@@ -1011,12 +1011,12 @@ complete in v1.3.0-evolve.
 
 Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md).
 
-- [ ] Cross-platform windowing (X11/Wayland, Cocoa, Win32)
-- [ ] Event system (keyboard, mouse, touch, window events)
-- [ ] Real-time audio (CoreAudio, ALSA, WASAPI with callback-based I/O)
-- [ ] MIDI input/output for instrument control
-- [ ] Vulkan Compute for cross-platform GPU (beyond Metal/CUDA)
-- [ ] Embedded cross-compilation (ARM bare-metal, RISC-V)
+- [x] Cross-platform windowing: X11, Cocoa and offscreen backends with pixel surfaces ([PLATFORM_LAYER.md](docs/platform/PLATFORM_LAYER.md), ADR-0053); Wayland and Win32 Planned for v1.8.1
+- [x] Event system (keyboard, mouse, touch, window events): per-window thread-safe queues, platform-independent key codes
+- [x] Real-time audio with callback-based I/O: CoreAudio, ALSA and a null real-time clock; lock-free queue mode, underrun/overrun/latency counters; WASAPI Planned for v1.8.1
+- [x] MIDI input/output: CoreMIDI, ALSA sequencer and in-process loopback
+- [x] Vulkan compute inside the ordinary GPU dispatch, cross-checked bit for bit against the CPU path ([VULKAN_COMPUTE.md](docs/platform/VULKAN_COMPUTE.md))
+- [x] Embedded cross-compilation: Cortex-M4, AArch64, RV32IMAC and RV64GC bare metal with a freestanding runtime subset ([EMBEDDED_TARGETS.md](docs/platform/EMBEDDED_TARGETS.md))
 - [ ] `core.memory` as a Z-set; resident recurrent AD
 
 Multi-GPU / multi-node dispatch is no longer gated behind "demonstrated

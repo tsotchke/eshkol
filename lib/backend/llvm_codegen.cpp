@@ -6,6 +6,7 @@
  */
 #include <functional>
 #include <eshkol/core/ast_routing.h>
+#include <eshkol/core/execution_profile.h>
 #include <eshkol/util/continuation_task.h>
 #include <eshkol/backend/ir_builder.h>
 #include <eshkol/backend/debug_artifact.h>
@@ -1390,6 +1391,48 @@ namespace {
 
         g_target_info_cached = true;
     }
+
+    // ── Embedded (bare-metal) target descriptions ───────────────────────────
+    //
+    // A freestanding --target that names a microcontroller or bare-metal
+    // application processor resolves to one row of the embedded target table
+    // (eshkol::profile::find_embedded_target).  The module records WHICH row
+    // in this module flag, because the canonical LLVM triple alone does not
+    // identify the machine (rv64gc/lp64d and rv64imac/lp64 share
+    // riscv64-unknown-none-elf).  Every TargetMachine this file creates for
+    // the module -- the data-layout one in the constructor and the object
+    // emitter -- takes its CPU, features, float ABI, ABI name and relocation
+    // model from that row, so instruction selection, the data layout, ELF
+    // e_flags and ARM build attributes always agree.
+    constexpr const char* kEmbeddedTargetModuleFlag = "eshkol.embedded-target";
+
+    const eshkol::profile::EmbeddedTarget* embeddedTargetForModule(const Module& m) {
+        if (auto* name = dyn_cast_or_null<MDString>(m.getModuleFlag(kEmbeddedTargetModuleFlag))) {
+            return eshkol::profile::find_embedded_target(name->getString().str());
+        }
+        return nullptr;
+    }
+
+    void applyEmbeddedTargetOptions(const eshkol::profile::EmbeddedTarget& target,
+                                    TargetOptions& options) {
+        switch (target.float_abi) {
+            case eshkol::profile::FloatAbi::Soft:
+                options.FloatABIType = FloatABI::Soft;
+                break;
+            case eshkol::profile::FloatAbi::Hard:
+                options.FloatABIType = FloatABI::Hard;
+                break;
+            case eshkol::profile::FloatAbi::Default:
+                break;
+        }
+        if (target.abi && target.abi[0] != '\0') {
+            options.MCOptions.ABIName = target.abi;
+        }
+        // Per-function / per-object sections let a firmware link script and
+        // `--gc-sections` keep only what the image references.
+        options.FunctionSections = true;
+        options.DataSections = true;
+    }
 }
 
 // TypedValue structure to carry both LLVM value and type information
@@ -2262,15 +2305,31 @@ public:
         InitializeAllAsmParsers();
         InitializeAllAsmPrinters();
 
-        // Set target triple (use WASM triple if target_triple param is set)
-        std::string target_triple_str = target_triple ? std::string(target_triple)
-                                                       : sys::getDefaultTargetTriple();
+        // Set target triple (use WASM triple if target_triple param is set).
+        // A bare-metal --target resolves through the embedded target table
+        // to its canonical LLVM triple and machine description.
+        const eshkol::profile::EmbeddedTarget* embedded_target =
+            target_triple ? eshkol::profile::find_embedded_target(target_triple) : nullptr;
+        std::string target_triple_str = embedded_target
+            ? std::string(embedded_target->llvm_triple)
+            : (target_triple ? std::string(target_triple) : sys::getDefaultTargetTriple());
 #if LLVM_VERSION_MAJOR >= 21
         Triple target_triple_obj(target_triple_str);
         module->setTargetTriple(target_triple_obj);
 #else
+        Triple target_triple_obj(target_triple_str);
         module->setTargetTriple(target_triple_str);
 #endif
+        if (embedded_target) {
+            module->addModuleFlag(Module::Error, kEmbeddedTargetModuleFlag,
+                                  MDString::get(*context, embedded_target->name));
+            if (target_triple_obj.isRISCV() && embedded_target->abi[0] != '\0') {
+                // The RISC-V backend checks this flag against the
+                // TargetMachine's ABI name, exactly as for clang -mabi=.
+                module->addModuleFlag(Module::Error, "target-abi",
+                                      MDString::get(*context, embedded_target->abi));
+            }
+        }
 
         // CRITICAL: Set DataLayout early so getTypeAllocSize returns correct values
         // This must be done before any allocations that depend on struct sizes
@@ -2286,20 +2345,33 @@ public:
         const Target* target = TargetRegistry::lookupTarget(target_triple_str, error);
 #endif
         if (target && !is_wasm32) {
-            // Only set data layout for native targets — WASM data layout is set in compile step
+            // Only set data layout for native targets — WASM data layout is set in compile step.
+            // Host CPU/features describe only the host triple; any other
+            // triple uses its embedded description or the generic baseline,
+            // the same rule the object emitter applies.
             TargetOptions options;
+            std::string cpu_name = "generic";
+            std::string feature_string;
+            if (embedded_target) {
+                cpu_name = embedded_target->cpu;
+                feature_string = embedded_target->features;
+                applyEmbeddedTargetOptions(*embedded_target, options);
+            } else if (target_triple_str == g_cached_target_triple) {
+                cpu_name = g_cached_cpu_name;
+                feature_string = g_cached_features;
+            }
             std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 21
-                target->createTargetMachine(target_triple_obj, g_cached_cpu_name, g_cached_features,
+                target->createTargetMachine(target_triple_obj, cpu_name, feature_string,
                                            options, Reloc::PIC_));
 #else
-                target->createTargetMachine(target_triple_str, g_cached_cpu_name, g_cached_features,
+                target->createTargetMachine(target_triple_str, cpu_name, feature_string,
                                            options, Reloc::PIC_));
 #endif
             if (target_machine) {
                 module->setDataLayout(target_machine->createDataLayout());
                 eshkol_debug("Set data layout for target: %s (cpu: %s)",
-                            target_triple_str.c_str(), g_cached_cpu_name.c_str());
+                            target_triple_str.c_str(), cpu_name.c_str());
             }
         }
 
@@ -3543,6 +3615,7 @@ public:
             }
 
             pruneUnusedFreestandingDeclarations();
+            markFreestandingNoUnwind();
 
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
@@ -4807,6 +4880,7 @@ private:
         }
 
         emitSharedLibraryExportWrappers(asts, num_asts);
+        emitFreestandingScalarExportWrappers(asts, num_asts);
     }
 
     /* ── SHARED-LIBRARY EXPORT ABI ───────────────────────────────────────────
@@ -4913,6 +4987,126 @@ private:
     // Eshkol dynamic link has a struct-convention entry point to bind to.
     static std::string sharedLibraryImplSymbolName(const std::string& name) {
         return name + "__eshkol_internal_abi";
+    }
+
+    /* ── FREESTANDING C-ABI EXPORTS ──────────────────────────────────────────
+     *
+     * Inside a module every Eshkol function speaks the internal tagged-value
+     * convention.  A freestanding image is entered from code that does not:
+     * a reset handler, a vector table, a C board-support layer.  So in a
+     * freestanding profile an `:export-symbol` function whose parameters and
+     * return are all annotated with machine types (u8..u64, i8..i64, usize,
+     * isize, ptr; `null` return) is exported under its symbol name with the
+     * platform C ABI for those scalars: the tagged body moves to an internal
+     * `<symbol>.eshkol` definition and a thunk under the exported name boxes
+     * the native arguments, calls it, and unboxes the result.  In-module
+     * Eshkol callers hold the body by pointer and keep the internal
+     * convention.  `:section`, `:used`, `:weak` and `:no-return` apply to
+     * the exported entry.
+     */
+    Type* freestandingExportScalarType(eshkol::hott::TypeId t, bool allow_void) {
+        if (auto shape = machineIntegerShape(t)) {
+            return IntegerType::get(*context, shape->bits);
+        }
+        if (t == eshkol::hott::BuiltinTypes::Pointer) return ptr_type;
+        if (allow_void && t == eshkol::hott::BuiltinTypes::Null) return void_type;
+        return nullptr;
+    }
+
+    void emitFreestandingScalarExportWrappers(const eshkol_ast_t* asts, size_t num_asts) {
+        if (!freestanding_codegen_ || g_repl_mode_enabled) return;
+
+        for (size_t i = 0; i < num_asts; ++i) {
+            if (asts[i].type != ESHKOL_OP || asts[i].operation.op != ESHKOL_DEFINE_OP) continue;
+            const auto& def = asts[i].operation.define_op;
+            if (!def.is_function || !def.export_symbol || !def.name || def.is_variadic) continue;
+
+            const std::string symbol = def.export_name ? def.export_name : def.name;
+            Function* impl = module->getFunction(symbol);
+            if (!impl || impl->isDeclaration()) continue;
+            FunctionType* impl_type = impl->getFunctionType();
+            if (impl_type->isVarArg() || impl_type->getReturnType() != tagged_value_type ||
+                impl_type->getNumParams() != def.num_params) {
+                continue;
+            }
+
+            // Every parameter and the return must carry a machine annotation.
+            std::vector<Type*> native_params;
+            std::vector<eshkol::hott::TypeId> param_hott;
+            bool scalar_signature = def.return_type != nullptr;
+            for (uint64_t p = 0; scalar_signature && p < def.num_params; ++p) {
+                if (!def.param_types || !def.param_types[p]) { scalar_signature = false; break; }
+                eshkol::hott::TypeId t = resolveDeclaredHottTypeId(def.param_types[p]);
+                Type* native = freestandingExportScalarType(t, false);
+                if (!native) { scalar_signature = false; break; }
+                native_params.push_back(native);
+                param_hott.push_back(t);
+            }
+            eshkol::hott::TypeId ret_hott = eshkol::hott::BuiltinTypes::Value;
+            Type* native_ret = nullptr;
+            if (scalar_signature) {
+                ret_hott = resolveDeclaredHottTypeId(def.return_type);
+                native_ret = freestandingExportScalarType(ret_hott, true);
+                scalar_signature = native_ret != nullptr;
+            }
+            if (!scalar_signature) {
+                eshkol_warn("freestanding export '%s' keeps Eshkol's internal calling "
+                            "convention; annotate every parameter and the return with a "
+                            "machine type (u8..u64, i8..i64, usize, isize, ptr, null) to "
+                            "export it with the C ABI",
+                            symbol.c_str());
+                continue;
+            }
+
+            impl->setName(symbol + ".eshkol");
+            impl->setLinkage(GlobalValue::InternalLinkage);
+            impl->setSection("");
+
+            Function* thunk = Function::Create(
+                FunctionType::get(native_ret, native_params, false),
+                def.is_weak ? GlobalValue::WeakAnyLinkage : GlobalValue::ExternalLinkage,
+                symbol, module.get());
+            if (thunk->getName() != symbol) {
+                eshkol_error("freestanding export name '%s' is already taken", symbol.c_str());
+                thunk->eraseFromParent();
+                markFatalCodegenError();
+                return;
+            }
+            if (def.link_section) thunk->setSection(def.link_section);
+            if (def.has_alignment) thunk->setAlignment(Align(def.alignment));
+            if (def.is_no_return) thunk->addFnAttr(Attribute::NoReturn);
+            if (def.is_used) markGlobalValueUsed(thunk);
+            thunk->addFnAttr(Attribute::NoUnwind);
+
+            IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+            DebugLoc saved_loc = builder->getCurrentDebugLocation();
+            builder->SetCurrentDebugLocation(DebugLoc());
+            builder->SetInsertPoint(BasicBlock::Create(*context, "entry", thunk));
+
+            std::vector<Value*> args;
+            for (uint64_t p = 0; p < def.num_params; ++p) {
+                Value* raw = thunk->getArg(p);
+                Value* bits = raw->getType()->isPointerTy()
+                    ? builder->CreatePtrToInt(raw, int64_type)
+                    : builder->CreateIntCast(raw, int64_type,
+                                             machineIntegerShape(param_hott[p])->is_signed);
+                args.push_back(packInt64ToTaggedValue(bits, true));
+            }
+            Value* result = builder->CreateCall(impl, args);
+            if (native_ret->isVoidTy()) {
+                builder->CreateRetVoid();
+            } else {
+                Value* bits = unpackInt64FromTaggedValue(result);
+                if (native_ret->isPointerTy()) {
+                    builder->CreateRet(builder->CreateIntToPtr(toIntPtr(bits), ptr_type));
+                } else {
+                    builder->CreateRet(builder->CreateTrunc(bits, native_ret));
+                }
+            }
+
+            builder->restoreIP(saved_point);
+            builder->SetCurrentDebugLocation(saved_loc);
+        }
     }
 
     void emitSharedLibraryExportWrappers(const eshkol_ast_t* asts, size_t num_asts) {
@@ -5119,6 +5313,17 @@ private:
     // LIBRARY MODE: Create initialization function instead of main
     // This function initializes global state but doesn't create an entry point
     void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts);
+
+    /* A freestanding image has no unwinder and no exception runtime, so no
+     * function in it can unwind. Saying so keeps targets with table-driven
+     * unwinding (ARM EHABI) from referencing personality routines such as
+     * __aeabi_unwind_cpp_pr0 that only a hosted C++ runtime provides. */
+    void markFreestandingNoUnwind() {
+        if (!freestanding_codegen_) return;
+        for (Function& function : *module) {
+            if (!function.isDeclaration()) function.addFnAttr(Attribute::NoUnwind);
+        }
+    }
 
     void pruneUnusedFreestandingDeclarations() {
         if (!freestanding_codegen_) return;
@@ -6011,6 +6216,13 @@ private:
                 if (ast->operation.op == ESHKOL_CALL_OP && ast->operation.call_op.func &&
                     ast->operation.call_op.func->type == ESHKOL_VAR && ast->operation.call_op.func->variable.id) {
                     std::string func_name = ast->operation.call_op.func->variable.id;
+
+                    // Freestanding machine-integer operators keep their
+                    // width and signedness as the result's HoTT type.
+                    if (const char* machine_op = freestandingMachineIntegerCall(func_name)) {
+                        co_return (co_await codegenMachineIntegerOpTask(
+                            &ast->operation, machine_op, func_name.c_str()));
+                    }
 
                     // HoTT TYPE TRACKING: Look up return type for builtin functions
                     eshkol::hott::TypeId return_hott_type = eshkol::hott::BuiltinTypes::Value;
@@ -12026,6 +12238,28 @@ private:
             eshkol_debug("Function %s uses rest parameter: %s", func_name, op->define_op.rest_param);
         }
 
+        // FREESTANDING MACHINE SCALARS: a parameter annotated with a machine
+        // integer or pointer type is read as that type inside the body, so
+        // the machine-integer operators see its declared width/signedness
+        // (see emitMachineIntegerOp).  Hosted code keeps gradual typing.
+        std::unordered_map<std::string, eshkol::hott::TypeId> prev_symbol_hott_types =
+            symbol_hott_types;
+        if (freestanding_codegen_ && op->define_op.parameters && op->define_op.param_types) {
+            for (uint64_t i = 0; i < op->define_op.num_params; ++i) {
+                const eshkol_ast_t& param = op->define_op.parameters[i];
+                if (param.type != ESHKOL_VAR || !param.variable.id ||
+                    !op->define_op.param_types[i]) {
+                    continue;
+                }
+                eshkol::hott::TypeId declared =
+                    resolveDeclaredHottTypeId(op->define_op.param_types[i]);
+                if (machineIntegerShape(declared) ||
+                    declared == eshkol::hott::BuiltinTypes::Pointer) {
+                    symbol_hott_types[param.variable.id] = declared;
+                }
+            }
+        }
+
         // TCO SETUP: Check if this function is self-tail-recursive
         bool use_tco = false;
         BasicBlock* tco_loop_bb = nullptr;
@@ -12247,7 +12481,9 @@ private:
 
         // Mutual TCO: collect non-self tail call sites for musttail optimization
         mutual_tail_call_sites_.clear();
-        if (op->define_op.value && !use_tco) {
+        // A freestanding image has no tail-transfer driver (a hosted runtime
+        // record), so mutual tail calls there are ordinary calls.
+        if (op->define_op.value && !use_tco && !freestanding_codegen_) {
             // Only do mutual TCO when self-TCO is NOT active (self-TCO uses loop transformation)
             collectMutualTailCallSites(op->define_op.value, op->define_op.value, func_name);
         }
@@ -12431,6 +12667,7 @@ private:
         }
 
         symbol_table = prev_symbols;
+        symbol_hott_types = prev_symbol_hott_types;
 
         // Re-add preserved function references
         for (auto& entry : func_refs_to_preserve) {
@@ -14128,6 +14365,13 @@ private:
                     co_return nullptr;
                 }
             }
+        }
+
+        // Freestanding profiles: integer operators are native machine arithmetic.
+        if (const char* machine_op = freestandingMachineIntegerCall(func_name)) {
+            TypedValue machine_result =
+                (co_await codegenMachineIntegerOpTask(op, machine_op, func_name.c_str()));
+            co_return machine_result.llvm_value ? typedValueToTaggedValue(machine_result) : nullptr;
         }
 
         // Handle arithmetic operations
@@ -20569,6 +20813,275 @@ private:
     
     // HoTT-optimized binary arithmetic: when both types are known, skip runtime dispatch
     // Returns nullptr if optimization not possible (fall back to polymorphic path)
+    // ── FREESTANDING MACHINE-INTEGER ARITHMETIC ─────────────────────────────
+    //
+    // The numeric tower (bignums, rationals, exact/inexact dispatch, AD
+    // carriers) is a hosted runtime facility.  A freestanding object has no
+    // runtime to call, so in a freestanding profile the integer operators
+    // lower to native modular machine arithmetic instead.  One rule covers
+    // every operator below:
+    //
+    //   * The operation width and signedness come from the operands that
+    //     carry a declared machine-integer type (u8..u64, i8..i64, usize,
+    //     isize: annotated parameters, low-level memory/atomic/intrinsic
+    //     results, and the results of these operators).  The widest such
+    //     type wins; on a width tie an unsigned type wins (C's usual
+    //     arithmetic conversions).  usize/isize are pointer-sized for the
+    //     module's data layout.
+    //   * Integer literals and values without a declared type adopt that
+    //     machine type; with no declared operand the operation is i64.
+    //   * Results wrap modulo 2^width; division and remainder by zero trap
+    //     (llvm.trap).  Comparisons use unsigned predicates for unsigned types.
+    //
+    // Non-integer operands (reals, strings, pairs) have no freestanding
+    // meaning and are rejected at compile time.
+    static const char* freestandingMachineIntegerOp(const std::string& name) {
+        static const std::unordered_map<std::string, const char*> ops = {
+            {"+", "add"}, {"-", "sub"}, {"*", "mul"},
+            {"quotient", "quotient"}, {"remainder", "remainder"},
+            {"modulo", "modulo"}, {"mod", "modulo"},
+            {"<", "lt"}, {">", "gt"}, {"<=", "le"}, {">=", "ge"}, {"=", "eq"},
+            {"bitwise-and", "and"}, {"bitwise-or", "or"}, {"bitwise-xor", "xor"},
+            {"bitwise-not", "not"},
+            {"bit-shift-left", "shl"}, {"bit-shift-right", "shr"},
+            {"arithmetic-shift", "ash"},
+        };
+        auto it = ops.find(name);
+        return it == ops.end() ? nullptr : it->second;
+    }
+
+    struct MachineIntegerShape {
+        eshkol::hott::TypeId type;
+        unsigned bits;
+        bool is_signed;
+    };
+
+    std::optional<MachineIntegerShape> machineIntegerShape(eshkol::hott::TypeId t) const {
+        using namespace eshkol::hott;
+        const unsigned ptr_bits = module->getDataLayout().getPointerSizeInBits();
+        switch (t.id) {
+            case BuiltinTypes::Int8.id:   return MachineIntegerShape{t, 8, true};
+            case BuiltinTypes::Int16.id:  return MachineIntegerShape{t, 16, true};
+            case BuiltinTypes::Int32.id:  return MachineIntegerShape{t, 32, true};
+            case BuiltinTypes::Int64.id:  return MachineIntegerShape{t, 64, true};
+            case BuiltinTypes::ISize.id:  return MachineIntegerShape{t, ptr_bits, true};
+            case BuiltinTypes::UInt8.id:  return MachineIntegerShape{t, 8, false};
+            case BuiltinTypes::UInt16.id: return MachineIntegerShape{t, 16, false};
+            case BuiltinTypes::UInt32.id: return MachineIntegerShape{t, 32, false};
+            case BuiltinTypes::UInt64.id: return MachineIntegerShape{t, 64, false};
+            case BuiltinTypes::USize.id:  return MachineIntegerShape{t, ptr_bits, false};
+            default: return std::nullopt;
+        }
+    }
+
+    // Integer payload of an operand, or nullptr when the operand is not an
+    // integer value in the freestanding sense.
+    Value* machineIntegerPayload(const TypedValue& tv) {
+        Value* v = tv.llvm_value;
+        if (!v) return nullptr;
+        Type* t = v->getType();
+        if (t == tagged_value_type) return unpackInt64FromTaggedValue(v);
+        if (t->isIntegerTy()) return v;
+        return nullptr;
+    }
+
+    void emitTrapUnless(Value* ok, const char* label) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* trap_bb = BasicBlock::Create(*context, std::string(label) + "_trap", fn);
+        BasicBlock* cont_bb = BasicBlock::Create(*context, std::string(label) + "_ok", fn);
+        builder->CreateCondBr(ok, cont_bb, trap_bb);
+        builder->SetInsertPoint(trap_bb);
+        builder->CreateCall(ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::trap, {}));
+        builder->CreateUnreachable();
+        builder->SetInsertPoint(cont_bb);
+    }
+
+    TypedValue emitMachineIntegerOp(const char* operation, const char* source_name,
+                                    const std::vector<TypedValue>& operands,
+                                    const std::vector<bool>& is_literal) {
+        using namespace eshkol::hott;
+        const std::string opname(operation);
+        const bool is_compare = opname == "lt" || opname == "gt" || opname == "le" ||
+                                opname == "ge" || opname == "eq";
+
+        // Width/signedness from the declared machine-typed operands.
+        std::optional<MachineIntegerShape> shape;
+        for (size_t i = 0; i < operands.size(); ++i) {
+            if (is_literal[i]) continue;
+            auto s = machineIntegerShape(operands[i].hott_type);
+            if (!s) continue;
+            if (!shape || s->bits > shape->bits ||
+                (s->bits == shape->bits && !s->is_signed && shape->is_signed)) {
+                shape = s;
+            }
+        }
+        if (!shape) shape = MachineIntegerShape{BuiltinTypes::Int64, 64, true};
+        IntegerType* ty = IntegerType::get(*context, shape->bits);
+
+        std::vector<Value*> vals;
+        vals.reserve(operands.size());
+        for (const auto& tv : operands) {
+            Value* payload = machineIntegerPayload(tv);
+            if (!payload) {
+                eshkol_error_current(
+                    "%s: freestanding profiles support machine-integer operands only "
+                    "(the numeric tower for reals and exact rationals is hosted)",
+                    source_name);
+                markFatalCodegenError();
+                return TypedValue();
+            }
+            vals.push_back(builder->CreateIntCast(payload, ty, shape->is_signed, "mint_operand"));
+        }
+
+        auto widen = [&](Value* v) -> TypedValue {
+            Value* wide = builder->CreateIntCast(v, int64_type, shape->is_signed, "mint_result");
+            return TypedValue(wide, ESHKOL_VALUE_INT64, shape->type, true);
+        };
+
+        if (is_compare) {
+            if (vals.size() < 2) {
+                eshkol_arity_error_current("%s requires at least 2 arguments", source_name);
+                return TypedValue();
+            }
+            CmpInst::Predicate pred;
+            if (opname == "eq") pred = CmpInst::ICMP_EQ;
+            else if (opname == "lt") pred = shape->is_signed ? CmpInst::ICMP_SLT : CmpInst::ICMP_ULT;
+            else if (opname == "gt") pred = shape->is_signed ? CmpInst::ICMP_SGT : CmpInst::ICMP_UGT;
+            else if (opname == "le") pred = shape->is_signed ? CmpInst::ICMP_SLE : CmpInst::ICMP_ULE;
+            else pred = shape->is_signed ? CmpInst::ICMP_SGE : CmpInst::ICMP_UGE;
+            // Chained comparison: (op a b c) = (and (op a b) (op b c)); the
+            // operands are already evaluated exactly once.
+            Value* result = nullptr;
+            for (size_t i = 0; i + 1 < vals.size(); ++i) {
+                Value* c = builder->CreateICmp(pred, vals[i], vals[i + 1], "mint_cmp");
+                result = result ? builder->CreateAnd(result, c) : c;
+            }
+            return TypedValue(result, ESHKOL_VALUE_BOOL, BuiltinTypes::Boolean, true);
+        }
+
+        if (opname == "not") {
+            if (vals.size() != 1) {
+                eshkol_arity_error_current("%s requires exactly 1 argument", source_name);
+                return TypedValue();
+            }
+            return widen(builder->CreateNot(vals[0], "mint_not"));
+        }
+
+        // Identity elements and unary forms of the folding operators.
+        if (vals.empty()) {
+            if (opname == "add" || opname == "or" || opname == "xor") return widen(ConstantInt::get(ty, 0));
+            if (opname == "mul") return widen(ConstantInt::get(ty, 1));
+            if (opname == "and") return widen(ConstantInt::getAllOnesValue(ty));
+            eshkol_arity_error_current("%s requires at least 1 argument", source_name);
+            return TypedValue();
+        }
+        if (vals.size() == 1) {
+            if (opname == "sub") return widen(builder->CreateNeg(vals[0], "mint_neg"));
+            if (opname == "add" || opname == "mul" || opname == "and" ||
+                opname == "or" || opname == "xor") {
+                return widen(vals[0]);
+            }
+            eshkol_arity_error_current("%s requires at least 2 arguments", source_name);
+            return TypedValue();
+        }
+
+        const bool binary_only = opname == "quotient" || opname == "remainder" ||
+                                 opname == "modulo" || opname == "shl" ||
+                                 opname == "shr" || opname == "ash";
+        if (binary_only && vals.size() != 2) {
+            eshkol_arity_error_current("%s requires exactly 2 arguments", source_name);
+            return TypedValue();
+        }
+
+        Value* acc = vals[0];
+        for (size_t i = 1; i < vals.size(); ++i) {
+            Value* rhs = vals[i];
+            if (opname == "add") acc = builder->CreateAdd(acc, rhs, "mint_add");
+            else if (opname == "sub") acc = builder->CreateSub(acc, rhs, "mint_sub");
+            else if (opname == "mul") acc = builder->CreateMul(acc, rhs, "mint_mul");
+            else if (opname == "and") acc = builder->CreateAnd(acc, rhs, "mint_and");
+            else if (opname == "or") acc = builder->CreateOr(acc, rhs, "mint_or");
+            else if (opname == "xor") acc = builder->CreateXor(acc, rhs, "mint_xor");
+            else if (opname == "quotient" || opname == "remainder" || opname == "modulo") {
+                emitTrapUnless(builder->CreateICmpNE(rhs, ConstantInt::get(ty, 0)), "mint_div");
+                if (opname == "quotient") {
+                    acc = shape->is_signed ? builder->CreateSDiv(acc, rhs, "mint_quot")
+                                           : builder->CreateUDiv(acc, rhs, "mint_quot");
+                } else if (!shape->is_signed) {
+                    acc = builder->CreateURem(acc, rhs, "mint_rem");
+                } else {
+                    Value* r = builder->CreateSRem(acc, rhs, "mint_rem");
+                    if (opname == "modulo") {
+                        // modulo takes the divisor's sign: adjust a nonzero
+                        // remainder whose sign differs from the divisor's.
+                        Value* nonzero = builder->CreateICmpNE(r, ConstantInt::get(ty, 0));
+                        Value* sign_differs = builder->CreateICmpSLT(
+                            builder->CreateXor(r, rhs), ConstantInt::get(ty, 0));
+                        Value* adjust = builder->CreateAnd(nonzero, sign_differs);
+                        r = builder->CreateSelect(adjust, builder->CreateAdd(r, rhs), r, "mint_mod");
+                    }
+                    acc = r;
+                }
+            } else {
+                // Shifts: amounts at or beyond the width give 0 (or the sign
+                // fill for a signed right shift), never an undefined shift.
+                Value* width = ConstantInt::get(ty, shape->bits);
+                Value* max_shift = ConstantInt::get(ty, shape->bits - 1);
+                auto shift_left = [&](Value* v, Value* n) {
+                    Value* in_range = builder->CreateICmpULT(n, width);
+                    Value* s = builder->CreateShl(v, builder->CreateSelect(in_range, n, max_shift));
+                    return builder->CreateSelect(in_range, s, ConstantInt::get(ty, 0), "mint_shl");
+                };
+                auto shift_right = [&](Value* v, Value* n) {
+                    Value* in_range = builder->CreateICmpULT(n, width);
+                    Value* clamped = builder->CreateSelect(in_range, n, max_shift);
+                    if (shape->is_signed) return builder->CreateAShr(v, clamped, "mint_shr");
+                    Value* s = builder->CreateLShr(v, clamped);
+                    return builder->CreateSelect(in_range, s, ConstantInt::get(ty, 0), "mint_shr");
+                };
+                if (opname == "shl") acc = shift_left(acc, rhs);
+                else if (opname == "shr") acc = shift_right(acc, rhs);
+                else {
+                    // arithmetic-shift: positive count shifts left, negative right.
+                    Value* negative = builder->CreateICmpSLT(rhs, ConstantInt::get(ty, 0));
+                    Value* left = shift_left(acc, rhs);
+                    Value* right = shift_right(acc, builder->CreateNeg(rhs));
+                    acc = builder->CreateSelect(negative, right, left, "mint_ash");
+                }
+            }
+        }
+        return widen(acc);
+    }
+
+    ContinuationTask<TypedValue> codegenMachineIntegerOpTask(const eshkol_operations_t* op,
+                                                             const char* operation,
+                                                             const char* source_name) {
+        std::vector<TypedValue> operands;
+        std::vector<bool> is_literal;
+        for (uint64_t i = 0; i < op->call_op.num_vars; ++i) {
+            const eshkol_ast_t* arg = &op->call_op.variables[i];
+            TypedValue tv = (co_await codegenTypedASTTask(arg));
+            if (!tv.llvm_value) co_return TypedValue();
+            operands.push_back(tv);
+            is_literal.push_back(arg->type == ESHKOL_INT64);
+        }
+        co_return emitMachineIntegerOp(operation, source_name, operands, is_literal);
+    }
+
+    // Freestanding builtin integer operator call that the program has not
+    // shadowed with its own definition.
+    const char* freestandingMachineIntegerCall(const std::string& func_name) {
+        if (!freestanding_codegen_) return nullptr;
+        const char* operation = freestandingMachineIntegerOp(func_name);
+        if (!operation) return nullptr;
+        if (isShadowedByLocalRuntimeBinding(func_name) ||
+            global_symbol_table.count(func_name + "_func") ||
+            symbol_table.count(func_name + "_func")) {
+            return nullptr;
+        }
+        return operation;
+    }
+
     Value* hottOptimizedBinaryArith(const TypedValue& left, const TypedValue& right,
                                      const std::string& operation) {
         using namespace eshkol::hott;
@@ -31380,6 +31893,9 @@ private:
         if (out_needs_nursery) *out_needs_nursery = false;
         static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
         if (disabled || !body) return false;
+        // Iteration scopes are arena regions, a hosted runtime facility; a
+        // freestanding loop allocates nothing on an arena to reclaim.
+        if (freestanding_codegen_) return false;
         // ESH-0214c: reject outright if this loop's body is reachable (via
         // ordinary calls) from a parallel-map/-fold/-filter/-for-each/
         // -execute or future callback argument -- see the pre-pass docblock
@@ -47227,13 +47743,25 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         // sections + /OPT:REF dead-stripping (see the linker flags below).
         const bool object_is_aarch64_windows =
             object_triple.getArch() == Triple::aarch64 && object_triple.isOSWindows();
+        // A bare-metal module is one linked image placed by a link script, so
+        // it takes the embedded description's static, small-model setup
+        // instead (see embeddedTargetForModule).
+        const eshkol::profile::EmbeddedTarget* embedded_target =
+            embeddedTargetForModule(*module);
         const bool use_large_aarch64_code_model =
+            !embedded_target &&
             object_triple.getArch() == Triple::aarch64 && !object_triple.isOSWindows();
         if (use_large_aarch64_code_model) {
             code_model = llvm::CodeModel::Large;
         }
 
         TargetOptions target_options;
+        if (embedded_target) {
+            applyEmbeddedTargetOptions(*embedded_target, target_options);
+            if (embedded_target->code_model == eshkol::profile::CodeModel::Medium) {
+                code_model = llvm::CodeModel::Medium;
+            }
+        }
         if (object_is_aarch64_windows) {
             // Emit each function/datum in its own COFF section so lld-link's
             // /OPT:REF can dead-strip everything the small test binary doesn't
@@ -47243,17 +47771,22 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             target_options.DataSections = true;
         }
         auto codegen_opt = getCodeGenOptLevel();
-        const bool use_host_cpu_features = (object_triple_str == g_cached_target_triple);
-        const std::string cpu_name = use_host_cpu_features ? g_cached_cpu_name : "generic";
-        const std::string feature_string = use_host_cpu_features ? g_cached_features : "";
+        const bool use_host_cpu_features =
+            !embedded_target && (object_triple_str == g_cached_target_triple);
+        const std::string cpu_name = embedded_target ? std::string(embedded_target->cpu)
+            : (use_host_cpu_features ? g_cached_cpu_name : std::string("generic"));
+        const std::string feature_string = embedded_target
+            ? std::string(embedded_target->features)
+            : (use_host_cpu_features ? g_cached_features : std::string());
+        const Reloc::Model reloc_model = embedded_target ? Reloc::Static : Reloc::PIC_;
         std::unique_ptr<TargetMachine> target_machine(
 #if LLVM_VERSION_MAJOR >= 21
             target->createTargetMachine(object_triple, cpu_name, feature_string,
-                                       target_options, Reloc::PIC_, code_model,
+                                       target_options, reloc_model, code_model,
                                        codegen_opt));
 #else
             target->createTargetMachine(object_triple_str, cpu_name, feature_string,
-                                       target_options, Reloc::PIC_, code_model,
+                                       target_options, reloc_model, code_model,
                                        codegen_opt));
 #endif
 

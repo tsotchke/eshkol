@@ -1,0 +1,16 @@
+;;; Shared check helpers for the platform language-surface tests.
+(define tests-passed 0)
+(define tests-failed 0)
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (condition (#t (set! raised #t))) (thunk))
+    raised))
+(define (check name condition)
+  (if condition
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name) (newline))))
+(define (report suite)
+  (display suite) (display ": ") (display tests-passed) (display " passed, ")
+  (display tests-failed) (display " failed") (newline))

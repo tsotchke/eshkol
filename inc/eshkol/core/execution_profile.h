@@ -146,6 +146,60 @@ std::string supported_names();
  */
 Resolution resolve(const Selection& selection);
 
+/**
+ * @brief Floating-point calling convention of an embedded target.
+ */
+enum class FloatAbi {
+    Default,  // The LLVM target's default for the triple
+    Soft,     // Floating-point values travel in integer registers
+    Hard      // Floating-point values travel in FPU registers
+};
+
+/**
+ * @brief Code model of an embedded target (how far code may address).
+ */
+enum class CodeModel {
+    Default,  // The LLVM target's default (small / medlow)
+    Medium    // RISC-V medany: PC-relative, any 2 GiB window (images at 0x80000000)
+};
+
+/**
+ * @brief Machine description of one bare-metal (freestanding) target.
+ *
+ * This table is the single source the native backend consults when a
+ * freestanding profile names a microcontroller or bare-metal application
+ * processor with `--target`: the canonical LLVM triple, CPU, feature set,
+ * ABI name and float ABI all come from here, so data layout, instruction
+ * selection, ELF flags and build attributes agree for every object the
+ * compiler emits for that target.
+ */
+struct EmbeddedTarget {
+    const char* name;         // Accepted --target spelling (exact match)
+    const char* llvm_triple;  // Canonical LLVM triple written into the module
+    const char* cpu;          // LLVM CPU name
+    const char* features;     // LLVM subtarget feature string
+    const char* abi;          // ABI name (RISC-V ilp32/lp64d, ...) or "" for the default
+    FloatAbi float_abi;       // Float calling convention
+    CodeModel code_model;     // Addressing model for code and data references
+    const char* isa;          // Human-readable ISA summary, e.g. "rv32imac"
+};
+
+/**
+ * @brief Look up the embedded target description for a --target spelling.
+ *
+ * @param triple The spelling passed to --target, e.g. "thumbv7em-none-eabi",
+ *        "riscv64gc-unknown-none-elf" or "aarch64-unknown-none".
+ * @return The matching description, or nullptr when @p triple is not a
+ *         bare-metal target this table describes (hosted and kernel triples
+ *         such as x86_64-unknown-linux-gnu keep the generic native path).
+ */
+const EmbeddedTarget* find_embedded_target(std::string_view triple);
+
+/**
+ * @brief Comma-separated list of every --target spelling in the embedded table.
+ */
+std::string embedded_target_names();
+
 }  // namespace eshkol::profile
 
 #endif

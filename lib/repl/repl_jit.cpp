@@ -25,6 +25,11 @@
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "eshkol/core/net.h"
 #include "eshkol/core/tls.h"
+#if defined(ESHKOL_PLATFORM_LAYER)
+#include <eshkol/platform/audio.h>   // Platform layer bridge (ADR-0053)
+#include <eshkol/platform/midi.h>
+#include <eshkol/platform/window.h>
+#endif
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -1850,6 +1855,43 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_net_port);
     ADD_SYMBOL(eshkol_net_nonblocking);
     ADD_SYMBOL(eshkol_net_close);
+#if defined(ESHKOL_PLATFORM_LAYER)
+    // Platform layer bridge used by lib/platform/*.esk (ADR-0053).
+    ADD_SYMBOL(eshkol_plat_backend);
+    ADD_SYMBOL(eshkol_plat_backend_name);
+    ADD_SYMBOL(eshkol_plat_select_backend);
+    ADD_SYMBOL(eshkol_plat_window_open);
+    ADD_SYMBOL(eshkol_plat_window_close);
+    ADD_SYMBOL(eshkol_plat_window_query);
+    ADD_SYMBOL(eshkol_plat_window_set);
+    ADD_SYMBOL(eshkol_plat_window_set_title);
+    ADD_SYMBOL(eshkol_plat_window_fill_rect);
+    ADD_SYMBOL(eshkol_plat_window_get_pixel);
+    ADD_SYMBOL(eshkol_plat_window_present);
+    ADD_SYMBOL(eshkol_plat_window_read_presented);
+    ADD_SYMBOL(eshkol_plat_window_next_event);
+    ADD_SYMBOL(eshkol_plat_window_event_field);
+    ADD_SYMBOL(eshkol_plat_window_event_real);
+    ADD_SYMBOL(eshkol_plat_window_push_event);
+    ADD_SYMBOL(eshkol_plat_audio_open);
+    ADD_SYMBOL(eshkol_plat_audio_close);
+    ADD_SYMBOL(eshkol_plat_audio_control);
+    ADD_SYMBOL(eshkol_plat_audio_write);
+    ADD_SYMBOL(eshkol_plat_audio_commit);
+    ADD_SYMBOL(eshkol_plat_audio_available);
+    ADD_SYMBOL(eshkol_plat_audio_read);
+    ADD_SYMBOL(eshkol_plat_audio_stat);
+    ADD_SYMBOL(eshkol_plat_midi_open);
+    ADD_SYMBOL(eshkol_plat_midi_close);
+    ADD_SYMBOL(eshkol_plat_midi_stage);
+    ADD_SYMBOL(eshkol_plat_midi_send_staged);
+    ADD_SYMBOL(eshkol_plat_midi_receive);
+    ADD_SYMBOL(eshkol_plat_midi_byte);
+    ADD_SYMBOL(eshkol_plat_midi_timestamp);
+    ADD_SYMBOL(eshkol_plat_midi_stat);
+    ADD_SYMBOL(eshkol_plat_midi_source_count);
+    ADD_SYMBOL(eshkol_plat_midi_source_name);
+#endif
     // Optional native TLS context construction.
     ADD_SYMBOL(eshkol_tls_available);
     ADD_SYMBOL(eshkol_tls_client_context);

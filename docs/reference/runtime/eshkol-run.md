@@ -116,6 +116,28 @@ shapes are enforced and which are not yet.
 format and the VM profiles, and the [platform target matrix](../../platform/TARGET_SUPPORT_MATRIX.md)
 for what each profile guarantees.
 
+**Bare-metal targets.** With a freestanding profile, `--target` also accepts
+the bare-metal spellings below. Each resolves to one machine description (CPU,
+feature set, ABI, float ABI, code model) that the data layout, instruction
+selection, ELF flags and ARM build attributes all follow; the object is
+emitted with static relocations and per-function sections for a link script.
+
+| `--target` | Machine | ABI |
+|---|---|---|
+| `thumbv7em-none-eabi` | Cortex-M4, ARMv7E-M Thumb-2, no FPU | AAPCS, soft float |
+| `thumbv7em-none-eabihf` | Cortex-M4F, FPv4-SP-D16 | AAPCS-VFP, hard float |
+| `aarch64-unknown-none` (also `-none-elf`, `aarch64-none-elf`) | ARMv8-A | AAPCS64 |
+| `riscv32imac-unknown-none-elf` (also `riscv32-unknown-none-elf`) | RV32IMAC | ilp32 |
+| `riscv64gc-unknown-none-elf` (also `riscv64-unknown-none-elf`) | RV64GC, medany | lp64d |
+| `riscv64imac-unknown-none-elf` | RV64IMAC, medany | lp64 |
+
+In freestanding profiles integer operators (`+ - * quotient remainder modulo`,
+comparisons, `bitwise-*`, shifts) compile to native modular machine arithmetic
+at the width of their machine-typed operands, and an `:export-symbol` function
+whose parameters and return are machine-typed is exported with the platform C
+ABI. The [embedded targets guide](../../platform/EMBEDDED_TARGETS.md) covers the
+freestanding runtime subset, the reference boards and running images under QEMU.
+
 ### Info
 
 | Flag | Alias | Meaning |

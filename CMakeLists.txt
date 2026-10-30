@@ -1903,6 +1903,35 @@ if(ESHKOL_GPU_ENABLED)
         endif()
     endif()
 
+    # ── Vulkan compute (ADR-0053) ───────────────────────────────────────
+    # lib/backend/gpu/gpu_vulkan.c opens the Vulkan loader (libvulkan.so.1)
+    # at run time, so the build needs neither the loader nor the Khronos
+    # headers and no binary gains a link-time Vulkan dependency. In a CUDA
+    # build it is the fallback device backend of gpu_memory_cuda.cpp; without
+    # CUDA it is the device backend of gpu_memory_stub.cpp. Linux/BSD only;
+    # Windows (vulkan-1.dll) and Apple (MoltenVK) are not wired yet.
+    # ESHKOL_REQUIRE_GPU_BACKEND keeps its meaning (Metal or CUDA): a
+    # run-time-loaded backend never satisfies it.
+    option(ESHKOL_VULKAN_COMPUTE "Build the run-time-loaded Vulkan compute backend" ON)
+    set(ESHKOL_VULKAN_COMPUTE_ENABLED FALSE)
+    if(ESHKOL_VULKAN_COMPUTE AND UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
+        if(GPU_FOUND)
+            set(ESHKOL_VULKAN_COMPUTE_ENABLED TRUE)
+            list(APPEND GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_vulkan.c")
+            message(STATUS "GPU: Vulkan compute linked as the fallback device backend (loader opened at run time)")
+        elseif(NOT ESHKOL_REQUIRE_GPU_BACKEND)
+            set(ESHKOL_VULKAN_COMPUTE_ENABLED TRUE)
+            set(GPU_FOUND TRUE)
+            set(ESHKOL_GPU_BACKEND "VULKAN" CACHE INTERNAL
+                "Resolved Eshkol GPU backend (NONE, METAL, CUDA, VULKAN, or WEBGPU)" FORCE)
+            set(GPU_LIBRARIES ${CMAKE_DL_LIBS})
+            set(GPU_SOURCES
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_vulkan.c")
+            message(STATUS "GPU: Vulkan compute (loader opened at run time; CPU when no device)")
+        endif()
+    endif()
+
     if(GPU_FOUND)
         add_compile_definitions(ESHKOL_GPU_ENABLED)
         message(STATUS "GPU acceleration: ENABLED")
@@ -2207,6 +2236,13 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
 # weight_matrices_v2.c, eshkol_compiler_standalone.c, qllm_interpreter_v1.c).
 # These are reference-only — kept for paper-section history but never linked.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
+# lib/platform/embedded/ is the freestanding runtime subset for bare-metal
+# targets.  It is cross-compiled per target by the embedded-runtime block
+# (ESHKOL_BUILD_EMBEDDED_RUNTIME) and never belongs to a host library.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/platform/embedded/.*")
+# The hosted platform layer (windows, audio, MIDI; ADR-0053) is listed in
+# cmake/EshkolPlatform.cmake and compiled into the runtime-support archive.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/platform/(platform\\.c|event/|window/|audio/|midi/)")
 
 # ESH-0011: exactly one event-loop backend is compiled, chosen below the same
 # way GPU_SOURCES picks gpu_memory.mm / gpu_memory_cuda.cpp / gpu_memory_stub.cpp.
@@ -2616,6 +2652,10 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
 if(ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2)
   list(APPEND ESHKOL_RUNTIME_SUPPORT_SRC lib/core/eskm_v2_preflight.c)
 endif()
+
+# Platform layer: windows/events, real-time audio, MIDI (ADR-0053).
+set(ESHKOL_PLATFORM_STAGE sources)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
 
 list(REMOVE_ITEM ESHKOL_NON_RUNTIME_SRC
   ${ESHKOL_BACKEND_RUNTIME_SRC}
@@ -3040,6 +3080,16 @@ if(TARGET eshkol-gpu-runtime-obj)
     eshkol_apply_common_compile_settings(eshkol-gpu-runtime-obj)
     if(CUDAToolkit_FOUND)
         target_include_directories(eshkol-gpu-runtime-obj SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    endif()
+    if(ESHKOL_VULKAN_COMPUTE_ENABLED)
+        # Only the GPU backend objects see the Vulkan switch. The admission
+        # probe's host references must stay unfused.
+        target_compile_definitions(eshkol-gpu-runtime-obj PRIVATE ESHKOL_GPU_VULKAN_ENABLED=1)
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            set_source_files_properties(
+                "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_vulkan.c"
+                PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+        endif()
     endif()
 endif()
 if(TARGET eshkol-xla-runtime-obj)
@@ -8922,6 +8972,56 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
     endif()
 endif()
 
+# ─────────────────────────────────────────────────────────────────────
+# Embedded (bare-metal) targets: freestanding runtime subset + target matrix.
+#
+# lib/platform/embedded holds the freestanding runtime subset (memory
+# primitives, C startup) and one board-support directory per reference
+# board.  It is cross-compiled with the LLVM toolchain's clang for every
+# reference target by tests/embedded/embedded_targets.sh: the
+# `eshkol-embedded-runtime` target writes
+# build/embedded/<target>/libeshkol_embedded.a plus the board link script.
+# The CTests compile tests/embedded/fib_checksum.esk for thumbv7em (soft and
+# hard float), aarch64, rv32imac and rv64gc, link and inspect each image
+# (embedded_targets_objects), and boot each image under QEMU where a
+# qemu-system-* emulator is installed (embedded_targets_qemu).  Both exit 77
+# (skip) when the cross tools are absent.  See docs/platform/EMBEDDED_TARGETS.md.
+# ─────────────────────────────────────────────────────────────────────
+option(ESHKOL_BUILD_EMBEDDED_RUNTIME
+    "Cross-compile the freestanding runtime subset for the reference bare-metal targets" ON)
+if(NOT WIN32 AND ESHKOL_BUILD_EMBEDDED_RUNTIME)
+    find_program(ESHKOL_EMBEDDED_CLANG NAMES clang
+        HINTS "${ESHKOL_LLVM_ROOT}/bin" "${LLVM_TOOLS_BINARY_DIR}" NO_DEFAULT_PATH)
+    find_program(ESHKOL_EMBEDDED_BASH NAMES bash)
+    if(ESHKOL_EMBEDDED_CLANG AND ESHKOL_EMBEDDED_BASH)
+        get_filename_component(ESHKOL_EMBEDDED_LLVM_BIN "${ESHKOL_EMBEDDED_CLANG}" DIRECTORY)
+        add_custom_target(eshkol-embedded-runtime
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_EMBEDDED_LLVM_BIN=${ESHKOL_EMBEDDED_LLVM_BIN}"
+                "${ESHKOL_EMBEDDED_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/embedded/embedded_targets.sh"
+                runtime "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/embedded"
+            COMMENT "Cross-compiling the freestanding runtime subset for the reference bare-metal targets"
+            VERBATIM)
+        if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+            add_test(NAME embedded_targets_objects
+                COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_EMBEDDED_LLVM_BIN=${ESHKOL_EMBEDDED_LLVM_BIN}"
+                    "${ESHKOL_EMBEDDED_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/embedded/embedded_targets.sh"
+                    check $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_SOURCE_DIR}"
+                    "${CMAKE_CURRENT_BINARY_DIR}/embedded-check")
+            add_test(NAME embedded_targets_qemu
+                COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_EMBEDDED_LLVM_BIN=${ESHKOL_EMBEDDED_LLVM_BIN}"
+                    "${ESHKOL_EMBEDDED_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/embedded/embedded_targets.sh"
+                    check $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_SOURCE_DIR}"
+                    "${CMAKE_CURRENT_BINARY_DIR}/embedded-qemu" qemu)
+            set_tests_properties(embedded_targets_objects embedded_targets_qemu PROPERTIES
+                LABELS "toolchain;embedded"
+                SKIP_RETURN_CODE 77
+                TIMEOUT 600)
+        endif()
+    else()
+        message(STATUS "Embedded runtime: clang from the LLVM toolchain not found; bare-metal target tests skipped")
+    endif()
+endif()
+
 if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh")
     find_program(ESHKOL_BASH_EXECUTABLE NAMES bash)
@@ -9474,6 +9574,59 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ji
     )
     add_test(NAME jit_aarch64_coff_target_config_test
         COMMAND jit_aarch64_coff_target_config_test)
+endif()
+
+# ── Vulkan compute backend tests (ADR-0053) ─────────────────────────────
+# gpu_vulkan_compute_crosscheck: every kernel on every reachable Vulkan f64
+#   device against the CPU reference (bitwise), straight through gpu_vulkan.c.
+# gpu_vulkan_dispatch: the ordinary eshkol_gpu_* API with
+#   ESHKOL_GPU_BACKEND=vulkan, through the production backend objects.
+# gpu_vulkan_abi_layout / gpu_vulkan_spirv_current: the self-declared Vulkan
+#   ABI against the Khronos headers, and the embedded SPIR-V against the GLSL
+#   sources; each needs a tool that is optional on build hosts.
+# All four exit 77 (skipped) where the device or tool is absent.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_VULKAN_COMPUTE_ENABLED)
+    find_package(Threads REQUIRED)
+    add_executable(vulkan_compute_test
+        tests/gpu/vulkan_compute_test.c
+        lib/backend/gpu/gpu_vulkan.c)
+    target_include_directories(vulkan_compute_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(vulkan_compute_test PRIVATE -ffp-contract=off)
+    endif()
+    target_link_libraries(vulkan_compute_test PRIVATE ${CMAKE_DL_LIBS} Threads::Threads m)
+    add_test(NAME gpu_vulkan_compute_crosscheck COMMAND vulkan_compute_test)
+    set_tests_properties(gpu_vulkan_compute_crosscheck PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 600)
+
+    add_executable(vulkan_dispatch_test tests/gpu/vulkan_dispatch_test.cpp)
+    target_compile_features(vulkan_dispatch_test PRIVATE cxx_std_17)
+    target_include_directories(vulkan_dispatch_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(vulkan_dispatch_test PRIVATE -ffp-contract=off)
+    endif()
+    target_link_libraries(vulkan_dispatch_test PRIVATE
+        eshkol-runtime ${ESHKOL_EXTRA_LINK_LIBS} Threads::Threads ${CMAKE_DL_LIBS})
+    add_test(NAME gpu_vulkan_dispatch COMMAND vulkan_dispatch_test)
+    set_tests_properties(gpu_vulkan_dispatch PROPERTIES
+        ENVIRONMENT "ESHKOL_GPU_BACKEND=vulkan"
+        SKIP_RETURN_CODE 77 TIMEOUT 300)
+
+    add_test(NAME gpu_vulkan_abi_layout
+        COMMAND ${CMAKE_COMMAND} -E env
+            "CC=${CMAKE_C_COMPILER}"
+            "ESHKOL_VK_ABI_WORKDIR=${CMAKE_CURRENT_BINARY_DIR}/vulkan-abi-check"
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vulkan_abi.sh)
+    add_test(NAME gpu_vulkan_spirv_current
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_VK_SPIRV_WORKDIR=${CMAKE_CURRENT_BINARY_DIR}/vulkan-spirv-check"
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_vulkan_spirv.sh --check)
+    set_tests_properties(gpu_vulkan_abi_layout gpu_vulkan_spirv_current PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 
 if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
@@ -15145,3 +15298,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
         set_tests_properties(vm_binding_read_runtime PROPERTIES TIMEOUT 180)
     endif()
 endif()
+
+# Platform layer tests (ADR-0053).
+set(ESHKOL_PLATFORM_STAGE tests)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
