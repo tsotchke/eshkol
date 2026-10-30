@@ -18,13 +18,13 @@
                             pair, simplifying a right-hand side, returning a
                             rule to the pending equations, dropping a joined
                             equation) keeps all rules and equations inside
-                            the congruence: an 'equal answer is never wrong,
+                            the congruence: an 'equal answer is always sound,
                             complete or not;
      decide_by_normal_forms with a confluent rule set whose rules are
                             consequences of the relations and which joins
                             every relation, two words are congruent exactly
                             when their normal forms coincide: a complete
-                            system's 'distinct answer is never wrong.
+                            system's 'distinct answer is always sound.
 
    Words of a category are paths (composable generator sequences); a rule
    relates parallel paths, so a rewrite inside a path yields a path and every

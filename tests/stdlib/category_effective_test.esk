@@ -166,8 +166,8 @@
             (null? (effective-adjunction-hom-bijection-violations (cdr FC) (pairs ns qs) 0))))
 (check "floor is not left adjoint to the inclusion: the checks name the failures"
        (let* ((i (effective-adjunction-left (cdr FC))) (fl (effective-adjunction-right (cdr FC)))
-              (wrong (make-effective-adjunction fl i (lambda (q) (cons q (floor q))) (lambda (n) (cons n n)))))
-         (not (null? (effective-adjunction-hom-bijection-violations wrong (pairs qs ns) 0)))))
+              (mismatched (make-effective-adjunction fl i (lambda (q) (cons q (floor q))) (lambda (n) (cons n n)))))
+         (not (null? (effective-adjunction-hom-bijection-violations mismatched (pairs qs ns) 0)))))
 (check "natural transformations: the counit of the pointed-set adjunction is natural; the order-reversing family is not"
        (let* ((F (effective-adjunction-left PA)) (U (effective-adjunction-right PA)) (FU (effective-functor-compose F U)))
          (and (null? (effective-transformation-violations FU (effective-identity-functor Pt) (effective-adjunction-counit PA) (range-from 1 4)
