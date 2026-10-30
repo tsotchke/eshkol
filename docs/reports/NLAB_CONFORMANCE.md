@@ -11,6 +11,8 @@ Eshkol program on the mathematics libraries: [`core.sheaf`](../reference/stdlib/
 check can fail: it compares the library's answer with an independent
 computation (a definition re-evaluated by enumeration, a second algorithm, a
 closed formula) or with the value nLab states.
+The general theorems behind the central claims are machine-checked in Agda and
+Rocq; see [Formal cross-checks](../reference/math/formal-crosschecks.md).
 
 <!-- nlab-coverage: pages=51 computed-pages=50 computed=132 planned=9 -->
 
