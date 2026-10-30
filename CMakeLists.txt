@@ -13752,6 +13752,28 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-s
         FAIL_REGULAR_EXPRESSION "FAIL:|ERROR|Unhandled exception|fatal signal|verification failed")
 endif()
 
+# HoTT kernel (ADR-0043): the kernel-level driver and the four-route gate
+# (kernel, JIT, AOT, bytecode VM) over tests/hott, positive and negative.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    add_executable(hott_kernel_driver
+        tests/hott/hott_kernel_driver.cpp
+        lib/types/cubical/interval.cpp
+        lib/types/cubical/eval.cpp
+        lib/types/cubical/conv.cpp
+        lib/types/cubical/elab.cpp
+        lib/types/cubical/decl.cpp)
+    target_include_directories(hott_kernel_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(hott_kernel_driver PRIVATE cxx_std_20)
+    add_test(NAME hott_gate
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_hott_gate.sh"
+                "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(hott_gate PROPERTIES TIMEOUT 1800
+        LABELS "hott;types;parity"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "RESULT: FAIL")
+endif()
+
 include(cmake/AllocationHardeningTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
