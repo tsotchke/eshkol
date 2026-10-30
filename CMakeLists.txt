@@ -2788,6 +2788,7 @@ target_link_libraries(eshkol-runtime PUBLIC eshkol-qllm-abi)
 # hosted reader/runtime support but no LLVM libraries or code-generation TU.
 add_library(eshkol-workspace STATIC
   lib/frontend/parser.cpp
+  lib/frontend/differentiation_graph.cpp
   lib/frontend/ast_strings.cpp
   lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
@@ -12732,4 +12733,71 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v2_engine_parity.py
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
     set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
+endif()
+
+# Shared differentiation graph: this unit has no LLVM or runtime dependency.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(differentiation_graph_test tests/frontend/differentiation_graph_test.cpp
+        lib/frontend/differentiation_graph.cpp)
+    target_include_directories(differentiation_graph_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(differentiation_graph_test PRIVATE cxx_std_20)
+    add_test(NAME differentiation_graph_test COMMAND differentiation_graph_test)
+    set_tests_properties(differentiation_graph_test PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_differentiation_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/compiler_differentiation_test.esk")
+    add_test(NAME compiler_differentiation_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> --strict-types -r "${_differentiation_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME compiler_differentiation_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot' '${_differentiation_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_differentiation_aot'")
+    set_tests_properties(compiler_differentiation_jit compiler_differentiation_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        TIMEOUT 180 LABELS "compiler;ad;regression"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|verification failed")
+    if(Python3_Interpreter_FOUND)
+        set(_differentiation_vm_args)
+        if(TARGET eshkol-vm-standalone-test)
+            list(APPEND _differentiation_vm_args --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>)
+        endif()
+        add_test(NAME compiler_differentiation_diagnostics
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/differentiation_diagnostics.py
+                --runner $<TARGET_FILE:eshkol-run> --link-dir ${CMAKE_CURRENT_BINARY_DIR} ${_differentiation_vm_args})
+        set_tests_properties(compiler_differentiation_diagnostics PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            TIMEOUT 300 LABELS "compiler;ad;regression")
+    endif()
+endif()
+
+# Finite incremental interpretation of the same admitted compiler graph.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(incrementalize_test tests/frontend/incrementalize_test.cpp
+        lib/frontend/differentiation_graph.cpp lib/frontend/incrementalize.cpp)
+    target_include_directories(incrementalize_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_compile_features(incrementalize_test PRIVATE cxx_std_20)
+    add_test(NAME incrementalize_test COMMAND incrementalize_test)
+    set_tests_properties(incrementalize_test PROPERTIES PASS_REGULAR_EXPRESSION "RESULT: PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL")
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    set(_incremental_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/incremental/compiler_incremental_test.esk")
+    add_test(NAME compiler_incremental_jit
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
+            $<TARGET_FILE:eshkol-run> --strict-types -r "${_incremental_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME compiler_incremental_aot
+        COMMAND sh -c "'$<TARGET_FILE:eshkol-run>' --strict-types -O1 -o '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot' '${_incremental_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/compiler_incremental_aot'")
+    set_tests_properties(compiler_incremental_jit compiler_incremental_aot PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        TIMEOUT 900 LABELS "compiler;incremental;regression"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|verification failed")
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME compiler_incremental_locality
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/incrementalize_locality.py
+                --runner $<TARGET_FILE:eshkol-run> --link-dir ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(compiler_incremental_locality PROPERTIES
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            TIMEOUT 1200 LABELS "compiler;incremental;regression")
+    endif()
 endif()
