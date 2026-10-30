@@ -213,3 +213,10 @@ bench/results/
 # `icc doc-intelligence --repo eshkol_lang --format markdown`.
 # Generated workspace reports remain local.
 .icc/eshkol_doc_intel.md
+
+# formal proof checker outputs (tests/formal)
+tests/formal/agda/_build/
+tests/formal/coq/*.vo
+tests/formal/coq/*.vo[sk]
+tests/formal/coq/*.glob
+tests/formal/coq/.*.aux
