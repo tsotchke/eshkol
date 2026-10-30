@@ -1017,7 +1017,10 @@ struct StructuralChecker::Impl {
             if (f->type == ESHKOL_OP && f->operation.op == ESHKOL_REQUIRE_OP && !libraryForm(f)) {
                 activate(f);
             }
-            if (libraryForm(f)) activateInlined(f);
+            // A unit that contains a structural library's code (inlined, or
+            // the module compiled on its own by the JIT loader) makes the
+            // library known to this process.
+            activateInlined(f);
         }
         activateProcessModules();
         std::set<const eshkol_ast_t*> chosen;
@@ -2078,10 +2081,8 @@ struct StructuralChecker::Impl {
             activateProcessModules();
         }
         if (op.op == ESHKOL_REQUIRE_OP && !program_known) noteModuleFiles(form);
-        if (libraryForm(form)) {
-            if (!program_known) activateInlined(form);
-            return;
-        }
+        if (!program_known) activateInlined(form);
+        if (libraryForm(form)) return;
         switch (op.op) {
             case ESHKOL_REQUIRE_OP:
                 activate(form);
