@@ -70,7 +70,9 @@ Object-only `-g -c` output keeps DWARF in the requested object file.
 
 | Flag | Meaning |
 |------|---------|
-| `--strict-types` | Type errors become fatal (default: gradual — warnings only) |
+| `--types=gradual` | The default: nominal type mismatches are warnings and compilation continues |
+| `--types=strict` | Every type error is fatal |
+| `--strict-types` | Same as `--types=strict` |
 | `--unsafe` | Skip all type checks |
 
 "Fatal" is enforced, not advisory: under `--strict-types` a program with type
@@ -78,7 +80,13 @@ errors stops before code generation, the command exits **nonzero**, and **no
 output binary is written**. In the default gradual mode the same programs report
 `[WARN] Type warning: …` and compile as before.
 
-**Linearity violations are the exception, and are fatal in both modes.** Gradual
+**Failed dependent-type obligations are fatal in both modes** (ADR 0042): an
+index that is not definitionally equal to the one a type requires, a universe
+inconsistency, an ill-formed Pi, Sigma or family type, a known index out of
+bounds. Only a program that writes a dependent type can incur one. The bytecode
+VM refuses the same programs.
+
+**Linearity violations are likewise fatal in both modes.** Gradual
 typing governs how much the checker is required to INFER; it is not a licence to
 compile a program the checker has PROVEN ill-formed. Cloning or dropping a value
 of a linear type (`Qubit`) stops code generation, exits nonzero and writes no

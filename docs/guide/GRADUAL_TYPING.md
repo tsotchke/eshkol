@@ -109,7 +109,8 @@ Two flags change the policy:
 
 | Flag | Effect |
 |---|---|
-| `--strict-types` | Every type diagnostic is an error. No code is generated and the exit status is nonzero. |
+| `--types=strict` (or `--strict-types`) | Every type diagnostic is an error. No code is generated and the exit status is nonzero. |
+| `--types=gradual` | The default, as above. |
 | `--unsafe` | Skip all type checks. |
 
 Under `--strict-types` the same program stops at compile time:
@@ -120,10 +121,39 @@ Under `--strict-types` the same program stops at compile time:
      ERROR: Refusing to generate code for a program with type errors (--strict-types)
 ```
 
-One family of diagnostics is an error in every mode: **linearity**. Using a
+Two families of diagnostics are errors in every mode. **Linearity**: using a
 linear value such as a `Qubit` twice, or dropping it, is a compile-time error
 even without `--strict-types`, because no run-time check could recover from it.
 See [the language guide](../ESHKOL_LANGUAGE_GUIDE.md) for the linear types.
+**Dependent types** (ADR 0042): a program that writes a dependent type -- a
+length-indexed `(vector real n)`, a `Pi` or `Sigma`, a universe, a
+`define-type` family with declared parameter sorts -- states an obligation, and
+one that provably fails is a compile-time error:
+
+```console
+[ERROR] Type error: argument 2 of 'dot': expected (vector Float64 3), got (vector Value 2) (line 15:37)
+     ERROR: HoTT: 1 dependent type obligation(s) not met
+```
+
+A value whose index is not known statically (a vector built by `list->vector`)
+is accepted where a length-indexed vector is expected, in both modes.
+
+### The checking direction
+
+An expected type is checked tail by tail: each branch of an `if`, `cond`,
+`case`, `when` or `unless`, and the last expression of a body, must fit it on
+its own. The join of two branches can be `Value`, which fits anything; the
+branch that does not fit is reported where it is:
+
+```console
+[WARN] Type warning: result of 'f': expected Int64, got String (line 12:7)
+```
+
+Expected types come from parameters (`argument i of 'f'`), a parameter's
+function type checked against a lambda argument's body (`result of the lambda
+in argument i of 'f'`), return annotations (`result of 'f'`), annotated `let`
+bindings (`binding 'x'`), `(: name type)` declarations (`definition of 'name'`)
+and `(the T e)`.
 
 ## 3. What is checked, and where
 
@@ -448,14 +478,17 @@ really does accept more than it declared.
 | You write | The checker does |
 |---|---|
 | `(define (f (x : T)) ...)` | checks every call's argument against `T`, wherever the call is written |
-| `(define (f ...) : T ...)` | checks the body's type against `T` |
+| `(define (f ...) : T ...)` | checks each tail of the body against `T` |
 | no annotation | treats the binding as `Value`: nothing is checked, nothing is reported |
 | `(if c a b)`, `(cond ...)`, `(case ...)`, `(match ...)` | result is the join of the branches |
 | `(let loop ((acc seed)) ...)` | `acc` is the join of `seed` and every argument passed back |
 | `(do ((v init step)) ...)` | `v` is the join of `init` and `step` |
 | `(number? x)` in a test | `x` is `Number` in the guarded branch |
 | `(the T expr)` | takes `expr` as `T`; free at run time; reported only if impossible |
-| `--strict-types` | diagnostics are errors; no code is generated |
+| `(: f T)` | checks the definition of `f` against `T`; callers see `T` |
+| `(let ((x : T init)) ...)` | checks `init` against `T` |
+| `(vector real n)`, `(Pi ...)`, `(Sigma ...)`, families | dependent obligations, errors in every mode |
+| `--types=strict`, `--strict-types` | diagnostics are errors; no code is generated |
 | `--unsafe` | no type checks |
 
 ## See also
