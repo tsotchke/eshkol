@@ -4446,8 +4446,11 @@ endif()
 # Yoneda, Kan extensions, adjunctions, monads, derived limits, and descent and
 # sheafification as category theory. category_s62_test is the S6.2 acceptance
 # suite (descent as a Kan extension, sheafification as a reflector).
+# category_effective_test covers effective and finitely presented categories
+# (ADR-0054): Knuth-Bendix completion, Delta, FinOrd, FinSet, Mat_R, Kan
+# extensions with finite comma categories, skeleta and coskeleta.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    foreach(_category_suite category_test category_s62_test)
+    foreach(_category_suite category_test category_s62_test category_effective_test)
         add_test(NAME ${_category_suite}_jit
             COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk")
         add_test(NAME ${_category_suite}_aot COMMAND ${CMAKE_COMMAND}

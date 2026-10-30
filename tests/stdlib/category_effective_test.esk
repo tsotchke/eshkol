@@ -1,0 +1,380 @@
+;; core.category.effective, .presented, .standard, .effective_kan: effective
+;; and finitely presented categories, with independent cross-checks (closed
+;; forms, brute-force enumerations, the finite core.category routes for the
+;; same objects, and two library routes to the same answer).
+(require stdlib)
+(require core.ring)
+(require core.integer_linalg)
+(require core.category)
+(require core.simplicial)
+(require core.category.effective)
+(require core.category.presented)
+(require core.category.standard)
+(require core.category.effective_kan)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (any? pred (cdr xs)))))
+(define (range n) (iota n))
+(define (range-from a b) (if (>= a b) '() (cons a (range-from (+ a 1) b))))
+(define (binomial n k) (if (or (< k 0) (> k n)) 0 (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (quotient (* acc (- n i)) (+ i 1)))))))
+(define (distinct? xs) (cond ((null? xs) #t) ((member (car xs) (cdr xs)) #f) (else (distinct? (cdr xs)))))
+(define (refusal-kind thunk) (guard (e ((category-refusal? e) (category-refusal-kind e))) (thunk) 'no-refusal))
+(define (pairs xs ys) (apply append (map (lambda (x) (map (lambda (y) (cons x y)) ys)) xs)))
+
+;; ---------------------------------------------------------------------------
+;; Enumerators
+;; ---------------------------------------------------------------------------
+(define NxZ (enumerator-product (naturals-enumerator) (integers-enumerator)))
+(check "enumerator product: stage n has the pairs with i + j = n (closed form 2n + ... counted)"
+       (equal? (map (lambda (n) (length (enumerator-stage NxZ n))) (range 6))
+               (map (lambda (n) (apply + (map (lambda (j) (if (= j 0) 1 2)) (range (+ n 1))))) (range 6))))
+(check "enumerator take, find and the refusal to list an infinite enumerator"
+       (and (equal? (enumerator-take (integers-enumerator) 5 10) (list 0 1 -1 2 -2))
+            (= 7 (enumerator-find (lambda (x) (> x 6)) (naturals-enumerator) 20))
+            (not (enumerator-find (lambda (x) (> x 60)) (naturals-enumerator) 20))
+            (eq? 'enumeration-infinite (refusal-kind (lambda () (enumerator->list (naturals-enumerator)))))
+            (equal? (enumerator->list (list->enumerator (list 3 1 2))) (list 3 1 2))))
+
+;; ---------------------------------------------------------------------------
+;; Finite categories are a special case, and conversion goes both ways
+;; ---------------------------------------------------------------------------
+(define finite-cats (list (walking-arrow-category) (parallel-pair-category) (commutative-square-category)
+                          (cyclic-group-category 3) (poset-category 4 (lambda (x y) (= x (bitwise-and x y)))) (span-category)))
+(check "finite -> effective -> finite: counts, laws, and the composition table through arrow names"
+       (all? (lambda (C)
+               (let* ((E (finite-category->effective C)) (C2 (effective->finite-category E)))
+                 (and (effective-category-finite? E)
+                      (null? (effective-category-laws-violations E (range (category-object-count C)) 0))
+                      (= (category-object-count C2) (category-object-count C)) (= (category-arrow-count C2) (category-arrow-count C))
+                      (category-laws? C2)
+                      (all? (lambda (g) (all? (lambda (f) (or (not (= (arrow-target C2 f) (arrow-source C2 g)))
+                                                              (eqv? (arrow-name C2 (category-compose C2 g f))
+                                                                    (category-compose C (arrow-name C2 g) (arrow-name C2 f)))))
+                                              (range (category-arrow-count C2))))
+                            (range (category-arrow-count C2))))))
+             finite-cats))
+(check "effective opposite: hom(a, b) of C^op is hom(b, a) of C, and C^op^op has C's composites"
+       (let* ((E (finite-category->effective (commutative-square-category))) (Eop (effective-opposite E)) (Eopop (effective-opposite Eop)))
+         (all? (lambda (p) (and (equal? (effective-category-hom-list Eop (car p) (cdr p)) (effective-category-hom-list E (cdr p) (car p)))
+                                (equal? (effective-category-hom-list Eopop (car p) (cdr p)) (effective-category-hom-list E (car p) (cdr p)))))
+               (pairs (range 4) (range 4)))))
+(check "an infinite category is refused by effective->finite-category, naming the infinite hom-set"
+       (eq? 'category-not-finite (refusal-kind (lambda () (effective->finite-category (presented->effective (free-monoid (list 'x))))))))
+
+;; ---------------------------------------------------------------------------
+;; Finitely presented categories: Knuth-Bendix completion
+;; ---------------------------------------------------------------------------
+(define (stage-counts PC a b n) (map (lambda (k) (length (enumerator-stage (presented-hom PC a b) k))) (range n)))
+(define Zg (presented-group (list 'a) '()))
+(define Z2g (presented-group (list 'a 'b) (list (list 'a 'b (list 'inv 'a) (list 'inv 'b)))))
+(define F2g (presented-group (list 'a 'b) '()))
+(check "Z = <a | >: complete with the two inverse rules, hom infinite, one word of each sign per length"
+       (and (eq? 'complete (presented-category-status Zg)) (= 2 (length (rewriting-system-rules (presented-category-system Zg))))
+            (not (presented-hom-finite? Zg 0 0)) (equal? (stage-counts Zg 0 0 6) (list 1 2 2 2 2 2))))
+(check "Z^2 = <a, b | [a, b]>: normal forms of length n number 4n (lattice points with |x| + |y| = n)"
+       (and (eq? 'complete (presented-category-status Z2g)) (equal? (stage-counts Z2g 0 0 7) (cons 1 (map (lambda (n) (* 4 n)) (range-from 1 7))))))
+(check "free group of rank 2: reduced words of length n number 4 * 3^(n-1)"
+       (equal? (stage-counts F2g 0 0 6) (cons 1 (map (lambda (n) (* 4 (expt 3 (- n 1)))) (range-from 1 6)))))
+(define S3g (presented-group (list 's 't) (list (list 's 's) (list 't 't) (list 's 't 's 't 's 't))))
+(define S3c (presented->finite-category S3g))
+;; permutations of {0,1,2}: element orders by brute force
+(define perms (list (list 0 1 2) (list 0 2 1) (list 1 0 2) (list 1 2 0) (list 2 0 1) (list 2 1 0)))
+(define (perm-compose p q) (map (lambda (i) (list-ref p (list-ref q i))) (range 3)))
+(define (perm-order p) (let loop ((q p) (k 1)) (if (equal? q (list 0 1 2)) k (loop (perm-compose p q) (+ k 1)))))
+(define (arrow-order C a) (let loop ((q a) (k 1)) (if (= q (category-identity C 0)) k (loop (category-compose C a q) (+ k 1)))))
+(check "S3 = <s, t | s^2, t^2, (st)^3>: complete, 6 arrows, a groupoid, element orders as for permutations of 3 letters"
+       (and (eq? 'complete (presented-category-status S3g)) (= 6 (presented-hom-count S3g 0 0)) (= 6 (category-arrow-count S3c))
+            (category-groupoid? S3c) (category-laws? S3c)
+            (equal? (sort (map (lambda (a) (arrow-order S3c a)) (range 6)) (lambda (x y) (< x y))) (sort (map perm-order perms) (lambda (x y) (< x y))))))
+(check "S3: (s t s) = (t s t) is decided equal and (s t) = (t s) distinct"
+       (and (eq? 'equal (presented-equal S3g (list 's 't 's) (list 't 's 't))) (eq? 'distinct (presented-equal S3g (list 's 't) (list 't 's)))))
+(check "cyclic groups <a | a^n> have n elements and dihedral <r, s | r^4, s^2, srsr> has 8"
+       (and (equal? (map (lambda (n) (presented-hom-count (presented-group (list 'a) (list (map (lambda (i) 'a) (range n)))) 0 0)) (range-from 1 7))
+                    (range-from 1 7))
+            (= 8 (presented-hom-count (presented-group (list 'r 's) (list (list 'r 'r 'r 'r) (list 's 's) (list 's 'r 's 'r))) 0 0))))
+(define KN (presented-monoid (list 'a 'b) (list (list (list 'a 'b 'a) (list 'b 'a 'b))) 40 400))
+(check "<a, b | aba = bab> (no finite complete system on {a, b}, Kapur-Narendran): undecided within budget, never guessed"
+       (and (eq? 'incomplete (presented-category-status KN))
+            (eq? 'equal (presented-equal KN (list 'a 'b 'a) (list 'b 'a 'b)))
+            (eq? 'equal (presented-equal KN (list 'a 'b 'a 'a) (list 'b 'a 'b 'a)))
+            (eq? 'undecided (presented-equal KN (list 'a 'b) (list 'b 'a)))
+            (eq? 'distinct (presented-equal KN (list 'a 'a) (list 'a)))
+            (eq? 'presentation-undecided-within-budget (refusal-kind (lambda () (presented-hom KN 0 0))))
+            (eq? 'presentation-undecided-within-budget (refusal-kind (lambda () (presented->effective KN))))))
+(check "a budget too small for S3 is reported, not completed"
+       (let ((small (presented-group (list 's 't) (list (list 's 's) (list 't 't) (list 's 't 's 't 's 't)) 3 6)))
+         (and (eq? 'incomplete (presented-category-status small))
+              (eq? 'presentation-undecided-within-budget (refusal-kind (lambda () (presented-hom-count small 0 0)))))))
+(define SqP (present-category (make-presentation 4 (list (list 0 1 'a) (list 0 2 'b) (list 1 3 'c) (list 2 3 'd)) (list (list (list 'c 'a) (list 'd 'b))))))
+(check "the commutative square by presentation: 9 arrows, as core.category's square and as core.sheaf.site's presentation route"
+       (and (= 9 (category-arrow-count (presented->finite-category SqP))) (= 9 (category-arrow-count (presented-site-category SqP 3)))
+            (= 9 (category-arrow-count (commutative-square-category)))
+            (eq? 'equal (presented-equal SqP (list 'c 'a) (list 'd 'b)))))
+(define Idem (presented-monoid (list 'e) (list (list (list 'e 'e) (list 'e)))))
+(check "an idempotent <e | ee = e>: hom finite with 2 arrows, decided by the automaton"
+       (and (presented-hom-finite? Idem 0 0) (= 2 (presented-hom-count Idem 0 0))))
+(define Q3 (free-category-on-quiver 3 (list (list 0 1 'f) (list 1 2 'g) (list 0 2 'h) (list 2 0 'k))))
+(define Q3a (free-category-on-quiver 3 (list (list 0 1 'f) (list 1 2 'g) (list 0 2 'h))))
+;; paths 0 -> 2 in the quiver with h : 0 -> 2, g f : 0 -> 2 and k : 2 -> 0 have
+;; generating function S / (1 - x S), S = x + x^2: 0 1 1 1 2 2 3
+(check "free categories on quivers: a cycle makes homs infinite; an acyclic quiver has its path counts"
+       (and (not (presented-hom-finite? Q3 0 2)) (presented-hom-finite? Q3a 0 2) (= 2 (presented-hom-count Q3a 0 2))
+            (= 1 (presented-hom-count Q3a 0 0)) (= 0 (presented-hom-count Q3a 2 0))
+            (equal? (stage-counts Q3 0 2 7) (list 0 1 1 1 2 2 3))))
+(check "critical pairs: the overlap of ab -> 1 with ba -> 1 and an inclusion"
+       (and (equal? (critical-pairs (cons (list 0 1) '()) (cons (list 1 0) '())) (list (cons (list 0) (list 0))))
+            (equal? (critical-pairs (cons (list 0 1 0) (list 2)) (cons (list 1) (list 3))) (list (cons (list 2) (list 0 3 0))))))
+
+;; ---------------------------------------------------------------------------
+;; Functors, transformations, adjunctions
+;; ---------------------------------------------------------------------------
+(define ZZ (integers-additive-group))
+(define toZ (presented-functor Zg ZZ (list 0) (list 1 -1)))
+(define bad (presented-functor Zg ZZ (list 0) (list 1 1)))
+(check "a functor out of a presented category is checked exactly on generators and relations"
+       (and (null? (presented-functor-violations toZ)) (= 2 (length (presented-functor-violations bad)))
+            (= -3 (effective-functor-arrow toZ (presented-arrow Zg (list (list 'inv 'a) (list 'inv 'a) (list 'inv 'a)))))))
+(define Nadd (naturals-additive-monoid))
+(define FM1 (free-monoid (list 'x)))
+(define toN (presented-functor FM1 Nadd (list 0) (list 1)))
+(define fromN (make-effective-functor Nadd (presented->effective FM1) (lambda (o) 0)
+                                      (lambda (n) (presented-arrow FM1 (map (lambda (i) 'x) (range n)) 0)) "N -> free"))
+(check "free monoid on one generator and (N, +): both composites are identities (on the generator; on 0..30)"
+       (and (null? (presented-functor-violations toN))
+            (null? (effective-functor-violations fromN (list 0) (range 12)))
+            (equal? (effective-functor-arrow fromN (effective-functor-arrow toN (presented-generator-arrow FM1 'x))) (presented-generator-arrow FM1 'x))
+            (all? (lambda (n) (= n (effective-functor-arrow toN (effective-functor-arrow fromN n)))) (range 31))))
+(define S (finset-category)) (define Pt (pointed-finset-category))
+(define PA (pointed-set-adjunction))
+(check "free -| forgetful for pointed finite sets: triangle identities, naturality and the hom bijection on objects <= 3"
+       (and (null? (effective-adjunction-violations PA (range 4) (range-from 1 4) (effective-category-arrows-up-to S (range 3) 0)
+                                                    (effective-category-arrows-up-to Pt (range-from 1 4) 0)))
+            (null? (effective-adjunction-hom-bijection-violations PA (pairs (range 4) (range-from 1 4)) 0))
+            (all? (lambda (p) (= (length (effective-category-hom-list Pt (+ (car p) 1) (cdr p))) (length (effective-category-hom-list S (car p) (cdr p)))))
+                  (pairs (range 4) (range-from 1 4)))))
+(define FC (floor-ceiling-adjunctions))
+(define qs (enumerator-up-to (rationals-enumerator) 3)) (define ns (enumerator-up-to (integers-enumerator) 3))
+(define Qp (rationals-poset)) (define Zp (integers-poset))
+(check "ceiling -| (Z -> Q) -| floor on the rationals of height <= 3 and the integers |n| <= 3"
+       (and (null? (effective-adjunction-violations (car FC) qs ns (effective-category-arrows-up-to Qp qs 0) (effective-category-arrows-up-to Zp ns 0)))
+            (null? (effective-adjunction-violations (cdr FC) ns qs (effective-category-arrows-up-to Zp ns 0) (effective-category-arrows-up-to Qp qs 0)))
+            (null? (effective-adjunction-hom-bijection-violations (car FC) (pairs qs ns) 0))
+            (null? (effective-adjunction-hom-bijection-violations (cdr FC) (pairs ns qs) 0))))
+(check "floor is not left adjoint to the inclusion: the checks name the failures"
+       (let* ((i (effective-adjunction-left (cdr FC))) (fl (effective-adjunction-right (cdr FC)))
+              (wrong (make-effective-adjunction fl i (lambda (q) (cons q (floor q))) (lambda (n) (cons n n)))))
+         (not (null? (effective-adjunction-hom-bijection-violations wrong (pairs qs ns) 0)))))
+(check "natural transformations: the counit of the pointed-set adjunction is natural; the order-reversing family is not"
+       (let* ((F (effective-adjunction-left PA)) (U (effective-adjunction-right PA)) (FU (effective-functor-compose F U)))
+         (and (null? (effective-transformation-violations FU (effective-identity-functor Pt) (effective-adjunction-counit PA) (range-from 1 4)
+                                                          (effective-category-arrows-up-to Pt (range-from 1 4) 0)))
+              (not (null? (effective-transformation-violations FU (effective-identity-functor Pt) (lambda (m) (list (+ m 1) m (cons 0 (map (lambda (i) (- m 1 i)) (range m)))))
+                                                               (range-from 1 4) (effective-category-arrows-up-to Pt (range-from 1 4) 0)))))))
+
+;; ---------------------------------------------------------------------------
+;; Delta, FinOrd, FinSet
+;; ---------------------------------------------------------------------------
+(define Dl (simplex-category)) (define FO (finord-category))
+(check "Delta: |Delta([m], [n])| = binomial(m + n + 1, m + 1); FinOrd: binomial(m + n - 1, m); FinSet: n^m"
+       (all? (lambda (p) (let ((m (car p)) (n (cdr p)))
+                           (and (= (length (effective-category-hom-list Dl m n)) (binomial (+ m n 1) (+ m 1)))
+                                (= (length (effective-category-hom-list FO m n)) (if (= m 0) 1 (binomial (+ m n -1) m)))
+                                (= (length (effective-category-hom-list S m n)) (expt n m)))))
+             (pairs (range 4) (range 4))))
+(check "Delta, FinOrd and FinSet satisfy the category laws on objects <= 2"
+       (and (null? (effective-category-laws-violations Dl (range 3) 0)) (null? (effective-category-laws-violations FO (range 3) 0))
+            (null? (effective-category-laws-violations S (range 3) 0))))
+(check "the cosimplicial identities hold in Delta up to [5]" (null? (delta-cosimplicial-identity-violations 5)))
+(check "every map of Delta is d^(i1)..d^(is) s^(j1)..s^(jt) in exactly one way (m, n <= 3)"
+       (all? (lambda (p) (let* ((fs (effective-category-hom-list Dl (car p) (cdr p))) (nfs (map delta-normal-form fs)))
+                           (and (distinct? nfs)
+                                (all? (lambda (f) (let ((nf (delta-normal-form f))) (equal? f (delta-from-normal-form (car f) (cadr f) (car nf) (cadr nf))))) fs))))
+             (pairs (range 4) (range 4))))
+(define D2P (present-category (delta-truncated-presentation 2)))
+(define D3P (present-category (delta-truncated-presentation 3)))
+(check "Delta_{<=2} and Delta_{<=3} by faces, degeneracies and the cosimplicial identities: complete, with Delta's hom counts"
+       (and (eq? 'complete (presented-category-status D2P)) (eq? 'complete (presented-category-status D3P))
+            (all? (lambda (p) (= (presented-hom-count D3P (car p) (cdr p)) (binomial (+ (car p) (cdr p) 1) (+ (car p) 1)))) (pairs (range 4) (range 4)))))
+(check "the presented Delta_{<=3} maps to Delta by a functor (relations checked) that is bijective on every hom-set"
+       (let ((F (delta-truncated-functor D3P)))
+         (and (null? (presented-functor-violations F))
+              (all? (lambda (p) (let ((images (map (lambda (f) (effective-functor-arrow F f)) (enumerator->list (presented-hom D3P (car p) (cdr p))))))
+                                  (and (distinct? images) (= (length images) (length (effective-category-hom-list Dl (car p) (cdr p)))))))
+                    (pairs (range 4) (range 4))))))
+;; universal property of a (co)product by brute force: for each test object x,
+;; the maps x -> P correspond to the pairs of maps x -> a, x -> b
+(define (product-universal? E P p1 p2 a b xs)
+  (all? (lambda (x) (let ((maps (effective-category-hom-list E x P)))
+                      (and (= (length maps) (* (length (effective-category-hom-list E x a)) (length (effective-category-hom-list E x b))))
+                           (distinct? (map (lambda (u) (list (effective-category-compose E p1 u) (effective-category-compose E p2 u))) maps)))))
+        xs))
+(check "Delta: [0] x [n] = [n] is a product (checked against every test object <= 3); [1] x [1], [1] x [2] and [0] + [0] are refused with counting witnesses"
+       (let ((P (ordinal-product 'delta 0 2)))
+         (and (product-universal? Dl (car P) (cadr P) (caddr P) 0 2 (range 4))
+              (eq? 'limit-does-not-exist (refusal-kind (lambda () (ordinal-product 'delta 1 1))))
+              (eq? 'limit-does-not-exist (refusal-kind (lambda () (ordinal-product 'delta 1 2))))
+              (eq? 'limit-does-not-exist (refusal-kind (lambda () (ordinal-coproduct 'delta 0 0))))
+              (eq? 'limit-does-not-exist (refusal-kind (lambda () (ordinal-initial 'delta)))))))
+(check "the witness of [1] x [1]: 9 cones from [1] but 10 maps [1] -> [3]"
+       (equal? (guard (e ((category-refusal? e) (list-ref (category-refusal-irritants e) 3))) (ordinal-product 'delta 1 1))
+               (list 'candidate 3 'test-object 1 'cones 9 'maps-into-candidate 10)))
+(check "FinOrd: 0 + n = n and 1 x n = n exist; 2 x 2 and 1 + 1 are refused"
+       (let ((C (ordinal-coproduct 'finord 0 3)) (P (ordinal-product 'finord 1 3)))
+         (and (= 3 (car C)) (product-universal? FO (car P) (cadr P) (caddr P) 1 3 (range 4))
+              (eq? 'limit-does-not-exist (refusal-kind (lambda () (ordinal-product 'finord 2 2))))
+              (eq? 'limit-does-not-exist (refusal-kind (lambda () (ordinal-coproduct 'finord 1 1)))))))
+(check "FinSet: a x b and a + b have the universal properties against test objects <= 2"
+       (all? (lambda (p) (let ((P (finset-product (car p) (cdr p))))
+                           (product-universal? S (car P) (cadr P) (caddr P) (car p) (cdr p) (range 3))))
+             (pairs (range-from 1 3) (range-from 1 4))))
+(define (fs-diagram J objs gen)
+  (list->vector (map (lambda (u) (let ((s (arrow-source J u)))
+                                   (if (= u (category-identity J s)) (list (vector-ref objs s) (vector-ref objs s) (range (vector-ref objs s))) (gen u))))
+                     (range (category-arrow-count J)))))
+(define PPJ (parallel-pair-category))
+(define pf (list 4 3 (list 0 1 2 2))) (define pg (list 4 3 (list 0 2 1 2)))
+(define pp-arrs (fs-diagram PPJ (vector 4 3) (lambda (u) (if (equal? (arrow-name PPJ u) (list 0)) pf pg))))
+(check "FinSet: the general limit over the parallel pair is the equalizer; cones from 1 and 2 factor uniquely"
+       (let ((L (finset-limit PPJ (vector 4 3) pp-arrs)))
+         (and (= (car L) (car (finset-equalizer pf pg))) (= 2 (car L))
+              (all? (lambda (x) (all? (lambda (c) (= 1 (length (finset-factor L c)))) (finset-cones PPJ (vector 4 3) pp-arrs x))) (list 1 2)))))
+(check "FinSet: the general colimit over the parallel pair is the coequalizer; pullback and pushout sizes"
+       (and (= (car (finset-colimit PPJ (vector 4 3) pp-arrs)) (car (finset-coequalizer pf pg))) (= 2 (car (finset-coequalizer pf pg)))
+            (= (car (finset-pullback (list 3 2 (list 0 0 1)) (list 3 2 (list 0 1 1))))
+               (length (filter (lambda (p) (= (list-ref (list 0 0 1) (car p)) (list-ref (list 0 1 1) (cdr p)))) (pairs (range 3) (range 3)))))
+            (= 3 (car (finset-pushout (list 1 2 (list 0)) (list 1 2 (list 1)))))))
+
+;; ---------------------------------------------------------------------------
+;; Mat_R
+;; ---------------------------------------------------------------------------
+(define MZ (matrix-category integers)) (define MQ (matrix-category rationals)) (define F5 (make-zmod 5)) (define M5 (matrix-category F5))
+(define A1 (list 4 3 (vector (vector 1 2 3 4) (vector 2 4 6 8) (vector 1 0 1 0))))
+(define (arrow-compose E g f) (effective-category-compose E g f))
+(define (zero-arrow? f) (all? (lambda (row) (all? (lambda (x) (= x 0)) (vector->list row))) (vector->list (caddr f))))
+(check "Mat_Z hom enumeration: stage s holds (2s+1)^k - (2s-1)^k matrices with k entries"
+       (all? (lambda (s) (= (length (enumerator-stage (effective-category-hom MZ 2 1) s)) (- (expt (+ (* 2 s) 1) 2) (expt (- (* 2 s) 1) 2)))) (range-from 1 4)))
+(check "Mat_Z kernel: A K = 0, rank-nullity, and the kernel lattice is saturated (invariant factors 1)"
+       (let ((K (mat-kernel integers A1)))
+         (and (zero-arrow? (arrow-compose MZ A1 K)) (= (car K) (- 4 (mat-rank integers A1)))
+              (all? (lambda (d) (= d 1)) (integer-invariant-factors (caddr K))))))
+(check "Mat_Z cokernel: Q A = 0, Q onto Z^(m - r) (invariant factors 1); coker of (2) is 0 in Mat_Z"
+       (let ((Q (mat-cokernel integers A1)))
+         (and (zero-arrow? (arrow-compose MZ Q A1)) (= (cadr Q) (- 3 (mat-rank integers A1)))
+              (all? (lambda (d) (= d 1)) (integer-invariant-factors (caddr Q)))
+              (= 0 (cadr (mat-cokernel integers (list 1 1 (vector (vector 2)))))))))
+(check "Mat_Z kernel universal property: every h with A h = 0 from Z^1 (entries |x| <= 1) factors uniquely through ker A"
+       (let* ((K (mat-kernel integers A1))
+              (hs (filter (lambda (h) (zero-arrow? (arrow-compose MZ A1 h))) (effective-category-hom-up-to MZ 1 4 1))))
+         (and (> (length hs) 1)
+              (all? (lambda (h) (let ((u (mat-factor-through-mono integers K h))) (and u (equal? (caddr (arrow-compose MZ K u)) (caddr h))))) hs))))
+(check "Mat_Q kernel by the field route equals core.integer_linalg's rational kernel (same span)"
+       (let* ((B (list 4 3 (vector (vector 1/2 1 0 2) (vector 1 2 0 4) (vector 0 0 3 1)))) (K (mat-kernel rationals B)))
+         (and (zero-arrow? (arrow-compose MQ B K))
+              (rational-same-span? (caddr K) (integer-matrix-from-columns (rational-kernel (caddr B) 4) 4) 4))))
+(check "Mat_{Z/5}: |ker A| = 5^dim by brute force over all 625 vectors"
+       (let* ((B (list 4 2 (vector (vector 1 2 3 4) (vector 2 4 1 3)))) (K (mat-kernel F5 B))
+              (count (length (filter (lambda (v) (all? (lambda (row) (= 0 (modulo (apply + (map (lambda (a b) (* a b)) (vector->list row) v)) 5))) (vector->list (caddr B))))
+                                     (let gen ((k 4)) (if (= k 0) (list '()) (apply append (map (lambda (x) (map (lambda (r) (cons x r)) (gen (- k 1)))) (range 5)))))))))
+         (= count (expt 5 (car K)))))
+(define (fs-diagram-mat J u w)
+  (list->vector (map (lambda (a) (let ((s (arrow-source J a)))
+                                   (if (= a (category-identity J s)) (matrix-identity-arrow rationals 2) (if (equal? (arrow-name J a) (list 0)) u w))))
+                     (range (category-arrow-count J)))))
+(check "Mat_Q pullback and pushout commute; the limit over the parallel pair is the equalizer"
+       (let* ((f (list 2 1 (vector (vector 1 1)))) (g (list 1 1 (vector (vector 2))))
+              (PB (mat-pullback rationals f g)) (PO (mat-pushout rationals (list 1 2 (vector (vector 1) (vector 1))) (list 1 1 (vector (vector 3)))))
+              (u (list 2 2 (vector (vector 1 2) (vector 0 1)))) (w (list 2 2 (vector (vector 1 0) (vector 0 1))))
+              (L (mat-limit rationals PPJ (vector 2 2) (fs-diagram-mat PPJ u w))))
+         (and (equal? (caddr (arrow-compose MQ f (cadr PB))) (caddr (arrow-compose MQ g (caddr PB))))
+              (= 2 (car PB)) (= 2 (car PO))
+              (= (car L) (car (mat-equalizer rationals u w))))))
+(check "Mat over Z/6 is refused by name (neither Z nor a field)"
+       (eq? 'limit-not-computable (refusal-kind (lambda () (mat-kernel (make-zmod 6) A1)))))
+(check "biproduct a + b in Mat_Z: p_i o i_j = delta_ij"
+       (let ((P (mat-product integers 2 3)) (C (mat-coproduct integers 2 3)))
+         (and (equal? (caddr (arrow-compose MZ (cadr P) (cadr C))) (caddr (matrix-identity-arrow integers 2)))
+              (zero-arrow? (arrow-compose MZ (caddr P) (cadr C))) (zero-arrow? (arrow-compose MZ (cadr P) (caddr C))))))
+
+;; ---------------------------------------------------------------------------
+;; Posets
+;; ---------------------------------------------------------------------------
+(define Np (naturals-poset)) (define Dv (divisibility-poset))
+(check "posets: meets and joins are products and coproducts; (N, <=) has no top, (Z, <=) no bottom"
+       (and (equal? (poset-meet Np 3 5) (list 3 (cons 3 3) (cons 3 5))) (= 6 (car (poset-join Dv 2 3))) (= 2 (car (poset-meet Dv 4 6)))
+            (eq? 'limit-does-not-exist (refusal-kind (lambda () (poset-top Np))))
+            (eq? 'limit-does-not-exist (refusal-kind (lambda () (poset-bottom Zp))))
+            (null? (effective-category-laws-violations Dv (range-from 1 13) 0))))
+
+;; ---------------------------------------------------------------------------
+;; Kan extensions, skeleta, coskeleta, nerves
+;; ---------------------------------------------------------------------------
+(define (to-effective-set-functor X C)
+  (make-effective-set-functor C (lambda (c) (set-functor-elements X c)) (lambda (a) (lambda (e) (set-functor-apply X a e)))))
+(define (kan-agrees? C D F0 X)
+  (let* ((EC (finite-category->effective C)) (ED (finite-category->effective D)) (F (finite-functor->effective F0 EC ED))
+         (G (to-effective-set-functor X EC)) (objs (range (category-object-count D))))
+    (and (equal? (map (lambda (d) (length (effective-set-functor-object (effective-lan F G) d))) objs) (set-functor-sizes (set-lan F0 X)))
+         (equal? (map (lambda (d) (length (effective-set-functor-object (effective-ran F G) d))) objs) (set-functor-sizes (set-ran F0 X))))))
+(define Wk (walking-arrow-category)) (define B2 (cyclic-group-category 2))
+(check "effective Lan and Ran agree with core.category.kan on finite functors"
+       (and (kan-agrees? (discrete-category 2) Wk (make-functor (discrete-category 2) Wk (list 0 1) (list (category-identity Wk 0) (category-identity Wk 1)))
+                         (make-set-functor (discrete-category 2) (list (list 'a 'b) (list 'x 'y 'z)) (lambda (a e) e)))
+            (kan-agrees? Wk (terminal-category) (make-functor Wk (terminal-category) (list 0 0) (list 0 0 0))
+                         (make-set-functor Wk (list (list 0 1 2) (list 0 1)) (lambda (a e) (if (= a (category-identity Wk (arrow-source Wk a))) e (min e 1)))))
+            (kan-agrees? (terminal-category) B2 (make-functor (terminal-category) B2 (list 0) (list 0))
+                         (make-set-functor (terminal-category) (list (list 'p 'q)) (lambda (a e) e)))))
+(define incNZ (make-effective-functor Np Zp (lambda (x) x) (lambda (f) f) "N -> Z" (list (cons 'fibre (lambda (d) (if (< d 0) '() (range (+ d 1))))))))
+(define Gn (make-effective-set-functor Np (lambda (n) (range (+ n 1))) (lambda (f) (lambda (x) x))))
+(check "Lan along (N, <=) -> (Z, <=) is computed at every integer; Ran along it is refused (its comma categories are infinite)"
+       (let ((L (effective-lan incNZ Gn)))
+         (and (equal? (map (lambda (d) (length (effective-set-functor-object L d))) (list -3 -1 0 1 4)) (list 0 0 1 2 5))
+              (null? (effective-set-functor-violations L (range-from -2 4) (effective-category-arrows-up-to Zp (range-from -2 4) 0)))
+              (eq? 'comma-category-not-finite (refusal-kind (lambda () (effective-set-functor-object (effective-ran incNZ Gn) 2)))))))
+(define EW (finite-category->effective Wk)) (define EB2 (finite-category->effective B2))
+(check "nerves: |N([1])_m| = m + 2; the nerve of [1] is 1-coskeletal, the nerve of BZ/2 is 2-coskeletal but not 1-coskeletal"
+       (let ((NW (nerve-presheaf EW)) (NB (nerve-presheaf EB2)))
+         (and (equal? (map (lambda (m) (length (effective-set-functor-object NW m))) (range 5)) (list 2 3 4 5 6))
+              (presheaf-unit-bijective? NW 1 2) (presheaf-unit-bijective? NW 1 3)
+              (presheaf-unit-bijective? NB 2 3) (not (presheaf-unit-bijective? NB 1 2)))))
+(check "sk_1 Delta[2] has the 9 degenerate 2-simplices and sk_2 Delta[2] all 10; cosk_0 of a 3-element set is 3^(m+1)"
+       (let* ((D2 (simplex-presheaf 2)) (pt (make-effective-set-functor (truncated-simplex-category 0) (lambda (c) (list 'a 'b 'c)) (lambda (f) (lambda (x) x)))))
+         (and (= 9 (length (effective-set-functor-object (skeleton (truncate-presheaf D2 1) 1) 2)))
+              (= 10 (length (effective-set-functor-object (skeleton (truncate-presheaf D2 2) 2) 2)))
+              (equal? (map (lambda (m) (length (effective-set-functor-object (coskeleton (effective-restrict (effective-functor-opposite (simplex-inclusion-functor 0)) (simplex-presheaf 0)) 0) m))) (range 3))
+                      (list 1 1 1))
+              (equal? (map (lambda (m) (length (effective-set-functor-object (effective-ran (effective-functor-opposite (simplex-inclusion-functor 0))
+                                                                                            (make-effective-set-functor (effective-opposite (truncated-simplex-category 0)) (lambda (c) (list 'a 'b 'c)) (lambda (f) (lambda (x) x))))
+                                                                             m)))
+                           (range 3))
+                      (list 3 9 27)))))
+(define ESq (finite-category->effective (commutative-square-category)))
+(check "the effective nerve of a finite category has core.simplicial's finite-category-nerve counts, and d d = 0"
+       (let ((N1 (effective-category-nerve ESq)) (N2 (finite-category-nerve (commutative-square-category))))
+         (and (equal? (map (lambda (n) (simplicial-set-count N1 n)) (range 4)) (map (lambda (n) (simplicial-set-count N2 n)) (range 4)))
+              (all? (lambda (n) (all? (lambda (x) (let ((dx (effective-nerve-boundary ESq n x)))
+                                                    (null? (filter (lambda (p) (not (= 0 (cdr p))))
+                                                                   (let ((acc '()))
+                                                                     (for-each (lambda (t) (for-each (lambda (q) (let ((old (assoc (car q) acc)))
+                                                                                                                   (set! acc (cons (cons (car q) (+ (* (cdr t) (cdr q)) (if old (cdr old) 0)))
+                                                                                                                                   (filter (lambda (r) (not (equal? (car r) (car q)))) acc)))))
+                                                                                                     (effective-nerve-boundary ESq (- n 1) (car t))))
+                                                                               dx)
+                                                                     acc)))))
+                                      (vector->list (simplicial-set-nondegenerate N1 n))))
+                    (list 2 3)))))
+(define EN (presented->effective (free-monoid (list 'x))))
+(check "the nerve of the infinite category BN is locally effective: faces are computed, the listing is refused, bounded listings work"
+       (let ((N (effective-category-nerve EN)) (x2 (list 0 (list 0 0 (list 0)) (list 0 0 (list 0 0)))))
+         (and (eq? 'nerve-not-enumerable (refusal-kind (lambda () (simplicial-set-nondegenerate N 1))))
+              (equal? (simplex-base (simplicial-set-face N 1 (simplex x2 2))) (list 0 (list 0 0 (list 0 0 0))))
+              (= 3 (length (effective-nerve-simplices EN 1 3)))
+              (not ((car (effective-nerve-chain-data EN)) 1))
+              (equal? (effective-nerve-boundary EN 2 x2) (list (cons (list 0 (list 0 0 (list 0 0))) 1) (cons (list 0 (list 0 0 (list 0 0 0))) -1) (cons (list 0 (list 0 0 (list 0))) 1))))))
+
+(if (= failures 0)
+    (begin (display "PASS: category_effective_test (") (display passes) (display " checks)") (newline))
+    (begin (display "RESULT: FAIL category_effective_test (") (display failures) (display " of ") (display (+ passes failures)) (display " failed)") (newline)))
