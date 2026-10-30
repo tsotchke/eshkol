@@ -209,6 +209,26 @@ set(CMAKE_CXX_STANDARD 20)
 
 # Options
 option(ESHKOL_BUILD_TESTS "Build tests" ON)
+
+# Refinement types (ADR-0044) are decided by a built-in procedure on every
+# platform. This option adds the z3 backend (SMT-LIB2 over a pipe to the z3
+# executable; no library link), selectable with ESHKOL_REFINEMENT_SOLVER=z3 or
+# =cross at compile time of a program, and a corpus test that compares the two.
+option(ESHKOL_REFINEMENT_Z3 "Build the optional z3 backend for refinement types" OFF)
+if(ESHKOL_REFINEMENT_Z3)
+    if(WIN32)
+        message(FATAL_ERROR "ESHKOL_REFINEMENT_Z3 needs a POSIX host (the backend spawns z3 over a pipe)")
+    endif()
+    find_program(ESHKOL_Z3_EXECUTABLE z3)
+    if(ESHKOL_Z3_EXECUTABLE)
+        set(_eshkol_z3_default "${ESHKOL_Z3_EXECUTABLE}")
+    else()
+        set(_eshkol_z3_default "z3")
+        message(STATUS "Refinement z3 backend: z3 not found now; ESHKOL_Z3 or PATH decides at run time")
+    endif()
+    add_compile_definitions(ESHKOL_REFINEMENT_Z3=1 ESHKOL_Z3_DEFAULT_PATH="${_eshkol_z3_default}")
+    message(STATUS "Refinement z3 backend: ON (${_eshkol_z3_default})")
+endif()
 option(ESHKOL_BUILD_EXAMPLES "Build examples" OFF)
 option(ESHKOL_BUILD_INTEGRATION_TESTS "Build integration tests" OFF)
 # OALR object/layout ABI v2 (ADR-0001 SS3, ADR-0000 Stage 4). MUST stay OFF by
@@ -8139,6 +8159,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
     set_tests_properties(qubit_linearity_engine_parity_gate PROPERTIES
         TIMEOUT 300
         PASS_REGULAR_EXPRESSION "PASS: qubit linearity engine parity"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Refinement types (ADR-0044). refinement_smt_test is the decision
+# procedure's known-answer corpus (brute force, engine cross-checks, unbounded
+# families); refinement_types_gate runs the language-level programs on the
+# native and VM engines. With ESHKOL_REFINEMENT_Z3 and a z3 on this host the
+# corpus is also compared query by query with z3.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/refinement_smt_test.cpp")
+    add_executable(refinement_smt_test tests/types/refinement_smt_test.cpp)
+    target_compile_features(refinement_smt_test PRIVATE cxx_std_20)
+    target_include_directories(refinement_smt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(refinement_smt_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(refinement_smt_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(refinement_smt_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME refinement_smt_test COMMAND refinement_smt_test)
+    set_tests_properties(refinement_smt_test PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: refinement decision procedure")
+    if(ESHKOL_REFINEMENT_Z3 AND ESHKOL_Z3_EXECUTABLE)
+        add_test(NAME refinement_smt_z3_agreement COMMAND refinement_smt_test --z3)
+        set_tests_properties(refinement_smt_z3_agreement PROPERTIES
+            TIMEOUT 1800
+            PASS_REGULAR_EXPRESSION "z3 agreement: [0-9]+ queries"
+            FAIL_REGULAR_EXPRESSION "FAIL")
+    endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/refinement/refinement_gate.sh")
+    if(NOT WIN32)
+        set(ESHKOL_REFINEMENT_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_REFINEMENT_GATE_VM "none")
+    endif()
+    add_test(NAME refinement_types_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/refinement/refinement_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_REFINEMENT_GATE_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/refinement-types-gate")
+    set_tests_properties(refinement_types_gate PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: refinement types on"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 

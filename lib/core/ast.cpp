@@ -389,6 +389,17 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars,
     return type;
 }
 
+/** @brief Create a HOTT_TYPE_REFINE type expression `(Refine base [binder] predicate)`.
+ *  Takes ownership of @p base and @p predicate; copies @p binder (may be null). */
+hott_type_expr_t* hott_make_refine_type(hott_type_expr_t* base, const char* binder,
+                                        struct eshkol_ast* predicate) {
+    hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_REFINE);
+    type->refine.base = base;
+    type->refine.binder = binder ? eshkol_ast_strdup(binder) : nullptr;
+    type->refine.predicate = predicate;
+    return type;
+}
+
 // Deep copy a type expression
 /** @brief Deep-copy a HoTT type expression, recursively copying nested
  *  type structure (arrow params/return, forall vars/body, container
@@ -448,6 +459,13 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
         case HOTT_TYPE_UNIVERSE:
             copy->universe.level = type->universe.level;
+            break;
+
+        case HOTT_TYPE_REFINE:
+            copy->refine.base = hott_copy_type_expr(type->refine.base);
+            copy->refine.binder =
+                type->refine.binder ? eshkol_ast_strdup(type->refine.binder) : nullptr;
+            copy->refine.predicate = eshkol_copy_ast(type->refine.predicate);
             break;
 
         default:
@@ -608,6 +626,16 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
 
         case HOTT_TYPE_PATH:
             return arena_strdup("(Path ...)");
+
+        case HOTT_TYPE_REFINE: {
+            char* base_str = hott_type_to_string(type->refine.base);
+            if (type->refine.binder) {
+                BUF_APPEND("(Refine %s %s ...)", base_str, type->refine.binder);
+            } else {
+                BUF_APPEND("(Refine %s ...)", base_str);
+            }
+            return arena_strdup(buffer);
+        }
 
         default:
             return arena_strdup("unknown");

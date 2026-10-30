@@ -56,6 +56,7 @@
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/backend/tensorcore_codegen.h>
 #include <eshkol/types/type_checker.h>
+#include <eshkol/types/refinement.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
 #include <eshkol/logger.h>
@@ -2762,6 +2763,28 @@ public:
                     } else {
                         // Non-op top-level forms (literals, variables, etc.)
                         type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                    }
+                }
+
+                // Refinement types (ADR-0044): discharge every obligation the
+                // program's (Refine T phi) annotations create. A refinement that
+                // is violated, or not proved inside an annotated function, is
+                // fatal in every mode but --unsafe, like a linearity violation;
+                // gradual-boundary and undecided findings went through
+                // reportTypeIssue and are governed by --strict-types below.
+                // Programs without refinement types are not walked.
+                {
+                    const auto refinement_options =
+                        eshkol::hott::RefinementOptions::fromEnvironment(cfg->strict_types,
+                                                                        cfg->unsafe_mode);
+                    const auto refinements = eshkol::hott::checkProgramRefinements(
+                        type_checker, asts_to_use, num_asts_to_use, refinement_options);
+                    if (refinements.errors > 0 && !cfg->unsafe_mode) {
+                        eshkol_error("HoTT: %zu refinement error(s) detected",
+                                     refinements.errors);
+                        eshkol_error("Refusing to generate code for a program whose "
+                                     "refinement types do not hold");
+                        return std::make_pair(nullptr, nullptr);
                     }
                 }
 
@@ -9010,6 +9033,9 @@ private:
                 return BuiltinTypes::Function;
             case HOTT_TYPE_FORALL:
                 return type_expr->forall.body ? resolveDeclaredHottTypeId(type_expr->forall.body)
+                                              : BuiltinTypes::Value;
+            case HOTT_TYPE_REFINE:  // erased to its base (ADR-0044)
+                return type_expr->refine.base ? resolveDeclaredHottTypeId(type_expr->refine.base)
                                               : BuiltinTypes::Value;
             case HOTT_TYPE_VAR:
                 if (type_expr->var_name) {

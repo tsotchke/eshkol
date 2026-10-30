@@ -6175,6 +6175,8 @@ int main(int argc, char **argv)
     // the real judgment here means both routes out of this driver enforce ONE
     // rule; see inc/eshkol/backend/vm.h for why the VM takes it as a hook.
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
+    // Refinement types (ADR-0044) take the same route to the VM.
+    eshkol_vm_install_refinement_check(eshkol_refinement_check_source);
 
     // Baseline for the artifact-emission gate below. Sampled before anything
     // can report a diagnostic, so the gate covers every compilation stage —

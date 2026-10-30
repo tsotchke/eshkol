@@ -307,6 +307,9 @@ undocumented.
 
 | Variable | Effect | Default |
 |----------|--------|---------|
+| `ESHKOL_REFINEMENT_SOLVER` | Solver for refinement-type obligations ([refinement types](../language/refinement-types.md)): `internal`, `z3` (builds with `-DESHKOL_REFINEMENT_Z3=ON`), or `cross` (both; a disagreement is an error). Other values are ignored. | `internal` |
+| `ESHKOL_REFINEMENT_BUDGET` | Deterministic step budget per refinement query (positive base-10 integer); exhausting it answers "undecided", never "proved". | `2000000` |
+| `ESHKOL_Z3` | z3 executable used by the z3 refinement backend. | path found at configure time, else `z3` on `PATH` |
 | `ESHKOL_LLVM_REMARKS` | Let LLVM optimization remarks reach stderr. Off by default: the optimizer runs behind `eshkol-run`, so its stderr is the compiled program's stderr and a remark about a stdlib loop is not part of the program's output. Covers both the AOT and the `-r` JIT pipeline. Errors and module-verification diagnostics are never suppressed. | off |
 | `ESHKOL_TARGET_CPU` | Override the LLVM target CPU used for codegen (`lib/backend/llvm_codegen.cpp`, `lib/backend/tensor_codegen.cpp`). | host CPU |
 | `ESHKOL_TARGET_FEATURES` | Override the LLVM target feature string. | host features |

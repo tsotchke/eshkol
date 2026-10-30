@@ -2520,7 +2520,8 @@ void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
  *
  * Selects which member of hott_type_expr_t's union is active: none for the
  * primitive types, `var_name` for HOTT_TYPE_VAR, `arrow`/`forall`/
- * `container`/`pair`/`sum`/`universe` for the corresponding compound kinds.
+ * `container`/`pair`/`sum`/`universe` for the corresponding compound kinds,
+ * `refine` for HOTT_TYPE_REFINE.
  * HOTT_TYPE_DEPENDENT/_PATH are reserved for future dependent-type support.
  */
 typedef enum {
@@ -2551,11 +2552,13 @@ typedef enum {
     // Advanced types (future)
     HOTT_TYPE_DEPENDENT,    // dependent type (Pi type)
     HOTT_TYPE_PATH,         // path type (identity type)
-    HOTT_TYPE_UNIVERSE      // universe level
+    HOTT_TYPE_UNIVERSE,     // universe level
+    HOTT_TYPE_REFINE        // (Refine base [binder] predicate): {binder : base | predicate} (ADR-0044)
 } hott_type_kind_t;
 
-// Forward declaration
+// Forward declarations
 struct hott_type_expr;
+struct eshkol_ast;
 
 /**
  * @brief Homotopy-Type-Theory-inspired static type expression.
@@ -2608,6 +2611,16 @@ typedef struct hott_type_expr {
         struct {
             uint32_t level;  // Universe level (U0, U1, U2, ...)
         } universe;
+
+        // For refinement types {binder : base | predicate} (ADR-0044). The
+        // runtime representation is base's; the predicate is a compile-time
+        // proposition discharged by the refinement checker. A NULL binder is
+        // resolved by the checker (docs/reference/language/refinement-types.md).
+        struct {
+            struct hott_type_expr* base;
+            char* binder;
+            struct eshkol_ast* predicate;
+        } refine;
     };
 } hott_type_expr_t;
 
@@ -3670,6 +3683,15 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hot
  * @return Newly allocated, independent copy.
  */
 hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type);
+
+/**
+ * @brief Construct a HOTT_TYPE_REFINE type expression `(Refine base [binder] predicate)`.
+ *
+ * Takes ownership of @p base and @p predicate (both arena-owned trees);
+ * copies @p binder, which may be NULL.
+ */
+hott_type_expr_t* hott_make_refine_type(hott_type_expr_t* base, const char* binder,
+                                        struct eshkol_ast* predicate);
 /**
  * @brief Recursively free a type expression and its owned children.
  * @param type Type expression to free (may be NULL, a no-op).

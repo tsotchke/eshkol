@@ -262,6 +262,12 @@ static hott_type_expr_t* substituteTypeVars(
             result->universe.level = type_expr->universe.level;
             break;
 
+        case HOTT_TYPE_REFINE:
+            result->refine.base = substituteTypeVars(type_expr->refine.base, substitutions);
+            result->refine.binder = type_expr->refine.binder;
+            result->refine.predicate = type_expr->refine.predicate;
+            break;
+
         default:
             // Primitive types have no additional data to substitute
             break;
@@ -4593,7 +4599,9 @@ bool TypeChecker::unify(TypeId a, TypeId b) {
  * polymorphism is erased and tagged values carry their own type tag).
  * HOTT_TYPE_FORALL resolves to its body's type (the quantifier itself has no
  * runtime representation — instantiation/substitution happens at compile
- * time via substituteTypeVars()). Any other/unrecognized kind, or a null @p
+ * time via substituteTypeVars()). HOTT_TYPE_REFINE resolves to its base: the
+ * representation is unchanged and the predicate is the refinement checker's
+ * obligation (ADR-0044). Any other/unrecognized kind, or a null @p
  * type_expr, resolves to BuiltinTypes::Value.
  */
 TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
@@ -4695,6 +4703,12 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
             if (type_expr->sum.right) arms.push_back(resolveType(type_expr->sum.right));
             return env_.makeSumType(arms);
         }
+
+        case HOTT_TYPE_REFINE:
+            // A refinement has its base's representation; the predicate is an
+            // obligation for the refinement checker (lib/types/refinement.cpp).
+            return type_expr->refine.base ? resolveType(type_expr->refine.base)
+                                          : BuiltinTypes::Value;
 
         case HOTT_TYPE_FORALL:
             // Polymorphic types are erased at runtime — tagged values handle polymorphism

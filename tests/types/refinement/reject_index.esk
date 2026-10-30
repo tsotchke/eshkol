@@ -1,0 +1,4 @@
+;; expect: refinement not proved: index i of vector-ref
+(define (first-after (v : (vector integer)) (i : (Refine Integer (>= i 0)))) : Integer
+  (vector-ref v i))
+(display (first-after (vector 1 2 3) 0))

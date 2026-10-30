@@ -39,6 +39,7 @@ it is called out explicitly.
 | 17 | Type annotations and the gradual checker: what is checked where, function types, branch joins, loop typing, diagnostics | [../../guide/GRADUAL_TYPING.md](../../guide/GRADUAL_TYPING.md) |
 | 18 | Macros: `define-syntax`, `let-syntax`, `letrec-syntax`, `syntax-rules`, hygiene | [macros.md](macros.md) |
 | 19 | Explicit compiler differentiation graph: scalar admission and numeric lowering | [differentiation.md](differentiation.md) |
+| 20 | Refinement types `(Refine T phi)`: what is proved, diagnostics, solvers | [refinement-types.md](refinement-types.md) |
 
 ## Known-issue conventions
 
