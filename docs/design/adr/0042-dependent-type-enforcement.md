@@ -207,4 +207,16 @@ the refined binder; effect rows (ADR 0045) annotate the Pi codomain.
 
 ## Measured corpus impact
 
-CORPUS_IMPACT_PLACEHOLDER
+Every `.esk` program under `tests/` and `examples/` that predates this record (2546 programs)
+was compiled with the base compiler (`51a935869`) and with this record's compiler, in the
+default mode with the LLVM IR dumped, and its strict-mode verdict derived (strict mode makes
+exactly the default run's type warnings fatal):
+
+| Measure | Result |
+|---|---|
+| Default-mode compile status (2417 compile under both) | 0 programs change status |
+| Generated LLVM IR, every program that compiles under both (2428 incl. those expected to fail at run time) | byte-identical for all 2428 |
+| Programs with additional gradual warnings | 7 (14 warnings): branches and annotated initializers the checking direction now judges, and vector indices known statically to be out of range in four bounds tests |
+| `--types=strict` verdict | 2 programs change status (a `(: x (tensor real))` declaration bound to a vector literal; the `if`-join fixture, now asserting the per-branch diagnostics) |
+
+The 25 dependent and bidirectional fixtures added by this record are not counted above.
