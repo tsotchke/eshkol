@@ -11838,6 +11838,9 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/too
     endif()
 endif()
 
+# Scoped sdnc-holes consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/sdnc-holes/CTest.cmake")
+
 # ===== SDNC Paper Artifact: weight_matrices ============================# The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
 # transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
