@@ -912,7 +912,10 @@ workflow (ADR-0007 Phase 1).
 - [x] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through) —
       `stop-gradient` builtin; Gumbel-Softmax, straight-through, score-function
       estimators with their bias/variance properties tested (ADR-0049)
-- [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors
+- [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors —
+      HNSW (`core.ml.hnsw`), BPE (`core.ml.bpe`) and CSR sparse matrices
+      (`core.ml.sparse`) delivered; int/complex tensor storage planned for
+      v1.5.0 (ADR-0049)
 - [ ] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
       angular means, evaluation at a phase map with full chain-rule
       propagation, support-disjointness bookkeeping, and the inverse of a

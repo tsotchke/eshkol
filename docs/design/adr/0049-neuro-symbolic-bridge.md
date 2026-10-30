@@ -4,10 +4,11 @@ status: current
 owner-area: stdlib
 since: v1.5.0
 sources:
-  - lib/core/ml/neurosymbolic.esk
-  - lib/core/ml/diff_logic.esk
   - lib/core/ml/recurrent.esk
   - lib/core/ml/gradient_estimators.esk
+  - lib/core/ml/hnsw.esk
+  - lib/core/ml/bpe.esk
+  - lib/core/ml/sparse.esk
   - lib/core/runtime_taylor.c
   - lib/core/runtime_arena_core.cpp
   - lib/backend/llvm_codegen.cpp
@@ -15,147 +16,151 @@ sources:
   - lib/backend/vm_native.c
   - scripts/wasm_exact_runtime.fragment.js
 ---
-# ADR-0049: The neuro-symbolic bridge is differentiated by the built-in AD operators
+# ADR-0049: The v1.5.0 neuro-symbolic bridge — Noesis for the cognition, Eshkol for the substrate
 
-**Status:** Accepted — implemented for v1.5.0-intelligence
-**Scope:** The v1.5.0 neuro-symbolic items of [`ROADMAP.md`](../../../ROADMAP.md):
+**Status:** Accepted — Eshkol substrate and gap items implemented; Noesis
+upstreaming planned for v1.5.0 under the boundary process below
+**Scope:** The v1.5.0-intelligence items of [`ROADMAP.md`](../../../ROADMAP.md):
 symbol embeddings, soft unification, LSTM and GRU cells, differentiable logic
-programs, attention over the knowledge base, and gradient estimators for
-discrete operations. Library modules `core.ml.neurosymbolic`,
-`core.ml.diff_logic`, `core.ml.recurrent` and `core.ml.gradient_estimators`,
-one builtin (`stop-gradient`) on the native backend, the bytecode VM and the
-browser WASM lane, and the loop-reclamation rule for reverse-mode tapes.
+programs, attention over the knowledge base, gradient estimators for discrete
+operations, and the Noesis M2 surface (HNSW, BPE, sparse tensors, int/complex
+tensors).
 
 ## Context
 
-The consciousness engine is exact: `unify` matches two ground symbols only
-when they are the same symbol, `kb-query` returns the substitutions of the
-facts that unify, and inference is discrete. The roadmap's v1.5.0 items ask
-for the opposite direction as well: symbols with learnable vector meanings,
-matching that has a gradient, rules whose application has a gradient, and
-estimators for the gradient of a discrete choice. The design document
+The design document
 [`NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md`](../../future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md)
-(section 2.2.4 and Part IV) specifies the surface: an embedding table,
-recursive term embeddings, cosine-similarity soft unification, attention over
-facts, Gumbel-Softmax and a straight-through estimator written as
-`stop-gradient(hard - soft) + soft`, all integrated with `gradient`.
+(section 2.2.4 and Part IV) describes an embedding table, recursive term
+embeddings, soft unification, attention over facts, Gumbel-Softmax and a
+straight-through estimator written as `stop-gradient(hard - soft) + soft`, all
+integrated with `gradient`. Noesis, the Eshkol reference consumer, ships with
+v1.5.0-intelligence and v1.6.0-reasoning (maintainer ruling 2026-08-26), and
+already implements most of the cognition side of these items in Eshkol. What
+Noesis needs from Eshkol is substrate. This record maps each item to where it
+is delivered, decides what Eshkol builds, and proposes how the Noesis modules
+reach the Eshkol standard library.
 
-Eshkol already has three exact differentiation engines: forward jets
-(`derivative`), Taylor towers (`derivative-n`, `taylor`) and the reverse-mode
-tape (`gradient`, `jacobian`). It also has `core.ad.tape`, a pure-Scheme tape
-where every op carries a hand-written backward closure; the first slice of
-`core.ml.neurosymbolic` and `core.ml.gradient_estimators` was built on it.
+## Item map
+
+| v1.5.0 item | Delivered by | Where |
+|---|---|---|
+| Symbol embeddings | Noesis | term embeddings (`core/geometry/term_embedding`, `core/encoder`) |
+| Soft unification, gradients through matching | Noesis | `core/soft_unify` (`soft_unify`, `soft_unify_grad`, `semantic_unify`) |
+| Differentiable logic programs | Noesis | differentiable belief propagation (`core/v1_5/differentiable_bp`) on its tape |
+| Attention over the knowledge base | Noesis | attention unification (`core/attention_unify`) |
+| LSTM and GRU cells | Eshkol (absent from Noesis) | `core.ml.recurrent` |
+| Gradient estimators (Gumbel-Softmax, straight-through) | Eshkol (absent from Noesis) | `stop-gradient` builtin, `core.ml.gradient_estimators` |
+| M2: HNSW | Eshkol | `core.ml.hnsw`, with `kb-query-nearest` over KB facts |
+| M2: BPE | Eshkol | `core.ml.bpe` |
+| M2: sparse tensors | Eshkol | `core.ml.sparse` (CSR) |
+| M2: int/complex tensors | Eshkol, planned for v1.5.0 | staged design below |
 
 ## Decision
 
-1. **One parameter vector, one differentiation mechanism.** Every learnable
-   quantity of the bridge (symbol embeddings, rule-template logits, LSTM and
-   GRU weights, categorical logits) is a slice of a flat vector `theta`, and
-   every forward function is written over generic arithmetic. A loss is an
-   ordinary `(lambda (theta) ...)`; `(gradient loss theta)` is its exact
-   reverse-mode gradient (for a recurrent net: backpropagation through time),
-   and `derivative` along any coordinate gives the same numbers in forward
-   mode. No forward function has a hand-written backward pass, so there is no
-   second derivative implementation to keep in agreement. The tape-based
-   functions of the first slice stay as the `core.ad.tape` interface.
+1. **Eshkol does not carry a second implementation of what Noesis delivers.**
+   Symbol embeddings, soft unification, differentiable logic and KB attention
+   reach Eshkol by upstreaming Noesis modules, not by rewriting them. An
+   Eshkol-side implementation built before this map was drawn is kept on the
+   branch `feat/v15-neurosymbolic-noesis-overlap` as reference material for
+   that review and is not part of the v1.5.0 change.
 
-2. **Embeddings are attached to the knowledge base, not copied out of it.**
-   `embedding-attach-kb!` registers every predicate and constant of the facts
-   of a schema; facts are read with the engine's own `kb-query` through fresh
-   logic variables (`kb-facts`). The table has a live view (`embed!`) and the
-   parameter view (`embedding-params`, `param-embedding`, `embedding-load!`).
-   Compound terms are embedded as holographic reduced representations
-   (Plate 1995): `emb(f) + sum_i role_i (*) emb(a_i)` with fixed unit-norm role
-   vectors and circular convolution.
+2. **One parameter vector, one differentiation mechanism, for what Eshkol
+   builds.** LSTM and GRU weights, categorical logits and sparse-matrix values
+   are slices of a flat vector `theta`; every forward function is written over
+   generic arithmetic, so `(gradient loss theta)` is the exact reverse-mode
+   gradient (for a recurrent net, backpropagation through time) and
+   `derivative` along any coordinate gives the same numbers. No hand-written
+   backward pass exists to drift from its forward pass. The tests compare the
+   two modes, compare closed forms, and assert `(ad-finite-difference-evals)`
+   is 0.
 
-3. **Soft unification extends the engine's unification.** `soft-unify-terms`
-   walks both terms with the engine's `walk`, binds logic variables with the
-   engine's `unify` (occurs check included), unifies pairs componentwise with
-   the product t-norm, and scores two distinct ground atoms with a similarity
-   of their embeddings (RBF kernel, mapped cosine, or sigmoid of the scaled dot
-   product). Whenever `unify` succeeds, soft unification returns the same
-   bindings with score exactly 1. A structural mismatch still fails.
+3. **`stop-gradient` is a builtin.** No library function can remove an AD
+   carrier: arithmetic on a carrier produces a carrier. `(stop-gradient x)`
+   returns the primal of any carrier (forward jet, Taylor tower or nested
+   level, reverse-mode node; an exact payload stays exact) and passes other
+   values through. It reads the primal as the comparisons and branch builtins
+   already do (`tagged_primal`), through one runtime entry point,
+   `eshkol_stop_gradient_tagged`; the VM (builtin id 2252) reads its dual's
+   primal the same way, and the browser lane has the same import. The
+   straight-through identity `s + stop-gradient(h - s)` has the value `h` and
+   the derivative of `s`; the estimators are built on it, with their bias and
+   variance stated and tested on known distributions.
 
-4. **Attention over the KB is attention over proofs.** `neural-query` answers
-   a pattern with one variable by a softmax over the facts whose logits are
-   `log(score)/temperature` of the soft unification of the pattern with each
-   fact (Neural Theorem Provers, Rocktaschel & Riedel 2017). Arguments equal in
-   the pattern and a fact contribute exactly 1, so a learned predicate
-   similarity carries over to entities never seen in training. Generic
-   scaled dot-product attention (`attend`), Gaussian-kernel attention
-   (`attend-rbf`) and term-embedding attention over facts (`attend-facts`) are
-   provided for key-value use.
-
-5. **Differentiable logic programs are forward chaining with soft truth.**
-   `core.ml.diff_logic` holds binary relations over a finite domain read from
-   the KB as `n x n` truth matrices; conjunction is the product t-norm,
-   disjunction the probabilistic sum, the existential the noisy-or. Rule
-   templates (`chain`, `conj`, `inverse`, `copy`) leave their body predicates
-   to be learned as a softmax over candidates (Evans & Grefenstette 2018; the
-   relation mixture is the Neural LP relaxation). A head may be its own
-   candidate, so recursive programs are expressed directly, and `steps` bounds
-   the derivation depth. `dl-extract-rules` reads the learned program back as
-   symbolic clauses and `dl-assert-derived!` asserts the derived atoms into the
-   KB, where the exact engine queries them.
-
-6. **`stop-gradient` is a builtin.** The straight-through estimators need a
-   value that every enclosing AD pass treats as a constant, and no library
-   function can remove a carrier: arithmetic on a carrier produces a carrier.
-   `(stop-gradient x)` returns the primal of any carrier (forward jet, Taylor
-   tower or nested level, reverse-mode node; an exact payload stays exact) and
-   passes every other value through. It reads the primal exactly as the
-   comparisons and branch builtins do (`tagged_primal`), through one runtime
-   entry point `eshkol_stop_gradient_tagged`; the VM (builtin id 2252) reads
-   its dual's primal the same way, and the browser lane has the same import.
-   The straight-through identity `s + stop-gradient(h - s)` has the value `h`
-   and the derivative of `s`.
-
-7. **The recording tape is a root for loop reclamation.** A named-let loop
+4. **The recording tape is a root for loop reclamation.** A named-let loop
    under reverse mode opens its per-iteration arena scope on the tape's arena.
    The scope used to be popped whenever the loop-carried values did not point
    into it; a node consed onto a list from the global arena is not such a
-   pointer, so its span was rewound while the tape still recorded the node,
-   and the next iteration reused the address (every earlier entry then read
-   the newest node). Nodes are appended to the tape in creation order and
-   allocated bump-ordered from the tape's arena, so a span holds a recorded
-   node exactly when it holds the last one; such a span, or one holding a
-   regrown node array, is now retained at a back edge, before a promotion, and
-   at the loop's exit.
+   pointer, so its span was rewound while the tape still recorded the node and
+   the next iteration reused the address. Nodes are appended in creation order
+   and allocated bump-ordered from the tape's arena, so a span holds a
+   recorded node exactly when it holds the last one; such a span, or one
+   holding a regrown node array, is now retained at a back edge, before a
+   promotion, and at the loop's exit. Every list-building loop under
+   `gradient` depends on this, Noesis's included.
+
+5. **The M2 substrate is library first.** HNSW (Malkov & Yashunin 2018,
+   deterministic levels from a seeded LCG, squared-L2 or cosine), BPE
+   (Sennrich et al. 2016, deterministic tie-breaking, models as plain merge and
+   vocabulary data) and CSR sparse matrices (values may be AD carriers;
+   Gustavson products) are `core.ml` modules. `hnsw-index-kb!` and
+   `kb-query-nearest` put an HNSW index beside a KB under a caller's embedding
+   function, so Noesis keeps its own embeddings and gains the vector side of a
+   KB query.
+
+## Int and complex tensors (planned for v1.5.0)
+
+Tensor storage is f64 bit patterns with a logical `dtype` field
+(`runtime_tensor_dtype.cpp`); casting reduces precision through f64. Exact
+int64 elements and complex elements need storage that is not f64: stage 1
+adds an element-width field and int64/complex128 storage to the tensor
+header behind the object-ABI ratchet (ADR-0012); stage 2 routes the
+elementwise, reduction and matmul kernels by storage kind; stage 3 carries the
+VM and the browser lane. It changes the 40-byte tensor layout and so moves
+with the object-ABI staging, not inside this record's library change.
+
+## Upstreaming proposal for the Noesis modules
+
+Under the Noesis boundary process (a file-by-file enumeration of each
+candidate module and an identity, secrets and history sweep, decided by the
+maintainer):
+
+- **Candidates for the Eshkol standard library / public prover engine:**
+  soft unification and its gradient (`core/soft_unify`), term embeddings
+  (`core/geometry/term_embedding`), attention unification
+  (`core/attention_unify`), differentiable belief propagation
+  (`core/v1_5/differentiable_bp`) and the factor-graph layer it runs on. These
+  are mechanism, built on the consciousness engine and the AD operators, and
+  are what the roadmap items name.
+- **Stays in Noesis:** the product layer — the system's own cognitive state
+  and the encoders trained on it.
+- **Interface contract on the Eshkol side:** the upstreamed modules use
+  `walk`/`unify`/`kb-query` for structure, the built-in AD operators (with
+  `stop-gradient` where a custom backward is needed) instead of a private
+  tape, and the substrate modules above for vector search, tokenization and
+  sparse algebra.
 
 ## Alternatives rejected
 
-- **Hand-written backward passes on `core.ad.tape` for every new op.** Each
-  op would carry a second implementation of its derivative that has to agree
-  with the forward pass forever; the built-in operators already differentiate
-  the forward code exactly, in two independent modes that the tests compare.
-- **Finite-difference gradient checks.** The checks compare reverse mode with
-  forward mode and with closed forms, and assert
-  `(ad-finite-difference-evals)` is 0 for the whole program.
-- **Dot-product attention for `neural-query`.** Superposed term embeddings
-  make the logit depend on cross terms between the predicate and the entity,
-  so a predicate similarity learned on some entities does not transfer to
-  others; proof-score logits factor over argument positions and do.
-- **A tensor-typed embedding table.** The bridge's parameter counts are in the
-  tens to thousands, and the vector representation keeps every function on the
-  carriers that all three AD engines differentiate today. A dense tensor
-  parameter store is the v1.5.x follow-on once ADR-0002's staged kernels carry
-  these losses.
+- **Reimplementing the Noesis items in Eshkol.** Two implementations of the
+  same cognition mechanism would diverge, and the Noesis versions are the ones
+  exercised by a running system.
+- **Hand-written backward passes on `core.ad.tape` for the new Eshkol
+  modules.** The built-in operators already differentiate the forward code
+  exactly, in two independent modes the tests compare.
+- **Finite-difference gradient checks.** Exact AD in two modes and closed
+  forms replace them.
 
 ## Consequences
 
-- Every bridge function runs on plain numbers and on every AD carrier; the
-  tests check reverse == forward to 1e-12 and the closed forms to 1e-14.
 - The language surface gains one builtin (`stop-gradient`), registered in the
   VM table, the LLVM dispatch, the XLA classification (host) and both browser
-  bundles.
+  bundles; the coverage ledger counts it at integration.
 - Loops that build lists of reverse-mode nodes keep those nodes for the tape's
-  lifetime instead of reclaiming them per iteration, which is the lifetime the
-  tape already requires.
+  lifetime, which is the lifetime the tape already requires.
 
 ## Verification
 
-`tests/ml/neurosymbolic_bridge_test.esk`, `tests/ml/diff_logic_test.esk`,
-`tests/ml/recurrent_test.esk`, `tests/ml/gradient_estimators_native_test.esk`
-and `tests/autodiff/loop_list_reverse_mode_test.esk`, each under JIT and AOT;
-examples `examples/neurosymbolic_kinship.esk` and
-`examples/neurosymbolic_relation_paraphrase.esk`.
+`tests/ml/recurrent_test.esk`, `tests/ml/gradient_estimators_native_test.esk`,
+`tests/autodiff/loop_list_reverse_mode_test.esk`, `tests/ml/hnsw_test.esk`,
+`tests/ml/bpe_test.esk` and `tests/ml/sparse_test.esk`, each under JIT and
+AOT; `tests/vm_parity/corpus/102_stop_gradient.esk` for the VM.
