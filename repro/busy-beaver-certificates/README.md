@@ -48,3 +48,18 @@ The focused CTest wrapper targets POSIX native builds; Windows is unqualified.
 Run `python3 self_test.py` to demonstrate that the actual readiness gate
 rejects a successful backend returning incorrect data. Infrastructure failures
 are distinguished from the expected rejection.
+
+
+The gate explicitly sets `ESHKOL_JIT_CACHE=0` in its child environment so the
+`-r` leg cannot inherit the persistent executable-cache route. `self_test.py`
+intercepts the gate's first child boundary with that setting unset and with it
+enabled in the caller; both cases must pass `0` to the child without mutating
+the caller. This contained environment check starts no compiler or Busy Beaver
+workload.
+
+The included `results.json` is the earlier certificate/reference-tape receipt.
+It predates this explicit cache policy and alone does not establish an
+independent in-process JIT run. Mathematical certificate checks, the complete
+reference-tape comparison and a fresh native run of the corrected gate remain
+separate qualification steps; this environment correction does not reissue
+those results.

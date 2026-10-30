@@ -18,7 +18,7 @@ def main():
     p.add_argument('--source-root', type=Path, required=True)
     p.add_argument('--results', type=Path)
     args = p.parse_args()
-    env = dict(os.environ, ESHKOL_PATH=str(args.source_root.resolve() / 'lib'))
+    env = dict(os.environ, ESHKOL_PATH=str(args.source_root.resolve() / 'lib'), ESHKOL_JIT_CACHE='0')
     with tempfile.TemporaryDirectory(prefix='bb5-gate-') as work:
         work = Path(work)
         def run(command):
