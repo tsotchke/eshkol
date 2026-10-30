@@ -28,11 +28,11 @@ EXPECTED_LINE="eshkol bare-metal fib checksum 429027928"
 
 # target | board | clang flags | expected readelf -h class | machine | e_flags | attribute needles (;-separated) | qemu command
 TARGETS=(
-  "thumbv7em-none-eabi|mps2-an386|--target=thumbv7em-none-eabi -mcpu=cortex-m4 -mfloat-abi=soft -mthumb|ELF32|ARM|0x5000200|Tag_CPU_arch: v7E-M;Tag_CPU_arch_profile: Microcontroller;Tag_THUMB_ISA_use: Thumb-2|qemu-system-arm -M mps2-an386 -semihosting-config enable=on,target=native"
-  "thumbv7em-none-eabihf|mps2-an386|--target=thumbv7em-none-eabihf -mcpu=cortex-m4 -mfloat-abi=hard -mfpu=fpv4-sp-d16 -mthumb|ELF32|ARM|0x5000400|Tag_CPU_arch: v7E-M;Tag_CPU_arch_profile: Microcontroller;Tag_ABI_VFP_args: AAPCS VFP|qemu-system-arm -M mps2-an386 -semihosting-config enable=on,target=native"
+  "thumbv7em-none-eabi|mps2-an386|--target=thumbv7em-none-eabi -mcpu=cortex-m4 -mfloat-abi=soft -mthumb|ELF32|ARM|0x5000200|CPU_arch: ARM v7E-M;CPU_arch_profile: Microcontroller;THUMB_ISA_use: Thumb-2|qemu-system-arm -M mps2-an386 -semihosting-config enable=on,target=native"
+  "thumbv7em-none-eabihf|mps2-an386|--target=thumbv7em-none-eabihf -mcpu=cortex-m4 -mfloat-abi=hard -mfpu=fpv4-sp-d16 -mthumb|ELF32|ARM|0x5000400|CPU_arch: ARM v7E-M;CPU_arch_profile: Microcontroller;ABI_VFP_args: AAPCS VFP|qemu-system-arm -M mps2-an386 -semihosting-config enable=on,target=native"
   "aarch64-unknown-none|qemu-virt-aarch64|--target=aarch64-none-elf|ELF64|AArch64|0x0||qemu-system-aarch64 -M virt -cpu cortex-a53 -semihosting"
-  "riscv32imac-unknown-none-elf|qemu-virt-riscv|--target=riscv32-unknown-elf -march=rv32imac -mabi=ilp32 -mcmodel=medany|ELF32|RISC-V|0x1|Tag_RISCV_arch: rv32i2p1_m2p0_a2p1_c2p0|qemu-system-riscv32 -M virt -bios none"
-  "riscv64gc-unknown-none-elf|qemu-virt-riscv|--target=riscv64-unknown-elf -march=rv64gc -mabi=lp64d -mcmodel=medany|ELF64|RISC-V|0x5|Tag_RISCV_arch: rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0|qemu-system-riscv64 -M virt -bios none"
+  "riscv32imac-unknown-none-elf|qemu-virt-riscv|--target=riscv32-unknown-elf -march=rv32imac -mabi=ilp32 -mcmodel=medany|ELF32|RISC-V|0x1|arch: rv32i2p1_m2p0_a2p1_c2p0|qemu-system-riscv32 -M virt -bios none"
+  "riscv64gc-unknown-none-elf|qemu-virt-riscv|--target=riscv64-unknown-elf -march=rv64gc -mabi=lp64d -mcmodel=medany|ELF64|RISC-V|0x5|arch: rv64i2p1_m2p0_a2p1_f2p2_d2p2_c2p0|qemu-system-riscv64 -M virt -bios none"
 )
 
 tool() {
@@ -134,7 +134,13 @@ cmd_check() {
     [ -z "$("$NM" -u "$elf")" ] || fail "$target: linked image has undefined symbols"
     "$NM" "$elf" | grep -q " T eshkol_main$" || fail "$target: eshkol_main is not a global text symbol"
     if [ -n "$attrs" ]; then
-      attributes=$("$READELF" -A "$elf" 2>&1)
+      # Flatten llvm-readelf's attribute records to "TagName: Description"
+      # (or "TagName: Value" for string attributes) so needles are stable.
+      attributes=$("$READELF" -A "$elf" 2>&1 | awk '
+        /TagName:/ { sub(/.*TagName: */, ""); tag = $0; next }
+        /Description:/ && tag != "" { sub(/.*Description: */, ""); print tag ": " $0; tag = ""; next }
+        /Value:/ { sub(/.*Value: */, ""); val = $0; next }
+        /}/ && tag != "" { print tag ": " val; tag = "" }')
       local needle
       IFS=';' read -r -a needles <<< "$attrs"
       for needle in "${needles[@]}"; do

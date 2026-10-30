@@ -3615,6 +3615,7 @@ public:
             }
 
             pruneUnusedFreestandingDeclarations();
+            markFreestandingNoUnwind();
 
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
@@ -5312,6 +5313,17 @@ private:
     // LIBRARY MODE: Create initialization function instead of main
     // This function initializes global state but doesn't create an entry point
     void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts);
+
+    /* A freestanding image has no unwinder and no exception runtime, so no
+     * function in it can unwind. Saying so keeps targets with table-driven
+     * unwinding (ARM EHABI) from referencing personality routines such as
+     * __aeabi_unwind_cpp_pr0 that only a hosted C++ runtime provides. */
+    void markFreestandingNoUnwind() {
+        if (!freestanding_codegen_) return;
+        for (Function& function : *module) {
+            if (!function.isDeclaration()) function.addFnAttr(Attribute::NoUnwind);
+        }
+    }
 
     void pruneUnusedFreestandingDeclarations() {
         if (!freestanding_codegen_) return;
@@ -12469,7 +12481,9 @@ private:
 
         // Mutual TCO: collect non-self tail call sites for musttail optimization
         mutual_tail_call_sites_.clear();
-        if (op->define_op.value && !use_tco) {
+        // A freestanding image has no tail-transfer driver (a hosted runtime
+        // record), so mutual tail calls there are ordinary calls.
+        if (op->define_op.value && !use_tco && !freestanding_codegen_) {
             // Only do mutual TCO when self-TCO is NOT active (self-TCO uses loop transformation)
             collectMutualTailCallSites(op->define_op.value, op->define_op.value, func_name);
         }
@@ -31879,6 +31893,9 @@ private:
         if (out_needs_nursery) *out_needs_nursery = false;
         static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
         if (disabled || !body) return false;
+        // Iteration scopes are arena regions, a hosted runtime facility; a
+        // freestanding loop allocates nothing on an arena to reclaim.
+        if (freestanding_codegen_) return false;
         // ESH-0214c: reject outright if this loop's body is reachable (via
         // ordinary calls) from a parallel-map/-fold/-filter/-for-each/
         // -execute or future callback argument -- see the pre-pass docblock
