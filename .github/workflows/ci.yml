@@ -1418,7 +1418,7 @@ jobs:
       && needs.changes.outputs.docs_only == 'false'
       && (needs.changes.outputs.active_lanes == 'ALL'
           || contains(needs.changes.outputs.active_lanes, '|quantum-macos|'))
-    runs-on: macos-14
+    runs-on: macos-15
     continue-on-error: true
     # Run 38002220309 reached the two-hour job cap during the complete
     # traced corpus. Keep the full corpus and coverage ratchet, with the
@@ -1687,7 +1687,7 @@ jobs:
       && needs.changes.outputs.docs_only == 'false'
       && (needs.changes.outputs.active_lanes == 'ALL'
           || contains(needs.changes.outputs.active_lanes, '|bench-smoke|'))
-    runs-on: macos-14
+    runs-on: macos-15
     continue-on-error: true
     timeout-minutes: 30
     steps:
@@ -1933,7 +1933,7 @@ jobs:
             upload_artifact: 'false'
             artifact_name: ''
           - name: macos-arm64-lite
-            runner: macos-14
+            runner: macos-15
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -1959,7 +1959,7 @@ jobs:
             upload_artifact: 'true'
             artifact_name: eshkol-macos-x64
           - name: macos-arm64-xla
-            runner: macos-14
+            runner: macos-15
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
