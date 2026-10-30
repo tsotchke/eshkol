@@ -4176,3 +4176,45 @@ oracles:
         severity: high
         label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
         action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums
+
+  # Windows x64 only: do not fold these conditionally registered units into
+  # platform-independent readiness. A full Windows run_ctest_gate.sh run emits
+  # each exact CTest event; actions below are focused diagnostic replays.
+  - name: windows-x64-native-jit
+    aliases: [windows-jit]
+    requires:
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["windows_jit_regressions"]
+          event_values: ["PASS"]
+        severity: high
+        label: Seven forced in-process JIT cases and their exact-output AOT controls pass on Windows x64
+        action: ctest --test-dir build -C Release -R '^windows_jit_regressions$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["windows_jit_regressions_harness"]
+          event_values: ["PASS"]
+        severity: high
+        label: Harness negative controls reject wrong output, silent errors, crashes, timeouts and failed controls
+        action: ctest --test-dir build -C Release -R '^windows_jit_regressions_harness$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["jit_parallel_init_test"]
+          event_values: ["PASS"]
+        severity: high
+        label: Independent ORC modules resolve and invoke their own worker initializer across unloading
+        action: ctest --test-dir build -C Release -R '^jit_parallel_init_test$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["jit_windows_x64_unwind_test"]
+          event_values: ["PASS"]
+        severity: high
+        label: Windows resolves JIT unwind metadata, supports a native jump into JIT code and removes metadata on unload
+        action: ctest --test-dir build -C Release -R '^jit_windows_x64_unwind_test$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["windows_x64_continuation_restore_test"]
+          event_values: ["PASS"]
+        severity: high
+        label: The Windows context-restoration helper preserves native setjmp return values
+        action: ctest --test-dir build -C Release -R '^windows_x64_continuation_restore_test$' --output-on-failure

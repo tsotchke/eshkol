@@ -8,6 +8,7 @@
 
 #include <eshkol/eshkol.h>
 #include <eshkol/core/resource_limits.h>
+#include "runtime_windows_x64_continuation.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -401,6 +402,9 @@ extern "C" void eshkol_init_stack_size(void) {
     // Hand the freestanding runtime core a platform probe so call/cc can
     // snapshot the stack and stay re-invocable after its frame returns.
     eshkol_set_stack_base_hook(&eshkol_hosted_stack_base);
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+    eshkol_set_continuation_restore_hook(&eshkol::restoreWindowsX64Continuation);
+#endif
 #ifdef _WIN32
     // Windows thread stack sizing is handled at link/thread creation time.
     return;

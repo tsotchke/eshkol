@@ -398,7 +398,7 @@ int main(int argc, char** argv) {
                          "${{ runner.temp }}\\eshkol-crash-dumps-${{ matrix.name }}\\*.dmp",
                          "Windows failure diagnostics include crash dumps") &&
          expect_contains(workflow,
-                         "${{ runner.temp }}\\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\\lib\\stdlib-jit-v4-*.o",
+                         "${{ runner.temp }}\\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\\lib\\stdlib-jit-v5-*.o",
                          "Windows failure diagnostics include the emitted stdlib object") &&
          expect_contains(workflow, "if-no-files-found: warn",
                          "partial Windows failure evidence never masks the root failure") &&
@@ -560,7 +560,7 @@ int main(int argc, char** argv) {
          expect_contains(repl_jit,
                          "builder.getOptions().DataSections = true;",
                          "AArch64 JIT emission isolates data for safe pruning") &&
-         expect_contains(repl_jit, "stdlib-jit-v4-",
+         expect_contains(repl_jit, "stdlib-jit-v5-",
                          "stdlib JIT object cache version changes with external-data lowering") &&
          expect_contains(repl_jit,
                          "prepare_jit_module_for_target(*module, jit_->getTargetTriple());",
