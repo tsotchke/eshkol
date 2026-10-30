@@ -18,6 +18,7 @@
 #include <eshkol/core/string_escape.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
+#include <eshkol/types/quantum_types.h>
 #include <eshkol/frontend/binding_forms.h>
 #include <eshkol/frontend/syntax_color.h>
 #include <eshkol/frontend/syntax_datum.h>
@@ -2830,6 +2831,34 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
                 co_return result;
             }
 
+            if (lower == "qreg" || lower == "qidx") {
+                // (qreg e) / (qidx e): the indexed quantum families (ADR-0048),
+                // spelled canonically as qreg<e> for the checker. The index is
+                // a natural, a name, or (+ ...) (- ...) (* k e) over them.
+                std::string index_text;
+                int depth = 0;
+                while (true) {
+                    Token t = tokenizer.nextToken();
+                    decolor_symbol_token(t);
+                    if (t.type == TOKEN_EOF) {
+                        PARSE_ERROR_AT(token, "unexpected end of input in %s type", lower.c_str());
+                        co_return nullptr;
+                    }
+                    if (t.type == TOKEN_RPAREN && depth == 0) break;
+                    if (t.type == TOKEN_LPAREN) { index_text += "("; ++depth; continue; }
+                    if (t.type == TOKEN_RPAREN) { index_text += ")"; --depth; continue; }
+                    if (!index_text.empty() && index_text.back() != '(') index_text += " ";
+                    index_text += t.value;
+                }
+                auto spelled = eshkol::hott::quantum::canonicalIndexedSpelling(lower, index_text);
+                if (!spelled) {
+                    PARSE_ERROR_AT(token, "malformed index '%s' in (%s ...): an index is a natural, a name, "
+                                   "or (+ ...), (- ...), (* k ...) of them", index_text.c_str(), lower.c_str());
+                    co_return nullptr;
+                }
+                co_return hott_make_type_var(spelled->c_str());
+            }
+
             // Unknown type constructor - treat as type application or just type name
             // Skip remaining tokens until )
             int depth = 1;
@@ -5468,6 +5497,106 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             co_return ast;
         }
         // else: not an ascription — fall through to ordinary symbol handling.
+    }
+
+    // Quantum regions (ADR-0048) are syntax over define, lambda and the
+    // core.quantum procedure call-with-quantum-region, rewritten here at the
+    // token level so every later stage (macro expansion, the checker, both
+    // engines) sees only ordinary forms:
+    //   (define-quantum-region R (name . formals) [: type] body ...)
+    //     => (define (name . formals) [: type]
+    //          (call-with-quantum-region (lambda ((R : qregion)) body ...)))
+    //   (with-quantum-region (R) body ...)
+    //     => (call-with-quantum-region (lambda ((R : qregion)) body ...))
+    // The body's own tokens keep their positions and tape indices.
+    if (token.type == TOKEN_SYMBOL &&
+        (token_base(token) == "define-quantum-region" || token_base(token) == "with-quantum-region")) {
+        const bool is_define = token_base(token) == "define-quantum-region";
+        const std::string form = is_define ? "define-quantum-region" : "with-quantum-region";
+        std::vector<Token> rest;
+        int depth = 0;
+        while (true) {
+            Token t = tokenizer.nextToken();
+            if (t.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(token, "unexpected end of input in %s", form.c_str());
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            if (t.type == TOKEN_LPAREN || t.type == TOKEN_VECTOR_START) ++depth;
+            if (t.type == TOKEN_RPAREN) {
+                if (depth == 0) { rest.push_back(t); break; }
+                --depth;
+            }
+            rest.push_back(t);
+        }
+        const auto synth = [&](TokenType type, const char* value) {
+            Token k{type, value, token.pos, token.line, token.column};
+            k.index = 0;  // not on the tape: never a macro re-read anchor
+            return k;
+        };
+        // index just past the balanced datum that starts at rest[i]
+        const auto datum_end = [&](size_t i) -> size_t {
+            if (i >= rest.size()) return i;
+            if (rest[i].type != TOKEN_LPAREN && rest[i].type != TOKEN_VECTOR_START) return i + 1;
+            int d = 0;
+            for (size_t j = i; j < rest.size(); ++j) {
+                if (rest[j].type == TOKEN_LPAREN || rest[j].type == TOKEN_VECTOR_START) ++d;
+                else if (rest[j].type == TOKEN_RPAREN && --d == 0) return j + 1;
+            }
+            return rest.size();
+        };
+        std::vector<Token> out;
+        size_t body_start = 0;
+        Token region_name;
+        if (is_define) {
+            if (rest.size() < 3 || rest[0].type != TOKEN_SYMBOL || rest[1].type != TOKEN_LPAREN) {
+                PARSE_ERROR_AT(token, "define-quantum-region expects a region name and a procedure header: "
+                               "(define-quantum-region R (name formals ...) body ...)");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            region_name = rest[0];
+            const size_t header_end = datum_end(1);
+            out.push_back(synth(TOKEN_SYMBOL, "define"));
+            for (size_t j = 1; j < header_end; ++j) out.push_back(rest[j]);
+            body_start = header_end;
+            if (body_start < rest.size() && rest[body_start].type == TOKEN_COLON) {
+                const size_t type_end = datum_end(body_start + 1);
+                for (size_t j = body_start; j < type_end; ++j) out.push_back(rest[j]);
+                body_start = type_end;
+            }
+            out.push_back(synth(TOKEN_LPAREN, "("));
+        } else {
+            if (rest.size() < 4 || rest[0].type != TOKEN_LPAREN || rest[1].type != TOKEN_SYMBOL ||
+                rest[2].type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "with-quantum-region expects (R) then a body: (with-quantum-region (R) body ...)");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            region_name = rest[1];
+            body_start = 3;
+        }
+        if (body_start + 1 >= rest.size()) {
+            PARSE_ERROR_AT(token, "%s requires a body", form.c_str());
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        out.push_back(synth(TOKEN_SYMBOL, "call-with-quantum-region"));
+        out.push_back(synth(TOKEN_LPAREN, "("));
+        out.push_back(synth(TOKEN_SYMBOL, "lambda"));
+        out.push_back(synth(TOKEN_LPAREN, "("));
+        out.push_back(synth(TOKEN_LPAREN, "("));
+        out.push_back(region_name);
+        out.push_back(synth(TOKEN_COLON, ":"));
+        out.push_back(synth(TOKEN_SYMBOL, "qregion"));
+        out.push_back(synth(TOKEN_RPAREN, ")"));
+        out.push_back(synth(TOKEN_RPAREN, ")"));
+        for (size_t j = body_start; j + 1 < rest.size(); ++j) out.push_back(rest[j]);
+        out.push_back(synth(TOKEN_RPAREN, ")"));      // lambda
+        if (is_define) out.push_back(synth(TOKEN_RPAREN, ")"));  // call
+        out.push_back(rest.back());                    // the form's own ')'
+        for (auto it = out.rbegin(); it != out.rend(); ++it) tokenizer.pushBack(*it);
+        token = tokenizer.nextToken();
     }
 
     // First element should determine the operation

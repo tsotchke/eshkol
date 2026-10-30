@@ -1,0 +1,14 @@
+;; Type System Test: a measured register is consumed: using it again is a clone
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'r' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define-quantum-region qr (measure-then-gate)
+  (let* ((r (qalloc qr 1))
+         (bits (qmeasure r)))
+    (qmeasure (qx r 0))))
+
+(display (measure-then-gate))

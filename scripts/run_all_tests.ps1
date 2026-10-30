@@ -1361,6 +1361,8 @@ function Invoke-CppTypeSuite {
         (Join-Path $script:ProjectRoot "lib/types/type_relation.cpp"),
         (Join-Path $script:ProjectRoot "lib/types/type_checker.cpp"),
         (Join-Path $script:ProjectRoot "lib/types/dependent.cpp"),
+        (Join-Path $script:ProjectRoot "lib/types/quantum_types.cpp"),
+        (Join-Path $script:ProjectRoot "lib/types/quantum_index.cpp"),
         (Join-Path $script:ProjectRoot "lib/core/ast.cpp")
     )
 

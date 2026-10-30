@@ -4225,3 +4225,20 @@ oracles:
         severity: high
         label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
         action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums
+
+  # ─────────────────────────────────────────────────────────────────
+  # v2.0-starlight quantum (ADR-0048): register types qreg<n>, quantum
+  # regions, circuit compilation and QAOA. scripts/run_quantum_types_gate.sh
+  # produces the trace from a normal and a Moonlab-enabled build.
+  # ─────────────────────────────────────────────────────────────────
+  - name: quantum-types
+    aliases: [v20-quantum-types, quantum-registers, qaoa]
+    requires:
+      - id: v20_quantum_types
+        runtime_event:
+          event_kinds: [v2_0_starlight]
+          event_names: ["v20_quantum_types"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Quantum registers (ADR-0048): qreg<n>/qidx<n> dimensions unified at every call and fatal on mismatch, out-of-range and repeated qubits, clones, unconsumed registers, discards and region escapes refused on the native and bytecode engines; quantum regions at run time; the circuit optimiser and SABRE router sound on random circuits exactly over Q(zeta_m); QAOA exact on the state vector with AD gradients and p=1 closed forms; the same QAOA on Moonlab with the Moonlab adjoint gradient equal to Eshkol AD; reference-page examples in JIT and AOT'
+        action: ./scripts/run_quantum_types_gate.sh

@@ -1,0 +1,18 @@
+;; Type System Test: a qreg<2> passed where qreg<3> is declared is a compile-time error
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: quantum register dimension mismatch in argument 1 of 'ghz3': expected qreg<3>, got qreg<2>
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+;; ADR-0048: register dimensions are part of the type and unify at every
+;; application; a known mismatch is fatal like a linearity violation.
+(define (ghz3 (r : qreg<3>)) : qreg<3>
+  (qcnot (qcnot (qh r 0) 0 1) 1 2))
+
+(define-quantum-region qr (run)
+  (qmeasure (ghz3 (qalloc qr 2))))
+
+(display (run))
+(newline)

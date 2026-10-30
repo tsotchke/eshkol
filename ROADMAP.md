@@ -1151,19 +1151,34 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       inference and is what ADR-0004's **place-keyed** PlaceId/FlowEnv closes,
       for linear types and ownership `move` alike (ADR-0004, ADR-0000
       Stage 12).
-- [ ] Quantum register types `qreg<n>` with compile-time dimension
-- [ ] `define-quantum-region` scoping for qubit allocation and deallocation
-- [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9
+- [x] Quantum register types `qreg<n>` with compile-time dimension - BUILT for
+      v2.0-starlight (ADR-0048, `core.quantum`): `qreg<e>` / `qidx<e>` with linear
+      index expressions unified at every call, value-dependent sizes
+      (`(qalloc qr 3) : qreg<3>`), linear on the `Qubit` judgment (no-cloning,
+      no-discard, measurement consumes); mismatches fatal on both engines
+- [x] `define-quantum-region` scoping for qubit allocation and deallocation -
+      BUILT for v2.0-starlight (ADR-0048): region capability `qregion`, compile-time
+      unconsumed-qubit, discard and escape checks, run-time guards for untyped code
+- [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9.
+      BUILT for v2.0-starlight on today's linear judgment (ADR-0048): regions
+      compile (optimise, route) each block before measuring; QAOA in
+      `core.quantum.qaoa`. Moving the register rules onto the v1.9
+      quantitative type theory follows ADR-0048's interface section
 
 ### Quantum Operations
 - [x] Gate primitives: H, CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries - SHIPPED in v1.3.3-evolve
 - [x] Measurement with classical outcome - SHIPPED in v1.3.3-evolve
-- [ ] Circuit compilation and optimization (gate fusion, qubit mapping)
+- [x] Circuit compilation and optimization (gate fusion, qubit mapping) - BUILT
+      for v2.0-starlight (ADR-0048): fusion, commutation cancellation, phase
+      folding, ZX resynthesis through `core.monoidal.zx`, SABRE routing, exact
+      equivalence over Q(zeta_m), lowering to Moonlab
 - [x] AD integration for variational algorithms - SHIPPED in v1.3.3-evolve (custom-VJP tape nodes carry Moonlab's exact adjoint)
 
 ### Hybrid Classical-Quantum
 - [x] Variational Quantum Eigensolver (VQE) - SHIPPED in v1.3.3-evolve
-- [ ] Quantum Approximate Optimization Algorithm (QAOA)
+- [x] Quantum Approximate Optimization Algorithm (QAOA) - BUILT for
+      v2.0-starlight (ADR-0048): MaxCut and weighted MaxCut, exact AD gradients,
+      p=1 closed forms, Moonlab evaluation with Moonlab's exact adjoint gradient
 - [x] Quantum machine learning (parameterized circuits with AD) - SHIPPED in v1.3.3-evolve
 - [x] Integration with Moonlab quantum simulator - SHIPPED in v1.3.3-evolve; pinned to Moonlab v1.2.0 in v1.3.4-evolve
 

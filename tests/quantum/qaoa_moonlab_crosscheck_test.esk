@@ -1,0 +1,95 @@
+;; QAOA on Moonlab (ADR-0048), in builds configured with
+;; -DESHKOL_QUANTUM_ENABLED=ON: the expectation Moonlab computes for the
+;; QAOA program equals the exact binary64 state vector of core.quantum.qaoa,
+;; and Eshkol's gradient through Moonlab's exact adjoint (one custom-VJP tape
+;; node) equals Eshkol AD through the state vector; the gradient composes
+;; with surrounding arithmetic; gradient ascent on the Moonlab gradient
+;; reaches the known optimum; and quantum regions run on the Moonlab backend.
+(require stdlib)
+(require core.quantum)
+(require core.quantum.moonlab)
+
+(define failures 0) (define passes 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (max-abs-diff u v)
+  (let loop ((i 0) (m 0.0)) (if (= i (vector-length u)) m (loop (+ i 1) (max m (abs (- (vector-ref u i) (vector-ref v i))))))))
+
+(define problems
+  (list (cons "triangle" (maxcut-problem 3 '((0 1) (1 2) (0 2))))
+        (cons "ring4" (maxcut-problem 4 '((0 1) (1 2) (2 3) (3 0))))
+        (cons "weighted4" (maxcut-problem 4 '((0 1 3.0) (1 2 1.0) (2 3 3.0) (3 0 1.0) (0 2 0.5))))
+        (cons "prism" (maxcut-problem 6 '((0 1) (1 2) (2 0) (3 4) (4 5) (5 3) (0 3) (1 4) (2 5))))))
+(define thetas-by-p
+  (list (cons 1 (list (vector 0.3 0.7) (vector 1.1 -0.4) (vector -0.6 0.25)))
+        (cons 2 (list (vector 0.2 0.5 0.9 0.3) (vector -0.7 0.4 0.1 1.2)))))
+
+(define worst-value 0.0)
+(define worst-gradient 0.0)
+(for-each
+ (lambda (named)
+   (let ((prob (cdr named)))
+     (for-each
+      (lambda (entry)
+        (let* ((p (car entry))
+               (prog (qaoa-moonlab-program prob p))
+               (f-moonlab (lambda (th) (moonlab-expectation prog th)))
+               (f-exact (qaoa-objective prob p)))
+          (for-each
+           (lambda (th)
+             (let* ((vm (f-moonlab th)) (ve (f-exact th))
+                    (gm (gradient (lambda (x) (moonlab-expectation prog x)) th)) (ge (qaoa-gradient prob th))
+                    (dv (abs (- vm ve))) (dg (max-abs-diff gm ge)))
+               (set! worst-value (max worst-value dv))
+               (set! worst-gradient (max worst-gradient dg))
+               (check (string-append (car named) " p=" (number->string p) ": Moonlab value equals the state vector") (< dv 1e-10))
+               (check (string-append (car named) " p=" (number->string p) ": Moonlab adjoint gradient equals AD") (< dg 1e-8))))
+           (cdr entry))
+          (moonlab-program-destroy prog)))
+      thetas-by-p)))
+ problems)
+(display "qaoa-moonlab: max |E_moonlab - E_exact| = ") (display worst-value)
+(display ", max gradient difference = ") (display worst-gradient) (newline)
+
+;; the custom-VJP node composes: d/dth [ 2 E(th) + th0^2 ]
+(let* ((prob (cdr (assoc "ring4" problems)))
+       (prog (qaoa-moonlab-program prob 1))
+       (th (vector 0.4 0.9))
+       (g (gradient (lambda (x) (+ (* 2.0 (moonlab-expectation prog x)) (* (vector-ref x 0) (vector-ref x 0)))) th))
+       (ge (qaoa-gradient prob th)))
+  (check "composition: chain rule through the Moonlab node"
+         (< (max-abs-diff g (vector (+ (* 2.0 (vector-ref ge 0)) 0.8) (* 2.0 (vector-ref ge 1)))) 1e-8))
+  (moonlab-program-destroy prog))
+
+;; gradient ascent on Moonlab's gradient reaches the ring-4 optimum (3 at p=1)
+(let* ((prob (cdr (assoc "ring4" problems)))
+       (prog (qaoa-moonlab-program prob 1))
+       (f (lambda (th) (moonlab-expectation prog th))))
+  (let loop ((k 0) (th (vector 0.3 0.3)))
+    (if (= k 150)
+        (let ((e (f th)))
+          (display "qaoa-moonlab: ring4 p=1 ascent reaches ") (display e) (newline)
+          (check "ascent on the Moonlab gradient reaches 2.99" (> e 2.99)))
+        (let ((g (gradient (lambda (x) (moonlab-expectation prog x)) th)))
+          (loop (+ k 1) (vector (+ (vector-ref th 0) (* 0.1 (vector-ref g 0)))
+                                (+ (vector-ref th 1) (* 0.1 (vector-ref g 1))))))))
+  (moonlab-program-destroy prog))
+
+;; regions on the Moonlab backend
+(set-quantum-region-options! (list (cons 'backend moonlab-backend)))
+(define-quantum-region qr (bell)
+  (let* ((r (qalloc qr 2)) (r (qh r 0)) (r (qcnot r 0 1)))
+    (qmeasure r)))
+(define bells (let loop ((i 0) (acc '())) (if (= i 60) acc (loop (+ i 1) (cons (bell) acc)))))
+(check "moonlab region: Bell outcomes are correlated" (= 60 (length (filter (lambda (b) (= (car b) (cadr b))) bells))))
+(check "moonlab region: both Bell outcomes occur"
+       (let ((ones (length (filter (lambda (b) (= 1 (car b))) bells)))) (and (> ones 10) (< ones 50))))
+(define-quantum-region qr (deterministic)
+  (let* ((r (qalloc qr 3)) (r (qx r 0)) (r (qcnot r 0 2)) (r (qswap r 1 2)) (r (qt r 1)) (r (qtdg r 1)))
+    (qmeasure r)))
+(check "moonlab region: lowered gates keep the semantics" (equal? (deterministic) '(1 1 0)))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "qaoa_moonlab_crosscheck_test: PASS") (newline)

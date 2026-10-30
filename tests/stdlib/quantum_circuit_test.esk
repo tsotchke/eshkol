@@ -1,0 +1,358 @@
+;; core.quantum.circuit: construction and validation of the gate IR, gate
+;; metadata (inverse, diagonality, Clifford+T membership, exactness) checked
+;; against hand matrices for every gate kind, the binary64 state-vector
+;; simulator against known amplitudes and identities (Bell, GHZ, uniform
+;; superposition, Pauli expectations), the exact unitary over a cyclotomic
+;; field against the binary64 unitary on random Clifford+T circuits, exact
+;; equality versus equality up to a global phase, ZX-calculus identity
+;; certificates, parametric circuits with AD through qcircuit-bind, lowering
+;; to the Moonlab gate set, and wire-permutation realisation.
+(require stdlib)
+(require core.quantum.circuit)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (range n) (iota n))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define pi 3.141592653589793)
+(define s2 (/ 1.0 (sqrt 2.0)))
+
+(define seed 91017)
+(define (rand n) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) n))
+(define (rand-other n q) (let ((r (rand (- n 1)))) (if (>= r q) (+ r 1) r)))
+(define angle-pool (list 0.3 -0.3 0.7 (/ pi 2) pi -1.1 2.2 0.05))
+(define (rand-angle) (list-ref angle-pool (rand (length angle-pool))))
+(define (rand-gates n len gen) (map (lambda (i) (gen n)) (range len)))
+
+(define (approx? a b eps) (< (abs (- a b)) eps))
+(define (cabs2 z) (+ (* (real-part z) (real-part z)) (* (imag-part z) (imag-part z))))
+;; the amplitude at index i of state vector st is within eps of re + im*i
+(define (amp-close? st i re im eps)
+  (let ((z (vector-ref st i)))
+    (and (approx? (real-part z) re eps) (approx? (imag-part z) im eps))))
+
+;; ---------------------------------------------------------------------------
+;; 1. Construction and validation
+;; ---------------------------------------------------------------------------
+(check "make-qcircuit refuses an unknown gate name, an operand count that differs from the gate's, and a negative or non-exact wire"
+       (and (raises? (lambda () (make-qcircuit 1 (list (list 'FOO 0)))))
+            (raises? (lambda () (make-qcircuit 2 (list (list 'CNOT 0)))))
+            (raises? (lambda () (make-qcircuit 1 (list (list 'H 0 1)))))
+            (raises? (lambda () (make-qcircuit 1 (list (list 'H -1)))))
+            (raises? (lambda () (make-qcircuit 1 (list (list 'H 0.0)))))))
+(check "make-qcircuit refuses a wire out of range and repeated wires on the same gate"
+       (and (raises? (lambda () (make-qcircuit 1 (list (list 'H 5)))))
+            (raises? (lambda () (make-qcircuit 2 (list (list 'CNOT 0 0)))))
+            (raises? (lambda () (make-qcircuit 3 (list (list 'CCX 1 1 2)))))))
+(check "make-qcircuit refuses an angle that is not a real number, a qparam, or an AD value"
+       (and (raises? (lambda () (make-qcircuit 1 (list (list 'RX 0 'theta)))))
+            (raises? (lambda () (make-qcircuit 1 (list (list 'RX 0 "0.3")))))
+            (raises? (lambda () (make-qcircuit 1 (list (list 'RX 0 #t)))))
+            (raises? (lambda () (make-qcircuit 1 (list (list 'RX 0 (make-rectangular 1.0 2.0))))))
+            (raises? (lambda () (make-qcircuit 1 (list (list 'RX 0 (vector 'qparam -1 1))))))))
+(check "qcircuit-validate accepts a well-formed circuit and make-qcircuit constructs it"
+       (let ((c (make-qcircuit 2 (list (list 'H 0) (list 'CNOT 0 1)))))
+         (and (qcircuit? c) (qcircuit-validate c))))
+
+;; A hand-counted circuit: H(0) CNOT(0,1) T(1) CZ(0,1).
+;; depth: H -> level0=1; CNOT needs max(1,0)+1=2, level0=level1=2;
+;; T -> max(2)+1=3, level1=3; CZ -> max(2,3)+1=4, level0=level1=4.
+(define counted (make-qcircuit 2 (list (list 'H 0) (list 'CNOT 0 1) (list 'T 1) (list 'CZ 0 1))))
+(check "qcircuit-stats on a hand-counted circuit: 4 gates, 2 two-qubit, 1 T, depth 4"
+       (let ((s (qcircuit-stats counted)))
+         (and (= 4 (cdr (assq 'gates s))) (= 2 (cdr (assq 'two-qubit s)))
+              (= 1 (cdr (assq 't-count s))) (= 4 (cdr (assq 'depth s))))))
+(check "qcircuit-gate-count, qcircuit-two-qubit-count, qcircuit-t-count and qcircuit-depth agree with the stats"
+       (and (= 4 (qcircuit-gate-count counted)) (= 2 (qcircuit-two-qubit-count counted))
+            (= 1 (qcircuit-t-count counted)) (= 4 (qcircuit-depth counted))))
+(check "qcircuit-t-count charges CCX and CCZ 7 each and counts odd eighths of P as T"
+       (= 16 (qcircuit-t-count (make-qcircuit 3 (list (list 'CCX 0 1 2) (list 'CCZ 0 1 2) (list 'P 0 (/ 1 4))
+                                                       (list 'P 0 (/ 1 2)) (list 'P 0 (/ 3 4)))))))
+(check "qcircuit-inverse reverses the gate list and inverts every gate, exactly matching the hand-built list"
+       (equal? (qcircuit-gates (qcircuit-inverse counted))
+               (list (list 'CZ 0 1) (list 'Tdg 1) (list 'CNOT 0 1) (list 'H 0))))
+(define small (make-qcircuit 2 (list (list 'H 0) (list 'CNOT 0 1))))
+(check "qcircuit-remap renames every wire of every gate through the given vector"
+       (equal? (qcircuit-gates (qcircuit-remap small (vector 1 0) 2)) (list (list 'H 1) (list 'CNOT 1 0))))
+(check "qcircuit-concat refuses circuits of unequal width and appends gate lists of equal width"
+       (and (raises? (lambda () (qcircuit-concat (make-qcircuit 1 '()) (make-qcircuit 2 '()))))
+            (equal? (qcircuit-gates (qcircuit-concat small small)) (append (qcircuit-gates small) (qcircuit-gates small)))))
+
+;; ---------------------------------------------------------------------------
+;; 2. Gate metadata
+;; ---------------------------------------------------------------------------
+;; g;inverse(g) is the identity: exactly, for a gate expressible over a
+;; cyclotomic field; in binary64 for the continuous rotations.
+(define (gate-inverse-identity? g width)
+  (let ((c (make-qcircuit width (list g (qgate-inverse g)))) (e (make-qcircuit width '())))
+    (if (qgate-exact? g) (qcircuit-equal-exact? c e) (qcircuit-equivalent-float? c e))))
+(define gate-kinds
+  (list (cons (list 'H 0) 1) (cons (list 'X 0) 1) (cons (list 'Y 0) 1) (cons (list 'Z 0) 1)
+        (cons (list 'S 0) 1) (cons (list 'Sdg 0) 1) (cons (list 'T 0) 1) (cons (list 'Tdg 0) 1)
+        (cons (list 'P 0 (/ 1 3)) 1) (cons (list 'XP 0 (/ 5 8)) 1)
+        (cons (list 'RX 0 0.37) 1) (cons (list 'RY 0 1.1) 1) (cons (list 'RZ 0 -0.6) 1)
+        (cons (list 'CNOT 0 1) 2) (cons (list 'CZ 0 1) 2) (cons (list 'SWAP 0 1) 2) (cons (list 'RZZ 0 1 0.42) 2)
+        (cons (list 'CCX 0 1 2) 3) (cons (list 'CCZ 0 1 2) 3)))
+(check "qgate-inverse is an inverse for every gate kind: exact for exact gates, binary64 for rotations"
+       (all? (lambda (p) (gate-inverse-identity? (car p) (cdr p))) gate-kinds))
+
+;; qgate-diagonal? agrees with the single-gate unitary actually being diagonal.
+(define (float-diagonal? g width)
+  (let* ((U (qcircuit-unitary (make-qcircuit width (list g)))) (n (vector-length U)))
+    (let loopc ((col 0))
+      (or (= col n)
+          (and (let loopr ((row 0))
+                 (or (= row n)
+                     (and (or (= row col) (< (cabs2 (vector-ref (vector-ref U col) row)) 1e-18))
+                          (loopr (+ row 1)))))
+               (loopc (+ col 1)))))))
+(check "qgate-diagonal? agrees with whether the single-gate unitary is diagonal, for every gate kind"
+       (all? (lambda (p) (eq? (qgate-diagonal? (car p)) (float-diagonal? (car p) (cdr p)))) gate-kinds))
+
+(check "qgate-clifford+t? and qgate-exact?: every exact-name gate is both; P/XP depend on the phase; rotations are neither"
+       (and (qgate-clifford+t? (list 'H 0)) (qgate-exact? (list 'H 0))
+            (qgate-clifford+t? (list 'CCX 0 1 2)) (qgate-exact? (list 'CCX 0 1 2))
+            (qgate-clifford+t? (list 'P 0 (/ 1 4))) (qgate-exact? (list 'P 0 (/ 1 4)))
+            (not (qgate-clifford+t? (list 'P 0 (/ 1 3)))) (qgate-exact? (list 'P 0 (/ 1 3)))
+            (not (qgate-clifford+t? (list 'P 0 0.5))) (not (qgate-exact? (list 'P 0 0.5)))
+            (not (qgate-clifford+t? (list 'XP 0 (/ 1 3)))) (qgate-exact? (list 'XP 0 (/ 1 3)))
+            (not (qgate-clifford+t? (list 'RX 0 0.4))) (not (qgate-exact? (list 'RX 0 0.4)))
+            (not (qgate-clifford+t? (list 'RZZ 0 1 0.4))) (not (qgate-exact? (list 'RZZ 0 1 0.4)))))
+(check "qgate-self-inverse? holds exactly for H X Y Z CNOT CZ SWAP CCX CCZ"
+       (and (all? qgate-self-inverse? (list '(H 0) '(X 0) '(Y 0) '(Z 0) '(CNOT 0 1) '(CZ 0 1) '(SWAP 0 1) '(CCX 0 1 2) '(CCZ 0 1 2)))
+            (not (qgate-self-inverse? '(S 0))) (not (qgate-self-inverse? (list 'RX 0 0.3)))))
+
+;; ---------------------------------------------------------------------------
+;; 3. Simulator
+;; ---------------------------------------------------------------------------
+;; 1-qubit actions, matrices of Nielsen & Chuang, "Quantum Computation and
+;; Quantum Information" (2010), section 4.2 and eqs. 4.11-4.13.
+(check "X exchanges |0> and |1>"
+       (and (amp-close? (qstate-apply 1 (qstate-basis 1 0) '(X 0)) 1 1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 1 (qstate-basis 1 1) '(X 0)) 0 1.0 0.0 1e-12)))
+(check "Y maps |0> to i|1> and |1> to -i|0>"
+       (and (amp-close? (qstate-apply 1 (qstate-basis 1 0) '(Y 0)) 1 0.0 1.0 1e-12)
+            (amp-close? (qstate-apply 1 (qstate-basis 1 1) '(Y 0)) 0 0.0 -1.0 1e-12)))
+(check "Z fixes |0> and negates |1>"
+       (and (amp-close? (qstate-apply 1 (qstate-basis 1 0) '(Z 0)) 0 1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 1 (qstate-basis 1 1) '(Z 0)) 1 -1.0 0.0 1e-12)))
+(check "S multiplies |1> by i and T by e^{i pi/4}"
+       (and (amp-close? (qstate-apply 1 (qstate-basis 1 1) '(S 0)) 1 0.0 1.0 1e-12)
+            (amp-close? (qstate-apply 1 (qstate-basis 1 1) '(T 0)) 1 s2 s2 1e-9)))
+(check "P p multiplies |1> by e^{i pi p}, at p = 1/3 and p = 5/8"
+       (and (amp-close? (qstate-apply 1 (qstate-basis 1 1) (list 'P 0 (/ 1 3))) 1 (cos (* pi (/ 1 3))) (sin (* pi (/ 1 3))) 1e-9)
+            (amp-close? (qstate-apply 1 (qstate-basis 1 1) (list 'P 0 (/ 5 8))) 1 (cos (* pi (/ 5 8))) (sin (* pi (/ 5 8))) 1e-9)))
+(check "XP(1/2) = H P(1/2) H on |0> gives (1+i)/2 at |0> and (1-i)/2 at |1>"
+       (let ((v (qstate-apply 1 (qstate-basis 1 0) (list 'XP 0 (/ 1 2)))))
+         (and (amp-close? v 0 0.5 0.5 1e-9) (amp-close? v 1 0.5 -0.5 1e-9))))
+(define th 0.37)
+(check "RX(th)|0> = cos(th/2)|0> - i sin(th/2)|1>, RX(th)|1> = -i sin(th/2)|0> + cos(th/2)|1>"
+       (let ((v0 (qstate-apply 1 (qstate-basis 1 0) (list 'RX 0 th))) (v1 (qstate-apply 1 (qstate-basis 1 1) (list 'RX 0 th))))
+         (and (amp-close? v0 0 (cos (* 0.5 th)) 0.0 1e-9) (amp-close? v0 1 0.0 (- (sin (* 0.5 th))) 1e-9)
+              (amp-close? v1 0 0.0 (- (sin (* 0.5 th))) 1e-9) (amp-close? v1 1 (cos (* 0.5 th)) 0.0 1e-9))))
+(check "RY(th)|0> = cos(th/2)|0> + sin(th/2)|1>, RY(th)|1> = -sin(th/2)|0> + cos(th/2)|1>"
+       (let ((v0 (qstate-apply 1 (qstate-basis 1 0) (list 'RY 0 th))) (v1 (qstate-apply 1 (qstate-basis 1 1) (list 'RY 0 th))))
+         (and (amp-close? v0 0 (cos (* 0.5 th)) 0.0 1e-9) (amp-close? v0 1 (sin (* 0.5 th)) 0.0 1e-9)
+              (amp-close? v1 0 (- (sin (* 0.5 th))) 0.0 1e-9) (amp-close? v1 1 (cos (* 0.5 th)) 0.0 1e-9))))
+(check "RZ(th)|0> = e^{-i th/2}|0>, RZ(th)|1> = e^{i th/2}|1>"
+       (and (amp-close? (qstate-apply 1 (qstate-basis 1 0) (list 'RZ 0 th)) 0 (cos (* -0.5 th)) (sin (* -0.5 th)) 1e-9)
+            (amp-close? (qstate-apply 1 (qstate-basis 1 1) (list 'RZ 0 th)) 1 (cos (* 0.5 th)) (sin (* 0.5 th)) 1e-9)))
+
+;; 2- and 3-qubit actions; wire 0 is the most significant bit of the index.
+(check "CNOT(0,1) flips the target exactly when the control is 1"
+       (and (amp-close? (qstate-apply 2 (qstate-basis 2 2) '(CNOT 0 1)) 3 1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 2 (qstate-basis 2 3) '(CNOT 0 1)) 2 1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 2 (qstate-basis 2 0) '(CNOT 0 1)) 0 1.0 0.0 1e-12)))
+(check "CZ(0,1) phases |11> by -1 and fixes the rest"
+       (and (amp-close? (qstate-apply 2 (qstate-basis 2 3) '(CZ 0 1)) 3 -1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 2 (qstate-basis 2 1) '(CZ 0 1)) 1 1.0 0.0 1e-12)))
+(check "SWAP(0,1) exchanges |01> and |10>"
+       (and (amp-close? (qstate-apply 2 (qstate-basis 2 1) '(SWAP 0 1)) 2 1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 2 (qstate-basis 2 2) '(SWAP 0 1)) 1 1.0 0.0 1e-12)))
+(check "RZZ(0,1,th) phases equal bits by e^{-i th/2} and unequal bits by e^{i th/2}"
+       (and (amp-close? (qstate-apply 2 (qstate-basis 2 0) (list 'RZZ 0 1 th)) 0 (cos (* -0.5 th)) (sin (* -0.5 th)) 1e-9)
+            (amp-close? (qstate-apply 2 (qstate-basis 2 3) (list 'RZZ 0 1 th)) 3 (cos (* -0.5 th)) (sin (* -0.5 th)) 1e-9)
+            (amp-close? (qstate-apply 2 (qstate-basis 2 1) (list 'RZZ 0 1 th)) 1 (cos (* 0.5 th)) (sin (* 0.5 th)) 1e-9)))
+(check "CCX(0,1,2) flips the target exactly when both controls are 1"
+       (and (amp-close? (qstate-apply 3 (qstate-basis 3 6) '(CCX 0 1 2)) 7 1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 3 (qstate-basis 3 7) '(CCX 0 1 2)) 6 1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 3 (qstate-basis 3 5) '(CCX 0 1 2)) 5 1.0 0.0 1e-12)))
+(check "CCZ(0,1,2) phases |111> by -1 and fixes the rest"
+       (and (amp-close? (qstate-apply 3 (qstate-basis 3 7) '(CCZ 0 1 2)) 7 -1.0 0.0 1e-12)
+            (amp-close? (qstate-apply 3 (qstate-basis 3 6) '(CCZ 0 1 2)) 6 1.0 0.0 1e-12)))
+
+(define bell (qstate-run 2 '((H 0) (CNOT 0 1)) (qstate-zero 2)))
+(check "a Bell circuit gives amplitude 1/sqrt2 at |00> and |11>, zero elsewhere"
+       (and (amp-close? bell 0 s2 0.0 1e-9) (amp-close? bell 3 s2 0.0 1e-9)
+            (< (cabs2 (vector-ref bell 1)) 1e-15) (< (cabs2 (vector-ref bell 2)) 1e-15)))
+(define ghz (qstate-run 3 '((H 0) (CNOT 0 1) (CNOT 1 2)) (qstate-zero 3)))
+(check "a GHZ circuit gives amplitude 1/sqrt2 at |000> and |111>"
+       (and (amp-close? ghz 0 s2 0.0 1e-9) (amp-close? ghz 7 s2 0.0 1e-9)))
+(check "GHZ Pauli expectations: <ZZI> = 1, <XXX> = 1, <ZII> = 0"
+       (and (approx? (qstate-pauli-expectation 3 ghz '(Z Z I)) 1.0 1e-9)
+            (approx? (qstate-pauli-expectation 3 ghz '(X X X)) 1.0 1e-9)
+            (approx? (qstate-pauli-expectation 3 ghz '(Z I I)) 0.0 1e-9)))
+(define unif3 (qstate-run 3 '((H 0) (H 1) (H 2)) (qstate-zero 3)))
+(check "H on every wire gives a uniform superposition, amplitude 1/sqrt8 at every basis state"
+       (all? (lambda (i) (amp-close? unif3 i (/ 1.0 (sqrt 8.0)) 0.0 1e-9)) (range 8)))
+
+(define (rand-sim-gate n)
+  (let ((r (rand 10)) (q (rand n)))
+    (cond ((= r 0) (list 'H q)) ((= r 1) (list 'X q)) ((= r 2) (list 'Y q)) ((= r 3) (list 'Z q))
+          ((= r 4) (list 'S q)) ((= r 5) (list 'T q)) ((= r 6) (list 'RX q (rand-angle))) ((= r 7) (list 'RY q (rand-angle)))
+          ((= r 8) (list 'RZ q (rand-angle))) (else (if (> n 1) (list 'CNOT q (rand-other n q)) (list 'H q))))))
+(check "qstate-norm2 stays 1 on 20 random circuits of up to 4 wires"
+       (all? (lambda (i) (let* ((n (+ 1 (rand 4))) (st (qstate-run n (rand-gates n (+ 3 (rand 10)) rand-sim-gate) (qstate-zero n))))
+                           (approx? (qstate-norm2 st) 1.0 1e-9)))
+             (range 20)))
+(check "after RX(th) on |0>, <Z> = cos(th), for several th"
+       (all? (lambda (a) (approx? (qstate-pauli-expectation 1 (qstate-run 1 (list (list 'RX 0 a)) (qstate-zero 1)) '(Z)) (cos a) 1e-9))
+             (list 0.0 0.3 1.0 2.1 -0.7)))
+(define unif2 (qstate-run 2 '((H 0) (H 1)) (qstate-zero 2)))
+(check "the diagonal expectation of f(x) = x on a uniform 2-qubit state is the mean index 1.5"
+       (approx? (qstate-diagonal-expectation unif2 (lambda (x) x)) 1.5 1e-9))
+(check "fidelity and inner product: self-fidelity 1, Bell vs |00> fidelity 1/2, orthogonal basis states fidelity 0"
+       (and (approx? (qstate-fidelity bell bell) 1.0 1e-9)
+            (approx? (real-part (qstate-inner bell (qstate-basis 2 0))) s2 1e-9)
+            (approx? (qstate-fidelity bell (qstate-basis 2 0)) 0.5 1e-9)
+            (approx? (qstate-fidelity (qstate-basis 2 0) (qstate-basis 2 3)) 0.0 1e-9)))
+
+;; ---------------------------------------------------------------------------
+;; 4. Exact semantics through core.monoidal.zx
+;; ---------------------------------------------------------------------------
+(define (rand-ct-gate n)
+  (let ((r (rand (if (= n 1) 10 14))) (q (rand n)))
+    (cond ((< r 2) (list 'H q)) ((< r 4) (list 'T q)) ((= r 4) (list 'Tdg q)) ((= r 5) (list 'S q)) ((= r 6) (list 'Sdg q))
+          ((= r 7) (list 'X q)) ((= r 8) (list 'Z q)) ((= r 9) (list 'Y q))
+          ((< r 12) (list 'CNOT q (rand-other n q))) ((= r 12) (list 'CZ q (rand-other n q)))
+          (else (list 'SWAP q (rand-other n q))))))
+;; the entries of the exact unitary (read through scalars->complex, which
+;; gives a (re . im) pair) agree with the entries of the binary64 unitary
+(define (exact-matches-float? c eps)
+  (let* ((K (qcircuit-exact-scalars c)) (EU (qcircuit-exact-unitary c K)) (FU (qcircuit-unitary c)) (n (vector-length FU)))
+    (let loopc ((col 0))
+      (or (= col n)
+          (and (let loopr ((row 0))
+                 (or (= row n)
+                     (and (let* ((z (scalars->complex K (linear-map-entry EU row col))) (fz (vector-ref (vector-ref FU col) row)))
+                            (and (approx? (car z) (real-part fz) eps) (approx? (cdr z) (imag-part fz) eps)))
+                          (loopr (+ row 1)))))
+               (loopc (+ col 1)))))))
+(define exact-circuits
+  (append (map (lambda (i) (make-qcircuit 1 (rand-gates 1 (+ 4 (rand 6)) rand-ct-gate))) (range 5))
+          (map (lambda (i) (make-qcircuit 2 (rand-gates 2 (+ 4 (rand 8)) rand-ct-gate))) (range 6))
+          (map (lambda (i) (make-qcircuit 3 (rand-gates 3 (+ 4 (rand 8)) rand-ct-gate))) (range 6))))
+(check "17 random Clifford+T circuits on 1-3 wires: the exact unitary agrees with the binary64 unitary"
+       (all? (lambda (c) (exact-matches-float? c 1e-9)) exact-circuits))
+(check "S S is exactly Z, and so also equivalent up to a global phase"
+       (let ((c (make-qcircuit 1 '((S 0) (S 0)))) (d (make-qcircuit 1 '((Z 0)))))
+         (and (qcircuit-equal-exact? c d) (qcircuit-equivalent-exact? c d))))
+(check "X Z X Z is -I: equivalent to the identity up to a global phase, but not equal to it"
+       (let ((c (make-qcircuit 1 '((X 0) (Z 0) (X 0) (Z 0)))) (i (make-qcircuit 1 '())))
+         (and (qcircuit-equivalent-exact? c i) (not (qcircuit-equal-exact? c i)))))
+(define p-denom3 (make-qcircuit 1 (list (list 'P 0 (/ 1 3)))))
+(define p-denom8 (make-qcircuit 1 (list (list 'P 0 (/ 3 8)))))
+(check "P with denominator 3 or 8 needs a cyclotomic field bigger than the default order 8, and still matches binary64"
+       (and (> (scalars-order (qcircuit-exact-scalars p-denom3)) 8)
+            (> (scalars-order (qcircuit-exact-scalars p-denom8)) 8)
+            (exact-matches-float? p-denom3 1e-9) (exact-matches-float? p-denom8 1e-9)))
+
+;; ---------------------------------------------------------------------------
+;; 5. ZX-calculus certificate
+;; ---------------------------------------------------------------------------
+(define (rand-clifford-gate n)
+  (let ((r (rand (if (= n 1) 4 6))) (q (rand n)))
+    (cond ((= r 0) (list 'H q)) ((= r 1) (list 'S q)) ((= r 2) (list 'X q)) ((= r 3) (list 'Z q))
+          ((= r 4) (list 'CNOT q (rand-other n q))) (else (list 'CZ q (rand-other n q))))))
+(define clifford-circuits (map (lambda (i) (make-qcircuit 3 (rand-gates 3 (+ 4 (rand 6)) rand-clifford-gate))) (range 10)))
+(check "C ; C^-1 is a ZX-calculus identity certificate for 10 random Clifford circuits on 3 wires"
+       (all? (lambda (c) (qcircuit-zx-identity? (qcircuit-concat c (qcircuit-inverse c)))) clifford-circuits))
+(check "a single H is not a ZX-calculus identity"
+       (not (qcircuit-zx-identity? (make-qcircuit 1 '((H 0))))))
+
+;; ---------------------------------------------------------------------------
+;; 6. Parametric circuits and AD
+;; ---------------------------------------------------------------------------
+(check "qparam carries an index and a coefficient; qcircuit-bind substitutes it; qcircuit-parameter-count counts distinct indices"
+       (let* ((p (qparam 2 3)) (c (make-qcircuit 1 (list (list 'RZ 0 (qparam 0)) (list 'RX 0 (qparam 1 2)))))
+              (bound (qcircuit-bind c (vector 0.5 0.25))))
+         (and (= 2 (qparam-index p)) (= 3 (qparam-coefficient p))
+              (equal? (qcircuit-gates bound) (list (list 'RZ 0 0.5) (list 'RX 0 0.5)))
+              (= 2 (qcircuit-parameter-count c))
+              (qcircuit-parametric? c) (not (qcircuit-parametric? bound)))))
+;; <Z> after RX(theta) on |0> is cos(theta), through qcircuit-bind + qcircuit-run
+(define (rx-z-expectation theta)
+  (let* ((c (make-qcircuit 1 (list (list 'RX 0 (qparam 0)))))
+         (bound (qcircuit-bind c (vector theta))))
+    (qstate-pauli-expectation 1 (qcircuit-run bound) '(Z))))
+(check "the gradient of <Z> after RX(theta), through qcircuit-bind and qcircuit-run, equals -sin(theta)"
+       (all? (lambda (a) (approx? (gradient rx-z-expectation a) (- (sin a)) 1e-10)) (list 0.3 0.9 -0.5 1.4)))
+
+;; ---------------------------------------------------------------------------
+;; 7. Lowering
+;; ---------------------------------------------------------------------------
+(define lowering-targets '(H X Y Z CNOT RX RY RZ))
+(define every-kind
+  (make-qcircuit 3 (list (list 'H 0) (list 'X 1) (list 'Y 2) (list 'Z 0) (list 'S 1) (list 'Sdg 2) (list 'T 0) (list 'Tdg 1)
+                         (list 'P 2 (/ 1 4)) (list 'XP 0 (/ 1 8)) (list 'RX 1 0.4) (list 'RY 2 0.6) (list 'RZ 0 0.7)
+                         (list 'CNOT 0 1) (list 'CZ 1 2) (list 'SWAP 0 2) (list 'RZZ 1 2 0.3) (list 'CCX 0 1 2) (list 'CCZ 0 1 2))))
+(check "qcircuit-lower of a circuit with every gate kind emits only H X Y Z CNOT RX RY RZ and is float-equivalent to the input"
+       (and (all? (lambda (g) (memq (qgate-name g) lowering-targets)) (qcircuit-gates (qcircuit-lower every-kind)))
+            (qcircuit-equivalent-float? every-kind (qcircuit-lower every-kind))))
+;; a wire different from a and b (n >= 3)
+(define (third-wire n a b) (let ((c (rand n))) (if (or (= c a) (= c b)) (third-wire n a b) c)))
+(define (rand-any-gate n)
+  (let ((r (rand 19)) (q (rand n)))
+    (cond ((= r 0) (list 'H q)) ((= r 1) (list 'X q)) ((= r 2) (list 'Y q)) ((= r 3) (list 'Z q)) ((= r 4) (list 'S q))
+          ((= r 5) (list 'Sdg q)) ((= r 6) (list 'T q)) ((= r 7) (list 'Tdg q)) ((= r 8) (list 'P q (/ (+ 1 (rand 7)) 4)))
+          ((= r 9) (list 'XP q (/ (+ 1 (rand 7)) 4))) ((= r 10) (list 'RX q (rand-angle))) ((= r 11) (list 'RY q (rand-angle)))
+          ((= r 12) (list 'RZ q (rand-angle)))
+          ((= r 13) (list 'CNOT q (rand-other n q))) ((= r 14) (list 'CZ q (rand-other n q))) ((= r 15) (list 'SWAP q (rand-other n q)))
+          ((= r 16) (list 'RZZ q (rand-other n q) (rand-angle)))
+          (else (let* ((a (rand n)) (b (rand-other n a)) (c (third-wire n a b))) (list (if (= r 17) 'CCX 'CCZ) a b c))))))
+(define random-full (map (lambda (i) (make-qcircuit 4 (rand-gates 4 (+ 6 (rand 10)) rand-any-gate))) (range 6)))
+(check "qcircuit-lower is float-equivalent on 6 random circuits mixing every gate kind, including CCX/CCZ"
+       (all? (lambda (c) (and (all? (lambda (g) (memq (qgate-name g) lowering-targets)) (qcircuit-gates (qcircuit-lower c)))
+                              (qcircuit-equivalent-float? c (qcircuit-lower c))))
+             random-full))
+(define multiqubit (make-qcircuit 3 (list (list 'CCX 0 1 2) (list 'H 1) (list 'CCZ 0 1 2))))
+(check "qcircuit-decompose-multiqubit removes CCX/CCZ and is exactly equivalent to the original, up to a global phase"
+       (let ((d (qcircuit-decompose-multiqubit multiqubit)))
+         (and (all? (lambda (g) (not (memq (qgate-name g) '(CCX CCZ)))) (qcircuit-gates d))
+              (qcircuit-equivalent-exact? multiqubit d))))
+
+;; ---------------------------------------------------------------------------
+;; 8. Permutations
+;; ---------------------------------------------------------------------------
+(define (bit-index n w) (expt 2 (- n 1 w)))
+;; the flat index of the single nonzero (unit-amplitude) entry of st
+(define (basis-index-of st)
+  (let loop ((i 0)) (if (> (cabs2 (vector-ref st i)) 0.5) i (loop (+ i 1)))))
+(define (rand-perm n)
+  (let ((v (list->vector (range n))))
+    (let loop ((i (- n 1)))
+      (if (< i 1) v
+          (let* ((j (rand (+ i 1))) (t (vector-ref v i)))
+            (vector-set! v i (vector-ref v j)) (vector-set! v j t) (loop (- i 1)))))))
+;; qcircuit-permutation-gates perm moves the state of wire w to wire perm[w]
+(define (realises-permutation? perm)
+  (let ((n (vector-length perm)) (gs (qcircuit-permutation-gates perm)))
+    (all? (lambda (w) (= (basis-index-of (qstate-run n gs (qstate-basis n (bit-index n w)))) (bit-index n (vector-ref perm w))))
+          (range n))))
+(check "qcircuit-permutation-gates realises four random permutations of 3-4 wires"
+       (all? realises-permutation? (list (rand-perm 3) (rand-perm 3) (rand-perm 4) (rand-perm 4))))
+(define perm-c (make-qcircuit 2 (list (list 'H 0) (list 'T 1))))
+(define perm-d (qcircuit-append perm-c (list (list (quote SWAP) 0 1))))   ; c, then the two wires exchanged
+(check "qcircuit-equivalent-up-to-permutation? holds between a circuit and the circuit followed by exchanging its wires, under that exchange"
+       (qcircuit-equivalent-up-to-permutation? perm-c perm-d (vector 1 0)))
+(check "qcircuit-equivalent-up-to-permutation? fails under the identity permutation, since the wires were exchanged"
+       (not (qcircuit-equivalent-up-to-permutation? perm-c perm-d (vector 0 1))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: quantum_circuit_test") (newline) (display "RESULT: PASS") (newline)

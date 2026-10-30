@@ -42,7 +42,12 @@
          vqe-optimize
          vqe-energy
          vqe-gradient
-         with-hamiltonian)
+         with-hamiltonian
+         make-moonlab-program
+         moonlab-program-add-gate!
+         moonlab-program-add-term!
+         moonlab-program-parameter-count
+         moonlab-program-destroy!)
 
 ;; FFI declarations
 (extern i64    quantum-state-create-raw     i32           :real eshkol_quantum_state_create)
@@ -80,6 +85,14 @@
 (extern i32    vqe-gradient-set-parameter-raw i64 i32 double :real eshkol_vqe_gradient_set_parameter)
 (extern i32    vqe-gradient-compute-raw     i64           :real eshkol_vqe_gradient_compute)
 (extern double vqe-gradient-get-raw         i64 i32       :real eshkol_vqe_gradient_get)
+;; Circuit-expectation programs (ADR-0048): a parametric circuit on Moonlab's
+;; gate set and a Pauli-sum observable, evaluated and differentiated by the
+;; same custom-VJP primitive as vqe-energy (core.quantum.moonlab).
+(extern i64    qexpect-create-raw          i32           :real eshkol_qexpect_create)
+(extern void   qexpect-destroy-raw         i64           :real eshkol_qexpect_destroy)
+(extern i32    qexpect-add-gate-raw        i64 i32 i32 i32 i32 double :real eshkol_qexpect_add_gate)
+(extern i32    qexpect-add-term-raw        i64 double ptr :real eshkol_qexpect_add_term)
+(extern i64    qexpect-parameter-count-raw i64           :real eshkol_qexpect_parameter_count)
 
 ;; ---------------------------------------------------------------------------
 ;; Internal: honest error surface. Moonlab/the shim signal failure with a
@@ -362,3 +375,34 @@
                                      (collect (+ i 1)))
                                    gradient))))))))
              (lambda () (vqe-gradient-context-destroy-raw context)))))))
+
+;; ---------------------------------------------------------------------------
+;; Circuit-expectation programs (ADR-0048)
+;; ---------------------------------------------------------------------------
+
+(define (make-moonlab-program num-qubits)
+  "Create an empty Moonlab circuit-expectation program on `num-qubits` qubits.
+   Fill it with moonlab-program-add-gate! and moonlab-program-add-term!;
+   evaluate it with (vqe-energy-primitive program thetas)."
+  (capability-require! 'ffi 'make-moonlab-program)
+  (let ((h (qexpect-create-raw num-qubits)))
+    (if (< h 0)
+        (error (string-append "agent.quantum: make-moonlab-program failed: " (quantum-last-error)))
+        h)))
+
+(define (moonlab-program-add-gate! program kind q0 q1 param coef)
+  "Append a gate: kind 0..8 = H X Y Z CNOT CZ RX RY RZ; q1 is the target of a
+   two-qubit gate (ignored otherwise); a rotation's angle is coef * theta[param],
+   or the fixed angle coef when param is -1."
+  (check-gate-result! "moonlab-program-add-gate!" (qexpect-add-gate-raw program kind q0 q1 param coef)))
+
+(define (moonlab-program-add-term! program coef paulis)
+  "Add coef * P to the observable; paulis is a string with one letter I X Y Z
+   per qubit, qubit 0 first."
+  (check-gate-result! "moonlab-program-add-term!" (qexpect-add-term-raw program coef paulis)))
+
+(define (moonlab-program-parameter-count program)
+  (let ((n (qexpect-parameter-count-raw program)))
+    (if (< n 0) (error (string-append "agent.quantum: " (quantum-last-error))) n)))
+
+(define (moonlab-program-destroy! program) (qexpect-destroy-raw program))

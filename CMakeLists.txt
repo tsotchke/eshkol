@@ -3158,6 +3158,7 @@ add_library(eshkol-workspace STATIC
   lib/frontend/workspace.cpp
   lib/types/hott_types.cpp
   lib/types/type_relation.cpp
+  lib/types/quantum_index.cpp
   lib/core/ast.cpp
 )
 target_include_directories(eshkol-workspace PUBLIC
@@ -4422,6 +4423,56 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 1500
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
             PASS_REGULAR_EXPRESSION "zx_moonlab_crosscheck_test: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL|error:|Unhandled exception|fatal signal")
+    endif()
+endif()
+
+# core.quantum (ADR-0048): quantum register types qreg<n> with compile-time
+# dimensions, quantum regions, the circuit IR with its optimiser (soundness
+# checked exactly over Q(zeta_m) and by ZX-calculus certificates), SABRE
+# routing, and QAOA with exact AD gradients, in native JIT and AOT; the
+# compile-time corpus (tests/typesystem/qreg_*.esk) on the native and the
+# bytecode engines; and, in Moonlab builds, QAOA expectations and gradients
+# through Moonlab's exact adjoint against the exact state vector.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_quantum_suite quantum_circuit_test quantum_optimize_test quantum_route_test qaoa_test quantum_register_test)
+        add_test(NAME ${_quantum_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_quantum_suite}.esk")
+        add_test(NAME ${_quantum_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_quantum_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_quantum_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=1200"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_quantum_suite}_jit ${_quantum_suite}_aot PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_quantum_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+    if(NOT WIN32)
+        set(ESHKOL_QREG_CORPUS_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_QREG_CORPUS_VM "none")
+    endif()
+    add_test(NAME quantum_types_corpus
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qreg_corpus_gate.sh"
+            "$<TARGET_FILE:eshkol-run>" "${ESHKOL_QREG_CORPUS_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/qreg-corpus")
+    set_tests_properties(quantum_types_corpus PROPERTIES
+        TIMEOUT 1800
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: quantum types corpus"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+    if(ESHKOL_QUANTUM_ENABLED)
+        add_test(NAME qaoa_moonlab_crosscheck
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/quantum/qaoa_moonlab_crosscheck_test.esk"
+                    "-L${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(qaoa_moonlab_crosscheck PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "qaoa_moonlab_crosscheck_test: PASS"
             FAIL_REGULAR_EXPRESSION "FAIL|error:|Unhandled exception|fatal signal")
     endif()
 endif()

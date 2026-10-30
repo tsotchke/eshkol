@@ -601,6 +601,13 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_energy_from_tagged(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_create(int32_t num_qubits) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_qexpect_destroy(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_gate(int64_t handle, int32_t kind, int32_t q0, int32_t q1,
+                                    int32_t param, double coef) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_term(int64_t handle, double coef, const char* paulis)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_parameter_count(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
     void* eshkol_vqe_ad_prepare(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_ad_prepared_energy(const void* prepared)
@@ -1547,6 +1554,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_exact_ground_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_optimize);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_energy_from_tagged);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_gate);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_term);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_parameter_count);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepare);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_inputs);

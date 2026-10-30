@@ -1,0 +1,395 @@
+;;; core.quantum.qaoa -- the Quantum Approximate Optimization Algorithm for
+;;; MaxCut over the shared circuit IR (core.quantum.circuit): MaxCut problems
+;;; (unweighted or real-weighted), the cost observable as Pauli terms, the
+;;; parametric QAOA circuit, its expectation on the binary64 state-vector
+;;; simulator with exact AD gradients, the p = 1 closed forms, and a
+;;; restarted Adam optimiser driven by those exact gradients.
+;;;
+;;; Usage: (require core.quantum.qaoa)
+;;;
+;;; Problems:
+;;;   (maxcut-problem n edges)  edges a list of (u v) (weight 1) or (u v w)
+;;;   (w real); vertices 0 .. n-1, u /= v, no repeated vertex pair. Vertex q
+;;;   is wire q. The cut value of an assignment x in {0,1}^n is
+;;;       C(x) = sum_{(u v w)} w [x_u /= x_v].
+;;;   A basis index uses wire 0 as its most significant bit (as qstate-bit).
+;;;
+;;; Cost observable (maxcut-pauli-terms): C = sum_k coef_k P_k with
+;;;       C = (sum_e w_e / 2) I  -  sum_{(u v w)} (w / 2) Z_u Z_v,
+;;;   returned as a list of (coef . paulis), paulis a list of I / Z per wire;
+;;;   the first term is the constant (all I), then one term per edge in edge
+;;;   order. Coefficients are binary64 reals.
+;;;
+;;; Circuit convention (qaoa-parametric-circuit, 2p parameters ordered
+;;; theta = (gamma_1 .. gamma_p beta_1 .. beta_p)):
+;;;       |psi(gamma, beta)> = prod_{l = p..1} e^{-i beta_l B} e^{-i gamma_l C} |+>^n,
+;;;       B = sum_q X_q.
+;;;   Gates: (H q) on every wire; then for each layer l = 1..p, for each edge
+;;;   (u v w) the gate (RZZ u v (qparam l-1 (- w))), followed by (RX q
+;;;   (qparam p+l-1 2)) on every wire. Since
+;;;       e^{-i gamma C} = e^{-i gamma sum w/2} prod e^{+i gamma w Z_u Z_v / 2}
+;;;                      = (global phase) prod RZZ_uv(-gamma w)
+;;;   with RZZ(th) = e^{-i th Z(x)Z/2}, and e^{-i beta X} = RX(2 beta) with
+;;;   RX(th) = e^{-i th X/2}, the circuit realises the state above exactly up
+;;;   to the global phase e^{-i sum_l gamma_l sum_e w_e / 2}.
+;;;
+;;; Expectation: <psi|C|psi> = sum_x |psi_x|^2 C(x) on the binary64 state
+;;; vector. (qaoa-objective problem p) is a procedure of one vector theta for
+;;; (gradient f theta); the gradient is Eshkol's exact AD through the
+;;; complex state-vector simulator.
+;;;
+;;; Closed forms for p = 1 (verified against the state vector to 1e-10 in
+;;; tests/stdlib/qaoa_test.esk on unweighted, weighted and negative-weight
+;;; graphs):
+;;;   unweighted (Wang, Hadfield, Jiang, Rieffel 2018, Theorem 1): for an
+;;;   edge (u v) with d = deg(u) - 1, e = deg(v) - 1, f = number of triangles
+;;;   containing (u v),
+;;;       <C_uv> = 1/2 + (1/4) sin 4b sin g (cos^d g + cos^e g)
+;;;                    - (1/4) sin^2 2b cos^{d+e-2f} g (1 - cos^f 2g);
+;;;   weighted (single-layer Ising form, Ozaeta, van Dam, McMahon 2022;
+;;;   Hadfield 2018): with e^{-i g C} = (phase) e^{-i g sum J_uv Z_u Z_v},
+;;;   J_uv = -w_uv / 2, and products over the other vertices x,
+;;;       <Z_u Z_v> = (1/2) sin 4b sin(2 g J_uv)
+;;;                       [prod cos(2 g J_ux) + prod cos(2 g J_vx)]
+;;;                 - (1/2) sin^2 2b [prod cos(2 g (J_ux + J_vx))
+;;;                                   - prod cos(2 g (J_ux - J_vx))],
+;;;       <C> = sum_{(u v w)} (w / 2)(1 - <Z_u Z_v>).
+;;;
+;;; Optimisation (qaoa-optimize problem p . options): gradient ascent on the
+;;; expectation with Adam (beta1 0.9, beta2 0.999, eps 1e-8), the learning
+;;; rate decaying linearly from lr to lr / 50 over the run, exact AD
+;;; gradients, several deterministic starting points (a linear ramp, then
+;;; LCG-drawn points); the best final expectation wins. Options, an alist:
+;;;   (iterations . 200) (restarts . 4) (seed . 20141114) (learning-rate . 0.05)
+;;; The result is an alist with keys
+;;;   p params gammas betas expectation max-cut approximation-ratio
+;;;   most-probable most-probable-cut most-probable-probability
+;;;   optimal-probability optimal-cuts restart-expectations
+;;; (approximation-ratio is expectation / max-cut, or #f when max-cut <= 0).
+;;;
+;;; Sources: E. Farhi, J. Goldstone, S. Gutmann, "A Quantum Approximate
+;;; Optimization Algorithm", arXiv:1411.4028 (2014); Z. Wang, S. Hadfield,
+;;; Z. Jiang, E. G. Rieffel, "Quantum approximate optimization algorithm for
+;;; MaxCut: a fermionic view", Phys. Rev. A 97, 022304 (2018); S. Hadfield,
+;;; "Quantum Algorithms for Scientific Computing and Approximate
+;;; Optimization", PhD thesis, Columbia University (2018); A. Ozaeta,
+;;; W. van Dam, P. L. McMahon, "Expectation values from the single-layer
+;;; quantum approximate optimization algorithm on Ising problems", Quantum
+;;; Sci. Technol. 7, 045036 (2022); D. P. Kingma, J. Ba, "Adam: A Method for
+;;; Stochastic Optimization", arXiv:1412.6980 (2014); ADR-0048.
+
+(require stdlib)
+(require core.quantum.circuit)
+
+(provide maxcut-problem maxcut-problem? maxcut-size maxcut-edges maxcut-weighted?
+         maxcut-value maxcut-value-of-index maxcut-cost-vector maxcut-brute-force
+         maxcut-pauli-terms
+         qaoa-parametric-circuit qaoa-circuit qaoa-state qaoa-expectation
+         qaoa-objective qaoa-gradient
+         qaoa-p1-expectation qaoa-p1-ising-expectation qaoa-p1-unweighted-expectation
+         qaoa-optimize qaoa-sample-probabilities)
+
+;; ---------------------------------------------------------------------------
+;; MaxCut problems
+;; ---------------------------------------------------------------------------
+
+(define (qa-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (qa-vertex? n u) (and (integer? u) (exact? u) (>= u 0) (< u n)))
+
+(define (qa-normalise-edge n e)
+  (if (not (and (list? e) (or (= 2 (length e)) (= 3 (length e)))))
+      (error "core.quantum.qaoa: an edge is (u v) or (u v w)" e))
+  (let ((u (car e)) (v (cadr e)) (w (if (= 3 (length e)) (caddr e) 1)))
+    (if (not (and (qa-vertex? n u) (qa-vertex? n v)))
+        (error "core.quantum.qaoa: edge vertex out of range" e n))
+    (if (= u v) (error "core.quantum.qaoa: an edge joins two distinct vertices" e))
+    (if (not (real? w)) (error "core.quantum.qaoa: an edge weight is a real number" e))
+    (list u v w)))
+
+(define (qa-same-pair? a b)
+  (or (and (= (car a) (car b)) (= (cadr a) (cadr b)))
+      (and (= (car a) (cadr b)) (= (cadr a) (car b)))))
+
+;; #(maxcut n edges weighted?) with edges normalised to (u v w)
+(define (maxcut-problem n edges)
+  (if (not (and (integer? n) (exact? n) (>= n 1)))
+      (error "core.quantum.qaoa: the vertex count is a positive integer" n))
+  (let ((es (map (lambda (e) (qa-normalise-edge n e)) edges)))
+    (let check ((rest es))
+      (if (pair? rest)
+          (begin
+            (if (let any ((others (cdr rest)))
+                  (and (pair? others) (or (qa-same-pair? (car rest) (car others)) (any (cdr others)))))
+                (error "core.quantum.qaoa: a vertex pair appears in two edges" (car rest)))
+            (check (cdr rest)))))
+    (vector 'maxcut n es
+            (let any ((r es)) (and (pair? r) (or (not (= 1 (caddr (car r)))) (any (cdr r))))))))
+
+(define (maxcut-problem? p) (and (vector? p) (= 4 (vector-length p)) (eq? (vector-ref p 0) 'maxcut)))
+(define (maxcut-size p) (vector-ref p 1))
+(define (maxcut-edges p) (vector-ref p 2))
+;; #t when some edge weight differs from 1
+(define (maxcut-weighted? p) (vector-ref p 3))
+
+;; cut value of bits, a list or vector of 0/1 indexed by vertex
+(define (maxcut-value p bits)
+  (let ((b (if (vector? bits) bits (list->vector bits))))
+    (if (not (= (vector-length b) (maxcut-size p)))
+        (error "core.quantum.qaoa: one bit per vertex" bits))
+    (let loop ((es (maxcut-edges p)) (acc 0))
+      (if (null? es) acc
+          (let ((e (car es)))
+            (loop (cdr es)
+                  (if (= (vector-ref b (car e)) (vector-ref b (cadr e))) acc (+ acc (caddr e)))))))))
+
+;; cut value of the basis index x on n wires, wire 0 the most significant bit
+(define (maxcut-value-of-index p n x)
+  (let loop ((es (maxcut-edges p)) (acc 0))
+    (if (null? es) acc
+        (let ((e (car es)))
+          (loop (cdr es)
+                (if (= (qstate-bit n x (car e)) (qstate-bit n x (cadr e))) acc (+ acc (caddr e))))))))
+
+;; the diagonal of C: a vector of 2^n cut values (binary64)
+(define (maxcut-cost-vector p)
+  (let* ((n (maxcut-size p)) (N (expt 2 n)) (v (make-vector N 0.0)))
+    (do ((x 0 (+ x 1))) ((= x N) v)
+      (vector-set! v x (exact->inexact (maxcut-value-of-index p n x))))))
+
+(define (qa-index->bits n x) (map (lambda (q) (qstate-bit n x q)) (qa-range n)))
+
+;; (best-value . optimal bitstrings), each a list of 0/1 per vertex, in
+;; increasing basis-index order; exhaustive, n <= 16
+(define (maxcut-brute-force p)
+  (let ((n (maxcut-size p)))
+    (if (> n 16) (error "core.quantum.qaoa: brute force is limited to 16 vertices" n))
+    (let loop ((x (- (expt 2 n) 1)) (best #f) (arg '()))
+      (if (< x 0)
+          (cons best (map (lambda (i) (qa-index->bits n i)) arg))
+          (let ((c (maxcut-value-of-index p n x)))
+            (cond ((or (not best) (> c best)) (loop (- x 1) c (list x)))
+                  ((= c best) (loop (- x 1) best (cons x arg)))
+                  (else (loop (- x 1) best arg))))))))
+
+;; C = sum coef <P>: the constant (sum w/2, all I) then -w/2 Z_u Z_v per edge
+(define (maxcut-pauli-terms p)
+  (let* ((n (maxcut-size p)) (es (maxcut-edges p))
+         (total (let loop ((r es) (acc 0.0)) (if (null? r) acc (loop (cdr r) (+ acc (* 0.5 (caddr (car r)))))))))
+    (cons (cons total (map (lambda (q) 'I) (qa-range n)))
+          (map (lambda (e)
+                 (cons (* -0.5 (caddr e))
+                       (map (lambda (q) (if (or (= q (car e)) (= q (cadr e))) 'Z 'I)) (qa-range n))))
+               es))))
+
+;; ---------------------------------------------------------------------------
+;; Circuits and expectations
+;; ---------------------------------------------------------------------------
+
+(define (qaoa-parametric-circuit p layers)
+  (if (not (and (integer? layers) (exact? layers) (>= layers 1)))
+      (error "core.quantum.qaoa: the depth p is a positive integer" layers))
+  (let ((n (maxcut-size p)) (es (maxcut-edges p)))
+    (make-qcircuit
+     n
+     (append (map (lambda (q) (list 'H q)) (qa-range n))
+             (apply append
+                    (map (lambda (l)
+                           (append (map (lambda (e) (list 'RZZ (car e) (cadr e) (qparam l (- (caddr e))))) es)
+                                   (map (lambda (q) (list 'RX q (qparam (+ layers l) 2))) (qa-range n))))
+                         (qa-range layers)))))))
+
+(define (qa->list xs) (if (vector? xs) (vector->list xs) xs))
+;; theta = (gamma_1 .. gamma_p beta_1 .. beta_p) as a vector
+(define (qa-theta gammas betas)
+  (let ((g (qa->list gammas)) (b (qa->list betas)))
+    (if (not (= (length g) (length b)))
+        (error "core.quantum.qaoa: as many betas as gammas" gammas betas))
+    (if (null? g) (error "core.quantum.qaoa: at least one layer" gammas))
+    (list->vector (append g b))))
+
+(define (qaoa-circuit p gammas betas)
+  (let ((th (qa-theta gammas betas)))
+    (qcircuit-bind (qaoa-parametric-circuit p (quotient (vector-length th) 2)) th)))
+(define (qaoa-state p gammas betas) (qcircuit-run (qaoa-circuit p gammas betas)))
+
+(define (qaoa-expectation p gammas betas)
+  (let ((cv (maxcut-cost-vector p)))
+    (qstate-diagonal-expectation (qaoa-state p gammas betas) (lambda (x) (vector-ref cv x)))))
+
+;; theta -> <C>, one vector argument of length 2 layers, for (gradient f theta)
+(define (qaoa-objective p layers)
+  (let ((c (qaoa-parametric-circuit p layers)) (cv (maxcut-cost-vector p)) (k (* 2 layers)))
+    (lambda (theta)
+      (if (not (= (vector-length theta) k))
+          (error "core.quantum.qaoa: theta has 2p entries" k))
+      (qstate-diagonal-expectation (qcircuit-run (qcircuit-bind c theta)) (lambda (x) (vector-ref cv x))))))
+
+;; exact AD gradient of <C> at theta (a vector of length 2p)
+(define (qaoa-gradient p theta)
+  (let ((th (if (vector? theta) theta (list->vector theta))))
+    (if (odd? (vector-length th)) (error "core.quantum.qaoa: theta has 2p entries" theta))
+    (let ((f (qaoa-objective p (quotient (vector-length th) 2))))
+      (gradient f th))))
+
+(define (qaoa-sample-probabilities p gammas betas)
+  (qstate-probabilities (qaoa-state p gammas betas)))
+
+;; ---------------------------------------------------------------------------
+;; p = 1 closed forms
+;; ---------------------------------------------------------------------------
+
+(define (qa-pow x k) (let loop ((k k) (acc 1.0)) (if (= k 0) acc (loop (- k 1) (* acc x)))))
+
+;; neighbour lists of every vertex
+(define (qa-adjacency p)
+  (let ((adj (make-vector (maxcut-size p) '())))
+    (for-each (lambda (e)
+                (vector-set! adj (car e) (cons (cadr e) (vector-ref adj (car e))))
+                (vector-set! adj (cadr e) (cons (car e) (vector-ref adj (cadr e)))))
+              (maxcut-edges p))
+    adj))
+
+;; Wang-Hadfield-Jiang-Rieffel: unit weights only
+(define (qaoa-p1-unweighted-expectation p gamma beta)
+  (if (maxcut-weighted? p)
+      (error "core.quantum.qaoa: the unweighted closed form needs unit weights; use qaoa-p1-ising-expectation"))
+  (let* ((adj (qa-adjacency p))
+         (cg (cos gamma)) (sg (sin gamma)) (c2g (cos (* 2 gamma)))
+         (s4b (sin (* 4 beta))) (s2b (sin (* 2 beta))))
+    (let loop ((es (maxcut-edges p)) (acc 0.0))
+      (if (null? es) acc
+          (let* ((u (car (car es))) (v (cadr (car es)))
+                 (nu (vector-ref adj u)) (nv (vector-ref adj v))
+                 (d (- (length nu) 1)) (e (- (length nv) 1))
+                 (f (length (filter (lambda (x) (memv x nv)) nu))))
+            (loop (cdr es)
+                  (+ acc 0.5
+                     (* 0.25 s4b sg (+ (qa-pow cg d) (qa-pow cg e)))
+                     (- (* 0.25 s2b s2b (qa-pow cg (- (+ d e) (* 2 f))) (- 1.0 (qa-pow c2g f)))))))))))
+
+;; single-layer Ising form with J_uv = -w_uv / 2; any real weights
+(define (qaoa-p1-ising-expectation p gamma beta)
+  (let* ((n (maxcut-size p))
+         (J (list->vector (map (lambda (i) (make-vector n 0.0)) (qa-range n))))
+         (s4b (sin (* 4 beta))) (s2b (sin (* 2 beta))))
+    (for-each (lambda (e)
+                (let ((j (* -0.5 (caddr e))))
+                  (vector-set! (vector-ref J (car e)) (cadr e) j)
+                  (vector-set! (vector-ref J (cadr e)) (car e) j)))
+              (maxcut-edges p))
+    (let loop ((es (maxcut-edges p)) (acc 0.0))
+      (if (null? es) acc
+          (let* ((u (car (car es))) (v (cadr (car es))) (w (caddr (car es)))
+                 (Ju (vector-ref J u)) (Jv (vector-ref J v)))
+            (let prods ((x 0) (pu 1.0) (pv 1.0) (pp 1.0) (pm 1.0))
+              (cond ((= x n)
+                     (let ((zz (- (* 0.5 s4b (sin (* 2 gamma (vector-ref Ju v))) (+ pu pv))
+                                  (* 0.5 s2b s2b (- pp pm)))))
+                       (loop (cdr es) (+ acc (* 0.5 w (- 1.0 zz))))))
+                    ((or (= x u) (= x v)) (prods (+ x 1) pu pv pp pm))
+                    (else
+                     (let ((a (vector-ref Ju x)) (b (vector-ref Jv x)))
+                       (prods (+ x 1)
+                              (* pu (cos (* 2 gamma a))) (* pv (cos (* 2 gamma b)))
+                              (* pp (cos (* 2 gamma (+ a b)))) (* pm (cos (* 2 gamma (- a b))))))))))))))
+
+;; the closed form that applies: Wang et al. for unit weights, Ising otherwise
+(define (qaoa-p1-expectation p gamma beta)
+  (if (maxcut-weighted? p)
+      (qaoa-p1-ising-expectation p gamma beta)
+      (qaoa-p1-unweighted-expectation p gamma beta)))
+
+;; ---------------------------------------------------------------------------
+;; Optimisation: Adam ascent with exact AD gradients
+;; ---------------------------------------------------------------------------
+
+(define (qa-option opts key default)
+  (let ((e (assq key opts))) (if e (cdr e) default)))
+
+;; options: one alist, or the (key . value) pairs given directly
+(define (qa-options rest)
+  (cond ((null? rest) '())
+        ((and (null? (cdr rest)) (list? (car rest)) (or (null? (car rest)) (pair? (caar rest)))) (car rest))
+        (else rest)))
+
+(define (qa-lcg s) (modulo (+ (* s 1103515245) 12345) 2147483648))
+(define (qa-unit s) (/ (exact->inexact (quotient s 65536)) 32768.0))
+
+(define (qa-max-abs-weight p)
+  (let loop ((es (maxcut-edges p)) (m 0.0))
+    (if (null? es) (if (> m 0.0) m 1.0) (loop (cdr es) (max m (abs (exact->inexact (caddr (car es)))))))))
+
+;; starting point r: r = 0 a linear ramp (gamma rising, beta falling);
+;; otherwise LCG draws gamma in (0.05, 1.25) / max|w|, beta in (0.05, 0.75)
+(define (qa-initial p layers r seed)
+  (let ((th (make-vector (* 2 layers) 0.0)) (ws (qa-max-abs-weight p)))
+    (if (= r 0)
+        (do ((l 0 (+ l 1))) ((= l layers) (cons th seed))
+          (let ((t (/ (+ l 0.5) layers)))
+            (vector-set! th l (/ (* 0.8 t) ws))
+            (vector-set! th (+ layers l) (* 0.6 (- 1.0 t)))))
+        (let loop ((k 0) (s seed))
+          (if (= k (* 2 layers)) (cons th s)
+              (let ((s2 (qa-lcg s)))
+                (vector-set! th k (if (< k layers)
+                                      (/ (+ 0.05 (* 1.2 (qa-unit s2))) ws)
+                                      (+ 0.05 (* 0.7 (qa-unit s2)))))
+                (loop (+ k 1) s2)))))))
+
+(define (qa-adam f theta iterations lr)
+  (let* ((k (vector-length theta)) (th (vector-map (lambda (x) x) theta))
+         (m (make-vector k 0.0)) (v (make-vector k 0.0)))
+    (do ((t 1 (+ t 1))) ((> t iterations) th)
+      (let ((g (gradient f th))
+            (a (* lr (+ 0.02 (* 0.98 (- 1.0 (/ (exact->inexact (- t 1)) iterations))))))
+            (c1 (- 1.0 (expt 0.9 t))) (c2 (- 1.0 (expt 0.999 t))))
+        (do ((i 0 (+ i 1))) ((= i k))
+          (let ((gi (vector-ref g i)))
+            (vector-set! m i (+ (* 0.9 (vector-ref m i)) (* 0.1 gi)))
+            (vector-set! v i (+ (* 0.999 (vector-ref v i)) (* 0.001 gi gi)))
+            ;; ascent: theta += a mhat / (sqrt vhat + eps)
+            (vector-set! th i (+ (vector-ref th i)
+                                 (/ (* a (/ (vector-ref m i) c1))
+                                    (+ (sqrt (/ (vector-ref v i) c2)) 1e-8))))))))))
+
+(define (qaoa-optimize p layers . options)
+  (let* ((opts (qa-options options))
+         (iterations (qa-option opts 'iterations 200))
+         (restarts (max 1 (qa-option opts 'restarts 4)))
+         (lr (exact->inexact (qa-option opts 'learning-rate 0.05)))
+         (f (qaoa-objective p layers))
+         (n (maxcut-size p))
+         (bf (maxcut-brute-force p)))
+    (let loop ((r 0) (seed (qa-option opts 'seed 20141114)) (best #f) (best-e #f) (es '()))
+      (if (< r restarts)
+          (let* ((init (qa-initial p layers r seed))
+                 (th (qa-adam f (car init) iterations lr))
+                 (e (f th)))
+            (if (or (not best-e) (> e best-e))
+                (loop (+ r 1) (cdr init) th e (cons e es))
+                (loop (+ r 1) (cdr init) best best-e (cons e es))))
+          (let* ((gs (qa-range layers))
+                 (gammas (map (lambda (l) (vector-ref best l)) gs))
+                 (betas (map (lambda (l) (vector-ref best (+ layers l))) gs))
+                 (probs (qaoa-sample-probabilities p gammas betas))
+                 (optimal (cdr bf))
+                 (top (let find ((x 1) (bx 0))
+                        (cond ((= x (vector-length probs)) bx)
+                              ((> (vector-ref probs x) (vector-ref probs bx)) (find (+ x 1) x))
+                              (else (find (+ x 1) bx)))))
+                 (p-opt (let sum ((x 0) (acc 0.0))
+                          (if (= x (vector-length probs)) acc
+                              (sum (+ x 1) (if (= (maxcut-value-of-index p n x) (car bf)) (+ acc (vector-ref probs x)) acc))))))
+            (list (cons 'p layers)
+                  (cons 'params best)
+                  (cons 'gammas gammas)
+                  (cons 'betas betas)
+                  (cons 'expectation best-e)
+                  (cons 'max-cut (car bf))
+                  (cons 'approximation-ratio (if (> (car bf) 0) (/ best-e (exact->inexact (car bf))) #f))
+                  (cons 'most-probable (qa-index->bits n top))
+                  (cons 'most-probable-cut (maxcut-value-of-index p n top))
+                  (cons 'most-probable-probability (vector-ref probs top))
+                  (cons 'optimal-probability p-opt)
+                  (cons 'optimal-cuts optimal)
+                  (cons 'restart-expectations (reverse es))))))))
