@@ -23,10 +23,6 @@
 
 ;;; Control - trampolining for deep recursion
 (require core.control.trampoline)
-;;; Control - algebraic effects and handlers (ADR-0045): the runtime under
-;;; define-effect / handle / handle-shallow. The standard effects (state,
-;;; reader, exceptions, choice, generators, async) are in core.effects.
-(require core.control.effects)
 
 ;;; List - compound accessors, generation, transformation, queries, sorting, higher-order, search, convert
 (require core.list.compound)
@@ -37,6 +33,12 @@
 (require core.list.higher_order)
 (require core.list.search)
 (require core.list.convert)
+
+;;; Control - algebraic effects and handlers (ADR-0045): the runtime under
+;;; define-effect / handle / handle-shallow. The standard effects (state,
+;;; reader, exceptions, choice, generators, async) are in core.effects.
+;;; After the list modules: the bytecode VM compiles this closure in order.
+(require core.control.effects)
 
 ;;; Strings - extended string utilities
 (require core.strings)

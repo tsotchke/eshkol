@@ -8,5 +8,5 @@ resumed-later-1: (got 1)
 resumed-later-2: (got 2)
 pull: (0 1 4 9 done done)
 shallow: (deep-return (shallow (1 2)))
-shallow-loop: (33 12)
+shallow-loop: (33 13)
 depth-after: 0

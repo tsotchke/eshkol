@@ -248,11 +248,43 @@ void datumSymbols(const eshkol_ast_t* d, std::vector<std::string>& out, std::str
         datumSymbols(d->cons_cell.cdr, out, tail);
         return;
     }
-    if (d->type == ESHKOL_OP && (d->operation.op == ESHKOL_CALL_OP)) {
-        if (const char* v = varName(d->operation.call_op.func)) out.push_back(sourceName(v));
-        for (uint64_t i = 0; i < d->operation.call_op.num_vars; ++i) {
-            const char* a = varName(&d->operation.call_op.variables[i]);
-            if (a) out.push_back(sourceName(a));
+    if (isOp(d, ESHKOL_QUOTE_OP) && d->operation.call_op.num_vars >= 1) {
+        datumSymbols(&d->operation.call_op.variables[0], out, tail);
+        return;
+    }
+    // The reader spells a quoted list as (list e ...) and a dotted one as
+    // (cons e tail).
+    if (d->type == ESHKOL_OP && d->operation.op == ESHKOL_CALL_OP) {
+        const std::string head = sourceName(varName(d->operation.call_op.func));
+        const auto& c = d->operation.call_op;
+        auto symbolOf = [](const eshkol_ast_t* x) -> std::string {
+            if (const char* v = varName(x)) return sourceName(v);
+            if (x && x->type == ESHKOL_SYMBOL && x->str_val.ptr) return symbolText(x);
+            if (isOp(x, ESHKOL_QUOTE_OP) && x->operation.call_op.num_vars >= 1) {
+                const eshkol_ast_t* q = &x->operation.call_op.variables[0];
+                if (const char* v = varName(q)) return sourceName(v);
+                if (q->type == ESHKOL_SYMBOL && q->str_val.ptr) return symbolText(q);
+            }
+            return {};
+        };
+        if (head == "list") {
+            for (uint64_t i = 0; i < c.num_vars; ++i) {
+                std::string sym = symbolOf(&c.variables[i]);
+                if (!sym.empty()) out.push_back(sym);
+            }
+        } else if (head == "cons" && c.num_vars == 2) {
+            std::string sym = symbolOf(&c.variables[0]);
+            if (!sym.empty()) out.push_back(sym);
+            std::string rest = symbolOf(&c.variables[1]);
+            if (!rest.empty()) { if (tail) *tail = rest; }
+            else datumSymbols(&c.variables[1], out, tail);
+        } else {
+            // a proper list read as an application: (a b c)
+            if (!head.empty()) out.push_back(head);
+            for (uint64_t i = 0; i < c.num_vars; ++i) {
+                std::string sym = symbolOf(&c.variables[i]);
+                if (!sym.empty()) out.push_back(sym);
+            }
         }
     }
 }
@@ -280,6 +312,7 @@ class Analyzer {
 public:
     std::map<std::string, Operation> ops;               // operation procedure -> effect
     std::map<std::string, std::set<std::string>> effect_ops;  // effect -> operation names
+    std::map<std::string, int> opArity;                       // operation -> arity (-1 variadic)
     std::map<std::string, Procedure> procs;
     std::set<std::string> globals;                      // every top-level definition
     std::vector<Declaration> decls;
@@ -302,6 +335,11 @@ public:
                 if (eff) {
                     ops[name] = Operation{sourceName(eff), quotedSymbol(&v->operation.call_op.variables[1])};
                     effect_ops[sourceName(eff)].insert(name);
+                    if (v->operation.call_op.num_vars >= 3) {
+                        std::string tail;
+                        auto formals = quotedList(&v->operation.call_op.variables[2], &tail);
+                        opArity[name] = tail.empty() ? static_cast<int>(formals.size()) : -1;
+                    }
                 }
                 return;
             }
@@ -528,7 +566,15 @@ private:
                 const auto& cc = cl->operation.call_op;
                 if (const char* opn = varName(&cc.variables[0])) handled_ops.insert(sourceName(opn));
                 const std::string kind = quotedSymbol(&cc.variables[1]);
-                const bool takes_k = kind == "general" || kind == "general-tail";
+                bool takes_k = kind == "general" || kind == "general-tail";
+                if (kind.empty() && isOp(&cc.variables[2], ESHKOL_LAMBDA_OP)) {
+                    // unrecognised kind: k is first exactly when the clause takes
+                    // one parameter more than the operation
+                    auto o = opArity.find(sourceName(varName(&cc.variables[0])));
+                    if (o != opArity.end() && o->second >= 0)
+                        takes_k = cc.variables[2].operation.lambda_op.num_params ==
+                                  static_cast<uint64_t>(o->second) + 1;
+                }
                 if (isOp(&cc.variables[2], ESHKOL_LAMBDA_OP))
                     clauses.join(analyzeLambda(&cc.variables[2], takes_k ? 0 : -1));
                 else
@@ -602,6 +648,54 @@ private:
         return r;
     }
 
+    /** A sequence of expressions stored in the call layout (func included). */
+    Row walkContainer(const eshkol_ast_t* c) {
+        if (!isOp(c, ESHKOL_CALL_OP)) return walk(c);
+        Row r = walk(c->operation.call_op.func);
+        r.join(walkAll(c->operation.call_op.variables, c->operation.call_op.num_vars));
+        return r;
+    }
+
+    /** A cond/case/guard clause: (test body ...) in the call layout. */
+    Row walkClause(const eshkol_ast_t* c, bool has_test) {
+        if (!isOp(c, ESHKOL_CALL_OP)) return walk(c);
+        Row r;
+        if (has_test) r.join(walk(c->operation.call_op.func));
+        r.join(walkAll(c->operation.call_op.variables, c->operation.call_op.num_vars));
+        return r;
+    }
+
+    /** (do ((var init step) ...) (test result ...) body ...) */
+    Row walkDo(const eshkol_ast_t* e) {
+        const auto& op = e->operation;
+        Row r;
+        const eshkol_ast_t* main_cons = op.call_op.func;
+        if (!main_cons || main_cons->type != ESHKOL_CONS) {
+            r.addTail(kUnknownTail, {}, at(e, "a do form the effect analysis does not model"));
+            return r;
+        }
+        scopes_->push_back({});
+        const eshkol_ast_t* bindings = main_cons->cons_cell.car;
+        if (isOp(bindings, ESHKOL_CALL_OP)) {
+            for (uint64_t i = 0; i < bindings->operation.call_op.num_vars; ++i) {
+                const eshkol_ast_t* b = &bindings->operation.call_op.variables[i];
+                if (b->type != ESHKOL_CONS) continue;
+                if (const char* v = varName(b->cons_cell.car)) bindLocal(sourceName(v), Binding{});
+                r.join(walk(b->cons_cell.cdr));      // init and step
+            }
+        }
+        const eshkol_ast_t* test_clause = main_cons->cons_cell.cdr;
+        if (test_clause && test_clause->type == ESHKOL_CONS) {
+            r.join(walk(test_clause->cons_cell.car));             // test
+            r.join(walkContainer(test_clause->cons_cell.cdr));    // results
+        } else {
+            r.join(walk(test_clause));
+        }
+        r.join(walkAll(op.call_op.variables, op.call_op.num_vars));
+        scopes_->pop_back();
+        return r;
+    }
+
     static bool catchAllGuard(const eshkol_operations_t& op) {
         for (uint64_t i = 0; i < op.guard_op.num_clauses; ++i) {
             const eshkol_ast_t* clause = &op.guard_op.clauses[i];
@@ -645,8 +739,24 @@ private:
                 r.join(callEffect(e));
                 return r;
             }
-            case ESHKOL_IF_OP: case ESHKOL_COND_OP: case ESHKOL_CASE_OP:
-            case ESHKOL_WHEN_OP: case ESHKOL_UNLESS_OP: case ESHKOL_DO_OP:
+            case ESHKOL_COND_OP:
+                // clauses share the call layout: func = test, variables = body
+                r.join(walk(op.call_op.func));
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) r.join(walkClause(&op.call_op.variables[i], true));
+                return r;
+            case ESHKOL_CASE_OP:
+                // clauses are (datums . body); body is a container of expressions
+                r.join(walk(op.call_op.func));
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                    const eshkol_ast_t* c = &op.call_op.variables[i];
+                    if (c->type == ESHKOL_CONS) r.join(walkContainer(c->cons_cell.cdr));
+                    else r.join(walkClause(c, false));
+                }
+                return r;
+            case ESHKOL_DO_OP:
+                return walkDo(e);
+            case ESHKOL_IF_OP:
+            case ESHKOL_WHEN_OP: case ESHKOL_UNLESS_OP:
             case ESHKOL_ADD_OP: case ESHKOL_SUB_OP: case ESHKOL_MUL_OP: case ESHKOL_DIV_OP:
             case ESHKOL_QUASIQUOTE_OP: case ESHKOL_UNQUOTE_OP: case ESHKOL_UNQUOTE_SPLICING_OP:
                 r.join(walk(op.call_op.func));
@@ -698,7 +808,8 @@ private:
                 r.join(body);
                 scopes_->push_back({});
                 if (op.guard_op.var_name) bindLocal(sourceName(op.guard_op.var_name), Binding{});
-                r.join(walkAll(op.guard_op.clauses, op.guard_op.num_clauses));
+                for (uint64_t i = 0; i < op.guard_op.num_clauses; ++i)
+                    r.join(walkClause(&op.guard_op.clauses[i], true));
                 scopes_->pop_back();
                 return r;
             }
@@ -773,8 +884,15 @@ size_t checkProgram(const eshkol_ast_t* asts, size_t count, eshkol::hott::TypeCh
     a.infer();
 
     if (dumpEnabled()) {
-        for (const auto& [name, p] : a.procs)
+        const bool witnesses = std::getenv("ESHKOL_DUMP_EFFECTS")[0] == '2';
+        for (const auto& [name, p] : a.procs) {
             std::fprintf(stderr, "effects: %s : %s\n", name.c_str(), p.latent.str().c_str());
+            if (!witnesses) continue;
+            for (const auto& [l, w] : p.latent.labels)
+                std::fprintf(stderr, "  %s from %s (line %u)\n", l.c_str(), w.what.c_str(), w.line);
+            for (const auto& [t, w] : p.latent.tail_witness)
+                std::fprintf(stderr, "  %s from %s (line %u)\n", t.c_str(), w.what.c_str(), w.line);
+        }
     }
 
     size_t violations = 0;

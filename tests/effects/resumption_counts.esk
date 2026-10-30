@@ -1,4 +1,5 @@
-;;; How many times a resumption runs, and where it runs.
+;;; How many times a resumption runs, and where it runs. Operations are
+;;; sequenced with let*: the engines may evaluate call arguments in any order.
 
 (define-effect Choose (choose))
 (define-effect Tick (tick))
@@ -22,7 +23,7 @@
 
 ;; nested multi-shot: every combination
 (show "combinations"
-      (handle (list (if (choose) 1 2) (if (choose) 'a 'b))
+      (handle (let* ((x (if (choose) 1 2)) (y (if (choose) 'a 'b))) (list x y))
         (return (x) (list x))
         ((choose) k (append (k #t) (k #f)))))
 
@@ -49,7 +50,7 @@
 
 ;; shallow: one operation per handler; the rest goes to the next handler out
 (show "shallow"
-      (handle (handle-shallow (list (tick) (tick))
+      (handle (handle-shallow (let* ((a (tick)) (b (tick))) (list a b))
                 (return (x) (list 'shallow-return x))
                 ((tick) k (list 'shallow (k 1))))
         (return (x) (list 'deep-return x))

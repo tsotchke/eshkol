@@ -212,13 +212,27 @@
 (define (%effect-run-abort frame s proc n a b c rest)
   (%effect-escape frame (cdr s) (lambda () (%effect-call proc n a b c rest))))
 
+;; The delimiters of the frames between the operation and the handler are
+;; control state: they belong to the captured continuation, not to the heap.
+;; A resumption restores them, so re-entering the same continuation a second
+;; time (multi-shot) sees the delimiters it was captured with.
+(define (%frames-snapshot prefix)
+  (map (lambda (f) (cons (vector-ref f 3) (vector-ref f 6))) prefix))
+
+(define (%frames-restore! prefix snap)
+  (if (pair? prefix)
+      (begin (vector-set! (car prefix) 3 (car (car snap)))
+             (vector-set! (car prefix) 6 (cdr (car snap)))
+             (%frames-restore! (cdr prefix) (cdr snap)))))
+
 (define (%effect-run-general frame s proc tail? n a b c rest)
   (let ((v (call/cc
             (lambda (resume-k)
-              (let ((prefix (%stack-prefix frame %effect-stack (not (%frame-shallow? frame)))))
+              (let* ((prefix (%stack-prefix frame %effect-stack (not (%frame-shallow? frame))))
+                     (snap (%frames-snapshot prefix)))
                 (%effect-escape frame (cdr s)
                   (lambda ()
-                    (%effect-call/k proc (%make-resumption frame prefix resume-k tail?)
+                    (%effect-call/k proc (%make-resumption frame prefix snap resume-k tail?)
                                     n a b c rest))))))))
     (set! %effect-transfer #f)
     v))
@@ -226,9 +240,10 @@
 ;; The resumption handed to a clause. It reinstalls the frames that were
 ;; between the operation and the handler (the handler itself unless shallow)
 ;; on top of the handler context at the resumption site.
-(define (%make-resumption frame prefix resume-k tail?)
+(define (%make-resumption frame prefix snap resume-k tail?)
   (if tail?
       (lambda (v)
+        (%frames-restore! prefix snap)
         (if (%frame-shallow? frame) (vector-set! frame 6 #t))
         (set! %effect-stack (append prefix %effect-stack))
         (set! %effect-transfer #t)
@@ -238,6 +253,7 @@
               (saved-shallow (vector-ref frame 6)))
           (let ((r ((call/cc
                      (lambda (back)
+                       (%frames-restore! prefix snap)
                        (vector-set! frame 3 back)
                        (if (%frame-shallow? frame) (vector-set! frame 6 #t))
                        (set! %effect-stack (append prefix %effect-stack))
