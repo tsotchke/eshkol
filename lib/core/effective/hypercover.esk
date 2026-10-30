@@ -1,0 +1,185 @@
+;;; core.effective.hypercover -- hypercovers of finite spaces by cones, and
+;;; descent for mapping spaces into 2-types and 3-types computed on both
+;;; sides of a cover (stage S6.3 of the S6 definition of done).
+;;;
+;;; Usage: (require core.effective.hypercover)   or   (require core.effective)
+;;;
+;;; Sources: J. Lurie, "Higher Topos Theory" (2009), 6.5.3 (Cech descent,
+;;; Cech nerves) and 6.5.4 (hypercovers, hypercompleteness); D. Dugger,
+;;; S. Hollander, D. Isaksen, "Hypercovers and simplicial presheaves", Math.
+;;; Proc. Camb. Phil. Soc. 136 (2004) and D. Dugger, D. Isaksen,
+;;; "Topological hypercovers and A^1-realizations", Math. Z. 246 (2004)
+;;; (hocolim of a hypercover is weakly equivalent to the space); M. Artin,
+;;; B. Mazur, "Etale homotopy" (1969), 8 (hypercoverings built level by level
+;;; through coskeleta); M. C. McCord, Duke Math. J. 33 (1966) and J. A.
+;;; Barmak, LNM 2032 (2011) (finite spaces; U_x is contractible);
+;;; J. Faria Martins, T. Porter, TAC 18 (2007) (homotopy cardinality of
+;;; Map(K, B G) for a crossed module G).
+;;;
+;;; A hypercover of a finite T_0 space X by cones is built level by level.
+;;; Level 0: for each open U of the cover, the minimal opens U_y of its
+;;; maximal points y. Level n: for every boundary beta = (sigma_0 ... sigma_n)
+;;; of (n-1)-simplices with d_i sigma_j = d_(j-1) sigma_i (i < j) that is not
+;;; the boundary of a degenerate simplex, and every maximal point y of
+;;; V_beta = U(sigma_0) n ... n U(sigma_n), one nondegenerate simplex
+;;; (beta, y) with open U_y. A degenerate simplex s_j c has open U(c), which
+;;; is all of V_beta for its own boundary, so H_n -> (cosk_(n-1) H)_n is
+;;; surjective over every point: a hypercover, refining the cover where an
+;;; intersection is not a cone and agreeing with the Cech nerve where it is.
+;;; Every piece U_y is contractible, so the simplicial set of pieces H is
+;;; weakly equivalent to X (Dugger-Isaksen), and Map(H, P) = Map(X, P) for
+;;; every n-type P: descent along the hypercover. H through level n + 1 is
+;;; enough for an n-type.
+;;;
+;;; Values. For p prime and the 2-types BZ/p, K(Z/p, 2) and their product,
+;;; |Map(K, P)| from H^*(K; F_p): p^(d1 - d0), p^(d2 - d1 + d0) and their
+;;; product (homotopy cardinality; d_i = dim H^i). For the 3-type
+;;; P_k = K(B, 3) x_k K(A, 2) with A = B = Z/2 and k-invariant
+;;; k = iota u iota (the cup square, Sq^2 iota), the fibration formula
+;;;   |Map(K, P_k)| = sum over [x] in H^2(K; A) with [x u x] = 0 in H^4(K; B)
+;;;                   of |H^0(A)| / |H^1(A)| * |H^3(B)| |H^1(B)| / (|H^2(B)| |H^0(B)|)
+;;; needs K through dimension 4 only (whether x u x is a coboundary is decided
+;;; in C^4, and |H^3| = |ker d^3| / |im d^2|).
+
+(require stdlib)
+(require core.ring)
+(require core.sheaf.site)
+(require core.simplicial.sset)
+(require core.simplicial.group)
+(require core.simplicial.kan)
+(require core.homological.complex)
+(require core.homological.simplicial)
+
+(provide finite-space-hypercover hypercover-piece-point hypercover-open hypercover-boundaries
+         hypercover-violations hypercover-level-counts
+         mod-p-cohomology-dimensions two-type-cardinalities mapping-space-cardinality
+         cup-square-three-type-cardinality)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix hc-)
+;; ---------------------------------------------------------------------------
+(define (hc-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (hc-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (hc-all? pred (cdr xs))) (else #f)))
+(define (hc-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (hc-any? pred (cdr xs)))))
+(define (hc-intersect A B) (filter (lambda (x) (memv x B)) A))
+(define (hc-maximal X V) (filter (lambda (x) (hc-all? (lambda (y) (not (finite-space-lt? X x y))) V)) V))
+(define (hc-expt p e) (if (< e 0) (/ 1 (expt p (- e))) (expt p e)))
+
+;; ---------------------------------------------------------------------------
+;; The hypercover
+;; ---------------------------------------------------------------------------
+;; piece values: (piece n y beta) with y the point whose minimal open is the
+;; piece and beta the list of faces (simplices of level n-1); level 0:
+;; (piece 0 y (i)) with i the index of the open of the cover
+(define (hypercover-piece-point x) (cadr (cdr x)))
+(define (hypercover-open X s) (finite-space-down-set X (hypercover-piece-point (simplex-base s))))
+;; compatible boundaries of an n-simplex (n >= 1) made of (n-1)-simplices of H
+(define (hypercover-boundaries H n)
+  (let ((S (simplicial-set-simplices H (- n 1))))
+    (let extend ((partial '()) (j 0))       ;; partial = (sigma_(j-1) ... sigma_0)
+      (if (> j n) (list (reverse partial))
+          (apply append
+                 (map (lambda (s)
+                        (if (or (< n 2)
+                                (hc-all? (lambda (i) (equal? (simplicial-set-face H i s)
+                                                             (simplicial-set-face H (- j 1) (list-ref (reverse partial) i))))
+                                         (hc-range j)))
+                            (extend (cons s partial) (+ j 1))
+                            '()))
+                      S))))))
+(define (hc-degenerate-boundaries H n)
+  (let ((t (make-hash-table)))
+    (for-each (lambda (c) (for-each (lambda (j) (let ((s (simplicial-set-degeneracy H j c)))
+                                                   (hash-table-set! t (map (lambda (i) (simplicial-set-face H i s)) (hc-range (+ n 1))) #t)))
+                                    (hc-range n)))
+              (simplicial-set-simplices H (- n 1)))
+    t))
+(define (finite-space-hypercover X cover nmax)
+  (letrec ((H (make-simplicial-set
+               "hypercover"
+               (lambda (n)
+                 (if (= n 0)
+                     (apply append (map (lambda (U i) (map (lambda (y) (list 'piece 0 y (list i))) (hc-maximal X U))) cover (hc-range (length cover))))
+                     (let ((degenerate (hc-degenerate-boundaries H n)))
+                       (apply append
+                              (map (lambda (beta)
+                                     (if (hash-table-ref/default degenerate beta #f) '()
+                                         (let ((V (fold-left hc-intersect (hypercover-open X (car beta)) (map (lambda (s) (hypercover-open X s)) (cdr beta)))))
+                                           (map (lambda (y) (list 'piece n y beta)) (hc-maximal X V)))))
+                                   (hypercover-boundaries H n))))))
+               (lambda (n i x) (list-ref (cadddr x) i))
+               nmax)))
+    H))
+(define (hypercover-level-counts H nmax) (map (lambda (n) (simplicial-set-count H n)) (hc-range (+ nmax 1))))
+;; the hypercover conditions through level nmax: every piece is a cone
+;; contained in the opens of its faces, the level-0 pieces cover X, and over
+;; every compatible boundary every point of V_beta lies in the open of a
+;; simplex (degenerate or not) with that boundary
+(define (hypercover-violations X H nmax)
+  (let ((out '()) (points (hc-range (finite-space-size X))))
+    (if (not (hc-all? (lambda (x) (hc-any? (lambda (v) (memv x (hypercover-open X (simplex v 0)))) (vector->list (simplicial-set-nondegenerate H 0)))) points))
+        (set! out (cons "the level-0 pieces do not cover X" out)))
+    (for-each
+     (lambda (n)
+       (let ((all (simplicial-set-simplices H n)))
+         (for-each (lambda (v)
+                     (let ((s (simplex v n)))
+                       (if (not (= 1 (length (hc-maximal X (hypercover-open X s))))) (set! out (cons (list "a piece is not a cone" n v) out)))
+                       (for-each (lambda (i) (if (not (hc-all? (lambda (x) (memv x (hypercover-open X (simplicial-set-face H i s)))) (hypercover-open X s)))
+                                                 (set! out (cons (list "a piece is not inside its face" n i) out))))
+                                 (hc-range (+ n 1)))))
+                   (vector->list (simplicial-set-nondegenerate H n)))
+         (for-each (lambda (beta)
+                     (let* ((V (fold-left hc-intersect (hypercover-open X (car beta)) (map (lambda (s) (hypercover-open X s)) (cdr beta))))
+                            (over (filter (lambda (s) (equal? beta (map (lambda (i) (simplicial-set-face H i s)) (hc-range (+ n 1))))) all))
+                            (covered (apply append (map (lambda (s) (hypercover-open X s)) over))))
+                       (if (not (hc-all? (lambda (x) (memv x covered)) V)) (set! out (cons (list "H_n -> M_n is not surjective" n beta) out)))))
+                   (hypercover-boundaries H n))))
+     (cdr (hc-range (+ nmax 1))))
+    (reverse out)))
+
+;; ---------------------------------------------------------------------------
+;; Homotopy cardinalities of mapping spaces
+;; ---------------------------------------------------------------------------
+(define (mod-p-cohomology-dimensions K nmax p)
+  (map cadr (simplicial-cohomology K nmax (make-zmod p))))
+;; (BZ/p  K(Z/p,2)  BZ/p x K(Z/p,2)) from H^0, H^1, H^2 (K through dimension 3)
+(define (two-type-cardinalities K p)
+  (let* ((d (mod-p-cohomology-dimensions K 2 p)) (d0 (car d)) (d1 (cadr d)) (d2 (caddr d))
+         (b (hc-expt p (- d1 d0))) (k (hc-expt p (+ d2 (- d0 d1)))))
+    (list b k (* b k))))
+;; the state sum: |N|^-V |M|^(V-E) #{simplicial maps K -> nerve of M -> N}
+;; (Faria Martins-Porter), K of finite type through dimension 3
+(define (mapping-space-cardinality K xmod nerve)
+  (let ((V (simplicial-set-count K 0)) (E (simplicial-set-count K 1))
+        (m (group-order (crossed-module-source xmod))) (nn (group-order (crossed-module-target xmod))))
+    (* (hc-expt nn (- 0 V)) (hc-expt m (- V E)) (simplicial-maps-count K nerve))))
+
+;; --- the 3-type with k-invariant the cup square ------------------------------------
+;; over F_2: the cocycles x of a basis of H^2(K), and the test whether a
+;; 4-cochain is a coboundary
+(define (cup-square-three-type-cardinality K)
+  (let* ((F2 (make-zmod 2))
+         (C (simplicial-cochain-complex K 4 F2))
+         (dims (map (lambda (n) (simplicial-set-count K n)) (hc-range 5)))
+         (rank (lambda (n) (let ((D (complex-map C n))) (if D (coefficient-rank F2 D) 0))))
+         (r0 (rank 0)) (r1 (rank 1)) (r2 (rank 2)) (r3 (rank 3))
+         (h0 (- (list-ref dims 0) r0)) (h1 (- (list-ref dims 1) r1 r0)) (h2 (- (list-ref dims 2) r2 r1)) (h3 (- (list-ref dims 3) r3 r2))
+         (gens (map cdr (homology-generators C 2)))
+         (D3 (complex-map C 3))
+         (classes (hc-subset-sums gens (list-ref dims 2)))
+         (good (filter (lambda (x) (let ((sq (cup-product K x 2 x 2 F2)))
+                                     (or (coefficient-zero-vector? F2 sq)
+                                         (and D3 (coefficient-in-span? F2 D3 (list-ref dims 3) sq)))))
+                       classes))
+         (fibre (* (hc-expt 2 (- h0 h1)) (hc-expt 2 (+ h3 h1 (- 0 h2) (- 0 h0))))))
+    (list (length good) (length classes) (* (length good) fibre) (list h0 h1 h2 h3))))
+;; all F_2 combinations of the vectors (the classes of H^2 through their
+;; representative cocycles)
+(define (hc-subset-sums vs n)
+  (let loop ((vs vs) (acc (list (make-vector n 0))))
+    (if (null? vs) acc
+        (loop (cdr vs) (append acc (map (lambda (u) (let ((w (make-vector n 0)))
+                                                      (let fill ((i 0)) (if (< i n) (begin (vector-set! w i (modulo (+ (vector-ref u i) (vector-ref (car vs) i)) 2)) (fill (+ i 1)))))
+                                                      w))
+                                        acc))))))
