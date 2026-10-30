@@ -150,7 +150,7 @@
               (equal? (vector->list (functor-objects (adjunction-left L))) (map (lambda (o) (bitwise-or (quotient o 4) (remainder o 4))) (range 16))))))
 (check "a group with no terminal object: the collapse BZ/2 -> 1 has no right adjoint and no left adjoint"
        (and (not (right-adjoint (terminal-functor BZ2))) (not (left-adjoint (terminal-functor BZ2)))))
-(check "a broken triangle identity is reported: on BZ/3 with unit 1 and counit 0 both triangles fail"
+(check "a triangle identity that does not hold is reported: on BZ/3 with unit 1 and counit 0 both triangles fail"
        (equal? (adjunction-violations (make-adjunction (identity-functor BZ3) (identity-functor BZ3) (vector 1) (vector 0)))
                (list (list 'triangle-left 0) (list 'triangle-right 0))))
 (check "monads from adjunctions: the laws hold, and the algebras of a closure operator are its fixed points"
