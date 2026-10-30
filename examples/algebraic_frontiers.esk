@@ -1,0 +1,61 @@
+;; Certified constants, matrix calculus, coupled roots, packed products,
+;; sparse curvature and live exact row/parameter differentiation.
+(require stdlib)
+(require core.algebraic_linalg)
+(require core.ad.algebraic_implicit)
+(require core.algebraic_batch)
+(require core.ad.algebraic_sparse)
+(require core.ad.algebraic_incremental)
+(define failures 0)
+(define passes 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define quadratic (make-algebraic-field '(-2 0 1) 3 1))
+(define cubic (make-algebraic-field '(-2 0 0 1) 7 0))
+(define composition (make-algebraic-compositum quadratic cubic))
+(define field (vector-ref composition 0))
+(define alpha ((vector-ref composition 1) (algebraic-generator quadratic)))
+(define beta ((vector-ref composition 2) (algebraic-generator cubic)))
+(define matrix (vector (vector alpha 1) (vector 1 alpha)))
+(define solution (algebraic-solve field matrix (vector 1 0)))
+(check "exact matrix inverse in the certified degree-six field"
+  (and (algebraic-equal? (vector-ref solution 0) alpha) (= (algebraic-rational (vector-ref solution 1)) -1)))
+(define context (make-algebraic-taylor field 2))
+(define p (algebraic-ad-seed context 4))
+(define roots (algebraic-ad-system-root context
+  (vector (list (list 1 (vector 2 0)) (list 1 (vector 0 2))
+                (list (algebraic-ad-sub (algebraic-ad-constant context 0) p) (vector 0 0)))
+          (list (list 1 (vector 1 0)) (list -1 (vector 0 1)))) (vector alpha alpha)))
+(check "coupled implicit branch exact second derivative"
+  (algebraic-equal? (algebraic-ad-derivative (vector-ref roots 0) 2) (algebraic-scale alpha -1/64)))
+(define packed-right (algebraic-ad-value context '(2 1 0)))
+(define packed (algebraic-batch-mul (make-algebraic-multiplication-plan context)
+  (vector (vector-ref roots 0)) (vector packed-right)))
+(check "packed coupled-root product equals the generic exact product"
+  (algebraic-ad-equal? (vector-ref (vector-ref packed 0) 0)
+    (algebraic-ad-mul (vector-ref roots 0) packed-right)))
+(define sparse (algebraic-sparse-hessian field
+  (lambda (xs) (algebraic-ad-mul (vector-ref xs 0) (vector-ref xs 1)))
+  (vector alpha beta) '((0 1))))
+(check "sparse mixed curvature remains exact" (= (algebraic-rational (algebraic-sparse-hessian-ref sparse 0 1)) 1))
+(define plan (make-algebraic-incremental-plan field 2 2
+  '(pow (- (+ (* (param 0) (row 0)) (param 1)) (row 1)) 2)))
+(define state (algebraic-incremental-new plan (vector alpha beta) (zset-singleton (vector 1 2) 1)))
+(define update (algebraic-incremental-step state
+  (zset-from-weighted (list (list -1 (vector 1 2)) (list 1 (vector 2 3)))) (vector 1 0)))
+(define output (algebraic-incremental-output (vector-ref update 0)))
+(define residual (algebraic-sub (algebraic-add (algebraic-scale (algebraic-add alpha (algebraic-element field 1)) 2) beta)
+                              (algebraic-element field 3)))
+(check "simultaneous row and parameter edits retain finite cross terms"
+  (algebraic-equal? (vector-ref output 0) (algebraic-mul residual residual)))
+(check "maintained exact gradient matches the independent formula"
+  (and (algebraic-equal? (vector-ref (vector-ref output 1) 0) (algebraic-scale residual 4))
+       (algebraic-equal? (vector-ref (vector-ref output 1) 1) (algebraic-scale residual 2))))
+(check "parameter-only successor replays no rows"
+  (= (vector-ref (vector-ref (algebraic-incremental-step (vector-ref update 0) (zset-empty) (vector 0 1)) 2) 1) 0))
+(check "no finite differences" (= (ad-finite-difference-evals) 0))
+(display "Exact maintained loss coefficients: ") (display (algebraic-coefficients (vector-ref output 0))) (newline)
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: PASS") (newline)
