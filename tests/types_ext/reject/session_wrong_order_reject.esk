@@ -1,5 +1,5 @@
 ;; Receiving where the protocol says send is a protocol violation.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: cannot match
 (require stdlib)
 (require core.sessions)

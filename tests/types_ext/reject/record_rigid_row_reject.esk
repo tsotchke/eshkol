@@ -1,6 +1,6 @@
 ;; A signature's row variable is rigid: the body may not claim the removed
 ;; field is still there.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: Type error
 (require stdlib)
 (require core.records)

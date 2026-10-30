@@ -1,5 +1,5 @@
 ;; Selecting a field the record does not have is a compile-time error.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: no field or label `y`
 (require stdlib)
 (require core.records)

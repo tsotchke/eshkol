@@ -1,5 +1,5 @@
 ;; Handing an endpoint to code whose type is unknown loses track of it.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: flows into code whose type is not known here
 (require stdlib)
 (require core.sessions)

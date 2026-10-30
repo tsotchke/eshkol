@@ -1,6 +1,6 @@
 ;; A rank-2 parameter demands a polymorphic argument; a function that only
 ;; works on numbers is not one.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: the rigid type variable `a`
 (require stdlib)
 (define (apply-both (f : (forall (a) (-> a a))) (n : number) (s : string)) : number

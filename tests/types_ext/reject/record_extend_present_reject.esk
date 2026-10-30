@@ -1,6 +1,6 @@
 ;; Extending a record with a label it already has is rejected (rows lack
 ;; duplicate labels).
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: the label `x` would occur twice in one row
 (require stdlib)
 (require core.records)

@@ -1,6 +1,6 @@
 ;; Exactly once on EVERY path: closing on one branch and dropping on the
 ;; other abandons the protocol.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: is not consumed on every path
 (require stdlib)
 (require core.sessions)

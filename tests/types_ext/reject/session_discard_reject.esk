@@ -1,5 +1,5 @@
 ;; The endpoint a send returns must be used: dropping it abandons the protocol.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: produced here is discarded
 (require stdlib)
 (require core.sessions)

@@ -1,5 +1,5 @@
 ;; An endpoint is linear: sending twice on the same endpoint is rejected.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: was consumed more than once
 (require stdlib)
 (require core.sessions)

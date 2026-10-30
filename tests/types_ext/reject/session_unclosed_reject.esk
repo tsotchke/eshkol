@@ -1,5 +1,5 @@
 ;; An endpoint that reaches `end` must still be closed.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: was not consumed
 (require stdlib)
 (require core.sessions)

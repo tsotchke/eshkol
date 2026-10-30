@@ -1,6 +1,6 @@
 ;; The runST encapsulation: a reference created inside run-st cannot leave
 ;; it, because its type mentions the run's own state variable.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: would escape its scope
 (require stdlib)
 (define (st-new (tok : (st s)) (v : a)) : (st-ref s a) (vector v))

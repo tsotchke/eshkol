@@ -1,5 +1,5 @@
 ;; An offer must handle every label of the protocol, no more and no fewer.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: Type error
 (require stdlib)
 (require core.sessions)

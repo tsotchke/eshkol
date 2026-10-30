@@ -1,5 +1,5 @@
 ;; Selecting a label the peer does not offer is rejected.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: no field or label `mul`
 (require stdlib)
 (require core.sessions)

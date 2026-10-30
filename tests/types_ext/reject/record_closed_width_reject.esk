@@ -1,6 +1,6 @@
 ;; Width subtyping only lets MORE fields through: a record lacking a field
 ;; the closed annotation requires is rejected.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: has no field `y`
 (require stdlib)
 (require core.records)

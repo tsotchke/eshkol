@@ -70,6 +70,11 @@ for f in "$HERE"/reject/*.esk; do
     if [ $rc -eq 0 ]; then fail "$name: compiled (exit 0) but must be refused"; ok=0; fi
     if [ -e "$bin" ]; then fail "$name: a binary was written for a refused program"; ok=0; fi
     grep -qF -- "$want" "$WORK/$name.cerr" || { fail "$name: missing diagnostic '$want': $(grep -m2 -i error "$WORK/$name.cerr")"; ok=0; }
+    if has_engine "$f" jit; then
+        timeout 300 "$ESHKOL_RUN" -r "$f" -L "$LIBDIR" > "$WORK/$name.jit" 2> "$WORK/$name.jit.err"; jrc=$?
+        [ $jrc -ne 0 ] || { fail "$name [jit]: the JIT ran a program the checker refuses"; ok=0; }
+        grep -qF -- "$want" "$WORK/$name.jit.err" || { fail "$name [jit]: missing diagnostic '$want'"; ok=0; }
+    fi
     if has_engine "$f" vm && [ "$VM" != none ] && [ -x "$VM" ]; then
         (cd "$(dirname "$LIBDIR")" && timeout 120 "$VM" "$f") > "$WORK/$name.vm" 2> "$WORK/$name.vm.err"; vrc=$?
         [ $vrc -ne 0 ] || { fail "$name [vm]: the VM ran a program the checker refuses"; ok=0; }

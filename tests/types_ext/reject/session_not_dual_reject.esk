@@ -1,6 +1,6 @@
 ;; Both ends of a pair get dual protocols; using one end with the SAME
 ;; protocol as the other (not its dual) is rejected.
-;; ENGINES: aot vm
+;; ENGINES: jit aot vm
 ;; EXPECT-STDERR: cannot match
 (require stdlib)
 (require core.sessions)
