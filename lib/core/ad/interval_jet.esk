@@ -1,0 +1,439 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.interval_jet — interval automatic differentiation  (ADR-0050)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Two interval element types that carry derivatives, and one family of
+;;  generic operators that evaluates the SAME function on every numeric
+;;  carrier Eshkol has:
+;;
+;;    interval Taylor jet   (vector 'interval-jet K #(C0 ... CK))
+;;        Ci is an interval enclosing f^(i)(x)/i! for every x in the
+;;        argument interval. Built by `ijet-var`; evaluated with the
+;;        classical Taylor-coefficient recurrences (Moore 1966; Griewank and
+;;        Walther, Evaluating Derivatives, 2nd ed., ch. 13) carried out in
+;;        directed-rounding interval arithmetic. Each recurrence is an exact
+;;        identity at every point of the box, so the interval evaluation
+;;        encloses the coefficient set over the whole box.
+;;
+;;    interval gradient     (vector 'interval-grad V #(D1 ... Dn))
+;;        V encloses f(x) and Di encloses the partial derivative d f / d x_i
+;;        for every x in the box (forward mode, first order).
+;;
+;;  Generic operators rn+ rn- rn* rn/ rn-neg rn-sqr rn-expt rn-exp rn-log
+;;  rn-sqrt rn-sin rn-cos rn-atan dispatch on their arguments:
+;;
+;;    plain number (exact or binary64, or a value of the native AD
+;;      operators)            -> the native operator (+, *, exp, ...), so the
+;;                               native `derivative`, `gradient`,
+;;                               `derivative-n` and `taylor` differentiate a
+;;                               function written with rn ops exactly as if
+;;                               it had been written with + and *;
+;;    interval (lo . hi)      -> core.ad.rigorous_interval (directed rounding);
+;;    interval jet / gradient -> the recurrences / product rules below;
+;;    rigorous Taylor model   -> core.ad.rigorous_taylor_models (tm+ tm* ...).
+;;
+;;  A plain number meeting an interval, jet, gradient or model is promoted to
+;;  a constant of that carrier. A binary64 literal denotes the binary64 value
+;;  it rounds to; write 1/10, not 0.1, for one tenth.
+;;
+;;  Module discipline: every definition precedes its first use (the bytecode
+;;  VM compiles top-level definitions in one pass), no stdlib map/for-each.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.rigorous_interval)
+(require core.ad.rigorous_taylor_models)
+
+(provide ijet? ijet-var ijet-const ijet-order ijet-coeff ijet-coeffs ijet-value
+         igrad? igrad-var igrad-const igrad-value igrad-partial igrad-partials
+         igrad-dim
+         rn+ rn- rn* rn/ rn-neg rn-sqr rn-expt rn-exp rn-log rn-sqrt
+         rn-sin rn-cos rn-atan rn->interval
+         interval-eval interval-taylor-coeffs interval-derivative-n
+         interval-gradient taylor-model-certified)
+
+;; ── Representation helpers ────────────────────────────────────────────────
+(define ij-zero (cons 0 0))
+(define ij-one (cons 1 1))
+
+(define (ij-tagged? x tag)
+  (and (vector? x) (not (tensor? x)) (= (vector-length x) 3)
+       (eq? (vector-ref x 0) tag)))
+
+(define (ijet? x) (ij-tagged? x 'interval-jet))
+(define (igrad? x) (ij-tagged? x 'interval-grad))
+
+(define (ij-point x) (cons x x))
+(define (ij-as-interval x) (if (pair? x) x (ij-point x)))
+(define (ij-fact n) (let loop ((i n) (acc 1)) (if (<= i 1) acc (loop (- i 1) (* acc i)))))
+(define (ij-list-ref l n) (if (= n 0) (car l) (ij-list-ref (cdr l) (- n 1))))
+
+;; 0 = plain number / native value, 1 = interval, 2 = jet, 3 = gradient,
+;; 4 = rigorous Taylor model.
+(define (rn-kind x)
+  (cond ((pair? x) 1)
+        ((ijet? x) 2)
+        ((igrad? x) 3)
+        ((tm-rigorous? x) 4)
+        (else 0)))
+
+;; ── Interval Taylor jets ───────────────────────────────────────────────────
+(define (ijet-order j) (vector-ref j 1))
+(define (ij-cv j) (vector-ref j 2))
+(define (ijet-coeff j n)
+  (if (> n (ijet-order j)) ij-zero (vector-ref (ij-cv j) n)))
+(define (ijet-value j) (ijet-coeff j 0))
+(define (ijet-coeffs j)
+  (let loop ((i (ijet-order j)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons (vector-ref (ij-cv j) i) acc)))))
+
+(define (ij-make k cv) (vector 'interval-jet k cv))
+
+(define (ijet-const c k)
+  (let ((cv (make-vector (+ k 1) ij-zero)))
+    (vector-set! cv 0 (ij-as-interval c))
+    (ij-make k cv)))
+
+;; The independent variable over the interval (or point) X, to order K.
+(define (ijet-var x k)
+  (let ((cv (make-vector (+ k 1) ij-zero)))
+    (vector-set! cv 0 (ij-as-interval x))
+    (if (>= k 1) (vector-set! cv 1 ij-one) #f)
+    (ij-make k cv)))
+
+(define (ij-build k f)                      ; cv[n] = (f n), n = 0..k in order
+  (let ((cv (make-vector (+ k 1) ij-zero)))
+    (let loop ((n 0))
+      (if (<= n k)
+          (begin (vector-set! cv n (f n cv)) (loop (+ n 1)))
+          (ij-make k cv)))))
+
+(define (ij-add a b)
+  (ij-build (ijet-order a) (lambda (n cv) (ia+ (ijet-coeff a n) (ijet-coeff b n)))))
+(define (ij-sub a b)
+  (ij-build (ijet-order a) (lambda (n cv) (ia- (ijet-coeff a n) (ijet-coeff b n)))))
+(define (ij-neg a)
+  (ij-build (ijet-order a) (lambda (n cv) (ia-neg (ijet-coeff a n)))))
+
+;; sum_{i=lo..hi} (ia* (fa i) (fb i)) with ia+ accumulation
+(define (ij-sum-products lo hi fa fb)
+  (let loop ((i lo) (acc ij-zero))
+    (if (> i hi) acc (loop (+ i 1) (ia+ acc (ia* (fa i) (fb i)))))))
+
+(define (ij-mul a b)
+  (ij-build (ijet-order a)
+            (lambda (n cv)
+              (ij-sum-products 0 n (lambda (i) (ijet-coeff a i))
+                                   (lambda (i) (ijet-coeff b (- n i)))))))
+
+;; Square: symmetric pairs counted twice, the middle term through ia-sqr.
+(define (ij-sqr a)
+  (ij-build (ijet-order a)
+            (lambda (n cv)
+              (let* ((half (quotient n 2))
+                     (pairs (if (even? n)
+                                (ij-sum-products 0 (- half 1)
+                                                 (lambda (i) (ijet-coeff a i))
+                                                 (lambda (i) (ijet-coeff a (- n i))))
+                                (ij-sum-products 0 half
+                                                 (lambda (i) (ijet-coeff a i))
+                                                 (lambda (i) (ijet-coeff a (- n i))))))
+                     (twice (ia-scale pairs 2)))
+                (if (even? n) (ia+ twice (ia-sqr (ijet-coeff a half))) twice)))))
+
+;; q = a / b :  q_n = (a_n - sum_{i=1..n} b_i q_{n-i}) / b_0
+(define (ij-div a b)
+  (let ((b0 (ijet-coeff b 0)))
+    (ij-build (ijet-order a)
+              (lambda (n cv)
+                (ia/ (ia- (ijet-coeff a n)
+                          (ij-sum-products 1 n (lambda (i) (ijet-coeff b i))
+                                               (lambda (i) (vector-ref cv (- n i)))))
+                     b0)))))
+
+;; e = exp(a) :  e_0 = exp(a_0),  e_n = (1/n) sum_{i=1..n} i a_i e_{n-i}
+(define (ij-exp a)
+  (ij-build (ijet-order a)
+            (lambda (n cv)
+              (if (= n 0)
+                  (ia-exp (ijet-coeff a 0))
+                  (ia-scale (ij-sum-products 1 n (lambda (i) (ia-scale (ijet-coeff a i) i))
+                                                 (lambda (i) (vector-ref cv (- n i))))
+                            (/ 1 n))))))
+
+;; l = log(a) :  l_n = (a_n - (1/n) sum_{i=1..n-1} i l_i a_{n-i}) / a_0
+(define (ij-log a)
+  (let ((a0 (ijet-coeff a 0)))
+    (ij-build (ijet-order a)
+              (lambda (n cv)
+                (if (= n 0)
+                    (ia-log a0)
+                    (ia/ (ia- (ijet-coeff a n)
+                              (ia-scale (ij-sum-products 1 (- n 1)
+                                                         (lambda (i) (ia-scale (vector-ref cv i) i))
+                                                         (lambda (i) (ijet-coeff a (- n i))))
+                                        (/ 1 n)))
+                         a0))))))
+
+;; s = sqrt(a) :  s_n = (a_n - sum_{i=1..n-1} s_i s_{n-i}) / (2 s_0)
+(define (ij-sqrt a)
+  (ij-build (ijet-order a)
+            (lambda (n cv)
+              (if (= n 0)
+                  (ia-sqrt (ijet-coeff a 0))
+                  (ia/ (ia- (ijet-coeff a n)
+                            (ij-sum-products 1 (- n 1) (lambda (i) (vector-ref cv i))
+                                                       (lambda (i) (vector-ref cv (- n i)))))
+                       (ia-scale (vector-ref cv 0) 2))))))
+
+;; sin and cos together:
+;;   s_n =  (1/n) sum_{i=1..n} i a_i c_{n-i},   c_n = -(1/n) sum i a_i s_{n-i}
+;; returns (sin-jet . cos-jet)
+(define (ij-sincos a)
+  (let* ((k (ijet-order a))
+         (sv (make-vector (+ k 1) ij-zero))
+         (cv (make-vector (+ k 1) ij-zero)))
+    (vector-set! sv 0 (ia-sin (ijet-coeff a 0)))
+    (vector-set! cv 0 (ia-cos (ijet-coeff a 0)))
+    (let loop ((n 1))
+      (if (<= n k)
+          (begin
+            (vector-set! sv n
+              (ia-scale (ij-sum-products 1 n (lambda (i) (ia-scale (ijet-coeff a i) i))
+                                             (lambda (i) (vector-ref cv (- n i))))
+                        (/ 1 n)))
+            (vector-set! cv n
+              (ia-scale (ij-sum-products 1 n (lambda (i) (ia-scale (ijet-coeff a i) i))
+                                             (lambda (i) (vector-ref sv (- n i))))
+                        (/ -1 n)))
+            (loop (+ n 1)))
+          (cons (ij-make k sv) (ij-make k cv))))))
+
+;; t = atan(a) :  t' = a' / (1 + a^2),  t_n = d_{n-1} / n  with d = a'/(1+a^2)
+(define (ij-deriv-shift a)                  ; jet of a' (order k-1 data, padded)
+  (let ((k (ijet-order a)))
+    (ij-build k (lambda (n cv) (if (< n k) (ia-scale (ijet-coeff a (+ n 1)) (+ n 1)) ij-zero)))))
+(define (ij-atan a)
+  (let* ((k (ijet-order a))
+         (w (ij-add (ijet-const 1 k) (ij-sqr a)))
+         (d (ij-div (ij-deriv-shift a) w)))
+    (ij-build k (lambda (n cv)
+                  (if (= n 0)
+                      (ia-atan (ijet-coeff a 0))
+                      (ia-scale (ijet-coeff d (- n 1)) (/ 1 n)))))))
+
+;; ── Interval gradients (first order, forward mode) ────────────────────────
+(define (igrad-value g) (vector-ref g 1))
+(define (igrad-partials g) (vector-ref g 2))
+(define (igrad-dim g) (vector-length (vector-ref g 2)))
+(define (igrad-partial g i) (vector-ref (vector-ref g 2) i))
+
+(define (ig-make v pv) (vector 'interval-grad v pv))
+(define (igrad-const c n) (ig-make (ij-as-interval c) (make-vector n ij-zero)))
+(define (igrad-var x i n)
+  (let ((pv (make-vector n ij-zero)))
+    (vector-set! pv i ij-one)
+    (ig-make (ij-as-interval x) pv)))
+
+(define (ig-map-partials g f)               ; new partial vector, (f di)
+  (let* ((n (igrad-dim g)) (pv (make-vector n ij-zero)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! pv i (f (igrad-partial g i))) (loop (+ i 1)))
+          pv))))
+(define (ig-map2-partials a b f)
+  (let* ((n (igrad-dim a)) (pv (make-vector n ij-zero)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! pv i (f (igrad-partial a i) (igrad-partial b i))) (loop (+ i 1)))
+          pv))))
+
+(define (ig-add a b)
+  (ig-make (ia+ (igrad-value a) (igrad-value b)) (ig-map2-partials a b ia+)))
+(define (ig-sub a b)
+  (ig-make (ia- (igrad-value a) (igrad-value b)) (ig-map2-partials a b ia-)))
+(define (ig-neg a)
+  (ig-make (ia-neg (igrad-value a)) (ig-map-partials a ia-neg)))
+(define (ig-mul a b)
+  (let ((va (igrad-value a)) (vb (igrad-value b)))
+    (ig-make (ia* va vb)
+             (ig-map2-partials a b (lambda (da db) (ia+ (ia* da vb) (ia* va db)))))))
+(define (ig-sqr a)
+  (let ((va (igrad-value a)))
+    (ig-make (ia-sqr va) (ig-map-partials a (lambda (da) (ia-scale (ia* va da) 2))))))
+;; (a/b)' = (a' - q b') / b, q enclosing a/b over the box
+(define (ig-div a b)
+  (let* ((vb (igrad-value b)) (q (ia/ (igrad-value a) vb)))
+    (ig-make q (ig-map2-partials a b (lambda (da db) (ia/ (ia- da (ia* q db)) vb))))))
+;; unary chain rule: value v = phi(a), partials = phi'(a) * a'
+(define (ig-chain a v dphi)
+  (ig-make v (ig-map-partials a (lambda (da) (ia* dphi da)))))
+(define (ig-exp a)
+  (let ((v (ia-exp (igrad-value a)))) (ig-chain a v v)))
+(define (ig-log a)
+  (let ((va (igrad-value a)))
+    (ig-chain a (ia-log va) (ia/ ij-one va))))
+(define (ig-sqrt a)
+  (let ((v (ia-sqrt (igrad-value a))))
+    (ig-chain a v (ia/ ij-one (ia-scale v 2)))))
+(define (ig-sin a)
+  (let ((va (igrad-value a))) (ig-chain a (ia-sin va) (ia-cos va))))
+(define (ig-cos a)
+  (let ((va (igrad-value a))) (ig-chain a (ia-cos va) (ia-neg (ia-sin va)))))
+(define (ig-atan a)
+  (let ((va (igrad-value a)))
+    (ig-chain a (ia-atan va) (ia/ ij-one (ia+ ij-one (ia-sqr va))))))
+
+;; ── Rigorous Taylor-model promotion ───────────────────────────────────────
+(define (tm-order-of m) (vector-ref m 1))
+(define (rn-zero-list n) (let loop ((i 0) (acc '())) (if (>= i n) acc (loop (+ i 1) (cons 0 acc)))))
+(define (rn-tm-like m c)                    ; constant (number or interval) as m's model
+  (let ((k (tm-order-of m)))
+    (if (pair? c)
+        (vector 'rigorous-taylor-model k (rn-zero-list (+ k 1))
+                (vector-ref m 3) (vector-ref m 4) c)
+        (tm-const c (vector-ref m 3) (vector-ref m 4) k))))
+
+;; ── Promotion to a common carrier ─────────────────────────────────────────
+(define (rn-err who a b)
+  (error (string-append who ": cannot combine these numeric carriers (interval jets, interval gradients and Taylor models do not mix)")))
+
+(define (rn-lift x kind like)               ; lift x (kind <= 1) to carrier `kind` shaped like `like`
+  (cond ((= kind 1) (ij-as-interval x))
+        ((= kind 2) (ijet-const x (ijet-order like)))
+        ((= kind 3) (igrad-const x (igrad-dim like)))
+        (else (rn-tm-like like x))))
+
+;; Apply a binary operation: (dispatch who a b num-op iv-op jet-op grad-op tm-op)
+(define (rn-binary who a b num-op iv-op jet-op grad-op tm-op)
+  (let ((ka (rn-kind a)) (kb (rn-kind b)))
+    (if (and (= ka 0) (= kb 0))
+        (num-op a b)
+        (let ((k (if (> ka kb) ka kb)))
+          (if (and (> ka 1) (> kb 1) (not (= ka kb)))
+              (rn-err who a b)
+              (let ((a2 (if (= ka k) a (rn-lift a k b)))
+                    (b2 (if (= kb k) b (rn-lift b k a))))
+                (cond ((= k 1) (iv-op a2 b2))
+                      ((= k 2) (jet-op a2 b2))
+                      ((= k 3) (grad-op a2 b2))
+                      (else (tm-op a2 b2)))))))))
+
+(define (rn-unary a num-op iv-op jet-op grad-op tm-op)
+  (let ((ka (rn-kind a)))
+    (cond ((= ka 0) (num-op a))
+          ((= ka 1) (iv-op a))
+          ((= ka 2) (jet-op a))
+          ((= ka 3) (grad-op a))
+          (else (tm-op a)))))
+
+;; ── Generic operators ─────────────────────────────────────────────────────
+(define (tm-neg-local m) (tm-scale-const m -1))
+
+(define (rn+ a b)
+  (rn-binary "rn+" a b (lambda (x y) (+ x y)) ia+ ij-add ig-add tm+))
+(define (rn- a b)
+  (rn-binary "rn-" a b (lambda (x y) (- x y)) ia- ij-sub ig-sub
+             (lambda (x y) (tm+ x (tm-neg-local y)))))
+(define (rn* a b)
+  (rn-binary "rn*" a b (lambda (x y) (* x y)) ia* ij-mul ig-mul tm*))
+(define (rn/ a b)
+  (rn-binary "rn/" a b (lambda (x y) (/ x y)) ia/ ij-div ig-div
+             (lambda (x y) (tm* x (tm-recip y)))))
+(define (rn-neg a)
+  (rn-unary a (lambda (x) (- x)) ia-neg ij-neg ig-neg tm-neg-local))
+(define (rn-sqr a)
+  (rn-unary a (lambda (x) (* x x)) ia-sqr ij-sqr ig-sqr (lambda (m) (tm* m m))))
+(define (rn-exp a)
+  (rn-unary a (lambda (x) (exp x)) ia-exp ij-exp ig-exp
+            (lambda (m) (tm-exp m (tm-order-of m)))))
+(define (rn-log a)
+  (rn-unary a (lambda (x) (log x)) ia-log ij-log ig-log
+            (lambda (m) (tm-log m (tm-order-of m)))))
+(define (rn-sqrt a)
+  (rn-unary a (lambda (x) (sqrt x)) ia-sqrt ij-sqrt ig-sqrt
+            (lambda (m) (tm-sqrt m (tm-order-of m)))))
+(define (rn-sin a)
+  (rn-unary a (lambda (x) (sin x)) ia-sin (lambda (j) (car (ij-sincos j))) ig-sin
+            (lambda (m) (tm-sin m (tm-order-of m)))))
+(define (rn-cos a)
+  (rn-unary a (lambda (x) (cos x)) ia-cos (lambda (j) (cdr (ij-sincos j))) ig-cos
+            (lambda (m) (tm-cos m (tm-order-of m)))))
+(define (rn-atan a)
+  (rn-unary a (lambda (x) (atan x)) ia-atan ij-atan ig-atan
+            (lambda (m) (tm-atan m (tm-order-of m)))))
+
+;; a^e for an exact nonnegative integer e, by binary powering through rn-sqr
+;; (so an interval base straddling zero gives a nonnegative even power).
+(define (rn-expt a e)
+  (if (not (and (integer? e) (exact? e) (>= e 0)))
+      (error "rn-expt: exponent must be an exact nonnegative integer")
+      (cond ((= e 0) (if (= (rn-kind a) 0) 1 (rn-lift 1 (rn-kind a) a)))
+            ((= e 1) a)
+            ((even? e) (rn-expt (rn-sqr a) (quotient e 2)))
+            (else (rn* a (rn-expt (rn-sqr a) (quotient e 2)))))))
+
+;; The interval enclosure carried by any rn value.
+(define (rn->interval v)
+  (let ((k (rn-kind v)))
+    (cond ((= k 0) (ij-point v))
+          ((= k 1) v)
+          ((= k 2) (ijet-value v))
+          ((= k 3) (igrad-value v))
+          (else (tm-bound v)))))
+
+;; ── Operators over functions ──────────────────────────────────────────────
+;; f takes one argument (univariate) or one vector (a box). Intervals are
+;; (lo . hi) pairs; a box is a Scheme vector of intervals.
+(define (interval-eval f x) (rn->interval (f x)))
+
+;; (C0 ... CK): Ci encloses f^(i)(x)/i! for every x in X.
+(define (interval-taylor-coeffs f x k)
+  (let ((v (f (ijet-var x k))))
+    (if (ijet? v)
+        (ijet-coeffs v)
+        (ijet-coeffs (ijet-const (rn->interval v) k)))))
+
+;; Enclosure of f^(n) over X.
+(define (interval-derivative-n f x n)
+  (let ((cs (interval-taylor-coeffs f x n)))
+    (ia-scale (ij-list-ref cs n) (ij-fact n))))
+
+;; (V . #(D1 ... Dn)): V encloses f over the box, Di encloses df/dx_i.
+(define (interval-gradient f box)
+  (let* ((n (vector-length box))
+         (args (make-vector n ij-zero)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! args i (igrad-var (vector-ref box i) i n)) (loop (+ i 1)))
+          #t))
+    (let ((v (f args)))
+      (if (igrad? v)
+          (cons (igrad-value v) (igrad-partials v))
+          (cons (rn->interval v) (make-vector n ij-zero))))))
+
+;; A rigorous Taylor model of f about x0 on [x0 - r, x0 + r], order k
+;; (Berz and Makino 1998): the coefficients are the exact midpoints of the
+;; interval Taylor coefficients at the point x0, the remainder collects the
+;; coefficient radii times [-r,r]^n plus the Lagrange term C_{k+1}(D) [-r,r]^{k+1}
+;; with C_{k+1}(D) enclosing f^(k+1)/(k+1)! over the whole domain D. No
+;; sampling: the remainder is proven. Returns the core.ad.rigorous_taylor_models
+;; representation, so tm-bound / tm+ / tm* / tm-prove-bound apply.
+(define (ij-exact-mid iv)
+  (let ((lo (car iv)) (hi (cdr iv)))
+    (/ (+ (if (exact? lo) lo (inexact->exact lo)) (if (exact? hi) hi (inexact->exact hi))) 2)))
+
+(define (taylor-model-certified f x0 r k)
+  (let* ((pt (interval-taylor-coeffs f x0 k))
+         (dom (ia+ (ij-point x0) (cons (- r) r)))
+         (box (interval-taylor-coeffs f dom (+ k 1)))
+         (tdom (cons (- r) r)))
+    (let loop ((n 0) (cs pt) (coeffs '()) (rem (ia* (ij-list-ref box (+ k 1)) (ia-ipow tdom (+ k 1)))))
+      (if (> n k)
+          (let rev ((l coeffs) (acc '()))
+            (if (pair? l)
+                (rev (cdr l) (cons (car l) acc))
+                (vector 'rigorous-taylor-model k acc x0 r rem)))
+          (let* ((c (car cs)) (m (ij-exact-mid c))
+                 (dev (ia- c (ij-point m))))
+            (loop (+ n 1) (cdr cs) (cons m coeffs)
+                  (ia+ rem (ia* dev (ia-ipow tdom n)))))))))

@@ -2,12 +2,14 @@
 ;;  core.ad.rigorous_interval — PROVEN outward-rounded interval arithmetic
 ;; ─────────────────────────────────────────────────────────────────────────
 ;;
-;;  The RIGOROUS layer beneath core.ad.interval (which stays exactly as it
-;;  was: an honest, documented epsilon-widening approximation). Every
-;;  primitive here is a proof, not a heuristic: given operand intervals that
-;;  soundly contain their true real values, the result interval provably
+;;  The directed-rounding layer beneath core.ad.interval. Since v1.5.0
+;;  (ADR-0050) every core.ad.interval operation routes here by default.
+;;  Every primitive here is a proof, not a heuristic: given operand intervals
+;;  that soundly contain their true real values, the result interval provably
 ;;  contains the true real result. Never sampled, never merely "usually
-;;  wide enough".
+;;  wide enough". Remainder magnitudes are computed exactly over the
+;;  rationals and rounded upward once (`ia-exact-up`); even powers square
+;;  through `ia-sqr`; sin/cos results are intersected with [-1,1].
 ;;
 ;;  ── ROUNDING MECHANISM: nextafter, not fesetround ───────────────────────
 ;;  Directed rounding needs each endpoint computed with the FPU rounding
@@ -162,7 +164,13 @@
 
 (provide ia+ ia- ia* ia/ ia-neg ia-ipow ia-scale
          ia-sqrt ia-exp ia-log ia-sin ia-cos ia-atan
-         ia-pi)
+         ia-pi
+         ;; v1.5.0 (ADR-0050): tight even powers, set operations and the
+         ;; outward exact->binary64 conversions, exported so every layer
+         ;; above (core.ad.interval, interval jets, compact-set bounds,
+         ;; interval tensors) shares one rounding facility.
+         ia-sqr ia-abs-interval ia-hull ia-intersect ia-contains?
+         ia-mag ia-to-double-down ia-to-double-up ia-exact-up)
 
 ;; ── Local numeric helpers (core-module discipline: no stdlib map/for-each,
 ;;    private to this module) ────────────────────────────────────────────
@@ -279,6 +287,14 @@
       (and (= (car xs) (car xs)) (ia-float-results-ok? (cdr xs)))
       #t))
 
+;; ia-exact-up: the least binary64 value >= the EXACT nonnegative-or-signed
+;; number q (an inexact q is returned unchanged). Every remainder MAGNITUDE
+;; below is computed exactly over the rationals and passed through this one
+;; upward conversion, so no bound depends on how a runtime rounds
+;; exact->inexact (some runtimes round numerator and denominator separately,
+;; which is why `(fl-next-up (exact->inexact q))` alone is not a proof).
+(define (ia-exact-up q) (ia-to-double-up q))
+
 (define (ia+ a b)
   (ia-check "ia+" a) (ia-check "ia+" b)
   (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
@@ -351,6 +367,41 @@
 ;; Multiply an interval by an exact integer/rational SCALAR k (both signs).
 (define (ia-scale a k) (ia* a (ia-pt k)))
 
+;; ── Set operations and tight squares (ADR-0050) ──────────────────────────
+;; None of these round: they only select or compare existing endpoints.
+(define (ia-hull a b)
+  (ia-check "ia-hull" a) (ia-check "ia-hull" b)
+  (cons (ia-min2 (car a) (car b)) (ia-max2 (cdr a) (cdr b))))
+
+;; Intersection; #f when the two closed intervals are disjoint.
+(define (ia-intersect a b)
+  (ia-check "ia-intersect" a) (ia-check "ia-intersect" b)
+  (let ((lo (ia-max2 (car a) (car b))) (hi (ia-min2 (cdr a) (cdr b))))
+    (if (<= lo hi) (cons lo hi) #f)))
+
+(define (ia-contains? a x)
+  (ia-check "ia-contains?" a)
+  (and (<= (car a) x) (<= x (cdr a))))
+
+;; |X| = { |x| : x in X }.
+(define (ia-abs-interval a)
+  (ia-check "ia-abs-interval" a)
+  (let ((lo (car a)) (hi (cdr a)))
+    (cond ((>= lo 0) a)
+          ((<= hi 0) (cons (- hi) (- lo)))
+          (else (cons 0 (ia-max2 (- lo) hi))))))
+
+;; X^2 without the dependency problem: the square of a sign-straddling
+;; interval starts at exactly 0, and a one-signed interval is squared through
+;; the outward product of its absolute value with itself.
+(define (ia-sqr a)
+  (let ((m (ia-abs-interval a)))
+    (if (and (= (car m) 0) (exact? (car m)))
+        (let ((hi2 (ia* (cons (cdr m) (cdr m)) (cons (cdr m) (cdr m)))))
+          (cons 0 (cdr hi2)))
+        (let ((p (ia* m m)))
+          (cons (ia-max2 0 (car p)) (cdr p))))))
+
 ;; Horner evaluation of a polynomial (given as coefficients DESCENDING —
 ;; highest degree first) over an interval, using ia+/ia* above. Shared by
 ;; every Taylor-with-remainder function below. Deliberately placed AFTER
@@ -367,6 +418,36 @@
     (if (pair? cs)
         (loop (cdr cs) (ia+ (cons (car cs) (car cs)) (ia* acc tv)))
         acc)))
+
+;; Horner over coefficient ENCLOSURES: the exact coefficients of each series
+;; are converted outward to binary64 intervals once per order and cached, so
+;; an inexact argument runs entirely on the binary64 path (no exact->binary64
+;; conversion per step); an exact argument keeps the exact coefficients and
+;; stays exact. Caches are plain two-slot vectors (order, value).
+(define (ia-outward-list cs)
+  (if (pair? cs)
+      (cons (cons (ia-to-double-down (car cs)) (ia-to-double-up (car cs)))
+            (ia-outward-list (cdr cs)))
+      '()))
+(define (ia-memo-coeffs cache n build)
+  (if (and (vector-ref cache 0) (= (vector-ref cache 0) n))
+      (vector-ref cache 1)
+      (let* ((ex (build n)) (v (cons ex (ia-outward-list ex))))
+        (vector-set! cache 0 n)
+        (vector-set! cache 1 v)
+        v)))
+(define (ia-horner-cached cpair tv)
+  (if (and (exact? (car tv)) (exact? (cdr tv)))
+      (ia-horner-desc (car cpair) tv)
+      (let loop ((cs (cdr (cdr cpair))) (acc (car (cdr cpair))))
+        (if (pair? cs)
+            (loop (cdr cs) (ia+ (car cs) (ia* acc tv)))
+            acc))))
+(define ia-exp-cc (vector #f #f))
+(define ia-log-cc (vector #f #f))
+(define ia-sin-cc (vector #f #f))
+(define ia-cos-cc (vector #f #f))
+(define ia-atan-cc (vector #f #f))
 
 ;; ── sqrt: certified bracketing (see header derivation note) ──────────────
 (define ia-sqrt-max-iters 2000)
@@ -396,13 +477,34 @@
               ((>= (fl-next-down (* g g)) x) g)
               (else (loop (fl-next-up g) (+ n 1)))))))
 
+(define (ia-isqrt n)                          ; floor(sqrt(n)), exact integer n >= 0 (Newton)
+  (if (< n 2)
+      n
+      (let loop ((x n))
+        (let ((y (quotient (+ x (quotient n x)) 2)))
+          (if (>= y x) x (loop y))))))
+(define (ia-perfect-square-root n)          ; exact root of an exact integer n >= 0, or #f
+  (let ((root (ia-isqrt n)))
+    (if (= (* root root) n) root #f)))
+(define (ia-exact-root q)                     ; exact sqrt of an exact rational, or #f
+  (if (and (exact? q) (>= q 0))
+      (let ((rn (ia-perfect-square-root (numerator q)))
+            (rd (ia-perfect-square-root (denominator q))))
+        (if (and rn rd) (/ rn rd) #f))
+      #f))
+
 (define (ia-sqrt a)
   (ia-check "ia-sqrt" a)
   (let ((lo (car a)) (hi (cdr a)))
     (if (< lo 0)
         (error "ia-sqrt: domain requires interval lo >= 0")
-        (cons (ia-sqrt-lower-certify (exact->inexact lo))
-                        (ia-sqrt-upper-certify (exact->inexact hi))))))
+        ;; An exact endpoint is first converted OUTWARD (down for lo, up for
+        ;; hi) so the certified root brackets the exact value, and an exact
+        ;; perfect-square rational keeps its exact root.
+        (cons (let ((r (ia-exact-root lo)))
+                (if r r (ia-sqrt-lower-certify (ia-to-double-down lo))))
+              (let ((r (ia-exact-root hi)))
+                (if r r (ia-sqrt-upper-certify (ia-to-double-up hi))))))))
 
 ;; ── exp: halving reduction + exact-rational Maclaurin + Lagrange remainder
 (define ia-exp-r0 1/4)
@@ -415,19 +517,25 @@
 
 (define (ia-exp-reduced r)        ; r an interval with sup|r| <= ia-exp-r0
   (let* ((n ia-exp-order)
-         (poly (ia-horner-desc (ia-exp-coeffs-desc n) r))
+         (poly (ia-horner-cached (ia-memo-coeffs ia-exp-cc n ia-exp-coeffs-desc) r))
          (m (/ 4 3))                                    ; exact bound exp(t)<=1/(1-1/4)
          (bmag-exact (* m (/ (ia-ipow-exact ia-exp-r0 (+ n 1)) (ia-fact (+ n 1)))))
-         (bmag (fl-next-up (exact->inexact bmag-exact))))
+         (bmag (ia-exact-up bmag-exact)))
     (ia+ poly (cons (- bmag) bmag))))
 
 (define (ia-exp-choose-k mag)     ; smallest k>=0 with mag/2^k <= R0 (heuristic only)
   (let loop ((k 0) (m mag))
     (if (or (<= m ia-exp-r0-d) (> k 1100)) k (loop (+ k 1) (/ m 2.0)))))
 
-(define (ia-ipow a e)              ; interval a raised to nonneg integer e, via ia*
-  (let loop ((n e) (acc (ia-pt 1)))
-    (if (<= n 0) acc (loop (- n 1) (ia* acc a)))))
+;; Interval a raised to a nonnegative integer e by binary powering: an even
+;; exponent squares through ia-sqr (so a sign-straddling base gives a
+;; nonnegative result, never the dependency-problem superset), an odd one
+;; peels a single factor. log2(e) outward squarings instead of e products.
+(define (ia-ipow a e)
+  (cond ((<= e 0) (ia-pt 1))
+        ((= e 1) a)
+        ((even? e) (ia-ipow (ia-sqr a) (quotient e 2)))
+        (else (ia* a (ia-ipow (ia-sqr a) (quotient e 2))))))
 
 (define (ia-exp a)
   (ia-check "ia-exp" a)
@@ -458,9 +566,9 @@
     (if (> umag (/ 1.0 3.0))
         (error "ia-log1p: |u| exceeds the certified reduction radius 1/3")
         (let* ((n ia-log-order)
-               (poly (ia-horner-desc (ia-log-coeffs-desc n) u))
+               (poly (ia-horner-cached (ia-memo-coeffs ia-log-cc n ia-log-coeffs-desc) u))
                (bmag-exact (* (/ 3 2) (/ (ia-ipow-exact 1/3 (+ n 1)) (+ n 1))))
-               (bmag (fl-next-up (exact->inexact bmag-exact))))
+               (bmag (ia-exact-up bmag-exact)))
           (ia+ poly (cons (- bmag) bmag))))))
 
 ;; ln2 = log(4/3) - log(2/3), both |u|=1/3 exactly: no extra machinery.
@@ -533,17 +641,18 @@
                     acc)))))
 
 (define (ia-trig-remainder-mag s)
-  (let* ((smag (ia-mag s))
-         (n ia-trig-order)
-         (raw (/ (ia-ipow-double smag (+ n 1)) (exact->inexact (ia-fact (+ n 1))))))
-    (fl-next-up raw)))
+  ;; smag^(n+1)/(n+1)! evaluated EXACTLY on the dyadic value of smag and
+  ;; rounded upward once: the bound carries no unaccounted rounding.
+  (let* ((smag (inexact->exact (ia-mag s)))
+         (n ia-trig-order))
+    (ia-exact-up (/ (ia-ipow-exact smag (+ n 1)) (ia-fact (+ n 1))))))
 
 (define (ia-sin0 s)
-  (let ((poly (ia-horner-desc (ia-sin0-coeffs-desc ia-trig-order) s))
+  (let ((poly (ia-horner-cached (ia-memo-coeffs ia-sin-cc ia-trig-order ia-sin0-coeffs-desc) s))
         (b (ia-trig-remainder-mag s)))
     (ia+ poly (cons (- b) b))))
 (define (ia-cos0 s)
-  (let ((poly (ia-horner-desc (ia-cos0-coeffs-desc ia-trig-order) s))
+  (let ((poly (ia-horner-cached (ia-memo-coeffs ia-cos-cc ia-trig-order ia-cos0-coeffs-desc) s))
         (b (ia-trig-remainder-mag s)))
     (ia+ poly (cons (- b) b))))
 
@@ -571,9 +680,9 @@
     (if (> umag 1.0)
         (error "ia-atan-core: |u| exceeds the certified radius 1")
         (let* ((maxdeg ia-atan-core-maxdeg)
-               (poly (ia-horner-desc (ia-atan-coeffs-desc maxdeg) u))
+               (poly (ia-horner-cached (ia-memo-coeffs ia-atan-cc maxdeg ia-atan-coeffs-desc) u))
                (nextdeg (+ maxdeg 2))
-               (bmag (fl-next-up (/ (ia-ipow-double umag nextdeg) (exact->inexact nextdeg)))))
+               (bmag (ia-exact-up (/ (ia-ipow-exact (inexact->exact umag) nextdeg) nextdeg))))
           (ia+ poly (cons (- bmag) bmag))))))
 
 ;; Machin's formula: pi = 16*atan(1/5) - 4*atan(1/239). Both arguments are
@@ -648,18 +757,34 @@
          (qm4 (modulo q 4)))
     (cons s qm4)))
 
+;; |sin|, |cos| <= 1 everywhere, so intersecting with [-1,1] is sound, and
+;; an argument interval at least one period wide (2*pi < 7) attains both
+;; extrema. The width test uses the exact rational value of each endpoint.
+(define ia-unit (cons -1 1))
+(define (ia-trig-clamp iv)
+  (let ((c (ia-intersect iv ia-unit)))
+    (if c c ia-unit)))
+(define (ia-wider-than-period? a)
+  (>= (- (inexact->exact (cdr a)) (inexact->exact (car a))) 7))
+
 (define (ia-sin a)
   (ia-check "ia-sin" a)
-  (let* ((sq (ia-trig-quadrant a)) (s (car sq)) (qm4 (cdr sq)))
-    (cond ((= qm4 0) (ia-sin0 s))
-          ((= qm4 1) (ia-cos0 s))
-          ((= qm4 2) (ia-neg (ia-sin0 s)))
-          (else (ia-neg (ia-cos0 s))))))
+  (if (ia-wider-than-period? a)
+      ia-unit
+      (let* ((sq (ia-trig-quadrant a)) (s (car sq)) (qm4 (cdr sq)))
+        (ia-trig-clamp
+         (cond ((= qm4 0) (ia-sin0 s))
+               ((= qm4 1) (ia-cos0 s))
+               ((= qm4 2) (ia-neg (ia-sin0 s)))
+               (else (ia-neg (ia-cos0 s))))))))
 
 (define (ia-cos a)
   (ia-check "ia-cos" a)
-  (let* ((sq (ia-trig-quadrant a)) (s (car sq)) (qm4 (cdr sq)))
-    (cond ((= qm4 0) (ia-cos0 s))
-          ((= qm4 1) (ia-neg (ia-sin0 s)))
-          ((= qm4 2) (ia-neg (ia-cos0 s)))
-          (else (ia-sin0 s)))))
+  (if (ia-wider-than-period? a)
+      ia-unit
+      (let* ((sq (ia-trig-quadrant a)) (s (car sq)) (qm4 (cdr sq)))
+        (ia-trig-clamp
+         (cond ((= qm4 0) (ia-cos0 s))
+               ((= qm4 1) (ia-neg (ia-sin0 s)))
+               ((= qm4 2) (ia-neg (ia-cos0 s)))
+               (else (ia-sin0 s)))))))

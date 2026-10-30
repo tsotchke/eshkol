@@ -1,0 +1,465 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.torus — periodic fields on T^d and their averages  (ADR-0050)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Coordinates are angles: T^d = R^d / (2 pi Z)^d, theta = (theta_1 ...
+;;  theta_d). The Haar measure is normalized, so the Haar mean of f is
+;;  (2 pi)^-d times the integral of f over one period cell. A unit-period
+;;  chart Y in R^d / Z^d maps to theta = 2 pi Y; the factor 2 pi of that
+;;  chart change is ordinary chain rule and stays outside this module.
+;;
+;;  Two field types:
+;;
+;;  1. Trigonometric polynomials (EXACT)
+;;       F(theta) = sum_k  a_k cos(k . theta) + b_k sin(k . theta)
+;;     held as (vector 'torus-trig d terms), terms a list of (k a b) with k a
+;;     list of d exact integers in canonical form (first nonzero entry
+;;     positive; the zero frequency carries b = 0), sorted. Sums, products
+;;     (product-to-sum identities), partial and directional derivatives, the
+;;     inverse of a directional derivative v . grad on the zero-mean subspace,
+;;     the Haar mean and partial angular means are computed on coefficients
+;;     with exact arithmetic: exact coefficients give exact results.
+;;
+;;  2. Supported fields (ENCLOSURE-BOUNDED)
+;;       (vector 'torus-field d support proc)
+;;     proc maps a list of d angles to a value and is written with the
+;;     generic operators of core.ad.interval_jet, so it runs on numbers (and
+;;     under the native AD operators) and on intervals. The support is a
+;;     list of boxes, each a list of d closed arcs (start . length) in TURNS
+;;     (fractions of the period, exact rationals). Support bookkeeping is
+;;     exact: products intersect supports arc by arc, and a product of fields
+;;     with disjoint supports is the certified zero field. The Haar mean of a
+;;     supported field is an interval enclosure computed on a grid of boxes
+;;     with core.ad.compact_bounds, refined until it is narrower than tol.
+;;
+;;  Evaluation at a phase map: (torus-at-phase F phi) is x -> F(phi(x)); on
+;;  plain numbers it is built from + * cos sin, so `derivative` and
+;;  `gradient` propagate the full chain rule through the phase.
+;;
+;;  References: Y. Katznelson, An Introduction to Harmonic Analysis (3rd ed.,
+;;  2004), ch. I; the averaging and inversion steps are those used in
+;;  docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md rows 35, 37, 50-52,
+;;  58 and 67.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.rigorous_interval)
+(require core.ad.interval_jet)
+(require core.ad.compact_bounds)
+
+(provide torus-trig torus-trig? torus-dimension torus-terms
+         torus-constant torus-cos torus-sin
+         torus+ torus- torus-neg torus-scale torus*
+         torus-mean torus-angular-mean torus-coefficient
+         torus-deriv torus-directional-deriv torus-directional-inverse
+         torus-eval torus-at-phase torus-degree torus-zero?
+         torus-field torus-field? torus-field-support torus-field-proc
+         torus-field-from-trig torus-field-eval torus-field*
+         torus-field+ torus-field-deriv torus-field-zero?
+         torus-supports-disjoint? torus-support-intersect
+         torus-field-mean)
+
+;; ── Integer-vector helpers ────────────────────────────────────────────────
+(define (tr-length l) (let loop ((l l) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+(define (tr-reverse l) (let loop ((l l) (acc '())) (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+(define (tr-zeros d) (let loop ((i 0) (acc '())) (if (>= i d) acc (loop (+ i 1) (cons 0 acc)))))
+(define (tr-vadd k l) (if (null? k) '() (cons (+ (car k) (car l)) (tr-vadd (cdr k) (cdr l)))))
+(define (tr-vsub k l) (if (null? k) '() (cons (- (car k) (car l)) (tr-vsub (cdr k) (cdr l)))))
+(define (tr-vneg k) (if (null? k) '() (cons (- (car k)) (tr-vneg (cdr k)))))
+(define (tr-dot k v) (if (null? k) 0 (+ (* (car k) (car v)) (tr-dot (cdr k) (cdr v)))))
+(define (tr-ref l j) (if (= j 0) (car l) (tr-ref (cdr l) (- j 1))))
+(define (tr-zero-vec? k) (if (null? k) #t (and (= (car k) 0) (tr-zero-vec? (cdr k)))))
+(define (tr-first-nonzero k) (cond ((null? k) 0) ((= (car k) 0) (tr-first-nonzero (cdr k))) (else (car k))))
+(define (tr-lex<? k l)
+  (cond ((null? k) #f)
+        ((< (car k) (car l)) #t)
+        ((> (car k) (car l)) #f)
+        (else (tr-lex<? (cdr k) (cdr l)))))
+(define (tr-vequal? k l) (if (null? k) #t (and (= (car k) (car l)) (tr-vequal? (cdr k) (cdr l)))))
+(define (tr-check-freq who k)
+  (if (let loop ((l k)) (or (null? l) (and (integer? (car l)) (exact? (car l)) (loop (cdr l)))))
+      #t
+      (error (string-append who ": a frequency must be a list of exact integers"))))
+
+;; ── Trigonometric polynomials ─────────────────────────────────────────────
+(define (torus-trig? x)
+  (and (vector? x) (not (tensor? x)) (= (vector-length x) 3) (eq? (vector-ref x 0) 'torus-trig)))
+(define (torus-dimension f) (vector-ref f 1))
+(define (torus-terms f) (vector-ref f 2))
+(define (tr-make d terms) (vector 'torus-trig d terms))
+
+;; canonical term: first nonzero frequency positive (cos even, sin odd)
+(define (tr-canon k a b)
+  (cond ((tr-zero-vec? k) (list k a 0))
+        ((< (tr-first-nonzero k) 0) (list (tr-vneg k) a (- b)))
+        (else (list k a b))))
+
+;; insert a canonical term into a sorted term list, merging equal frequencies
+(define (tr-insert term terms)
+  (cond ((null? terms) (list term))
+        ((tr-vequal? (car term) (car (car terms)))
+         (let ((a (+ (cadr term) (cadr (car terms))))
+               (b (+ (caddr term) (caddr (car terms)))))
+           (cons (list (car term) a b) (cdr terms))))
+        ((tr-lex<? (car term) (car (car terms))) (cons term terms))
+        (else (cons (car terms) (tr-insert term (cdr terms))))))
+
+(define (tr-drop-zeros terms)
+  (cond ((null? terms) '())
+        ((and (= (cadr (car terms)) 0) (= (caddr (car terms)) 0)
+              (exact? (cadr (car terms))) (exact? (caddr (car terms))))
+         (tr-drop-zeros (cdr terms)))
+        (else (cons (car terms) (tr-drop-zeros (cdr terms))))))
+
+(define (tr-from-raw d raw)                ; raw: list of (k a b), any form
+  (let loop ((l raw) (acc '()))
+    (if (null? l)
+        (tr-make d (tr-drop-zeros acc))
+        (let ((t (car l)))
+          (tr-check-freq "torus-trig" (car t))
+          (if (not (= (tr-length (car t)) d))
+              (error "torus-trig: frequency length differs from the dimension")
+              (loop (cdr l) (tr-insert (tr-canon (car t) (cadr t) (caddr t)) acc)))))))
+
+;; (torus-trig d '((k a b) ...)): sum of a cos(k.theta) + b sin(k.theta)
+(define (torus-trig d raw) (tr-from-raw d raw))
+(define (torus-constant d c) (tr-from-raw d (list (list (tr-zeros d) c 0))))
+(define (torus-cos k) (tr-from-raw (tr-length k) (list (list k 1 0))))
+(define (torus-sin k) (tr-from-raw (tr-length k) (list (list k 0 1))))
+
+(define (tr-check-same who f g)
+  (if (and (torus-trig? f) (torus-trig? g) (= (torus-dimension f) (torus-dimension g)))
+      #t
+      (error (string-append who ": operands must be trigonometric polynomials on the same torus"))))
+
+(define (torus+ f g)
+  (tr-check-same "torus+" f g)
+  (tr-from-raw (torus-dimension f) (append (torus-terms f) (torus-terms g))))
+(define (torus-scale f c)
+  (tr-from-raw (torus-dimension f)
+               (let loop ((l (torus-terms f)) (acc '()))
+                 (if (null? l) acc
+                     (loop (cdr l) (cons (list (car (car l)) (* c (cadr (car l))) (* c (caddr (car l)))) acc))))))
+(define (torus-neg f) (torus-scale f -1))
+(define (torus- f g) (torus+ f (torus-neg g)))
+
+;; product of two terms by the product-to-sum identities:
+;;   at k+l: cos coeff (ac - be)/2, sin coeff (ae + bc)/2
+;;   at k-l: cos coeff (ac + be)/2, sin coeff (bc - ae)/2
+(define (tr-term-product t u)
+  (let ((k (car t)) (a (cadr t)) (b (caddr t))
+        (l (car u)) (c (cadr u)) (e (caddr u)))
+    (list (list (tr-vadd k l) (/ (- (* a c) (* b e)) 2) (/ (+ (* a e) (* b c)) 2))
+          (list (tr-vsub k l) (/ (+ (* a c) (* b e)) 2) (/ (- (* b c) (* a e)) 2)))))
+
+(define (torus* f g)
+  (tr-check-same "torus*" f g)
+  (let outer ((ts (torus-terms f)) (acc '()))
+    (if (null? ts)
+        (tr-from-raw (torus-dimension f) acc)
+        (let inner ((us (torus-terms g)) (acc2 acc))
+          (if (null? us)
+              (outer (cdr ts) acc2)
+              (let ((pr (tr-term-product (car ts) (car us))))
+                (inner (cdr us) (cons (car pr) (cons (cadr pr) acc2)))))))))
+
+(define (torus-zero? f) (null? (torus-terms f)))
+
+;; (a . b) for frequency k (any sign; canonicalized), (0 . 0) if absent
+(define (torus-coefficient f k)
+  (let* ((c (tr-canon k 1 1)) (kk (car c)) (flip (if (= (caddr c) -1) -1 1)))
+    (let loop ((l (torus-terms f)))
+      (cond ((null? l) (cons 0 0))
+            ((tr-vequal? (car (car l)) kk) (cons (cadr (car l)) (* flip (caddr (car l)))))
+            (else (loop (cdr l)))))))
+
+;; Haar mean: the zero-frequency coefficient (exact for exact coefficients)
+(define (torus-mean f) (car (torus-coefficient f (tr-zeros (torus-dimension f)))))
+
+;; Angular mean over theta_j: the terms with k_j = 0 (a field on T^d that no
+;; longer depends on theta_j).
+(define (torus-angular-mean f j)
+  (tr-make (torus-dimension f)
+           (let loop ((l (torus-terms f)))
+             (cond ((null? l) '())
+                   ((= (tr-ref (car (car l)) j) 0) (cons (car l) (loop (cdr l))))
+                   (else (loop (cdr l)))))))
+
+(define (torus-degree f)
+  (let loop ((l (torus-terms f)) (m 0))
+    (if (null? l) m
+        (loop (cdr l)
+              (let inner ((k (car (car l))) (mm m))
+                (if (null? k) mm
+                    (inner (cdr k) (let ((x (if (< (car k) 0) (- (car k)) (car k)))) (if (> x mm) x mm)))))))))
+
+;; v . grad: cos(k.t) -> -(v.k) sin(k.t), sin(k.t) -> (v.k) cos(k.t)
+(define (torus-directional-deriv f v)
+  (tr-from-raw (torus-dimension f)
+               (let loop ((l (torus-terms f)) (acc '()))
+                 (if (null? l) acc
+                     (let* ((t (car l)) (s (tr-dot (car t) v)))
+                       (loop (cdr l) (cons (list (car t) (* s (caddr t)) (- (* s (cadr t)))) acc)))))))
+
+(define (torus-deriv f j)
+  (let ((v (let loop ((i (- (torus-dimension f) 1)) (acc '()))
+             (if (< i 0) acc (loop (- i 1) (cons (if (= i j) 1 0) acc))))))
+    (torus-directional-deriv f v)))
+
+;; The inverse of v . grad on the zero-mean subspace: the unique G with
+;; mean 0 and v . grad G = F. Requires mean(F) = 0 and v . k != 0 on every
+;; frequency of F (a resonant frequency has no preimage); signals an error
+;; naming the obstruction otherwise. Exact for exact data.
+(define (torus-directional-inverse f v)
+  (if (not (= (torus-mean f) 0))
+      (error "torus-directional-inverse: the field has nonzero Haar mean; v . grad maps onto the zero-mean subspace only")
+      (tr-from-raw (torus-dimension f)
+                   (let loop ((l (torus-terms f)) (acc '()))
+                     (if (null? l) acc
+                         (let* ((t (car l)) (s (tr-dot (car t) v)))
+                           (if (= s 0)
+                               (error "torus-directional-inverse: resonant frequency (v . k = 0)" (car t))
+                               (loop (cdr l)
+                                     (cons (list (car t) (- (/ (caddr t) s)) (/ (cadr t) s)) acc)))))))))
+
+;; F at angles theta (a list of d values): plain numbers use + * cos sin (so
+;; the native AD operators differentiate through it), intervals and interval
+;; jets give rigorous enclosures.
+(define (tr-phase k theta)
+  (let loop ((k k) (th theta) (acc 0))
+    (if (null? k) acc
+        (loop (cdr k) (cdr th)
+              (if (= (car k) 0) acc (rn+ acc (rn* (car k) (car th))))))))
+
+(define (torus-eval f theta)
+  (let loop ((l (torus-terms f)) (acc 0))
+    (if (null? l) acc
+        (let* ((t (car l)) (ph (tr-phase (car t) theta))
+               (cpart (if (= (cadr t) 0) 0 (rn* (cadr t) (rn-cos ph))))
+               (spart (if (= (caddr t) 0) 0 (rn* (caddr t) (rn-sin ph)))))
+          (loop (cdr l) (rn+ acc (rn+ cpart spart)))))))
+
+(define (torus-at-phase f phi) (lambda (x) (torus-eval f (phi x))))
+
+;; ── Arcs in turns: (start . length), 0 <= start < 1, 0 <= length <= 1 ────
+(define (tr-frac x) (- x (floor x)))
+(define (tr-arc a b)                       ; user arc [a, b] in turns, exact
+  (if (not (and (exact? a) (exact? b)))
+      (error "torus-field: support arcs are exact rationals in turns")
+      (let ((len (if (>= b a) (- b a) (+ (- b a) 1))))
+        (cons (tr-frac a) (if (> len 1) 1 len)))))
+
+;; intersection of two closed arcs: list of arcs (0, 1 or 2 pieces)
+(define (tr-arc-intersect p q)
+  (cond ((= (cdr p) 1) (list q))
+        ((= (cdr q) 1) (list p))
+        (else
+         (let ((a1 (car p)) (b1 (+ (car p) (cdr p))))
+           (let loop ((shifts (list -1 0 1)) (acc '()))
+             (if (null? shifts) acc
+                 (let* ((a2 (+ (car q) (car shifts))) (b2 (+ a2 (cdr q)))
+                        (lo (if (> a1 a2) a1 a2)) (hi (if (< b1 b2) b1 b2)))
+                   (loop (cdr shifts)
+                         (if (<= lo hi) (cons (cons (tr-frac lo) (- hi lo)) acc) acc)))))))))
+
+;; product of per-coordinate arc lists -> list of boxes
+(define (tr-box-products lists)
+  (if (null? lists) (list '())
+      (let ((rest (tr-box-products (cdr lists))))
+        (let outer ((as (car lists)) (acc '()))
+          (if (null? as) acc
+              (outer (cdr as)
+                     (let inner ((r rest) (acc2 acc))
+                       (if (null? r) acc2 (inner (cdr r) (cons (cons (car as) (car r)) acc2))))))))))
+
+(define (tr-box-intersect b1 b2)           ; list of boxes
+  (let loop ((x b1) (y b2) (lists '()))
+    (if (null? x)
+        (tr-box-products (tr-reverse lists))
+        (let ((pieces (tr-arc-intersect (car x) (car y))))
+          (if (null? pieces) '() (loop (cdr x) (cdr y) (cons pieces lists)))))))
+
+(define (tr-support-intersect s t)
+  (let outer ((ss s) (acc '()))
+    (if (null? ss) acc
+        (outer (cdr ss)
+               (let inner ((tt t) (acc2 acc))
+                 (if (null? tt) acc2
+                     (inner (cdr tt) (append (tr-box-intersect (car ss) (car tt)) acc2))))))))
+
+;; Public support form: a list of boxes, each a list of d arcs (a . b) in
+;; turns; b < a wraps through 0, and b may exceed 1 (the arc [7/8, 9/8] is the
+;; arc (7/8 . 1/8)). Internally an arc is (start . length).
+(define (tr-support-in s)
+  (let loop ((bs s) (acc '()))
+    (if (null? bs) (tr-reverse acc)
+        (loop (cdr bs)
+              (cons (let arcs ((as (car bs)) (acc2 '()))
+                      (if (null? as) (tr-reverse acc2)
+                          (arcs (cdr as) (cons (tr-arc (car (car as)) (cdr (car as))) acc2))))
+                    acc)))))
+(define (tr-support-out s)
+  (let loop ((bs s) (acc '()))
+    (if (null? bs) (tr-reverse acc)
+        (loop (cdr bs)
+              (cons (let arcs ((as (car bs)) (acc2 '()))
+                      (if (null? as) (tr-reverse acc2)
+                          (arcs (cdr as) (cons (cons (car (car as)) (+ (car (car as)) (cdr (car as)))) acc2))))
+                    acc)))))
+(define (torus-support-intersect s t)
+  (tr-support-out (tr-support-intersect (tr-support-in s) (tr-support-in t))))
+(define (torus-supports-disjoint? s t)
+  (null? (tr-support-intersect (tr-support-in s) (tr-support-in t))))
+
+;; ── Supported fields ──────────────────────────────────────────────────────
+(define (torus-field? x)
+  (and (vector? x) (not (tensor? x)) (= (vector-length x) 4) (eq? (vector-ref x 0) 'torus-field)))
+(define (tr-field-dim f) (vector-ref f 1))
+(define (tr-field-support f) (vector-ref f 2))
+(define (torus-field-proc f) (vector-ref f 3))
+
+;; (torus-field d support proc): support is a list of boxes, each a list of
+;; d user arcs (a . b) in turns.
+(define (torus-field d support proc)
+  (vector 'torus-field d (tr-support-in support) proc))
+(define (torus-field-support f) (tr-support-out (tr-field-support f)))
+
+(define (tr-full-support d)
+  (list (let loop ((i 0) (acc '())) (if (>= i d) acc (loop (+ i 1) (cons (cons 0 1) acc))))))
+
+(define (torus-field-from-trig f)
+  (vector 'torus-field (torus-dimension f) (tr-full-support (torus-dimension f))
+          (lambda (theta) (torus-eval f theta))))
+
+(define (torus-field-eval f theta) ((torus-field-proc f) theta))
+(define (torus-field-zero? f) (null? (tr-field-support f)))
+
+(define (torus-field* f g)
+  (let ((s (tr-support-intersect (tr-field-support f) (tr-field-support g))))
+    (if (null? s)
+        (vector 'torus-field (tr-field-dim f) '() (lambda (theta) 0))
+        (vector 'torus-field (tr-field-dim f) s
+                (lambda (theta) (rn* ((torus-field-proc f) theta) ((torus-field-proc g) theta)))))))
+
+(define (torus-field+ f g)
+  (vector 'torus-field (tr-field-dim f)
+          (append (tr-field-support f) (tr-field-support g))
+          (lambda (theta) (rn+ ((torus-field-proc f) theta) ((torus-field-proc g) theta)))))
+
+(define (tr-replace l j x) (if (= j 0) (cons x (cdr l)) (cons (car l) (tr-replace (cdr l) (- j 1) x))))
+
+;; d/dtheta_j of a supported field; the support is kept. On plain numbers
+;; this is the native `derivative`; on an interval angle it is the first
+;; coefficient of an interval Taylor jet (an enclosure of the derivative).
+(define (torus-field-deriv f j)
+  (let ((p (torus-field-proc f)))
+    (vector 'torus-field (tr-field-dim f) (tr-field-support f)
+            (lambda (theta)
+              (let ((tj (tr-ref theta j)))
+                (if (pair? tj)
+                    (let ((v (p (tr-replace theta j (ijet-var tj 1)))))
+                      (if (ijet? v) (ijet-coeff v 1) (cons 0 0)))
+                    (derivative (lambda (s) (p (tr-replace theta j s))) tj)))))))
+
+;; Enclosure of the Haar mean of a supported field. The period cell is cut
+;; into n^d cells of angle width h = 2 pi / n (all angles enclosed with the
+;; rigorous pi). On a cell with center c, Taylor's theorem with Lagrange
+;; remainder and the symmetry of the cell give
+;;   d = 1:  mean = f(c) + f''(c)/2 h^2/12 + R,   R in C4(X) h^4/80
+;;   d > 1:  mean in f(c) + sum_i C2_ii(X) h^2/12
+;;                        + sum_{i<j} [-1,1] |H_ij(X)| h^2/16
+;; where Cm(X) encloses the m-th Taylor coefficient over the cell X (an
+;; interval Taylor jet), C2_ii is the second coefficient along e_i and H_ij
+;; is recovered from the jets along e_i, e_j and e_i + e_j. The odd moments
+;; of the centered cell vanish exactly, which is why the error is O(h^4)
+;; (d = 1) or O(h^2) (d > 1) rather than O(h). The mean of f is the average
+;; of the cell means; n doubles until the enclosure is narrower than tol or
+;; the next grid would exceed max-cells cells (default 4096), and the last
+;; enclosure is returned.
+(define (tr-vector->list v)
+  (let loop ((i (- (vector-length v) 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons (vector-ref v i) acc)))))
+
+(define (tr-cell-indices d n)              ; all d-tuples over 0..n-1
+  (if (= d 0) (list '())
+      (let ((rest (tr-cell-indices (- d 1) n)))
+        (let outer ((i 0) (acc '()))
+          (if (>= i n) acc
+              (outer (+ i 1)
+                     (let inner ((r rest) (acc2 acc))
+                       (if (null? r) acc2 (inner (cdr r) (cons (cons i (car r)) acc2))))))))))
+
+;; jet of f along direction u (list of exact numbers) from base point list xs
+;; (intervals), to order k: argument_m = xs_m + s u_m
+(define (tr-line-jet f xs u k)
+  (let ((v (f (let loop ((x xs) (uu u) (acc '()))
+                (if (null? x) (tr-reverse acc)
+                    (loop (cdr x) (cdr uu)
+                          (cons (if (= (car uu) 0)
+                                    (ijet-const (car x) k)
+                                    (rn+ (ijet-const (car x) k) (rn* (car uu) (ijet-var 0 k))))
+                                acc)))))))
+    (if (ijet? v) v (ijet-const (rn->interval v) k))))
+
+(define (tr-unit d i) (let loop ((m (- d 1)) (acc '())) (if (< m 0) acc (loop (- m 1) (cons (if (= m i) 1 0) acc)))))
+(define (tr-pair-dir d i j) (let loop ((m (- d 1)) (acc '())) (if (< m 0) acc (loop (- m 1) (cons (if (or (= m i) (= m j)) 1 0) acc)))))
+
+(define (tr-cell-mean f d cell-box center h)   ; cell-box, center: lists of intervals
+  (let ((h2 (ia-sqr h)))
+    (if (= d 1)
+        (let* ((pc (tr-line-jet f center (list 1) 2))
+               (bx (tr-line-jet f cell-box (list 1) 4))
+               (h4 (ia-sqr h2)))
+          (ia+ (ia+ (ijet-coeff pc 0) (ia* (ijet-coeff pc 2) (ia* h2 (cons 1/12 1/12))))
+               (ia* (ijet-coeff bx 4) (ia* h4 (cons 1/80 1/80)))))
+        (let* ((fc (rn->interval (f center)))
+               (diag (let loop ((i 0) (acc '()))
+                       (if (>= i d) (list->vector (tr-reverse acc))
+                           (loop (+ i 1) (cons (ijet-coeff (tr-line-jet f cell-box (tr-unit d i) 2) 2) acc)))))
+               (acc (let loop ((i 0) (acc fc))
+                      (if (>= i d) acc
+                          (loop (+ i 1) (ia+ acc (ia* (vector-ref diag i) (ia* h2 (cons 1/12 1/12)))))))))
+          (let outer ((i 0) (acc acc))
+            (if (>= i d) acc
+                (outer (+ i 1)
+                       (let inner ((j (+ i 1)) (acc2 acc))
+                         (if (>= j d) acc2
+                             (let* ((cij (ijet-coeff (tr-line-jet f cell-box (tr-pair-dir d i j) 2) 2))
+                                    ;; C2 along e_i + e_j = C2_ii + C2_jj + H_ij
+                                    (hij (ia- cij (ia+ (vector-ref diag i) (vector-ref diag j))))
+                                    (m (ia-mag hij))
+                                    (bound (ia* (cons (- m) m) (ia* h2 (cons 1/16 1/16)))))
+                               (inner (+ j 1) (ia+ acc2 bound))))))))))))
+
+(define (tr-mean-at f n)
+  (let* ((d (tr-field-dim f))
+         (p (torus-field-proc f))
+         (twopi (ia-scale (ia-pi) 2))
+         (h (ia* twopi (cons (/ 1 n) (/ 1 n))))
+         (cells (tr-cell-indices d n))
+         (count (let q ((i 0) (m 1)) (if (>= i d) m (q (+ i 1) (* m n))))))
+    (let loop ((cs cells) (acc (cons 0 0)))
+      (if (null? cs)
+          (ia* acc (cons (/ 1 count) (/ 1 count)))
+          (let* ((idx (car cs))
+                 (cell (let mk ((ix idx) (out '()))
+                         (if (null? ix) (tr-reverse out)
+                             (let ((lo (ia* twopi (cons (/ (car ix) n) (/ (car ix) n))))
+                                   (hi (ia* twopi (cons (/ (+ (car ix) 1) n) (/ (+ (car ix) 1) n)))))
+                               (mk (cdr ix) (cons (cons (car lo) (cdr hi)) out))))))
+                 (center (let mk ((ix idx) (out '()))
+                           (if (null? ix) (tr-reverse out)
+                               (let ((cv (/ (+ (* 2 (car ix)) 1) (* 2 n))))
+                                 (mk (cdr ix) (cons (ia* twopi (cons cv cv)) out)))))))
+            (loop (cdr cs) (ia+ acc (tr-cell-mean p d cell center h))))))))
+
+(define (torus-field-mean f tol . opt)
+  (if (torus-field-zero? f)
+      (cons 0 0)
+      (let ((max-cells (if (pair? opt) (car opt) 4096))
+            (d (tr-field-dim f)))
+        (let loop ((n 4))
+          (let ((m (tr-mean-at f n))
+                (next-cells (let q ((i 0) (c 1)) (if (>= i d) c (q (+ i 1) (* c (* 2 n)))))))
+            (if (or (<= (- (inexact->exact (cdr m)) (inexact->exact (car m))) (inexact->exact tol))
+                    (> next-cells max-cells))
+                m
+                (loop (* 2 n))))))))

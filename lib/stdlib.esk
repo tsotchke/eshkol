@@ -136,6 +136,16 @@
 ;;; generated from exactly this closure.
 (require core.ad.taylor_models)
 
+;;; Rigorous numerics (ADR-0050) - interval Taylor jets and interval
+;;; gradients with generic operators (core.ad.interval_jet), certified
+;;; sup/inf over parameter boxes (core.ad.compact_bounds), periodic fields on
+;;; T^d with exact Haar and angular means (core.torus), and tensors with
+;;; interval / Taylor-model elements (core.ad.interval_tensor).
+(require core.ad.interval_jet)
+(require core.ad.compact_bounds)
+(require core.torus)
+(require core.ad.interval_tensor)
+
 ;;; Machine Learning - optimization algorithms (gradient descent, Adam, L-BFGS, CG)
 (require ml.optimization)
 
