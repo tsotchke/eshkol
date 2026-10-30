@@ -86,27 +86,46 @@
 ;; Limits of finite diagrams of finite sets given by constraints
 ;; ---------------------------------------------------------------------------
 ;; sets: a list of element lists; constraints: (i j proc) meaning
-;; proc(x_i) = x_j. Returns every compatible family (a list of elements),
-;; assigning objects in the order given and propagating forced values.
+;; proc(x_i) = x_j. Returns every compatible family (a list of elements in
+;; the order of sets), assigning first the objects with the most outgoing
+;; constraints and propagating forced values.
 (define (effective-set-limit sets constraints)
   (let* ((n (length sets)) (sv (list->vector sets))
-         (into (make-vector n '())))
-    (for-each (lambda (k) (vector-set! into (cadr k) (cons k (vector-ref into (cadr k))))) constraints)
+         (into (make-vector n '())) (touch (make-vector n '())))
+    (for-each (lambda (k) (vector-set! into (cadr k) (cons k (vector-ref into (cadr k))))
+                (vector-set! touch (car k) (cons k (vector-ref touch (car k))))
+                (if (not (= (car k) (cadr k))) (vector-set! touch (cadr k) (cons k (vector-ref touch (cadr k))))))
+              constraints)
     (let ((consistent? (lambda (fam j)          ;; every constraint touching j with both ends assigned
                          (ek-all? (lambda (k) (let ((xi (vector-ref fam (car k))) (xj (vector-ref fam (cadr k))))
                                                 (or (eq? xi 'ek-unset) (eq? xj 'ek-unset) (equal? ((caddr k) xi) xj))))
-                                  (filter (lambda (k) (or (= (car k) j) (= (cadr k) j))) constraints)))))
-      (let search ((j 0) (fam (make-vector n 'ek-unset)))
-        (if (= j n) (list (vector->list fam))
-            (let* ((forced (let find ((ks (vector-ref into j)))
-                             (cond ((null? ks) 'ek-unset)
-                                   ((not (eq? (vector-ref fam (car (car ks))) 'ek-unset)) ((caddr (car ks)) (vector-ref fam (car (car ks)))))
-                                   (else (find (cdr ks))))))
-                   (choices (if (eq? forced 'ek-unset) (vector-ref sv j) (if (member forced (vector-ref sv j)) (list forced) '()))))
-              (ek-flatmap (lambda (x) (let ((f2 (list->vector (vector->list fam))))
-                                        (vector-set! f2 j x)
-                                        (if (consistent? f2 j) (search (+ j 1) f2) '())))
-                          choices)))))))
+                                  (vector-ref touch j)))))
+      ;; dynamic order: an object whose value is forced by an assigned
+      ;; constraint comes first; otherwise the unassigned object with the
+      ;; most outgoing constraints is searched
+      (let* ((outdeg (make-vector n 0))
+             (forced-value (lambda (fam j)
+                             (let find ((ks (vector-ref into j)))
+                               (cond ((null? ks) 'ek-unset)
+                                     ((not (eq? (vector-ref fam (car (car ks))) 'ek-unset)) ((caddr (car ks)) (vector-ref fam (car (car ks)))))
+                                     (else (find (cdr ks)))))))
+             (pick (lambda (fam)
+                     (let loop ((j 0) (best #f))
+                       (cond ((= j n) (if best (cons best 'ek-unset) #f))
+                             ((not (eq? (vector-ref fam j) 'ek-unset)) (loop (+ j 1) best))
+                             (else (let ((fv (forced-value fam j)))
+                                     (if (not (eq? fv 'ek-unset)) (cons j fv)
+                                         (loop (+ j 1) (if (or (not best) (> (vector-ref outdeg j) (vector-ref outdeg best))) j best))))))))))
+        (for-each (lambda (k) (vector-set! outdeg (car k) (+ 1 (vector-ref outdeg (car k))))) constraints)
+        (let search ((fam (make-vector n 'ek-unset)))
+          (let ((next (pick fam)))
+            (if (not next) (list (vector->list fam))
+                (let* ((j (car next)) (forced (cdr next))
+                       (choices (if (eq? forced 'ek-unset) (vector-ref sv j) (if (member forced (vector-ref sv j)) (list forced) '()))))
+                  (ek-flatmap (lambda (x) (let ((f2 (list->vector (vector->list fam))))
+                                            (vector-set! f2 j x)
+                                            (if (consistent? f2 j) (search f2) '())))
+                              choices)))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Left Kan extension
@@ -190,7 +209,12 @@
 ;; ---------------------------------------------------------------------------
 ;; Simplicial presheaves
 ;; ---------------------------------------------------------------------------
-(define (truncated-simplex-category n) (effective-full-subcategory (simplex-category) (ek-range (+ n 1)) (list 'Delta<= n)))
+;; Delta_{<=n}, declaring its faces and degeneracies as generators
+(define (truncated-simplex-category n)
+  (effective-category-with-properties
+   (effective-full-subcategory (simplex-category) (ek-range (+ n 1)) (list 'Delta<= n))
+   (list (cons 'generators (append (ek-flatmap (lambda (k) (map (lambda (i) (delta-face k i)) (ek-range (+ k 1)))) (ek-range-from 1 (+ n 1)))
+                                   (ek-flatmap (lambda (k) (map (lambda (j) (delta-degeneracy k j)) (ek-range (+ k 1)))) (ek-range n)))))))
 ;; i : Delta_{<=n} -> Delta, and its opposite (along which presheaves are
 ;; truncated and extended)
 (define (simplex-inclusion-functor n)
@@ -229,8 +253,8 @@
 ;; is the unit X_m -> (cosk_n tr_n X)_m a bijection?  (#t exactly when X is
 ;; n-coskeletal in degree m)
 (define (presheaf-unit-bijective? X n m)
-  (let* ((F (effective-functor-opposite (simplex-inclusion-functor n)))
-         (images (map (lambda (x) (effective-ran-unit F X m x)) (effective-set-functor-object X m)))
+  (let* ((F (effective-functor-opposite (simplex-inclusion-functor n))) (objs (effective-cocomma-objects F m))
+         (images (map (lambda (x) (map (lambda (o) ((effective-set-functor-arrow X (cadr o)) x)) objs)) (effective-set-functor-object X m)))
          (target (effective-set-functor-object (coskeleton (truncate-presheaf X n) n) m)))
     (and (= (length images) (length target))
          (let loop ((l images) (seen '())) (cond ((null? l) #t) ((member (car l) seen) #f) ((not (member (car l) target)) #f) (else (loop (cdr l) (cons (car l) seen))))))))

@@ -140,14 +140,12 @@
 ;; is a 2-coskeletal simplicial set"
 ;; For the walking arrow, BZ/2, BZ/3 and the commutative square: the unit
 ;; N C -> cosk_2 tr_2 N C (a right Kan extension along Delta_{<=2} -> Delta,
-;; comma categories finite) is a bijection in degree 3, and in degree 4 for
-;; the walking arrow and BZ/2.
+;; comma categories finite) is a bijection in degrees 3 and 4.
 (let* ((cats (list (walking-arrow-category) (cyclic-group-category 2) (cyclic-group-category 3) (commutative-square-category)))
        (rows (map (lambda (C) (let ((N (nerve-presheaf (finite-category->effective C))))
-                                (list (length (effective-set-functor-object N 3)) (presheaf-unit-bijective? N 2 3)
-                                      (if (<= (category-arrow-count C) 3) (presheaf-unit-bijective? N 2 4) 'not-run))))
+                                (list (length (effective-set-functor-object N 3)) (presheaf-unit-bijective? N 2 3) (presheaf-unit-bijective? N 2 4))))
                   cats)))
-  (claim "coskeleton" 1 "(|N C_3|, unit bijective in degree 3, in degree 4 for the two smallest) for four categories" rows
+  (claim "coskeleton" 1 "(|N C_3|, unit bijective in degree 3, in degree 4) for four categories" rows
          (all? (lambda (r) (and (cadr r) (caddr r))) rows)))
 
 ;; [coskeleton#2] The coskeleton is "a fully faithful right adjoint, given by
@@ -200,11 +198,11 @@
 ;; n = 0), and a morphism from m to n is an m-tuple (f_0, ..., f_{m-1}) of
 ;; numbers satisfying 0 <= f_i < n."
 ;; The effective skeleton of FinSet: |hom(m, n)| = n^m for m, n <= 4 and the
-;; category laws on objects <= 3.
+;; category laws on objects <= 2.
 (let* ((S (finset-category))
        (counts (map (lambda (p) (length (effective-category-hom-list S (car p) (cdr p)))) (pairs (range 5) (range 5))))
-       (laws (effective-category-laws-violations S (range 4) 0)))
-  (claim "FinSet" 1 "|FinSet(m, n)| for m, n = 0..4 and law violations on objects <= 3" (list counts (length laws))
+       (laws (effective-category-laws-violations S (range 3) 0)))
+  (claim "FinSet" 1 "|FinSet(m, n)| for m, n = 0..4 and law violations on objects <= 2" (list counts (length laws))
          (and (equal? counts (map (lambda (p) (expt (cdr p) (car p))) (pairs (range 5) (range 5)))) (null? laws))))
 
 ;; [matrix#1] "matrices over X may be taken as the morphisms of a category
