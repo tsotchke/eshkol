@@ -929,6 +929,35 @@ static bool iter_values_escape(const arena_t* arena,
     return false;
 }
 
+/* Does the span above @p scope's mark (the innermost scope when @p scope is
+ * NULL) hold state of the AD tape that is recording into @p arena?
+ *
+ * The recording tape is a root the loop-carried values do not show. Every node
+ * it records stays reachable from tape->nodes[] for the tape's whole lifetime,
+ * whatever the loop does with the node's VALUE afterwards: the value may be
+ * consumed, or stored only in a structure that lives in another arena (a cons
+ * cell from the global arena holding a node from the tape's arena), and either
+ * way the out-values point nowhere near the node. Rewinding a span with such a
+ * node recycles its address, the next iteration reallocates there, and every
+ * earlier tape entry then aliases the newest node: the primal values stay
+ * right, the gradient comes back wrong.
+ *
+ * Nodes are appended to the tape in creation order and allocated bump-ordered
+ * from tape->owner_arena, so the span holds a recorded node exactly when it
+ * holds the LAST recorded node. The node array grows from the same arena, so a
+ * growth during the span leaves the array itself inside the span. */
+static bool iter_span_holds_live_tape(const arena_t* arena, const arena_scope_t* scope) {
+    const ad_tape_t* tape = __current_ad_tape;
+    if (!tape || tape->owner_arena != arena) return false;
+    const arena_scope_t* mark = scope ? scope : arena->current_scope;
+    if (!mark) return false;
+    if (tape->num_nodes > 0 && tape->nodes &&
+        arena_scope_span_contains(arena, mark, tape->nodes[tape->num_nodes - 1])) {
+        return true;
+    }
+    return tape->nodes && arena_scope_span_contains(arena, mark, tape->nodes);
+}
+
 /* Bytes @p arena has allocated above @p scope's mark: this loop's whole
  * footprint since it started, live and dead together. Same block walk as
  * arena_scope_span_contains. */
@@ -1140,6 +1169,13 @@ void eshkol_arena_iter_scope_end(arena_t* arena, eshkol_tagged_value_t* vals, ui
         return;
     }
 
+    /* The recording tape holds nodes this iteration created: retain them
+     * (see iter_span_holds_live_tape). Nothing in the span may be rewound. */
+    if (iter_span_holds_live_tape(arena, nullptr)) {
+        arena_commit_scope(arena);
+        return;
+    }
+
     if (!iter_values_escape(arena, vals, n)) {
         arena_pop_scope(arena);
         return;
@@ -1149,6 +1185,12 @@ void eshkol_arena_iter_scope_end(arena_t* arena, eshkol_tagged_value_t* vals, ui
     if (!loop_scope || loop_scope != arena->current_scope->parent) {
         /* No loop scope in the expected shape: fall back to the pre-SW-164
          * behavior — retain this iteration, keep the scope stack balanced. */
+        arena_commit_scope(arena);
+        return;
+    }
+
+    /* Promotion rewinds the whole LOOP span, earlier iterations included. */
+    if (iter_span_holds_live_tape(arena, loop_scope)) {
         arena_commit_scope(arena);
         return;
     }
@@ -1184,13 +1226,21 @@ void eshkol_arena_iter_scope_finish(arena_t* arena, eshkol_tagged_value_t* vals,
          * leaving, so drop its registration if it is the one on top —
          * otherwise the abandoned record would disable promotion for every
          * later loop on this thread. */
-        if (iter_values_escape(arena, vals, n)) arena_commit_scope(arena);
+        if (iter_values_escape(arena, vals, n) || iter_span_holds_live_tape(arena, nullptr))
+            arena_commit_scope(arena);
         else arena_pop_scope(arena);
         std::vector<LoopScopeRecord>& stack = loop_scopes();
         if (!stack.empty() && stack.back().arena == arena &&
             stack.back().scope == loop_scope) {
             stack.pop_back();
         }
+        return;
+    }
+
+    /* Nodes the recording tape holds anywhere in the loop's span keep the
+     * whole span: commit both scopes instead of rewinding them. */
+    if (iter_span_holds_live_tape(arena, loop_scope)) {
+        iter_retain(arena, /*reopen=*/false);
         return;
     }
 

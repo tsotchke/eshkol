@@ -1,0 +1,179 @@
+;; core.ml.neurosymbolic — the parameter view of the embedding table, soft
+;; unification of terms through the engine's substitutions, attention over the
+;; knowledge base, exact gradients, and learning.
+;;
+;; Gradient checks compare two exact AD engines: reverse mode (`gradient`) and
+;; forward mode (`derivative` along each coordinate), plus closed forms where
+;; one exists. No finite differences are used: (ad-finite-difference-evals)
+;; stays 0 for the whole program.
+
+(require core.ml.neurosymbolic)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (vmaxabs-diff a b)
+  (let loop ((i 0) (m 0.0))
+    (if (< i (vector-length a))
+        (loop (+ i 1) (max m (abs (- (vector-ref a i) (vector-ref b i)))))
+        m)))
+
+;; forward-mode gradient: one `derivative` per coordinate
+(define (forward-gradient f theta)
+  (let* ((n (vector-length theta)) (g (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! g i
+              (derivative (lambda (s)
+                            (let ((th (make-vector n 0.0)))
+                              (let fill ((k 0))
+                                (if (< k n)
+                                    (begin (vector-set! th k (if (= k i) (+ (vector-ref theta k) s) (vector-ref theta k)))
+                                           (fill (+ k 1)))))
+                              (f th)))
+                          0.0))
+            (loop (+ i 1)))))
+    g))
+
+;; ── a small family KB ──
+(define kb (make-kb))
+(kb-assert! kb (make-fact 'parent 'ann 'bob))
+(kb-assert! kb (make-fact 'parent 'bob 'cid))
+(kb-assert! kb (make-fact 'parent 'dee 'eve))
+(kb-assert! kb (make-fact 'parent 'eve 'fay))
+(kb-assert! kb (make-fact 'likes 'bob 'tea))
+(kb-assert! kb (make-fact 'likes 'eve 'jazz))
+
+(define tbl (make-embedding-table 6))
+(define nsym (embedding-attach-kb! tbl kb (list (cons 'parent 2) (cons 'likes 2))))
+(embedding-index tbl 'father)          ; a query-only symbol gets an embedding too
+(check "attach registers predicates and constants" (= nsym 10))
+(check "kb-facts reads facts in insertion order"
+       (equal? (kb-facts kb 'parent 2) '((parent ann bob) (parent bob cid) (parent dee eve) (parent eve fay))))
+(check "table-facts spans the schema" (= (length (table-facts tbl)) 6))
+
+;; parameter view round-trip
+(define theta0 (embedding-params tbl))
+(check "params length = count * dim" (= (vector-length theta0) (* 11 6)))
+(check "param-embedding matches the live table vector"
+       (< (vmaxabs-diff (param-embedding theta0 tbl 'bob) (embed! tbl 'bob)) 1e-15))
+(define theta-shift (make-vector (vector-length theta0) 0.0))
+(let loop ((i 0)) (if (< i (vector-length theta0)) (begin (vector-set! theta-shift i (+ 0.25 (vector-ref theta0 i))) (loop (+ i 1)))))
+(embedding-load! tbl theta-shift)
+(check "embedding-load! writes the table" (< (abs (- (vector-ref (embed! tbl 'ann) 0) (+ 0.25 (vector-ref theta0 (* 6 (embedding-index tbl 'ann)))))) 1e-15))
+(embedding-load! tbl theta0)
+
+;; ── soft unification extends hard unification ──
+(define rbf (make-rbf-similarity 1.0))
+(define s0 (make-substitution))
+(define hard (unify '(parent ?x bob) '(parent ann bob) s0))
+(define soft (soft-unify-terms theta0 tbl '(parent ?x bob) '(parent ann bob) s0 rbf))
+(check "hard match: score exactly 1" (= (cdr soft) 1.0))
+(check "hard match: same binding as unify" (eq? (walk '?x (car soft)) (walk '?x hard)))
+(define soft2 (soft-unify-terms theta0 tbl '(father ?x bob) '(parent ann bob) s0 rbf))
+(check "soft match binds the variable" (eq? (walk '?x (car soft2)) 'ann))
+(check "soft match: score = rbf(father, parent)"
+       (< (abs (- (cdr soft2) (rbf-similarity (param-embedding theta0 tbl 'father) (param-embedding theta0 tbl 'parent) 1.0))) 1e-15))
+(check "structural mismatch fails" (not (soft-unify-terms theta0 tbl '(parent ?x) '(parent ann bob) s0 rbf)))
+(check "occurs check is the engine's" (not (soft-unify-terms theta0 tbl '?x '(f ?x) s0 rbf)))
+(define bound (unify '?y 'cid s0))
+(check "walks existing bindings" (= (cdr (soft-unify-terms theta0 tbl '(parent bob ?y) '(parent bob cid) bound rbf)) 1.0))
+(check "soft-kb-query returns every same-arity fact" (= (length (soft-kb-query theta0 tbl '(father ann ?z) rbf)) 6))
+
+;; ── exact gradients: reverse mode == forward mode == closed form ──
+(define (loss-unify theta)
+  (let ((r (soft-unify-terms theta tbl '(father ann ?z) '(parent ann bob) (make-substitution) rbf)))
+    (- 1.0 (cdr r))))
+(define g-rev (gradient loss-unify theta0))
+(define g-fwd (forward-gradient loss-unify theta0))
+(define (vmaxabs v) (vmaxabs-diff v (make-vector (vector-length v) 0.0)))
+(check "soft-unify-terms: gradient is non-trivial" (> (vmaxabs g-rev) 1e-3))
+(check "soft-unify-terms: reverse == forward (1e-12)" (< (vmaxabs-diff g-rev g-fwd) 1e-12))
+;; closed form: d/d e_father (1 - k) = k (e_father - e_parent) / mu^2
+(define e-f (param-embedding theta0 tbl 'father))
+(define e-p (param-embedding theta0 tbl 'parent))
+(define k0 (rbf-similarity e-f e-p 1.0))
+(define base-f (* 6 (embedding-index tbl 'father)))
+(check "soft-unify-terms: closed form on the father block"
+       (let loop ((i 0) (ok #t))
+         (if (< i 6)
+             (loop (+ i 1) (and ok (< (abs (- (vector-ref g-rev (+ base-f i)) (* k0 (- (vector-ref e-f i) (vector-ref e-p i))))) 1e-12)))
+             ok)))
+
+(define (cos-loss theta)
+  (cosine-similarity (param-embedding theta tbl 'ann) (param-embedding theta tbl 'bob)))
+(define gc (gradient cos-loss theta0))
+(define ea (param-embedding theta0 tbl 'ann))
+(define eb (param-embedding theta0 tbl 'bob))
+(define na (sqrt (vdot ea ea)))
+(define nb (sqrt (vdot eb eb)))
+(define base-a (* 6 (embedding-index tbl 'ann)))
+;; d/da 0.5 cos(a,b) = 0.5 (b/(|a||b|) - (a.b) a / (|a|^3 |b|))
+(check "cosine-similarity: closed form gradient"
+       (let loop ((i 0) (ok #t))
+         (if (< i 6)
+             (loop (+ i 1)
+                   (and ok (< (abs (- (vector-ref gc (+ base-a i))
+                                      (* 0.5 (- (/ (vector-ref eb i) (* na nb))
+                                                (/ (* (vdot ea eb) (vector-ref ea i)) (* na na na nb))))))
+                              1e-9)))
+             ok)))
+
+(define (attn-loss theta)
+  (- 1.0 (neural-query-probability theta tbl '(father ann ?w) 'bob rbf 1.0)))
+(define g-attn (gradient attn-loss theta0))
+(check "neural-query: gradient is non-trivial" (> (vmaxabs g-attn) 1e-3))
+(check "neural-query: reverse == forward (1e-12)"
+       (< (vmaxabs-diff g-attn (forward-gradient attn-loss theta0)) 1e-12))
+
+(define (term-loss theta)
+  (vdot (embed-term theta tbl '(likes bob (parent ann bob))) (embed-term theta tbl '(likes eve tea))))
+(check "embed-term (nested, circular convolution): reverse == forward (1e-12)"
+       (< (vmaxabs-diff (gradient term-loss theta0) (forward-gradient term-loss theta0)) 1e-12))
+
+;; ── attention is a distribution ──
+(define dist (neural-query theta0 tbl '(parent ann ?w) rbf 1.0))
+(check "neural-query answers sum to 1"
+       (< (abs (- 1.0 (let loop ((d dist) (s 0.0)) (if (pair? d) (loop (cdr d) (+ s (cdr (car d)))) s)))) 1e-12))
+(define af (attend-facts theta0 tbl '(parent ann ?w) (table-facts tbl) 1.0))
+(check "attend-facts weights sum to 1"
+       (< (abs (- 1.0 (let loop ((w (car af)) (s 0.0)) (if (pair? w) (loop (cdr w) (+ s (car w))) s)))) 1e-12))
+(check "attend context has the embedding dimension" (= (vector-length (cdr af)) 6))
+
+;; ── learning: father queries are answered from parent facts ──
+;; Train on the ann/bob family only; every query about dee and eve is held out.
+(define (train-loss theta)
+  (+ (- (log (neural-query-probability theta tbl '(father ann ?w) 'bob rbf 1.0)))
+     (- (log (neural-query-probability theta tbl '(father bob ?w) 'cid rbf 1.0)))
+     (- (log (neural-query-probability theta tbl '(likes bob ?w) 'tea rbf 1.0)))))
+(define theta (embedding-params tbl))
+(define loss-before (train-loss theta))
+(let train ((step 0))
+  (if (< step 100)
+      (let ((g (gradient train-loss theta)))
+        (let upd ((i 0))
+          (if (< i (vector-length theta))
+              (begin (vector-set! theta i (- (vector-ref theta i) (* 0.05 (vector-ref g i)))) (upd (+ i 1)))))
+        (train (+ step 1)))))
+(define loss-after (train-loss theta))
+(check "training lowers the query loss" (< loss-after (* 0.2 loss-before)))
+(check "held out: father(dee, ?) answers eve" (eq? (neural-query-answer theta tbl '(father dee ?w) rbf 1.0) 'eve))
+(check "held out: father(eve, ?) answers fay" (eq? (neural-query-answer theta tbl '(father eve ?w) rbf 1.0) 'fay))
+(check "learned: father soft-unifies with parent more than with likes"
+       (> (rbf-similarity (param-embedding theta tbl 'father) (param-embedding theta tbl 'parent) 1.0)
+          (rbf-similarity (param-embedding theta tbl 'father) (param-embedding theta tbl 'likes) 1.0)))
+(embedding-load! tbl theta)
+(check "soft-prove: father(eve, fay) is proved by parent(eve, fay)"
+       (equal? (cadr (soft-prove theta tbl '(father eve fay) rbf)) '(parent eve fay)))
+
+(check "no finite differences anywhere" (= (ad-finite-difference-evals) 0))
+
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0) (begin (display "ALL TESTS PASSED") (newline)))

@@ -14206,6 +14206,10 @@ private:
         if (func_name == "fl-next-up") co_return codegenNextafter(op, true);
         if (func_name == "fl-next-down") co_return codegenNextafter(op, false);
 
+        // stop-gradient (ADR-0049): a number's value with every derivative
+        // carrier removed; every enclosing AD pass sees a constant.
+        if (func_name == "stop-gradient") co_return codegenStopGradient(op);
+
         // Modulo and remainder
         if (func_name == "modulo" || func_name == "mod" || func_name == "%")
             co_return codegenModulo(op);
@@ -21063,6 +21067,40 @@ private:
             return std::string(op->call_op.func->variable.id);
         }
         return lowering_name;
+    }
+
+    // stop-gradient (ADR-0049). One runtime entry point,
+    // eshkol_stop_gradient_tagged, reads the primal of any carrier -- forward
+    // jet, Taylor tower or level, reverse-mode node -- exactly as the
+    // comparisons do, so `(stop-gradient x)` is a constant to every enclosing
+    // `derivative`/`gradient`/`derivative-n` pass while its value equals x.
+    // Non-carriers pass through unchanged. This is the primitive behind the
+    // straight-through estimators: soft + (stop-gradient (- hard soft)) has
+    // the hard value and the soft derivative.
+    Value* codegenStopGradient(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_arity_error_current("stop-gradient requires exactly 1 argument");
+            return nullptr;
+        }
+        Value* arg = codegenAST(&op->call_op.variables[0]);
+        if (!arg) return nullptr;
+        Value* arg_tagged = ensureTaggedValue(arg);
+        // Entry-block slots: a call inside a loop body must not grow the stack
+        // once per iteration.
+        Function* cur_fn = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        if (cur_fn && !cur_fn->empty()) {
+            BasicBlock& entry = cur_fn->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        AllocaInst* in_slot = builder->CreateAlloca(tagged_value_type, nullptr, "stop_gradient_in");
+        AllocaInst* out_slot = builder->CreateAlloca(tagged_value_type, nullptr, "stop_gradient_out");
+        builder->restoreIP(saved_ip);
+        builder->CreateStore(arg_tagged, in_slot);
+        FunctionType* ft = FunctionType::get(builder->getVoidTy(), {ptr_type, ptr_type}, false);
+        FunctionCallee fn = module->getOrInsertFunction("eshkol_stop_gradient_tagged", ft);
+        builder->CreateCall(fn, {in_slot, out_slot});
+        return builder->CreateLoad(tagged_value_type, out_slot, "stop_gradient");
     }
 
     // Directed rounding: fl-next-up / fl-next-down. Unary Scheme surface

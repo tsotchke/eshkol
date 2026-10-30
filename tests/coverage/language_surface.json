@@ -9972,9 +9972,9 @@
     }
   },
   "counts": {
-    "builtins_total": 1057,
-    "builtins_in_vm_table": 793,
-    "builtins_in_llvm_aot_dispatch": 799,
+    "builtins_total": 1058,
+    "builtins_in_vm_table": 794,
+    "builtins_in_llvm_aot_dispatch": 800,
     "builtins_aot_only": 242,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -9983,7 +9983,7 @@
   },
   "builtins_by_category": {
     "ffi_system": 302,
-    "tensor_ad": 226,
+    "tensor_ad": 227,
     "numeric": 90,
     "predicate": 76,
     "geometry": 56,
@@ -19808,6 +19808,19 @@
       "arity": null,
       "min_arity": null,
       "backends": [
+        "native_llvm"
+      ],
+      "category": "tensor_ad"
+    },
+    {
+      "name": "stop-gradient",
+      "ids": [
+        2252
+      ],
+      "arity": 1,
+      "min_arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"

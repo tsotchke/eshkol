@@ -17993,6 +17993,26 @@ tensor_inverse_done:
         vm_push(vm, FLOAT_VAL(nextafter(as_number_vm(vm, a), -INFINITY)));
         break;
     }
+    case 2252: { /* stop-gradient (ADR-0049): the value of a number with
+                  * every derivative carrier removed, mirroring native
+                  * eshkol_stop_gradient_tagged. A dual (scalar, Taylor tower
+                  * or level) answers its primal, exact when the carrier
+                  * holds it exactly; anything else passes through. */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_DUAL) {
+            VmDual* d = (VmDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            VmRational* ex = vm_dual_exact_value(d);
+            if (ex && vm_push_exact_rational(vm, ex)) break;
+            vm_push(vm, FLOAT_VAL(as_number_vm(vm, a)));
+            break;
+        }
+        if (a.type == VAL_HYPER_DUAL) {
+            vm_push(vm, FLOAT_VAL(as_number_vm(vm, a)));
+            break;
+        }
+        vm_push(vm, a);
+        break;
+    }
     case 251: { /* call-with-values-apply: unpack multi-value result */
         Value consumer = vm_pop(vm), result = vm_pop(vm);
         if (consumer.type == VAL_CLOSURE) {

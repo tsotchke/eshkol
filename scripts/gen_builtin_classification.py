@@ -404,6 +404,9 @@ _TENSOR_AD_HOST = {
     "diff": "Orchestrates the host AD tape to compute a derivative.",
     "directional-derivative": "Orchestrates the host AD tape.",
     "gradient": "Orchestrates the host AD tape's reverse pass.",
+    "stop-gradient": "Reads the primal out of a host AD carrier (forward jet, "
+        "Taylor tower or level, reverse-mode tape node); the device analogue is "
+        "a graph-level stop_gradient, not a StableHLO element op.",
     "hessian": "Orchestrates two nested passes over the host AD tape.",
     "jacobian": "Orchestrates the host AD tape's reverse pass per output "
         "component.",

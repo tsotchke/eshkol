@@ -487,7 +487,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,057 builtins across a 1,470-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,058 builtins across a 1,470-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -850,7 +850,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,057 builtins — 1,470-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,058 builtins — 1,470-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)

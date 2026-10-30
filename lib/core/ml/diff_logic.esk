@@ -1,0 +1,314 @@
+;;
+;; core.ml.diff_logic — differentiable logic programs (v1.5.0-intelligence,
+;; ADR-0049).
+;;
+;; Forward chaining with soft truth values, so gradients flow through rule
+;; application. A valuation assigns every ground atom p(a, b) of a binary
+;; predicate over a finite domain a truth value in [0,1]; extensional
+;; predicates are read from the consciousness engine's knowledge base, and
+;; rules derive intensional predicates step by step:
+;;
+;;   conjunction   a AND b  = a * b                   (product t-norm)
+;;   disjunction   a OR b   = a + b - a * b           (probabilistic sum)
+;;   existential   EXISTS z = 1 - prod_z (1 - .)      (noisy-or over z)
+;;
+;; A rule template fixes the shape of a clause and leaves its body predicates
+;; to be LEARNED (Evans & Grefenstette, "Learning Explanatory Rules from Noisy
+;; Data", 2018): each body slot holds a softmax over the candidate predicates,
+;; and the slot's relation is the softmax-weighted mixture of the candidates'
+;; relations (the TensorLog / Neural LP relaxation of choosing one predicate).
+;;
+;;   chain    head(x, y) <- P(x, z), Q(z, y)
+;;   conj     head(x, y) <- P(x, y), Q(x, y)
+;;   inverse  head(x, y) <- P(y, x)
+;;   copy     head(x, y) <- P(x, y)
+;;
+;; A head may appear among the candidates, so recursive programs (ancestor
+;; <- parent; ancestor <- parent, ancestor) are expressed directly; `steps`
+;; bounds the derivation depth. Every function is written over generic
+;; arithmetic: a loss built from `dl-forward-chain` is differentiated exactly
+;; by `gradient` over the rule logits. `dl-extract-rules` reads the learned
+;; program back as symbolic clauses, and `dl-assert-derived!` writes derived
+;; atoms into the knowledge base, where the exact engine queries them.
+;;
+
+(require core.ml.neurosymbolic)
+
+(provide dl-domain dl-domain-from-kb dl-domain-size dl-domain-constants dl-constant-index
+         dl-relation-from-kb dl-relation-zero dl-relation-ref dl-relation-set!
+         dl-and dl-or dl-not
+         dl-compose dl-conjoin dl-disjoin dl-inverse dl-mix dl-softmax
+         make-dl-program dl-program-param-count dl-program-init-params
+         dl-forward-chain dl-valuation-ref dl-cross-entropy
+         dl-rule-weights dl-extract-rules dl-assert-derived! dl-true-atoms)
+
+;; ── helpers ──
+(define (dl-reverse lst)
+  (let loop ((l lst) (acc '())) (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+(define (dl-length lst)
+  (let loop ((l lst) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+(define (dl-memq x lst)
+  (if (pair? lst) (if (eq? x (car lst)) lst (dl-memq x (cdr lst))) #f))
+(define (dl-assq x alist)
+  (if (pair? alist) (if (eq? x (car (car alist))) (car alist) (dl-assq x (cdr alist))) #f))
+
+;; ── domain: the constants the relations range over ──
+;; #(constants-vector size)
+(define (dl-domain constants)
+  (let ((n (dl-length constants)) )
+    (let ((v (make-vector n #f)))
+      (let loop ((cs constants) (i 0))
+        (if (pair? cs) (begin (vector-set! v i (car cs)) (loop (cdr cs) (+ i 1)))))
+      (vector v n))))
+(define (dl-domain-size dom) (vector-ref dom 1))
+(define (dl-domain-constants dom)
+  (let loop ((i (- (dl-domain-size dom) 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons (vector-ref (vector-ref dom 0) i) acc)))))
+(define (dl-constant-index dom c)
+  (let ((v (vector-ref dom 0)) (n (dl-domain-size dom)))
+    (let loop ((i 0))
+      (if (< i n) (if (equal? (vector-ref v i) c) i (loop (+ i 1))) #f))))
+
+;; constants of every fact of the binary predicates `preds`, first-seen order
+(define (dl-domain-from-kb kb preds)
+  (let loop ((ps preds) (acc '()))
+    (if (pair? ps)
+        (loop (cdr ps)
+              (let facts ((fs (kb-facts kb (car ps) 2)) (a acc))
+                (if (pair? fs)
+                    (let* ((x (cadr (car fs))) (y (car (cddr (car fs))))
+                           (a1 (if (dl-memq x a) a (cons x a)))
+                           (a2 (if (dl-memq y a1) a1 (cons y a1))))
+                      (facts (cdr fs) a2))
+                    a)))
+        (dl-domain (dl-reverse acc)))))
+
+;; ── relations: flat n*n vectors, R(x, y) at x*n + y ──
+(define (dl-relation-zero dom)
+  (let ((n (dl-domain-size dom))) (make-vector (* n n) 0.0)))
+(define (dl-relation-ref dom r x y) (vector-ref r (+ (* x (dl-domain-size dom)) y)))
+(define (dl-relation-set! dom r x y v) (vector-set! r (+ (* x (dl-domain-size dom)) y) v))
+
+;; the 0/1 relation of the facts pred(a, b) in the KB (constants outside the
+;; domain are skipped)
+(define (dl-relation-from-kb dom kb pred)
+  (let ((r (dl-relation-zero dom)))
+    (let loop ((fs (kb-facts kb pred 2)))
+      (if (pair? fs)
+          (let ((x (dl-constant-index dom (cadr (car fs))))
+                (y (dl-constant-index dom (car (cddr (car fs))))))
+            (if (and x y) (dl-relation-set! dom r x y 1.0))
+            (loop (cdr fs)))))
+    r))
+
+;; ── fuzzy connectives ──
+(define (dl-and a b) (* a b))
+(define (dl-or a b) (- (+ a b) (* a b)))
+(define (dl-not a) (- 1.0 a))
+
+(define (dl-map2 f a b)
+  (let* ((m (vector-length a)) (r (make-vector m 0.0)))
+    (let loop ((i 0)) (if (< i m) (begin (vector-set! r i (f (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    r))
+
+;; EXISTS z. R(x, z) AND S(z, y)
+(define (dl-compose dom r s)
+  (let* ((n (dl-domain-size dom)) (out (make-vector (* n n) 0.0)))
+    (let lx ((x 0))
+      (if (< x n)
+          (begin
+            (let ly ((y 0))
+              (if (< y n)
+                  (begin
+                    (vector-set! out (+ (* x n) y)
+                      (let lz ((z 0) (none 1.0))
+                        (if (< z n)
+                            (lz (+ z 1) (* none (- 1.0 (* (vector-ref r (+ (* x n) z)) (vector-ref s (+ (* z n) y))))))
+                            (- 1.0 none))))
+                    (ly (+ y 1)))))
+            (lx (+ x 1)))))
+    out))
+
+(define (dl-conjoin r s) (dl-map2 dl-and r s))
+(define (dl-disjoin r s) (dl-map2 dl-or r s))
+
+;; R(y, x)
+(define (dl-inverse dom r)
+  (let* ((n (dl-domain-size dom)) (out (make-vector (* n n) 0.0)))
+    (let lx ((x 0))
+      (if (< x n)
+          (begin
+            (let ly ((y 0))
+              (if (< y n) (begin (vector-set! out (+ (* x n) y) (vector-ref r (+ (* y n) x))) (ly (+ y 1)))))
+            (lx (+ x 1)))))
+    out))
+
+;; sum_i w_i R_i for weights summing to 1: a soft choice of one relation
+(define (dl-mix weights rels)
+  (let* ((m (vector-length (car rels))) (out (make-vector m 0.0)))
+    (let loop ((ws weights) (rs rels))
+      (if (pair? ws)
+          (begin
+            (let acc ((i 0))
+              (if (< i m)
+                  (begin (vector-set! out i (+ (vector-ref out i) (* (car ws) (vector-ref (car rs) i)))) (acc (+ i 1)))))
+            (loop (cdr ws) (cdr rs)))))
+    out))
+
+;; softmax of theta[off .. off+k-1] as a list
+(define (dl-softmax theta off k)
+  (let* ((mx (let loop ((i 1) (m (vector-ref theta off)))
+               (if (< i k) (loop (+ i 1) (max m (vector-ref theta (+ off i)))) m)))
+         (es (let loop ((i (- k 1)) (acc '()))
+               (if (< i 0) acc (loop (- i 1) (cons (exp (- (vector-ref theta (+ off i)) mx)) acc)))))
+         (s (let loop ((l es) (t 0.0)) (if (pair? l) (loop (cdr l) (+ t (car l))) t))))
+    (let loop ((l es) (acc '())) (if (pair? l) (loop (cdr l) (cons (/ (car l) s) acc)) (dl-reverse acc)))))
+
+;; ── programs ──
+;; #(candidates rules param-count)
+;;   rules: list of #(head kind slots offset)
+(define (dl-kind-slots kind)
+  (cond ((eq? kind 'chain) 2) ((eq? kind 'conj) 2) ((eq? kind 'inverse) 1) ((eq? kind 'copy) 1)
+        (else (error "make-dl-program: unknown rule template (chain, conj, inverse, copy)" kind))))
+
+;; `candidates`: the predicates a body slot may choose from (extensional and
+;; intensional); `rules`: list of (head kind)
+(define (make-dl-program candidates rules)
+  (let ((k (dl-length candidates)))
+    (let loop ((rs rules) (off 0) (acc '()))
+      (if (pair? rs)
+          (let* ((head (car (car rs))) (kind (cadr (car rs))) (slots (dl-kind-slots kind)))
+            (loop (cdr rs) (+ off (* slots k)) (cons (vector head kind slots off) acc)))
+          (vector candidates (dl-reverse acc) off)))))
+
+(define (dl-program-param-count prog) (vector-ref prog 2))
+
+;; all-zero logits: every candidate equally likely
+(define (dl-program-init-params prog) (make-vector (dl-program-param-count prog) 0.0))
+
+(define (dl-valuation-ref val pred)
+  (let ((hit (dl-assq pred val)))
+    (if hit (cdr hit) (error "dl-valuation-ref: predicate has no relation in the valuation" pred))))
+
+(define (dl-valuation-set val pred r)
+  (let loop ((v val) (acc '()) (done #f))
+    (if (pair? v)
+        (if (eq? (car (car v)) pred)
+            (loop (cdr v) (cons (cons pred r) acc) #t)
+            (loop (cdr v) (cons (car v) acc) done))
+        (if done (dl-reverse acc) (dl-reverse (cons (cons pred r) acc))))))
+
+;; the slot relation: softmax-weighted mixture of the candidates' relations
+(define (dl-slot theta prog rule slot val)
+  (let* ((cands (vector-ref prog 0)) (k (dl-length cands))
+         (ws (dl-softmax theta (+ (vector-ref rule 3) (* slot k)) k))
+         (rels (let loop ((cs cands) (acc '()))
+                 (if (pair? cs) (loop (cdr cs) (cons (dl-valuation-ref val (car cs)) acc)) (dl-reverse acc)))))
+    (dl-mix ws rels)))
+
+(define (dl-apply-rule theta prog dom rule val)
+  (let ((kind (vector-ref rule 1)))
+    (cond ((eq? kind 'chain) (dl-compose dom (dl-slot theta prog rule 0 val) (dl-slot theta prog rule 1 val)))
+          ((eq? kind 'conj) (dl-conjoin (dl-slot theta prog rule 0 val) (dl-slot theta prog rule 1 val)))
+          ((eq? kind 'inverse) (dl-inverse dom (dl-slot theta prog rule 0 val)))
+          (else (dl-slot theta prog rule 0 val)))))
+
+;; Forward chaining. `base` is an alist (pred . relation) of the extensional
+;; predicates; every rule head starts at its base relation (or false) and each
+;; of the `steps` rounds ORs in what every rule derives from the previous
+;; round's valuation. Returns the final valuation as an alist.
+(define (dl-forward-chain theta prog dom base steps)
+  (let* ((rules (vector-ref prog 1))
+         (val0 (let loop ((rs rules) (v base))
+                 (if (pair? rs)
+                     (loop (cdr rs) (if (dl-assq (vector-ref (car rs) 0) v) v
+                                        (dl-valuation-set v (vector-ref (car rs) 0) (dl-relation-zero dom))))
+                     v))))
+    (let round ((t 0) (val val0))
+      (if (< t steps)
+          (round (+ t 1)
+                 (let loop ((rs rules) (next val))
+                   (if (pair? rs)
+                       (let ((head (vector-ref (car rs) 0)))
+                         (loop (cdr rs)
+                               (dl-valuation-set next head
+                                 (dl-disjoin (dl-valuation-ref next head)
+                                             (dl-apply-rule theta prog dom (car rs) val)))))
+                       next)))
+          val))))
+
+;; binary cross-entropy of a relation against a 0/1 target, entries clamped
+;; into [eps, 1 - eps]
+(define (dl-cross-entropy r target)
+  (let ((eps 1.0e-7) (m (vector-length r)))
+    (let loop ((i 0) (s 0.0))
+      (if (< i m)
+          (let* ((p (+ eps (* (- 1.0 (* 2.0 eps)) (vector-ref r i)))) (t (vector-ref target i)))
+            (loop (+ i 1) (- s (+ (* t (log p)) (* (- 1.0 t) (log (- 1.0 p)))))))
+          s))))
+
+;; ── reading the learned program back ──
+;; per rule: (head kind ((cand . weight) ...) ...) one weight list per slot
+(define (dl-rule-weights theta prog)
+  (let* ((cands (vector-ref prog 0)) (k (dl-length cands)))
+    (let loop ((rs (vector-ref prog 1)) (acc '()))
+      (if (pair? rs)
+          (let ((rule (car rs)))
+            (loop (cdr rs)
+                  (cons (cons (vector-ref rule 0)
+                              (cons (vector-ref rule 1)
+                                    (let slots ((s 0) (out '()))
+                                      (if (< s (vector-ref rule 2))
+                                          (slots (+ s 1)
+                                                 (cons (let pair-up ((cs cands) (ws (dl-softmax theta (+ (vector-ref rule 3) (* s k)) k)) (o '()))
+                                                         (if (pair? cs) (pair-up (cdr cs) (cdr ws) (cons (cons (car cs) (car ws)) o)) (dl-reverse o)))
+                                                       out))
+                                          (dl-reverse out)))))
+                        acc)))
+          (dl-reverse acc)))))
+
+(define (dl-argmax-pair ps)
+  (let loop ((l ps) (best #f))
+    (if (pair? l) (loop (cdr l) (if (or (not best) (> (cdr (car l)) (cdr best))) (car l) best)) best)))
+
+;; Each rule as a clause with its most probable body predicates:
+;;   ((head ?x ?y) <- (P ?x ?z) (Q ?z ?y)) . confidence)
+;; confidence is the product of the chosen predicates' softmax weights.
+(define (dl-extract-rules theta prog)
+  (let loop ((rw (dl-rule-weights theta prog)) (acc '()))
+    (if (pair? rw)
+        (let* ((head (car (car rw))) (kind (cadr (car rw))) (slots (cddr (car rw)))
+               (p (dl-argmax-pair (car slots)))
+               (q (if (pair? (cdr slots)) (dl-argmax-pair (cadr slots)) #f))
+               (clause (cond ((eq? kind 'chain) (list (list head '?x '?y) '<- (list (car p) '?x '?z) (list (car q) '?z '?y)))
+                             ((eq? kind 'conj) (list (list head '?x '?y) '<- (list (car p) '?x '?y) (list (car q) '?x '?y)))
+                             ((eq? kind 'inverse) (list (list head '?x '?y) '<- (list (car p) '?y '?x)))
+                             (else (list (list head '?x '?y) '<- (list (car p) '?x '?y))))))
+          (loop (cdr rw) (cons (cons clause (if q (* (cdr p) (cdr q)) (cdr p))) acc)))
+        (dl-reverse acc))))
+
+;; ground atoms (pred a b) whose truth exceeds `threshold`
+(define (dl-true-atoms dom r pred threshold)
+  (let* ((n (dl-domain-size dom)) (cs (vector-ref dom 0)))
+    (let lx ((x (- n 1)) (acc '()))
+      (if (< x 0)
+          acc
+          (lx (- x 1)
+              (let ly ((y (- n 1)) (a acc))
+                (if (< y 0)
+                    a
+                    (ly (- y 1) (if (> (vector-ref r (+ (* x n) y)) threshold)
+                                    (cons (list pred (vector-ref cs x) (vector-ref cs y)) a)
+                                    a)))))))))
+
+;; assert every derived atom above `threshold` that the KB does not already
+;; hold; returns the number of facts added
+(define (dl-assert-derived! kb dom r pred threshold)
+  (let loop ((atoms (dl-true-atoms dom r pred threshold)) (added 0))
+    (if (pair? atoms)
+        (let ((a (car atoms)))
+          (if (pair? (kb-query kb a))
+              (loop (cdr atoms) added)
+              (begin (kb-assert! kb (make-fact (car a) (cadr a) (car (cddr a))))
+                     (loop (cdr atoms) (+ added 1)))))
+        added)))

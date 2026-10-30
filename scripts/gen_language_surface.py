@@ -973,7 +973,7 @@ def categorize(name):
             "make-tensor", "reshape", "transpose", "flatten", "matmul", "conv2d",
             "softmax", "relu", "sigmoid", "dropout", "zeros", "ones", "arange",
             "linspace", "eye", "matrix", "gradient", "jacobian", "hessian",
-            "derivative", "derivative-n", "taylor", "divergence", "curl",
+            "derivative", "derivative-n", "taylor", "divergence", "curl", "stop-gradient",
             "laplacian", "directional-derivative", "diff", "differentiate", "D",
             "make-dual", "dual?", "mse-loss", "cross-entropy-loss", "batch-norm",
             "layer-norm", "scaled-dot-attention", "tensor-matmul", "tensor-scale",
