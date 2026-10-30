@@ -58,7 +58,7 @@
 ;;      on the presheaf category; core.sheaf's derived limits agree.
 
 (require stdlib)
-(require core.category.set)
+(require core.category.kan)
 (require core.sheaf.cohomology)
 
 (define pass-count 0)

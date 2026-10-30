@@ -25,15 +25,26 @@
 ;;;   (module-presheaf-colimit F)  #(module-colimit ring rank torsion):
 ;;;       (+)_c F(c) / <iota_d F(a) w - iota_c w>, rank and the invariant
 ;;;       factors d > 1 of its torsion (none over Q).
+;;;   (module-presheaf-derived-limits F kmax)  ((k betti torsion) ...): lim^k
+;;;       over C^op, the cohomology of the normalized cosimplicial replacement
+;;;       C^n = prod over strings j0 -> ... -> jn of non-identity arrows of
+;;;       C^op of F(jn) (Bousfield-Kan XI.5; Weibel 2.6 for posets), so
+;;;       lim^0 is the limit and, for a group G, lim^n over BG is H^n(G; M).
 
 (require stdlib)
 (require core.integer_linalg)
 (require core.sheaf.site)
 (require core.sheaf.module)
+(require core.sheaf.cohomology)
+(require core.category.finite)
+(require core.category.functor)
 
 (provide module-presheaf-limit module-limit-rank module-limit-basis module-limit-component
          module-presheaf-colimit module-colimit-rank module-colimit-torsion
-         module-presheaf-limit-relations module-presheaf-colimit-relations)
+         module-presheaf-limit-relations module-presheaf-colimit-relations
+         module-presheaf-restrict poset-module->point-presheaf
+         module-presheaf-cosimplicial-complex module-presheaf-derived-limits
+         module-presheaf-map-hypercohomology module-cohomology-mod-p-dimensions)
 
 (define (cl-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
 (define (cl-offsets F)
@@ -102,3 +113,108 @@
   (let ((m (matrix-clear-denominators (vector v)))) (vector-ref m 0)))
 (define (module-colimit-rank K) (vector-ref K 2))
 (define (module-colimit-torsion K) (vector-ref K 3))
+
+;; ---------------------------------------------------------------------------
+;; Restriction along a functor, and the bridge from core.sheaf poset modules
+;; ---------------------------------------------------------------------------
+;; F o G for G : D -> C: the module presheaf on D with F(G a) on each arrow
+(define (module-presheaf-restrict F G)
+  (let ((D (functor-source G)))
+    (make-module-presheaf D (module-presheaf-ring F)
+                          (lambda (d) (module-presheaf-rank F (functor-object G d)))
+                          (lambda (a) (module-presheaf-restriction F (functor-arrow G a))))))
+;; a core.sheaf poset module (stalks F(x), maps F(x) -> F(y) for y <= x) as
+;; a module presheaf on the category of points: one arrow y -> x for y <= x
+(define (poset-module->point-presheaf M)
+  (let* ((X (poset-module-space M)) (n (finite-space-size X))
+         (P (poset-category n (lambda (y x) (finite-space-leq? X y x)))))
+    (make-module-presheaf P (poset-module-ring M) (lambda (x) (poset-module-rank M x))
+                          (lambda (a) (poset-module-map M (arrow-target P a) (arrow-source P a))))))
+
+;; ---------------------------------------------------------------------------
+;; Derived limits by the cosimplicial replacement
+;; ---------------------------------------------------------------------------
+(define (cl-matrix-vector M v rows) (if (= rows 0) (make-vector 0 0) (integer-matrix-vector M v)))
+;; (dims Ds): dims of C^0 .. C^kmax and the coboundaries D_k : C^k -> C^{k+1}.
+;; A cochain is a block vector over the k-simplices s of the nerve of C^op,
+;; block s in F(last object of s); (delta phi)(s) = sum_i (-1)^i phi(d_i s),
+;; the last face transported along F of the last arrow; faces through an
+;; identity are degenerate and vanish (normalized cochains).
+(define (module-presheaf-cosimplicial-complex F kmax)
+  (let* ((C (module-presheaf-category F)) (Cop (category-opposite C))
+         (last-obj (lambda (s k) (if (= k 0) (car s) (arrow-target Cop (car (reverse s))))))
+         (layer (lambda (k)
+                  (let* ((ss (list->vector (category-nerve Cop k))) (m (vector-length ss)) (offs (make-vector (+ m 1) 0)) (index (make-hash-table)))
+                    (let loop ((i 0)) (if (< i m) (begin (hash-table-set! index (vector-ref ss i) i)
+                                                         (vector-set! offs (+ i 1) (+ (vector-ref offs i) (module-presheaf-rank F (last-obj (vector-ref ss i) k))))
+                                                         (loop (+ i 1)))))
+                    (list ss offs index))))
+         (layers (list->vector (map layer (cl-range (+ kmax 2)))))
+         (dim (lambda (k) (let ((L (vector-ref layers k))) (vector-ref (cadr L) (vector-length (car L)))))))
+    (list (map dim (cl-range (+ kmax 1)))
+          (map (lambda (k)
+                 (let* ((src (vector-ref layers k)) (tgt (vector-ref layers (+ k 1)))
+                        (M (integer-matrix (dim (+ k 1)) (dim k))))
+                   (let loop ((t 0))
+                     (if (< t (vector-length (car tgt)))
+                         (let* ((s (vector-ref (car tgt) t)) (row0 (vector-ref (cadr tgt) t)) (jn (last-obj s (+ k 1))) (r (module-presheaf-rank F jn)))
+                           (let faces ((i 0))
+                             (if (<= i (+ k 1))
+                                 (let* ((face (cond ((= k 0) (list (if (= i 0) (arrow-target Cop (car s)) (arrow-source Cop (car s)))))
+                                                    ((= i 0) (cdr s))
+                                                    ((= i (+ k 1)) (reverse (cdr (reverse s))))
+                                                    (else (let walk ((l s) (j 1) (out '()))
+                                                            (if (= j i) (append (reverse out) (cons (category-compose Cop (cadr l) (car l)) (cddr l)))
+                                                                (walk (cdr l) (+ j 1) (cons (car l) out)))))))
+                                        (degenerate (and (> k 0) (not (null? (filter (lambda (a) (category-identity? Cop a)) face)))))
+                                        (j (if degenerate #f (hash-table-ref/default (caddr src) face #f)))
+                                        (sign (if (even? i) 1 -1)))
+                                   (if j
+                                       (let ((col0 (vector-ref (cadr src) j)) (c (module-presheaf-rank F (last-obj face k))))
+                                         (if (= i (+ k 1))
+                                             ;; transport along the last arrow a : j_k -> j_{k+1} of C^op, i.e. F(a)
+                                             (let ((A (module-presheaf-restriction F (car (reverse s)))))
+                                               (let rows ((p 0)) (if (< p r) (begin (let cols ((q 0)) (if (< q c) (begin (integer-matrix-set! M (+ row0 p) (+ col0 q) (+ (integer-matrix-ref M (+ row0 p) (+ col0 q)) (* sign (integer-matrix-ref A p q)))) (cols (+ q 1))))) (rows (+ p 1))))))
+                                             (let rows ((p 0)) (if (< p r) (begin (integer-matrix-set! M (+ row0 p) (+ col0 p) (+ (integer-matrix-ref M (+ row0 p) (+ col0 p)) sign)) (rows (+ p 1))))))))
+                                   (faces (+ i 1)))))
+                           (loop (+ t 1)))))
+                   M))
+               (cl-range (+ kmax 1))))))
+;; ((k betti torsion) ...), k = 0..kmax; torsion only over Z
+(define (module-presheaf-derived-limits F kmax)
+  (let ((cx (module-presheaf-cosimplicial-complex F kmax)))
+    (ring-cochain-cohomology (module-presheaf-ring F) (car cx) (cadr cx))))
+;; the hypercohomology of a two-term complex F --phi--> G (degrees 0 and 1),
+;; phi a vector c -> matrix F(c) -> G(c) natural in c: the total complex
+;; Tot^n = C^n(F) (+) C^{n-1}(G), D(a, b) = (delta a, phi a - delta b)
+(define (module-presheaf-map-hypercohomology F G phi kmax)
+  (let* ((C (module-presheaf-category F)) (Cop (category-opposite C))
+         (cF (module-presheaf-cosimplicial-complex F (+ kmax 1))) (cG (module-presheaf-cosimplicial-complex G (+ kmax 1)))
+         (dF (list->vector (car cF))) (dG (list->vector (car cG))) (DF (list->vector (cadr cF))) (DG (list->vector (cadr cG)))
+         ;; phi on C^n: block s ends at j, apply phi_j
+         (phin (lambda (n)
+                 (let* ((ss (category-nerve Cop n)) (M (integer-matrix (vector-ref dG n) (vector-ref dF n))))
+                   (let loop ((l ss) (oF 0) (oG 0))
+                     (if (null? l) M
+                         (let* ((j (if (= n 0) (car (car l)) (arrow-target Cop (car (reverse (car l))))))
+                                (P (vector-ref phi j)) (rf (module-presheaf-rank F j)) (rg (module-presheaf-rank G j)))
+                           (let rows ((p 0)) (if (< p rg) (begin (let cols ((q 0)) (if (< q rf) (begin (integer-matrix-set! M (+ oG p) (+ oF q) (integer-matrix-ref P p q)) (cols (+ q 1))))) (rows (+ p 1)))))
+                           (loop (cdr l) (+ oF rf) (+ oG rg))))))))
+         (tot (lambda (n) (+ (vector-ref dF n) (if (> n 0) (vector-ref dG (- n 1)) 0))))
+         (D (lambda (n)            ;; Tot^n -> Tot^{n+1}
+              (let* ((a (vector-ref dF n)) (b (if (> n 0) (vector-ref dG (- n 1)) 0))
+                     (M (integer-matrix (tot (+ n 1)) (tot n))) (P (phin n)) (a2 (vector-ref dF (+ n 1))))
+                (let rows ((p 0)) (if (< p a2) (begin (let cols ((q 0)) (if (< q a) (begin (integer-matrix-set! M p q (integer-matrix-ref (vector-ref DF n) p q)) (cols (+ q 1))))) (rows (+ p 1)))))
+                (let rows ((p 0)) (if (< p (vector-ref dG n)) (begin (let cols ((q 0)) (if (< q a) (begin (integer-matrix-set! M (+ a2 p) q (integer-matrix-ref P p q)) (cols (+ q 1))))) (rows (+ p 1)))))
+                (if (> n 0)
+                    (let rows ((p 0)) (if (< p (vector-ref dG n)) (begin (let cols ((q 0)) (if (< q b) (begin (integer-matrix-set! M (+ a2 p) (+ a q) (- (integer-matrix-ref (vector-ref DG (- n 1)) p q))) (cols (+ q 1))))) (rows (+ p 1))))))
+                M))))
+    (ring-cochain-cohomology (module-presheaf-ring F) (map tot (cl-range (+ kmax 1))) (map D (cl-range (+ kmax 1))))))
+;; dim_{F_p} H^k(-; Z/p) for k = 0..kmax-1 from integral groups ((k betti
+;; torsion) ... up to kmax) by the universal coefficient theorem:
+;; b_k + #{p | t in tors_k} + #{p | t in tors_{k+1}}
+(define (module-cohomology-mod-p-dimensions H p)
+  (let ((hv (list->vector H)))
+    (map (lambda (k) (let ((cnt (lambda (h) (length (filter (lambda (t) (= 0 (remainder t p))) (caddr h))))))
+                       (+ (cadr (vector-ref hv k)) (cnt (vector-ref hv k)) (cnt (vector-ref hv (+ k 1))))))
+         (cl-range (- (vector-length hv) 1)))))

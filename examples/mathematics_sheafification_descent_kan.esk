@@ -54,6 +54,7 @@
 ;;      (gluing twice) and both triangle identities checked.
 
 (require stdlib)
+(require core.category.kan)
 (require core.category.descent)
 
 (define pass-count 0)

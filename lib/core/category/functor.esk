@@ -48,7 +48,7 @@
          natural-isomorphism?
          functor-category functor-category-functors
          comma-category comma-domain-projection comma-codomain-projection
-         slice-category coslice-category
+         slice-category coslice-category sieve-category
          make-category-diagram category-diagram? category-diagram-base category-diagram-category
          category-diagram-functor category-diagram-violations
          grothendieck-construction grothendieck-projection
@@ -292,6 +292,15 @@
 ;; C / c = (id | c) and c / C = (c | id)
 (define (slice-category C c) (comma-category (identity-functor C) (object-functor C c)))
 (define (coslice-category C c) (comma-category (object-functor C c) (identity-functor C)))
+
+;; The category of a sieve S on c (Mac Lane-Moerdijk I.4): (K . pi), K the
+;; full subcategory of C/c on the arrows of S (object labels (d 0 f), f in
+;; S), pi : K -> C the domain functor
+(define (sieve-category C c S)
+  (let* ((sl (slice-category C c))
+         (objs (filter (lambda (o) (memv (caddr (category-object-label sl o)) S)) (cf-range (category-object-count sl))))
+         (inc (inclusion-functor sl objs)))
+    (cons (car inc) (functor-compose (comma-domain-projection (identity-functor C) sl) (cdr inc)))))
 
 ;; ---------------------------------------------------------------------------
 ;; The Grothendieck construction of a diagram of categories
