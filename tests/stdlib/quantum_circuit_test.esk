@@ -71,7 +71,7 @@
        (and (= 4 (qcircuit-gate-count counted)) (= 2 (qcircuit-two-qubit-count counted))
             (= 1 (qcircuit-t-count counted)) (= 4 (qcircuit-depth counted))))
 (check "qcircuit-t-count charges CCX and CCZ 7 each and counts odd eighths of P as T"
-       (= 15 (qcircuit-t-count (make-qcircuit 3 (list (list 'CCX 0 1 2) (list 'CCZ 0 1 2) (list 'P 0 (/ 1 4))
+       (= 16 (qcircuit-t-count (make-qcircuit 3 (list (list 'CCX 0 1 2) (list 'CCZ 0 1 2) (list 'P 0 (/ 1 4))
                                                        (list 'P 0 (/ 1 2)) (list 'P 0 (/ 3 4)))))))
 (check "qcircuit-inverse reverses the gate list and inverts every gate, exactly matching the hand-built list"
        (equal? (qcircuit-gates (qcircuit-inverse counted))
@@ -304,6 +304,8 @@
 (check "qcircuit-lower of a circuit with every gate kind emits only H X Y Z CNOT RX RY RZ and is float-equivalent to the input"
        (and (all? (lambda (g) (memq (qgate-name g) lowering-targets)) (qcircuit-gates (qcircuit-lower every-kind)))
             (qcircuit-equivalent-float? every-kind (qcircuit-lower every-kind))))
+;; a wire different from a and b (n >= 3)
+(define (third-wire n a b) (let ((c (rand n))) (if (or (= c a) (= c b)) (third-wire n a b) c)))
 (define (rand-any-gate n)
   (let ((r (rand 19)) (q (rand n)))
     (cond ((= r 0) (list 'H q)) ((= r 1) (list 'X q)) ((= r 2) (list 'Y q)) ((= r 3) (list 'Z q)) ((= r 4) (list 'S q))
@@ -312,7 +314,7 @@
           ((= r 12) (list 'RZ q (rand-angle)))
           ((= r 13) (list 'CNOT q (rand-other n q))) ((= r 14) (list 'CZ q (rand-other n q))) ((= r 15) (list 'SWAP q (rand-other n q)))
           ((= r 16) (list 'RZZ q (rand-other n q) (rand-angle)))
-          (else (let* ((a (rand n)) (b (rand-other n a)) (c (rand-other n (min a b)))) (list (if (= r 17) 'CCX 'CCZ) a b c))))))
+          (else (let* ((a (rand n)) (b (rand-other n a)) (c (third-wire n a b))) (list (if (= r 17) 'CCX 'CCZ) a b c))))))
 (define random-full (map (lambda (i) (make-qcircuit 4 (rand-gates 4 (+ 6 (rand 10)) rand-any-gate))) (range 6)))
 (check "qcircuit-lower is float-equivalent on 6 random circuits mixing every gate kind, including CCX/CCZ"
        (all? (lambda (c) (and (all? (lambda (g) (memq (qgate-name g) lowering-targets)) (qcircuit-gates (qcircuit-lower c)))
@@ -345,10 +347,10 @@
 (check "qcircuit-permutation-gates realises four random permutations of 3-4 wires"
        (all? realises-permutation? (list (rand-perm 3) (rand-perm 3) (rand-perm 4) (rand-perm 4))))
 (define perm-c (make-qcircuit 2 (list (list 'H 0) (list 'T 1))))
-(define perm-d (qcircuit-remap perm-c (vector 1 0) 2))
-(check "qcircuit-equivalent-up-to-permutation? holds between a circuit and its wire-swapped remapping, under that permutation"
+(define perm-d (qcircuit-append perm-c (list (list (quote SWAP) 0 1))))   ; c, then the two wires exchanged
+(check "qcircuit-equivalent-up-to-permutation? holds between a circuit and the circuit followed by exchanging its wires, under that exchange"
        (qcircuit-equivalent-up-to-permutation? perm-c perm-d (vector 1 0)))
-(check "qcircuit-equivalent-up-to-permutation? fails under the identity permutation, since the wires were actually swapped"
+(check "qcircuit-equivalent-up-to-permutation? fails under the identity permutation, since the wires were exchanged"
        (not (qcircuit-equivalent-up-to-permutation? perm-c perm-d (vector 0 1))))
 
 (display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
