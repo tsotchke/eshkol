@@ -2202,7 +2202,7 @@ jobs:
           cmake --build "${{ matrix.build_dir }}" --parallel ${BUILD_JOBS}
 
       - name: Required CE, qLLM bridge and tensor gradient CTests
-        if: env.LANE_ACTIVE == 'true' && matrix.name == 'linux-x64-lite'
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'linux-x64-xla')
         timeout-minutes: 35
         shell: bash
         env:
@@ -2493,7 +2493,7 @@ jobs:
           ./scripts/run_ad_exactness_gate.sh
 
       - name: Upload Test Logs
-        if: env.LANE_ACTIVE == 'true' && (failure() || cancelled() || matrix.name == 'linux-x64-lite')
+        if: env.LANE_ACTIVE == 'true' && (failure() || cancelled() || matrix.name == 'linux-x64-lite' || matrix.name == 'linux-x64-xla')
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
