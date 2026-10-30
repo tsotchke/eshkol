@@ -52,7 +52,9 @@
 (require core.category.effective)
 (require core.category.presented)
 
-(provide poset-effective-category naturals-poset integers-poset divisibility-poset
+(provide poset-effective-category naturals-poset integers-poset rationals-poset divisibility-poset
+         rationals-enumerator floor-ceiling-adjunctions
+         pointed-finset-category pointed-set-adjunction
          poset-meet poset-join poset-top poset-bottom
          monoid-effective-category naturals-additive-monoid integers-additive-group
          simplex-category finord-category finset-category
@@ -107,6 +109,26 @@
   (poset-effective-category "(Z, <=)" (integers-enumerator) (lambda (x) (and (integer? x) (exact? x))) (lambda (a b) (<= a b))
                             (list (cons 'meet (lambda (a b) (min a b))) (cons 'join (lambda (a b) (max a b)))
                                   (cons 'bottom 'none) (cons 'top 'none))))
+;; the rationals by height max(|numerator|, denominator): stage s is finite
+(define (rationals-enumerator)
+  (make-enumerator (lambda (s) (if (= s 0) (list 0)
+                                   (cs-flatmap (lambda (q) (let ((den (car q)) (num (cdr q))) (if (= (gcd num den) 1) (list (/ num den) (- (/ num den))) '())))
+                                               (append (map (lambda (num) (cons s num)) (cs-range-from 1 (+ s 1)))
+                                                       (map (lambda (den) (cons den s)) (cs-range-from 1 s))))))))
+(define (rationals-poset)
+  (poset-effective-category "(Q, <=)" (rationals-enumerator) (lambda (x) (and (rational? x) (exact? x))) (lambda (a b) (<= a b))
+                            (list (cons 'meet (lambda (a b) (min a b))) (cons 'join (lambda (a b) (max a b)))
+                                  (cons 'bottom 'none) (cons 'top 'none))))
+;; ceiling -| i -| floor for the inclusion i : (Z, <=) -> (Q, <=), as two
+;; effective adjunctions (ceiling-adjunction . floor-adjunction): the
+;; Galois connections ceil(q) <= n <=> q <= n and n <= q <=> n <= floor(q)
+(define (floor-ceiling-adjunctions)
+  (let* ((Z (integers-poset)) (Q (rationals-poset))
+         (i (make-effective-functor Z Q (lambda (n) n) (lambda (f) f) "Z -> Q"))
+         (ceil-f (make-effective-functor Q Z (lambda (q) (ceiling q)) (lambda (f) (cons (ceiling (car f)) (ceiling (cdr f)))) "ceiling"))
+         (floor-f (make-effective-functor Q Z (lambda (q) (floor q)) (lambda (f) (cons (floor (car f)) (floor (cdr f)))) "floor")))
+    (cons (make-effective-adjunction ceil-f i (lambda (q) (cons q (ceiling q))) (lambda (n) (cons n n)))
+          (make-effective-adjunction i floor-f (lambda (n) (cons n n)) (lambda (q) (cons (floor q) q))))))
 ;; positive integers under divisibility: meet gcd, join lcm, bottom 1, no top
 (define (divisibility-poset)
   (poset-effective-category "(N+, |)" (make-enumerator (lambda (n) (list (+ n 1)))) (lambda (x) (and (cs-nat? x) (> x 0)))
@@ -291,6 +313,25 @@
                                       (list 'candidate q 'test-object x 'cocones cocones 'maps-from-candidate maps))
                      (if (< x (+ t0 2)) (loop (+ x 1))
                          (category-refuse 'limit-not-computable 'ordinal-coproduct (effective-category-name E) (list a b)))))))))))
+
+;; Pointed finite sets: objects n >= 1 ({0..n-1} pointed at 0), arrows the
+;; maps fixing 0. Free -| forgetful: F n = n + 1 (a new base point 0, i |->
+;; i + 1), U forgets the base point; eta_n : i |-> i + 1, eps_m : F U m -> m
+;; sends 0 to 0 and i + 1 to i.
+(define (pointed-finset-category)
+  (make-effective-category "FinSet*" (make-enumerator (lambda (n) (list (+ n 1)))) (lambda (x) (and (cs-nat? x) (> x 0)))
+                           (lambda (m n) (map (lambda (im) (list m n (cons 0 im))) (cs-functions (- m 1) n)))
+                           (lambda (g f) (cs-compose-maps g f))
+                           (lambda (n) (list n n (cs-range n)))
+                           (lambda (f) (car f)) (lambda (f) (cadr f)) (lambda (f g) (equal? f g))))
+(define (pointed-set-adjunction)
+  (let* ((S (finset-category)) (P (pointed-finset-category))
+         (F (make-effective-functor S P (lambda (n) (+ n 1))
+                                    (lambda (f) (list (+ (car f) 1) (+ (cadr f) 1) (cons 0 (map (lambda (y) (+ y 1)) (caddr f))))) "free"))
+         (U (make-effective-functor P S (lambda (n) n) (lambda (f) f) "forget")))
+    (make-effective-adjunction F U
+                               (lambda (n) (list n (+ n 1) (map (lambda (i) (+ i 1)) (cs-range n))))
+                               (lambda (m) (list (+ m 1) m (cons 0 (cs-range m)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Limits and colimits in FinSet (skeleton: n = {0..n-1})

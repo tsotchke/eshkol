@@ -366,9 +366,10 @@
 ;; ---------------------------------------------------------------------------
 ;; Functors
 ;; ---------------------------------------------------------------------------
+;; (make-effective-functor C D object arrow [name [props]])
 (define (make-effective-functor C D object arrow . more)
-  (vector 'effective-functor (if (and (pair? more) (not (pair? (car more)))) (car more) "functor") C D object arrow
-          (let ((props (ce-find pair? more))) (or props '()))))
+  (vector 'effective-functor (if (pair? more) (car more) "functor") C D object arrow
+          (if (and (pair? more) (pair? (cdr more))) (cadr more) '())))
 (define (effective-functor? F) (and (vector? F) (= 7 (vector-length F)) (eq? (vector-ref F 0) 'effective-functor)))
 (define (effective-functor-name F) (vector-ref F 1))
 (define (effective-functor-source F) (vector-ref F 2))
@@ -527,18 +528,26 @@
   (let ((F (vector-ref A 1)) (D (effective-functor-target (vector-ref A 1))))
     (effective-category-compose D ((vector-ref A 4) d) (effective-functor-arrow F k))))
 ;; D(Fc, d) ~ C(c, Gd): both round trips are identities on hom stages 0..n,
-;; for every pair (c . d) listed
+;; for every pair (c . d) listed; when the receiving hom-set is finite, each
+;; transpose is also checked to be one of its arrows
 (define (effective-adjunction-hom-bijection-violations A pairs n)
   (let* ((F (vector-ref A 1)) (G (vector-ref A 2)) (C (effective-functor-source F)) (D (effective-functor-target F))
-         (out '()) (note (lambda (v) (set! out (cons v out)))))
+         (out '()) (note (lambda (v) (set! out (cons v out))))
+         (in-hom? (lambda (E a b f) (let ((h (effective-category-hom E a b)))
+                                      (or (not (enumerator-finite? h))
+                                          (if (ce-find (lambda (g) (effective-category-arrow=? E g f)) (enumerator->list h)) #t #f))))))
     (for-each (lambda (p)
-                (let ((c (car p)) (d (cdr p)))
-                  (for-each (lambda (h) (if (not (effective-category-arrow=? D (effective-adjunction-cotranspose A d (effective-adjunction-transpose A c h)) h))
-                                            (note (list 'left-round-trip c d h))))
-                            (effective-category-hom-up-to D (effective-functor-object F c) d n))
-                  (for-each (lambda (k) (if (not (effective-category-arrow=? C (effective-adjunction-transpose A c (effective-adjunction-cotranspose A d k)) k))
-                                            (note (list 'right-round-trip c d k))))
-                            (effective-category-hom-up-to C c (effective-functor-object G d) n))))
+                (let ((c (car p)) (d (cdr p)) (Fc (effective-functor-object F (car p))) (Gd (effective-functor-object G (cdr p))))
+                  (for-each (lambda (h) (let ((k (effective-adjunction-transpose A c h)))
+                                          (if (not (in-hom? C c Gd k)) (note (list 'transpose-outside-hom c d h)))
+                                          (if (not (effective-category-arrow=? D (effective-adjunction-cotranspose A d k) h))
+                                              (note (list 'left-round-trip c d h)))))
+                            (effective-category-hom-up-to D Fc d n))
+                  (for-each (lambda (k) (let ((h (effective-adjunction-cotranspose A d k)))
+                                          (if (not (in-hom? D Fc d h)) (note (list 'cotranspose-outside-hom c d k)))
+                                          (if (not (effective-category-arrow=? C (effective-adjunction-transpose A c h) k))
+                                              (note (list 'right-round-trip c d k)))))
+                            (effective-category-hom-up-to C c Gd n))))
               pairs)
     (reverse out)))
 
