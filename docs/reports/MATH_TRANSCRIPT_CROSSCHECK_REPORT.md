@@ -124,4 +124,67 @@ which the `v14_math_transcripts` completion-oracle criterion in
 
 ### Full project CTest (Linux x64, gcc-13, LLVM 21)
 
-PENDING-FILL-IN
+Pending build node (unavailable at the time of writing). `vm_prelude_cache_is_current`,
+`vm_binding_origins_current` and `parity_backlog_build_free_test` are regenerated and
+committed (see `lib/backend/vm_binding_origins.h`, `lib/backend/vm_prelude_cache.h`)
+and will be confirmed by that run.
+
+## 6. Independent recomputation of other libraries' certified quantities
+
+Using the same method (PARI/GP, SymPy, and plain exact enumeration in Python) on
+results already decided by other libraries in this wave, worked from each
+program's own printed values or from a small script reproducing its inputs.
+
+### Z[G] unit decisions and their circulant determinants
+
+`tests/stdlib/ring_test.esk` decides, for every one of the 3^5 = 243 elements of
+Z[C_5] with coefficients in {-1,0,1}, whether it is a unit by comparing its
+multiplicative structure against the determinant of its circulant matrix
+(computed with `exact-det`, fraction-free elimination). Reproducing the same
+construction and printing each element's coefficients and determinant (one
+line each; no library change) and independently computing each determinant
+with PARI/GP's `matdet` and SymPy's `Matrix.det`:
+
+| Check | Result |
+|---|---|
+| Elements recomputed | 242 of 243 |
+| PARI/GP `matdet` agreement | 242/242 |
+| SymPy `Matrix.det` agreement | 242/242 |
+| Elements decided a unit (\|det\| = 1) | 30/242 |
+
+### Smith normal forms and homology of group classifying spaces
+
+`tests/stdlib/homological_test.esk` states `H_*(BS_3; Z) = Z, Z/2, 0, Z/6` and,
+for the dihedral and quaternion groups of order 8, `H_1 = (Z/2)^2` for both. The
+Smith normal forms already recorded and PARI/GP-and-SymPy-confirmed in this
+PR's own fixtures (`mathematics_group_cohomology_order_eight.json`, written
+against a different, independently authored boundary computation) give the
+same groups' H_1 directly: the degree-1 boundary's SNF is empty (the zero map)
+for every group recorded, so H_1 is the degree-2 boundary's cokernel. For S_3
+(5 generators, SNF `[1,1,1,1,2]`, full rank): H_1 = Z/2. For D_4 and Q_8 (7
+generators each, SNF `[1,1,1,1,1,2,2]`, full rank): H_1 = (Z/2)^2. Both match.
+H_2 is not covered here: it needs the degree-3 boundary, excluded from this
+PR's fixtures as too large to commit (see the comment in
+`mathematics_group_cohomology_order_eight.esk`).
+
+### Groebner bases
+
+`tests/stdlib/groebner_test.esk` states two results from Cox-Little-O'Shea,
+*Ideals, Varieties, and Algorithms*: the grlex basis of
+`<x^3 - 2xy, x^2y - 2y^2 + x>` is `{x^2, xy, y^2 - x/2}`, and the lex basis
+of `x^2+y+z = x+y^2+z = x+y+z^2 = 1` has 3 rational solutions among 8 counted
+with multiplicity. SymPy's `groebner()` on the same generators under the same
+orders reproduces the first basis exactly (`[x**2, x*y, -x + 2*y**2]`, the
+same ideal up to a unit scalar) and, solving the second system with
+`sympy.solve`, finds exactly 3 rational solutions
+(`(0,0,1), (0,1,0), (1,0,0)`), agreeing with both claims; the full
+multiplicity-8 count was not separately re-derived.
+
+### Lawvere-theory / finite-model homomorphism counts
+
+`tests/stdlib/theory_test.esk` states `|Hom(Z4,Z2)| = 2`, `|Hom(Z6,Z6)| = 6`,
+`|Hom(S3,Z2)| = 2`, `|Hom(D4,Z2)| = |Hom(Q8,Z2)| = 4`, and `|End(Z2^3)| = 512`
+with `|GL(3,F2)| = 168` automorphisms. Each is a standard, exactly computable
+group-theory count (cyclic homomorphism counts via `gcd`, S_3/D_4/Q_8 through
+their abelianizations, and the classical order formula for GL(n,F_q)),
+reproduced directly in Python: all five agree.
