@@ -2,7 +2,7 @@
 #
 # Structural types gate (ADR-0046, v1.9.0-types): row polymorphism, higher-rank types, session types.
 #
-# Runs, from an existing CMake build, the three CTest entries that own the
+# Runs, from an existing CMake build, the two CTest entries that own the
 # behaviour:
 #   structural_types_test   the solver contract (rows, protocols, duality, levels)
 #   types_ext_gate          every tests/types_ext fixture on JIT, AOT and VM:
