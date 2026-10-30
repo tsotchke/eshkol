@@ -1209,6 +1209,13 @@ struct StructuralChecker::Impl {
                 return s.dyn();
             case ESHKOL_THE_OP: {
                 TyRef sigma = annotation(op.the_op.type_expr, FreeVars::Fresh, e);
+                if (!annotationIsStructural(op.the_op.type_expr)) {
+                    // A plain ascription is a checked cast of the gradual
+                    // relation (ADR-0013), which the TypeId layer has already
+                    // judged; here it only names the value's type.
+                    obligations.push_back({inferRho(op.the_op.expr), op.the_op.expr});
+                    return s.instantiate(sigma, level);
+                }
                 checkSigma(op.the_op.expr, sigma);
                 return s.instantiate(sigma, level);
             }
