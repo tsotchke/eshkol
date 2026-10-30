@@ -1,0 +1,162 @@
+;; core.effective: reductions and the perturbation lemma checked exactly,
+;; exhaustively on finite simplicial sets and on every cell a computation
+;; touches on infinite ones; the Eilenberg-Zilber vector field against the
+;; AW / EML / SHI formulas; classifying spaces and Eilenberg-MacLane spaces
+;; against direct computation and the known tables; twisted products
+;; (the Hopf fibration, the 3-connected cover of S^3) against Serre's
+;; computations; Euler characteristics; the first stages of the Whitehead
+;; tower (Hurewicz, pi_3(S^2), pi_4(S^3)).
+(require stdlib)
+(require core.simplicial)
+(require core.effective)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? f) (guard (e (else #t)) (f) #f))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (words vals n) (if (= n 0) (list '()) (apply append (map (lambda (w) (map (lambda (a) (cons a w)) vals)) (words vals (- n 1))))))
+(define (H . rows) (map (lambda (k r) (list k (car r) (cadr r))) (range (length rows)) rows))
+(define (ranks C nmax) (map (lambda (n) (effective-complex-rank C n)) (range (+ nmax 1))))
+;; every identity on every cell of degrees 0 .. nmax (finite big complex)
+(define (exhaustive-violations r nmax)
+  (apply append (map (lambda (n) (reduction-violations r n (effective-complex-basis (reduction-big r) n) (effective-complex-basis (reduction-small r) n)))
+                     (range (+ nmax 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Linear combinations
+;; ---------------------------------------------------------------------------
+(check "linear combinations: sums cancel, scale, relabel and apply linearly"
+       (and (lc-zero? (lc-sub (lc-add (lc-term 'a 2) (lc-term 'b -1)) (lc-add (lc-term 'b -1) (lc-term 'a 2))))
+            (= 6 (lc-coefficient (lc-scale (lc-term 'a 2) 3) 'a))
+            (lc-equal? (lc-apply (lambda (c) (if (eq? c 'a) (lc-term 'x 1) (lc-term 'x -1))) (lc-add (lc-term 'a 1) (lc-term 'b 1))) '())
+            (= 0 (lc-coefficient (lc-term 'a 0) 'a))))
+
+;; ---------------------------------------------------------------------------
+;; The Eilenberg-Zilber reduction: vector field = AW / EML / SHI
+;; ---------------------------------------------------------------------------
+(define (ez-same? X Y top)
+  (let* ((r (eilenberg-zilber-reduction X Y #t)) (rf (eilenberg-zilber-formula-reduction X Y #t))
+         (B (reduction-big r)) (S (reduction-small r)))
+    (and (null? (exhaustive-violations r top)) (null? (exhaustive-violations rf top))
+         (all? (lambda (n)
+                 (and (all? (lambda (c) (and (lc-equal? (reduction-f r n (lc-term c 1)) (reduction-f rf n (lc-term c 1)))
+                                             (lc-equal? (reduction-h r n (lc-term c 1)) (reduction-h rf n (lc-term c 1)))))
+                            (effective-complex-basis B n))
+                      (all? (lambda (w) (and (lc-equal? (reduction-g r n (lc-term w 1)) (reduction-g rf n (lc-term w 1)))
+                                             (lc-equal? (effective-complex-d-cell S n w) (effective-complex-d-cell (reduction-small rf) n w))))
+                            (effective-complex-basis S n))))
+               (range (+ top 1))))))
+(check "Eilenberg-Zilber on the prisms Delta^1 x Delta^1, Delta^2 x Delta^1, Delta^2 x Delta^2: the vector-field reduction and the AW / EML / SHI formulas are both reductions on every cell and coincide map by map; the critical differential is the tensor differential"
+       (and (ez-same? (standard-simplex 1) (standard-simplex 1) 2)
+            (ez-same? (standard-simplex 2) (standard-simplex 1) 3)
+            (ez-same? (standard-simplex 2) (standard-simplex 2) 4)))
+(define ez22 (eilenberg-zilber-reduction (standard-simplex 2) (standard-simplex 2) #t))
+(check "Delta^2 x Delta^2: nondegenerate simplices (9 27 37 24 6) reduce to the tensor product (9 18 15 6 1); one critical cell per prism (the last simplex)"
+       (and (equal? (ranks (reduction-big ez22) 4) (list 9 27 37 24 6)) (equal? (ranks (reduction-small ez22) 4) (list 9 18 15 6 1))))
+(check "(p,q)-shuffles: C(p+q, p) of them with the sign of the permutation"
+       (and (= 6 (length (shuffles 2 2))) (= 10 (length (shuffles 3 2)))
+            (= 0 (fold-left + 0 (map caddr (shuffles 2 2))))
+            (equal? (car (shuffles 1 1)) (list (list 1) (list 0) -1))))
+(define S2xS2 (product-space "S^2 x S^2" (sphere-space 2) (sphere-space 2)))
+(check "S^2 x S^2 (minimal spheres): Kunneth (Z, 0, Z^2, 0, Z), Euler characteristic 4 on both sides, every identity on every cell"
+       (and (equal? (effective-space-homology S2xS2 4) (H '(1 ()) '(0 ()) '(2 ()) '(0 ()) '(1 ())))
+            (= 4 (fold-left + 0 (map (lambda (n) (* (if (even? n) 1 -1) (effective-complex-rank (effective-space-small S2xS2) n))) (range 5))))
+            (null? (reduction-small-violations (effective-space-reduction S2xS2) 4))))
+
+;; ---------------------------------------------------------------------------
+;; K(pi, 1) and classifying spaces
+;; ---------------------------------------------------------------------------
+(define KZ1 (eilenberg-maclane-space 0 1))
+(check "K(Z,1) => C(S^1) by the vector field of Proposition 26: every identity on all words with letters in {-2,-1,1,2,3} of length <= 3; the small complex is Z [] + Z [1] with d = 0"
+       (and (all? (lambda (n) (null? (reduction-violations (effective-space-reduction KZ1) n (words (list -2 -1 1 2 3) n)
+                                                           (effective-complex-basis (effective-space-small KZ1) n))))
+                  (range 4))
+            (equal? (ranks (effective-space-small KZ1) 3) (list 1 1 0 0))))
+(check "K(Z/2,1), K(Z/3,1), K(Z,1): simplicial abelian groups (faces and degeneracies are homomorphisms, neutral, inverses, associative, commutative)"
+       (and (null? (simplicial-group-violations (k-pi-1-group 2) (map (lambda (n) (cons n (simplicial-set-simplices (simplicial-group-set (k-pi-1-group 2)) n))) (range 4))))
+            (null? (simplicial-group-violations (k-pi-1-group 3) (map (lambda (n) (cons n (simplicial-set-simplices (simplicial-group-set (k-pi-1-group 3)) n))) (range 3))))
+            (null? (simplicial-group-violations (k-pi-1-group 0) (list (cons 2 (list (k-pi-1-simplex 0 (list 1 2)) (k-pi-1-simplex 0 (list 0 -1)) (k-pi-1-simplex 0 (list 3 -3)))))))))
+(define G2 (k-pi-1-group 2))
+(define WG2 (classifying-group G2 #t))
+(define W2 (simplicial-group-set WG2))
+(check "W-bar K(Z/2,1): nondegenerate counts (1 0 1 4 41 768), the simplicial identities, and the group laws of W-bar G"
+       (and (equal? (map (lambda (n) (simplicial-set-count W2 n)) (range 6)) (list 1 0 1 4 41 768))
+            (null? (simplicial-set-identity-violations W2 5))
+            (null? (simplicial-group-violations WG2 (map (lambda (n) (cons n (simplicial-set-simplices W2 n))) (range 3))))))
+(define (pairing-consistent? status W n)
+  (all? (lambda (b)
+          (let ((s (status n b)))
+            (cond ((eq? s 'critical) #t)
+                  ((eq? (car s) 'source) (let ((t (status (+ n 1) (cdr s)))) (and (pair? t) (eq? (car t) 'target) (equal? (cdr t) b))))
+                  (else (let ((t (status (- n 1) (cdr s)))) (and (pair? t) (eq? (car t) 'source) (equal? (cdr t) b)))))))
+        (vector->list (simplicial-set-nondegenerate W n))))
+(define st2 (classifying-status G2 W2))
+(check "the classifying-space vector field on W-bar K(Z/2,1) is a pairing (source <-> target both ways) through degree 5, with critical cells counted by compositions (1 0 1 1 2 3)"
+       (and (all? (lambda (n) (pairing-consistent? st2 W2 n)) (range 6))
+            (equal? (map (lambda (n) (length (filter (lambda (b) (eq? 'critical (st2 n b))) (vector->list (simplicial-set-nondegenerate W2 n))))) (range 6))
+                    (list 1 0 1 1 2 3))))
+(define K22 (eilenberg-maclane-space 2 2))
+(check "C(W-bar K(Z/2,1)) => Bar: every identity on every nondegenerate simplex of degree <= 4"
+       (null? (exhaustive-violations (effective-space-reduction K22) 4)))
+(check "H_*(K(Z/2,2)) = Z, 0, Z/2, 0, Z/4, Z/2, Z/2 through degree 6, equal through degree 4 to the direct computation on W-bar K(Z/2,1)"
+       (and (equal? (effective-space-homology K22 6) (H '(1 ()) '(0 ()) '(0 (2)) '(0 ()) '(0 (4)) '(0 (2)) '(0 (2))))
+            (equal? (effective-complex-homology (effective-space-chains K22) 4) (H '(1 ()) '(0 ()) '(0 (2)) '(0 ()) '(0 (4))))))
+(define KZ2 (eilenberg-maclane-space 0 2))
+(check "H_*(K(Z,2)) = H_*(CP^infinity) = Z, 0, Z, 0, Z, 0, Z, 0, Z through degree 8; the effective complex is the divided-power coalgebra (one cell in each even degree)"
+       (and (equal? (effective-space-homology KZ2 8) (H '(1 ()) '(0 ()) '(1 ()) '(0 ()) '(1 ()) '(0 ()) '(1 ()) '(0 ()) '(1 ())))
+            (equal? (ranks (effective-space-small KZ2) 8) (list 1 0 1 0 1 0 1 0 1))
+            (null? (reduction-small-violations (effective-space-reduction KZ2) 6))))
+(define K32 (eilenberg-maclane-space 3 2))
+(check "H_*(K(Z/3,2)) through degree 4 equals the direct computation on W-bar K(Z/3,1): Z, 0, Z/3, 0, Z/3"
+       (let ((h (effective-space-homology K32 4)))
+         (and (equal? h (H '(1 ()) '(0 ()) '(0 (3)) '(0 ()) '(0 (3))))
+              (equal? h (effective-complex-homology (effective-space-chains K32) 4)))))
+(define KZ3 (eilenberg-maclane-space-cached 0 3))
+(check "H_*(K(Z,3)) = Z, 0, 0, Z, 0, Z/2, 0, Z/3 through degree 7 (Eilenberg-Mac Lane, Cartan)"
+       (equal? (effective-space-homology KZ3 7) (H '(1 ()) '(0 ()) '(0 ()) '(1 ()) '(0 ()) '(0 (2)) '(0 ()) '(0 (3)))))
+(define K23 (eilenberg-maclane-space-cached 2 3))
+(check "H_*(K(Z/2,3)) = Z, 0, 0, Z/2, 0, Z/2, Z/2 through degree 6 (Serre)"
+       (and (equal? (effective-space-homology K23 6) (H '(1 ()) '(0 ()) '(0 ()) '(0 (2)) '(0 ()) '(0 (2)) '(0 (2))))
+            (null? (reduction-small-violations (effective-space-reduction K23) 5))))
+(check "the bar construction's perturbation lowers the word length (the nilpotency hypothesis, checked on every cell)"
+       (raises? (lambda () (effective-complex-d-cell (reduction-small (perturb-reduction (identity-reduction (bar-complex (effective-space-chains KZ1)))
+                                                                                               (lambda (n w) (lc-term w 1))
+                                                                                               (cons word-length 1)))
+                                                     2 (make-word (list (cons 1 (list 2))))))))
+
+;; ---------------------------------------------------------------------------
+;; Twisted products and the twisted Eilenberg-Zilber reduction
+;; ---------------------------------------------------------------------------
+;; S^2 x_tau K(Z/2,1) classified by the generator of H^2(S^2; Z/2): of finite
+;; type in every degree, so every identity is checked on every cell
+(define S2 (sphere-space 2))
+(define twist2 (cocycle-twisting (effective-space-simplicial-set S2) (lambda (x) 1) 2 2))
+(define T2 (twisted-product-space "S^2 x_tau K(Z/2,1)" S2 (eilenberg-maclane-space 2 1) twist2))
+(check "S^2 x_tau K(Z/2,1): the twisting function identities, and the twisted Eilenberg-Zilber reduction perturbed by the twisted part of the differential satisfies every identity on every cell through degree 4"
+       (and (null? (twisting-function-violations (effective-space-simplicial-set S2) (k-pi-1-group 2) twist2
+                                                 (list (simplex 'top 2) (simplicial-set-degeneracy (effective-space-simplicial-set S2) 1 (simplex 'top 2)))))
+            (null? (exhaustive-violations (effective-space-reduction T2) 4))))
+(check "S^2 x_tau K(Z/2,1) is the homotopy fibre of the nonzero map S^2 -> K(Z/2,2): homology Z, 0, Z/2, 0, Z/2 ... of the circle bundle of degree 2 (Z, Z/2, 0, Z in the 3-manifold part; here the fibre K(Z/2,1) makes it Z, Z/2? ) -- checked against the direct computation through degree 4"
+       (equal? (effective-space-homology T2 4) (effective-complex-homology (effective-space-chains T2) 4)))
+(define hopf (whitehead-step S2 2))
+(check "Hurewicz: H_2(S^2) = Z; the Hopf fibration S^2 x_tau K(Z,1) has the homology of S^3 through degree 5"
+       (and (equal? (car hopf) (list 2 1 '()))
+            (equal? (effective-space-homology (cdr hopf) 5) (H '(1 ()) '(0 ()) '(0 ()) '(1 ()) '(0 ()) '(0 ())))
+            (null? (reduction-small-violations (effective-space-reduction (cdr hopf)) 4))))
+(define S3 (sphere-space 3))
+(define S33 (whitehead-step S3 3))
+(check "the 3-connected cover S^3<3> = S^3 x_tau K(Z,2): H_2k = Z/k (H_4 = Z/2, H_6 = Z/3, H_8 = Z/4) and odd degrees vanish through degree 8 (Serre)"
+       (equal? (effective-space-homology (cdr S33) 8)
+               (H '(1 ()) '(0 ()) '(0 ()) '(0 ()) '(0 (2)) '(0 ()) '(0 (3)) '(0 ()) '(0 (4)))))
+(check "pi_n(S^n) = Z for n = 2, 3, 4 (Hurewicz on the first stage), pi_3(S^2) = Z, pi_4(S^3) = Z/2"
+       (and (all? (lambda (n) (equal? (car (whitehead-step (sphere-space n) n)) (list n 1 '()))) (list 2 3 4))
+            (equal? (homotopy-groups S2 3) (list (list 2 1 '()) (list 3 1 '())))
+            (equal? (car (whitehead-step (cdr S33) 4)) (list 4 0 (list 2)))))
+(check "a space that is not (k-1)-connected is refused by name"
+       (raises? (lambda () (whitehead-step S2 3))))
+
+(display "core.effective: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
+(if (= failures 0) (begin (display "PASS: effective_test") (newline)) (begin (display "FAIL: effective_test") (newline)))

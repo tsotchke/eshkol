@@ -55,7 +55,7 @@
 (require core.effective.homotopy)
 (require core.integer_linalg)
 
-(provide finite-space-hypercover finite-space-cech-nerve hypercover-space hypercover-piece-point hypercover-open hypercover-boundaries
+(provide finite-space-hypercover finite-space-cech-nerve hypercover-space hypercover-piece-point hypercover-open-of hypercover-boundaries
          hypercover-violations hypercover-level-counts
          mod-p-cohomology-dimensions two-type-cardinalities mapping-space-cardinality
          cup-square-three-type-cardinality uct-cohomology-order postnikov-cardinalities)
@@ -77,22 +77,35 @@
 ;; the point y of a hypercover by cones; a component for a Cech nerve) and
 ;; beta the list of faces (simplices of level n-1); level 0:
 ;; (piece 0 (y . U) (i)) with i the index of the open of the cover
-(define (hypercover-piece-point x) (car (caddr x)))
-(define (hypercover-open X s) (cdr (caddr (simplex-base s))))
-;; compatible boundaries of an n-simplex (n >= 1) made of (n-1)-simplices of H
+;; Pieces are numbered: a nondegenerate n-simplex is the value #(piece n id)
+;; and a table of the construction holds, for each id, the pair
+;; (point . open) and the boundary (the list of faces, simplices of level
+;; n-1); level-0 pieces have the boundary (i), i the index of the open of the
+;; cover they come from.
+(define hc-tables (make-hash-table))           ;; simplicial set name+identity -> table
+(define (hc-table-of H) (hash-table-ref/default hc-tables (simplicial-set-name H) #f))
+(define (hc-piece-data H x) (hash-table-ref/default (hc-table-of H) (vector-ref x 2) #f))
+(define (hypercover-piece-point H x) (car (car (hc-piece-data H x))))
+(define (hypercover-open-of H s) (cdr (car (hc-piece-data H (simplex-base s)))))
+;; compatible boundaries (sigma_0 ... sigma_n) of an n-simplex (n >= 1):
+;; d_i sigma_j = d_(j-1) sigma_i for i < j; candidates for sigma_j are read
+;; from an index of the (n-1)-simplices by their 0-face
 (define (hypercover-boundaries H n)
-  (let ((S (simplicial-set-simplices H (- n 1))))
-    (let extend ((partial '()) (j 0))       ;; partial = (sigma_(j-1) ... sigma_0)
-      (if (> j n) (list (reverse partial))
-          (apply append
-                 (map (lambda (s)
-                        (if (or (< n 2)
-                                (hc-all? (lambda (i) (equal? (simplicial-set-face H i s)
-                                                             (simplicial-set-face H (- j 1) (list-ref (reverse partial) i))))
-                                         (hc-range j)))
-                            (extend (cons s partial) (+ j 1))
-                            '()))
-                      S))))))
+  (let* ((S (simplicial-set-simplices H (- n 1))) (by-d0 (make-hash-table)))
+    (if (>= n 2)
+        (for-each (lambda (s) (let ((k (simplicial-set-face H 0 s))) (hash-table-set! by-d0 k (cons s (hash-table-ref/default by-d0 k '()))))) (reverse S)))
+    (let extend ((partial '()) (j 0))       ;; partial = (sigma_0 ... sigma_(j-1)) as a vector-free list
+      (if (> j n) (list partial)
+          (let ((cands (if (or (< n 2) (= j 0)) S
+                           (hash-table-ref/default by-d0 (simplicial-set-face H (- j 1) (car partial)) '()))))
+            (apply append
+                   (map (lambda (s)
+                          (if (or (< n 2)
+                                  (hc-all? (lambda (i) (equal? (simplicial-set-face H i s) (simplicial-set-face H (- j 1) (list-ref partial i))))
+                                           (if (> j 0) (cdr (hc-range j)) (quote ()))))
+                              (extend (append partial (list s)) (+ j 1))
+                              '()))
+                        cands)))))))
 (define (hc-degenerate-boundaries H n)
   (let ((t (make-hash-table)))
     (for-each (lambda (c) (for-each (lambda (j) (let ((s (simplicial-set-degeneracy H j c)))
@@ -104,22 +117,27 @@
 ;; cones, connected components for the Cech nerve), as (point . open) pairs
 (define (hc-cones X V) (map (lambda (y) (cons y (finite-space-down-set X y))) (hc-maximal X V)))
 (define (hc-components X V) (map (lambda (c) (cons c c)) (finite-space-components X V)))
-(define (hc-build X cover nmax refine name)
-  (letrec ((H (make-simplicial-set
-               name
-               (lambda (n)
-                 (if (= n 0)
-                     (apply append (map (lambda (U i) (map (lambda (yo) (list 'piece 0 yo (list i))) (refine X U))) cover (hc-range (length cover))))
-                     (let ((degenerate (hc-degenerate-boundaries H n)))
-                       (apply append
-                              (map (lambda (beta)
-                                     (if (hash-table-ref/default degenerate beta #f) '()
-                                         (let ((V (fold-left hc-intersect (hypercover-open X (car beta)) (map (lambda (s) (hypercover-open X s)) (cdr beta)))))
-                                           (map (lambda (yo) (list 'piece n yo beta)) (refine X V)))))
-                                   (hypercover-boundaries H n))))))
-               (lambda (n i x) (list-ref (cadddr x) i))
-               nmax)))
-    H))
+(define hc-counter 0)
+(define (hc-build X cover nmax refine kind)
+  (set! hc-counter (+ hc-counter 1))
+  (let* ((name (string-append kind " " (number->string hc-counter))) (table (make-hash-table)) (next 0)
+         (new-piece! (lambda (n yo beta) (let ((id next)) (set! next (+ next 1)) (hash-table-set! table id (cons yo beta)) (vector 'piece n id)))))
+    (hash-table-set! hc-tables name table)
+    (letrec ((H (make-simplicial-set
+                 name
+                 (lambda (n)
+                   (if (= n 0)
+                       (apply append (map (lambda (U i) (map (lambda (yo) (new-piece! 0 yo (list i))) (refine X U))) cover (hc-range (length cover))))
+                       (let ((degenerate (hc-degenerate-boundaries H n)))
+                         (apply append
+                                (map (lambda (beta)
+                                       (if (hash-table-ref/default degenerate beta #f) '()
+                                           (let ((V (fold-left hc-intersect (hypercover-open-of H (car beta)) (map (lambda (s) (hypercover-open-of H s)) (cdr beta)))))
+                                             (map (lambda (yo) (new-piece! n yo beta)) (refine X V)))))
+                                     (hypercover-boundaries H n))))))
+                 (lambda (n i x) (list-ref (cdr (hash-table-ref/default table (vector-ref x 2) #f)) i))
+                 nmax)))
+      H)))
 (define (finite-space-hypercover X cover nmax) (hc-build X cover nmax hc-cones "hypercover"))
 ;; the Cech nerve as a simplicial set: n-simplices are the tuples of opens of
 ;; the cover with a connected component of their intersection (built by the
@@ -137,22 +155,22 @@
 ;; simplex (degenerate or not) with that boundary
 (define (hypercover-violations X H nmax)
   (let ((out '()) (points (hc-range (finite-space-size X))))
-    (if (not (hc-all? (lambda (x) (hc-any? (lambda (v) (memv x (hypercover-open X (simplex v 0)))) (vector->list (simplicial-set-nondegenerate H 0)))) points))
+    (if (not (hc-all? (lambda (x) (hc-any? (lambda (v) (memv x (hypercover-open-of H (simplex v 0)))) (vector->list (simplicial-set-nondegenerate H 0)))) points))
         (set! out (cons "the level-0 pieces do not cover X" out)))
     (for-each
      (lambda (n)
        (let ((all (simplicial-set-simplices H n)))
          (for-each (lambda (v)
                      (let ((s (simplex v n)))
-                       (if (not (= 1 (length (hc-maximal X (hypercover-open X s))))) (set! out (cons (list "a piece is not a cone" n v) out)))
-                       (for-each (lambda (i) (if (not (hc-all? (lambda (x) (memv x (hypercover-open X (simplicial-set-face H i s)))) (hypercover-open X s)))
+                       (if (not (= 1 (length (hc-maximal X (hypercover-open-of H s))))) (set! out (cons (list "a piece is not a cone" n v) out)))
+                       (for-each (lambda (i) (if (not (hc-all? (lambda (x) (memv x (hypercover-open-of H (simplicial-set-face H i s)))) (hypercover-open-of H s)))
                                                  (set! out (cons (list "a piece is not inside its face" n i) out))))
                                  (hc-range (+ n 1)))))
                    (vector->list (simplicial-set-nondegenerate H n)))
          (for-each (lambda (beta)
-                     (let* ((V (fold-left hc-intersect (hypercover-open X (car beta)) (map (lambda (s) (hypercover-open X s)) (cdr beta))))
+                     (let* ((V (fold-left hc-intersect (hypercover-open-of H (car beta)) (map (lambda (s) (hypercover-open-of H s)) (cdr beta))))
                             (over (filter (lambda (s) (equal? beta (map (lambda (i) (simplicial-set-face H i s)) (hc-range (+ n 1))))) all))
-                            (covered (apply append (map (lambda (s) (hypercover-open X s)) over))))
+                            (covered (apply append (map (lambda (s) (hypercover-open-of H s)) over))))
                        (if (not (hc-all? (lambda (x) (memv x covered)) V)) (set! out (cons (list "H_n -> M_n is not surjective" n beta) out)))))
                    (hypercover-boundaries H n))))
      (cdr (hc-range (+ nmax 1))))
