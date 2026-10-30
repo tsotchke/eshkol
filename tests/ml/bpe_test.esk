@@ -1,0 +1,39 @@
+;; core.ml.bpe — byte-pair encoding: the merges of the Sennrich et al. (2016)
+;; example, deterministic tie-breaking, encode/decode round trips, ids, and a
+;; model rebuilt from its merges and vocabulary.
+
+(require core.ml.bpe)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display name) (newline))))
+
+;; the paper's dictionary: low x5, lower x2, newest x6, widest x3
+(define (repeat w n) (let loop ((i 0) (acc '())) (if (< i n) (loop (+ i 1) (cons w acc)) acc)))
+(define corpus (append (repeat "low" 5) (repeat "lower" 2) (repeat "newest" 6) (repeat "widest" 3)))
+(define m (bpe-train corpus 10))
+(display "merges: ") (display (bpe-merges m)) (newline)
+(check "first merges of the paper's example: es, est</w>"
+       (and (equal? (car (bpe-merges m)) '("e" . "s")) (equal? (cadr (bpe-merges m)) '("es" . "t</w>"))))
+(check "ten merges learned" (= (length (bpe-merges m)) 10))
+(check "training is deterministic" (equal? (bpe-merges m) (bpe-merges (bpe-train corpus 10))))
+(check "frequent word becomes one token" (equal? (bpe-encode m "newest") '("newest</w>")))
+(check "unseen word splits into learned subwords" (equal? (bpe-encode m "lowest") '("lo" "w" "est</w>")))
+(check "encode covers every word" (equal? (bpe-encode m "low widest") '("low</w>" "widest</w>")))
+(define ids (bpe-encode-ids m "lowest newer wider"))
+(check "ids are vocabulary positions" (equal? (list-ref (bpe-vocab m) (car ids)) "lo"))
+(check "decode inverts encode" (string=? (bpe-decode m ids) "lowest newer wider"))
+(check "decode normalises whitespace" (string=? (bpe-decode m (bpe-encode-ids m "  low   lower ")) "low lower"))
+(check "unseen character is refused" (guard (e (#t #t)) (bpe-encode-ids m "zebra") #f))
+(define m2 (make-bpe-model (bpe-merges m) (bpe-vocab m)))
+(check "a model rebuilt from merges and vocabulary encodes identically"
+       (equal? (bpe-encode-ids m2 "lowest newer wider") ids))
+(check "zero merges is character level" (equal? (bpe-encode (bpe-train corpus 0) "low") '("l" "o" "w</w>")))
+
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0) (begin (display "ALL TESTS PASSED") (newline)))

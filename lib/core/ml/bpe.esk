@@ -1,0 +1,202 @@
+;;
+;; core.ml.bpe — byte-pair-encoding tokenizer (v1.5.0, ADR-0049).
+;;
+;; Subword tokenization by learned merges (Sennrich, Haddow & Birch, "Neural
+;; Machine Translation of Rare Words with Subword Units", 2016). Training
+;; splits each whitespace-separated word into characters followed by the
+;; end-of-word marker "</w>", then repeatedly merges the most frequent
+;; adjacent pair of symbols, counted over word frequencies. Ties go to the
+;; lexicographically smallest pair, so training is deterministic.
+;; Encoding applies the learned merges to a word in rank order (the lowest-
+;; ranked applicable pair first), which reproduces training's segmentation.
+;;
+;;   (define m (bpe-train '("low low low low low" "lower lower" ...) 10))
+;;   (bpe-encode m "lowest")        ; => ("lo" "w" "est</w>")
+;;   (bpe-encode-ids m "lowest")    ; => (ids ...)
+;;   (bpe-decode m (bpe-encode-ids m "lowest newer")) ; => "lowest newer"
+;;
+;; Models are plain data: (bpe-merges m) is the ranked merge list and
+;; (bpe-vocab m) the token list whose positions are the token ids, so a model
+;; trained elsewhere loads with (make-bpe-model merges vocab).
+;;
+
+(provide bpe-train bpe-encode bpe-encode-ids bpe-decode bpe-merges bpe-vocab
+         bpe-token-id make-bpe-model bpe-end-of-word)
+
+(define bpe-end-of-word "</w>")
+
+;; ── helpers ──
+(define (bp-reverse l) (let loop ((l l) (a '())) (if (pair? l) (loop (cdr l) (cons (car l) a)) a)))
+(define (bp-append a b) (if (pair? a) (cons (car a) (bp-append (cdr a) b)) b))
+
+;; whitespace split
+(define (bp-words s)
+  (let ((n (string-length s)))
+    (let loop ((i 0) (start #f) (acc '()))
+      (if (>= i n)
+          (bp-reverse (if start (cons (substring s start n) acc) acc))
+          (let ((c (string-ref s i)))
+            (if (char-whitespace? c)
+                (loop (+ i 1) #f (if start (cons (substring s start i) acc) acc))
+                (loop (+ i 1) (or start i) acc)))))))
+
+;; characters of a word, the last one carrying the end-of-word marker
+(define (bp-symbols word)
+  (let ((n (string-length word)))
+    (let loop ((i (- n 1)) (acc '()))
+      (if (< i 0)
+          acc
+          (loop (- i 1)
+                (cons (if (= i (- n 1))
+                          (string-append (string (string-ref word i)) bpe-end-of-word)
+                          (string (string-ref word i)))
+                      acc))))))
+
+;; separator for pair keys: a character no whitespace-split token holds
+(define bp-sep (string (integer->char 1)))
+
+;; merge sort of strings (core module: no stdlib sort)
+(define (bp-sort-strings l)
+  (define (merge a b)
+    (cond ((not (pair? a)) b) ((not (pair? b)) a)
+          ((string<? (car b) (car a)) (cons (car b) (merge a (cdr b))))
+          (else (cons (car a) (merge (cdr a) b)))))
+  (define (split l a b) (if (pair? l) (split (cdr l) b (cons (car l) a)) (cons a b)))
+  (if (or (not (pair? l)) (not (pair? (cdr l))))
+      l
+      (let ((h (split l '() '()))) (merge (bp-sort-strings (car h)) (bp-sort-strings (cdr h))))))
+
+(define (bp-pair<? a b)
+  (or (string<? (car a) (car b)) (and (string=? (car a) (car b)) (string<? (cdr a) (cdr b)))))
+
+;; merge every occurrence of (a . b) in a symbol list, left to right
+(define (bp-merge-word syms a b)
+  (cond ((not (pair? syms)) '())
+        ((and (pair? (cdr syms)) (string=? (car syms) a) (string=? (cadr syms) b))
+         (cons (string-append a b) (bp-merge-word (cddr syms) a b)))
+        (else (cons (car syms) (bp-merge-word (cdr syms) a b)))))
+
+;; ── training ──
+;; word counts as an alist (symbol-list . count)
+(define (bp-word-counts corpus)
+  (let ((tbl (make-hash-table)))
+    (let lines ((ls corpus))
+      (if (pair? ls)
+          (begin
+            (let ws ((w (bp-words (car ls))))
+              (if (pair? w)
+                  (begin (hash-table-set! tbl (car w) (+ 1 (hash-table-ref/default tbl (car w) 0))) (ws (cdr w)))))
+            (lines (cdr ls)))))
+    (let ((keys (bp-sort-strings (hash-table-keys tbl))))
+      (let loop ((ks keys) (acc '()))
+        (if (pair? ks)
+            (loop (cdr ks) (cons (cons (bp-symbols (car ks)) (hash-table-ref tbl (car ks))) acc))
+            (bp-reverse acc))))))
+
+;; the most frequent adjacent pair, ties to the smallest pair; #f when none
+(define (bp-best-pair words)
+  (let ((tbl (make-hash-table)))
+    (let loop ((ws words))
+      (if (pair? ws)
+          (begin
+            (let pairs ((s (car (car ws))))
+              (if (and (pair? s) (pair? (cdr s)))
+                  (let ((key (string-append (car s) bp-sep (cadr s))))
+                    (hash-table-set! tbl key
+                      (let ((old (hash-table-ref/default tbl key #f)))
+                        (if old (cons (car old) (+ (cdr old) (cdr (car ws))))
+                            (cons (cons (car s) (cadr s)) (cdr (car ws))))))
+                    (pairs (cdr s)))))
+            (loop (cdr ws)))))
+    (let loop ((vs (hash-table-values tbl)) (best #f))
+      (if (pair? vs)
+          (let ((v (car vs)))
+            (loop (cdr vs)
+                  (if (or (not best) (> (cdr v) (cdr best))
+                          (and (= (cdr v) (cdr best)) (bp-pair<? (car v) (car best))))
+                      v best)))
+          (if best (car best) #f)))))
+
+;; vocabulary: every symbol of the final segmentation and every merge result,
+;; plus every initial character symbol, sorted for stable ids
+(define (bp-collect-vocab words merges initial)
+  (let ((tbl (make-hash-table)))
+    (let add ((l initial)) (if (pair? l) (begin (hash-table-set! tbl (car l) #t) (add (cdr l)))))
+    (let add ((ms merges)) (if (pair? ms) (begin (hash-table-set! tbl (string-append (car (car ms)) (cdr (car ms))) #t) (add (cdr ms)))))
+    (bp-sort-strings (hash-table-keys tbl))))
+
+;; Learn up to `num-merges` merges from a list of strings.
+(define (bpe-train corpus num-merges)
+  (let* ((words0 (bp-word-counts corpus))
+         (initial (let loop ((ws words0) (acc '()))
+                    (if (pair? ws) (loop (cdr ws) (bp-append (car (car ws)) acc)) acc))))
+    (let loop ((k 0) (words words0) (merges '()))
+      (let ((best (if (< k num-merges) (bp-best-pair words) #f)))
+        (if (not best)
+            (make-bpe-model (bp-reverse merges) (bp-collect-vocab words merges initial))
+            (loop (+ k 1)
+                  (let upd ((ws words) (acc '()))
+                    (if (pair? ws)
+                        (upd (cdr ws) (cons (cons (bp-merge-word (car (car ws)) (car best) (cdr best)) (cdr (car ws))) acc))
+                        (bp-reverse acc)))
+                  (cons best merges)))))))
+
+;; ── model ──
+;; #(merges vocab rank-table id-table)
+(define (make-bpe-model merges vocab)
+  (let ((ranks (make-hash-table)) (ids (make-hash-table)))
+    (let loop ((ms merges) (r 0))
+      (if (pair? ms)
+          (begin (hash-table-set! ranks (string-append (car (car ms)) bp-sep (cdr (car ms))) r) (loop (cdr ms) (+ r 1)))))
+    (let loop ((vs vocab) (i 0))
+      (if (pair? vs) (begin (hash-table-set! ids (car vs) i) (loop (cdr vs) (+ i 1)))))
+    (vector merges vocab ranks ids)))
+
+(define (bpe-merges m) (vector-ref m 0))
+(define (bpe-vocab m) (vector-ref m 1))
+(define (bpe-token-id m tok) (hash-table-ref/default (vector-ref m 3) tok #f))
+
+;; segment one word: repeatedly apply the lowest-ranked adjacent merge
+(define (bp-encode-word m word)
+  (let ((ranks (vector-ref m 2)))
+    (let loop ((syms (bp-symbols word)))
+      (let find ((s syms) (best #f) (best-rank #f))
+        (if (and (pair? s) (pair? (cdr s)))
+            (let ((r (hash-table-ref/default ranks (string-append (car s) bp-sep (cadr s)) #f)))
+              (if (and r (or (not best-rank) (< r best-rank)))
+                  (find (cdr s) (cons (car s) (cadr s)) r)
+                  (find (cdr s) best best-rank)))
+            (if best (loop (bp-merge-word syms (car best) (cdr best))) syms))))))
+
+;; the token strings of a text
+(define (bpe-encode m text)
+  (let loop ((ws (bp-words text)) (acc '()))
+    (if (pair? ws)
+        (loop (cdr ws) (bp-append (bp-reverse (bp-encode-word m (car ws))) acc))
+        (bp-reverse acc))))
+
+;; token ids; a symbol outside the vocabulary (a character never seen in
+;; training) is an error
+(define (bpe-encode-ids m text)
+  (let loop ((ts (bpe-encode m text)) (acc '()))
+    (if (pair? ts)
+        (let ((id (bpe-token-id m (car ts))))
+          (if (not id) (error "bpe-encode-ids: token outside the vocabulary" (car ts)))
+          (loop (cdr ts) (cons id acc)))
+        (bp-reverse acc))))
+
+;; ids back to text: tokens concatenate, each end-of-word marker becomes a
+;; space between words
+(define (bpe-decode m ids)
+  (let* ((vocab (list->vector (bpe-vocab m)))
+         (joined (let loop ((is ids) (acc ""))
+                   (if (pair? is) (loop (cdr is) (string-append acc (vector-ref vocab (car is)))) acc)))
+         (marker bpe-end-of-word) (ml (string-length marker)) (n (string-length joined)))
+    (let loop ((i 0) (out '()))
+      (cond ((>= i n)
+             (let ((s (list->string (bp-reverse out))))
+               (if (and (> (string-length s) 0) (char=? (string-ref s (- (string-length s) 1)) #\space))
+                   (substring s 0 (- (string-length s) 1)) s)))
+            ((and (<= (+ i ml) n) (string=? (substring joined i (+ i ml)) marker))
+             (loop (+ i ml) (cons #\space out)))
+            (else (loop (+ i 1) (cons (string-ref joined i) out)))))))
