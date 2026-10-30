@@ -2931,6 +2931,131 @@ jobs:
           }
           cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
 
+      - name: Windows x64 native JIT regression CTest gate
+        if: env.LANE_ACTIVE == 'true' && matrix.name == 'windows-x64-cuda'
+        timeout-minutes: 35
+        shell: python
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          TEST_LOG_DIR: ${{ runner.temp }}\eshkol-test-logs
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          import tempfile
+          import codecs
+          from io import StringIO
+
+          build = pathlib.Path(os.environ["BUILD_DIR"])
+          log_dir = pathlib.Path(os.environ["TEST_LOG_DIR"])
+          log_dir.mkdir(parents=True, exist_ok=True)
+          gate_log = log_dir / "windows-x64-cuda-native-jit.log"
+          inventory = log_dir / "windows-x64-cuda-native-jit-inventory.json"
+          names = [
+              "windows_jit_regressions",
+              "windows_jit_regressions_harness",
+              "jit_parallel_init_test",
+              "jit_windows_x64_unwind_test",
+              "windows_x64_continuation_restore_test",
+          ]
+          exact = set(names)
+
+          class Tee:
+              def __init__(self, path):
+                  self.file = path.open("w", encoding="utf-8", errors="replace")
+              def write(self, text):
+                  sys.stdout.write(text)
+                  self.file.write(text)
+                  self.file.flush()
+              def flush(self):
+                  sys.stdout.flush()
+                  self.file.flush()
+
+          out = Tee(gate_log)
+          try:
+              def run(argv):
+                  print("$ " + " ".join(argv), file=out)
+                  proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                          stderr=subprocess.STDOUT, bufsize=0)
+                  decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                  while True:
+                      chunk = proc.stdout.read(65536)
+                      if not chunk:
+                          break
+                      out.write(decoder.decode(chunk))
+                  tail = decoder.decode(b"", final=True)
+                  if tail:
+                      out.write(tail)
+                  rc = proc.wait()
+                  if rc:
+                      out.write("command failed with exit %d: %s\n" % (rc, argv[0]))
+                      raise SystemExit(rc)
+
+              def capture_inventory(argv):
+                  print("$ " + " ".join(argv), file=out)
+                  with tempfile.TemporaryFile() as errfile:
+                      proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                              stderr=errfile, bufsize=0)
+                      decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                      text = StringIO()
+                      while True:
+                          chunk = proc.stdout.read(65536)
+                          if not chunk:
+                              break
+                          decoded = decoder.decode(chunk)
+                          text.write(decoded)
+                          out.write(decoded)
+                      tail = decoder.decode(b"", final=True)
+                      if tail:
+                          text.write(tail)
+                          out.write(tail)
+                      rc = proc.wait()
+                      errfile.seek(0)
+                      err_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+                      while True:
+                          chunk = errfile.read(65536)
+                          if not chunk:
+                              break
+                          out.write(err_decoder.decode(chunk))
+                      tail = err_decoder.decode(b"", final=True)
+                      if tail:
+                          out.write(tail)
+                  if rc:
+                      out.write("ctest inventory failed with exit %d\n" % rc)
+                      raise SystemExit(rc)
+                  return text.getvalue()
+
+              run(["cmake", "-S", ".", "-B", str(build),
+                   "-DESHKOL_BUILD_TESTS=ON",
+                   "-DESHKOL_TEST_WINDOWS_JIT_REGRESSIONS=ON"])
+              run(["cmake", "--build", str(build), "--config", "Release",
+                   "--target", "jit_parallel_init_test",
+                   "jit_windows_x64_unwind_test",
+                   "windows_x64_continuation_restore_test", "--parallel", "2"])
+
+              regex = "^(windows_jit_regressions|windows_jit_regressions_harness|"
+              regex += "jit_parallel_init_test|jit_windows_x64_unwind_test|"
+              regex += "windows_x64_continuation_restore_test)$"
+              show_text = capture_inventory(["ctest", "--test-dir", str(build), "-C", "Release",
+                                     "--show-only=json-v1", "-R", regex])
+              inventory.write_text(show_text, encoding="utf-8")
+              data = json.loads(show_text)
+              rows = data.get("tests", [])
+              actual = [row.get("name") for row in rows]
+              if len(actual) != 5 or sorted(actual) != sorted(names) or len(actual) != len(set(actual)):
+                  out.write("CTest inventory must contain exactly five unique targets: %r\n" % actual)
+                  raise SystemExit(1)
+
+              run(["ctest", "--test-dir", str(build), "-C", "Release",
+                   "--no-tests=error", "--output-on-failure", "--timeout", "900",
+                   "-R", "^(windows_jit_regressions|windows_jit_regressions_harness|"
+                   "jit_parallel_init_test|jit_windows_x64_unwind_test|"
+                   "windows_x64_continuation_restore_test)$"])
+          finally:
+              out.file.close()
+
       - name: Run Tests
         if: env.LANE_ACTIVE == 'true'
         timeout-minutes: 120
@@ -2977,11 +3102,17 @@ jobs:
           }
 
       - name: Upload Test Logs
-        if: env.LANE_ACTIVE == 'true' && (failure() || cancelled())
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'windows-x64-cuda' || failure() || cancelled())
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
-          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          path: |
+            ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+            ${{ runner.temp }}/eshkol-test-logs/windows-x64-cuda-native-jit.log
+            ${{ runner.temp }}/eshkol-test-logs/windows-x64-cuda-native-jit-inventory.json
+            ${{ matrix.build_dir }}/Testing/Temporary/LastTest.log
+            ${{ matrix.build_dir }}/windows-jit-regressions/**/*.json
+            ${{ matrix.build_dir }}/windows-jit-regressions/**/*.txt
           if-no-files-found: ignore
 
       - name: Upload Artifacts
