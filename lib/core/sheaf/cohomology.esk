@@ -108,7 +108,7 @@
                              (lambda (U V) (module-presheaf-restriction F (category-thin-arrow C V U))))))
 (define (module-cech-cohomology site F cover kmax)
   (let ((cx (module-cech-complex site F cover kmax)))
-    (ring-cochain-cohomology (module-presheaf-ring F) (car cx) (cadr cx))))
+    (sheaf-module-cochain-cohomology (module-presheaf-ring F) (car cx) (cadr cx))))
 
 ;; explicit cocycles generating H^k of a complex (dims Ds), integer coefficients:
 ;; a list of (order . cocycle), order 0 for an infinite cyclic summand
@@ -198,7 +198,7 @@
 ;; ((k betti torsion) ...) for k = 0 .. kmax
 (define (poset-module-cohomology F kmax . allowed)
   (let ((cx (apply poset-module-cochain-complex F kmax allowed)))
-    (ring-cochain-cohomology (poset-module-ring F) (car cx) (cadr cx))))
+    (sheaf-module-cochain-cohomology (poset-module-ring F) (car cx) (cadr cx))))
 (define (poset-module-cohomology-generators F k)
   (cohomology-generators (poset-module-cochain-complex F (+ k 1)) k))
 (define (finite-space-euler-characteristic X kmax)
@@ -230,7 +230,7 @@
                     (set! blocks (cons row blocks)))))
             D))
          D)
-        (ring-kernel (poset-module-ring F) (integer-matrix-vstack (reverse blocks)) total))))
+        (sheaf-module-kernel (poset-module-ring F) (integer-matrix-vstack (reverse blocks)) total))))
 ;; restriction of a section over D to a down-set E inside D
 (define (poset-module-restrict-section F D E s)
   (let* ((rks (map (lambda (x) (poset-module-rank F x)) D)) (offs (co-offsets rks))
@@ -248,7 +248,7 @@
         (let ((BVM (integer-matrix-from-columns BV (co-total F V))))
           (let loop ((bs BU) (col 0))
             (if (null? bs) M
-                (let ((y (ring-solve ring BVM (length BV) (poset-module-restrict-section F U V (car bs)))))
+                (let ((y (sheaf-module-solve ring BVM (length BV) (poset-module-restrict-section F U V (car bs)))))
                   (if (not y) (error "poset module: restricted section is not a section" (list U V)))
                   (let put ((t 0)) (if (< t (length BV)) (begin (integer-matrix-set! M t col (vector-ref y t)) (put (+ t 1)))))
                   (loop (cdr bs) (+ col 1)))))))))
@@ -263,7 +263,7 @@
                              (lambda (U V) (co-section-restriction F U V (sections U) (sections V))))))
 (define (poset-module-cech-cohomology F cover kmax)
   (let ((cx (poset-module-cech-complex F cover kmax)))
-    (ring-cochain-cohomology (poset-module-ring F) (car cx) (cadr cx))))
+    (sheaf-module-cochain-cohomology (poset-module-ring F) (car cx) (cadr cx))))
 ;; the module presheaf U |-> Gamma(U) on the site of opens of the space
 (define (poset-module->module-presheaf site F)
   (let* ((C (site-category site)) (n (category-object-count C))
