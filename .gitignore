@@ -220,3 +220,5 @@ tests/formal/coq/*.vo
 tests/formal/coq/*.vo[sk]
 tests/formal/coq/*.glob
 tests/formal/coq/.*.aux
+tests/formal/coq/.lia.cache
+tests/formal/coq/__pycache__/

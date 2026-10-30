@@ -102,8 +102,11 @@ if compgen -G "$COQ_DIR/*.v" >/dev/null; then
       if ! lint_coq "$f"; then
         record rocq "$name" FAIL "(Admitted/Axiom present)"; fail=$((fail+1)); continue
       fi
-      out="$(cd "$COQ_DIR" && $NICE "${COQ[@]}" -no-glob -o /dev/null "$name" 2>&1)"; rc=$?
-      if [ $rc -eq 0 ]; then
+      out="$(cd "$COQ_DIR" && $NICE "${COQ[@]}" -no-glob "$name" 2>&1)"; rc=$?
+      if [ $rc -eq 0 ] && printf '%s' "$out" | grep -q 'Axioms:'; then
+        record rocq "$name" FAIL "(a theorem depends on axioms)"; fail=$((fail+1))
+        printf '%s\n' "$out" | grep -A5 'Axioms:' | head -20
+      elif [ $rc -eq 0 ]; then
         record rocq "$name" PASS "($COQV)"; pass=$((pass+1))
       else
         record rocq "$name" FAIL "(exit $rc)"; fail=$((fail+1))
@@ -112,6 +115,19 @@ if compgen -G "$COQ_DIR/*.v" >/dev/null; then
     done
   fi
 fi
+
+# certificate blocks must match their generators
+for gen in "$COQ_DIR"/gen_*.py; do
+  [ -f "$gen" ] || continue
+  name="$(basename "$gen")"
+  if ! command -v python3 >/dev/null 2>&1; then
+    record certificates "$name" SKIP "(python3 not installed)"; skip=$((skip+1))
+  elif $NICE python3 -I -B "$gen" --check >/dev/null 2>&1; then
+    record certificates "$name" PASS "(generated block current)"; pass=$((pass+1))
+  else
+    record certificates "$name" FAIL "(generated block differs; rerun $name)"; fail=$((fail+1))
+  fi
+done
 
 echo "formal gate: $pass passed, $fail failed, $skip skipped"
 
