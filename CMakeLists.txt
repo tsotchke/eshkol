@@ -4324,6 +4324,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# Static admission never executes submitted lambda programs.
+if(ESHKOL_BUILD_TESTS)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME blc_corpus_review
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/examples/blc-corpus/review.py" check)
+        add_test(NAME blc_corpus_review_controls
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/examples/blc-corpus/review_self_test.py")
+        set_tests_properties(blc_corpus_review blc_corpus_review_controls PROPERTIES
+            TIMEOUT 30 LABELS "blc;admission;security")
+    endif()
+endif()
+
 # Classical BLC finite byte observation, with explicit collector/resource gates.
 option(ESHKOL_BLC_CORPUS_TESTS "Register the slow seven-program BLC transfer gate" OFF)
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)

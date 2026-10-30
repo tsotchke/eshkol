@@ -100,50 +100,104 @@ def active_query(frame):
 ORACLES["active-query"] = active_query
 
 
+MAX_BITS = 1000000
+MAX_NODES = 500000
+MAX_DEPTH = 4096
+MAX_FILE_BYTES = 4 * 1024 * 1024
+
+
+def corpus_bytes(relative, limit=MAX_FILE_BYTES):
+    """Bounded regular-file read from an immutable checkout; reject symlinks."""
+    import stat
+    relative = Path(relative)
+    if (relative.is_absolute() or not relative.parts
+            or any(p in ("..", ".") for p in relative.parts)):
+        raise ValueError("unsafe corpus path")
+    path = BASE
+    for part in relative.parts:
+        path = path / part
+        if path.is_symlink():
+            raise ValueError("symlink in corpus path")
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+        raise ValueError("corpus file type or byte budget")
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("corpus file byte budget")
+    return data
+
+
 def closed_classic(bits):
-    """Independent prefix/scope check; this is not a lambda evaluator."""
-    cursor = 0
+    """Bounded iterative prefix/scope admission; return a readable node table.
 
-    def parse(depth):
-        nonlocal cursor
-        if cursor >= len(bits):
-            raise ValueError("truncated classic BLC")
-        if bits[cursor] == "1":
-            start = cursor
-            while cursor < len(bits) and bits[cursor] == "1":
-                cursor += 1
-            if cursor == len(bits) or cursor - start > depth:
-                raise ValueError("truncated or open variable")
-            cursor += 1
+    This never evaluates a term. Nodes are postorder (tag, child...) tuples;
+    every child precedes its parent. No Python reader/eval or recursion.
+    """
+    if not bits or len(bits) > MAX_BITS or set(bits) - {"0", "1"}:
+        raise ValueError("expected bounded classic binary code")
+    cursor, entered = 0, 0
+    tasks, values, nodes = [("term", 0, 0)], [], []
+    while tasks:
+        task, scope, nesting = tasks.pop()
+        if task == "lambda":
+            nodes.append(("lambda", values.pop()))
+            values.append(len(nodes) - 1)
+        elif task == "apply":
+            right, left = values.pop(), values.pop()
+            nodes.append(("apply", left, right))
+            values.append(len(nodes) - 1)
         else:
-            tag = bits[cursor:cursor + 2]
-            cursor += 2
-            if tag == "00":
-                parse(depth + 1)
-            elif tag == "01":
-                parse(depth)
-                parse(depth)
+            entered += 1
+            if entered > MAX_NODES or nesting > MAX_DEPTH or cursor >= len(bits):
+                raise ValueError("truncated term or syntax budget")
+            if bits[cursor] == "1":
+                start = cursor
+                while cursor < len(bits) and bits[cursor] == "1":
+                    cursor += 1
+                    if cursor - start > scope:
+                        raise ValueError("open variable")
+                if cursor == len(bits):
+                    raise ValueError("truncated variable")
+                nodes.append(("bound", cursor - start))
+                values.append(len(nodes) - 1)
+                cursor += 1
             else:
-                raise ValueError("truncated constructor")
-
-    if not bits or set(bits) - {"0", "1"}:
-        raise ValueError("expected classic binary code")
-    parse(0)
-    if cursor != len(bits):
+                tag = bits[cursor:cursor + 2]
+                cursor += 2
+                if tag == "00":
+                    tasks.extend([("lambda", 0, 0), ("term", scope + 1, nesting + 1)])
+                elif tag == "01":
+                    tasks.extend([("apply", 0, 0), ("term", scope, nesting + 1), ("term", scope, nesting + 1)])
+                else:
+                    raise ValueError("truncated constructor")
+    if cursor != len(bits) or len(values) != 1:
         raise ValueError("trailing classic BLC data")
+    return nodes
+
+
+def canonical_bits(program):
+    raw = corpus_bytes(program["bits_path"], MAX_BITS + 1)
+    bits = raw[:-1].decode("ascii") if raw.endswith(b"\n") else ""
+    if not bits or raw != bits.encode("ascii") + b"\n":
+        raise ValueError("expected ASCII bits and exactly one final newline")
+    closed_classic(bits)
+    return bits
 
 
 def check():
-    manifest = tomllib.loads((BASE / "manifest.toml").read_text())
+    manifest = tomllib.loads(corpus_bytes("manifest.toml", 512 * 1024).decode("utf-8"))
     if manifest["schema_version"] != 1 or manifest["license"] != "MIT":
         raise ValueError("unknown corpus contract")
+    if not 1 <= len(manifest["file"]) <= 128:
+        raise ValueError("manifest file budget")
     paths = set()
     for item in manifest["file"]:
         relative = Path(item["path"])
         if relative.is_absolute() or ".." in relative.parts or relative in paths:
             raise ValueError("unsafe or duplicated manifest path")
         paths.add(relative)
-        if digest((BASE / relative).read_bytes()) != item["sha256"]:
+        if digest(corpus_bytes(relative)) != item["sha256"]:
             raise ValueError("file hash differs: " + item["path"])
     programs = set()
     for program in manifest["program"]:
@@ -152,8 +206,8 @@ def check():
                 or Path(program["packed_path"]) not in paths):
             raise ValueError("program identity or sealed path differs")
         programs.add(program["id"])
-        bits = (BASE / program["bits_path"]).read_text().strip()
-        packed = (BASE / program["packed_path"]).read_bytes()
+        bits = canonical_bits(program)
+        packed = corpus_bytes(program["packed_path"])
         closed_classic(bits)
         padded = bits + "0" * (-len(bits) % 8)
         if (len(bits) != program["logical_bits"] or len(packed) != program["packed_bytes"]
@@ -162,12 +216,13 @@ def check():
             raise ValueError("packed/text identity differs")
     if programs != PROGRAMS:
         raise ValueError("missing program")
-    fixtures = tomllib.loads((BASE / "fixtures.toml").read_text())["fixture"]
-    if len(fixtures) != manifest["fixture_count"]:
+    fixtures = tomllib.loads(corpus_bytes("fixtures.toml").decode("utf-8"))["fixture"]
+    if len(fixtures) != manifest["fixture_count"] or not 1 <= len(fixtures) <= 1024:
         raise ValueError("fixture count differs")
     names = set()
     for case in fixtures:
         if (not re.fullmatch(r"[a-z0-9-]+", case["id"]) or case["id"] in names
+                or len(case["input"]) > 65536 or len(case["expected"]) > 65536
                 or any(type(x) is not int or not 0 <= x <= 255 for x in case["input"] + case["expected"])):
             raise ValueError("invalid fixture")
         names.add(case["id"])
@@ -187,20 +242,68 @@ def command(argv, payload, timeout, memory_mib):
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         resource.setrlimit(resource.RLIMIT_AS, (memory_mib * 1024**2,) * 2)
         resource.setrlimit(resource.RLIMIT_CPU, (math.ceil(timeout) + 1,) * 2)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024**2,) * 2)
 
     started = time.monotonic()
     process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True,
                                preexec_fn=limits)
-    timed_out = False
+    # Bound pipes as well as elapsed time: communicate() alone can exhaust
+    # the parent process on a hostile or broken backend's stdout/stderr.
+    import selectors
+    selector = selectors.DefaultSelector()
+    buffers = {process.stdout: bytearray(), process.stderr: bytearray()}
+    for stream in buffers:
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ)
+    timed_out, output_limited = False, False
+    deadline = started + timeout
     try:
-        stdout, stderr = process.communicate(payload, timeout=timeout)
+        if payload:
+            # Corpus inputs are bounded by admission, and fit in the pipe on
+            # current fixtures. A separate writer prevents a blocked stdin
+            # from escaping the same wall deadline on future inputs.
+            import threading
+            def send():
+                try:
+                    process.stdin.write(payload)
+                    process.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            writer = threading.Thread(target=send, daemon=True)
+            writer.start()
+        else:
+            process.stdin.close()
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            for key, _ in selector.select(min(remaining, 0.1)):
+                data = os.read(key.fileobj.fileno(), 65536)
+                if not data:
+                    selector.unregister(key.fileobj)
+                else:
+                    buffers[key.fileobj].extend(data)
+                    if sum(map(len, buffers.values())) > 8 * 1024**2:
+                        output_limited = True
+                        break
+            if output_limited:
+                break
+        if timed_out or output_limited:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=max(0.1, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         timed_out = True
         os.killpg(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate()
+        process.wait()
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
     return {"exit_code": process.returncode, "wall_seconds": time.monotonic() - started,
-            "timed_out": timed_out, "stdout": stdout, "stderr": stderr}
+            "timed_out": timed_out, "output_limited": output_limited,
+            "stdout": bytes(buffers[process.stdout]), "stderr": bytes(buffers[process.stderr])}
 
 
 def execute(args, manifest, fixtures, work):
@@ -211,10 +314,10 @@ def execute(args, manifest, fixtures, work):
         binary = str(Path(args.binary).resolve(strict=True))
         phase = "execute"
         if args.backend == "tromp":
-            payload = (BASE / program["packed_path"]).read_bytes() + bytes(case["input"])
+            payload = corpus_bytes(program["packed_path"]) + bytes(case["input"])
             result = command([binary], payload, args.timeout, args.memory_mib)
         else:
-            bits = (BASE / program["bits_path"]).read_text().strip()
+            bits = canonical_bits(program)
             probe = work / (case["id"] + ".esk")
             data = work / (case["id"] + ".input")
             data.write_text("(" + " ".join(map(str, case["input"])) + ")\n")
@@ -243,7 +346,9 @@ def execute(args, manifest, fixtures, work):
         actual = None
         status = "process-failure"
         counters = [-1] * 6
-        if result["timed_out"]:
+        if result["output_limited"]:
+            status = "output-limit"
+        elif result["timed_out"]:
             status = "wall-timeout"
         elif result["exit_code"] != 0 and any(message in result["stderr"].lower()
                 for message in (b"out of memory", b"failed to allocate")):
@@ -304,7 +409,7 @@ def main():
     parser.add_argument("--work-dir")
     parser.add_argument("--report")
     args = parser.parse_args()
-    args.manifest_sha256 = digest((BASE / "manifest.toml").read_bytes())
+    args.manifest_sha256 = digest(corpus_bytes("manifest.toml", 512 * 1024))
     args.runner_sha256 = digest(Path(__file__).read_bytes())
     args.module_sha256 = digest((LIBRARY / "core/blc_bytes.esk").read_bytes()) if (LIBRARY / "core/blc_bytes.esk").exists() else ""
     manifest, fixtures = check()

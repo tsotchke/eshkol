@@ -34,9 +34,18 @@ cmp "$WORK/jit.out" "$WORK/aot.out"
 cat "$WORK/jit.out"
 if [[ $# -eq 1 ]]; then
     CORPUS="$PROJECT_ROOT/examples/blc-corpus"
+    # Contributed lambda payloads execute only behind the fail-closed boundary.
+    RUNTIME_ROOT="${ESHKOL_SANDBOX_RUNTIME_ROOT:-$(dirname "$RUN")}"
+    if [[ "$(basename "$RUNTIME_ROOT")" = bin ]]; then RUNTIME_ROOT="$(dirname "$RUNTIME_ROOT")"; fi
+    SANDBOX_ROOTS=(--runtime-root "$RUNTIME_ROOT")
+    if [[ -n "${ESHKOL_SANDBOX_DEPENDENCIES:-}" ]]; then
+        IFS=: read -r -a DEPENDENCY_ROOTS <<< "$ESHKOL_SANDBOX_DEPENDENCIES"
+        for root in "${DEPENDENCY_ROOTS[@]}"; do SANDBOX_ROOTS+=(--runtime-root "$root"); done
+    fi
     for mode in jit aot; do
-        python3 "$CORPUS/run.py" run --backend "eshkol-$mode" --binary "$RUN" \
-            --timeout 1800 --memory-mib 2048 --report "$WORK/$mode.toml" --work-dir "$WORK/$mode"
+        python3 "$CORPUS/review.py" run --binary "$RUN" "${SANDBOX_ROOTS[@]}" \
+            --report "$WORK/$mode.toml" --work-dir "$WORK/$mode" -- \
+            --backend "eshkol-$mode" --timeout 1800 --memory-mib 2048
     done
     python3 - "$WORK" <<'PY'
 from pathlib import Path
