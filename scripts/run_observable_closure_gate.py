@@ -229,7 +229,7 @@ def main():
                    help='Explicitly compile this checkout\'s linalg module when a packaged stdlib object predates exact-affine-solve')
     args = p.parse_args()
     root = args.source_root.resolve()
-    env = dict(os.environ, ESHKOL_PATH=str(root / 'lib'))
+    env = dict(os.environ, ESHKOL_PATH=str(root / 'lib'), ESHKOL_JIT_CACHE='0')
     with tempfile.TemporaryDirectory(prefix='observable-gate-') as directory:
         work = Path(directory)
 
@@ -268,7 +268,7 @@ def main():
         replay_jit = run([args.eshkol_bin, '-r', str(replay)])
         run([args.eshkol_bin, *extra, str(replay), '-O', '2', '-o', str(work / 'replay')])
         assert replay_jit == run([str(work / 'replay')]) == 'PASS observable_producer_free\n'
-        result = {'schema_version': 1, 'engines': ['jit', 'aot-O2'], 'checks_per_engine': 159,
+        result = {'schema_version': 1, 'jit_executable_cache': 'disabled', 'engines': ['jit', 'aot-O2'], 'checks_per_engine': 159,
                   'independent_span_cases': 64, 'hawkes_dimensions': [15, 4, 11],
                   'producer_free_replay': True, 'stdout_sha256': hashlib.sha256(jit.encode()).hexdigest(),
                   'linalg_source_compiled_explicitly': args.compile_linalg_source,
