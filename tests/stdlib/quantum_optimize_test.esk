@@ -1,0 +1,278 @@
+;; core.quantum.optimize: exact expected outputs of each pass on small cases,
+;; every commutation rule and every merge checked by exact unitary equality,
+;; random Clifford+T circuits checked exactly (over a cyclotomic field) after
+;; every pass and the full pipeline, random circuits with binary64 rotation
+;; angles checked in binary64, ZX-calculus certificates, the reduction over
+;; the random set, and that optimising twice never raises the cost.
+(require stdlib)
+(require core.quantum.circuit)
+(require core.quantum.optimize)
+(require core.monoidal.zx)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (length (filter pred xs)))
+(define (range n) (iota n))
+(define (take xs k) (if (or (= k 0) (null? xs)) '() (cons (car xs) (take (cdr xs) (- k 1)))))
+(define seed 4142)
+(define (rand n) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) n))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define pi 3.141592653589793)
+
+(define (qc n gates) (make-qcircuit n gates))
+(define (gates-of c) (qcircuit-gates c))
+;; pass applied to (n gates) yields exactly the gate list expected
+(define (yields? pass n gates expected) (equal? (gates-of (pass (qc n gates))) expected))
+(define (opt c) (qopt-optimize c))
+
+;; ---------------------------------------------------------------------------
+;; Unit cases with exact expected outputs
+;; ---------------------------------------------------------------------------
+(check "pipeline: H H, CNOT CNOT, T Tdg, S Sdg, Z Z, CZ(0,1) CZ(1,0), SWAP(0,1) SWAP(1,0), CCX(0,1,2) CCX(1,0,2) vanish"
+       (and (null? (gates-of (opt (qc 1 '((H 0) (H 0))))))
+            (null? (gates-of (opt (qc 2 '((CNOT 0 1) (CNOT 0 1))))))
+            (null? (gates-of (opt (qc 1 '((T 0) (Tdg 0))))))
+            (null? (gates-of (opt (qc 1 '((S 0) (Sdg 0))))))
+            (null? (gates-of (opt (qc 1 '((Z 0) (Z 0))))))
+            (null? (gates-of (opt (qc 2 '((CZ 0 1) (CZ 1 0))))))
+            (null? (gates-of (opt (qc 2 '((SWAP 0 1) (SWAP 1 0))))))
+            (null? (gates-of (opt (qc 3 '((CCX 0 1 2) (CCX 1 0 2))))))))
+(check "fuse: T T -> S, S S -> Z, T S -> P 3/4, T T T T T T T T -> nothing, Sdg Tdg -> P 5/4, T X X T -> S"
+       (and (yields? qopt-fuse 1 '((T 0) (T 0)) '((S 0)))
+            (yields? qopt-fuse 1 '((S 0) (S 0)) '((Z 0)))
+            (yields? qopt-fuse 1 '((T 0) (S 0)) (list (list 'P 0 (/ 3 4))))
+            (yields? qopt-fuse 1 '((T 0) (T 0) (T 0) (T 0) (T 0) (T 0) (T 0) (T 0)) '())
+            (yields? qopt-fuse 1 '((Sdg 0) (Tdg 0)) (list (list 'P 0 (/ 5 4))))
+            (yields? qopt-fuse 1 '((T 0) (X 0) (X 0) (T 0)) '((S 0)))))
+(check "fuse: P 1/3 P 1/6 -> S, P 3/4 T -> Z, P 1/8 Tdg -> P 15/8"
+       (and (yields? qopt-fuse 1 (list (list 'P 0 (/ 1 3)) (list 'P 0 (/ 1 6))) '((S 0)))
+            (yields? qopt-fuse 1 (list (list 'P 0 (/ 3 4)) '(T 0)) '((Z 0)))
+            (yields? qopt-fuse 1 (list (list 'P 0 (/ 1 8)) '(Tdg 0)) (list (list 'P 0 (/ 15 8))))))
+(check "fuse: X XP 1/2 -> XP 3/2, X X -> nothing, Y Y -> nothing, XP 1/4 XP 3/4 -> X"
+       (and (yields? qopt-fuse 1 (list '(X 0) (list 'XP 0 (/ 1 2))) (list (list 'XP 0 (/ 3 2))))
+            (yields? qopt-fuse 1 '((X 0) (X 0)) '())
+            (yields? qopt-fuse 1 '((Y 0) (Y 0)) '())
+            (yields? qopt-fuse 1 (list (list 'XP 0 (/ 1 4)) (list 'XP 0 (/ 3 4))) '((X 0)))))
+(check "fuse: RZ(a) RZ(b) -> RZ(a+b), RX RX, RY RY likewise; RZ(pi) RZ(pi) and RX(3) RX(4 pi - 3) vanish"
+       (and (yields? qopt-fuse 1 '((RZ 0 0.3) (RZ 0 0.4)) (list (list 'RZ 0 (+ 0.3 0.4))))
+            (yields? qopt-fuse 1 '((RX 0 0.3) (RX 0 -1.1)) (list (list 'RX 0 (+ 0.3 -1.1))))
+            (yields? qopt-fuse 1 '((RY 0 2.5) (RY 0 0.25)) (list (list 'RY 0 (+ 2.5 0.25))))
+            (yields? qopt-fuse 1 (list (list 'RZ 0 pi) (list 'RZ 0 pi)) '())
+            (yields? qopt-fuse 1 (list (list 'RX 0 3.0) (list 'RX 0 (- (* 4 pi) 3.0))) '())
+            (yields? qopt-fuse 1 '((RZ 0 0) (H 0) (RX 0 0.0)) '((H 0)))))
+(check "fuse: a mix of RZ and an exact phase becomes one RZ, X and RX one RX, Y and RY one RY"
+       (and (yields? qopt-fuse 1 '((RZ 0 0.3) (T 0)) (list (list 'RZ 0 (+ 0.3 (* pi (/ 1 4))))))
+            (yields? qopt-fuse 1 '((S 0) (RZ 0 0.3)) (list (list 'RZ 0 (+ (* pi (/ 1 2)) 0.3))))
+            (yields? qopt-fuse 1 '((X 0) (RX 0 0.5)) (list (list 'RX 0 (+ pi 0.5))))
+            (yields? qopt-fuse 1 '((RY 0 0.5) (Y 0)) (list (list 'RY 0 (+ 0.5 pi))))
+            (qcircuit-equivalent-float? (qc 1 '((RZ 0 0.3) (T 0))) (qopt-fuse (qc 1 '((RZ 0 0.3) (T 0)))))
+            (qcircuit-equivalent-float? (qc 1 '((RY 0 0.5) (Y 0))) (qopt-fuse (qc 1 '((RY 0 0.5) (Y 0)))))))
+(check "fuse: RZZ(0,1,a) RZZ(1,0,b) -> RZZ(0,1,a+b); RZZ(a) RZZ(-a) vanishes; RZZ on different pairs stays"
+       (and (yields? qopt-fuse 2 '((RZZ 0 1 0.2) (RZZ 1 0 0.5)) (list (list 'RZZ 0 1 (+ 0.2 0.5))))
+            (yields? qopt-fuse 2 '((RZZ 0 1 0.2) (RZZ 0 1 -0.2)) '())
+            (yields? qopt-fuse 3 '((RZZ 0 1 0.2) (RZZ 1 2 0.5)) '((RZZ 0 1 0.2) (RZZ 1 2 0.5)))))
+(define th0 (qparam 0)) (define th1 (qparam 1))
+(check "fuse: qparam angles of one parameter add coefficients; different parameters and numbers do not merge"
+       (and (yields? qopt-fuse 1 (list (list 'RZ 0 (qparam 0 1)) (list 'RZ 0 (qparam 0 2))) (list (list 'RZ 0 (qparam 0 3))))
+            (yields? qopt-fuse 1 (list (list 'RX 0 (qparam 2 (/ 1 2))) (list 'RX 0 (qparam 2 (/ -1 2)))) '())
+            (yields? qopt-fuse 1 (list (list 'RZ 0 th0) (list 'RZ 0 th1)) (list (list 'RZ 0 th0) (list 'RZ 0 th1)))
+            (yields? qopt-fuse 1 (list (list 'RZ 0 th0) (list 'RZ 0 0.5)) (list (list 'RZ 0 th0) (list 'RZ 0 0.5)))
+            (yields? qopt-fuse 1 (list (list 'RZ 0 th0) '(T 0)) (list (list 'RZ 0 th0) '(T 0)))
+            (yields? qopt-fuse 2 (list (list 'RZZ 0 1 (qparam 1 2)) (list 'RZZ 1 0 (qparam 1 3))) (list (list 'RZZ 0 1 (qparam 1 5))))))
+(check "fuse keeps gates apart when another gate sits between them on the wire"
+       (and (yields? qopt-fuse 2 '((T 0) (CNOT 0 1) (T 0)) '((T 0) (CNOT 0 1) (T 0)))
+            (yields? qopt-fuse 1 '((T 0) (H 0) (T 0)) '((T 0) (H 0) (T 0)))))
+(check "cancel: T on control, CNOT, Tdg on control -> CNOT; X on target through CNOT cancels; S through CNOT control merges to Z"
+       (and (yields? qopt-cancel 2 '((T 0) (CNOT 0 1) (Tdg 0)) '((CNOT 0 1)))
+            (yields? qopt-cancel 2 '((X 1) (CNOT 0 1) (X 1)) '((CNOT 0 1)))
+            (yields? qopt-cancel 2 '((S 0) (CNOT 0 1) (S 0)) '((Z 0) (CNOT 0 1)))
+            (yields? qopt-cancel 2 (list '(RX 1 0.4) '(CNOT 0 1) '(RX 1 0.1)) (list (list 'RX 1 (+ 0.4 0.1)) '(CNOT 0 1)))))
+(check "cancel: CNOTs sharing a control or a target commute; CNOT(0,1) CNOT(0,2) CNOT(0,1) -> CNOT(0,2)"
+       (and (yields? qopt-cancel 3 '((CNOT 0 1) (CNOT 0 2) (CNOT 0 1)) '((CNOT 0 2)))
+            (yields? qopt-cancel 3 '((CNOT 0 2) (CNOT 1 2) (CNOT 0 2)) '((CNOT 1 2)))
+            (yields? qopt-cancel 3 '((CNOT 0 1) (CNOT 1 2) (CNOT 0 1)) '((CNOT 0 1) (CNOT 1 2) (CNOT 0 1)))))
+(check "cancel: diagonal gates pass each other; CZ through a CNOT control; SWAP past a CZ on its pair"
+       (and (yields? qopt-cancel 2 '((T 0) (CZ 0 1) (RZ 1 0.5) (T 0)) '((S 0) (CZ 0 1) (RZ 1 0.5)))
+            (yields? qopt-cancel 3 '((CZ 0 2) (CNOT 0 1) (CZ 2 0)) '((CNOT 0 1)))
+            (yields? qopt-cancel 3 '((CZ 1 2) (CNOT 0 1) (CZ 2 1)) '((CZ 1 2) (CNOT 0 1) (CZ 2 1)))
+            (yields? qopt-cancel 2 '((SWAP 0 1) (CZ 0 1) (SWAP 1 0)) '((CZ 0 1)))
+            (yields? qopt-cancel 2 '((RZZ 0 1 0.2) (CZ 0 1) (T 0) (RZZ 1 0 0.5)) (list (list 'RZZ 0 1 (+ 0.2 0.5)) '(CZ 0 1) '(T 0)))))
+(check "cancel refuses non-commuting moves: H between, Z on a CNOT target, X on a CNOT control"
+       (and (yields? qopt-cancel 2 '((H 0) (CNOT 0 1) (H 0)) '((H 0) (CNOT 0 1) (H 0)))
+            (yields? qopt-cancel 2 '((Z 1) (CNOT 0 1) (Z 1)) '((Z 1) (CNOT 0 1) (Z 1)))
+            (yields? qopt-cancel 2 '((X 0) (CNOT 0 1) (X 0)) '((X 0) (CNOT 0 1) (X 0)))))
+(check "phase-fold: T on x0+x1, CNOTs back and forth, T on x0+x1 again -> S at the first; T X T -> X; across an H on another wire; not across an H changing the parity"
+       (and (yields? qopt-phase-fold 2 '((CNOT 0 1) (T 1) (CNOT 0 1) (CNOT 0 1) (T 1)) '((CNOT 0 1) (S 1) (CNOT 0 1) (CNOT 0 1)))
+            (yields? qopt-phase-fold 1 '((T 0) (X 0) (T 0)) '((X 0)))
+            (yields? qopt-phase-fold 3 '((CNOT 0 1) (T 1) (H 0) (SWAP 1 2) (T 2)) '((CNOT 0 1) (S 1) (H 0) (SWAP 1 2)))
+            (yields? qopt-phase-fold 2 '((T 0) (CNOT 1 0) (H 1) (CNOT 1 0) (T 0)) '((T 0) (CNOT 1 0) (H 1) (CNOT 1 0) (T 0)))
+            (yields? qopt-phase-fold 1 '((T 0) (H 0) (T 0)) '((T 0) (H 0) (T 0)))
+            (yields? qopt-phase-fold 2 '((T 0) (SWAP 0 1) (Tdg 1)) '((SWAP 0 1)))))
+(check "phase-fold is exact on its examples"
+       (all? (lambda (gs) (let ((c (qc 3 gs))) (qcircuit-equivalent-exact? c (qopt-phase-fold c))))
+             '(((T 0) (X 0) (T 0)) ((CNOT 0 1) (T 1) (H 0) (SWAP 1 2) (T 2)) ((T 0) (SWAP 0 1) (Tdg 1))
+               ((CNOT 0 1) (T 1) (CNOT 1 2) (X 1) (CNOT 0 2) (Tdg 2) (CNOT 0 1) (S 1) (CNOT 1 2) (T 2)))))
+(check "zx-resynthesize: H CNOT H -> CZ, three alternating CNOTs -> SWAP, H S H S H S -> fewer gates"
+       (and (yields? qopt-zx-resynthesize 2 '((H 1) (CNOT 0 1) (H 1)) '((CZ 0 1)))
+            (yields? qopt-zx-resynthesize 2 '((CNOT 0 1) (CNOT 1 0) (CNOT 0 1)) '((SWAP 0 1)))
+            (yields? qopt-zx-resynthesize 3 '((T 2) (H 1) (CNOT 0 1) (H 1)) '((T 2) (CZ 0 1)))
+            (let ((c (qc 1 '((H 0) (S 0) (H 0) (S 0) (H 0) (S 0)))))
+              (and (< (qcircuit-gate-count (qopt-zx-resynthesize c)) 6) (qcircuit-equivalent-exact? c (qopt-zx-resynthesize c))))))
+(check "zx-resynthesize leaves non-Clifford+T gates and wide windows alone"
+       (and (yields? qopt-zx-resynthesize 2 '((RZ 0 0.3) (H 1) (RX 1 0.2)) '((RZ 0 0.3) (H 1) (RX 1 0.2)))
+            (yields? qopt-zx-resynthesize 3 '((CCX 0 1 2) (CCX 0 1 2)) '((CCX 0 1 2) (CCX 0 1 2)))))
+(check "qopt-zx-extract reads a frontier-form graph and refuses others"
+       (let* ((g (zx-graph-from '((0 B) (1 B) (2 B) (3 B) (4 Z 1/2) (5 Z 0)) '((0 4 hadamard) (4 2) (1 5) (5 3 hadamard) (4 5 hadamard)) '(0 1) '(2 3)))
+              (h (zx-graph-from '((0 B) (1 B) (2 Z 1/4)) '((0 2) (2 1) (2 2 hadamard)) '(0) '(1))))
+         (and (equal? (qopt-zx-extract g 2) '((H 0) (S 0) (CZ 0 1) (H 1)))
+              (not (qopt-zx-extract h 1)))))
+(check "pipeline options: zx off, phase-fold off, verify on; report and cost"
+       (let* ((c (qc 2 '((H 1) (CNOT 0 1) (H 1) (T 0) (T 0))))
+              (a (qopt-optimize c '((zx . #f)))) (b (qopt-optimize c '((verify . #t) (phase-fold . #f)))))
+         (and (equal? (gates-of a) '((H 1) (CNOT 0 1) (H 1) (S 0)))
+              (equal? (gates-of b) '((S 0) (CZ 0 1)))
+              (equal? (qopt-cost b) '(1 0 2))
+              (qopt-cost<? '(1 0 2) '(1 1 0)) (not (qopt-cost<? '(1 0 2) '(1 0 2)))
+              (equal? (qopt-report c b) '((gates 5 2) (two-qubit 1 1) (t-count 2 0) (depth 4 2))))))
+(check "pipeline with verify on a parametric circuit"
+       (let* ((c (qc 2 (list (list 'RZ 0 (qparam 0)) '(CNOT 0 1) (list 'RZ 0 (qparam 0 -1)) (list 'RZZ 0 1 (qparam 1)) '(H 1) '(H 1))))
+              (d (qopt-optimize c '((verify . #t)))))
+         (equal? (gates-of d) (list '(CNOT 0 1) (list 'RZZ 0 1 (qparam 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Every commutation rule and every merge, exactly
+;; ---------------------------------------------------------------------------
+(define pool
+  (append (apply append (map (lambda (q) (list (list 'H q) (list 'X q) (list 'Y q) (list 'Z q) (list 'S q) (list 'T q) (list 'Tdg q)
+                                               (list 'P q (/ 3 8)) (list 'XP q (/ 1 4))))
+                             '(0 1 2)))
+          '((CNOT 0 1) (CNOT 1 0) (CNOT 0 2) (CNOT 2 1) (CNOT 1 2) (CZ 0 1) (CZ 1 2) (CZ 2 0) (SWAP 0 1) (SWAP 1 2)
+            (CCX 0 1 2) (CCX 1 0 2) (CCX 0 2 1) (CCZ 0 1 2))))
+(define fpool
+  '((RX 0 0.3) (RX 1 -0.7) (RY 0 0.4) (RY 1 1.1) (RZ 0 0.9) (RZ 1 -0.2) (RZZ 0 1 0.6) (RZZ 1 2 -1.3) (RZZ 0 2 0.5)
+    (X 0) (X 1) (Y 0) (H 0) (CNOT 0 1) (CNOT 1 0) (CNOT 2 1) (CZ 0 1) (SWAP 0 1) (SWAP 1 2) (CCX 0 2 1) (T 0) (XP 1 1/2)))
+(define (pairs xs) (if (null? xs) '() (append (map (lambda (y) (cons (car xs) y)) (cdr xs)) (pairs (cdr xs)))))
+(define exact-commuting (filter (lambda (p) (qopt-commute? (car p) (cdr p))) (pairs pool)))
+(define float-commuting (filter (lambda (p) (qopt-commute? (car p) (cdr p))) (pairs fpool)))
+(check "qopt-commute? is symmetric over both pools"
+       (all? (lambda (p) (eq? (qopt-commute? (car p) (cdr p)) (qopt-commute? (cdr p) (car p)))) (append (pairs pool) (pairs fpool))))
+(check "every pair of exact gates on 3 wires declared commuting satisfies g h = h g exactly"
+       (all? (lambda (p) (qcircuit-equal-exact? (qc 3 (list (car p) (cdr p))) (qc 3 (list (cdr p) (car p))))) exact-commuting))
+(check "every pair with binary64 rotations declared commuting satisfies g h = h g in binary64"
+       (all? (lambda (p) (qcircuit-equivalent-float? (qc 3 (list (car p) (cdr p))) (qc 3 (list (cdr p) (car p))))) float-commuting))
+(define merging (filter (lambda (p) (qopt-merge (car p) (cdr p)))
+                        (apply append (map (lambda (g) (map (lambda (h) (cons g h)) (append pool fpool))) (append pool fpool)))))
+(check "every merge h ; g -> m is h ; g up to a global phase (exact or binary64)"
+       (all? (lambda (p) (let ((a (qc 3 (list (car p) (cdr p)))) (b (qc 3 (cdr (qopt-merge (car p) (cdr p))))))
+                           (qcircuit-equivalent? a b)))
+             merging))
+(display "commutation pairs checked: ") (display (+ (length exact-commuting) (length float-commuting)))
+(display ", merges checked: ") (display (length merging)) (newline)
+
+;; ---------------------------------------------------------------------------
+;; Random Clifford+T circuits, checked exactly after every pass
+;; ---------------------------------------------------------------------------
+(define (rand-other n q) (let ((r (rand (- n 1)))) (if (>= r q) (+ r 1) r)))
+(define (rand-ct-gate n)
+  (let ((r (rand (if (= n 1) 10 15))) (q (rand n)))
+    (cond ((< r 2) (list 'H q)) ((< r 4) (list 'T q)) ((= r 4) (list 'Tdg q)) ((= r 5) (list 'S q)) ((= r 6) (list 'Sdg q))
+          ((= r 7) (list 'X q)) ((= r 8) (list 'Z q)) ((= r 9) (list 'P q (/ (rand 8) 4)))
+          ((< r 13) (list 'CNOT q (rand-other n q))) ((= r 13) (list 'CZ q (rand-other n q)))
+          (else (if (= 0 (rand 3)) (list 'SWAP q (rand-other n q)) (list 'CNOT q (rand-other n q)))))))
+(define (rand-gates n len gen) (map (lambda (i) (gen n)) (range len)))
+;; a gate, a circuit, its inverse, a gate (a "mirror"): reducible structure
+(define (mirror n len)
+  (let* ((gs (rand-gates n len rand-ct-gate)) (inv (reverse (map qgate-inverse gs))))
+    (append (list (rand-ct-gate n)) gs inv (list (rand-ct-gate n)))))
+(define ct-circuits
+  (append (map (lambda (i) (qc 1 (rand-gates 1 (+ 5 (rand 16)) rand-ct-gate))) (range 6))
+          (map (lambda (i) (qc 2 (rand-gates 2 (+ 5 (rand 26)) rand-ct-gate))) (range 12))
+          (map (lambda (i) (qc 3 (rand-gates 3 (+ 5 (rand 26)) rand-ct-gate))) (range 14))
+          (map (lambda (i) (qc 4 (rand-gates 4 (+ 5 (rand 16)) rand-ct-gate))) (range 4))
+          (map (lambda (i) (qc 3 (mirror 3 (+ 4 (rand 9))))) (range 4))))
+(define optimised (map opt ct-circuits))
+(check "40 random Clifford+T circuits on 1-4 wires: qopt-fuse is exact"
+       (all? (lambda (c) (qcircuit-equivalent-exact? c (qopt-fuse c))) ct-circuits))
+(check "... qopt-cancel is exact"
+       (all? (lambda (c) (qcircuit-equivalent-exact? c (qopt-cancel c))) ct-circuits))
+(check "... qopt-phase-fold is exact"
+       (all? (lambda (c) (qcircuit-equivalent-exact? c (qopt-phase-fold c))) ct-circuits))
+(check "... qopt-zx-resynthesize is exact"
+       (all? (lambda (c) (qcircuit-equivalent-exact? c (qopt-zx-resynthesize c))) ct-circuits))
+(check "... qopt-zx-resynthesize with two-wire windows of at most 6 gates is exact"
+       (all? (lambda (c) (qcircuit-equivalent-exact? c (qopt-zx-resynthesize c '((window . 2) (window-gates . 6))))) ct-circuits))
+(check "... the full pipeline is exact"
+       (all? (lambda (p) (qcircuit-equivalent-exact? (car p) (cdr p))) (map cons ct-circuits optimised)))
+(check "... no pass and not the pipeline raises the cost"
+       (all? (lambda (c) (and (not (qopt-cost<? (qopt-cost c) (qopt-cost (qopt-fuse c))))
+                              (not (qopt-cost<? (qopt-cost c) (qopt-cost (qopt-cancel c))))
+                              (not (qopt-cost<? (qopt-cost c) (qopt-cost (qopt-phase-fold c))))
+                              (not (qopt-cost<? (qopt-cost c) (qopt-cost (qopt-zx-resynthesize c))))
+                              (not (qopt-cost<? (qopt-cost c) (qopt-cost (opt c))))))
+             ct-circuits))
+(define reoptimised (map opt optimised))
+(check "... optimising twice does not raise the cost"
+       (all? (lambda (p) (not (qopt-cost<? (qopt-cost (car p)) (qopt-cost (cdr p))))) (map cons optimised reoptimised)))
+(define (total f cs) (apply + (map f cs)))
+(define g0 (total qcircuit-gate-count ct-circuits)) (define g1 (total qcircuit-gate-count optimised))
+(define q0 (total qcircuit-two-qubit-count ct-circuits)) (define q1 (total qcircuit-two-qubit-count optimised))
+(define t0 (total qcircuit-t-count ct-circuits)) (define t1 (total qcircuit-t-count optimised))
+(display "optimise: gates ") (display g0) (display " -> ") (display g1)
+(display ", two-qubit ") (display q0) (display " -> ") (display q1)
+(display ", T ") (display t0) (display " -> ") (display t1) (newline)
+(check "the pipeline strictly reduces the total gate count, and does not raise two-qubit or T totals"
+       (and (< g1 g0) (<= q1 q0) (<= t1 t0)))
+(define base (map (lambda (c) (qopt-cancel (qopt-fuse c))) ct-circuits))
+(check "after fuse and cancel, phase folding still lowers the T total and ZX resynthesis the two-qubit total"
+       (and (< (total qcircuit-t-count (map qopt-phase-fold base)) (total qcircuit-t-count base))
+            (< (total qcircuit-two-qubit-count (map qopt-zx-resynthesize base)) (total qcircuit-two-qubit-count base))))
+(check "the pipeline with (verify . #t) accepts every pass on 12 random circuits"
+       (all? (lambda (c) (qcircuit? (qopt-optimize c '((verify . #t))))) (take ct-circuits 12)))
+(check "the mirror circuits collapse to at most their two outer gates"
+       (all? (lambda (c) (<= (qcircuit-gate-count c) 2)) (list-tail optimised 36)))
+
+;; ZX certificates: optimised ; inverse(original) rewrites to bare wires
+(define zx-cases (append (list (qc 2 '((H 1) (CNOT 0 1) (H 1))) (qc 2 '((CNOT 0 1) (CNOT 1 0) (CNOT 0 1)))
+                               (qc 2 '((T 0) (CNOT 0 1) (Tdg 0) (X 1) (CNOT 0 1) (X 1))))
+                         (list-tail ct-circuits 36)
+                         (take ct-circuits 10)))
+(define certified (filter (lambda (c) (qcircuit-zx-identity? (qcircuit-concat (opt c) (qcircuit-inverse c)))) zx-cases))
+(display "zx certificates: ") (display (length certified)) (display " of ") (display (length zx-cases)) (newline)
+(check "ZX-calculus certificates for the unit cases and the mirror circuits"
+       (>= (length certified) 7))
+
+;; ---------------------------------------------------------------------------
+;; Random circuits with binary64 rotation angles
+;; ---------------------------------------------------------------------------
+(define angles (list 0.3 -0.3 0.7 (/ pi 2) pi -1.1 2.2 (* 2 pi)))
+(define (rand-angle) (if (= 0 (rand 3)) (- (/ (rand 1000) 100.0) 5.0) (list-ref angles (rand (length angles)))))
+(define (rand-float-gate n)
+  (let ((r (rand (if (= n 1) 9 13))) (q (rand n)))
+    (cond ((= r 0) (list 'H q)) ((= r 1) (list 'T q)) ((= r 2) (list 'X q)) ((= r 3) (list 'S q))
+          ((= r 4) (list 'RX q (rand-angle))) ((= r 5) (list 'RY q (rand-angle))) ((< r 8) (list 'RZ q (rand-angle)))
+          ((= r 8) (list 'Y q))
+          ((< r 11) (list 'CNOT q (rand-other n q))) ((= r 11) (list 'RZZ q (rand-other n q) (rand-angle)))
+          (else (list 'CZ q (rand-other n q))))))
+(define float-circuits
+  (append (map (lambda (i) (qc 1 (rand-gates 1 (+ 5 (rand 16)) rand-float-gate))) (range 6))
+          (map (lambda (i) (qc 2 (rand-gates 2 (+ 5 (rand 21)) rand-float-gate))) (range 10))
+          (map (lambda (i) (qc 3 (rand-gates 3 (+ 5 (rand 21)) rand-float-gate))) (range 10))))
+(define float-optimised (map opt float-circuits))
+(check "26 random circuits with RX RY RZ RZZ: fuse, cancel, phase-fold, zx-resynthesize agree in binary64"
+       (all? (lambda (c) (and (qcircuit-equivalent-float? c (qopt-fuse c)) (qcircuit-equivalent-float? c (qopt-cancel c))
+                              (qcircuit-equivalent-float? c (qopt-phase-fold c)) (qcircuit-equivalent-float? c (qopt-zx-resynthesize c))))
+             float-circuits))
+(check "... the full pipeline agrees in binary64 and never raises the cost"
+       (all? (lambda (p) (and (qcircuit-equivalent-float? (car p) (cdr p)) (not (qopt-cost<? (qopt-cost (car p)) (qopt-cost (cdr p))))))
+             (map cons float-circuits float-optimised)))
+(display "optimise (binary64 angles): gates ") (display (total qcircuit-gate-count float-circuits)) (display " -> ")
+(display (total qcircuit-gate-count float-optimised)) (newline)
+(check "the pipeline strictly reduces the binary64 set"
+       (< (total qcircuit-gate-count float-optimised) (total qcircuit-gate-count float-circuits)))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: quantum_optimize_test") (newline) (display "RESULT: PASS") (newline)

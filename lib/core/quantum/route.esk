@@ -1,0 +1,431 @@
+;;; core.quantum.route -- qubit routing: placing the logical qubits of a
+;;; core.quantum.circuit circuit on the physical wires of a device whose
+;;; two-qubit gates act only on the edges of a coupling graph, and inserting
+;;; SWAP gates so that every two-qubit gate of the result acts on adjacent
+;;; physical wires. The router is SABRE (a front layer of the gate
+;;; dependency DAG, a look-ahead extended set, a decay term against
+;;; serialising SWAPs, and a reverse-traversal search for the initial
+;;; layout); a shortest-path router serves as the baseline; every routing
+;;; is checkable against the logical circuit, exactly for Clifford+T.
+;;;
+;;; Usage: (require core.quantum.route)   or   (require core.quantum)
+;;;
+;;; Representation (public):
+;;;   coupling  #(qcoupling n edges adjacency distances): physical wires
+;;;             0 .. n-1, undirected edges as sorted lists (a b) with a < b,
+;;;             adjacency a vector of ascending neighbour lists, distances
+;;;             the all-pairs shortest-path lengths (BFS, -1 when
+;;;             unreachable), computed once when the graph is built
+;;;   layout    a vector of length = number of logical qubits: logical
+;;;             qubit q sits on physical wire layout[q]
+;;;   routing   #(qrouting circuit initial-layout final-layout swap-count):
+;;;             circuit is a qcircuit of width (coupling-size cg) on
+;;;             PHYSICAL wires holding the gates of the logical circuit
+;;;             (three-qubit gates decomposed into one- and two-qubit
+;;;             Clifford+T gates) and the inserted (SWAP a b) gates;
+;;;             logical qubit q starts on initial-layout[q] and ends on
+;;;             final-layout[q]; swap-count counts the inserted SWAPs only
+;;;             (SWAP gates of the logical circuit are kept as gates)
+;;;
+;;; Semantics checked by qrouting-verify: with E the logical circuit placed
+;;; on the physical wires through the initial layout, the routed circuit
+;;; equals E followed by the wire permutation that carries the content of
+;;; physical wire initial-layout[q] to final-layout[q] for every logical q
+;;; (and the content of each unused wire to where the inserted SWAPs left
+;;; it), up to a global phase.
+;;;
+;;; Sources: G. Li, Y. Ding, Y. Xie, "Tackling the Qubit Mapping Problem
+;;; for NISQ-Era Quantum Devices", ASPLOS 2019 (SABRE); A. Zulehner,
+;;; A. Paler, R. Wille, "An Efficient Methodology for Mapping Quantum
+;;; Circuits to the IBM QX Architectures", IEEE TCAD 2018; ADR-0048.
+
+(require stdlib)
+(require core.quantum.circuit)
+
+(provide coupling-graph coupling? coupling-line coupling-ring coupling-grid coupling-complete
+         coupling-size coupling-edges coupling-adjacent? coupling-distance coupling-connected?
+         coupling-neighbors coupling-shortest-path
+         layout-trivial layout-inverse layout-valid?
+         qroute qroute-naive qrouting? qrouting-circuit qrouting-initial-layout
+         qrouting-final-layout qrouting-swap-count qrouting-respects-coupling?
+         qrouting-output-permutation qrouting-verify)
+
+;; ---------------------------------------------------------------------------
+;; Small helpers
+;; ---------------------------------------------------------------------------
+
+(define (qr-insert x xs less?)
+  (cond ((null? xs) (list x)) ((less? x (car xs)) (cons x xs)) (else (cons (car xs) (qr-insert x (cdr xs) less?)))))
+(define (qr-sort xs less?)
+  (let loop ((xs xs) (acc '())) (if (null? xs) acc (loop (cdr xs) (qr-insert (car xs) acc less?)))))
+(define (qr-edge< e f) (or (< (car e) (car f)) (and (= (car e) (car f)) (< (cadr e) (cadr f)))))
+(define (qr-dedupe xs) ; sorted list of edges
+  (cond ((or (null? xs) (null? (cdr xs))) xs)
+        ((equal? (car xs) (cadr xs)) (qr-dedupe (cdr xs)))
+        (else (cons (car xs) (qr-dedupe (cdr xs))))))
+(define (qr-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (qr-natural? n) (and (integer? n) (exact? n) (>= n 0)))
+(define (qr-wire? w n) (and (integer? w) (exact? w) (>= w 0) (< w n)))
+(define (qr-remap-gate g pi)
+  (let ((k (qgate-arity g)))
+    (append (list (car g)) (map (lambda (w) (vector-ref pi w)) (qgate-wires g)) (list-tail (cdr g) k))))
+
+;; ---------------------------------------------------------------------------
+;; Coupling graphs
+;; ---------------------------------------------------------------------------
+
+(define (qr-bfs adj n s)
+  (let ((d (make-vector n -1)) (queue (make-vector (max n 1) 0)))
+    (vector-set! d s 0) (vector-set! queue 0 s)
+    (let loop ((head 0) (tail 1))
+      (if (= head tail) d
+          (let* ((u (vector-ref queue head)) (du (vector-ref d u)))
+            (let visit ((ns (vector-ref adj u)) (tail tail))
+              (cond ((null? ns) (loop (+ head 1) tail))
+                    ((= -1 (vector-ref d (car ns)))
+                     (vector-set! d (car ns) (+ du 1)) (vector-set! queue tail (car ns))
+                     (visit (cdr ns) (+ tail 1)))
+                    (else (visit (cdr ns) tail)))))))))
+
+;; an undirected coupling graph on physical wires 0 .. n-1; edges are lists (a b)
+(define (coupling-graph n edges)
+  (if (not (qr-natural? n)) (error "core.quantum.route: a coupling size is a natural number" n))
+  (for-each (lambda (e)
+              (if (not (and (list? e) (= 2 (length e)) (qr-wire? (car e) n) (qr-wire? (cadr e) n)
+                            (not (= (car e) (cadr e)))))
+                  (error "core.quantum.route: an edge is a list of two distinct wires" e n)))
+            edges)
+  (let* ((es (qr-dedupe (qr-sort (map (lambda (e) (list (min (car e) (cadr e)) (max (car e) (cadr e)))) edges) qr-edge<)))
+         (adj (make-vector n '())))
+    (for-each (lambda (e)
+                (vector-set! adj (car e) (cons (cadr e) (vector-ref adj (car e))))
+                (vector-set! adj (cadr e) (cons (car e) (vector-ref adj (cadr e)))))
+              es)
+    (do ((i 0 (+ i 1))) ((= i n)) (vector-set! adj i (qr-sort (vector-ref adj i) <)))
+    (let ((dist (make-vector n #f)))
+      (do ((i 0 (+ i 1))) ((= i n)) (vector-set! dist i (qr-bfs adj n i)))
+      (vector 'qcoupling n es adj dist))))
+(define (coupling? cg) (and (vector? cg) (= 5 (vector-length cg)) (eq? (vector-ref cg 0) 'qcoupling)))
+(define (coupling-size cg) (vector-ref cg 1))
+(define (coupling-edges cg) (vector-ref cg 2))
+(define (coupling-neighbors cg a) (vector-ref (vector-ref cg 3) a))
+(define (coupling-distance cg a b) (vector-ref (vector-ref (vector-ref cg 4) a) b))
+(define (coupling-adjacent? cg a b) (= 1 (coupling-distance cg a b)))
+(define (coupling-connected? cg)
+  (or (= 0 (coupling-size cg))
+      (let ((d (vector-ref (vector-ref cg 4) 0)))
+        (let loop ((i 0)) (or (= i (coupling-size cg)) (and (>= (vector-ref d i) 0) (loop (+ i 1))))))))
+;; the first step from a towards b on a shortest path (lowest-numbered neighbour)
+(define (qr-step cg a b)
+  (let ((target (- (coupling-distance cg a b) 1)))
+    (let loop ((ns (coupling-neighbors cg a)))
+      (if (= (coupling-distance cg (car ns) b) target) (car ns) (loop (cdr ns))))))
+;; a shortest path a .. b as a list of wires, or #f when b is unreachable
+(define (coupling-shortest-path cg a b)
+  (if (< (coupling-distance cg a b) 0) #f
+      (let loop ((a a) (acc '()))
+        (if (= a b) (reverse (cons b acc)) (loop (qr-step cg a b) (cons a acc))))))
+
+(define (coupling-line n)
+  (coupling-graph n (map (lambda (i) (list i (+ i 1))) (qr-range (max 0 (- n 1))))))
+(define (coupling-ring n)
+  (coupling-graph n (append (map (lambda (i) (list i (+ i 1))) (qr-range (max 0 (- n 1))))
+                            (if (> n 2) (list (list (- n 1) 0)) '()))))
+;; wire r * cols + c sits at row r, column c
+(define (coupling-grid rows cols)
+  (coupling-graph (* rows cols)
+                  (apply append
+                         (map (lambda (k)
+                                (let ((r (quotient k cols)) (c (remainder k cols)))
+                                  (append (if (< (+ c 1) cols) (list (list k (+ k 1))) '())
+                                          (if (< (+ r 1) rows) (list (list k (+ k cols))) '()))))
+                              (qr-range (* rows cols))))))
+(define (coupling-complete n)
+  (coupling-graph n (apply append (map (lambda (a) (map (lambda (b) (list a b)) (list-tail (qr-range n) (+ a 1))))
+                                       (qr-range n)))))
+
+;; ---------------------------------------------------------------------------
+;; Layouts
+;; ---------------------------------------------------------------------------
+
+(define (layout-trivial n) (list->vector (qr-range n)))
+;; physical wire -> logical qubit on m wires, -1 on unused wires
+(define (layout-inverse layout m)
+  (let ((inv (make-vector m -1)))
+    (do ((q 0 (+ q 1))) ((= q (vector-length layout)) inv)
+      (vector-set! inv (vector-ref layout q) q))))
+;; a layout of n logical qubits on m physical wires: injective into 0 .. m-1
+(define (layout-valid? layout n m)
+  (and (vector? layout) (= n (vector-length layout))
+       (let ((seen (make-vector m #f)))
+         (let loop ((q 0))
+           (or (= q n)
+               (let ((p (vector-ref layout q)))
+                 (and (qr-wire? p m) (not (vector-ref seen p))
+                      (begin (vector-set! seen p #t) (loop (+ q 1))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Routing records
+;; ---------------------------------------------------------------------------
+
+(define (qr-make-routing circuit init final swaps) (vector 'qrouting circuit init final swaps))
+(define (qrouting? r) (and (vector? r) (= 5 (vector-length r)) (eq? (vector-ref r 0) 'qrouting)))
+(define (qrouting-circuit r) (vector-ref r 1))
+(define (qrouting-initial-layout r) (vector-ref r 2))
+(define (qrouting-final-layout r) (vector-ref r 3))
+(define (qrouting-swap-count r) (vector-ref r 4))
+
+;; the gates of c with three-qubit gates decomposed, after the checks
+;; every router makes
+(define (qr-prepare c cg)
+  (if (not (qcircuit? c)) (error "core.quantum.route: not a circuit" c))
+  (if (not (coupling? cg)) (error "core.quantum.route: not a coupling graph" cg))
+  (if (> (qcircuit-width c) (coupling-size cg))
+      (error "core.quantum.route: the circuit is wider than the coupling graph" (qcircuit-width c) (coupling-size cg)))
+  (if (not (coupling-connected? cg)) (error "core.quantum.route: the coupling graph is not connected"))
+  (qcircuit-gates (qcircuit-decompose-multiqubit c)))
+
+;; ---------------------------------------------------------------------------
+;; SABRE
+;; ---------------------------------------------------------------------------
+
+;; one SABRE pass over the gate vector gv (logical width n) from layout0;
+;; returns (routed-gates final-layout swap-count)
+(define (qr-sabre-pass gv n cg layout0 W esize dinc)
+  (let* ((m (vector-length gv)) (P (coupling-size cg))
+         (succ (make-vector m '())) (indeg (make-vector m 0)) (last (make-vector n -1))
+         (pi (vector-copy layout0)) (inv (layout-inverse layout0 P))
+         (decay (make-vector P 1.0))
+         (dist (lambda (a b) (coupling-distance cg a b)))
+         (wires (lambda (i) (qgate-wires (vector-ref gv i)))))
+    ;; the dependency DAG: an edge from the previous gate on each wire
+    (do ((i 0 (+ i 1))) ((= i m))
+      (for-each (lambda (q)
+                  (let ((j (vector-ref last q)))
+                    (if (and (>= j 0) (not (memv i (vector-ref succ j))))
+                        (begin (vector-set! succ j (append (vector-ref succ j) (list i)))
+                               (vector-set! indeg i (+ 1 (vector-ref indeg i)))))
+                    (vector-set! last q i)))
+                (wires i)))
+    (let* ((reset-decay! (lambda () (do ((p 0 (+ p 1))) ((= p P)) (vector-set! decay p 1.0))))
+           (apply-swap! (lambda (a b)
+                          (let ((qa (vector-ref inv a)) (qb (vector-ref inv b)))
+                            (vector-set! inv a qb) (vector-set! inv b qa)
+                            (if (>= qa 0) (vector-set! pi qa b))
+                            (if (>= qb 0) (vector-set! pi qb a)))))
+           (executable? (lambda (i)
+                          (let ((ws (wires i)))
+                            (or (null? (cdr ws))
+                                (coupling-adjacent? cg (vector-ref pi (car ws)) (vector-ref pi (cadr ws)))))))
+           ;; execute every executable gate of the front, repeatedly;
+           ;; returns (front out progressed?)
+           (execute (lambda (front out)
+                      (let rep ((front front) (out out) (prog #f))
+                        (let scan ((fs front) (blocked '()) (released '()) (out out) (any #f))
+                          (cond ((null? fs)
+                                 (if any
+                                     (rep (qr-sort (append blocked released) <) out #t)
+                                     (list front out prog)))
+                                ((executable? (car fs))
+                                 (let ((i (car fs)))
+                                   (scan (cdr fs) blocked
+                                         (let rel ((ss (vector-ref succ i)) (released released))
+                                           (if (null? ss) released
+                                               (let ((s (car ss)))
+                                                 (vector-set! indeg s (- (vector-ref indeg s) 1))
+                                                 (rel (cdr ss) (if (= 0 (vector-ref indeg s)) (cons s released) released)))))
+                                         (cons (qr-remap-gate (vector-ref gv i) pi) out) #t)))
+                                (else (scan (cdr fs) (cons (car fs) blocked) released out any)))))))
+           ;; the next esize two-qubit gates beyond the front, breadth first
+           (extended (lambda (front)
+                       (let ((seen (make-vector m #f)))
+                         (for-each (lambda (i) (vector-set! seen i #t)) front)
+                         (let loop ((queue (apply append (map (lambda (i) (vector-ref succ i)) front))) (acc '()) (k 0))
+                           (cond ((or (null? queue) (= k esize)) acc)
+                                 ((vector-ref seen (car queue)) (loop (cdr queue) acc k))
+                                 (else
+                                  (let ((j (car queue)))
+                                    (vector-set! seen j #t)
+                                    (if (null? (cdr (wires j)))
+                                        (loop (append (cdr queue) (vector-ref succ j)) acc k)
+                                        (loop (append (cdr queue) (vector-ref succ j)) (cons j acc) (+ k 1))))))))))
+           ;; summed distance of the two-qubit gates gs with wires a and b exchanged
+           (cost (lambda (gs a b)
+                   (let ((phys (lambda (q) (let ((p (vector-ref pi q))) (cond ((= p a) b) ((= p b) a) (else p))))))
+                     (let loop ((gs gs) (s 0))
+                       (if (null? gs) s
+                           (let ((ws (wires (car gs))))
+                             (loop (cdr gs) (+ s (dist (phys (car ws)) (phys (cadr ws)))))))))))
+           (candidates (lambda (front)
+                         (qr-dedupe
+                          (qr-sort
+                           (apply append
+                                  (map (lambda (i)
+                                         (apply append
+                                                (map (lambda (q)
+                                                       (let ((p (vector-ref pi q)))
+                                                         (map (lambda (nb) (list (min p nb) (max p nb))) (coupling-neighbors cg p))))
+                                                     (wires i))))
+                                       front))
+                           qr-edge<)))))
+      (let loop ((front (qr-sort (filter (lambda (i) (= 0 (vector-ref indeg i))) (qr-range m)) <))
+                 (out '()) (nsw 0) (stall 0) (dcount 0))
+        (let* ((r (execute front out)) (front (car r)) (out (cadr r)) (prog (caddr r)))
+          (if prog (reset-decay!))
+          (let ((stall (if prog 0 stall)) (dcount (if prog 0 dcount)))
+            (cond
+             ((null? front) (list (reverse out) pi nsw))
+             ((> stall (* 10 P))
+              ;; progress guarantee: bring the first front gate together along a shortest path
+              (let* ((ws (wires (car front))) (b (vector-ref pi (cadr ws))))
+                (let walk ((a (vector-ref pi (car ws))) (out out) (nsw nsw))
+                  (if (<= (dist a b) 1)
+                      (begin (reset-decay!) (loop front out nsw 0 0))
+                      (let ((s (qr-step cg a b)))
+                        (apply-swap! a s)
+                        (walk s (cons (list 'SWAP (min a s) (max a s)) out) (+ nsw 1)))))))
+             (else
+              (let* ((E (extended front)) (nF (length front)) (nE (length E))
+                     (score (lambda (e)
+                              (let ((a (car e)) (b (cadr e)))
+                                (* (max (vector-ref decay a) (vector-ref decay b))
+                                   (+ (/ (exact->inexact (cost front a b)) nF)
+                                      (if (= nE 0) 0.0 (* W (/ (exact->inexact (cost E a b)) nE))))))))
+                     (best (let pick ((cs (candidates front)) (be #f) (bs 0.0))
+                             (cond ((null? cs) be)
+                                   ((or (not be) (< (score (car cs)) bs)) (pick (cdr cs) (car cs) (score (car cs))))
+                                   (else (pick (cdr cs) be bs)))))
+                     (a (car best)) (b (cadr best)))
+                (apply-swap! a b)
+                (vector-set! decay a (+ dinc (vector-ref decay a)))
+                (vector-set! decay b (+ dinc (vector-ref decay b)))
+                (let ((dcount (+ dcount 1)))
+                  (if (= dcount 5) (reset-decay!))
+                  (loop front (cons (list 'SWAP a b) out) (+ nsw 1) (+ stall 1) (if (= dcount 5) 0 dcount))))))))))))
+
+(define (qr-option opts key default)
+  (let ((p (assq key opts))) (if p (cdr p) default)))
+
+;; SABRE routing of c onto cg. Options, as alist entries (key . value)
+;; given one by one or as one alist:
+;;   layout          'sabre (default: reverse-traversal search), 'trivial,
+;;                   or an explicit layout vector
+;;   iterations      forward-backward rounds of the layout search (3)
+;;   extended-size   look-ahead gates in the extended set (20)
+;;   extended-weight weight W of the extended set (0.5)
+;;   decay           decay increment per SWAP on its wires (0.001)
+;; The layout search keeps the forward pass with the fewest SWAPs.
+(define (qroute c cg . options)
+  (let* ((opts (if (and (pair? options) (pair? (car options)) (pair? (car (car options)))) (car options) options))
+         (gates (qr-prepare c cg)) (gv (list->vector gates)) (rv (list->vector (reverse gates)))
+         (n (qcircuit-width c)) (P (coupling-size cg))
+         (layout (qr-option opts 'layout 'sabre))
+         (iterations (qr-option opts 'iterations 3))
+         (esize (qr-option opts 'extended-size 20))
+         (W (qr-option opts 'extended-weight 0.5))
+         (dinc (qr-option opts 'decay 0.001))
+         (pass (lambda (v l) (qr-sabre-pass v n cg l W esize dinc)))
+         (finish (lambda (init r) (qr-make-routing (make-qcircuit P (car r)) init (cadr r) (caddr r)))))
+    (cond ((vector? layout)
+           (if (not (layout-valid? layout n P)) (error "core.quantum.route: not a layout of the circuit on the coupling graph" layout))
+           (finish (vector-copy layout) (pass gv layout)))
+          ((eq? layout 'trivial) (finish (layout-trivial n) (pass gv (layout-trivial n))))
+          ((eq? layout 'sabre)
+           (let search ((k 0) (l (layout-trivial n)) (best-l #f) (best-r #f))
+             (let* ((r (pass gv l))
+                    (better (or (not best-r) (< (caddr r) (caddr best-r))))
+                    (best-l (if better l best-l)) (best-r (if better r best-r)))
+               (if (>= k iterations) (finish best-l best-r)
+                   (search (+ k 1) (cadr (pass rv (cadr r))) best-l best-r)))))
+          (else (error "core.quantum.route: unknown layout option" layout)))))
+
+;; baseline: gates in program order from the trivial layout (or the given
+;; one); each non-adjacent two-qubit gate moves its first operand along a
+;; shortest path until the operands are adjacent
+(define (qroute-naive c cg . layout)
+  (let* ((gates (qr-prepare c cg)) (n (qcircuit-width c)) (P (coupling-size cg))
+         (l0 (if (pair? layout) (car layout) (layout-trivial n))))
+    (if (not (layout-valid? l0 n P)) (error "core.quantum.route: not a layout of the circuit on the coupling graph" l0))
+    (let ((pi (vector-copy l0)) (inv (layout-inverse l0 P)))
+      (let loop ((gs gates) (out '()) (nsw 0))
+        (if (null? gs)
+            (qr-make-routing (make-qcircuit P (reverse out)) (vector-copy l0) pi nsw)
+            (let ((ws (qgate-wires (car gs))))
+              (if (null? (cdr ws))
+                  (loop (cdr gs) (cons (qr-remap-gate (car gs) pi) out) nsw)
+                  (let ((b (vector-ref pi (cadr ws))))
+                    (let walk ((a (vector-ref pi (car ws))) (out out) (nsw nsw))
+                      (if (<= (coupling-distance cg a b) 1)
+                          (loop (cdr gs) (cons (qr-remap-gate (car gs) pi) out) nsw)
+                          (let* ((s (qr-step cg a b)) (qa (vector-ref inv a)) (qs (vector-ref inv s)))
+                            (vector-set! inv a qs) (vector-set! inv s qa)
+                            (if (>= qa 0) (vector-set! pi qa s))
+                            (if (>= qs 0) (vector-set! pi qs a))
+                            (walk s (cons (list 'SWAP (min a s) (max a s)) out) (+ nsw 1)))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Checks
+;; ---------------------------------------------------------------------------
+
+;; every multi-qubit gate of the routed circuit acts on pairwise adjacent wires
+(define (qrouting-respects-coupling? r cg)
+  (let ((R (qrouting-circuit r)))
+    (and (= (qcircuit-width R) (coupling-size cg))
+         (let loop ((gs (qcircuit-gates R)))
+           (or (null? gs)
+               (and (let pairs ((ws (qgate-wires (car gs))))
+                      (or (null? ws)
+                          (and (let each ((vs (cdr ws)))
+                                 (or (null? vs) (and (coupling-adjacent? cg (car ws) (car vs)) (each (cdr vs)))))
+                               (pairs (cdr ws)))))
+                    (loop (cdr gs))))))))
+
+;; The permutation perm (perm[w] = where the content of physical wire w
+;; is moved) that undoes the routing's movement of wire contents: the
+;; content on final-layout[q] goes back to initial-layout[q]; an unused
+;; wire's content (never touched by a logical gate) goes back from where
+;; the SWAP gates of the routed circuit carried it. #f when the layouts
+;; are not layouts on the routed width or the two parts collide.
+(define (qrouting-output-permutation r n)
+  (let* ((R (qrouting-circuit r)) (P (qcircuit-width R))
+         (pi0 (qrouting-initial-layout r)) (pif (qrouting-final-layout r)))
+    (and (layout-valid? pi0 n P) (layout-valid? pif n P)
+         (let ((pos (list->vector (qr-range P))) (at (list->vector (qr-range P)))
+               (perm (make-vector P -1)) (used (layout-inverse pi0 P)) (taken (make-vector P #f)))
+           ;; pos[w] = the physical wire now holding the content that started on w
+           (for-each (lambda (g)
+                       (if (eq? (car g) 'SWAP)
+                           (let* ((a (cadr g)) (b (caddr g)) (ca (vector-ref at a)) (cb (vector-ref at b)))
+                             (vector-set! at a cb) (vector-set! at b ca)
+                             (vector-set! pos ca b) (vector-set! pos cb a))))
+                     (qcircuit-gates R))
+           (do ((q 0 (+ q 1))) ((= q n))
+             (vector-set! perm (vector-ref pif q) (vector-ref pi0 q))
+             (vector-set! taken (vector-ref pi0 q) #t))
+           (let loop ((w 0))
+             (cond ((= w P)
+                    ;; a bijection: every slot filled with distinct targets
+                    (let ((hit (make-vector P #f)))
+                      (let chk ((p 0))
+                        (cond ((= p P) perm)
+                              ((or (< (vector-ref perm p) 0) (vector-ref hit (vector-ref perm p))) #f)
+                              (else (vector-set! hit (vector-ref perm p) #t) (chk (+ p 1)))))))
+                   ((>= (vector-ref used w) 0) (loop (+ w 1)))
+                   ((>= (vector-ref perm (vector-ref pos w)) 0) #f)
+                   (else (vector-set! perm (vector-ref pos w) w) (loop (+ w 1)))))))))
+
+;; The routed circuit followed by the permutation above equals the logical
+;; circuit c placed on the physical wires through the initial layout, up
+;; to a global phase. mode: 'auto (default: exact for Clifford+T circuits
+;; with rational phases, binary64 otherwise), 'exact or 'float.
+(define (qrouting-verify r c . mode)
+  (let* ((R (qrouting-circuit r)) (P (qcircuit-width R)) (n (qcircuit-width c))
+         (how (if (pair? mode) (car mode) 'auto))
+         (perm (and (<= n P) (qrouting-output-permutation r n))))
+    (and perm
+         (let ((lhs (qcircuit-append R (qcircuit-permutation-gates perm)))
+               (rhs (qcircuit-remap c (qrouting-initial-layout r) P)))
+           (case how
+             ((exact) (qcircuit-equivalent-exact? lhs rhs))
+             ((float) (qcircuit-equivalent-float? lhs rhs))
+             (else (qcircuit-equivalent? lhs rhs)))))))
