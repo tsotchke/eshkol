@@ -91,6 +91,7 @@ typedef struct {
 #include "algorithms/vqe.h"
 #include "applications/bell_test.h"
 #include "applications/moonlab_export.h"
+#include "algorithms/diff/differentiable.h"
 
 /*******************************************************************************
  * Handle Table
@@ -635,12 +636,237 @@ static vqe_solver_t* create_default_vqe_solver(pauli_hamiltonian_t* hamiltonian,
     return solver;
 }
 
+/*******************************************************************************
+ * Circuit-expectation programs (ADR-0048)
+ *
+ * A program is a parametric circuit on Moonlab's gate set {H X Y Z CNOT CZ
+ * RX RY RZ} and a Pauli-sum observable. A rotation's angle is coef * theta_k
+ * for a program parameter k, or the fixed angle coef. The program shares the
+ * handle space and the custom-VJP bridge of the Stage S2 Hamiltonians: a
+ * handle at or above QEXPECT_HANDLE_BASE names a program, so
+ * vqe-energy-primitive evaluates <psi(theta)|O|psi(theta)> with Moonlab's
+ * forward pass and differentiates it with Moonlab's exact adjoint
+ * (moonlab_diff_backward_pauli_sum), chained through the coefficients.
+ ******************************************************************************/
+
+#define QEXPECT_HANDLE_BASE (1 << 20)
+#define MAX_QEXPECT_PROGRAMS 256
+
+enum { QX_H = 0, QX_X, QX_Y, QX_Z, QX_CNOT, QX_CZ, QX_RX, QX_RY, QX_RZ };
+
+typedef struct {
+    int kind, q0, q1, param;
+    double coef;
+} qexpect_gate_t;
+
+typedef struct {
+    double coef;
+    size_t nops;
+    int* qubits;
+    moonlab_diff_observable_t* paulis;
+} qexpect_term_t;
+
+typedef struct {
+    uint32_t num_qubits;
+    int num_params;
+    qexpect_gate_t* gates;
+    size_t ngates, gate_cap;
+    qexpect_term_t* terms;
+    size_t nterms, term_cap;
+} qexpect_program_t;
+
+static qexpect_program_t* g_qexpect_programs[MAX_QEXPECT_PROGRAMS] = {0};
+
+static qexpect_program_t* get_qexpect(int64_t h) {
+    if (h < QEXPECT_HANDLE_BASE || h >= QEXPECT_HANDLE_BASE + MAX_QEXPECT_PROGRAMS) return NULL;
+    return g_qexpect_programs[h - QEXPECT_HANDLE_BASE];
+}
+
+int64_t eshkol_qexpect_create(int32_t num_qubits) {
+    if (num_qubits <= 0 || num_qubits > 30) {
+        set_last_error("moonlab-program: the number of qubits must be between 1 and 30");
+        return -1;
+    }
+    for (int i = 0; i < MAX_QEXPECT_PROGRAMS; ++i) {
+        if (!g_qexpect_programs[i]) {
+            qexpect_program_t* p = (qexpect_program_t*)calloc(1, sizeof(*p));
+            if (!p) { set_last_error("moonlab-program: allocation failed"); return -1; }
+            p->num_qubits = (uint32_t)num_qubits;
+            g_qexpect_programs[i] = p;
+            return (int64_t)QEXPECT_HANDLE_BASE + i;
+        }
+    }
+    set_last_error("moonlab-program: handle table exhausted");
+    return -1;
+}
+
+void eshkol_qexpect_destroy(int64_t h) {
+    qexpect_program_t* p = get_qexpect(h);
+    if (!p) return;
+    for (size_t t = 0; t < p->nterms; ++t) {
+        free(p->terms[t].qubits);
+        free(p->terms[t].paulis);
+    }
+    free(p->terms);
+    free(p->gates);
+    free(p);
+    g_qexpect_programs[h - QEXPECT_HANDLE_BASE] = NULL;
+}
+
+int32_t eshkol_qexpect_add_gate(int64_t h, int32_t kind, int32_t q0, int32_t q1,
+                                int32_t param, double coef) {
+    qexpect_program_t* p = get_qexpect(h);
+    if (!p) { set_last_error("moonlab-program: invalid program handle"); return -1; }
+    if (kind < QX_H || kind > QX_RZ) { set_last_error("moonlab-program: unknown gate kind"); return -1; }
+    const int two = kind == QX_CNOT || kind == QX_CZ;
+    if (q0 < 0 || (uint32_t)q0 >= p->num_qubits ||
+        (two && (q1 < 0 || (uint32_t)q1 >= p->num_qubits || q1 == q0))) {
+        set_last_error("moonlab-program: gate wire out of range");
+        return -1;
+    }
+    if (p->ngates == p->gate_cap) {
+        size_t cap = p->gate_cap ? p->gate_cap * 2 : 32;
+        qexpect_gate_t* g = (qexpect_gate_t*)realloc(p->gates, cap * sizeof(*g));
+        if (!g) { set_last_error("moonlab-program: allocation failed"); return -1; }
+        p->gates = g;
+        p->gate_cap = cap;
+    }
+    qexpect_gate_t* g = &p->gates[p->ngates++];
+    g->kind = kind; g->q0 = q0; g->q1 = q1; g->coef = coef;
+    g->param = (kind >= QX_RX) ? param : -1;
+    if (g->param >= 0 && g->param + 1 > p->num_params) p->num_params = g->param + 1;
+    return 0;
+}
+
+/* paulis: one letter I/X/Y/Z per qubit, qubit 0 first */
+int32_t eshkol_qexpect_add_term(int64_t h, double coef, const char* paulis) {
+    qexpect_program_t* p = get_qexpect(h);
+    if (!p || !paulis) { set_last_error("moonlab-program: invalid program handle or Pauli string"); return -1; }
+    if (strlen(paulis) != p->num_qubits) {
+        set_last_error("moonlab-program: a Pauli string has one letter per qubit");
+        return -1;
+    }
+    if (p->nterms == p->term_cap) {
+        size_t cap = p->term_cap ? p->term_cap * 2 : 16;
+        qexpect_term_t* t = (qexpect_term_t*)realloc(p->terms, cap * sizeof(*t));
+        if (!t) { set_last_error("moonlab-program: allocation failed"); return -1; }
+        p->terms = t;
+        p->term_cap = cap;
+    }
+    qexpect_term_t term = {coef, 0, NULL, NULL};
+    term.qubits = (int*)calloc(p->num_qubits ? p->num_qubits : 1, sizeof(int));
+    term.paulis = (moonlab_diff_observable_t*)calloc(p->num_qubits ? p->num_qubits : 1,
+                                                     sizeof(moonlab_diff_observable_t));
+    if (!term.qubits || !term.paulis) {
+        free(term.qubits); free(term.paulis);
+        set_last_error("moonlab-program: allocation failed");
+        return -1;
+    }
+    for (uint32_t q = 0; q < p->num_qubits; ++q) {
+        const char c = paulis[q];
+        if (c == 'I') continue;
+        moonlab_diff_observable_t o;
+        if (c == 'X') o = MOONLAB_DIFF_OBS_X;
+        else if (c == 'Y') o = MOONLAB_DIFF_OBS_Y;
+        else if (c == 'Z') o = MOONLAB_DIFF_OBS_Z;
+        else {
+            free(term.qubits); free(term.paulis);
+            set_last_error("moonlab-program: a Pauli letter is I, X, Y or Z");
+            return -1;
+        }
+        term.qubits[term.nops] = (int)q;
+        term.paulis[term.nops] = o;
+        term.nops++;
+    }
+    p->terms[p->nterms++] = term;
+    return 0;
+}
+
+int64_t eshkol_qexpect_parameter_count(int64_t h) {
+    qexpect_program_t* p = get_qexpect(h);
+    if (!p) { set_last_error("moonlab-program: invalid program handle"); return -1; }
+    return p->num_params;
+}
+
+/* <psi(theta)|O|psi(theta)>, and its exact gradient into `gradient` when given */
+static double qexpect_evaluate(int64_t h, const double* params, size_t count, double* gradient) {
+    qexpect_program_t* p = get_qexpect(h);
+    if (!p || (!params && p->num_params > 0)) {
+        return unavailable_double("moonlab-expectation: invalid program handle or parameters");
+    }
+    if (count != (size_t)p->num_params) {
+        return unavailable_double("moonlab-expectation: parameter vector has the wrong length");
+    }
+    if (p->nterms == 0) return unavailable_double("moonlab-expectation: the observable has no terms");
+    moonlab_diff_circuit_t* c = moonlab_diff_circuit_create(p->num_qubits);
+    if (!c) return unavailable_double("moonlab-expectation: could not create a Moonlab circuit");
+    int* diff_index = (int*)calloc(p->ngates ? p->ngates : 1, sizeof(int));
+    if (!diff_index) { moonlab_diff_circuit_free(c); return unavailable_double("moonlab-expectation: allocation failed"); }
+    int rc = 0, rotations = 0;
+    for (size_t k = 0; k < p->ngates && rc == 0; ++k) {
+        const qexpect_gate_t* g = &p->gates[k];
+        const double angle = g->param >= 0 ? g->coef * params[g->param] : g->coef;
+        diff_index[k] = -1;
+        switch (g->kind) {
+            case QX_H: rc = moonlab_diff_h(c, g->q0); break;
+            case QX_X: rc = moonlab_diff_x(c, g->q0); break;
+            case QX_Y: rc = moonlab_diff_y(c, g->q0); break;
+            case QX_Z: rc = moonlab_diff_z(c, g->q0); break;
+            case QX_CNOT: rc = moonlab_diff_cnot(c, g->q0, g->q1); break;
+            case QX_CZ: rc = moonlab_diff_cz(c, g->q0, g->q1); break;
+            case QX_RX: diff_index[k] = rotations++; rc = moonlab_diff_rx(c, g->q0, angle); break;
+            case QX_RY: diff_index[k] = rotations++; rc = moonlab_diff_ry(c, g->q0, angle); break;
+            case QX_RZ: diff_index[k] = rotations++; rc = moonlab_diff_rz(c, g->q0, angle); break;
+        }
+    }
+    quantum_state_t* state = rc == 0 ? quantum_state_create((int)p->num_qubits) : NULL;
+    if (!state || moonlab_diff_forward(c, state) != 0) {
+        if (state) quantum_state_destroy(state);
+        moonlab_diff_circuit_free(c);
+        free(diff_index);
+        return unavailable_double("moonlab-expectation: Moonlab forward pass failed");
+    }
+    moonlab_diff_pauli_term_t* terms =
+        (moonlab_diff_pauli_term_t*)calloc(p->nterms, sizeof(*terms));
+    if (!terms) {
+        quantum_state_destroy(state); moonlab_diff_circuit_free(c); free(diff_index);
+        return unavailable_double("moonlab-expectation: allocation failed");
+    }
+    for (size_t t = 0; t < p->nterms; ++t) {
+        terms[t].coefficient = p->terms[t].coef;
+        terms[t].num_ops = p->terms[t].nops;
+        terms[t].qubits = p->terms[t].qubits;
+        terms[t].paulis = p->terms[t].paulis;
+    }
+    double value = moonlab_diff_expect_pauli_sum(state, terms, p->nterms);
+    if (gradient) {
+        for (size_t k = 0; k < count; ++k) gradient[k] = 0.0;
+        double* dg = (double*)calloc(rotations ? (size_t)rotations : 1, sizeof(double));
+        int brc = dg ? moonlab_diff_backward_pauli_sum(c, state, terms, p->nterms, dg) : -1;
+        if (brc != 0) {
+            free(dg); free(terms); quantum_state_destroy(state); moonlab_diff_circuit_free(c); free(diff_index);
+            return unavailable_double("moonlab-expectation: Moonlab adjoint gradient failed");
+        }
+        for (size_t k = 0; k < p->ngates; ++k) {
+            const qexpect_gate_t* g = &p->gates[k];
+            if (g->param >= 0 && diff_index[k] >= 0) gradient[g->param] += g->coef * dg[diff_index[k]];
+        }
+        free(dg);
+    }
+    free(terms);
+    quantum_state_destroy(state);
+    moonlab_diff_circuit_free(c);
+    free(diff_index);
+    return value;
+}
+
 /**
  * Evaluate the fixed-parameter Stage S2 default ansatz.  This is deliberately
  * separate from vqe_solve(): the bridge needs E(theta), not an optimizer run.
  */
 static double vqe_energy_at_parameters(int64_t handle, const double* parameters,
                                        size_t parameter_count) {
+    if (get_qexpect(handle)) return qexpect_evaluate(handle, parameters, parameter_count, NULL);
     pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
     if (!hamiltonian || !parameters) {
         return unavailable_double("vqe-energy: invalid Hamiltonian handle or parameter buffer");
@@ -673,6 +899,10 @@ static double vqe_energy_at_parameters(int64_t handle, const double* parameters,
 /** Run exactly the same native adjoint path exposed by Stage S2's vqe-gradient. */
 static int vqe_gradient_at_parameters(int64_t handle, const double* parameters,
                                       double* gradient, size_t parameter_count) {
+    if (get_qexpect(handle)) {
+        double v = qexpect_evaluate(handle, parameters, parameter_count, gradient);
+        return v == v ? 0 : -1;
+    }
     pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
     if (!hamiltonian || !parameters || !gradient) {
         set_last_error("vqe-energy AD: invalid Hamiltonian handle or gradient buffer");
@@ -862,7 +1092,7 @@ void* eshkol_vqe_ad_prepare(int64_t handle, const eshkol_tagged_value_t* params)
 
     ctx->hamiltonian_handle = handle;
     ctx->parameter_count = n;
-    if (!get_hamiltonian(handle)) {
+    if (!get_hamiltonian(handle) && !get_qexpect(handle)) {
         fprintf(stderr,
                 "eshkol: vqe-energy AD error: invalid Hamiltonian handle %lld "
                 "inside gradient — the gradient would silently be zero\n",
@@ -1194,6 +1424,17 @@ double eshkol_vqe_gradient_get(int64_t handle, int32_t index) {
  *        that always check eshkol_quantum_last_error() after a -1 get an
  *        honest, actionable reason instead of an empty string.
  */
+int64_t eshkol_qexpect_create(int32_t num_qubits) { (void)num_qubits; return -1; }
+void eshkol_qexpect_destroy(int64_t h) { (void)h; }
+int32_t eshkol_qexpect_add_gate(int64_t h, int32_t kind, int32_t q0, int32_t q1,
+                                int32_t param, double coef) {
+    (void)h; (void)kind; (void)q0; (void)q1; (void)param; (void)coef; return -1;
+}
+int32_t eshkol_qexpect_add_term(int64_t h, double coef, const char* paulis) {
+    (void)h; (void)coef; (void)paulis; return -1;
+}
+int64_t eshkol_qexpect_parameter_count(int64_t h) { (void)h; return -1; }
+
 int32_t eshkol_quantum_last_error(char* buf, int64_t buf_size) {
     if (!buf || buf_size <= 0) return -1;
     size_t len = strlen(kUnavailableMsg);

@@ -1,0 +1,28 @@
+;; Type System Test: procedures generic in the register dimension, split, join and nested regions
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type error
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: dimension mismatch
+
+(require core.quantum)
+
+(define (entangle-first-two (r : qreg<n>)) : qreg<n>
+  (qcnot (qh r 0) 0 1))
+(define (flip-last (r : qreg<3>)) : qreg<3> (qx r 2))
+(define (widen (qr : qregion) (r : qreg<n>)) : qreg<n+1>
+  (qjoin r (qalloc qr 1)))
+
+(define-quantum-region qr (program)
+  (let* ((a (entangle-first-two (qalloc qr 2)))
+         (b (flip-last (widen qr a))))
+    (qsplit b 1
+            (lambda ((first : qreg<1>) (rest : qreg<2>))
+              (cons (qmeasure-bit first) (qmeasure rest))))))
+
+(define bits (program))
+(display (if (and (= (car bits) (cadr bits)) (= 1 (caddr bits))) "polymorphic: ok" "polymorphic: unexpected"))
+(newline)
+(display (with-quantum-region (qr2) (qmeasure-bit (qx (qalloc qr2 1) 0))))
+(newline)
