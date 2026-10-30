@@ -1,0 +1,105 @@
+(require stdlib)
+(require core.algebraic_field)
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define (power field value n)
+  (let loop ((i n) (out (algebraic-element field 1)))
+    (if (= i 0) out (loop (- i 1) (algebraic-mul out value)))))
+(define left (make-algebraic-field '(-2 0 1) 3 1))
+(define right (make-algebraic-field '(-2 0 0 1) 7 0))
+(define result (make-algebraic-compositum left right))
+(define field (vector-ref result 0))
+(define embed-left (vector-ref result 1))
+(define embed-right (vector-ref result 2))
+(define a (embed-left (algebraic-generator left)))
+(define b (embed-right (algebraic-generator right)))
+(define gamma (algebraic-generator field))
+(check "coprime source degrees certify degree six" (= (algebraic-field-degree field) 6))
+;; Independent elimination: (z^3+6z-2)^2 - 2(3z^2+2)^2.
+(check "minimal polynomial matches independent elimination"
+  (equal? (vector->list (algebraic-field-polynomial field)) '(-4 -24 12 -4 -6 0 1)))
+(check "left generator relation" (= (algebraic-rational (power field a 2)) 2))
+(check "right generator relation" (= (algebraic-rational (power field b 3)) 2))
+(check "primitive generator equals sum of both embedded generators"
+  (algebraic-equal? gamma (algebraic-add a b)))
+(check "generator images match independently eliminated rational function"
+  (algebraic-equal? a (algebraic-mul
+    (algebraic-sub (algebraic-add (power field gamma 3) (algebraic-scale gamma 6)) (algebraic-element field 2))
+    (algebraic-inverse (algebraic-add (algebraic-scale (power field gamma 2) 3) (algebraic-element field 2))))))
+(check "primitive inverse matches defining-polynomial closed form"
+  (algebraic-equal? (algebraic-inverse gamma) (algebraic-element field '(-6 3 -1 -3/2 0 1/4))))
+(check "mixed-field expression has exact inverse"
+  (= (algebraic-rational (algebraic-mul gamma (algebraic-inverse gamma))) 1))
+(check "transport preserves source inverse"
+  (algebraic-equal? (embed-left (algebraic-inverse (algebraic-generator left))) (algebraic-inverse a)))
+(check "transport preserves source arithmetic"
+  (algebraic-equal? (embed-right (algebraic-mul (algebraic-generator right)
+    (algebraic-add (algebraic-generator right) (algebraic-element right 1))))
+    (algebraic-mul b (algebraic-add b (algebraic-element field 1)))))
+(check "chosen real embedding retains both positive generators"
+  (and (= (algebraic-sign a) 1) (= (algebraic-sign b) 1)))
+(check "wrong conjugate fails checked embedding"
+  (raises? (lambda () (make-algebraic-embedding left field (algebraic-scale a -1)))))
+(check "wrong generator relation fails checked embedding"
+  (raises? (lambda () (make-algebraic-embedding left field b))))
+(check "foreign source fails transport" (raises? (lambda () (embed-left (algebraic-generator right)))))
+(check "untransported fields still refuse" (raises? (lambda ()
+  (algebraic-add (algebraic-generator left) (algebraic-generator right)))))
+(define certificate (algebraic-field-certificate field))
+(check "compositum provenance does not pretend to be a modular prime"
+  (and (eq? (car certificate) 'coprime-compositum) (= (cadr certificate) 6) (= (caddr certificate) 1)
+       (eq? (car (list-ref certificate 3)) 'modular-prime)))
+(vector-set! (list-ref certificate 5) 0 999)
+(vector-set! (list-ref (list-ref certificate 3) 2) 0 999)
+(check "certificate observation owns nested polynomial storage"
+  (and (= (vector-ref (algebraic-field-polynomial field) 0) -4)
+       (= (vector-ref (algebraic-field-polynomial left) 0) -2)))
+(check "source fields stay unchanged"
+  (and (= (algebraic-rational (power left (algebraic-generator left) 2)) 2)
+       (= (algebraic-rational (power right (algebraic-generator right) 3)) 2)))
+(define negative (make-algebraic-field '(-2 0 1) 3 0))
+(define negative-result (make-algebraic-compositum negative right))
+(define negative-field (vector-ref negative-result 0))
+(define na ((vector-ref negative-result 1) (algebraic-generator negative)))
+(define nb ((vector-ref negative-result 2) (algebraic-generator right)))
+(check "negative source conjugate selects the corresponding compositum root"
+  (and (= (algebraic-sign na) -1) (= (algebraic-sign nb) 1)
+       (algebraic-equal? (algebraic-generator negative-field) (algebraic-add na nb))))
+(check "negative conjugate retains both defining relations"
+  (and (= (algebraic-rational (power negative-field na 2)) 2)
+       (= (algebraic-rational (power negative-field nb 3)) 2)))
+(define reverse-result (make-algebraic-compositum right left))
+(define reverse-field (vector-ref reverse-result 0))
+(check "source order produces the independently known primitive polynomial"
+  (equal? (vector->list (algebraic-field-polynomial reverse-field)) '(-4 -24 12 -4 -6 0 1)))
+(check "reversed source transports retain their own relations"
+  (and (= (algebraic-rational (power reverse-field ((vector-ref reverse-result 1) (algebraic-generator right)) 3)) 2)
+       (= (algebraic-rational (power reverse-field ((vector-ref reverse-result 2) (algebraic-generator left)) 2)) 2)))
+(define identity (make-algebraic-compositum left left 2 0 0))
+(check "identical field shortcut retains field identity" (eq? (vector-ref identity 0) left))
+(check "identity transport is checked and owns coefficients"
+  (let* ((input (algebraic-generator left)) (output ((vector-ref identity 1) input)))
+    (vector-set! (vector-ref input 2) 1 99)
+    (algebraic-equal? output (algebraic-generator left))))
+(check "identity transport refuses foreign input" (raises? (lambda ()
+  ((vector-ref identity 2) (algebraic-generator right)))))
+(for-each (lambda (thunk) (check "invalid compositum admission/budget refuses" (raises? thunk)))
+  (list
+    (lambda () (make-algebraic-compositum left right 5))
+    (lambda () (make-algebraic-compositum left right 16 0))
+    (lambda () (make-algebraic-compositum left right 16 1 0))
+    (lambda () (make-algebraic-compositum left (make-algebraic-field '(-3 0 1) 5 1)))
+    (lambda () (make-algebraic-compositum left (make-algebraic-field '(-2 0 1) 3 1)))
+    (lambda () (make-algebraic-compositum #f right))
+    (lambda () (make-algebraic-compositum left right 17))
+    (lambda () (make-algebraic-compositum left right -1))
+    (lambda () (make-algebraic-compositum left right 16 1.0))
+    (lambda () (make-algebraic-compositum left right 16 1 -1))
+    (lambda () (make-algebraic-compositum left right 16 1 1 1))))
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: PASS") (newline)
