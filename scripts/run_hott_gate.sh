@@ -26,11 +26,11 @@ for f in "$S"/tests/hott/programs/*.esk; do
         && ok "$n kernel" || bad "$n kernel: $(head -c 400 "$W/$n.kernel.err")"
     "$RUN" -r "$f" -L"$B" > "$W/$n.jit" 2> "$W/$n.jit.err" && cmp -s "$W/$n.jit" "$exp" \
         && ok "$n jit" || bad "$n jit: $(diff "$W/$n.jit" "$exp" | head -4) $(head -c 400 "$W/$n.jit.err")"
-    if "$RUN" -O 1 -o "$W/$n.aot" "$f" -L"$B" > "$W/$n.build" 2>&1 && "$W/$n.aot" > "$W/$n.aot.out" 2>&1 \
+    if "$RUN" -O 1 -o "$W/$n.aot" "$f" -L"$B" > "$W/$n.build" 2>&1 && "$W/$n.aot" > "$W/$n.aot.out" 2> "$W/$n.aot.err" \
         && cmp -s "$W/$n.aot.out" "$exp"; then ok "$n aot"; else bad "$n aot: $(head -c 400 "$W/$n.build")"; fi
     if [ -x "$VM" ]; then
         if "$RUN" --profile hosted-vm --emit-eskb "$W/$n.eskb" "$f" -L"$B" > "$W/$n.vmb" 2>&1 \
-            && "$VM" "$W/$n.eskb" > "$W/$n.vm.out" 2>&1 && cmp -s "$W/$n.vm.out" "$exp"; then
+            && "$VM" "$W/$n.eskb" > "$W/$n.vm.out" 2> "$W/$n.vm.err" && cmp -s "$W/$n.vm.out" "$exp"; then
             ok "$n vm"
         else
             bad "$n vm: $(head -c 400 "$W/$n.vmb") $(diff "$W/$n.vm.out" "$exp" 2>/dev/null | head -4)"
@@ -71,9 +71,9 @@ for doc in ("docs/reference/language/hott.md", "docs/guide/HOTT.md"):
 PY
 while read -r base doc; do
     n=$(basename "$base")
-    "$RUN" -r "$base.esk" -L"$B" > "$base.jit" 2>&1 && cmp -s "$base.jit" "$base.expected" \
+    "$RUN" -r "$base.esk" -L"$B" > "$base.jit" 2> "$base.jit.err" && cmp -s "$base.jit" "$base.expected" \
         && ok "$n ($doc) jit" || bad "$n ($doc) jit: $(diff "$base.jit" "$base.expected" | head -4)"
-    if "$RUN" -O 1 -o "$base.aot" "$base.esk" -L"$B" > "$base.build" 2>&1 && "$base.aot" > "$base.aot.out" 2>&1 \
+    if "$RUN" -O 1 -o "$base.aot" "$base.esk" -L"$B" > "$base.build" 2>&1 && "$base.aot" > "$base.aot.out" 2> "$base.aot.err" \
         && cmp -s "$base.aot.out" "$base.expected"; then ok "$n ($doc) aot"; else bad "$n ($doc) aot: $(head -c 300 "$base.build")"; fi
 done < "$W/doc-examples.list"
 
