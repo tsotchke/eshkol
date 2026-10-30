@@ -243,7 +243,7 @@ def main():
     p.add_argument('--results', type=Path)
     args = p.parse_args()
     root = args.source_root.resolve()
-    env = dict(os.environ, ESHKOL_PATH=str(root/'lib'))
+    env = dict(os.environ, ESHKOL_PATH=str(root/'lib'), ESHKOL_JIT_CACHE='0')
     with tempfile.TemporaryDirectory(prefix='sblc-resource-') as directory:
         work = Path(directory)
 
@@ -289,7 +289,7 @@ def main():
         replay_jit = run([args.eshkol_bin, '-r', str(replay)])
         run([args.eshkol_bin, str(replay), '-O', '2', '-o', str(work/'replay')])
         assert replay_jit == run([str(work/'replay')]) == 'PASS resource_producer_free\n'
-        result = {'schema_version': 1, 'checks_per_engine': 84, 'cost_profiles': 11,
+        result = {'schema_version': 1, 'jit_executable_cache': 'disabled', 'checks_per_engine': 84, 'cost_profiles': 11,
                   'independent_operational_observations': 16, 'engines': ['jit', 'aot-O2'],
                   'termination_probabilities': ['5/9', '4/9'], 'conditional_total_work': [15, 16],
                   'producer_free_replay': True, 'stdout_sha256': hashlib.sha256(jit.encode()).hexdigest(),

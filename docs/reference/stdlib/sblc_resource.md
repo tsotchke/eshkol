@@ -83,3 +83,10 @@ The gate checks eleven profiles, sixteen operational observations against a
 separate de Bruijn reducer, exact moment/coefficient oracles, and source-bound
 replay with eleven producers disabled, on JIT and AOT. It also rejects forged
 coefficients, latent summaries, source identities and incomplete native output.
+
+The native gate explicitly sets `ESHKOL_JIT_CACHE=0` for every child, so its
+`-r` leg runs in-process JIT rather than the persistent executable-cache route.
+The readiness self-test intercepts the real first child boundary with the
+variable unset and set to `1` in the caller. Both must pass `0` to the child
+without changing the caller environment; this control launches no native work.
+The gate separately requires complete native receipts and independent oracles.
