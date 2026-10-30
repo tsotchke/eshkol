@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 106** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1203** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 107** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1211** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -105,6 +105,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.logic.predicates`](../../../lib/core/logic/predicates.esk) | yes | [logic_predicates.md](logic_predicates.md) | `is-zero?` `is-positive?` `is-negative?` `is-even?` `is-odd?` |
 | [`core.logic.types`](../../../lib/core/logic/types.esk) | yes | [logic_types.md](logic_types.md) | `is-null?` `is-pair?` |
 | [`core.manifold`](../../../lib/core/manifold.esk) | yes | [manifold.md](manifold.md) | `make-euclidean-manifold` `make-hyperbolic-manifold` `make-spherical-manifold` `manifold-exp-map` `manifold-log-map` `manifold-distance` `manifold-parallel-transport` `manifold-curvature` `manifold-dimension` `manifold-type` `metric-component` `manifold-metric` `manifold-metric-inverse` `christoffel-symbol` `manifold-christoffel` `manifold-sectional-curvature` `manifold-scalar-curvature` `ricci-component` `manifold-ricci` `riemann-component` |
+| [`core.observable_closure`](../../../lib/core/observable_closure.esk) | no | [observable_closure.md](observable_closure.md) | `compile-observable-closure` `verify-observable-closure` `project-observations` `compile-generator-closure` `verify-generator-closure` `observable-status` `observable-certificate` `observable-dimension` |
 | [`core.memory`](../../../lib/core/memory.esk) | no | [memory.md](memory.md) | `make-memory-log` `memory-append!` `memory-events` `memory-merge` `memory-verify-chain` `memory-verify-events` `memory-fold-lww` `memory-event?` `memory-event-id` `memory-event-prev` `memory-event-vclock` `memory-event-node` `memory-event-type` `memory-event-payload` `event-content-hash` |
 | [`core.memory_store`](../../../lib/core/memory_store.esk) | no | [memory_store.md](memory_store.md) | `make-memory-store` `memory-store?` `memory-store-log` `memory-store-path` `memory-store-open` `memory-store-open-fast` `memory-store-open-durable` `memory-store-open-fast-durable` `memory-store-close!` `memory-store-append!` `memory-store-verify` `memory-store-audit` `memory-store-audit-linear` `memory-store-linear-evidence` `memory-store-count` `memory-store-head` `memory-store-tail` `memory-store-sanitize` `memory-store-test-fail-next-first-file-parent-sync!` |
 | [`core.merkle`](../../../lib/core/merkle.esk) | no | [merkle.md](merkle.md) | `fnv1a-64` `hash->hex` `merkle-leaf` `merkle-leaf?` `merkle-inode?` `merkle-root` `merkle-data` `merkle-tree` `merkle-tree-with-hash` `merkle-leaves` `merkle-proof` `merkle-verify` `make-cas` `make-cas-with-hash` `cas?` `cas-put!` `cas-get` `cas-has?` `cas-size` `cas-keys` |
