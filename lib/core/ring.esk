@@ -1321,6 +1321,29 @@
                                (loop (cdr cs) (+ d 1) (cons (cons e (car cs)) acc)))))))))
           (else #f))))
 
+;; a / b for b dividing a over a coefficient domain with exact quotients:
+;; the division algorithm by b alone. In a domain LT(b) divides LT(a) when b
+;; divides a, so a leading term it does not divide proves b does not.
+(define (rc-mp-exact-quotient P a b)
+  (let* ((K (vector-ref P 11)) (kquot (rc-exact-quotient K)) (kneg (vector-ref K 15)) (kmul (vector-ref K 16))
+         (cmp (rc-extra P 'compare)) (kadd (vector-ref K 14)) (kzero? (lambda (c) (rc-mp-kzero? K c)))
+         (tb (vector-ref b 2)))
+    (if (null? tb) (error "exact quotient in K[x1..xn]: division by zero" (vector-ref P 5)))
+    (let ((lm (car (car tb))) (lc (cdr (car tb))))
+      (let loop ((r (vector-ref a 2)) (q '()))
+        (cond ((null? r) ((rc-extra P 'from-terms) (reverse q)))
+              ((not (let div ((i 0)) (or (= i (vector-length lm)) (and (<= (vector-ref lm i) (vector-ref (car (car r)) i)) (div (+ i 1))))))
+               (error "exact quotient in K[x1..xn]: the divisor does not divide" (vector-ref P 5)))
+              (else
+               (let* ((m (let ((v (make-vector (vector-length lm) 0)))
+                           (let fill ((i 0))
+                             (if (< i (vector-length lm))
+                                 (begin (vector-set! v i (- (vector-ref (car (car r)) i) (vector-ref lm i))) (fill (+ i 1)))))
+                           v))
+                      (c (kquot (cdr (car r)) lc)))
+                 (loop (rc-mp-merge r (rc-mp-shift tb m (kneg c) kmul kzero?) cmp kadd kzero?)
+                       (cons (cons m c) q)))))))))
+
 (define (rc-build-mpolys K vars order)
   (let* ((box (vector #f))
          (n (length vars))
@@ -1351,7 +1374,11 @@
                     (cons 'self-locating? #t)
                     (cons 'extra (list (cons 'variables vars) (cons 'order order) (cons 'compare cmp)
                                        (cons 'terms (lambda (x) (vector-ref x 2))) (cons 'from-terms wrap)
-                                       (cons 'enters (lambda (C) (rc-mp-enters (vector-ref box 0) C)))))))))
+                                       (cons 'enters (lambda (C) (rc-mp-enters (vector-ref box 0) C)))
+                                       (cons 'integral-domain (if (rc-integral-domain? K) #t #f))
+                                       (cons 'exact-quotient
+                                             (and (rc-integral-domain? K) (rc-exact-quotient K)
+                                                  (lambda (a b) (rc-mp-exact-quotient (vector-ref box 0) a b))))))))))
     (vector-set! box 0 P)
     (vector-set! P 12 (wrap '()))
     (vector-set! P 13 (constant (vector-ref K 13)))

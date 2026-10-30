@@ -307,6 +307,11 @@ K[x] with x among them) enters K[x1..xn] by placing its exponents, so
 | `(monomial-compare P a b)` | -1, 0 or 1 for two exponent lists under P's order |
 | `(ring-poly-eval p (c1 ... cn))` `(ring-poly-evaluation P S (a1 ... an))` | evaluation at a point of K^n; the ring map K[x1..xn] -> S, xi -> ai |
 
+Over a coefficient domain with exact quotients (Z, Q, F_p, ...) K[x1..xn]
+declares `integral-domain` and `exact-quotient` (the division algorithm by
+the divisor alone, refused when it does not divide), so `ring-det` over it
+uses fraction-free elimination.
+
 ```scheme
 (require core.ring)
 (define P (make-polys rationals '(x y z) 'lex))

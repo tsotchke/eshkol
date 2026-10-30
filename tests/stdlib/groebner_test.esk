@@ -99,6 +99,15 @@
          (and (= (ring-poly-eval f '(1 2 3)) (+ 16 -135 21/2))
               (r= Qt (ring-map-apply phi f) (ring-poly Qt '(-135 16 21/2))))))
 
+(check "determinants over Q[x,y,z] and Z[x,y] by fraction-free elimination: the Vandermonde product"
+       (let* ((V (vector (vector 1 x (r* Qgrevlex x x)) (vector 1 y (r* Qgrevlex y y)) (vector 1 z (r* Qgrevlex z z))))
+              (Zxy (make-polys integers '(x y))) (a (ring-poly-variable Zxy 'x)) (b (ring-poly-variable Zxy 'y)))
+         (and (r= Qgrevlex (ring-det Qgrevlex V) (r* Qgrevlex (r- Qgrevlex y x) (r* Qgrevlex (r- Qgrevlex z x) (r- Qgrevlex z y))))
+              (r= Zxy (ring-det Zxy (vector (vector a (r* Zxy 2 b)) (vector b a))) (r- Zxy (r* Zxy a a) (r* Zxy 2 (r* Zxy b b))))
+              (r= Zxy ((ring-carrier-extra Zxy 'exact-quotient) (r- Zxy (r* Zxy a a) (r* Zxy 4 (r* Zxy b b))) (r+ Zxy a (r* Zxy 2 b)))
+                  (r- Zxy a (r* Zxy 2 b)))
+              (raises? (lambda () ((ring-carrier-extra Zxy 'exact-quotient) (r+ Zxy a 1) b))))))
+
 ;; ===========================================================================
 ;; Division (Cox-Little-O'Shea ch. 2 sec. 3)
 ;; ===========================================================================
