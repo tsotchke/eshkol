@@ -11,12 +11,10 @@ No theory, no background — just type and see what happens.
 brew tap tsotchke/eshkol && brew install eshkol
 ```
 
-**Linux:**
-```bash
-# Download from GitHub Releases
-curl -LO https://github.com/tsotchke/eshkol/releases/latest
-# Extract and add to PATH
-```
+**Linux:** download the Linux archive matching your architecture from
+[GitHub Releases](https://github.com/tsotchke/eshkol/releases/latest), extract
+it, and add its `bin` directory to `PATH`. Choose a release **asset** from
+that page; the page URL itself is not an archive.
 
 **No install — browser:**
 Go to [eshkol.ai](https://eshkol.ai) and type in the REPL.

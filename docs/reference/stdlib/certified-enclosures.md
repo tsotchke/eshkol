@@ -126,16 +126,13 @@ that into an immediate, unambiguous error naming the mistake, at every
 public entry point (`ia+ ia- ia* ia/ ia-neg ia-sqrt ia-exp ia-log ia-sin
 ia-cos ia-atan`) — the correct construction is always `(cons lo hi)`.
 
-**Routed-around defect, not fixed.** `(expt 1/3 50)` silently returns the
-exact integer `0` (a repeated-exact-multiplication bug in the `expt`
-primitive). Every exact-rational power in this layer is computed by a
-local repeated-multiplication loop built from plain `*` instead (the same
-technique `iv-int-pow`/`tm-ipow` in the validated modules already use, and
-which does not exhibit the defect); every order is additionally chosen
-small enough that the documented int64 numerator/denominator overflow
-degrade-to-double path (see `docs/reference/stdlib/exact_linalg.md` §5)
-is never even approached, and every derived remainder magnitude still
-gets one final `fl-next-up` safety nudge regardless.
+**Exact powers.** This layer computes its integer powers with local
+repeated multiplication built from plain `*`, as do `iv-int-pow`/`tm-ipow`
+in the validated modules. This implementation is independent of `expt`;
+`(expt 1/3 50)` itself returns the exact rational
+`1/717897987691852588770249`, as described in the
+[numeric-tower reference](../language/numeric-tower.md). Every derived
+remainder magnitude still gets one final `fl-next-up` safety nudge.
 
 ## 3. Rigorous Taylor models — `core.ad.rigorous_taylor_models`
 

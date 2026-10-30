@@ -53,19 +53,12 @@
 ;;  corner or a denominator widened across zero fails closed. Inexact
 ;;  endpoints remain unchanged.
 ;;
-;;  Known defect ROUTED AROUND, not fixed: `(expt 1/3 50)` silently returns
-;;  the exact integer 0 (repeated-exact-multiplication bug in the `expt`
-;;  primitive). Every exact-rational power in this file is instead computed
-;;  by `ia-ipow-exact`, a local repeated-multiplication loop built from
-;;  plain `*` — the same technique lib/core/ad/interval.esk and
-;;  lib/core/ad/taylor_models.esk already use for `iv-int-pow`/`tm-ipow`,
-;;  which does not exhibit the defect. Orders below are additionally chosen
-;;  small enough (never letting an intermediate factorial or power exceed
-;;  ~1e15) that the *documented* int64-numerator/denominator overflow
-;;  degrade-to-double path (see docs/reference/stdlib/exact_linalg.md sec 5)
-;;  is never even approached — and every derived remainder MAGNITUDE gets
-;;  one final `fl-next-up` safety nudge regardless (belt-and-suspenders: the
-;;  bound stays sound even if some rational intermediate silently degraded).
+;;  Every exact-rational integer power in this file is computed by
+;;  `ia-ipow-exact`, a local repeated-multiplication loop built from plain
+;;  `*`, like `iv-int-pow`/`tm-ipow` in the validated modules. This is
+;;  independent of the primitive `expt`, which also preserves the exact
+;;  rational result for `(expt 1/3 50)`; see the numeric-tower reference.
+;;  Every derived remainder MAGNITUDE gets one final `fl-next-up` nudge.
 ;;
 ;;  ── PER-FUNCTION REMAINDER DERIVATIONS ───────────────────────────────────
 ;;  sqrt   CERTIFIED BRACKETING, not a Taylor remainder. sqrt's derivative
@@ -196,7 +189,7 @@
         "downstream computation on it is meaningless."))))
 
 ;; base-2^e helpers used by exp/log's range reduction. `ia-ipow-exact` never
-;; calls `expt` (see the defect note above). The named-let counter is
+;; calls `expt` (see the exact-power note above). The named-let counter is
 ;; deliberately NOT named `e` (matching the outer parameter) -- a
 ;; same-named loop/parameter pair here triggered a real VM-only bug
 ;; ("calling non-function", verified: reproduces with the shadowed name,
