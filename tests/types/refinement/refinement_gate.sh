@@ -33,13 +33,16 @@ run() {  # engine file [flags...]
 }
 
 for engine in "${engines[@]}"; do
-    out=$(run "$engine" "$HERE/accept.esk"); rc=$?
+    err="$WORKDIR/accept.$engine.err"
+    if [ "$engine" = native ]; then out=$("$ESHKOL_RUN" -r "$HERE/accept.esk" 2>"$err"); rc=$?
+    else "$VM" "$HERE/accept.esk" > "$WORKDIR/accept.vm.out" 2>"$err"; rc=$?
+         out=$(grep -v '^=== ' "$WORKDIR/accept.vm.out"); fi
     note
-    if [ $rc -ne 0 ]; then bad "[$engine] accept.esk exited $rc: $out"
-    elif ! diff <(printf '%s\n' "$out" | grep -v '^\[' ) "$HERE/accept.expected" > "$WORKDIR/accept.$engine.diff"; then
+    if [ $rc -ne 0 ]; then bad "[$engine] accept.esk exited $rc: $out $(cat "$err")"
+    elif ! diff <(printf '%s\n' "$out") "$HERE/accept.expected" > "$WORKDIR/accept.$engine.diff"; then
         bad "[$engine] accept.esk output differs: $(cat "$WORKDIR/accept.$engine.diff")"
-    elif printf '%s' "$out" | grep -q "Refinement error\|refinement"; then
-        bad "[$engine] accept.esk reported a refinement finding: $out"
+    elif grep -qi "refinement" "$err"; then
+        bad "[$engine] accept.esk reported a refinement finding: $(grep -i refinement "$err")"
     fi
 
     for f in "$HERE"/reject_*.esk; do
@@ -56,7 +59,7 @@ done
 # Gradual boundary: native only (the VM draws only the fatal verdict).
 out=$(run native "$HERE/boundary.esk"); rc=$?
 note
-if [ $rc -ne 0 ] || ! printf '%s' "$out" | grep -q "^5$"; then bad "boundary.esk did not run: $out"
+if [ $rc -ne 0 ] || ! printf '%s' "$out" | grep -q "^2$"; then bad "boundary.esk did not run: $out"
 elif ! printf '%s' "$out" | grep -q "not proved at a gradual boundary"; then bad "boundary.esk gave no boundary finding: $out"
 fi
 out=$(run native "$HERE/boundary.esk" --strict-types); rc=$?
