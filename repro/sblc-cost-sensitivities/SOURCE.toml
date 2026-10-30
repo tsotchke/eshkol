@@ -1,0 +1,25 @@
+schema_version = 1
+license = "MIT"
+base_commit = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
+prepared_tree_oid = "55999bfc60e5fb08118185511022e8c3122e7aa9"
+review_status = "review-ready"
+
+[[source_prerequisite]]
+name = "sblc"
+revision = "14dd4d0fbb2714e6fc40e99f53eb91b18a7f68be"
+
+[[source_prerequisite.file]]
+path = "lib/core/sblc.esk"
+sha256 = "a19ae694a84934a3f94dcd8a203e77aa1f3bfa8a5411ff54ab1e1a60141834ee"
+
+[[source_prerequisite]]
+name = "resource"
+revision = "selected MIT SBLC-resource contribution"
+
+[[source_prerequisite.file]]
+path = "lib/core/sblc/resource.esk"
+sha256 = "6507191739cccf3412711a582ff0f0801dcde1077c53d469a2e9c3f1cef1f047"
+
+[[source_prerequisite.file]]
+path = "scripts/run_sblc_resource_gate.py"
+sha256 = "4c34e226f4fc77d7023ce63d20ed914b481be27cd929b6d17db577c6c7f91432"
