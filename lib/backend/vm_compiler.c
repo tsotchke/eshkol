@@ -6845,6 +6845,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* -- define-type (type alias: compile-time only, no runtime effect) -- */
     if (is_sym(head, "define-type")) { return; }
 
+    /* -- (the type expr): an ascription, checked before compilation (the
+     * gradual checker, and refinements through the front-end bridge,
+     * ADR-0044); at run time it is exactly expr, as on the native engine. -- */
+    if (is_sym(head, "the") && node->n_children == 3) {
+        compile_expr(c, node->children[2], tail);
+        return;
+    }
+
 
     if (is_sym(head, "vref") && node->n_children == 3) {
         int s = c->n_locals;
