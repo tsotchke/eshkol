@@ -990,11 +990,19 @@ complete in v1.3.0-evolve.
 
 **Focus:** Programs that write and improve programs.
 
-- [ ] Neural-guided program search (beam search with neural scoring for candidate ranking)
-- [ ] Type-directed synthesis holes (`??` syntax — compiler searches for well-typed completions)
-- [ ] Graph Neural Networks (message passing, neighborhood aggregation, graph attention)
-- [ ] Synthesis from input-output examples (inductive programming)
-- [ ] Neural theorem provers (neural heuristic guides symbolic proof search, using v1.5 embeddings + v1.6 chaining)
+- [ ] Neural-guided program search (beam search with neural scoring for candidate ranking).
+      Substrate shipped: cost-ordered enumeration in `core.synthesis` whose
+      component costs are the hook for a learned scorer; the learned search
+      engines are in Noesis and their upstreaming is proposed in ADR-0052
+- [x] Type-directed synthesis holes (`??` syntax — compiler searches for well-typed completions;
+      [synthesis-holes.md](docs/reference/language/synthesis-holes.md), ADR-0052)
+- [x] Graph Neural Networks (message passing, neighborhood aggregation, graph attention;
+      `ml.gnn` on `ml.autograd`, exact reverse-mode gradients, [gnn.md](docs/reference/stdlib/gnn.md))
+- [x] Synthesis from input-output examples (inductive programming; `core.synthesis`: enumeration
+      with observational equivalence, FlashFill and map/filter deduction, 42/42 benchmark tasks
+      verified on held-out examples, [synthesis.md](docs/reference/stdlib/synthesis.md))
+- [ ] Neural theorem provers (neural heuristic guides symbolic proof search, using v1.5 embeddings + v1.6 chaining).
+      The learned prover is in Noesis; its upstreaming onto the v1.6 chainer is proposed in ADR-0052
 - [ ] Recursive IVM; staged optimizer; program-capsule foundations (ADR-0005)
 - [ ] Certificate emission and an independent checker (W2): a certified step
       emits its witnesses, interval endpoints, rounding direction and

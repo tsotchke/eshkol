@@ -76,6 +76,7 @@ before 1.3.5-evolve, use their former numbers:
 | [0016](0016-ad-alt-architect.md) — Staged dense-tensor reverse-mode AD and `value_and_grad` | 0002 | [0002](0002-ad-staged-dense-kernels.md) — Dense tensor AD nodes and a staged value-and-grad kernel |
 | [0017](0017-stochastic-binary-lambda-calculus.md) — Stochastic Binary Lambda Calculus | 0011 | [0011](0011-guest-collector-adapter.md) — Hosted guest collectors over OALR regions |
 | [0018](0018-signed-curvature-stereographic-geometry.md) — Signed-curvature stereographic geometry | 0012 | [0012](0012-object-abi-staged-migration.md) — Object ABI staged migration |
+| [0052](0052-program-synthesis.md) | Program synthesis, `??` synthesis holes and graph neural networks | Accepted — implemented on native JIT and AOT | 2026-10-30 | v1.7.0 |
 
 ## Status vocabulary
 

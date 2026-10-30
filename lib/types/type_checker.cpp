@@ -1402,6 +1402,9 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
             if (expr->operation.call_op.num_vars < 2) {
                 co_return errorAt(expr, "Arithmetic requires at least 2 operands");
             }
+            for (uint64_t i = 0; i < expr->operation.call_op.num_vars; ++i) {
+                expectAt(&expr->operation.call_op.variables[i], BuiltinTypes::Number);
+            }
             auto left = (co_await synthesizeTask(&expr->operation.call_op.variables[0]));
             auto right = (co_await synthesizeTask(&expr->operation.call_op.variables[1]));
             for (uint64_t i = 2; i < expr->operation.call_op.num_vars; ++i) {
@@ -1917,9 +1920,15 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
     // Pre-synthesize all arguments to ensure nested expressions are type-checked
     // (e.g., (display (vector-ref v -1)) must check the vector-ref even though
     // display itself doesn't need arg types for its return type)
-    // A hole argument is expected at the callee's declared parameter type.
+    // A hole argument is expected at the callee's declared parameter type
+    // (an arithmetic operator's operands are numbers).
     if (func_expr->type == ESHKOL_VAR && func_expr->variable.id) {
-        if (auto callee = ctx_.lookup(func_expr->variable.id); callee && env_.isFunctionType(*callee)) {
+        const std::string callee_name = func_expr->variable.id;
+        if (!ctx_.lookup(callee_name) && (callee_name == "+" || callee_name == "-" ||
+                                          callee_name == "*" || callee_name == "/")) {
+            for (size_t i = 0; i < call.num_vars; ++i) expectAt(&call.variables[i], BuiltinTypes::Number);
+        }
+        if (auto callee = ctx_.lookup(callee_name); callee && env_.isFunctionType(*callee)) {
             const auto params = env_.getFunctionParamTypes(*callee);
             for (size_t i = 0; i < call.num_vars && i < params.size(); ++i) {
                 expectAt(&call.variables[i], params[i]);
