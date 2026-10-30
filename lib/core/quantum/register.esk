@@ -190,9 +190,9 @@
 ;; take a register for an operation: it must be live, and it is consumed
 (define (qreg-take! q who)
   (if (not (qreg? q)) (error (string-append "core.quantum: " who ": not a quantum register") q))
+  (qr-check-open (qreg-region q) who)
   (if (not (qreg-live? q))
       (error (string-append "core.quantum: " who ": the register was already consumed (a register is used once)")))
-  (qr-check-open (qreg-region q) who)
   (vector-set! q 3 #f)
   q)
 (define (qreg-wire q i who)

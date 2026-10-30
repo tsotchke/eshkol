@@ -1,0 +1,128 @@
+;; core.quantum.register: quantum regions and linear registers at run time
+;; (ADR-0048). Bell and GHZ statistics, split and join, mid-circuit
+;; measurement with classical control (teleportation), whole circuits applied
+;; to registers, the compiled circuit a region executes (optimised, and routed
+;; for a coupling graph), sampled QAOA cut values against the exact
+;; expectation, and the run-time guards for registers that reach untyped code.
+(require stdlib)
+(require core.quantum)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises-with? text thunk)
+  (guard (e (#t (let ((m (if (error-object? e) (error-object-message e) ""))) (and (string? m) (string-contains? m text)))))
+    (thunk) #f))
+(define (string-contains? s sub)
+  (let ((n (string-length s)) (k (string-length sub)))
+    (let loop ((i 0)) (cond ((> (+ i k) n) #f) ((string=? (substring s i (+ i k)) sub) #t) (else (loop (+ i 1)))))))
+(define (repeat n thunk) (let loop ((i 0) (acc '())) (if (= i n) (reverse acc) (loop (+ i 1) (cons (thunk) acc)))))
+(define (count pred xs) (length (filter pred xs)))
+
+(set-quantum-region-options! '((seed . 20261030)))
+
+;; --- Bell pairs: perfectly correlated, both outcomes occur ---------------
+(define-quantum-region qr (bell)
+  (let* ((r (qalloc qr 2)) (r (qh r 0)) (r (qcnot r 0 1)))
+    (qmeasure r)))
+(define bells (repeat 200 bell))
+(check "bell: outcomes are 00 or 11" (= 200 (count (lambda (b) (= (car b) (cadr b))) bells)))
+(let ((ones (count (lambda (b) (= 1 (car b))) bells)))
+  (display "register: bell ones ") (display ones) (display "/200") (newline)
+  (check "bell: both outcomes occur in proportion" (and (> ones 60) (< ones 140))))
+
+;; --- GHZ through split and join -------------------------------------------
+(define-quantum-region qr (ghz-split)
+  (let* ((r (qalloc qr 3)) (r (qh r 0)) (r (qcnot r 0 1)) (r (qcnot r 1 2)))
+    (qsplit r 1 (lambda ((a : qreg<1>) (b : qreg<2>))
+                  (cons (qmeasure-bit a) (qmeasure b))))))
+(define ghzs (repeat 60 ghz-split))
+(check "ghz: all equal" (= 60 (count (lambda (g) (and (= (car g) (cadr g)) (= (cadr g) (caddr g)))) ghzs)))
+(define-quantum-region qr (joined)
+  (let* ((a (qx (qalloc qr 1) 0)) (b (qalloc qr 2)) (r (qjoin a b)) (r (qcnot r 0 2)))
+    (qmeasure r)))
+(check "join: register order is a then b" (equal? (joined) '(1 0 1)))
+
+;; --- teleportation: mid-circuit measurement and classical correction -------
+(define (teleport-one)
+  (with-quantum-region (qr)
+    (let* ((r (qalloc qr 3))
+           (r (qry r 0 1.1))                 ; the state to send
+           (r (qh r 1)) (r (qcnot r 1 2))    ; the shared pair
+           (r (qcnot r 0 1)) (r (qh r 0)))
+      (qsplit r 2
+              (lambda ((ab : qreg<2>) (c : qreg<1>))
+                (let* ((m (qmeasure ab))
+                       (c (if (= 1 (cadr m)) (qx c 0) c))
+                       (c (if (= 1 (car m)) (qz c 0) c))
+                       ;; undo the preparation: |0> again iff teleported
+                       (c (qry c 0 -1.1)))
+                  (qmeasure-bit c)))))))
+(check "teleportation: the prepared state arrives (40 runs)"
+       (= 0 (apply + (repeat 40 teleport-one))))
+
+;; --- whole circuits on registers -------------------------------------------
+(define ghz-circuit (make-qcircuit 3 '((H 0) (CNOT 0 1) (CNOT 1 2))))
+(define-quantum-region qr (apply-circuit)
+  (qmeasure (qapply-circuit (qalloc qr 3) ghz-circuit)))
+(check "qapply-circuit: GHZ outcomes" (= 30 (count (lambda (g) (= (apply + g) (* 3 (car g)))) (repeat 30 apply-circuit))))
+
+;; --- the circuit a region executes is compiled ------------------------------
+(define-quantum-region qr (compiled-log)
+  (let* ((r (qalloc qr 2)) (r (qh r 0)) (r (qh r 0)) (r (qt r 1)) (r (qt r 1))
+         (r (qcnot r 0 1)) (r (qcnot r 0 1)) (r (qx r 0)))
+    (let ((bits (qmeasure r)))
+      (list bits (qregion-gate-log qr)))))
+(let ((res (compiled-log)))
+  (check "compiled: semantics kept" (equal? (car res) '(1 0)))
+  (check "compiled: H H, CNOT CNOT cancelled, T T fused"
+         (and (= 2 (length (cadr res))) (member '(X 0) (cadr res)) (member '(S 1) (cadr res)) #t)))
+
+(set-quantum-region-options! (list (cons 'seed 7) (cons 'coupling (coupling-line 4))))
+(define-quantum-region qr (routed)
+  (let* ((r (qalloc qr 4)) (r (qx r 0)) (r (qcnot r 0 3)) (r (qh r 1)) (r (qcz r 1 3)) (r (qh r 1)))
+    (list (qmeasure r) (qregion-gate-log qr))))
+(let ((res (routed)) (cg (coupling-line 4)))
+  (check "routed: semantics kept (X0, CNOT 0 3, H CZ H)" (equal? (car res) '(1 1 0 1)))
+  (check "routed: every executed two-qubit gate is on a coupling edge"
+         (let loop ((gs (cadr res)))
+           (or (null? gs)
+               (and (or (< (length (qgate-wires (car gs))) 2)
+                        (coupling-adjacent? cg (car (qgate-wires (car gs))) (cadr (qgate-wires (car gs)))))
+                    (loop (cdr gs)))))))
+(set-quantum-region-options! '((seed . 99)))
+
+;; --- QAOA sampled in a region vs the exact expectation ----------------------
+(define ring (maxcut-problem 4 '((0 1) (1 2) (2 3) (3 0))))
+(define qaoa-c (qaoa-circuit ring '(0.39) '(1.18)))
+(define-quantum-region qr (qaoa-sample)
+  (maxcut-value ring (qmeasure (qapply-circuit (qalloc qr 4) qaoa-c))))
+(let* ((samples (repeat 300 qaoa-sample))
+       (mean (/ (exact->inexact (apply + samples)) 300.0))
+       (exact (qaoa-expectation ring '(0.39) '(1.18))))
+  (display "register: qaoa ring4 sampled mean ") (display mean) (display " exact ") (display exact) (newline)
+  (check "qaoa: sampled mean within 0.3 of the exact expectation" (< (abs (- mean exact)) 0.3)))
+
+;; --- run-time guards for registers in untyped code ---------------------------
+(define (measure-twice r) (list (qmeasure r) (qmeasure r)))    ; r is untyped here
+(check "guard: a consumed register is refused"
+       (raises-with? "already consumed"
+                     (lambda () (with-quantum-region (qr) (measure-twice (qalloc qr 1))))))
+(define (index-of k) k)
+(check "guard: a run-time qubit index out of range is refused"
+       (raises-with? "out of range"
+                     (lambda () (with-quantum-region (qr) (qmeasure (qh (qalloc qr 2) (index-of 5)))))))
+(define (keep r) 0)                                           ; drops an untyped register
+(check "guard: a region closing with a live register is refused"
+       (raises-with? "live qubit"
+                     (lambda () (with-quantum-region (qr) (keep (qalloc qr 2))))))
+(define saved #f)
+(define (stash r) (set! saved r) 0)
+(with-quantum-region (qr) (begin (stash (qalloc qr 1)) (qrelease saved)))
+(check "guard: a closed region refuses further gates"
+       (raises-with? "closed" (lambda () (qh saved 0))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: quantum_register_test") (newline) (display "RESULT: PASS") (newline)
