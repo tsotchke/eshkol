@@ -2201,6 +2201,45 @@ jobs:
           # parallelism at all — see the ASan block in CMakeLists.txt.)
           cmake --build "${{ matrix.build_dir }}" --parallel ${BUILD_JOBS}
 
+      - name: Required CE, qLLM bridge and tensor gradient CTests
+        if: env.LANE_ACTIVE == 'true' && matrix.name == 'linux-x64-lite'
+        timeout-minutes: 35
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
+          manifest="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}-pr871-ctest-manifest.json"
+          mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
+          cmake --build "$BUILD_DIR" --target \
+            qllm_bridge_gradcheck_test tensor_backward_dual_impl_gradcheck_test --parallel 2 \
+            2>&1 | tee -a "$log"
+          ctest --test-dir "$BUILD_DIR" --show-only=json-v1 \
+            -R '^(cross_entropy_gradient_harness_selftest|cross_entropy_gradient_(jit|aot)_dense[01]|qllm_bridge_gradcheck|tensor_backward_dual_impl_gradcheck)$' \
+            > "$manifest" 2>> "$log"
+          python3 - "$manifest" <<'PY' 2>&1 | tee -a "$log"
+          import json, sys
+          expected = {
+              "cross_entropy_gradient_harness_selftest",
+              "cross_entropy_gradient_jit_dense0",
+              "cross_entropy_gradient_jit_dense1",
+              "cross_entropy_gradient_aot_dense0",
+              "cross_entropy_gradient_aot_dense1",
+              "qllm_bridge_gradcheck",
+              "tensor_backward_dual_impl_gradcheck",
+          }
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          actual = {t["name"] for t in data["tests"]}
+          if len(data["tests"]) != len(expected) or actual != expected:
+              raise SystemExit(f"PR871 CTest inventory mismatch: expected exactly {len(expected)} unique tests, got {len(data['tests'])}: {sorted(actual)}")
+          print(f"PASS: exact PR871 CTest inventory ({len(expected)} tests)")
+          PY
+          ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error \
+            --timeout 900 \
+            -R '^(cross_entropy_gradient_harness_selftest|cross_entropy_gradient_(jit|aot)_dense[01]|qllm_bridge_gradcheck|tensor_backward_dual_impl_gradcheck)$' \
+            2>&1 | tee -a "$log"
+
       - name: Public compiler APIs link and execute
         if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite')
         run: ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure -R '^compiler_public_api_linkage$'
@@ -2395,7 +2434,7 @@ jobs:
             export LSAN_OPTIONS="suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt:print_suppressions=0"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
-          ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
+          ${{ matrix.test_command }} 2>&1 | tee -a "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
           test -x "${{ matrix.build_dir }}/eshkol-agent-http-test"
           "${{ matrix.build_dir }}/eshkol-agent-http-test"
           test -x "${{ matrix.build_dir }}/eshkol-agent-sse-test"
@@ -2454,11 +2493,11 @@ jobs:
           ./scripts/run_ad_exactness_gate.sh
 
       - name: Upload Test Logs
-        if: env.LANE_ACTIVE == 'true' && (failure() || cancelled())
+        if: env.LANE_ACTIVE == 'true' && (failure() || cancelled() || matrix.name == 'linux-x64-lite')
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}-test-log
-          path: ${{ runner.temp }}/eshkol-test-logs/${{ matrix.name }}.log
+          path: ${{ runner.temp }}/eshkol-test-logs/
           if-no-files-found: ignore
 
       - name: Upload Artifacts

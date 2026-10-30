@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labels and the 13 numeric-only loss builtins refuse unsupported reverse
   differentiation explicitly. Four native execution/lowering gates check
   analytical derivatives, every MLP weight slope and a wrong-zero canary. (#871)
+### Documentation
+
+- Correct the Linux download instructions, native REPL command, RK4 accuracy
+  description, and exact-rational power reference. Qualify AD overhead and
+  arena-memory timing claims on the website. (#870)
+- Clarify ownership and runtime limits, synchronous region traversal costs,
+  and the VM’s supported AD algorithms and operation limits. (#883, #899)
 
 ## [1.3.6-evolve] - 2026-10-15
 
