@@ -940,7 +940,7 @@ static bool iter_values_escape(const arena_t* arena,
  * way the out-values point nowhere near the node. Rewinding a span with such a
  * node recycles its address, the next iteration reallocates there, and every
  * earlier tape entry then aliases the newest node: the primal values stay
- * right, the gradient comes back wrong.
+ * right, the gradient does not match the reference.
  *
  * Nodes are appended to the tape in creation order and allocated bump-ordered
  * from tape->owner_arena, so the span holds a recorded node exactly when it

@@ -9,7 +9,7 @@ Approximate k-nearest-neighbour search over vectors (Malkov & Yashunin, 2018). E
 ## Functions
 
 - `(make-hnsw dim metric [M ef-construction])` — an empty index; `metric` is `'l2` (squared Euclidean distance) or `'cosine` (`1 - cos`); defaults `M = 8`, `ef-construction = 64`.
-- `(hnsw-insert! idx vec payload)` — add a point; returns its id. A vector of the wrong dimension is an error.
+- `(hnsw-insert! idx vec payload)` — add a point; returns its id. A vector whose dimension differs from the index is an error.
 - `(hnsw-search idx q k ef)` — the `k` nearest points as `(payload . distance)`, nearest first; `ef >= k` trades time for recall.
 - `(hnsw-brute-force idx q k)` — the exact answer by a linear scan, the reference recall is measured against.
 - `(hnsw-count idx)`, `(hnsw-dim idx)`, `(hnsw-vector idx id)`, `(hnsw-payload idx id)`, `(hnsw-distance idx a b)`.

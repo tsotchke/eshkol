@@ -34,7 +34,7 @@
 (check "two ops per element, count-down"
        (vclose? (gradient two-ops (vector 0.2 0.4 0.6)) (vector (* 3.0 (cos 0.2)) (* 6.0 (cos 0.4)) 0.0)))
 
-;; an element that is a plain sum with a constant (this shape used to fault)
+;; an element that is a plain sum with a constant
 (define (shifted th)
   (let loop ((i 0) (acc '()))
     (if (> i 2) (+ (car acc) (cadr acc)) (loop (+ i 1) (cons (+ 0.0 (vector-ref th i)) acc)))))
