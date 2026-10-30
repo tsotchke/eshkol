@@ -57,6 +57,11 @@ pages and lets them fan out to their siblings.
 - [Automatic Differentiation (breakdown)](breakdown/AUTODIFF.md) — mathematical foundations and implementation (symbolic, forward, reverse modes)
 - [AD Campaign](AD_CAMPAIGN.md) — campaign tracking for the AD adversarial-testing pillars
 
+## Mathematics
+
+- [Mathematics guide](guide/MATHEMATICS.md) — a reader's guide to computing mathematics in Eshkol: sites and sheaves, toposes and Kripke–Joyal semantics, rings, finite categories and Kan extensions, simplicial and homological algebra, Lawvere theories, Gröbner bases, and monoidal categories with ZX
+- [nLab conformance report](reports/NLAB_CONFORMANCE.md) — nLab claims turned into finite statements and decided exactly by the mathematics libraries, page by page
+
 ## VM, REPL, and Runtime
 
 - [Runtime reference index](reference/runtime/INDEX.md) — fans out to:

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mathematics now runs on finite structures that decide their own claims.** Add `core.sheaf`
+  (sites, sieves, Grothendieck topologies, sheaf cohomology by Cech descent), `core.topos`
+  (presheaf toposes with Kripke–Joyal forcing cross-checked against the subobject classifier),
+  `core.ring` (rings as a functor-of-points value: one program, many carriers — integers,
+  rationals, IEEE binary64, modular arithmetic, Taylor jets, polynomial rings, group rings),
+  `core.category` (finite category theory, adjunctions through comma categories, Kan
+  extensions), and `core.simplicial` / `core.homological` (simplicial sets, chain complexes,
+  homology with torsion). Measured against nLab: 141 claims across 51 pages, decided and
+  reported in `docs/reports/NLAB_CONFORMANCE.md`. Reader's guide:
+  `docs/guide/MATHEMATICS.md`. Lawvere theories, Gröbner bases and monoidal categories with
+  the ZX calculus follow in v1.4.x.
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix
   calculus (#794), coupled polynomial root towers (#795), preflighted packed
