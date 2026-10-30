@@ -1040,7 +1040,7 @@ single-machine platform surface.
 **Focus:** The type system becomes a proof system.
 
 - [ ] Full dependent type enforcement (compile-time errors, not just warnings)
-- [ ] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration)
+- [x] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration): built-in decision procedure (Omega test, exact simplex, congruence closure) and optional z3 backend, ADR-0044
 - [ ] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level)
 - [ ] Algebraic effects and handlers (structured side-effect management)
 - [ ] Row polymorphism for records (structural subtyping)
