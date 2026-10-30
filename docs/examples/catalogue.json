@@ -4055,16 +4055,16 @@
     },
     {
       "path": "examples/mathematics_presheaf_topos_internal_logic.esk",
-      "source_sha256": "11fdc767fc44cda5f0be5a43a347e44463caa810b37d3634905d3c77110163b8",
+      "source_sha256": "770f6106aa41871135d58957317c385335a5d1ce18922c976e4cded3dd7edb9a",
       "title": "Internal logic of finite presheaf categories",
       "kind": "mathematics",
       "purpose": "Construct classifiers, exponentials and local operators as finite data.",
-      "algorithm": "Enumerate sieves, subpresheaves and natural maps, construct exponentials and Heyting operations, and enumerate Grothendieck/Lawvere–Tierney topologies.",
+      "algorithm": "Build the categories and presheaves with core.sheaf; take Omega, products, exponentials, natural transformations, the Heyting operations and the Lawvere–Tierney topology of each site from core.topos; enumerate subpresheaves, Grothendieck topologies and all endomorphisms of Omega locally so each universal property is a count.",
       "domain": "Walking arrow, pseudocircle, commutative square and BZ/2; explicitly supplied finite presheaves.",
       "arithmetic": "Exact finite set enumeration and truth-table comparisons.",
       "validation": "Classifier bijections/pullbacks, exponential adjunction counts, Heyting laws/non-Boolean examples and 4/16/2 topology counts are checked.",
       "limitations": "The complete walking-arrow local-operator enumeration certifies that finite case; broader universal-property statements are restricted to the constructed inputs/cited theory.",
-      "prerequisites": "Built eshkol-run and stdlib; native JIT or AOT.",
+      "prerequisites": "Built eshkol-run and stdlib, and the core.sheaf and core.topos modules from lib/ (ESHKOL_PATH); native JIT or AOT.",
       "review_status": "source-inspected",
       "registrations": [
         {
@@ -4082,23 +4082,23 @@
           "text": ";; The internal logic of a presheaf topos, computed: for finite categories C"
         },
         {
-          "line": 66,
-          "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
+          "line": 60,
+          "text": "(require core.topos)"
         },
         {
-          "line": 67,
-          "text": "(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))"
+          "line": 112,
+          "text": "(define (classifier-check T X)"
         },
         {
-          "line": 312,
+          "line": 159,
           "text": "(check \"Omega(1) on the walking arrow has three elements and is not Boolean (the sieve {f} has no complement); Omega on BZ/2 is Boolean; Omega(c) on the pseudocircle (five sieves) is not\""
         },
         {
-          "line": 343,
+          "line": 173,
           "text": "(check \"every Grothendieck topology gives a Lawvere-Tierney topology, distinct topologies give distinct j, with 4 topologies on the walking arrow, 16 on the pseudocircle and 2 on BZ/2 (the trivial and the dense one)\""
         },
         {
-          "line": 348,
+          "line": 179,
           "text": "(check \"Theorem V.1.2 by exhaustion on the walking arrow: the Lawvere-Tierney topologies (4, out of 108 endomorphisms of Omega) are exactly the ones induced by the 4 Grothendieck topologies\""
         }
       ],
