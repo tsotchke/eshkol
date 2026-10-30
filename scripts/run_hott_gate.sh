@@ -54,6 +54,29 @@ for f in "$S"/tests/hott/reject/*.esk; do
     fi
 done
 
+# Documentation examples: every ```scheme block followed by "Output:" and a
+# ```text block, in the HoTT reference and guide, runs with that output.
+python3 - "$S" "$W" <<'PY' > "$W/doc-examples.list"
+import re, sys, os
+src, work = sys.argv[1], sys.argv[2]
+n = 0
+for doc in ("docs/reference/language/hott.md", "docs/guide/HOTT.md"):
+    text = open(os.path.join(src, doc)).read()
+    for m in re.finditer(r"```scheme\n(.*?)```\s*\nOutput:\s*\n\s*```text\n(.*?)```", text, re.S):
+        n += 1
+        base = os.path.join(work, "doc%02d" % n)
+        open(base + ".esk", "w").write(m.group(1))
+        open(base + ".expected", "w").write(m.group(2))
+        print(base, doc)
+PY
+while read -r base doc; do
+    n=$(basename "$base")
+    "$RUN" -r "$base.esk" -L"$B" > "$base.jit" 2>&1 && cmp -s "$base.jit" "$base.expected" \
+        && ok "$n ($doc) jit" || bad "$n ($doc) jit: $(diff "$base.jit" "$base.expected" | head -4)"
+    if "$RUN" -O 1 -o "$base.aot" "$base.esk" -L"$B" > "$base.build" 2>&1 && "$base.aot" > "$base.aot.out" 2>&1 \
+        && cmp -s "$base.aot.out" "$base.expected"; then ok "$n ($doc) aot"; else bad "$n ($doc) aot: $(head -c 300 "$base.build")"; fi
+done < "$W/doc-examples.list"
+
 echo "hott gate: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL"
 [ "$fail" -eq 0 ]
