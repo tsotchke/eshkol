@@ -104,6 +104,19 @@
   (zset-singleton 4 1)))
 (check "unknown input refused" (raises? (lambda () (dbsp-circuit-step guarded (list (list 'foreign (zset-empty)))))))
 (check "duplicate names refused" (raises? (lambda () (make-dbsp-circuit '(a a) '() 'a))))
+;; difference: the standing output equals the difference of the integrated inputs
+(define diff-circuit (make-dbsp-circuit '(a b) (list (list 'difference 'out 'a 'b)) 'out))
+(define diff-ok
+  (let loop ((i 0) (c diff-circuit) (ia (zset-empty)) (ib (zset-empty)) (ok #t))
+    (if (= i 12) ok
+        (let* ((da (zset-from-weighted (list (list 1 (modulo i 4)) (list 1 (modulo (* 3 i) 5)))))
+               (db (zset-from-weighted (list (list 1 (modulo (+ i 1) 4)))))
+               (step (dbsp-circuit-step c (list (list 'a da) (list 'b db))))
+               (ia2 (zset-add ia da)) (ib2 (zset-add ib db)))
+          (loop (+ i 1) (car step) ia2 ib2
+                (and ok (zset=? (dbsp-circuit-output (car step)) (zset-sub ia2 ib2))
+                     (zset=? (cdr step) (zset-sub da db))))))))
+(check "difference node is linear" diff-ok)
 (check "forward reference/cycle refused" (raises? (lambda ()
   (make-dbsp-circuit '(a) (list (list 'union 'out 'out 'a)) 'out))))
 (check "unsupported operator refused" (raises? (lambda ()

@@ -110,6 +110,7 @@
 
 ;; Nodes are named topological declarations:
 ;; (map|filter|project out in procedure), (union out left right),
+;; (difference out left right),
 ;; (join out left right left-key right-key emit), (distinct out in),
 ;; (aggregate out in key lift group emit). Zero-valued groups are absent.
 ;; Names are unique symbols; referencing only earlier names excludes cycles.
@@ -145,7 +146,7 @@
            (dc-group-check (list-ref spec 5))
            (add name op (list (dc-lookup aliases (list-ref spec 2)))
              (list (list-ref spec 3) (list-ref spec 4) (vector-copy (list-ref spec 5)) (list-ref spec 6))))
-          ((or (eq? op 'union) (eq? op 'join))
+          ((or (eq? op 'union) (eq? op 'difference) (eq? op 'join))
            (if (not (= size (if (eq? op 'join) 7 4))) (error "Malformed binary circuit declaration"))
            (let ((parameters (if (eq? op 'join) (list-tail spec 4) '())))
              (for-each (lambda (f) (if (not (procedure? f)) (error "Expected join procedure"))) parameters)
@@ -170,6 +171,8 @@
       ((or (eq? op 'map) (eq? op 'project)) (vector (zset-map (car params) left) (vector-ref old 1) (vector-ref old 2)))
       ((eq? op 'filter) (vector (zset-filter (car params) left) (vector-ref old 1) (vector-ref old 2)))
       ((eq? op 'union) (vector (zset-add left (radix-ref deltas (cadr children) (zset-empty))) #f #f))
+      ;; Linear: the change of left - right is the change of left minus the change of right.
+      ((eq? op 'difference) (vector (zset-sub left (radix-ref deltas (cadr children) (zset-empty))) #f #f))
       ((eq? op 'aggregate) (dc-aggregate old left params work))
       ((eq? op 'distinct)
        (let ((counts (vector-ref old 1)) (pairs '()))
