@@ -23,8 +23,8 @@
 ;;;                           site as a model of heyting-algebra-theory
 ;;;
 ;;; core.ring's carriers are models of commutative-ring-theory through
-;;; ring-carrier->model, and ring-law-violations checks the ring laws with
-;;; this library's law check.
+;;; ring-carrier->model, and every theory's laws are checked by core.ring's
+;;; law-violations, the procedure ring-law-violations uses for the ring laws.
 ;;;
 ;;; Reference: docs/reference/stdlib/theory.md; design: ADR-0039
 ;;; (docs/design/adr/0039-lawvere-theories.md).
