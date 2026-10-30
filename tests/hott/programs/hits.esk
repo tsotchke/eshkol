@@ -7,9 +7,21 @@
   (example (Path Int (winding (ap 0 0 S1 S1 (lambda (x) (SuspBool->S1 (S1->SuspBool x)))
                                   base base loop))
                  (pos 1))
-           (refl 0 Int (pos 1))))
+           (refl 0 Int (pos 1)))
+  ;; transport of the set truncation along a varying parameter (ua sucEquiv);
+  ;; the 2-dimensional constructor squash0 is moved with its boundary corrected
+  (define L : (Path U (SetTrunc 0 Int) (SetTrunc 0 Int))
+    (ap 1 1 U U (lambda (X) (SetTrunc 0 X)) Int Int sucPathInt))
+  (define (tr (x : (SetTrunc 0 Int))) : (SetTrunc 0 Int)
+    (transport 0 (SetTrunc 0 Int) (SetTrunc 0 Int) L x))
+  (define z : (SetTrunc 0 Int) (sinc (pos 0)))
+  (define rz : (Path (SetTrunc 0 Int) z z) (refl 0 (SetTrunc 0 Int) z))
+  (define sq : (Path (Path (SetTrunc 0 Int) (tr z) (tr z)) (lambda (j) (tr (rz j))) (lambda (j) (tr (rz j))))
+    (lambda (i) (lambda (j) (tr (squash0 z z rz rz i j))))))
 
 (define (show x) (display x) (newline))
 (show (hott-eval (winding (ap 0 0 S1 S1 (lambda (x) (SuspBool->S1 (S1->SuspBool x))) base base loop))))
 (show (hott-eval (S1->SuspBool base)))
 (show (hott-eval (SuspBool->S1 south)))
+(show (hott-eval (tr (sinc (negsuc 4)))))
+(show (hott-eval ((sq i0) i1)))

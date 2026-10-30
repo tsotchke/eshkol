@@ -56,10 +56,10 @@ bool strictlyPositive(const TermP& t, const DataDecl* d) {
 }
 
 // Structural boundary terms: constructors of the type being declared, applied
-// to the constructor's own arguments (or to such terms) and dimensions. Other
-// boundaries (paths among the arguments, as in set truncation) are accepted;
-// transport of such a constructor along a line of varying parameters then
-// stays a stuck term rather than computing (see transpData).
+// to the constructor's own arguments (or to such terms) and dimensions.
+// Transport commutes with such constructors; for other boundaries (paths
+// among the arguments, as in set truncation) transpData adds the CHM18
+// correcting composition.
 bool constructorExpression(const TermP& t, const DataDecl* d, const std::set<std::string>& args) {
     if (t->k == Term::K::Var) return args.count(t->name) > 0;
     if (t->k == Term::K::Con && t->data == d) {

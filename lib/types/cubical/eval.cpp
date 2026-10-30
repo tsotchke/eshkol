@@ -705,7 +705,7 @@ static V transpData(const V& line, const Formula& phi, const V& u0, Dim i, const
         if (occurs(p, i)) { constant = false; break; }
     if (constant) return u0;  // a data type along a constant line: transport is the identity
     const DataDecl* d = generic->data;
-    if (u0->k == Val::K::Con && d->cons[u0->con].structuralBoundary) {
+    if (u0->k == Val::K::Con) {
         // Transport the arguments through the constructor's telescope: argument k
         // lives over the parameters and the fillers of the earlier arguments.
         std::vector<V> fills;  // lines
@@ -726,7 +726,40 @@ static V transpData(const V& line, const Formula& phi, const V& u0, Dim i, const
         V D1 = lineAt(line, Formula::one());
         std::vector<V> args;
         for (auto& f : fills) args.push_back(lineAt(f, Formula::one()));
-        return mkCon(d, D1->levels, D1->params, u0->con, std::move(args), u0->dims);
+        V moved = mkCon(d, D1->levels, D1->params, u0->con, args, u0->dims);
+        if (c.structuralBoundary || c.boundary.empty()) return moved;
+        // CHM18: a boundary that is not a constructor expression does not
+        // commute with transport. Correct by a composition whose side on each
+        // boundary face runs from the boundary of the transported arguments
+        // (j = 0) to the transport of the boundary (j = 1):
+        //   u_k(j) = transp (i. D (j \/ i)) (j \/ phi) (t_k (args filled to j))
+        auto boundaryAt = [&](const Formula& j, const IExprP& faceE, const TermP& term, bool face) -> std::pair<Formula, V> {
+            V Dj = lineAt(line, j);
+            EnvP env;
+            for (size_t q = 0; q < d->levelParams.size() && q < Dj->levels.size(); ++q)
+                env = envLevel(env, d->levelParams[q], Dj->levels[q]);
+            for (size_t q = 0; q < d->params.size(); ++q) env = envValue(env, d->params[q].first, Dj->params[q]);
+            for (size_t q = 0; q < fills.size(); ++q) env = envValue(env, c.args[q].first, lineAt(fills[q], j));
+            for (size_t q = 0; q < c.dims.size(); ++q) env = envDim(env, c.dims[q], u0->dims[q]);
+            if (face) return {evalI(env, faceE), nullptr};
+            return {Formula::zero(), eval(env, term)};
+        };
+        VSys sys;
+        for (auto& [faceE, term] : c.boundary) {
+            Formula phiK = boundaryAt(Formula::zero(), faceE, term, true).first;
+            for (auto& F : facesOf(phiK)) {
+                V l = restrict(line, F);
+                Formula p = restrictFormula(phi, F);
+                sys.push_back({F, mkLine([&](const Formula& j) {
+                    Formula jj = j.neg();
+                    V shifted = mkLine([&](const Formula& i) { return lineAt(l, jj.join(i)); });
+                    V t = restrict(boundaryAt(jj, faceE, term, false).second, F);
+                    return transp(shifted, jj.join(p), t);
+                }), nullptr});
+            }
+        }
+        for (auto& F : facesOf(phi)) sys.push_back({F, constLine(restrict(u0, F)), nullptr});
+        return hcomp(D1, std::move(sys), moved);
     }
     if (u0->k == Val::K::HComp) {
         VSys s;

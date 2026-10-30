@@ -137,8 +137,9 @@ every composition side meets its base and sides agree where faces overlap;
 `transp` is checked constant where its formula holds; Glue clauses carry
 equivalences into the base. A path constructor whose boundary is built from
 constructors and the constructor's own arguments transports structurally;
-for other boundaries (set truncation's `squash0`) transport along a line of
-varying parameters is kept as a stuck term, never a wrong one.
+for any other boundary (set truncation's `squash0`, whose sides are paths
+among its arguments) transport adds the CHM18 correction, a composition from
+the boundary of the transported arguments to the transport of the boundary.
 
 ### 5. Surface syntax and integration
 
