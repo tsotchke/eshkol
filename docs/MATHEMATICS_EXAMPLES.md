@@ -16,7 +16,7 @@ sources:
 
 **49 programs**, each reproducing a published or classical result by computation. Exact finite constructions, bilinear/polynomial identity certificates, finite formal expansions and numerical comparisons have different scopes, stated per entry under **Arithmetic** and **Limits**.
 
-Measurement snapshot for these 49 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **39** completed in both modes; **38** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions), [Integral plus construction on a finite site](#mathematics-finite-site-sheafification), [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology), [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
+Measurement snapshot for these 49 programs at release SHA `60f345def` (Eshkol Compiler v1.3.6-evolve, Release build, macOS arm64, measured 2026-10-09) in native JIT and native AOT. **38** completed in both modes; **37** of those printed their own verdict `RESULT: ALL PASS` with `Failed: 0` in both modes, and the other 1 prints diagnostics or a receipt without a `RESULT:` line (status `RAN-OK`: exit 0, no runtime-error line; the entry quotes the output). **Not run:** [Exact a-posteriori linear solve admission](#mathematics-certified-linear-solve), [Maintained named-axis tensor contractions](#mathematics-dbsp-tensor-circuit), [Exact derivatives and finite changes of a bounded polynomial](#mathematics-derived-operator), [Finite categories and Kan extensions](#mathematics-finite-categories-kan-extensions), [Integral plus construction on a finite site](#mathematics-finite-site-sheafification), [Sheaf cohomology of finite spaces](#mathematics-finite-spaces-sheaf-cohomology), [Grothendieck constructions and homotopy colimits](#mathematics-homotopy-colimits-grothendieck), [Cyclotomic Reidemeister torsion of lens complexes](#mathematics-lens-spaces-reidemeister-torsion), [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic), [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan), [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) (the entry states why). Wall times measured with 6 programs running concurrently on a shared machine; CPU user/sys from wait4.
 
 Each entry gives: the published result being reproduced and its references; what the program computes and by which algorithm; the domain and parameters; the arithmetic and its scope; the checks the source asserts; the honest limits; and the measured outcome at the release SHA with the computed values that matter, quoted verbatim from the program's output. A reference marked *as cited in the program's source comments* is taken from the program header; *(citation unverified)* marks one whose bibliographic details could not be confirmed.
 
@@ -75,7 +75,7 @@ Registration is conditional on `ESHKOL_BUILD_TESTS AND TARGET eshkol-run`. Repea
 | [Similarity coordinates and fitted scale laws](#mathematics-navier-stokes-similarity-scales) | PASS / PASS | `ns_similarity_exponents_solved` |
 | [Admissible stress cone and profile tests](#mathematics-navier-stokes-stress-cone) | PASS / PASS | `ns_cone_condition_equivalence` |
 | [Viscosity rescaling of an AD residual](#mathematics-navier-stokes-viscosity-scaling) | PASS / PASS | `ns_viscosity_scaling_exact` |
-| [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic) | PASS / PASS | `cat_presheaf_topos_internal_logic` |
+| [Internal logic of finite presheaf categories](#mathematics-presheaf-topos-internal-logic) | NOT-RUN / NOT-RUN | `cat_presheaf_topos_internal_logic` |
 | [Sheafification, reflector and Kan descent](#mathematics-sheafification-descent-kan) | NOT-RUN / NOT-RUN | `cat_sheafification_descent_kan` |
 | [Torsors and nonabelian descent on finite spaces](#mathematics-stacks-nonabelian-descent) | PASS / PASS | `stacks_nonabelian_descent` |
 | [Exact cyclotomic Turaev–Viro state sums](#mathematics-turaev-viro-cyclotomic) | NOT-RUN / NOT-RUN | `tv_turaev_viro_cyclotomic` |
@@ -2006,7 +2006,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Internal logic of finite presheaf categories
 
-Source: [mathematics_presheaf_topos_internal_logic.esk](../examples/mathematics_presheaf_topos_internal_logic.esk#L1). SHA-256: `11fdc767fc44cda5f0be5a43a347e44463caa810b37d3634905d3c77110163b8`.
+Source: [mathematics_presheaf_topos_internal_logic.esk](../examples/mathematics_presheaf_topos_internal_logic.esk#L1). SHA-256: `770f6106aa41871135d58957317c385335a5d1ce18922c976e4cded3dd7edb9a`.
 
 **Published result:** In a presheaf topos Set^{C^op} the subobject classifier Ω assigns to c the set of sieves on c, exponentials are Y^X(c) = Hom(y(c) × X, Y), Ω is an internal Heyting algebra, and Lawvere–Tierney topologies correspond bijectively to Grothendieck topologies on C (Mac Lane–Moerdijk I.4, I.6, III.5, Theorem V.1.2). The program constructs each on small categories and checks the universal properties by counting both sides.
 
@@ -2018,7 +2018,7 @@ Source: [mathematics_presheaf_topos_internal_logic.esk](../examples/mathematics_
 
 **Purpose:** Construct classifiers, exponentials and local operators as finite data.
 
-**Implemented algorithm:** Enumerate sieves, subpresheaves and natural maps, construct exponentials and Heyting operations, and enumerate Grothendieck/Lawvere–Tierney topologies.
+**Implemented algorithm:** Build the categories and presheaves with core.sheaf; take Omega, products, exponentials, natural transformations, the Heyting operations and the Lawvere–Tierney topology of each site from core.topos; enumerate subpresheaves, Grothendieck topologies and all endomorphisms of Omega locally so each universal property is a count.
 
 **Domain and parameters:** Walking arrow, pseudocircle, commutative square and BZ/2; explicitly supplied finite presheaves.
 
@@ -2028,20 +2028,11 @@ Source: [mathematics_presheaf_topos_internal_logic.esk](../examples/mathematics_
 
 **Limits:** The complete walking-arrow local-operator enumeration certifies that finite case; broader universal-property statements are restricted to the constructed inputs/cited theory.
 
-**Prerequisites:** Built eshkol-run and stdlib; native JIT or AOT.
+**Prerequisites:** Built eshkol-run and stdlib, and the core.sheaf and core.topos modules from lib/ (ESHKOL_PATH); native JIT or AOT.
 
-**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): native JIT **PASS** (Passed: 9, Failed: 0; 4.92 s); native AOT **PASS** (Passed: 9, Failed: 0; compile 8.82 s, run 0.57 s). CTest: `cat_presheaf_topos_internal_logic_jit` Passed (10.6 s), `cat_presheaf_topos_internal_logic_aot` Passed (9.89 s). Verdict line: `RESULT: ALL PASS`.
+**Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now uses core.sheaf and core.topos and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Computed values (verbatim program output):
-
-```text
-  sizes of Omega(c): walking arrow, pseudocircle, square, BZ/2 = ((2 3) (2 2 5 5) (2 3 3 6) (2))
-  classifier check (sub-presheaves, Nat(X, Omega), all chi natural, pullback of true recovers A, chi injective): walking arrow, pseudocircle = ((18 18 #t #t #t) (19 19 #t #t #t))
-  Grothendieck topologies (count, all give LT topologies, distinct): walking arrow, pseudocircle, BZ/2 = ((4 #t #t) (16 #t #t) (2 #t #t))
-  walking arrow: all natural endomorphisms of Omega satisfying the Lawvere-Tierney axioms, by exhaustion = 4
-```
-
-Implementation/check anchors: [line 1](../examples/mathematics_presheaf_topos_internal_logic.esk#L1), [line 66](../examples/mathematics_presheaf_topos_internal_logic.esk#L66), [line 67](../examples/mathematics_presheaf_topos_internal_logic.esk#L67), [line 312](../examples/mathematics_presheaf_topos_internal_logic.esk#L312), [line 343](../examples/mathematics_presheaf_topos_internal_logic.esk#L343), [line 348](../examples/mathematics_presheaf_topos_internal_logic.esk#L348).
+Implementation/check anchors: [line 1](../examples/mathematics_presheaf_topos_internal_logic.esk#L1), [line 60](../examples/mathematics_presheaf_topos_internal_logic.esk#L60), [line 112](../examples/mathematics_presheaf_topos_internal_logic.esk#L112), [line 159](../examples/mathematics_presheaf_topos_internal_logic.esk#L159), [line 173](../examples/mathematics_presheaf_topos_internal_logic.esk#L173), [line 179](../examples/mathematics_presheaf_topos_internal_logic.esk#L179).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
