@@ -199,12 +199,14 @@ Term randomFormula(TermManager& tm, const std::vector<Term>& xs, Rng& rng, int d
                 rng.range(0, 2)};
         return mkAtom(tm, xs, at);
     }
-    switch (rng.range(0, 3)) {
-        case 0: return tm.mkAnd(randomFormula(tm, xs, rng, depth - 1), randomFormula(tm, xs, rng, depth - 1));
-        case 1: return tm.mkOr(randomFormula(tm, xs, rng, depth - 1), randomFormula(tm, xs, rng, depth - 1));
-        case 2: return tm.mkNot(randomFormula(tm, xs, rng, depth - 1));
-        default: return tm.mkImplies(randomFormula(tm, xs, rng, depth - 1), randomFormula(tm, xs, rng, depth - 1));
-    }
+    // Operands are drawn in sequence so every compiler builds the same corpus.
+    int op = rng.range(0, 3);
+    Term a = randomFormula(tm, xs, rng, depth - 1);
+    if (op == 2) return tm.mkNot(a);
+    Term b = randomFormula(tm, xs, rng, depth - 1);
+    if (op == 0) return tm.mkAnd(a, b);
+    if (op == 1) return tm.mkOr(a, b);
+    return tm.mkImplies(a, b);
 }
 
 void testPresburgerRandom(int n) {
@@ -256,7 +258,10 @@ Term conjunctive(TermManager& tm, Rng& rng, const std::function<Term()>& atom) {
     int k = rng.range(2, 5);
     for (int j = 0; j < k; ++j) {
         Term a = atom();
-        if (rng.range(0, 4) == 0) a = tm.mkOr(a, atom());
+        if (rng.range(0, 4) == 0) {
+            Term b = atom();
+            a = tm.mkOr(a, b);
+        }
         if (rng.range(0, 5) == 0) a = tm.mkNot(a);
         cs.push_back(a);
     }
@@ -276,8 +281,9 @@ void testUnboundedFamilies(int n) {
         if (family == 0) {
             vars = {tm.mkVar("x", Sort::Int), tm.mkVar("y", Sort::Int), tm.mkVar("z", Sort::Int)};
             atom = [&]() {
-                return relation(tm, linear(tm, vars, rng, 6), tm.mkInt(Integer(rng.range(-12, 12))),
-                                rng.range(0, 2));
+                Term lhs = linear(tm, vars, rng, 6);
+                Term rhs = tm.mkInt(Integer(rng.range(-12, 12)));
+                return relation(tm, lhs, rhs, rng.range(0, 2));
             };
         } else if (family == 1) {
             Term x = tm.mkVar("x", Sort::Int), y = tm.mkVar("y", Sort::Int);
@@ -293,17 +299,26 @@ void testUnboundedFamilies(int n) {
                 int pick = rng.range(0, 9);
                 if (pick == 0) return tm.mkEq(v, w);
                 if (pick == 1) return tm.mkEq(tm.mkApp("h", Sort::Obj, {v}), w);
-                std::vector<Term> two{pool[rng.range(0, 7)], pool[rng.range(0, 7)]};
-                return relation(tm, linear(tm, two, rng, 3), tm.mkInt(Integer(rng.range(-4, 4))),
-                                rng.range(0, 2));
+                Term p0 = pool[rng.range(0, 7)];
+                Term p1 = pool[rng.range(0, 7)];
+                std::vector<Term> two{p0, p1};
+                Term lhs = linear(tm, two, rng, 3);
+                Term rhs = tm.mkInt(Integer(rng.range(-4, 4)));
+                return relation(tm, lhs, rhs, rng.range(0, 2));
             };
         } else {
             vars = {tm.mkVar("n", Sort::Int), tm.mkVar("m", Sort::Int), tm.mkVar("r", Sort::Real),
                     tm.mkVar("s", Sort::Real)};
             atom = [&]() {
-                Term rhs = rng.range(0, 1) ? tm.mkInt(Integer(rng.range(-8, 8)))
-                                           : tm.mkReal(Rational(Integer(rng.range(-8, 8)), Integer(rng.range(1, 3))));
-                return relation(tm, linear(tm, vars, rng, 4), rhs, rng.range(0, 2));
+                Term rhs;
+                if (rng.range(0, 1)) {
+                    rhs = tm.mkInt(Integer(rng.range(-8, 8)));
+                } else {
+                    int n = rng.range(-8, 8), d = rng.range(1, 3);
+                    rhs = tm.mkReal(Rational(Integer(n), Integer(d)));
+                }
+                Term lhs = linear(tm, vars, rng, 4);
+                return relation(tm, lhs, rhs, rng.range(0, 2));
             };
         }
         Term phi = conjunctive(tm, rng, atom);
@@ -329,10 +344,16 @@ void testRationalEngines(int n) {
             LinearConstraint lc;
             for (uint32_t v = 0; v < 3; ++v) {
                 int a = rng.range(-4, 4);
-                if (a) lc.coeffs[v] = Rational(Integer(a), Integer(rng.range(1, 3)));
+                if (a) {
+                    int d = rng.range(1, 3);
+                    lc.coeffs[v] = Rational(Integer(a), Integer(d));
+                }
             }
-            lc.rhs = Rational(Integer(rng.range(-6, 6)), Integer(rng.range(1, 4)));
-            lc.rel = static_cast<Rel>(rng.range(0, 2) == 2 && rng.range(0, 2) == 0 ? 2 : rng.range(0, 1));
+            int rn = rng.range(-6, 6), rd = rng.range(1, 4);
+            lc.rhs = Rational(Integer(rn), Integer(rd));
+            bool eq = rng.range(0, 2) == 2 && rng.range(0, 2) == 0;
+            int strict = rng.range(0, 1);
+            lc.rel = static_cast<Rel>(eq ? 2 : strict);
             cs.push_back(std::move(lc));
         }
         std::vector<bool> is_int(3, false);
