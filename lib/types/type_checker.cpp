@@ -6,6 +6,7 @@
 #include "../core/taylor_opcodes.h"
 #include "eshkol/types/type_checker.h"
 #include <eshkol/frontend/ast_strings.h>
+#include <eshkol/frontend/differentiation_graph.h>
 #include <eshkol/frontend/syntax_color.h>
 #include "eshkol/types/type_relation.h"
 #include "../../lib/core/arena_memory.h"
@@ -1782,6 +1783,20 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
     // If we have no function expression, return Value
     if (!func_expr) {
         co_return TypeCheckResult::ok(BuiltinTypes::Value);
+    }
+
+    // A compiler region is not an ordinary call to its marker spelling.
+    // The graph pass owns admission of the function and synthetic helpers;
+    // only the caller's point is an expression evaluated by this wrapper.
+    if (func_expr->type == ESHKOL_VAR &&
+        (func_expr->node_id == eshkol::frontend::differentiation_gateway_node ||
+         func_expr->node_id == eshkol::frontend::differentiation_incremental_gateway_node)) {
+        if (call.num_vars >= 2 && call.variables) {
+            auto point = (co_await synthesizeTask(&call.variables[1]));
+            if (!point.success) co_return point;
+        }
+        co_return TypeCheckResult::ok(func_expr->node_id == eshkol::frontend::differentiation_gateway_node
+            ? BuiltinTypes::Value : BuiltinTypes::Function);
     }
 
     std::string builtin_name;
