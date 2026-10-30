@@ -2511,6 +2511,17 @@ oracles:
         severity: high
         label: 'Dependent type enforcement (ADR-0042): bidirectional checking (the tail rule; lambdas checked against expected signatures; applications, let, define, declarations, the), Pi and Sigma types, universe levels, length-indexed vectors and define-type families, definitional equality by normalization; every positive fixture compiles under --types=strict and runs, every negative fixture is refused with its diagnostic, and the bytecode VM refuses and runs the same programs as the native engine'
         action: ./scripts/run_dependent_types_gate.sh
+      # Structural types (ADR-0046). Producer: scripts/run_structural_types_gate.sh
+      # runs structural_types_test and types_ext_gate; PASS only when both ran
+      # and passed.
+      - id: v19_structural_types
+        runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_structural_types"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Structural types (ADR-0046): row-polymorphic records with principal types and width subtyping, predicative arbitrary-rank polymorphism with skolem escape (runST encapsulation), binary session types with duality, recursion and exactly-once endpoints over local channels and TCP; positives run on JIT and AOT (records and rank also on the VM) with their principal types, every negative is refused by JIT, AOT and the bytecode VM'
+        action: ./scripts/run_structural_types_gate.sh
 
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
