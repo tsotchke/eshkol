@@ -1,8 +1,8 @@
 {
   "schema": "eshkol.example-test-matrix.v1",
   "authored_condition": "ESHKOL_BUILD_TESTS AND TARGET eshkol-run",
-  "programs": 86,
-  "mathematics_programs": 49,
+  "programs": 87,
+  "mathematics_programs": 50,
   "families": {
     "ESHKOL_NS_EXAMPLES": {
       "criteria": 14,
@@ -124,9 +124,9 @@
       ]
     },
     "ESHKOL_IPM_EXAMPLES": {
-      "criteria": 29,
-      "distinct_sources": 29,
-      "ctest_entries": 58,
+      "criteria": 30,
+      "distinct_sources": 30,
+      "ctest_entries": 60,
       "rows": [
         {
           "criterion": "ipm_velocity_expansion_closes",
@@ -359,6 +359,14 @@
             "jit",
             "aot"
           ]
+        },
+        {
+          "criterion": "rings_functor_of_points",
+          "source": "examples/mathematics_functor_of_points.esk",
+          "modes": [
+            "jit",
+            "aot"
+          ]
         }
       ]
     },
@@ -428,7 +436,7 @@
   "general_runner": {
     "discovery": "examples/*.esk",
     "mode": "aot",
-    "flat_programs": 85,
+    "flat_programs": 86,
     "quantum_sources": [
       "examples/vqe_h2.esk",
       "examples/h2_vibrational_quantum.esk",
