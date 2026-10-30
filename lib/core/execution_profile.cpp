@@ -244,4 +244,79 @@ Resolution resolve(const Selection& selection) {
     return resolved;
 }
 
+namespace {
+
+// Feature strings mirror what clang selects for the same -mcpu/-march/-mabi,
+// so objects built by eshkol-run and by clang for the freestanding runtime
+// subset (lib/platform/embedded) link without attribute or ABI mismatches.
+constexpr const char* kCortexM4SoftFeatures =
+    "+soft-float,+soft-float-abi,+dsp,+hwdiv,-fpregs,-vfp2,-vfp2sp,-vfp3,"
+    "-vfp3d16,-vfp3d16sp,-vfp3sp,-fp16,-vfp4,-vfp4d16,-vfp4d16sp,-vfp4sp,"
+    "-fp-armv8,-fp-armv8d16,-fp-armv8d16sp,-fp-armv8sp,-fullfp16,-fp64,-d32,"
+    "-neon,-mve,-mve.fp";
+constexpr const char* kCortexM4HardFeatures =
+    "+dsp,+hwdiv,+vfp2sp,+vfp3d16sp,+fp16,+vfp4d16sp,-fp64,-d32,-neon,-mve,-mve.fp";
+constexpr const char* kAArch64Features = "+v8a,+fp-armv8,+neon";
+constexpr const char* kRv32imacFeatures = "+m,+a,+c,+zmmul,+zaamo,+zalrsc,+zca,+relax";
+constexpr const char* kRv64imacFeatures = "+m,+a,+c,+zmmul,+zaamo,+zalrsc,+zca,+relax";
+constexpr const char* kRv64gcFeatures =
+    "+m,+a,+f,+d,+c,+zicsr,+zifencei,+zmmul,+zaamo,+zalrsc,+zca,+zcd,+relax";
+
+constexpr std::array<EmbeddedTarget, 12> kEmbeddedTargets = {{
+    // ARM Cortex-M4 (ARMv7E-M, Thumb-2), software floating point.
+    {"thumbv7em-none-eabi", "thumbv7em-unknown-none-eabi", "cortex-m4",
+     kCortexM4SoftFeatures, "aapcs", FloatAbi::Soft, CodeModel::Default, "armv7e-m"},
+    {"thumbv7em-unknown-none-eabi", "thumbv7em-unknown-none-eabi", "cortex-m4",
+     kCortexM4SoftFeatures, "aapcs", FloatAbi::Soft, CodeModel::Default, "armv7e-m"},
+    // ARM Cortex-M4F: single-precision FPv4-SP-D16, hard-float calling convention.
+    {"thumbv7em-none-eabihf", "thumbv7em-unknown-none-eabihf", "cortex-m4",
+     kCortexM4HardFeatures, "aapcs", FloatAbi::Hard, CodeModel::Default, "armv7e-m+fpv4-sp-d16"},
+    {"thumbv7em-unknown-none-eabihf", "thumbv7em-unknown-none-eabihf", "cortex-m4",
+     kCortexM4HardFeatures, "aapcs", FloatAbi::Hard, CodeModel::Default, "armv7e-m+fpv4-sp-d16"},
+    // AArch64 bare metal (ARMv8-A application profile, AAPCS64).
+    {"aarch64-unknown-none", "aarch64-unknown-none-elf", "generic",
+     kAArch64Features, "", FloatAbi::Default, CodeModel::Default, "armv8-a"},
+    {"aarch64-unknown-none-elf", "aarch64-unknown-none-elf", "generic",
+     kAArch64Features, "", FloatAbi::Default, CodeModel::Default, "armv8-a"},
+    {"aarch64-none-elf", "aarch64-unknown-none-elf", "generic",
+     kAArch64Features, "", FloatAbi::Default, CodeModel::Default, "armv8-a"},
+    // RISC-V 32-bit microcontroller profile: RV32IMAC, soft-float ilp32.
+    {"riscv32imac-unknown-none-elf", "riscv32-unknown-none-elf", "generic-rv32",
+     kRv32imacFeatures, "ilp32", FloatAbi::Default, CodeModel::Default, "rv32imac"},
+    {"riscv32-unknown-none-elf", "riscv32-unknown-none-elf", "generic-rv32",
+     kRv32imacFeatures, "ilp32", FloatAbi::Default, CodeModel::Default, "rv32imac"},
+    // RISC-V 64-bit application profile: RV64GC, double-float lp64d.
+    {"riscv64gc-unknown-none-elf", "riscv64-unknown-none-elf", "generic-rv64",
+     kRv64gcFeatures, "lp64d", FloatAbi::Default, CodeModel::Medium, "rv64gc"},
+    {"riscv64-unknown-none-elf", "riscv64-unknown-none-elf", "generic-rv64",
+     kRv64gcFeatures, "lp64d", FloatAbi::Default, CodeModel::Medium, "rv64gc"},
+    // RISC-V 64-bit without hardware floating point: RV64IMAC, lp64.
+    {"riscv64imac-unknown-none-elf", "riscv64-unknown-none-elf", "generic-rv64",
+     kRv64imacFeatures, "lp64", FloatAbi::Default, CodeModel::Medium, "rv64imac"},
+}};
+
+}  // namespace
+
+/** Look up the bare-metal target description for a --target spelling. */
+const EmbeddedTarget* find_embedded_target(std::string_view triple) {
+    for (const auto& target : kEmbeddedTargets) {
+        if (triple == target.name) {
+            return &target;
+        }
+    }
+    return nullptr;
+}
+
+/** Comma-separated list of every --target spelling in the embedded table. */
+std::string embedded_target_names() {
+    std::string names;
+    for (size_t i = 0; i < kEmbeddedTargets.size(); ++i) {
+        if (i > 0) {
+            names += ", ";
+        }
+        names += kEmbeddedTargets[i].name;
+    }
+    return names;
+}
+
 }  // namespace eshkol::profile

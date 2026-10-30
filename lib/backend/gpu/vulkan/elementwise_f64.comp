@@ -1,0 +1,42 @@
+// Elementwise f64 kernel for the Vulkan compute backend (gpu_vulkan.c).
+//
+// Each expression mirrors the CPU reference in eshkol_gpu_elementwise_f64
+// literally (same operand order, same comparisons), so a device whose f64
+// arithmetic is IEEE-754 round-to-nearest produces bit-identical results.
+// `precise` forbids contraction into fused multiply-add.
+// Op codes are EshkolElementwiseOp; the host only dispatches the codes below.
+#version 450
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InA { double a[]; };
+layout(std430, set = 0, binding = 1) readonly buffer InB { double b[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer Out { double o[]; };
+
+layout(push_constant) uniform Params {
+    double ident;   // right operand when there is no b buffer (0 or 1)
+    uint n;
+    uint op;
+    uint has_b;
+} p;
+
+void main() {
+    uint idx = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 256u
+             + gl_LocalInvocationID.x;
+    if (idx >= p.n) return;
+    double x = a[idx];
+    double y = (p.has_b != 0u) ? b[idx] : p.ident;
+    precise double r;
+    switch (p.op) {
+        case 0u:  r = x + y; break;                       // ADD
+        case 1u:  r = x - y; break;                       // SUB
+        case 2u:  r = x * y; break;                       // MUL
+        case 3u:  r = x / y; break;                       // DIV
+        case 4u:  r = -x; break;                          // NEG
+        case 5u:  r = (x < 0.0LF) ? -x : x; break;        // ABS
+        case 11u: r = (x > 0.0LF) ? x : 0.0LF; break;     // RELU
+        case 13u: r = sqrt(x); break;                     // SQRT
+        case 14u: r = 1.0LF / x; break;                   // RECIPROCAL
+        default:  r = x; break;
+    }
+    o[idx] = r;
+}

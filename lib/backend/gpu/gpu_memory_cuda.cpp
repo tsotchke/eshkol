@@ -5,6 +5,12 @@
  * This file is a CUDA-only extraction of the unified gpu_memory.mm,
  * compiled as standard C++ (not Objective-C++) for non-Apple platforms.
  *
+ * With ESHKOL_GPU_VULKAN_ENABLED the Vulkan compute backend (gpu_vulkan.c) is
+ * the second device backend of this file: it becomes active when no CUDA
+ * device initialises, or when ESHKOL_GPU_BACKEND=vulkan asks for it. Every
+ * CUDA path below is gated on g_active_backend == ESHKOL_GPU_CUDA, so Vulkan
+ * buffers only ever reach the eshkol_vk_* calls or the CPU code on host_ptr.
+ *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
  */
@@ -12,6 +18,10 @@
 #include "eshkol/backend/gpu/gpu_memory.h"
 #include <eshkol/logger.h>
 #include "cublas_loader.h"
+#include "gpu_backend_request.h"
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+#include "gpu_vulkan.h"
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -113,6 +123,12 @@ size_t g_gpu_threshold = 100000;
 static EshkolGPUBackend g_active_backend = ESHKOL_GPU_NONE;
 static std::atomic<bool> g_gpu_initialized{false};
 static std::mutex g_gpu_init_mutex;
+
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+static inline bool is_vk(const EshkolGPUBuffer* b) {
+    return b && b->backend == ESHKOL_GPU_VULKAN;
+}
+#endif
 
 // ============================================================================
 // CUDA Backend
@@ -953,12 +969,34 @@ int eshkol_gpu_init(void) {
         if (val > 0) g_gpu_threshold = val;
     }
 
+    // ESHKOL_GPU_BACKEND=cpu|cuda|vulkan narrows the choice; default is CUDA,
+    // then Vulkan (GPU-type devices only) when no CUDA device initialises.
+    const EshkolGPURequest req = eshkol_gpu_backend_request();
+    (void)req;
+
 #if ESHKOL_GPU_CUDA_AVAILABLE
-    if (cuda_init() == 0) {
+    const bool try_cuda = req == ESHKOL_GPU_REQUEST_AUTO || req == ESHKOL_GPU_REQUEST_CUDA;
+    if (try_cuda && cuda_init() == 0) {
         g_active_backend = ESHKOL_GPU_CUDA;
         g_gpu_initialized.store(true, std::memory_order_release);
         eshkol_info("GPU initialized: NVIDIA CUDA");
         return 1;
+    }
+#endif
+
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (req == ESHKOL_GPU_REQUEST_AUTO || req == ESHKOL_GPU_REQUEST_VULKAN) {
+        const unsigned flags = (req == ESHKOL_GPU_REQUEST_VULKAN) ? ESHKOL_VK_ALLOW_CPU_DEVICE : 0u;
+        if (eshkol_vk_init(flags)) {
+            g_active_backend = ESHKOL_GPU_VULKAN;
+            g_gpu_initialized.store(true, std::memory_order_release);
+            eshkol_info("GPU initialized: Vulkan compute (%s)", eshkol_vk_device_name());
+            return 1;
+        }
+        if (req == ESHKOL_GPU_REQUEST_VULKAN) {
+            eshkol_warn("ESHKOL_GPU_BACKEND=vulkan: no usable Vulkan device (%s); using CPU",
+                        eshkol_vk_status());
+        }
     }
 #endif
 
@@ -975,6 +1013,11 @@ void eshkol_gpu_shutdown(void) {
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (g_active_backend == ESHKOL_GPU_CUDA) {
         cuda_shutdown();
+    }
+#endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (g_active_backend == ESHKOL_GPU_VULKAN) {
+        eshkol_vk_shutdown();
     }
 #endif
 
@@ -1008,8 +1051,10 @@ int eshkol_gpu_backend_available(EshkolGPUBackend backend) {
 
 /** @brief True if the active backend is CUDA (which supports f64 on all modern GPUs). */
 int eshkol_gpu_supports_f64(void) {
-    // CUDA supports f64 on all modern GPUs
-    return (g_active_backend == ESHKOL_GPU_CUDA) ? 1 : 0;
+    // CUDA supports f64 on all modern GPUs; a Vulkan device is only selected
+    // when it has shaderFloat64.
+    return (g_active_backend == ESHKOL_GPU_CUDA ||
+            g_active_backend == ESHKOL_GPU_VULKAN) ? 1 : 0;
 }
 
 /** @brief Alias for eshkol_gpu_supports_f64(). */
@@ -1028,6 +1073,11 @@ int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuff
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (g_active_backend == ESHKOL_GPU_CUDA) {
         return cuda_alloc(size_bytes, mem_type, out_buffer);
+    }
+#endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (g_active_backend == ESHKOL_GPU_VULKAN) {
+        return eshkol_vk_alloc(size_bytes, out_buffer) == ESHKOL_VK_OK ? 0 : -1;
     }
 #endif
 
@@ -1063,6 +1113,12 @@ void eshkol_gpu_free(EshkolGPUBuffer* buffer) {
         return;
     }
 #endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(buffer)) {
+        eshkol_vk_free(buffer);
+        return;
+    }
+#endif
 
     if (buffer->host_ptr && !(buffer->flags & 1)) {
         free(buffer->host_ptr);
@@ -1081,6 +1137,11 @@ int eshkol_gpu_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (g_active_backend == ESHKOL_GPU_CUDA) {
         return cuda_wrap_host(host_ptr, size_bytes, out_buffer);
+    }
+#endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (g_active_backend == ESHKOL_GPU_VULKAN) {
+        return eshkol_vk_wrap_host(host_ptr, size_bytes, out_buffer) == ESHKOL_VK_OK ? 0 : -1;
     }
 #endif
 
@@ -1102,6 +1163,11 @@ int eshkol_gpu_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (buffer->backend == ESHKOL_GPU_CUDA) {
         return cuda_sync(buffer, direction);
+    }
+#endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(buffer)) {
+        return eshkol_vk_sync(buffer, direction) == ESHKOL_VK_OK ? 0 : -1;
     }
 #endif
 
@@ -1140,6 +1206,15 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
         return cuda_matmul_f64(A, B, C, M, K, N);
     }
 #endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(A) && is_vk(B) && is_vk(C) &&
+        eshkol_vk_matmul_f64(A, B, C, M, K, N) == ESHKOL_VK_OK) {
+        GPU_LOG("matmul %llux%llu @ %llux%llu -> Vulkan",
+                (unsigned long long)M, (unsigned long long)K,
+                (unsigned long long)K, (unsigned long long)N);
+        return 0;
+    }
+#endif
 
     GPU_LOG("matmul %llux%llu @ %llux%llu -> CPU",
             (unsigned long long)M, (unsigned long long)K,
@@ -1160,6 +1235,12 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (g_active_backend == ESHKOL_GPU_CUDA) {
         return cuda_matmul_f32(A, B, C, M, K, N);
+    }
+#endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(A) && is_vk(B) && is_vk(C) &&
+        eshkol_vk_matmul_f32(A, B, C, M, K, N) == ESHKOL_VK_OK) {
+        return 0;
     }
 #endif
 
@@ -1300,6 +1381,13 @@ int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
         if (result == 0) return 0;
     }
 #endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(a) && is_vk(out) && (!b || is_vk(b)) &&
+        eshkol_vk_elementwise_f64(a, b, out, n, op) == ESHKOL_VK_OK) {
+        GPU_LOG("elementwise op=%d n=%llu → Vulkan", (int)op, (unsigned long long)n);
+        return 0;
+    }
+#endif
 
     GPU_LOG("elementwise op=%d n=%llu → CPU", (int)op, (unsigned long long)n);
     // CPU fallback
@@ -1347,6 +1435,12 @@ int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
             GPU_LOG("reduce op=%d n=%llu → CUDA kernel", (int)op, (unsigned long long)n);
             return 0;
         }
+    }
+#endif
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(in) && is_vk(out) && eshkol_vk_reduce_f64(in, out, n, op) == ESHKOL_VK_OK) {
+        GPU_LOG("reduce op=%d n=%llu → Vulkan", (int)op, (unsigned long long)n);
+        return 0;
     }
 #endif
 
