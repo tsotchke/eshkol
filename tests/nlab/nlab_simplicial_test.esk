@@ -13,7 +13,6 @@
 (require stdlib)
 (require core.ring)
 (require core.sheaf.site)
-(require core.category)
 (require core.simplicial)
 (require core.homological)
 
@@ -30,6 +29,23 @@
 (define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
 (define (count p xs) (length (filter p xs)))
 (define (binomial n k) (if (or (< k 0) (> k n)) 0 (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (/ (* acc (- n i)) (+ i 1)))))))
+;; finite categories on core.sheaf.site (the nerve here is core.simplicial's)
+(define (chain-category n) (poset-category n (lambda (x y) (<= x y))))
+(define span-cat (poset-category 3 (lambda (x y) (or (= x y) (= x 0)))))          ;; 1 <- 0 -> 2
+(define square-cat (poset-category 4 (lambda (x y) (or (= x y) (= x 0) (= y 3))))) ;; 0 -> 1, 2 -> 3, commuting
+(define (cyclic-cat n) (make-category-from-presentation 1 (list (list 0 0 's))
+                                                        (lambda (w) (let loop ((k (remainder (length w) n)) (acc '())) (if (= k 0) acc (loop (- k 1) (cons 0 acc)))))
+                                                        n))
+(define iso-cat (make-category-from-presentation 2 (list (list 0 1 'f) (list 1 0 'g))
+                                                 (lambda (w) (let loop ((w w)) (cond ((or (null? w) (null? (cdr w))) w) ((not (= (car w) (cadr w))) (loop (cddr w))) (else w))))
+                                                 2))
+(define idempotent-cat (make-category-from-presentation 1 (list (list 0 0 'e)) (lambda (w) (if (null? w) '() (list 0))) 2)) ;; {1, e}, e e = e
+(define (groupoid? C)
+  (all? (lambda (f) (any? (lambda (g) (and (eqv? (category-compose C g f) (category-identity C (arrow-source C f)))
+                                           (eqv? (category-compose C f g) (category-identity C (arrow-target C f)))))
+                          (category-hom C (arrow-target C f) (arrow-source C f))))
+        (range (category-arrow-count C))))
+
 (define F2 (make-zmod 2))
 (define (zero-vector? v) (all? (lambda (x) (= x 0)) (vector->list v)))
 (define (vadd R u v) (coefficient-vector-add R u v))
@@ -52,7 +68,7 @@
          (all? (lambda (r) (= (caddr r) (binomial (+ (car r) (cadr r) 1) (+ (cadr r) 1)))) rows)))
 ;; [simplicial set#2] face maps d_i and degeneracy maps s_i "such that these
 ;; functions satisfy the simplicial identities"
-(let* ((X (list (standard-simplex 3) (simplex-boundary 3) (horn 3 1) BZ3 (category-nerve (span-category))))
+(let* ((X (list (standard-simplex 3) (simplex-boundary 3) (horn 3 1) BZ3 (finite-category-nerve span-cat)))
        (v (map (lambda (Y) (length (simplicial-set-identity-violations Y 3))) X)))
   (claim "simplicial set" 2 "simplicial-identity violations through degree 3 for Delta[3], its boundary, a horn, BZ/3, the nerve of a span" v
          (all? (lambda (n) (= n 0)) v)))
@@ -66,17 +82,16 @@
   (claim "Kan complex" 1 "Kan through degree 3: (BZ/3, Delta[1], boundary of Delta[2])" v (equal? v '(#t #f #f))))
 ;; [nerve#3] "The nerve N(C) of a small category is a Kan complex precisely if
 ;; C is a groupoid"
-(let* ((cats (list (cons "BZ2" (cyclic-group-category 2)) (cons "iso" (category-full-subcategory (category-product (cyclic-group-category 1) (cyclic-group-category 1)) '(0)))
-                   (cons "discrete2" (discrete-category 2)) (cons "arrow" (walking-arrow-category)) (cons "span" (span-category))
-                   (cons "BZ3 monoid" (monoid-category 2 (lambda (g f) (if (or (= g 1) (= f 1)) 1 0)) 0))))
-       (rows (map (lambda (p) (list (car p) (category-groupoid? (cdr p)) (kan-complex-through? (category-nerve (cdr p)) 3))) cats)))
+(let* ((cats (list (cons "BZ2" (cyclic-cat 2)) (cons "iso" iso-cat) (cons "discrete2" (poset-category 2 (lambda (x y) (= x y))))
+                   (cons "arrow" (chain-category 2)) (cons "span" span-cat) (cons "idempotent monoid" idempotent-cat)))
+       (rows (map (lambda (p) (list (car p) (groupoid? (cdr p)) (kan-complex-through? (finite-category-nerve (cdr p)) 3))) cats)))
   (claim "nerve" 3 "(category, groupoid?, nerve Kan through degree 3?)" rows (all? (lambda (r) (eq? (cadr r) (caddr r))) rows)))
 ;; [nerve#4] "A simplicial set is the nerve of a small category precisely if all
 ;; inner horns have unique fillers": nerves have exactly one filler for every
 ;; inner horn in degrees 2 and 3; the boundary of Delta[2] has an inner horn with none
 (let* ((inner (lambda (Y n) (filter (lambda (r) (and (> (car r) 0) (< (car r) n))) (horn-filler-report Y n))))
        (unique? (lambda (Y) (all? (lambda (n) (all? (lambda (r) (and (= 1 (caddr r)) (= 1 (cadddr r)))) (inner Y n))) '(2 3))))
-       (nerves (map category-nerve (list (walking-arrow-category) (span-category) (commutative-square-category) (cyclic-group-category 2))))
+       (nerves (map finite-category-nerve (list (chain-category 2) span-cat square-cat (cyclic-cat 2))))
        (sphere (inner (simplex-boundary 2) 2)))
   (claim "nerve" 4 "(inner horns of four nerves uniquely filled?, inner-horn report of the boundary of Delta[2])"
          (list (map unique? nerves) sphere)
