@@ -906,22 +906,30 @@ workflow (ADR-0007 Phase 1).
 - [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
 - [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through)
 - [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors
-- [ ] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
+- [x] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
       angular means, evaluation at a phase map with full chain-rule
       propagation, support-disjointness bookkeeping, and the inverse of a
-      directional derivative on the zero-mean subspace
-- [ ] Directed-rounding interval arithmetic becomes the default under
+      directional derivative on the zero-mean subspace. `core.torus`
+      (ADR-0050): exact on trigonometric polynomials, enclosure-bounded
+      means for other fields; see
+      [rigorous numerics](docs/reference/stdlib/rigorous_numerics.md)
+- [x] Directed-rounding interval arithmetic becomes the default under
       `core.ad.interval`. **Partially SHIPPED in v1.3.5-evolve:** `fl-next-up`
       and `fl-next-down` carry `nextafter` into both engines, and
       `core.ad.rigorous_interval` / `core.ad.rigorous_taylor_models` are sound
-      by construction behind an explicit `rigorous?` flag. Remaining: make that
-      the default path, retiring the outward relative-epsilon widening the
-      validated modules still use
-- [ ] Rigorous compact-set bounds: supremum/infimum over a parameter box with
+      by construction behind an explicit `rigorous?` flag. In v1.5.0 (ADR-0050)
+      that is the default path: every `core.ad.interval` operation is
+      directed-rounding with no flag (the `rigorous?` argument is accepted and
+      has no further effect), the relative-epsilon widening is retired, and
+      `taylor-model` rounds its remainder upward from exact arithmetic
+- [x] Rigorous compact-set bounds: supremum/infimum over a parameter box with
       adaptive subdivision on top of directed rounding and the Taylor models, so
       a compactness constant is produced rather than asserted. All three items
       are used step by step in
-      [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+      [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md).
+      `core.ad.compact_bounds` (ADR-0050): `box-sup`, `box-inf`,
+      `box-certify-bound` by branch and bound with mean-value enclosures and
+      monotonicity pruning from interval gradients
 - [ ] Assurance: A6 + A8 full race matrix; SymPy oracle becomes a release
       gate; machine-checked-invariants ramp begins (Taylor-tower semantics
       proof sketch)
@@ -966,7 +974,10 @@ below.
 - [ ] Interval and Taylor-model tensor element types differentiable by the same
       operators (composing the shipped tensor towers with the shipped Taylor
       models), plus graded coefficient classes whose product and derivative
-      rules hold by construction
+      rules hold by construction. **Element types built ahead of this rung
+      (ADR-0050):** `core.ad.interval_tensor` tensors with interval, interval-jet
+      and Taylor-model entries, differentiated by the native AD operators and
+      by interval jets. Graded coefficient classes are planned for v1.6.0
 - [ ] Incremental knowledge-base evaluation for search over ansatz families:
       an ansatz family as a query whose answer updates incrementally as
       constraints are added, on the DBSP spine. Both items are used step by

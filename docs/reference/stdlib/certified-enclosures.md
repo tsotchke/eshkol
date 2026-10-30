@@ -3,14 +3,16 @@
 **Sources**: [`lib/backend/llvm_codegen.cpp`](../../../lib/backend/llvm_codegen.cpp) (`codegenNextafter`), [`lib/backend/vm_native.c`](../../../lib/backend/vm_native.c) (native ids 2228/2229), [`lib/core/ad/rigorous_interval.esk`](../../../lib/core/ad/rigorous_interval.esk), [`lib/core/ad/rigorous_taylor_models.esk`](../../../lib/core/ad/rigorous_taylor_models.esk)
 **Require**: `(require core.ad.taylor_models)` (re-exports the whole family); `fl-next-up`/`fl-next-down` are runtime builtins, always available with no require
 
-This is the **rigorous** (proof-backed) layer beneath the existing
-**validated** [`core.ad.interval`](interval.md-equivalent) and
-`core.ad.taylor_models` (epsilon-widening and sampled-remainder
-approximations — see those files' own header comments). Every enclosure
-described here is a proof: given operand intervals that soundly contain
-their true real values, the result interval provably contains the true
-real result. The validated modules are **completely unchanged by
-default** — this document is additive.
+This is the **rigorous** (proof-backed) layer of Eshkol's interval
+arithmetic. Since v1.5.0 ([ADR-0050](../../design/adr/0050-rigorous-numerics.md))
+it is the **default** of `core.ad.interval`: every `interval-*` operation
+evaluates through `core.ad.rigorous_interval` with directed rounding and
+no flag. Every enclosure described here is a proof: given operand
+intervals that soundly contain their true real values, the result interval
+provably contains the true real result. Interval Taylor jets, certified
+sup/inf over parameter boxes, torus averaging and interval / Taylor-model
+element tensors build on this layer and are described in
+[rigorous_numerics.md](rigorous_numerics.md).
 
 ## 1. Directed rounding primitives (runtime)
 
@@ -194,14 +196,13 @@ into one constructor without one of them lying about what it proved).
 - `(tm-integrate tm)` — exact term-by-term (`c_n -> c_n/(n+1)`, exact
   when `c_n` is exact), tail bound `\|t\| · sup\|f-P\|` via `ia*` on
   `[-r,r]`.
-- `(tm-deriv tm)` — **not** naive term-by-term differentiation of the
-  bound (a magnitude bound does not bound a slope). Uses Cauchy's
-  integral estimate instead: if `\|f(z)-P(z)\| <= R` on the complex disk
-  `\|z-center\| <= r` (true for our remainders — entire for exp/sin/cos,
-  and for log/sqrt the domain guard `lo>0` already keeps that disk away
-  from the branch point at 0), then `\|f'(z)-P'(z)\| <= R/(r-r')` for
-  `\|z-center\| <= r' < r`. Fixed at `r'=r/2`: the returned model's
-  **domain radius halves**, a known and accepted cost of this technique.
+- `(tm-deriv tm)` — differentiates a model whose remainder is exactly
+  `[0,0]` (a polynomial model, such as `tm-integrate` of a polynomial)
+  exactly, on the same domain. A model with a nonzero remainder is refused:
+  a real-domain remainder bounds values, not slopes, and is not a bound on a
+  complex disk, so no derivative remainder follows from the model alone. Use
+  `interval-derivative-n` (`core.ad.interval_jet`) for a derivative
+  enclosure. Coefficients of rigorous models are held exactly.
 - `(tm-bound tm)` — the certified enclosure (errors on a non-rigorous
   `tm`).
 - `(tm-enclose f x0 r k)` = `(f (tm-var x0 r k))` — the general entry
@@ -253,21 +254,30 @@ Makino-Berz product's tail convolution is identically zero and the model
 is **exact** (`tm-remainder` is `(0 . 0)`) — the tightest possible case,
 and a convincing negative/positive control for the whole feature.
 
-## 4. `rigorous?` on the validated modules
+## 4. `core.ad.interval` uses this layer by default
 
 `core.ad.interval`'s `interval-add`/`interval-sub`/`interval-mul`/
 `interval-div`/`interval-exp`/`interval-log`/`interval-sin`/
-`interval-cos` each take an **optional trailing boolean** (a dotted
-rest-arg, so every existing call site is unaffected): `(interval-add a
-b)` is byte-for-byte the original epsilon-widening body; `(interval-add
-a b #t)` instead routes to `ia+`. `core.ad.interval` requires
-`core.ad.rigorous_interval` (a leaf module — it requires nothing back),
-so there is no require cycle.
+`interval-cos`/`interval-sqrt`/`interval-atan`/`interval-pow` are the
+directed-rounding operations of this document. The optional trailing
+`rigorous?` argument is still accepted, so existing call sites compile
+unchanged, and has no further effect. `iv-eps`, `iv-rel-pad` and
+`iv-abs-pad` remain exported as named binary64 constants; no operation
+widens by them. Exact endpoints stay exact (`(interval-mul (cons 1/3 1/2)
+(cons -2 3))` is `(-1 . 3/2)`), even powers of a sign-straddling interval
+start at 0, and `interval-sqrt` of an exact perfect square is exact.
 
-`core.ad.taylor_models` requires `core.ad.rigorous_taylor_models` purely
-to re-export the whole rigorous family from one require site;
-`taylor-model`/`tm-add`/`tm-mul`/`tm-range`/`tm-eval` are not modified at
-all.
+Elementary functions on wide intervals: exp, log and atan are monotone and
+are enclosed endpoint by endpoint (any width is accepted); sin and cos take
+the hull of the endpoint values and every extremum whose rigorous location
+`c + 2kπ` may lie in the interval, intersected with `[-1, 1]`; an argument
+interval at least 7 wide gives `[-1, 1]`. Remainder magnitudes are exact
+rationals rounded upward once (`ia-exact-up`).
+
+`core.ad.taylor_models`'s `taylor-model` rounds its remainder magnitude
+upward from exact arithmetic (no epsilon pad); its derivative bound is still
+the sampled estimate documented in that module. For a remainder proven over
+the whole domain use `taylor-model-certified` (`core.ad.interval_jet`).
 
 ## 5. VM-only defects routed around (not fixed)
 
