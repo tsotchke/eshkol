@@ -110,7 +110,7 @@
                                              (abs (- (vector-ref cv x) (maxcut-value g (map (lambda (q) (qstate-bit n x q)) (range n)))))))
                                       (range (expt 2 n))))))
                   (list triangle ring4 k4 prism weighted4 wrand5 wrand6))))
-(display "qaoa: Pauli form vs cut value, max error over every basis state: ") (display (sci pauli-err)) (newline)
+(display "qaoa: Pauli form vs cut value, max deviation over every basis state: ") (display (sci pauli-err)) (newline)
 (check "sum coef <P> equals the cut value on every basis state of seven graphs" (< pauli-err 1e-12))
 
 ;; ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@
 (define err-unweighted (apply max (map (lambda (g) (closed-form-error g qaoa-p1-unweighted-expectation)) unweighted-graphs)))
 (define err-ising-u (apply max (map (lambda (g) (closed-form-error g qaoa-p1-ising-expectation)) unweighted-graphs)))
 (define err-ising-w (apply max (map (lambda (g) (closed-form-error g qaoa-p1-expectation)) weighted-graphs)))
-(display "qaoa: p=1 closed form vs state vector over a 7x7 (gamma, beta) grid, max error: unweighted ")
+(display "qaoa: p=1 closed form vs state vector over a 7x7 (gamma, beta) grid, max deviation: unweighted ")
 (display (sci err-unweighted)) (display ", Ising form on unweighted ") (display (sci err-ising-u))
 (display ", weighted ") (display (sci err-ising-w)) (newline)
 (check "Wang et al. p=1 form equals the state vector on 8 unweighted graphs (triangle, ring, K4, prism, star, random)" (< err-unweighted 1e-10))
@@ -154,7 +154,7 @@
                            (ad (qaoa-gradient g th)) (fd (fd-gradient f th 1e-5)))
                       (vmax-abs-diff ad fd)))
                   ad-cases)))
-(display "qaoa: AD gradient vs central differences (h=1e-5), p=1,2,3 on 5 graphs, max error: ") (display (sci ad-err)) (newline)
+(display "qaoa: AD gradient vs central differences (h=1e-5), p=1,2,3 on 5 graphs, max deviation: ") (display (sci ad-err)) (newline)
 (check "exact AD gradient agrees with central differences to 1e-6 (15 cases, weighted and unweighted)" (< ad-err 1e-6))
 (check "the AD gradient at p=1 is the derivative of the closed form (central differences of the closed form)"
        (let* ((ga 0.37) (be -0.21) (h 1e-5) (g (qaoa-gradient prism (vector ga be))))

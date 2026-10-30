@@ -39,7 +39,7 @@
           (for-each
            (lambda (th)
              (let* ((vm (f-moonlab th)) (ve (f-exact th))
-                    (gm (gradient (lambda (x) (moonlab-expectation prog x)) th)) (ge (gradient f-exact th))
+                    (gm (gradient (lambda (x) (moonlab-expectation prog x)) th)) (ge (qaoa-gradient prob th))
                     (dv (abs (- vm ve))) (dg (max-abs-diff gm ge)))
                (set! worst-value (max worst-value dv))
                (set! worst-gradient (max worst-gradient dg))
