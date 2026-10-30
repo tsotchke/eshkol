@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+#include <eshkol/frontend/incrementalize.h>
+#endif
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/logger.h>
@@ -4262,6 +4265,9 @@ static char** intern_driver_module_name_array(const std::string& name) {
 
 int main(int argc, char **argv)
 {
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+    eshkol::frontend::enable_self_hosted_incremental();
+#endif
     // First local, so it is destroyed last: every AST consumer in main() has
     // finished before the AST string owner is released (ADR-0021).
     eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
