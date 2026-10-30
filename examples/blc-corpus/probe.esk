@@ -1,0 +1,10 @@
+;;; Standalone byte observations through core.blc_bytes.
+(require core.blc_bytes)
+
+(define (learner-read path)
+  (let ((port (open-input-file path)))
+    (let ((value (read port))) (close-input-port port) value)))
+(define (learner-probe name bits frame work-limit heap-capacity output-limit)
+  (display "START ") (display name) (newline)
+  (let ((receipt (blc-run-bytes (blc-decode bits) frame work-limit heap-capacity output-limit)))
+    (display "OBS ") (display name) (display " ") (write receipt) (newline)))
