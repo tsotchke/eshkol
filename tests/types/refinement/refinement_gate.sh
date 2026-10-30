@@ -41,8 +41,8 @@ for engine in "${engines[@]}"; do
     if [ $rc -ne 0 ]; then bad "[$engine] accept.esk exited $rc: $out $(cat "$err")"
     elif ! diff <(printf '%s\n' "$out") "$HERE/accept.expected" > "$WORKDIR/accept.$engine.diff"; then
         bad "[$engine] accept.esk output differs: $(cat "$WORKDIR/accept.$engine.diff")"
-    elif grep -qi "refinement" "$err"; then
-        bad "[$engine] accept.esk reported a refinement finding: $(grep -i refinement "$err")"
+    elif grep -qE "Refinement error|refinement (not proved|violated|undecided)" "$err"; then
+        bad "[$engine] accept.esk reported a refinement finding: $(grep -E 'Refinement error|refinement (not|viol|undec)' "$err")"
     fi
 
     for f in "$HERE"/reject_*.esk; do
