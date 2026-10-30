@@ -72,6 +72,53 @@
   (not (syn-result-found? (syn-deduce-map (syn-spec '(xs) '(list) '((((1 1)) . (2 3))) 'list) lib))))
 
 ;; ---------------------------------------------------------------------------
+;; Soundness and completeness on generated tasks: random compositions of list
+;; functions are run on random inputs; whatever is synthesised must reproduce
+;; every example (soundness), and programs this small must be found.
+;; ---------------------------------------------------------------------------
+(define (lcg s) (modulo (+ (* s 1103515245) 12345) 2147483648))
+(define list-stages
+  (list '(syn-sort) '(syn-reverse) '(syn-map (lambda (e) (* e 2))) '(syn-map (lambda (e) (+ e 1)))
+        '(syn-filter (lambda (e) (even? e))) '(syn-filter (lambda (e) (> e 0))) '(syn-drop 1)))
+(define finals (list #f '(syn-sum) '(syn-maximum) '(syn-count)))
+(define (pick xs s) (list-ref xs (modulo (quotient s 65536) (length xs))))
+(define (random-list s n)
+  (let loop ((k n) (s s) (acc '()))
+    (if (= k 0) (cons acc s) (let ((s2 (lcg s))) (loop (- k 1) s2 (cons (- (modulo (quotient s2 65536) 19) 9) acc))))))
+(define (apply-stage stage arg) (append stage (list arg)))
+(define (generated-task seed)
+  (let* ((s1 (lcg seed)) (s2 (lcg s1)) (s3 (lcg s2))
+         (body (apply-stage (pick list-stages s2) (apply-stage (pick list-stages s1) 'xs)))
+         (fin (pick finals s3))
+         (prog (if fin (apply-stage fin body) body))
+         (goal (if fin 'int 'list)))
+    (let loop ((k 0) (s (lcg s3)) (exs '()))
+      (if (= k 4)
+          (list prog (syn-spec '(xs) '(list) exs goal))
+          (let* ((r (random-list s (+ 3 k))) (xs (car r)) (out (syn-eval prog (list (cons 'xs xs)))))
+            (loop (+ k 1) (lcg (cdr r)) (if (syn-bottom? out) exs (cons (cons (list xs) out) exs))))))))
+(define generated (map generated-task '(11 23 37 41 53 67 71 89 97 101 113 131 149 163 179 191 211 227 233 251)))
+(define gen-results (map (lambda (t) (syn-synthesize (cadr t))) generated))
+(check "every synthesised program reproduces its examples (soundness)"
+  (let loop ((ts generated) (rs gen-results))
+    (or (null? ts) (and (or (not (syn-result-found? (car rs))) (syn-consistent? (syn-result-program (car rs)) (cadr (car ts))))
+                        (loop (cdr ts) (cdr rs))))))
+;; cost under uniform component costs: every operator, literal, variable and
+;; lambda constant counts 1
+(define (uniform-cost p)
+  (cond ((not (pair? p)) 1) ((eq? (car p) 'lambda) 1)
+        (else (+ 1 (fold-left + 0 (map uniform-cost (cdr p)))))))
+(define gen-found (length (filter syn-result-found? gen-results)))
+(display "  generated tasks: ") (display gen-found) (display "/") (display (length generated)) (display " solved") (newline)
+(check "every generated task is solved" (= gen-found (length generated)))
+(check "a solution is never costlier than the generating program"
+  (let loop ((ts generated) (rs gen-results))
+    (or (null? ts)
+        (and (or (not (eq? (syn-result-method (car rs)) 'enumerate))
+                 (<= (syn-result-cost (car rs)) (uniform-cost (car (car ts)))))
+             (loop (cdr ts) (cdr rs))))))
+
+;; ---------------------------------------------------------------------------
 ;; Benchmarks
 ;; ---------------------------------------------------------------------------
 (define report (syn-run-benchmarks syn-benchmarks))

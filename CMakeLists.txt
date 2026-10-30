@@ -4353,6 +4353,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 600
         ENVIRONMENT "ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? in 'add2' : [A-Za-z0-9]+ filled with \\(\\+ x y\\); other candidates: ")
+    # Soundness: every completion is well typed, so the completed program
+    # passes the checker with type errors fatal.
+    add_test(NAME synthesis_holes_strict_types
+        COMMAND $<TARGET_FILE:eshkol-run> --strict-types -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_holes_test.esk")
+    set_tests_properties(synthesis_holes_strict_types PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: synthesis_holes_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Type error|type errors detected|fatal signal")
     # A hole with no well-typed completion stops compilation (JIT and AOT).
     add_test(NAME synthesis_hole_refusal_jit
         COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk")
