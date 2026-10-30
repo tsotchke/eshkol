@@ -44,7 +44,7 @@ class CatalogueTests(unittest.TestCase):
         (self.root/'CMakeLists.txt').write_text(cmake)
         shutil.copy(ROOT/'scripts/run_examples_tests.sh',self.root/'scripts/run_examples_tests.sh')
         catalogue=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
-        template=catalogue['entries'][0]
+        template=next(entry for entry in catalogue['entries'] if entry['kind']=='mathematics')
         self.entries=[]
         for path,family,criterion in zip(self.paths,module.FAMILIES,criteria):
             entry=copy.deepcopy(template)
@@ -178,7 +178,7 @@ class CatalogueTests(unittest.TestCase):
 
     def test_real_catalogue_completeness_exact_witness_and_scope_boundaries(self):
         data=json.loads((ROOT/'docs/examples/catalogue.json').read_text())
-        self.assertEqual(len(data['entries']),67)
+        self.assertEqual(len(data['entries']),70)
         self.assertEqual(sum(e['kind']=='mathematics' for e in data['entries']),46)
         pages=json.loads((ROOT/'site/pages.json').read_text())['pages']
         for name in ('docs/EXAMPLES.md','docs/MATHEMATICS_EXAMPLES.md'):
