@@ -1056,6 +1056,20 @@ complete in v1.3.0-evolve.
       certificate without trusting the compiler — the transferable-trust
       endpoint for
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+  - [x] Certificates and the independent checker (ADR-0047): `core.certificate`
+        emits fourteen kinds of certificate (rank, determinant, Smith normal
+        form, linear solution and solve enclosure, PSD, integer and Q[x] gcd,
+        polynomial identity, Pratt primality, polynomial and Taylor-model
+        ranges with exact interval endpoints and the rounding direction,
+        cocycle, cohomology class) as `eshkol.certificate.v1` claims extending
+        `core.transcript`; `tools/certcheck/eshkol_certcheck.py` re-verifies
+        each from its witness with the Python standard library alone and a
+        stated trusted base; a tamper suite shows every resealed false claim
+        rejected; `(certify (f ...))` emits a certificate at run time on the
+        native and VM paths
+  - [ ] Derivation chains linking certificates by id, and a validated
+        Taylor-model remainder in place of the sampled-bound premise (Planned
+        for v1.7.0)
 
 ---
 
@@ -1193,6 +1207,11 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       the Lean kernel export re-checks the compiler on the normative
       corpus, and "HoTT-inspired" is retired as a claim in favor of this
       concrete, checkable one (ADR-0004)
+  - [x] First stage on the data side (ADR-0047): the decidable finite facts
+        of certificates (determinants, ranks, Smith forms with unimodular
+        transforms, Bezout gcds, Pratt trees, cocycle and coboundary
+        identities) export to Lean 4 theorems proved by `decide` in the
+        kernel, on Lean core alone
 - [ ] Quantitative type theory for unified linear/quantum resource tracking
 - [ ] Lean-certified formal verification of the validated-AD Taylor models
       (P8) already shipped in v1.3.0-evolve (`taylor-model`, `tm-range`,

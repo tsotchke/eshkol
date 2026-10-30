@@ -6,6 +6,7 @@
 #
 # Runs, from an existing CMake build, the CTest entries that own the
 # behaviour:
+#   certify_form_jit / _aot / _direct_vm         the (certify ...) rewrite on every engine
 #   certificate_jit / certificate_aot            tests/stdlib/certificate_test.esk
 #   certificate_roundtrip_jit / _aot             emit -> check -> tamper -> Lean export
 #   certificate_check_fixtures                   checker on the committed documents
