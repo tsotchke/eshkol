@@ -29,6 +29,7 @@
 #include <deque>
 #include <functional>
 #include <iterator>
+#include <mutex>
 
 namespace eshkol::hott {
 
@@ -253,6 +254,19 @@ const Signature kSessionSignatures[] = {
 };
 const char* const kSessionRules[] = {"session-select", "session-offer"};
 
+/**
+ * Structural libraries whose module code this process has compiled. The JIT
+ * loads a required module in a compilation of its own, before the program's
+ * batch, so the program's checker learns of it here rather than from a
+ * `require` form or inlined module code in its own unit.
+ */
+std::set<std::string>& processModules(std::unique_lock<std::mutex>& lock) {
+    static std::mutex mu;
+    static std::set<std::string> modules;
+    lock = std::unique_lock<std::mutex>(mu);
+    return modules;
+}
+
 bool requireNames(const eshkol_ast_t* form, const char* module) {
     const auto& r = form->operation.require_op;
     for (uint64_t i = 0; i < r.num_modules; ++i) {
@@ -401,6 +415,8 @@ struct StructuralChecker::Impl {
     std::map<std::string, const hott_type_expr_t*> annotations;   // (: name T)
     std::set<std::string> modules;
     std::set<std::string> module_files;          // "core/records.esk" for each required module
+    uint32_t main_file = 0;                      // source file of the program itself
+    bool process_modules_seen = false;
     bool program_known = false;
     bool dump = false;
 
@@ -796,9 +812,16 @@ struct StructuralChecker::Impl {
     // Program pre-pass
     // ------------------------------------------------------------------
     void activate(const eshkol_ast_t* form) {
+        static const char* const kModules[] = {"core.records", "core.sessions"};
+        for (const char* m : kModules) {
+            if (requireNames(form, m)) activateModule(m);
+        }
+    }
+
+    void activateModule(const std::string& name) {
         auto on = [&](const char* m, const Signature* sigs, size_t ns, const char* const* rl,
                       size_t nr) {
-            if (!requireNames(form, m) || modules.count(m)) return;
+            if (name != m || modules.count(m)) return;
             modules.insert(m);
             for (size_t i = 0; i < ns; ++i) {
                 if (user_defined.count(sigs[i].name)) continue;
@@ -829,25 +852,60 @@ struct StructuralChecker::Impl {
         }
     }
 
+    static bool endsWithPath(const std::string& path, const std::string& suffix) {
+        return path.size() >= suffix.size() &&
+               path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+               (path.size() == suffix.size() || path[path.size() - suffix.size() - 1] == '/');
+    }
+
     /**
-     * A form that came from a required library module rather than from the
-     * program. Library code is typed by its signatures (section 2), not by
-     * checking its implementation here, and its definitions do not shadow
-     * those signatures.
+     * A form that came from an Eshkol library module rather than from the
+     * program (drivers inline required modules into the unit). Library code
+     * is typed by its signatures (section 2), not by checking its
+     * implementation here, and its definitions do not shadow those
+     * signatures. The program's own file is never a library file.
      */
     bool libraryForm(const eshkol_ast_t* f) {
-        if (!f || module_files.empty()) return false;
+        if (!f || f->source_file_id == 0 || f->source_file_id == main_file) return false;
         const char* file = eshkol_source_file_name(f->source_file_id);
         if (!file) return false;
         const std::string path = file;
+        if (path.rfind("lib/", 0) == 0 || path.find("/lib/") != std::string::npos) return true;
         for (const auto& suffix : module_files) {
-            if (path.size() >= suffix.size() &&
-                path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0 &&
-                (path.size() == suffix.size() || path[path.size() - suffix.size() - 1] == '/')) {
-                return true;
-            }
+            if (endsWithPath(path, suffix)) return true;
         }
         return false;
+    }
+
+    /** Activate a structural library whose module code is inlined in the unit. */
+    void activateInlined(const eshkol_ast_t* f) {
+        const char* file = eshkol_source_file_name(f->source_file_id);
+        if (!file) return;
+        const std::string path = file;
+        static const char* const kModules[] = {"core.records", "core.sessions"};
+        for (const char* m : kModules) {
+            std::string suffix = m;
+            for (char& ch : suffix) {
+                if (ch == '.') ch = '/';
+            }
+            if (endsWithPath(path, suffix + ".esk")) {
+                {
+                    std::unique_lock<std::mutex> lock;
+                    processModules(lock).insert(m);
+                }
+                activateModule(m);
+            }
+        }
+    }
+
+    void activateProcessModules() {
+        std::vector<std::string> ms;
+        {
+            std::unique_lock<std::mutex> lock;
+            const auto& set = processModules(lock);
+            ms.assign(set.begin(), set.end());
+        }
+        for (const auto& m : ms) activateModule(m);
     }
 
     void noteAlias(const eshkol_ast_t* form) {
@@ -927,6 +985,14 @@ struct StructuralChecker::Impl {
 
     void prepare(const eshkol_ast_t* asts, size_t n) {
         program_known = true;
+        // The program's own file: drivers place inlined library modules
+        // before the program's forms, so the last located form is the program's.
+        for (size_t i = n; i-- > 0;) {
+            if (asts[i].source_file_id != 0) {
+                main_file = asts[i].source_file_id;
+                break;
+            }
+        }
         for (size_t i = 0; i < n; ++i) {
             const eshkol_ast_t* f = &asts[i];
             if (f->type == ESHKOL_OP && f->operation.op == ESHKOL_REQUIRE_OP) noteModuleFiles(f);
@@ -951,7 +1017,9 @@ struct StructuralChecker::Impl {
             if (f->type == ESHKOL_OP && f->operation.op == ESHKOL_REQUIRE_OP && !libraryForm(f)) {
                 activate(f);
             }
+            if (libraryForm(f)) activateInlined(f);
         }
+        activateProcessModules();
         std::set<const eshkol_ast_t*> chosen;
         for (const eshkol_ast_t* f : defines) {
             if (defineHasStructuralAnnotation(f)) {
@@ -2005,8 +2073,15 @@ struct StructuralChecker::Impl {
             return;
         }
         auto& op = form->operation;
+        if (!program_known && !process_modules_seen) {
+            process_modules_seen = true;
+            activateProcessModules();
+        }
         if (op.op == ESHKOL_REQUIRE_OP && !program_known) noteModuleFiles(form);
-        if (libraryForm(form)) return;
+        if (libraryForm(form)) {
+            if (!program_known) activateInlined(form);
+            return;
+        }
         switch (op.op) {
             case ESHKOL_REQUIRE_OP:
                 activate(form);
