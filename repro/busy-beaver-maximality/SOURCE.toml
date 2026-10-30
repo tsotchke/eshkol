@@ -1,0 +1,8 @@
+schema_version = 1
+license = "MIT"
+source_kind = "selected source and complete proof-data donation"
+upstream_base = "370d889fbfa412c0567abdf4e78d47a8f78baf29"
+source_owners = ["quasicrystal-tiles-bb-maximality", "automata"]
+producer = "Bounded source-partition reconstruction, refined by a frozen regular-DFA portfolio"
+recipient_dependencies = "Eshkol standard library only; no source producer or private runtime"
+scope = "Complete labeled total binary two/three-state classes; known time/productivity maxima"
