@@ -56,6 +56,7 @@
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/backend/tensorcore_codegen.h>
 #include <eshkol/types/type_checker.h>
+#include <eshkol/types/hott_forms.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
 #include <eshkol/logger.h>
@@ -2779,6 +2780,15 @@ public:
                 // codegen outright rather than emit a binary for a program
                 // already rejected, so nothing downstream can trust $? or the
                 // existence of the output and certify a clone.
+                // A HoTT kernel rejection is fatal in every mode (ADR-0043): a
+                // proof the kernel does not accept is not a proof, and an
+                // unevaluated hott-eval has no value to compile.
+                if (type_checker.hasHottRejections()) {
+                    eshkol_error("HoTT: %zu form(s) rejected by the cubical kernel",
+                                 type_checker.hottRejections());
+                    eshkol_error("Refusing to generate code for a program whose HoTT forms do not check");
+                    return std::make_pair(nullptr, nullptr);
+                }
                 if (type_checker.hasLinearityViolations() && !cfg->unsafe_mode) {
                     eshkol_error("HoTT: %zu linearity violation(s) detected "
                                  "(linear types are use-exactly-once)",
@@ -4558,7 +4568,7 @@ private:
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_COND_OP,
                         ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                         ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                         ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                         ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                         ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
@@ -11427,7 +11437,7 @@ private:
                 And, Or, Cond, Case, Do, When,
                 Unless, Guard, Raise, CallCc, DynamicWind, CaseLambda,
                 Parameterize, MakeParameter, Quote, Quasiquote, Unquote, UnquoteSplicing,
-                Set, DefineType, Tensor, Diff, Derivative, Taylor,
+                Set, DefineType, Hott, Tensor, Diff, Derivative, Taylor,
                 DerivativeN, Gradient, Jacobian, Hessian, Divergence, Curl,
                 Laplacian, DirectionalDeriv, WithRegion, Owned, Move, Borrow,
                 Shared, WeakRef, Import, TypeAnnotation, The, Values,
@@ -11473,6 +11483,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::UnquoteSplicing, ESHKOL_UNQUOTE_SPLICING_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Set, ESHKOL_SET_OP>{},
                 eshkol::AstRouteGroup<AstRoute::DefineType, ESHKOL_DEFINE_TYPE_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Hott, ESHKOL_HOTT_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Tensor, ESHKOL_TENSOR_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Diff, ESHKOL_DIFF_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Derivative, ESHKOL_DERIVATIVE_OP>{},
@@ -11679,6 +11690,16 @@ private:
             case AstRoute::DefineType:
                 // Type alias definition - compile-time only, no runtime code
                 // The type alias is stored in the AST for use by the type checker
+                co_return packNullToTaggedValue();
+
+            case AstRoute::Hott:
+                // (hott decl...) is compile-time only. (hott-eval term) was
+                // replaced by its normal form when the type checker ran; one
+                // still here means it was never elaborated.
+                if (op->hott_op.is_eval) {
+                    eshkol_error("a hott-eval form was not elaborated by the HoTT kernel");
+                    fatal_codegen_error_ = true;
+                }
                 co_return packNullToTaggedValue();
 
             case AstRoute::Tensor:
@@ -23907,7 +23928,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_MATCH_OP, ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP,
                     ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -28476,7 +28497,7 @@ private:
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP,
                     ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_COND_OP, ESHKOL_CASE_OP,
                     ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
-                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP,
                     ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
@@ -28626,7 +28647,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::Extern, ESHKOL_EXTERN_OP>{},
                 eshkol::AstRouteGroup<AstRoute::ExternVar,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
-                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
                     ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
                     ESHKOL_LOGIC_VAR_OP
@@ -28900,7 +28921,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                     ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                    ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                     ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                     ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -29173,7 +29194,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
                     ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_CASE_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP, ESHKOL_GUARD_OP, ESHKOL_DEFINE_SYNTAX_OP,
                     ESHKOL_LOGIC_VAR_OP, ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP,
                     ESHKOL_SYNTAX_ERROR_OP
@@ -29439,7 +29460,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                         ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                        ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                        ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                         ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                         ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                         ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -29654,7 +29675,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                         ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                         ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                         ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                         ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -29859,7 +29880,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                         ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                         ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                         ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                         ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -30082,7 +30103,7 @@ private:
                         ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                         ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                         ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                        ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                         ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                         ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                         ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -30543,7 +30564,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_QUOTE_OP,
                     ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -30875,7 +30896,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_DEFINE_OP, ESHKOL_EXTERN_OP,
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                     ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -32090,7 +32111,7 @@ private:
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP, ESHKOL_MUL_OP,
                     ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
-                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP, ESHKOL_FORALL_OP,
                     ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP, ESHKOL_LOGIC_VAR_OP,
                     ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
@@ -32416,7 +32437,7 @@ private:
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LAMBDA_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP,
                     ESHKOL_LETREC_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                     ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP,
                     ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP,
                     ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP,
@@ -32544,7 +32565,7 @@ private:
                     ESHKOL_EXTERN_VAR_OP, ESHKOL_LET_OP, ESHKOL_LET_STAR_OP, ESHKOL_LETREC_OP,
                     ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_MATCH_OP,
                     ESHKOL_DO_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                     ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                     ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -32692,7 +32713,7 @@ private:
                     ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP,
                     ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
-                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
+                    ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                     ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP,
                     ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP, ESHKOL_HESSIAN_OP, ESHKOL_DIVERGENCE_OP,
@@ -32876,7 +32897,7 @@ private:
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                     ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
+                    ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP,
                     ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP, ESHKOL_MOVE_OP,
                     ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -33100,7 +33121,7 @@ private:
                         eshkol::AstRouteGroup<AstRoute::Parameterize, ESHKOL_PARAMETERIZE_OP>{},
                         eshkol::AstRouteGroup<AstRoute::OtherOperations,
                             ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
-                            ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP,
+                            ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP,
                             ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_TYPE_ANNOTATION_OP,
                             ESHKOL_FORALL_OP, ESHKOL_DEFINE_SYNTAX_OP, ESHKOL_LET_SYNTAX_OP, ESHKOL_LETREC_SYNTAX_OP,
                             ESHKOL_DEFINE_RECORD_TYPE_OP, ESHKOL_COND_EXPAND_OP, ESHKOL_INCLUDE_OP, ESHKOL_SYNTAX_ERROR_OP,
@@ -38357,7 +38378,7 @@ private:
                     ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
                     ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
-                    ESHKOL_UNLESS_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                    ESHKOL_UNLESS_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                     ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                     ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                     ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP, ESHKOL_JACOBIAN_OP,
@@ -43299,7 +43320,7 @@ private:
                         ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP, ESHKOL_COND_OP,
                         ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                         ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                        ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                         ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                         ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                         ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,

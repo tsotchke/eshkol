@@ -607,6 +607,11 @@ public:
      */
     void reportLinearViolation(const std::string& msg, const eshkol_ast_t* node = nullptr);
 
+    /** A HoTT kernel rejection (ADR-0043): fatal in every mode. */
+    void reportHottRejection(const std::string& msg, uint32_t line, uint32_t column);
+    bool hasHottRejections() const { return hott_rejections_ > 0; }
+    size_t hottRejections() const { return hott_rejections_; }
+
     /** True if any linearity violation was reported (fatal regardless of --strict-types). */
     bool hasLinearityViolations() const { return linearity_violations_ > 0; }
     /** Number of linearity violations reported. */
@@ -681,6 +686,7 @@ private:
     bool strict_types_ = false;
     bool unsafe_mode_ = false;
     size_t linearity_violations_ = 0;
+    size_t hott_rejections_ = 0;
     TypeEnvironment& env_;
     Context ctx_;
     BorrowChecker borrow_;

@@ -9977,8 +9977,8 @@
     "builtins_in_llvm_aot_dispatch": 799,
     "builtins_aot_only": 242,
     "quantum_agent_ffi_builtins": 22,
-    "special_forms": 116,
-    "ast_ops": 113,
+    "special_forms": 118,
+    "ast_ops": 114,
     "prelude": 472
   },
   "builtins_by_category": {
@@ -10007,8 +10007,8 @@
     "module": 8,
     "macro_syntax": 8,
     "memory_region": 6,
-    "ffi_system": 2,
-    "misc": 1
+    "misc": 3,
+    "ffi_system": 2
   },
   "ast_ops": [
     "ESHKOL_INVALID_OP",
@@ -10123,7 +10123,8 @@
     "ESHKOL_SDNC_SET_PARAMS_OP",
     "ESHKOL_SDNC_IMPROVE_OP",
     "ESHKOL_SDNC_PRED_OP",
-    "ESHKOL_THE_OP"
+    "ESHKOL_THE_OP",
+    "ESHKOL_HOTT_OP"
   ],
   "builtins": [
     {
@@ -23048,6 +23049,16 @@
       "name": "hessian",
       "op": "ESHKOL_HESSIAN_OP",
       "category": "tensor_ad"
+    },
+    {
+      "name": "hott",
+      "op": "ESHKOL_HOTT_OP",
+      "category": "misc"
+    },
+    {
+      "name": "hott-eval",
+      "op": "ESHKOL_HOTT_OP",
+      "category": "misc"
     },
     {
       "name": "if",

@@ -161,6 +161,7 @@ inline auto routeAstOperation(eshkol_op_t operation, First, Rest...) {
         case ESHKOL_SDNC_IMPROVE_OP: return ast_routing_detail::checkedRoute<ESHKOL_SDNC_IMPROVE_OP, First, Rest...>();
         case ESHKOL_SDNC_PRED_OP: return ast_routing_detail::checkedRoute<ESHKOL_SDNC_PRED_OP, First, Rest...>();
         case ESHKOL_THE_OP: return ast_routing_detail::checkedRoute<ESHKOL_THE_OP, First, Rest...>();
+        case ESHKOL_HOTT_OP: return ast_routing_detail::checkedRoute<ESHKOL_HOTT_OP, First, Rest...>();
     }
     ESHKOL_EXHAUSTIVE_SWITCH_END
     std::abort();

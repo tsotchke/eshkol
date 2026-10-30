@@ -5,6 +5,7 @@
 
 #include "../core/taylor_opcodes.h"
 #include "eshkol/types/type_checker.h"
+#include "eshkol/types/hott_forms.h"
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/differentiation_graph.h>
 #include <eshkol/frontend/syntax_color.h>
@@ -1259,6 +1260,17 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
 
         case ESHKOL_CALL_OP:
             co_return (co_await synthesizeApplicationTask(expr));
+
+        case ESHKOL_HOTT_OP: {
+            // (hott decl...) / (hott-eval term): the cubical kernel (ADR-0043).
+            HottFormOutcome outcome = elaborateHottForm(env_.cubicalKernel(), expr);
+            if (!outcome.ok) {
+                reportHottRejection(outcome.message, outcome.line, outcome.column);
+                co_return TypeCheckResult::error(outcome.message, (int)outcome.line, (int)outcome.column);
+            }
+            if (outcome.rewritten) co_return (co_await synthesizeTask(expr));
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
 
         case ESHKOL_THE_OP: {
             // Expression-level checked cast (the <type> <expr>): a trusted
@@ -4821,6 +4833,18 @@ void TypeChecker::appendLocation(std::string& msg, const eshkol_ast_t* node) {
  * runnable binary. `--unsafe` — documented precisely as "linear types can be
  * duplicated (no-cloning bypassed)" — remains the one way to proceed anyway.
  */
+void TypeChecker::reportHottRejection(const std::string& msg, uint32_t line, uint32_t column) {
+    std::string loc_msg = "HoTT: " + msg;
+    if (line > 0) {
+        loc_msg += " (line " + std::to_string(line);
+        if (column > 0) loc_msg += ":" + std::to_string(column);
+        loc_msg += ")";
+    }
+    emitDiagnostic("[ERROR] Type error: " + loc_msg);
+    hott_rejections_++;
+    addError("HoTT: " + msg, line, column);
+}
+
 void TypeChecker::reportLinearViolation(const std::string& msg,
                                         const eshkol_ast_t* node) {
     if (unsafe_mode_) return;
@@ -5737,6 +5761,10 @@ static int countLinearUses(const eshkol_ast_t* e,
             // The ascription is erased at runtime; the wrapped expression runs
             // verbatim, so its uses are the form's uses.
             return countLinearUses(op.the_op.expr, names, st);
+
+        case ESHKOL_HOTT_OP:
+            // Kernel syntax mentions no program variables.
+            return 0;
 
         case ESHKOL_QUOTE_OP:
             return 0;   // quoted data is never evaluated

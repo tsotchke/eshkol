@@ -2357,6 +2357,7 @@ Eshkol implements a gradual type system inspired by Homotopy Type Theory with:
 - **Subtype Hierarchy:** Transitive subtyping with caching
 - **Type Inference:** Bidirectional type checking
 - **Runtime Types:** Type information preserved in tagged values
+- **Identity types and univalence:** a cubical type theory (path types, `transp`/`hcomp`, Glue types, higher inductive types) checks and computes `(hott ...)` declarations and `(hott-eval ...)` terms at compile time; see [reference/language/hott.md](reference/language/hott.md) and ADR-0043
 
 ### 7.2 Universe Hierarchy
 

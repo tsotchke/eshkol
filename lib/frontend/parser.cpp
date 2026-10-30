@@ -3436,7 +3436,7 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                             ESHKOL_EXTERN_VAR_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP,
                             ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                             ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
-                            ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP,
+                            ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP,
                             ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP,
                             ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                             ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_JACOBIAN_OP,
@@ -5270,6 +5270,28 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         }
         eshkol::syntax_record_use(call.node_id, std::move(use));
         co_return call;
+    }
+    // HoTT kernel forms (ADR-0043): their operands are kernel syntax, kept as
+    // the reader datum for the cubical kernel, never parsed as expressions.
+    if (token.type == TOKEN_SYMBOL && (token.value == "hott" || token.value == "hott-eval")) {
+        eshkol::SyntaxDatum form;
+        tokenizer.pushBack(token);
+        Token open = head_token;
+        open.type = TOKEN_LPAREN;
+        open.value = "(";
+        if (!read_syntax_datum(tokenizer, open, form)) {
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        if (ast.node_id == ESHKOL_NODE_ID_NONE) {
+            PARSE_ERROR_AT(token, "node identity space exhausted recording a HoTT form");
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        ast.operation.op = ESHKOL_HOTT_OP;
+        ast.operation.hott_op.is_eval = token.value == "hott-eval" ? 1 : 0;
+        eshkol::syntax_record_use(ast.node_id, std::move(form));
+        co_return ast;
     }
     // A head that a macro expansion colored names whatever its spelling meant
     // where the macro was defined (ADR-0026). Keyword grammar dispatches on the

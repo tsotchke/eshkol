@@ -1,0 +1,145 @@
+;;; HoTT foundations (ADR-0043): paths, path algebra, transport, J,
+;;; function extensionality and univalence, in Eshkol's cubical kernel.
+;;; Import with (hott (import foundations)).
+
+(hott
+  ;; ---- paths ----
+  (define (refl (l : Level) (A : (U l)) (a : A)) : (Path A a a)
+    (lambda (i) a))
+
+  (define (sym (l : Level) (A : (U l)) (a b : A) (p : (Path A a b))) : (Path A b a)
+    (lambda (i) (p (~ i))))
+
+  ;; p . q, by a homogeneous composition: the square with sides a, q and base p
+  (define (trans (l : Level) (A : (U l)) (a b c : A) (p : (Path A a b)) (q : (Path A b c)))
+      : (Path A a c)
+    (lambda (i) (hcomp A (j) (((= i 0) a) ((= i 1) (q j))) (p i))))
+
+  (define (ap (l k : Level) (A : (U l)) (B : (U k)) (f : (-> A B)) (a b : A) (p : (Path A a b)))
+      : (Path B (f a) (f b))
+    (lambda (i) (f (p i))))
+
+  (define (apd (l k : Level) (A : (U l)) (B : (-> A (U k))) (f : (Pi ((x : A)) (B x)))
+               (a b : A) (p : (Path A a b)))
+      : (PathP (i) (B (p i)) (f a) (f b))
+    (lambda (i) (f (p i))))
+
+  ;; ---- transport and path induction ----
+  (define (transport (l : Level) (A B : (U l)) (p : (Path (U l) A B)) (x : A)) : B
+    (transp (i) (p i) i0 x))
+
+  (define (subst (l k : Level) (A : (U l)) (P : (-> A (U k))) (a b : A) (p : (Path A a b)) (x : (P a)))
+      : (P b)
+    (transp (i) (P (p i)) i0 x))
+
+  ;; J: path induction, by transport along the contraction of singletons
+  (define (J (l k : Level) (A : (U l)) (a : A)
+             (P : (Pi ((x : A)) (-> (Path A a x) (U k))))
+             (d : (P a (refl l A a)))
+             (x : A) (p : (Path A a x)))
+      : (P x p)
+    (transp (i) (P (p i) (lambda (j) (p (min i j)))) i0 d))
+
+  ;; the computation rule of J holds up to a path (CCHM); definitionally when
+  ;; transport in the motive is the identity on constant lines
+  (define (J-refl (l k : Level) (A : (U l)) (a : A)
+                  (P : (Pi ((x : A)) (-> (Path A a x) (U k))))
+                  (d : (P a (refl l A a))))
+      : (Path (P a (refl l A a)) (J l k A a P d a (refl l A a)) d)
+    (lambda (i) (transp (j) (P a (refl l A a)) i d)))
+
+  ;; ---- the groupoid laws, as terms ----
+  (define (rUnit (l : Level) (A : (U l)) (a b : A) (p : (Path A a b)))
+      : (Path (Path A a b) p (trans l A a b b p (refl l A b)))
+    (lambda (j) (lambda (i) (hcomp A (k) (((= i 0) a) ((= i 1) b) ((= j 0) (p i))) (p i)))))
+
+  (define (lUnit (l : Level) (A : (U l)) (a b : A) (p : (Path A a b)))
+      : (Path (Path A a b) (trans l A a a b (refl l A a) p) p)
+    (lambda (j) (lambda (i)
+      (hcomp A (k) (((= i 0) a) ((= i 1) (p (max j k))) ((= j 1) (p i))) (p (min i j))))))
+
+  (define (rCancel (l : Level) (A : (U l)) (a b : A) (p : (Path A a b)))
+      : (Path (Path A a a) (trans l A a b a p (sym l A a b p)) (refl l A a))
+    (lambda (j) (lambda (i)
+      (hcomp A (k) (((= i 0) a) ((= i 1) (p (min (~ k) (~ j)))) ((= j 1) a)) (p (min i (~ j)))))))
+
+  (define (lCancel (l : Level) (A : (U l)) (a b : A) (p : (Path A a b)))
+      : (Path (Path A b b) (trans l A b a b (sym l A a b p) p) (refl l A b))
+    (rCancel l A b a (sym l A a b p)))
+
+  (define (symInvol (l : Level) (A : (U l)) (a b : A) (p : (Path A a b)))
+      : (Path (Path A a b) (sym l A b a (sym l A a b p)) p)
+    (refl l (Path A a b) p))
+
+  ;; ---- function extensionality ----
+  (define (funExt (l k : Level) (A : (U l)) (B : (-> A (U k))) (f g : (Pi ((x : A)) (B x)))
+                  (h : (Pi ((x : A)) (Path (B x) (f x) (g x)))))
+      : (Path (Pi ((x : A)) (B x)) f g)
+    (lambda (i) (lambda (x) ((h x) i))))
+
+  (define (happly (l k : Level) (A : (U l)) (B : (-> A (U k))) (f g : (Pi ((x : A)) (B x)))
+                  (p : (Path (Pi ((x : A)) (B x)) f g)))
+      : (Pi ((x : A)) (Path (B x) (f x) (g x)))
+    (lambda (x) (lambda (i) ((p i) x))))
+
+  ;; ---- homotopy levels ----
+  (define (isProp (l : Level) (A : (U l))) : (U l)
+    (Pi ((x y : A)) (Path A x y)))
+
+  (define (isSet (l : Level) (A : (U l))) : (U l)
+    (Pi ((x y : A)) (isProp l (Path A x y))))
+
+  ;; ---- univalence ----
+  (define (ua (l : Level) (A B : (U l)) (e : (Equiv l l A B))) : (Path (U l) A B)
+    (lambda (i) (Glue B (((= i 0) A e) ((= i 1) B (idEquiv l B))))))
+
+  ;; transport along ua e is e: definitionally up to transport in B
+  (define (ua-beta (l : Level) (A B : (U l)) (e : (Equiv l l A B)) (x : A))
+      : (Path B (transport l A B (ua l A B e) x) ((fst e) x))
+    (lambda (i) (transp (j) B i ((fst e) x))))
+
+  (define (equiv-fun (l : Level) (A B : (U l)) (e : (Equiv l l A B))) : (-> A B)
+    (fst e))
+
+  ;; ---- isomorphisms are equivalences ----
+  ;; The proof of isoToIsEquiv from the Cubical Agda library
+  ;; (Cubical.Foundations.Isomorphism), with its fillers written out.
+  (define (iso-lemma (l : Level) (A B : (U l)) (f : (-> A B)) (g : (-> B A))
+                     (s : (Pi ((y : B)) (Path B (f (g y)) y)))
+                     (t : (Pi ((x : A)) (Path A (g (f x)) x)))
+                     (y : B) (x0 x1 : A) (p0 : (Path B (f x0) y)) (p1 : (Path B (f x1) y)))
+      : (Path (fiber l l A B f y) (pair x0 p0) (pair x1 p1))
+    (lambda (i) (pair (hcomp A (n) (((= i 1) (hcomp A (m) (((= (min 1 n) 1) ((t x1) (min 1 m))) ((= (min 1 n) 0) (g y)) ((= 1 0) (g (p1 (~ (min 1 n)))))) (g (p1 (~ (min 1 n)))))) ((= i 0) (hcomp A (m) (((= (min 1 n) 1) ((t x0) (min 1 m))) ((= (min 1 n) 0) (g y)) ((= 1 0) (g (p0 (~ (min 1 n)))))) (g (p0 (~ (min 1 n)))))) ((= 1 0) (g y))) (g y))
+                      (lambda (j) (hcomp B (k) (((= i 1) ((s (p1 (~ (~ j)))) k)) ((= i 0) ((s (p0 (~ (~ j)))) k)) ((= (~ j) 1) ((s (f (hcomp A (n) (((= i 1) (hcomp A (m) (((= (min 1 n) 1) ((t x1) (min 1 m))) ((= (min 1 n) 0) (g y)) ((= 1 0) (g (p1 (~ (min 1 n)))))) (g (p1 (~ (min 1 n)))))) ((= i 0) (hcomp A (m) (((= (min 1 n) 1) ((t x0) (min 1 m))) ((= (min 1 n) 0) (g y)) ((= 1 0) (g (p0 (~ (min 1 n)))))) (g (p0 (~ (min 1 n)))))) ((= 1 0) (g y))) (g y)))) k)) ((= (~ j) 0) ((s y) k))) (f (hcomp A (k) (((= i 1) (hcomp A (m) (((= (~ j) 1) ((t x1) (min (~ k) m))) ((= (~ j) 0) (g y)) ((= (~ k) 0) (g (p1 (~ (~ j)))))) (g (p1 (~ (~ j)))))) ((= i 0) (hcomp A (m) (((= (~ j) 1) ((t x0) (min (~ k) m))) ((= (~ j) 0) (g y)) ((= (~ k) 0) (g (p0 (~ (~ j)))))) (g (p0 (~ (~ j)))))) ((= (~ j) 1) ((t (hcomp A (n) (((= i 1) (hcomp A (m) (((= (min 1 n) 1) ((t x1) (min 1 m))) ((= (min 1 n) 0) (g y)) ((= 1 0) (g (p1 (~ (min 1 n)))))) (g (p1 (~ (min 1 n)))))) ((= i 0) (hcomp A (m) (((= (min 1 n) 1) ((t x0) (min 1 m))) ((= (min 1 n) 0) (g y)) ((= 1 0) (g (p0 (~ (min 1 n)))))) (g (p0 (~ (min 1 n)))))) ((= 1 0) (g y))) (g y))) (~ k))) ((= (~ j) 0) (g y))) (hcomp A (n) (((= i 1) (hcomp A (m) (((= (min (~ j) n) 1) ((t x1) (min 1 m))) ((= (min (~ j) n) 0) (g y)) ((= 1 0) (g (p1 (~ (min (~ j) n)))))) (g (p1 (~ (min (~ j) n)))))) ((= i 0) (hcomp A (m) (((= (min (~ j) n) 1) ((t x0) (min 1 m))) ((= (min (~ j) n) 0) (g y)) ((= 1 0) (g (p0 (~ (min (~ j) n)))))) (g (p0 (~ (min (~ j) n)))))) ((= (~ j) 0) (g y))) (g y)))))))))
+
+
+  (define (iso-to-equiv (l : Level) (A B : (U l)) (f : (-> A B)) (g : (-> B A))
+                        (s : (Pi ((y : B)) (Path B (f (g y)) y)))
+                        (t : (Pi ((x : A)) (Path A (g (f x)) x))))
+      : (Equiv l l A B)
+    (pair f (lambda (y)
+              (pair (pair (g y) (s y))
+                    (lambda (z) (iso-lemma l A B f g s t y (g y) (fst z) (s y) (snd z)))))))
+
+  (define (iso-to-path (l : Level) (A B : (U l)) (f : (-> A B)) (g : (-> B A))
+                       (s : (Pi ((y : B)) (Path B (f (g y)) y)))
+                       (t : (Pi ((x : A)) (Path A (g (f x)) x))))
+      : (Path (U l) A B)
+    (ua l A B (iso-to-equiv l A B f g s t))))
+
+(hott
+  ;; ---- homotopy levels ----
+  (define (isGroupoid (l : Level) (A : (U l))) : (U l)
+    (Pi ((x y : A)) (isSet l (Path A x y))))
+
+  ;; propositions are sets (Cubical.Foundations.Prelude isProp->isSet)
+  (define (isProp->isSet (l : Level) (A : (U l)) (h : (isProp l A))) : (isSet l A)
+    (lambda (a b p q) (lambda (j) (lambda (i)
+      (hcomp A (k) (((= i 0) ((h a a) k))
+                    ((= i 1) ((h a b) k))
+                    ((= j 0) ((h a (p i)) k))
+                    ((= j 1) ((h a (q i)) k)))
+             a)))))
+
+  (define (isContr->isProp (l : Level) (A : (U l)) (c : (isContr l A))) : (isProp l A)
+    (lambda (x y) (trans l A x (fst c) y (sym l A (fst c) x ((snd c) x)) ((snd c) y)))))

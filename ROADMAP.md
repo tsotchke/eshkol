@@ -1047,6 +1047,7 @@ single-machine platform surface.
 - [ ] Higher-rank types (rank-2 polymorphism for combinators)
 - [ ] Session types for communication protocols
 - [ ] `IncrementalizePass` (DBSP incrementalization as a compiler pass)
+- [x] HoTT identity types, univalence and higher inductive types: a cubical kernel with path induction, transport, function extensionality, computing univalence, the circle, suspensions and truncations; the fundamental group of the circle computed by encode-decode (ADR-0043, `(hott ...)` / `(hott-eval ...)`, all engines)
 
 ---
 

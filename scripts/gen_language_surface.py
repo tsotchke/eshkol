@@ -270,6 +270,8 @@ def extract_special_forms():
         "let-match": "ESHKOL_MATCH_OP",
         "define-values": "ESHKOL_DEFINE_OP",
         "named-let": "ESHKOL_LET_OP",                 # (let name (bindings) body)
+        "hott": "ESHKOL_HOTT_OP",                     # HoTT kernel declarations (ADR-0043)
+        "hott-eval": "ESHKOL_HOTT_OP",                # HoTT kernel normal form (ADR-0043)
     }
     for k, v in extra.items():
         forms.setdefault(k, v)

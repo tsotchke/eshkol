@@ -439,8 +439,13 @@ struct PiType {
  * - Arithmetic type promotion
  * - Parameterized type instantiation (List<Int64>, etc.)
  */
+namespace cubical { class Kernel; }
+
 class TypeEnvironment {
 private:
+    // The cubical kernel of this compilation (ADR-0043), created on first use.
+    mutable std::shared_ptr<cubical::Kernel> cubical_;
+
     std::map<uint16_t, TypeNode> types_;
     std::map<std::string, TypeId> name_to_id_;
     uint16_t next_user_id_ = 1000;  // User-defined types start at 1000
@@ -494,6 +499,9 @@ public:
     /**
      * Register a builtin type.
      */
+    /** The cubical HoTT kernel holding this compilation's `(hott ...)` declarations. */
+    cubical::Kernel& cubicalKernel() const;
+
     TypeId registerBuiltinType(uint16_t id, const std::string& name,
                                Universe level, uint8_t flags,
                                RuntimeRep rep,

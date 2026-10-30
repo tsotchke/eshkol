@@ -1,0 +1,2 @@
+;; expect-error: non-strictly-positive
+(hott (data Bad (mk (f : (-> Bad Bad)))))

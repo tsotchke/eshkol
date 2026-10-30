@@ -2492,6 +2492,26 @@ oracles:
         action: run_v14_connection_gate
 
   # -----------------------------------------------------------------
+  # v1.9.0-types readiness -- the type system becomes a proof system.
+  # -----------------------------------------------------------------
+  - name: v1.9-types
+    aliases: [v1.9, types]
+    requires:
+      # HoTT identity types, univalence and higher inductive types (ADR-0043).
+      # Producer: scripts/run_hott_gate.sh (CTest hott_gate) runs the HoTT
+      # programs through the kernel driver, JIT, AOT and the bytecode VM against
+      # their expected output, the negative corpus through the kernel and both
+      # compiler routes, and every example of the HoTT reference and guide.
+      - id: v19_hott_identity
+        runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_hott_identity"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'HoTT (ADR-0043): a cubical kernel with path types, J, transport, funext, computing univalence, the circle, suspensions and truncations; winding numbers of the circle computed by encode-decode and cross-checked in Cubical Agda; programs, rejections and documentation examples pass on the kernel, JIT, AOT and the VM'
+        action: ./scripts/run_hott_gate.sh build
+
+  # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
   # -----------------------------------------------------------------

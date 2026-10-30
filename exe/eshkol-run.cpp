@@ -6175,6 +6175,8 @@ int main(int argc, char **argv)
     // the real judgment here means both routes out of this driver enforce ONE
     // rule; see inc/eshkol/backend/vm.h for why the VM takes it as a hook.
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
+    // The same cubical kernel for HoTT forms on the VM route (ADR-0043).
+    eshkol_vm_install_hott_form(eshkol_hott_form_source);
 
     // Baseline for the artifact-emission gate below. Sampled before anything
     // can report a diagnostic, so the gate covers every compilation stage —

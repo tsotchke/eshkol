@@ -1,0 +1,2 @@
+;; expect-error: universe
+(hott (data (Box (A : (U 1))) (box (a : A))))

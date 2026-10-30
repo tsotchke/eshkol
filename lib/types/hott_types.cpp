@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/types/hott_types.h>
+#include <eshkol/types/hott_cubical.h>
 #include <eshkol/types/type_relation.h>
 #include <eshkol/eshkol.h>
 #include <algorithm>
@@ -1125,6 +1126,11 @@ TypeId TypeEnvironment::codegenReprOf(TypeId id) const {
         return BuiltinTypes::Pair;
     }
     return id;
+}
+
+cubical::Kernel& TypeEnvironment::cubicalKernel() const {
+    if (!cubical_) cubical_ = std::make_shared<cubical::Kernel>();
+    return *cubical_;
 }
 
 } // namespace eshkol::hott

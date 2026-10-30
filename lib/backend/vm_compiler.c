@@ -815,6 +815,93 @@ static int compile_depth = 0;
  *         bumps/checks compile_depth (erroring past 1000 nested
  *         expressions) around the actual compilation call. */
 static void vm_compile_error(const char* message, const char* detail);
+/* ── HoTT forms (ADR-0043) ─────────────────────────────────────────────── */
+
+static EshkolHottFormFn g_vm_hott_form = NULL;
+
+void eshkol_vm_install_hott_form(EshkolHottFormFn fn) { g_vm_hott_form = fn; }
+
+/* A new compilation unit: a fresh kernel, so declarations never carry over between programs. */
+static void vm_hott_begin_unit(void) {
+    if (!g_vm_hott_form) return;
+    int ok = 1;
+    char* r = g_vm_hott_form(NULL, &ok);
+    free(r);
+}
+
+/* Print a HoTT form back to text (kernel syntax: symbols, naturals, lists).
+ * Returns 0 on success, -1 for a datum outside the kernel syntax. */
+typedef struct { char* p; size_t len, cap; } VmHottText;
+
+static int vm_hott_append(VmHottText* t, const char* s) {
+    size_t n = strlen(s);
+    if (t->len + n + 1 > t->cap) {
+        size_t cap = t->cap ? t->cap * 2 : 256;
+        while (cap < t->len + n + 1) cap *= 2;
+        char* p = (char*)realloc(t->p, cap);
+        if (!p) return -1;
+        t->p = p;
+        t->cap = cap;
+    }
+    memcpy(t->p + t->len, s, n + 1);
+    t->len += n;
+    return 0;
+}
+
+static int vm_hott_print(const Node* n, VmHottText* t) {
+    if (n->type == N_SYMBOL) return vm_hott_append(t, n->symbol);
+    if (n->type == N_NUMBER && n->is_int && n->ival >= 0) {
+        char tmp[32];
+        snprintf(tmp, sizeof tmp, "%lld", (long long)n->ival);
+        return vm_hott_append(t, tmp);
+    }
+    if (n->type == N_LIST && !n->is_vector && !n->is_quote_sugar) {
+        if (vm_hott_append(t, "(") < 0) return -1;
+        for (int i = 0; i < n->n_children; i++) {
+            if (i && vm_hott_append(t, " ") < 0) return -1;
+            if (vm_hott_print(n->children[i], t) < 0) return -1;
+        }
+        return vm_hott_append(t, ")");
+    }
+    return -1;
+}
+
+/* (hott decl...): checked, no code. (hott-eval term): the normal form, as a quoted datum. */
+static void compile_hott_form(FuncChunk* c, Node* node) {
+    int is_eval = is_sym(node->children[0], "hott-eval");
+    if (!g_vm_hott_form) {
+        vm_compile_error("this build cannot check HoTT forms",
+                         "no HoTT kernel is installed; link a driver that calls "
+                         "eshkol_vm_install_hott_form()");
+        return;
+    }
+    VmHottText text = {NULL, 0, 0};
+    if (vm_hott_print(node, &text) < 0) {
+        free(text.p);
+        vm_compile_error("HoTT form contains a datum outside the kernel syntax", NULL);
+        return;
+    }
+    int ok = 1;
+    char* result = g_vm_hott_form(text.p, &ok);
+    free(text.p);
+    if (!ok || !result) {
+        vm_compile_error("HoTT: form rejected by the cubical kernel", result);
+        free(result);
+        return;
+    }
+    if (is_eval) {
+        Node* datum = parse_sexp_from_string(result);
+        if (!datum) {
+            vm_compile_error("HoTT: the normal form could not be read back", result);
+        } else {
+            compile_quote(c, datum);
+        }
+    } else {
+        chunk_emit(c, OP_VOID, 0);  /* a declaration is an expression with no value */
+    }
+    free(result);
+}
+
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth++;
     if (compile_depth > 1000) {
@@ -6818,6 +6905,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* -- define-type (type alias: compile-time only, no runtime effect) -- */
     if (is_sym(head, "define-type")) { return; }
+
+    /* -- HoTT forms (ADR-0043): the cubical kernel, through the driver's hook -- */
+    if (is_sym(head, "hott") || is_sym(head, "hott-eval")) { compile_hott_form(c, node); return; }
 
 
     if (is_sym(head, "vref") && node->n_children == 3) {
