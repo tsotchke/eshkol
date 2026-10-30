@@ -1,0 +1,212 @@
+;;; core.theory.finite -- finite models of the catalogue theories: groups
+;;; (every group of order at most 8), Z/n and matrix rings, modules, finite
+;;; lattices, Heyting and Boolean algebras.
+;;;
+;;; ADR-0039. Every constructor returns a model of core.theory.equational
+;;; whose elements are canonical representatives, so its law check and its
+;;; homomorphism search are exhaustive.
+;;;
+;;; Groups are models of group-theory on the elements 0 .. n-1 from a
+;;; multiplication; the identity and the inverses are found from the table.
+;;; The fourteen groups of order at most eight (up to isomorphism):
+;;;   1, Z2, Z3, Z4, Z2xZ2, Z5, Z6, S3, Z7, Z8, Z4xZ2, Z2xZ2xZ2, D4, Q8
+;;; (Burnside, "Theory of Groups of Finite Order" (1911), and any list of
+;;; small groups); S3 is the dihedral group of order 6. The encodings of
+;;; D4 and Q8 are those of examples/mathematics_group_cohomology_order_eight.esk.
+
+(require core.theory.equational)
+(require core.ring)
+
+(provide finite-group cyclic-group dihedral-group quaternion-group group-direct-product
+         small-groups zmod-ring-model matrix-ring-model make-module regular-module
+         finite-lattice chain-lattice divisor-lattice diamond-lattice pentagon-lattice
+         finite-heyting-algebra powerset-boolean-algebra divisor-boolean-algebra
+         lattice-order)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefixed tn-)
+;; ---------------------------------------------------------------------------
+(define (tn-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (tn-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (tn-all? p (cdr xs))) (else #f)))
+(define (tn-find p xs) (cond ((null? xs) #f) ((p (car xs)) (car xs)) (else (tn-find p (cdr xs)))))
+(define (tn-tuples xs k)
+  (if (= k 0) (list '())
+      (let ((rest (tn-tuples xs (- k 1))))
+        (apply append (map (lambda (x) (map (lambda (t) (cons x t)) rest)) xs)))))
+
+;; ---------------------------------------------------------------------------
+;; Groups
+;; ---------------------------------------------------------------------------
+
+(define (finite-group name n mul)
+  (let* ((es (tn-range n))
+         (e (or (tn-find (lambda (u) (tn-all? (lambda (x) (and (= (mul u x) x) (= (mul x u) x))) es)) es)
+                (error "finite-group: the table has no identity" name)))
+         (inv-table (list->vector
+                     (map (lambda (x) (or (tn-find (lambda (y) (= (mul x y) e)) es)
+                                          (error "finite-group: an element has no inverse" name x)))
+                          es))))
+    (make-model group-theory name
+                'operations (list (cons 'one e) (cons 'mul (lambda (a b) (mul a b)))
+                                  (cons 'inv (lambda (a) (vector-ref inv-table a))))
+                'elements es
+                'equal? (lambda (a b) (= a b)))))
+
+(define (cyclic-group n)
+  (finite-group (string-append "Z" (number->string n)) n (lambda (a b) (modulo (+ a b) n))))
+
+;; D_m = <r, s | r^m = s^2 = 1, s r s = r^-1>, order 2m; r^i s^j is 2i + j.
+(define (dihedral-group m . name)
+  (finite-group (if (pair? name) (car name) (string-append "D" (number->string m)))
+                (* 2 m)
+                (lambda (x y)
+                  (let ((i (quotient x 2)) (j (remainder x 2)) (k (quotient y 2)) (l (remainder y 2)))
+                    (+ (* 2 (modulo (+ i (if (= j 0) k (- 0 k))) m)) (modulo (+ j l) 2))))))
+
+;; Q8 = {+-1, +-i, +-j, +-k}: unit u in 0..3 (1, i, j, k) and a sign bit,
+;; encoded 2u + sign.
+(define tn-q8-units
+  (vector (vector (cons 0 0) (cons 1 0) (cons 2 0) (cons 3 0))
+          (vector (cons 1 0) (cons 0 1) (cons 3 0) (cons 2 1))
+          (vector (cons 2 0) (cons 3 1) (cons 0 1) (cons 1 0))
+          (vector (cons 3 0) (cons 2 0) (cons 1 1) (cons 0 1))))
+(define (quaternion-group)
+  (finite-group "Q8" 8
+                (lambda (x y)
+                  (let ((p (vector-ref (vector-ref tn-q8-units (quotient x 2)) (quotient y 2))))
+                    (+ (* 2 (car p)) (modulo (+ (remainder x 2) (remainder y 2) (cdr p)) 2))))))
+
+;; G x H on the elements 0 .. |G||H| - 1, (g, h) encoded g |H| + h.
+(define (group-direct-product G H)
+  (let ((m (model-size H)) (mg (model-operation G 'mul)) (mh (model-operation H 'mul)))
+    (finite-group (string-append (model-name G) "x" (model-name H)) (* (model-size G) m)
+                  (lambda (x y) (+ (* m (mg (quotient x m) (quotient y m))) (mh (remainder x m) (remainder y m)))))))
+
+(define (small-groups)
+  (let ((z2 (cyclic-group 2)) (z4 (cyclic-group 4)))
+    (list (finite-group "1" 1 (lambda (a b) 0))
+          z2 (cyclic-group 3) z4 (group-direct-product z2 z2) (cyclic-group 5)
+          (cyclic-group 6) (dihedral-group 3 "S3") (cyclic-group 7) (cyclic-group 8)
+          (group-direct-product z4 z2) (group-direct-product (group-direct-product z2 z2) z2)
+          (dihedral-group 4) (quaternion-group))))
+
+;; ---------------------------------------------------------------------------
+;; Rings and modules
+;; ---------------------------------------------------------------------------
+
+;; Z/n as a finite model of commutative-ring-theory: core.ring's carrier.
+(define (zmod-ring-model n) (ring-carrier->model (make-zmod n)))
+
+;; k x k matrices over a finite model R of a ring theory, as a model of
+;; ring-theory; a matrix is the list of its entries row by row.
+(define (matrix-ring-model R k)
+  (let* ((rs (model-elements R)) (zero (model-operation R 'zero)) (one (model-operation R 'one))
+         (add (model-operation R 'add)) (neg (model-operation R 'neg)) (mul (model-operation R 'mul))
+         (idx (tn-range k))
+         (ref (lambda (a i j) (list-ref a (+ (* i k) j))))
+         (build (lambda (f) (apply append (map (lambda (i) (map (lambda (j) (f i j)) idx)) idx)))))
+    (make-model ring-theory (string-append "M" (number->string k) "(" (model-name R) ")")
+                'operations
+                (list (cons 'zero (build (lambda (i j) zero)))
+                      (cons 'one (build (lambda (i j) (if (= i j) one zero))))
+                      (cons 'add (lambda (a b) (map (lambda (x y) (add x y)) a b)))
+                      (cons 'neg (lambda (a) (map (lambda (x) (neg x)) a)))
+                      (cons 'mul (lambda (a b)
+                                   (build (lambda (i j)
+                                            (fold-left (lambda (s l) (add s (mul (ref a i l) (ref b l j)))) zero idx))))))
+                'elements (tn-tuples rs (* k k))
+                'equal? (lambda (a b) (let loop ((a a) (b b)) (or (null? a) (and (model-equal? R (car a) (car b)) (loop (cdr a) (cdr b)))))))))
+
+;; A finite R-module from its abelian group and a scalar action
+;; (scale r x), as a model of (module-theory R).
+(define (make-module R name elements zero add neg scale)
+  (make-model (module-theory R) name
+              'operations (append (list (cons 'zero zero) (cons 'add add) (cons 'neg neg))
+                                  (map (lambda (r) (cons (list 'scale r) (lambda (x) (scale r x)))) (model-elements R)))
+              'elements elements))
+;; R as a module over itself.
+(define (regular-module R)
+  (make-module R (model-name R) (model-elements R) (model-operation R 'zero)
+               (model-operation R 'add) (model-operation R 'neg) (model-operation R 'mul)))
+
+;; ---------------------------------------------------------------------------
+;; Lattices, Heyting and Boolean algebras from a finite order
+;; ---------------------------------------------------------------------------
+
+;; The greatest lower bound and least upper bound of a and b in the order
+;; leq on elements, or a theory-not-a-lattice refusal.
+(define (tn-bound elements leq a b lower?)
+  (let* ((cands (filter (lambda (z) (if lower? (and (leq z a) (leq z b)) (and (leq a z) (leq b z)))) elements))
+         (best (tn-find (lambda (z) (tn-all? (lambda (w) (if lower? (leq w z) (leq z w))) cands)) cands)))
+    (or best (error "theory-not-a-lattice" 'finite-lattice elements))))
+(define (tn-table elements f)
+  (map (lambda (a) (cons a (map (lambda (b) (cons b (f a b))) elements))) elements))
+(define (tn-lookup table a b) (cdr (assoc b (cdr (assoc a table)))))
+
+(define (finite-lattice name elements leq)
+  (let ((meet (tn-table elements (lambda (a b) (tn-bound elements leq a b #t))))
+        (join (tn-table elements (lambda (a b) (tn-bound elements leq a b #f)))))
+    (make-model lattice-theory name
+                'operations (list (cons 'meet (lambda (a b) (tn-lookup meet a b)))
+                                  (cons 'join (lambda (a b) (tn-lookup join a b))))
+                'elements elements
+                'extra (list (cons 'order leq)))))
+;; The order of a lattice model: a <= b iff a /\ b = a.
+(define (lattice-order L)
+  (let ((meet (model-operation L 'meet))) (lambda (a b) (model-equal? L (meet a b) a))))
+
+(define (chain-lattice k)
+  (finite-lattice (string-append "C" (number->string k)) (tn-range k) (lambda (a b) (<= a b))))
+(define (tn-divisors n) (filter (lambda (d) (= 0 (remainder n d))) (cdr (tn-range (+ n 1)))))
+(define (divisor-lattice n)
+  (finite-lattice (string-append "Div(" (number->string n) ")") (tn-divisors n)
+                  (lambda (a b) (= 0 (remainder b a)))))
+;; M3: 0 below three incomparable atoms 1, 2, 3 below 4.
+(define (diamond-lattice)
+  (finite-lattice "M3" '(0 1 2 3 4) (lambda (a b) (or (= a b) (= a 0) (= b 4)))))
+;; N5: 0 < 1 < 2 < 4 and 0 < 3 < 4.
+(define (pentagon-lattice)
+  (finite-lattice "N5" '(0 1 2 3 4)
+                  (lambda (a b) (or (= a b) (= a 0) (= b 4) (and (= a 1) (= b 2))))))
+
+;; A finite lattice with its bounds and relative pseudo-complement
+;; a -> b = the largest z with z /\ a <= b, as a model of
+;; heyting-algebra-theory; refused when the largest such z does not exist.
+(define (finite-heyting-algebra name elements leq)
+  (let* ((L (finite-lattice name elements leq))
+         (meet (model-operation L 'meet)) (join (model-operation L 'join))
+         (bottom (tn-find (lambda (z) (tn-all? (lambda (w) (leq z w)) elements)) elements))
+         (top (tn-find (lambda (z) (tn-all? (lambda (w) (leq w z)) elements)) elements))
+         (implies (tn-table elements
+                            (lambda (a b)
+                              (let* ((cands (filter (lambda (z) (leq (meet z a) b)) elements))
+                                     (best (tn-find (lambda (z) (tn-all? (lambda (w) (leq w z)) cands)) cands)))
+                                (or best (error "theory-not-a-lattice" 'finite-heyting-algebra elements)))))))
+    (make-model heyting-algebra-theory name
+                'operations (list (cons 'bottom bottom) (cons 'top top) (cons 'meet meet) (cons 'join join)
+                                  (cons 'implies (lambda (a b) (tn-lookup implies a b))))
+                'elements elements
+                'extra (list (cons 'order leq)))))
+
+;; The subsets of {0, ..., n-1} as ascending lists.
+(define (tn-subsets n)
+  (if (= n 0) (list '())
+      (let ((rest (tn-subsets (- n 1))))
+        (append rest (map (lambda (s) (append s (list (- n 1)))) rest)))))
+(define (tn-member? x s) (and (memv x s) #t))
+(define (powerset-boolean-algebra n)
+  (let ((all (tn-range n)))
+    (make-model boolean-algebra-theory (string-append "P(" (number->string n) ")")
+                'operations (list (cons 'bottom '()) (cons 'top all)
+                                  (cons 'meet (lambda (a b) (filter (lambda (x) (tn-member? x b)) a)))
+                                  (cons 'join (lambda (a b) (filter (lambda (x) (or (tn-member? x a) (tn-member? x b))) all)))
+                                  (cons 'complement (lambda (a) (filter (lambda (x) (not (tn-member? x a))) all))))
+                'elements (tn-subsets n))))
+;; The divisors of a squarefree n under gcd, lcm and d -> n/d.
+(define (divisor-boolean-algebra n)
+  (make-model boolean-algebra-theory (string-append "Div(" (number->string n) ")")
+              'operations (list (cons 'bottom 1) (cons 'top n)
+                                (cons 'meet (lambda (a b) (gcd a b))) (cons 'join (lambda (a b) (lcm a b)))
+                                (cons 'complement (lambda (a) (quotient n a))))
+              'elements (tn-divisors n)
+              'equal? (lambda (a b) (= a b))))

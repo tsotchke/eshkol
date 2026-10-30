@@ -2535,6 +2535,21 @@ oracles:
         label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
         action: ./scripts/run_ring_gate.sh
 
+      # core.theory (ADR-0039): algebraic theories as first-class data.
+      # Producer: scripts/run_theory_gate.sh runs the four CTest entries that
+      # own the behaviour (theory_test and theory_topos_test, each in JIT and
+      # AOT), the core.ring law gate entries the theory law check now carries
+      # (ring_jit/aot), and every documentation example on theory.md; PASS
+      # only when all of them ran and passed.
+      - id: v14_algebraic_theories
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_algebraic_theories"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.theory (ADR-0039): signatures, terms, equational theories and models as data; the catalogue (semigroups, monoids, groups, abelian groups, rings, commutative rings, R-modules, lattices, distributive lattices, Boolean and Heyting algebras); laws exhaustive on finite models (the fourteen groups of order <= 8, Z/n, M2(Z/2), modules, lattices, Omega_J(c) of core.topos) and seeded on infinite ones; homomorphisms, products, congruences, quotients; free models with the word problem decided for every catalogue theory; the Lawvere theory with composition by substitution and finite products; core.ring carriers as models of commutative-ring-theory with ring-law-violations on the shared law check; theory_jit/aot, theory_topos_jit/aot, ring_jit/aot and the reference-page examples all pass'
+        action: ./scripts/run_theory_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.

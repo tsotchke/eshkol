@@ -8,6 +8,7 @@ sources:
   - lib/core/algebraic_domain.esk
   - tests/stdlib/ring_test.esk
   - tests/stdlib/ring_ieee_test.esk
+  - lib/core/theory/equational.esk
 ---
 
 # `core.ring` — ring carriers
@@ -86,6 +87,7 @@ A carrier is a versioned descriptor. `(ring-ref R key)` reads a field:
 | `nilpotency` `base` `primal` | n for K[e]/e^n, the base carrier, the map e -> 0 |
 | `from-rational` `admit-rational` `constant` | the implicit map Q -> R (a Q-algebra), the explicit partial map Q -> Z/m, the map K -> R for a carrier over K |
 | `order` `euclidean` `analytic` `nilpotent?` `divide` | optional capabilities; absent capabilities are `#f` |
+| `integral-domain` `exact-quotient` | no zero divisors (declared by Z and by K[x] over a domain; every field is one); `(q a b)` = a / b when b divides a |
 | `name` `family` `family-id` `parameters` `abi-version` | identity |
 
 `(ring-carrier? x)` recognises a descriptor. `(ring-carrier-name R)`,
@@ -302,16 +304,34 @@ A ring map is first-class: `(make-ring-map source target proc [name])`,
 
 ## Linear algebra over a carrier
 
-`(ring-det K matrix)` and `(ring-solve K A b)` eliminate over any carrier with
-unit pivots (every nonzero pivot over a field). A column whose remaining
-entries are all zero gives determinant zero; a column with nonzero entries but
-no unit is refused with `ring-not-a-unit`, as is a singular system in
-`ring-solve`. Matrices are vectors or lists of rows. These are the generic
-eliminations [`core.multimodular`](multimodular.md) runs in each fibre.
+`(ring-det K matrix)` is one determinant whose elimination follows the
+carrier's declared structure:
+
+- over a field, Gaussian elimination with unit pivots (every nonzero pivot);
+- over an integral domain with exact quotients (Z, K[x] over a domain, any
+  carrier declaring `integral-domain` and `exact-quotient`), fraction-free
+  Bareiss elimination: any nonzero pivot, each step divided exactly by the
+  previous pivot, so no unit pivot is ever needed (a unimodular integer
+  matrix such as `((2 3) (3 5))` has determinant 1 though its first column
+  holds no unit);
+- over any other carrier (Z/m for composite m, jets) pivots must be units: a
+  column whose remaining entries are all zero gives determinant zero, and a
+  column with nonzero entries but no unit is refused with `ring-not-a-unit`.
+
+`(ring-solve K A b)` needs inverses and keeps unit pivots: a system without
+a unit pivot, or a singular one, is refused with `ring-not-a-unit`. Matrices
+are vectors or lists of rows. Over the fields Z/p these are the eliminations
+[`core.multimodular`](multimodular.md) runs in each fibre.
 
 ```scheme
 (require core.ring)
 (display (ring-det rationals '((2 1) (1 3)))) ;; => 5
+(newline)
+(display (ring-det integers '((2 3) (3 5)))) ;; => 1
+(newline)
+(define Zx (make-polys integers))
+(define x (ring-poly-variable Zx))
+(display (ring-poly-coefficients (ring-det Zx (list (list x 2) (list 3 x))))) ;; => (-6 0 1)
 (newline)
 (display (ring-det (make-zmod 7) '((2 1) (1 3)))) ;; => 5
 (newline)
@@ -349,6 +369,27 @@ is guarded by its `unit?`, so a non-unit is refused by name.
   'zero 0 'one 1 'add (lambda (a b) (- a b)) 'neg (lambda (a) (- a)) 'mul *
   'from-integer (lambda (n) n) 'equal? = 'unit? (lambda (a) (= (abs a) 1)) 'inverse (lambda (a) a)))
 (display (car (ring-law-violations bad '(1 2 3)))) ;; => (additive-inverse 1)
+```
+
+The ring laws checked here are `ring-law-equations`, a list of
+`(name lhs rhs)` laws over the operation symbols `zero one add neg mul`, and
+the check is `(law-violations op-of arity-of same laws samples)`: every law
+under every assignment of the samples, extended one variable at a time, with
+the laws of each number of variables checked at that prefix; `op-of` gives an
+operation's procedure (its value at arity 0) and `arity-of` its arity.
+`(law-term->procedure op-of arity-of term vars)` compiles one term to a
+procedure of a vector of values. [`core.theory`](theory.md) checks the laws of
+every algebraic theory with them.
+
+```scheme
+(require core.ring)
+(define Z4 (make-zmod 4))
+(define (op-of op) (ring-ref Z4 op))
+(define (arity-of op) (cdr (assq op '((zero . 0) (one . 0) (add . 2) (neg . 1) (mul . 2)))))
+(display (law-violations op-of arity-of (lambda (a b) (= a b)) ring-law-equations '(0 1 2 3))) ;; => ()
+(newline)
+;; x * x = x fails at 2 and 3 in Z/4
+(display (law-violations op-of arity-of (lambda (a b) (= a b)) (list (list 'idempotent '(mul x x) 'x)) '(0 1 2 3))) ;; => ((idempotent 2) (idempotent 3))
 ```
 
 `make-family-carrier` builds a carrier of a registered family (core.algebraic_domain

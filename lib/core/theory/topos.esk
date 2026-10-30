@@ -1,0 +1,52 @@
+;;; core.theory.topos -- the truth values of a topos of a finite site as a
+;;; model of the theory of Heyting algebras.
+;;;
+;;; ADR-0039. (topos-omega-model T c) is Omega_J(c), the closed sieves on the
+;;; object c of the site of the core.topos topos T, with core.topos's own
+;;; operations: top the maximal sieve, bottom the closure of the empty sieve,
+;;; meet the intersection, join the closure of the union and implies the
+;;; largest closed R with R /\ S <= Q. It is a finite model of
+;;; heyting-algebra-theory, so core.theory checks the Heyting laws on it
+;;; exhaustively; it satisfies boolean-algebra-theory's laws (with
+;;; complement x = x -> bottom) exactly when topos-omega-boolean? says so.
+;;; (topos-omega-restriction T f) is the restriction Omega_J(U) -> Omega_J(V)
+;;; along f : V -> U, a homomorphism of Heyting algebras.
+;;;
+;;; Sources: S. Mac Lane, I. Moerdijk, "Sheaves in Geometry and Logic"
+;;; (1992), I.8 and III.8 (Omega is an internal Heyting algebra); P. T.
+;;; Johnstone, "Sketches of an Elephant" (2002), A1.6.3.
+
+(require core.theory.equational)
+(require core.sheaf.site)
+(require core.topos)
+
+(provide topos-omega-model topos-omega-boolean-model topos-omega-restriction)
+
+(define (topos-omega-model T c)
+  (make-model heyting-algebra-theory
+              (string-append "Omega(" (number->string c) ")")
+              'operations (list (cons 'bottom (topos-omega-bottom T c)) (cons 'top (topos-omega-top T c))
+                                (cons 'meet (lambda (s r) (topos-omega-meet T c s r)))
+                                (cons 'join (lambda (s r) (topos-omega-join T c s r)))
+                                (cons 'implies (lambda (s q) (topos-omega-implies T c s q))))
+              'elements (topos-closed-sieves T c)
+              'extra (list (cons 'topos T) (cons 'object c))))
+
+;; Omega_J(c) read as a Boolean algebra with complement x -> bottom; its
+;; laws hold exactly when Omega_J(c) is Boolean.
+(define (topos-omega-boolean-model T c)
+  (make-model boolean-algebra-theory
+              (string-append "Omega(" (number->string c) ")")
+              'operations (list (cons 'bottom (topos-omega-bottom T c)) (cons 'top (topos-omega-top T c))
+                                (cons 'meet (lambda (s r) (topos-omega-meet T c s r)))
+                                (cons 'join (lambda (s r) (topos-omega-join T c s r)))
+                                (cons 'complement (lambda (s) (topos-omega-not T c s))))
+              'elements (topos-closed-sieves T c)))
+
+;; The restriction of truth values along f : V -> U: the pullback sieve
+;; f*(S) = {g : W -> V | f g in S}, closed when S is.
+(define (topos-omega-restriction T f)
+  (let* ((C (topos-category T)) (V (arrow-source C f)))
+    (lambda (S)
+      (filter (lambda (g) (if (memv (category-compose C f g) S) #t #f))
+              (category-arrows-into C V)))))

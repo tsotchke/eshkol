@@ -1,0 +1,35 @@
+;;; core.theory -- algebraic theories as first-class data, as one library.
+;;;
+;;; Usage: (require core.theory)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.theory.equational  signatures, terms, substitution, theories (the
+;;;                           catalogue: semigroups, monoids, groups, abelian
+;;;                           groups, rings, commutative rings, R-modules,
+;;;                           lattices, distributive lattices, Boolean and
+;;;                           Heyting algebras), models, the law check,
+;;;                           homomorphisms, products, congruences, quotients,
+;;;                           interpretations, finite coalgebras
+;;;   core.theory.free        free models on finite generators and the word
+;;;                           problem for every catalogue theory
+;;;   core.theory.finite      finite models: the groups of order <= 8, Z/n and
+;;;                           matrix rings, modules, lattices, Heyting and
+;;;                           Boolean algebras
+;;;   core.theory.lawvere     the Lawvere theory L_T as a category with finite
+;;;                           products, models as product-preserving functors,
+;;;                           interpretations between the catalogue theories
+;;; and, separately (it loads core.topos):
+;;;   core.theory.topos       the truth values Omega_J(c) of a topos of a finite
+;;;                           site as a model of heyting-algebra-theory
+;;;
+;;; core.ring's carriers are models of commutative-ring-theory through
+;;; ring-carrier->model, and every theory's laws are checked by core.ring's
+;;; law-violations, the procedure ring-law-violations uses for the ring laws.
+;;;
+;;; Reference: docs/reference/stdlib/theory.md; design: ADR-0039
+;;; (docs/design/adr/0039-lawvere-theories.md).
+
+(require core.theory.equational)
+(require core.theory.free)
+(require core.theory.finite)
+(require core.theory.lawvere)

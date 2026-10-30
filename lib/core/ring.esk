@@ -66,6 +66,8 @@
   ring-poly-evaluation group-ring-character
   ;; algorithms over a carrier
   ring-det ring-solve ring-law-violations exact-prime?
+  ;; the equational law check, shared with core.theory (ADR-0039)
+  ring-law-equations law-violations law-term->procedure
   ;; interoperation with core.symbolic coefficient fields
   coefficient-field->ring ring->coefficient-field)
 
@@ -257,6 +259,13 @@
 (define (rc-extra R key) (let ((p (assq key (vector-ref R 30)))) (if p (cdr p) #f)))
 ;; A family's own data, by key (#f when absent).
 (define (ring-carrier-extra R key) (rc-extra (rc-check R "ring-carrier-extra") key))
+;; An integral domain: a field, or a carrier that declares 'integral-domain.
+(define (rc-integral-domain? K) (or (vector-ref K 7) (rc-extra K 'integral-domain)))
+;; a / b for b dividing a: declared by the carrier, or a * b^-1 over a field.
+(define (rc-exact-quotient K)
+  (or (rc-extra K 'exact-quotient)
+      (and (vector-ref K 7)
+           (let ((mul (vector-ref K 16)) (inv (vector-ref K 20))) (lambda (a b) (mul a (inv b)))))))
 
 ;; ===========================================================================
 ;; Exact -> binary64, rounded once to nearest, ties to even
@@ -329,7 +338,13 @@
                                        (lambda (a b) (if (= b 0) (rc-refuse 'ring-not-a-unit 'r-remainder "Z" b) (remainder a b)))
                                        (lambda (a) (abs a))))
               (cons 'nilpotent? (lambda (a) (= a 0)))
-              (cons 'self-locating? #t))))))
+              (cons 'self-locating? #t)
+              (cons 'extra (list (cons 'integral-domain #t)
+                                 (cons 'exact-quotient
+                                       (lambda (a b)
+                                         (if (and (not (= b 0)) (= (remainder a b) 0))
+                                             (quotient a b)
+                                             (error "exact quotient in Z: the divisor does not divide" a b)))))))))))
 
 (define rc-Q
   (rc-intern 2 '()
@@ -896,6 +911,32 @@
                     (if (null? cs) a
                         (let ((inv (kinv (list-ref cs (- (length cs) 1)))))
                           (wrap (map (lambda (c) (kmul inv c)) cs)))))))
+         (kquot (rc-exact-quotient K))
+         ;; a / b when b divides a, over a coefficient domain with exact
+         ;; quotients: long division by the leading coefficient of b.
+         (exact-quotient
+          (and kquot (rc-integral-domain? K)
+               (lambda (a b)
+                 (let ((cb (cs-of b)))
+                   (if (null? cb) (error "exact quotient in K[x]: division by zero" name))
+                   (let* ((db (- (length cb) 1)) (lb (list-ref cb db)) (vb (list->vector cb)))
+                     (let loop ((r (list->vector (cs-of a))) (q '()))
+                       (let ((dr (let find ((k (- (vector-length r) 1)))
+                                   (cond ((< k 0) -1) ((kzero? (vector-ref r k)) (find (- k 1))) (else k)))))
+                         (cond
+                           ((< dr 0) (wrap q))
+                           ((< dr db) (error "exact quotient in K[x]: the divisor does not divide" name))
+                           (else
+                            (let* ((c (kquot (vector-ref r dr) lb)) (shift (- dr db)) (r2 (vector-copy r)))
+                              (vector-set! r2 dr kzero)
+                              (let sub ((j 0))
+                                (if (< j db)
+                                    (begin
+                                      (vector-set! r2 (+ j shift)
+                                        (kadd (vector-ref r2 (+ j shift)) (kneg (kmul c (vector-ref vb j)))))
+                                      (sub (+ j 1)))))
+                              (loop r2 (add-lists q (append (let z ((k shift) (acc '())) (if (= k 0) acc (z (- k 1) (cons kzero acc))))
+                                                            (list c))))))))))))))
          (P (rc-descriptor 6 'polys (list K var) name
               (list (cons 'characteristic (vector-ref K 6)) (cons 'field? #f)
                     (cons 'lawful? (vector-ref K 8)) (cons 'exact? (vector-ref K 9))
@@ -918,7 +959,9 @@
                                                  monic)
                                          #f))
                     (cons 'self-locating? #t)
-                    (cons 'extra (list (cons 'variable var)))))))
+                    (cons 'extra (list (cons 'variable var)
+                                       (cons 'integral-domain (if (rc-integral-domain? K) #t #f))
+                                       (cons 'exact-quotient exact-quotient)))))))
     (vector-set! box 0 P)
     (vector-set! P 12 (wrap '()))
     (vector-set! P 13 (constant kone))
@@ -1137,13 +1180,52 @@
                                      (else (error (string-append who ": expected a matrix row") row))))))
           rows))))
 
-;; The determinant over K by Gaussian elimination. A pivot must be a unit of
-;; K (every nonzero element over a field); a column whose remaining entries
-;; are zero gives determinant zero, and a column with nonzero entries but no
-;; unit is refused (ring-not-a-unit) rather than guessed.
+;; The determinant over K. Over a field, Gaussian elimination with unit
+;; pivots. Over an integral domain with exact quotients (Z, K[x] over a
+;; domain, ...), fraction-free Bareiss elimination: any nonzero pivot, each
+;; step divided exactly by the previous pivot, so no unit is ever needed.
+;; Over any other carrier pivots must be units; a column whose remaining
+;; entries are zero gives determinant zero, and a column with nonzero
+;; entries but no unit is refused (ring-not-a-unit) rather than guessed.
 (define (ring-det K m0)
   (rc-check K "ring-det")
-  (let* ((m (rc-matrix K m0 'ring-det)) (n (vector-length m))
+  (if (and (not (vector-ref K 7)) (rc-integral-domain? K) (rc-exact-quotient K))
+      (rc-det-fraction-free K (rc-matrix K m0 'ring-det))
+      (rc-det-unit-pivots K (rc-matrix K m0 'ring-det))))
+
+(define (rc-det-fraction-free K m)
+  (let* ((n (vector-length m)) (zero (vector-ref K 12)) (one (vector-ref K 13))
+         (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
+         (same (vector-ref K 18)) (quot (rc-exact-quotient K))
+         (zero? (lambda (x) (same x zero))))
+    (if (= n 0)
+        one
+        (let col ((k 0) (sign #f) (prev one))
+          (if (= k (- n 1))
+              (let ((d (vector-ref (vector-ref m k) k))) (if sign (neg d) d))
+              (let find ((p k))
+                (cond
+                  ((= p n) zero)
+                  ((zero? (vector-ref (vector-ref m p) k)) (find (+ p 1)))
+                  (else
+                   (if (not (= p k))
+                       (let ((tmp (vector-ref m p))) (vector-set! m p (vector-ref m k)) (vector-set! m k tmp)))
+                   (let* ((rowk (vector-ref m k)) (pivot (vector-ref rowk k)))
+                     (let rows ((i (+ k 1)))
+                       (if (< i n)
+                           (let* ((rowi (vector-ref m i)) (lead (vector-ref rowi k)))
+                             (let cols ((j (+ k 1)))
+                               (if (< j n)
+                                   (begin
+                                     (vector-set! rowi j
+                                       (quot (add (mul (vector-ref rowi j) pivot) (neg (mul lead (vector-ref rowk j)))) prev))
+                                     (cols (+ j 1)))))
+                             (vector-set! rowi k zero)
+                             (rows (+ i 1)))))
+                     (col (+ k 1) (if (= p k) sign (not sign)) pivot))))))))))
+
+(define (rc-det-unit-pivots K m)
+  (let* ((n (vector-length m))
          (zero (vector-ref K 12)) (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
          (same (vector-ref K 18)) (unit? (vector-ref K 19)) (inv (vector-ref K 20))
          (zero? (lambda (x) (same x zero))))
@@ -1215,6 +1297,88 @@
                  (col (+ k 1))))))))))
 
 ;; ===========================================================================
+;; The equational law check (ADR-0039)
+;; ===========================================================================
+;;
+;; A law is (name lhs rhs) with terms over operation symbols: a variable is a
+;; symbol, an application (op t ...). (law-term->procedure op-of arity-of t
+;; vars) compiles a term to a procedure of one vector holding the values of
+;; vars; op-of gives an operation's procedure (its value when the arity is 0).
+;; (law-violations op-of arity-of same laws samples) evaluates every law
+;; under every assignment of the samples, extending an assignment one
+;; variable at a time and checking at each prefix the laws with exactly that
+;; many variables; a violation is (name value ...). core.theory checks the
+;; laws of every algebraic theory with it; the ring laws below are its
+;; theory of commutative rings.
+
+(define ring-law-equations
+  (list (list 'additive-identity '(add x (zero)) 'x)
+        (list 'multiplicative-identity '(mul x (one)) 'x)
+        (list 'additive-inverse '(add x (neg x)) '(zero))
+        (list 'additive-commutativity '(add x y) '(add y x))
+        (list 'multiplicative-commutativity '(mul x y) '(mul y x))
+        (list 'additive-associativity '(add (add x y) z) '(add x (add y z)))
+        (list 'multiplicative-associativity '(mul (mul x y) z) '(mul x (mul y z)))
+        (list 'distributivity '(mul x (add y z)) '(add (mul x y) (mul x z)))))
+
+(define (rc-law-vars t acc)
+  (cond ((symbol? t) (if (memq t acc) acc (append acc (list t))))
+        ((pair? t) (rc-law-vars-list (cdr t) acc))
+        (else acc)))
+(define (rc-law-vars-list ts acc) (if (null? ts) acc (rc-law-vars-list (cdr ts) (rc-law-vars (car ts) acc))))
+(define (rc-law-position vars t)
+  (let find ((vs vars) (i 0))
+    (cond ((null? vs) (error "law-term->procedure: a variable outside the given list" t))
+          ((eq? (car vs) t) i)
+          (else (find (cdr vs) (+ i 1))))))
+(define (rc-law-compile-list op-of arity-of vars ts)
+  (if (null? ts) '() (cons (law-term->procedure op-of arity-of (car ts) vars) (rc-law-compile-list op-of arity-of vars (cdr ts)))))
+(define (rc-law-apply-all args env) (if (null? args) '() (cons ((car args) env) (rc-law-apply-all (cdr args) env))))
+(define (law-term->procedure op-of arity-of t vars)
+  (cond
+    ((symbol? t) (let ((i (rc-law-position vars t))) (lambda (env) (vector-ref env i))))
+    ((pair? t)
+     (let ((n (arity-of (car t))) (f (op-of (car t))))
+       (if (not (and n (list? (cdr t)) (= n (length (cdr t)))))
+           (error "law-term->procedure: operation applied to this many arguments, expected this arity" t (if (list? (cdr t)) (length (cdr t)) #f) n))
+       (let ((args (rc-law-compile-list op-of arity-of vars (cdr t))))
+         (cond ((= n 0) (lambda (env) f))
+               ((= n 1) (let ((a (car args))) (lambda (env) (f (a env)))))
+               ((= n 2) (let ((a (car args)) (b (cadr args))) (lambda (env) (f (a env) (b env)))))
+               (else (lambda (env) (apply f (rc-law-apply-all args env))))))))
+    (else (error "law-term->procedure: not a term" t))))
+
+(define (law-violations op-of arity-of same laws samples)
+  (let* ((compiled (map (lambda (e)
+                          (let ((vs (rc-law-vars-list (cdr e) '())))
+                            (list (length vs) (car e)
+                                  (law-term->procedure op-of arity-of (cadr e) vs)
+                                  (law-term->procedure op-of arity-of (caddr e) vs))))
+                        laws))
+         (depth (fold-left (lambda (m c) (max m (car c))) 0 compiled))
+         (buckets (make-vector (+ depth 1) '()))
+         (env (make-vector depth #f))
+         (bad (vector '())))
+    (for-each (lambda (c) (vector-set! buckets (car c) (append (vector-ref buckets (car c)) (list c)))) compiled)
+    (rc-law-assign! same buckets env bad samples 0 depth)
+    (reverse (vector-ref bad 0))))
+(define (rc-law-assign! same buckets env bad samples k depth)
+  (rc-law-check! same (vector-ref buckets k) env bad k)
+  (if (< k depth) (rc-law-each! same buckets env bad samples samples k depth)))
+(define (rc-law-each! same buckets env bad samples xs k depth)
+  (if (pair? xs)
+      (begin (vector-set! env k (car xs))
+             (rc-law-assign! same buckets env bad samples (+ k 1) depth)
+             (rc-law-each! same buckets env bad samples (cdr xs) k depth))))
+(define (rc-law-check! same cs env bad k)
+  (if (pair? cs)
+      (let ((c (car cs)))
+        (if (not (same ((caddr c) env) ((cadddr c) env)))
+            (vector-set! bad 0 (cons (cons (cadr c) (rc-law-prefix env k)) (vector-ref bad 0))))
+        (rc-law-check! same (cdr cs) env bad k))))
+(define (rc-law-prefix env k) (let loop ((i (- k 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons (vector-ref env i) acc)))))
+
+;; ===========================================================================
 ;; The law check (ADR-0034 section 4)
 ;; ===========================================================================
 ;;
@@ -1225,6 +1389,18 @@
 ;; and the declared characteristic. It returns the violations as lists
 ;; (law element ...); the empty list means every law held. The IEEE tier
 ;; and the native tower are not rings, and are refused.
+;;
+;; The ring laws are ring-law-equations, checked by law-violations (the law
+;; check core.theory uses for every algebraic theory); the unit group,
+;; from-integer and the characteristic are the carrier protocol's own
+;; declarations and are checked here.
+
+;; The ring operations by their names in ring-law-equations.
+(define (rc-law-operation R op)
+  (cond ((eq? op 'zero) (vector-ref R 12)) ((eq? op 'one) (vector-ref R 13)) ((eq? op 'add) (vector-ref R 14))
+        ((eq? op 'neg) (vector-ref R 15)) ((eq? op 'mul) (vector-ref R 16)) (else #f)))
+(define (rc-law-arity op)
+  (cond ((or (eq? op 'zero) (eq? op 'one)) 0) ((eq? op 'neg) 1) ((or (eq? op 'add) (eq? op 'mul)) 2) (else #f)))
 
 (define rc-default-integer-samples
   (list 0 1 -1 2 -3 7 1000003 4611686018427387904 9223372036854775807 -9223372036854775808
@@ -1239,28 +1415,15 @@
          (zero (vector-ref R 12)) (one (vector-ref R 13))
          (add (vector-ref R 14)) (neg (vector-ref R 15)) (mul (vector-ref R 16))
          (fi (vector-ref R 17)) (same (vector-ref R 18)) (unit? (vector-ref R 19)) (inv (vector-ref R 20))
-         (bad '())
+         (bad (reverse (law-violations (lambda (op) (rc-law-operation R op)) (lambda (op) (rc-law-arity op))
+                                       (lambda (a b) (same a b)) ring-law-equations xs)))
          (note! (lambda (v) (set! bad (cons v bad)))))
     (for-each
      (lambda (a)
-       (if (not (same (add a zero) a)) (note! (list 'additive-identity a)))
-       (if (not (same (mul a one) a)) (note! (list 'multiplicative-identity a)))
-       (if (not (same (add a (neg a)) zero)) (note! (list 'additive-inverse a)))
        (if (unit? a)
            (if (not (same (mul a (inv a)) one)) (note! (list 'unit-inverse a)))
            (if (not (guard (e ((eq? (ring-refusal-kind e) 'ring-not-a-unit) #t) (else #f)) (inv a) #f))
-               (note! (list 'non-unit-refusal a))))
-       (for-each
-        (lambda (b)
-          (if (not (same (add a b) (add b a))) (note! (list 'additive-commutativity a b)))
-          (if (not (same (mul a b) (mul b a))) (note! (list 'multiplicative-commutativity a b)))
-          (for-each
-           (lambda (c)
-             (if (not (same (add (add a b) c) (add a (add b c)))) (note! (list 'additive-associativity a b c)))
-             (if (not (same (mul (mul a b) c) (mul a (mul b c)))) (note! (list 'multiplicative-associativity a b c)))
-             (if (not (same (mul a (add b c)) (add (mul a b) (mul a c)))) (note! (list 'distributivity a b c))))
-           xs))
-        xs))
+               (note! (list 'non-unit-refusal a)))))
      xs)
     (if (not (same (fi 0) zero)) (note! (list 'from-integer-zero)))
     (if (not (same (fi 1) one)) (note! (list 'from-integer-one)))
