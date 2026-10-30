@@ -830,6 +830,7 @@ are not yet scheduled to a specific release.
 ### v1.9.0 (per ADR-0004/ADR-0007, ADR-0000 Stage 12)
 
 - **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: Refinement types, effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
+- **Row polymorphism, higher-rank types, session types (ADR-0046)**: extensible records with principal row types and width subtyping (`core.records`), predicative arbitrary-rank polymorphism checked bidirectionally, binary session types with duality and exactly-once endpoints over local channels and TCP (`core.sessions`); compile-time errors on JIT, AOT and the bytecode VM — see [structural-types.md](reference/language/structural-types.md)
 - **Whole-Program Optimization + polyhedral loop optimization (BUILD ITEM, moved from v1.3-evolve, ADR-0007)**: no closed-world root analysis, no LTO/ThinLTO exists yet
 
 ### v2.0-starlight (target: Q4 2028)

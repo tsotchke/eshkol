@@ -1043,9 +1043,9 @@ single-machine platform surface.
 - [ ] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration)
 - [ ] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level)
 - [ ] Algebraic effects and handlers (structured side-effect management)
-- [ ] Row polymorphism for records (structural subtyping)
-- [ ] Higher-rank types (rank-2 polymorphism for combinators)
-- [ ] Session types for communication protocols
+- [x] Row polymorphism for records (structural subtyping) (ADR-0046)
+- [x] Higher-rank types (rank-2 polymorphism for combinators) (ADR-0046)
+- [x] Session types for communication protocols (ADR-0046)
 - [ ] `IncrementalizePass` (DBSP incrementalization as a compiler pass)
 
 ---
