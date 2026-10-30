@@ -4324,6 +4324,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# Scoped hawkes-forecast consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-forecast/CTest.cmake")
+
 # core.ring and core.multimodular (ADR-0034, library rung): the ring-law gate
 # (exhaustive on small lawful carriers, seeded on infinite ones, refusals,
 # coercion lattice, ring maps), the IEEE tier against its per-operation
@@ -11882,6 +11885,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
         )
     endif()
 endif()
+
+# Scoped hawkes-staging consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-staging/CTest.cmake")
 
 # ===== SDNC training-mode module: weight-matrix backward pass ==========# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
 # analytical forward constructor in weight_matrices.c: it differentiates the

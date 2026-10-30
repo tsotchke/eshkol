@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "model": "coupled Hawkes reduced mean generator, w=wn/4",
+  "residual_rows": 4,
+  "native_test_values": 128,
+  "producer_free_checks": 9,
+  "engines": [
+    "jit",
+    "aot-O2"
+  ],
+  "independent_oracle": "full-source invariant identities and exact five-variable polynomial equality",
+  "specialization_seconds": 0.326936927,
+  "residual_check_seconds": 0.009691808,
+  "construction_wall_seconds": 56.85284478898393,
+  "independent_replay_wall_seconds": 18.844610729953274,
+  "emitted_jit_wall_seconds": 2.8050053999759257,
+  "aot_O2_compile_wall_seconds": 12.932458170049358,
+  "aot_execution_wall_seconds": 0.012931148987263441,
+  "charged_deployment_seconds": 88.64284483797383,
+  "performance_claim": "deployment costs measured; no amortized speedup established",
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "files_sha256": {
+    "repro/hawkes-staging/staging.esk": "95c6082650ed5d1c186b400a9323769e7ec5838a128a9d344b9d7579878aa8f7",
+    "repro/hawkes-staging/staging_test.esk": "ff0c6decd54bd547e8e148076f975eea87e8a22dde600425d29ff10042a621d6",
+    "repro/hawkes-staging/run_staging_gate.py": "f3446d222649c3a0b6bc00d26ee5b81dd2fe651f7b673bbe30e1fe280010065d"
+  }
+}
