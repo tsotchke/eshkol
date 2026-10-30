@@ -1,0 +1,371 @@
+;; tests/stdlib/rigorous_numerics_test.esk
+;;
+;; ADR-0050 rigorous numerics, checked against EXACT ground truth:
+;;
+;;   1. DIRECTED ROUNDING IS THE DEFAULT  core.ad.interval operations equal
+;;      core.ad.rigorous_interval's with or without the trailing flag, and
+;;      exact endpoints stay exact.
+;;   2. RANDOMIZED CONTAINMENT  exp/log/sin/cos/atan/sqrt enclosures of
+;;      random rational intervals contain an exact rational bracket of the
+;;      true value at random rational points inside (brackets come from
+;;      exact series with proven tails written out in THIS file, independent
+;;      of the library). Rate must be 100%.
+;;   3. INTERVAL JETS  derivative enclosures contain the exact derivatives
+;;      the native AD operators produce at exact points, and closed forms.
+;;   4. COMPACT-SET BOUNDS  sup/inf over boxes against closed forms;
+;;      monotonicity pruning; band certification proven / refuted; a
+;;      compactness threshold produced from certified bounds.
+;;   5. TORUS  exact Haar / angular means, Parseval, inverse directional
+;;      derivative, resonance, chain rule through a phase map, support
+;;      disjointness, enclosure of the mean of a non-polynomial field.
+;;   6. ELEMENT TENSORS  one tensor program on numbers (native AD),
+;;      intervals, jets and Taylor models; containment of exact values.
+;;   7. TAYLOR MODELS  taylor-model-certified contains f on its domain;
+;;      tm-deriv refuses a nonzero remainder.
+
+(require core.ad.taylor_models)
+(require core.ad.interval_jet)
+(require core.ad.compact_bounds)
+(require core.torus)
+(require core.ad.interval_tensor)
+(require core.ad.tensor_tower)
+
+(define npass 0)
+(define nfail 0)
+(define (check name ok)
+  (if ok
+      (begin (set! npass (+ npass 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! nfail (+ nfail 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (ex x) (if (exact? x) x (inexact->exact x)))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+;; enclosure iv contains every point of the exact bracket br
+(define (covers? iv br) (and (<= (ex (car iv)) (car br)) (>= (ex (cdr iv)) (cdr br))))
+(define (contains? iv x) (and (<= (ex (car iv)) (ex x)) (>= (ex (cdr iv)) (ex x))))
+
+;; ── Exact ground truth (independent of the library) ──────────────────────
+(define (fact n) (let loop ((i n) (a 1)) (if (<= i 1) a (loop (- i 1) (* a i)))))
+(define (ipow b e) (let loop ((n e) (a 1)) (if (<= n 0) a (loop (- n 1) (* a b)))))
+(define (qabs q) (if (< q 0) (- q) q))
+
+;; exp(q), |q| <= 4: partial sum to N=40 plus the geometric tail bound
+;; |q|^41/41! * 1/(1 - |q|/42)
+(define (exp-bracket q)
+  (let* ((n 40)
+         (s (let loop ((i 0) (a 0)) (if (> i n) a (loop (+ i 1) (+ a (/ (ipow q i) (fact i)))))))
+         (t (* (/ (ipow (qabs q) (+ n 1)) (fact (+ n 1))) (/ 1 (- 1 (/ (qabs q) (+ n 2)))))))
+    (cons (- s t) (+ s t))))
+;; sin/cos(q), |q| <= 8: partial sums to degree 61/60, Lagrange tail
+(define (sin-bracket q)
+  (let* ((s (let loop ((k 0) (a 0)) (if (> k 30) a (loop (+ k 1) (+ a (/ (* (ipow -1 k) (ipow q (+ (* 2 k) 1))) (fact (+ (* 2 k) 1))))))))
+         (t (/ (ipow (qabs q) 63) (fact 63))))
+    (cons (- s t) (+ s t))))
+(define (cos-bracket q)
+  (let* ((s (let loop ((k 0) (a 0)) (if (> k 30) a (loop (+ k 1) (+ a (/ (* (ipow -1 k) (ipow q (* 2 k))) (fact (* 2 k))))))))
+         (t (/ (ipow (qabs q) 62) (fact 62))))
+    (cons (- s t) (+ s t))))
+;; log(q) = 2 atanh(z), z = (q-1)/(q+1); tail |z|^(2N+3) / ((2N+3)(1-z^2))
+(define (log-bracket q)
+  (let* ((z (/ (- q 1) (+ q 1))) (n 200)
+         (s (* 2 (let loop ((k 0) (a 0)) (if (> k n) a (loop (+ k 1) (+ a (/ (ipow z (+ (* 2 k) 1)) (+ (* 2 k) 1))))))))
+         (t (* 2 (/ (ipow (qabs z) (+ (* 2 n) 3)) (* (+ (* 2 n) 3) (- 1 (* z z)))))))
+    (cons (- s t) (+ s t))))
+;; atan(q), |q| <= 1/2: alternating series, tail <= first omitted term
+(define (atan-bracket q)
+  (let* ((n 50)
+         (s (let loop ((k 0) (a 0)) (if (> k n) a (loop (+ k 1) (+ a (/ (* (ipow -1 k) (ipow q (+ (* 2 k) 1))) (+ (* 2 k) 1)))))))
+         (t (/ (ipow (qabs q) (+ (* 2 n) 3)) (+ (* 2 n) 3))))
+    (cons (- s t) (+ s t))))
+;; sqrt(q) bracket from the integer square root of q * 10^40
+(define (isqrt n) (if (< n 2) n (let loop ((x n)) (let ((y (quotient (+ x (quotient n x)) 2))) (if (>= y x) x (loop y))))))
+(define (sqrt-bracket q)
+  (let* ((scale (ipow 10 20)) (m (floor (* q scale scale))) (r (isqrt m)))
+    (cons (/ r scale) (/ (+ r 1) scale))))
+
+;; deterministic generator of exact rationals
+(define seed 20261030)
+(define (rand-int m) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 7) m))
+(define (rand-rat lo hi)                 ; exact rational in [lo, hi] with denominator 1024
+  (+ lo (* (- hi lo) (/ (rand-int 1025) 1024))))
+
+;; ═══ 1. directed rounding is the default ═════════════════════════════════
+(display ";; --- core.ad.interval: directed rounding by default ---") (newline)
+(let ((a (cons 0.1 0.2)) (b (cons 0.3 0.7)))
+  (check "interval-add default = ia+" (equal? (interval-add a b) (ia+ a b)))
+  (check "interval-add flag has no further effect" (equal? (interval-add a b #t) (interval-add a b)))
+  (check "interval-mul default = ia*" (equal? (interval-mul a b) (ia* a b)))
+  (check "interval-exp default = ia-exp" (equal? (interval-exp a) (ia-exp a)))
+  (check "interval-sin default = ia-sin" (equal? (interval-sin a) (ia-sin a)))
+  (check "0.1 + 0.2 enclosure is one ulp each side"
+         (let ((r (interval-add (cons 0.1 0.1) (cons 0.2 0.2))))
+           (and (= (car r) (fl-next-down (+ 0.1 0.2))) (= (cdr r) (fl-next-up (+ 0.1 0.2)))))))
+(check "exact endpoints stay exact"
+       (equal? (interval-mul (cons 1/3 1/2) (cons -2 3)) (cons -1 3/2)))
+(check "even power of a sign-straddling interval starts at 0"
+       (equal? (interval-pow (cons -2 3) 2) (cons 0 9)))
+(check "interval-sqrt of an exact square is exact"
+       (equal? (interval-sqrt (cons 9/4 16)) (cons 3/2 4)))
+(check "interval-sin is clamped to [-1,1] on a wide argument"
+       (equal? (interval-sin (cons -100 100)) (cons -1 1)))
+(check "interval-widen rounds outward" (equal? (interval-widen (cons 2 4) 1/2) (cons 3/2 9/2)))
+
+;; ═══ 2. randomized containment against exact brackets ════════════════════
+(display ";; --- randomized containment (exact series brackets) ---") (newline)
+(define (containment-run name ivf bracketf lo hi trials)
+  (let loop ((t 0) (good 0) (total 0))
+    (if (>= t trials)
+        (begin
+          (display ";;   ") (display name) (display ": ") (display good) (display "/") (display total) (newline)
+          (check (string-append name " containment rate 100%") (= good total)))
+        (let* ((a (rand-rat lo hi)) (b (rand-rat lo hi))
+               (iv (cons (if (< a b) a b) (if (< a b) b a)))
+               ;; also a binary64 version of the same interval
+               (ivd (cons (exact->inexact (car iv)) (exact->inexact (cdr iv))))
+               (enc (ivf iv)) (encd (ivf ivd))
+               (p (+ (car iv) (* (- (cdr iv) (car iv)) (/ (rand-int 17) 16))))
+               (pd (ex (car ivd)))
+               (ok1 (covers? enc (bracketf p)))
+               (ok2 (covers? encd (bracketf pd))))
+          (loop (+ t 1) (+ good (if ok1 1 0) (if ok2 1 0)) (+ total 2))))))
+
+(containment-run "exp" interval-exp exp-bracket -3 3 40)
+(containment-run "sin" interval-sin sin-bracket -6 6 40)
+(containment-run "cos" interval-cos cos-bracket -6 6 40)
+(containment-run "log" interval-log log-bracket 1/64 8 40)
+(containment-run "atan" interval-atan atan-bracket -1/2 1/2 40)
+(containment-run "sqrt" interval-sqrt sqrt-bracket 0 50 40)
+;; polynomial: exact value at exact points inside the natural extension
+(containment-run "polynomial x^3 - 2x + 1/3"
+                 (lambda (x) (rn+ (rn- (rn-expt x 3) (rn* 2 x)) 1/3))
+                 (lambda (q) (let ((v (+ (- (* q q q) (* 2 q)) 1/3))) (cons v v)))
+                 -2 2 40)
+
+;; ═══ 3. interval Taylor jets ═════════════════════════════════════════════
+(display ";; --- interval jets: derivative enclosures ---") (newline)
+(define (poly5 x) (rn+ (rn* 3 (rn-expt x 5)) (rn- (rn* -2 (rn-expt x 2)) (rn/ x 7))))
+(let loop ((t 0) (good 0))
+  (if (< t 20)
+      (let* ((x (rand-rat -2 2)) (n (+ 1 (rand-int 5)))
+             (exact-d (derivative-n poly5 x n))        ; native AD, exact at an exact point
+             (enc (interval-derivative-n poly5 (cons x x) n)))
+        (loop (+ t 1) (+ good (if (and (exact? exact-d) (= (car enc) exact-d) (= (cdr enc) exact-d)) 1 0))))
+      (check "jet derivatives of a polynomial equal native exact AD (20/20)" (= good 20))))
+(let ((x 3/7) (box (cons 1/4 1/2)))
+  (check "jet value of x^3 at 1/3 matches native derivative exactly"
+         (equal? (interval-derivative-n (lambda (y) (rn-expt y 3)) (cons 1/3 1/3) 2)
+                 (cons (derivative-n (lambda (y) (rn-expt y 3)) 1/3 2) (derivative-n (lambda (y) (rn-expt y 3)) 1/3 2))))
+  ;; d^4/dx^4 exp = exp: enclosure over the box contains exp at every random point
+  (check "4th derivative of exp over [1/4,1/2] contains exp(p)"
+         (let ((enc (interval-derivative-n rn-exp box 4)))
+           (let lp ((i 0) (ok #t))
+             (if (< i 8) (lp (+ i 1) (and ok (covers? enc (exp-bracket (+ 1/4 (* i 1/28)))))) ok))))
+  ;; d^3/dx^3 sin = -cos
+  (check "3rd derivative of sin at 3/7 contains -cos(3/7)"
+         (let ((enc (interval-derivative-n rn-sin (cons x x) 3)) (cb (cos-bracket x)))
+           (covers? enc (cons (- (cdr cb)) (- (car cb))))))
+  ;; d/dx atan = 1/(1+x^2)
+  (check "derivative of atan at 3/7 contains 1/(1+x^2) exactly"
+         (contains? (interval-derivative-n rn-atan (cons x x) 1) (/ 1 (+ 1 (* x x)))))
+  ;; d/dx log = 1/x, d2 sqrt = -1/4 x^(-3/2)
+  (check "derivative of log at 3/7 contains 7/3"
+         (contains? (interval-derivative-n rn-log (cons x x) 1) 7/3))
+  (check "2nd derivative of sqrt at 9/4 contains -1/4 (9/4)^(-3/2) = -2/27"
+         (contains? (interval-derivative-n rn-sqrt (cons 9/4 9/4) 2) -2/27)))
+(let* ((g (interval-gradient (lambda (v) (rn* (vector-ref v 0) (rn-exp (vector-ref v 1))))
+                             (vector (cons 1 2) (cons 0 1))))
+       (d (cdr g)))
+  (check "interval gradient of x e^y over [1,2]x[0,1]: value, d/dx, d/dy"
+         (and (covers? (car g) (cons 1 (car (exp-bracket 1))))
+              (covers? (vector-ref d 0) (cons 1 (car (exp-bracket 1))))
+              (covers? (vector-ref d 1) (cons 1 (car (exp-bracket 1)))))))
+(check "native derivative differentiates an rn-written function"
+       (let ((d (derivative (lambda (x) (rn+ (rn-sqr x) (rn-sin x))) 1.0)))
+         (< (abs (- d (+ 2.0 (cos 1.0)))) 1e-14)))
+
+;; ═══ 4. compact-set bounds ═══════════════════════════════════════════════
+(display ";; --- compact-set bounds ---") (newline)
+(let ((c (box-sup (lambda (v) (let ((x (vector-ref v 0))) (rn* x (rn- 1 x)))) (vector (cons 0 1)) 1/1000000)))
+  (check "sup x(1-x) on [0,1] is exactly 1/4"
+         (and (compact-bound-converged? c) (equal? (compact-bound-enclosure c) (cons 1/4 1/4)))))
+(let* ((g (lambda (v) (rn+ (rn-sin (vector-ref v 0)) (rn-cos (vector-ref v 1)))))
+       (s (box-sup g (vector (cons 0 3) (cons 0 1)) 1e-9))
+       (i (box-inf g (vector (cons 0 3) (cons 0 1)) 1e-9))
+       (cb1 (cos-bracket 1)))
+  (check "sup sin x + cos y on [0,3]x[0,1] encloses 2 within 1e-9"
+         (and (compact-bound-converged? s) (contains? (compact-bound-enclosure s) 2)
+              (<= (- (ex (cdr (compact-bound-enclosure s))) (ex (car (compact-bound-enclosure s)))) (ex 1e-9))))
+  (check "inf sin x + cos y on [0,3]x[0,1] encloses cos 1"
+         (and (compact-bound-converged? i) (covers? (compact-bound-enclosure i) cb1)))
+  (check "monotonicity pruning collapsed coordinates" (> (compact-bound-monotone s) 0)))
+;; Rosenbrock: inf = 0 at (1,1)
+(let ((c (box-inf (lambda (v) (let ((x (vector-ref v 0)) (y (vector-ref v 1)))
+                                 (rn+ (rn-sqr (rn- 1 x)) (rn* 100 (rn-sqr (rn- y (rn-sqr x)))))))
+                  (vector (cons -1/2 2) (cons -1/2 2)) 1/1000 6000)))
+  (check "inf of Rosenbrock on [-1/2,2]^2 encloses 0"
+         (and (contains? (compact-bound-enclosure c) 0) (compact-bound-converged? c))))
+(let ((f (lambda (v) (let ((x (vector-ref v 0))) (rn* x (rn- 1 x))))))
+  (check "band certified: 0 <= x(1-x) <= 1/4 + 10^-6 on [0,1]"
+         (eq? (compact-bound-kind (box-certify-bound f (vector (cons 0 1)) 0 (+ 1/4 1/1000000))) 'proven))
+  (check "band refuted: x(1-x) <= 1/5 fails, with a certified witness"
+         (let ((c (box-certify-bound f (vector (cons 0 1)) 0 1/5)))
+           (and (eq? (compact-bound-kind c) 'refuted)
+                (> (car (compact-bound-enclosure c)) 1/5)))))
+;; A compactness constant PRODUCED, not asserted (NS mechanization row 19):
+;; P_K = max{(B_K + 2)/c_K, 8 B_K / gamma_K} from certified c >= c_K,
+;; G >= gamma_K, v <= B_K over the parameter box K = [1,2] x [0,1].
+(let* ((K (vector (cons 1 2) (cons 0 1)))
+       (cfun (lambda (p) (rn+ (vector-ref p 0) (rn-sqr (vector-ref p 1)))))         ; c = a + s^2
+       (gfun (lambda (p) (rn* (vector-ref p 0) (rn-exp (rn-neg (vector-ref p 1)))))) ; G = a e^-s
+       (vfun (lambda (p) (rn+ 1 (rn* (vector-ref p 1) (vector-ref p 0)))))           ; v = 1 + a s
+       (cK (car (compact-bound-enclosure (box-inf cfun K 1/1000))))
+       (gK (car (compact-bound-enclosure (box-inf gfun K 1/1000))))
+       (BK (cdr (compact-bound-enclosure (box-sup vfun K 1/1000))))
+       (t1 (ia/ (ia+ (cons BK BK) (cons 2 2)) (cons cK cK)))
+       (t2 (ia/ (ia* (cons 8 8) (cons BK BK)) (cons gK gK)))
+       (PK (if (> (cdr t1) (cdr t2)) (cdr t1) (cdr t2))))
+  ;; closed forms: inf c = 1, inf G = e^-1, sup v = 3 -> P_K >= max(5, 24 e)
+  (check "certified c_K <= 1, gamma_K <= 1/e, B_K >= 3"
+         (and (<= (ex cK) 1) (<= (ex gK) (car (exp-bracket -1))) (>= (ex BK) 3)))
+  (check "produced threshold P_K >= max(5, 24 e) and within 10^-2 of it"
+         (let ((true-pk (* 24 (cdr (exp-bracket 1)))))
+           (and (>= (ex PK) true-pk) (< (- (ex PK) true-pk) 1/100)))))
+
+;; ═══ 5. torus ════════════════════════════════════════════════════════════
+(display ";; --- torus fields ---") (newline)
+(check "<cos^2(3 theta)> = 1/2 exactly"
+       (equal? (torus-mean (torus* (torus-cos '(3)) (torus-cos '(3)))) 1/2))
+(check "<sin(2 theta) cos(2 theta)> = 0 exactly"
+       (equal? (torus-mean (torus* (torus-sin '(2)) (torus-cos '(2)))) 0))
+;; Parseval on random exact trigonometric polynomials on T^2
+(define (rand-trig2)
+  (let loop ((i 0) (terms '()))
+    (if (>= i 5) (torus-trig 2 terms)
+        (loop (+ i 1) (cons (list (list (- (rand-int 7) 3) (- (rand-int 7) 3))
+                                  (rand-rat -2 2) (rand-rat -2 2)) terms)))))
+(define (parseval f)
+  (let loop ((l (torus-terms f)) (acc 0))
+    (if (null? l) acc
+        (let ((t (car l)))
+          (loop (cdr l) (+ acc (if (and (= (car (car t)) 0) (= (cadr (car t)) 0))
+                                   (* (cadr t) (cadr t))
+                                   (/ (+ (* (cadr t) (cadr t)) (* (caddr t) (caddr t))) 2))))))))
+(let loop ((i 0) (good 0))
+  (if (< i 10)
+      (let ((f (rand-trig2)))
+        (loop (+ i 1) (+ good (if (equal? (torus-mean (torus* f f)) (parseval f)) 1 0))))
+      (check "Haar mean of F^2 equals Parseval sum exactly (10/10)" (= good 10))))
+(let* ((F (torus+ (torus-scale (torus-cos '(1 0)) 3) (torus-sin '(0 2))))
+       (v '(1 1/3))
+       (G (torus-directional-inverse F v)))
+  (check "inverse directional derivative: v.grad G = F exactly"
+         (torus-zero? (torus- (torus-directional-deriv G v) F)))
+  (check "inverse lands in the zero-mean subspace" (equal? (torus-mean G) 0))
+  (check "angular mean over theta_2 keeps the theta_1 mode"
+         (equal? (torus-terms (torus-angular-mean F 1)) (list (list '(1 0) 3 0))))
+  ;; chain rule through the phase map phi(x) = (x^2, 3x): native derivative
+  ;; of F(phi(x)) equals sum_j (d_j F)(phi(x)) phi_j'(x)
+  (let* ((phi (lambda (x) (list (* x x) (* 3 x))))
+         (h (torus-at-phase F phi)) (x0 0.7)
+         (lhs (derivative h x0))
+         (rhs (+ (* (torus-eval (torus-deriv F 0) (phi x0)) (* 2 x0))
+                 (* (torus-eval (torus-deriv F 1) (phi x0)) 3))))
+    (check "chain rule through a phase map (native AD vs torus-deriv)"
+           (< (abs (- lhs rhs)) 1e-12)))
+  ;; rigorous evaluation at an exact phase contains the exact value at 0
+  (check "torus-eval on intervals encloses F(0,0) = 3"
+         (contains? (torus-eval F (list (cons 0 0) (cons 0 0))) 3)))
+(check "resonant frequency has no preimage (error raised)"
+       (raises? (lambda () (torus-directional-inverse (torus-cos '(1 -1)) '(1 1)))))
+(check "n-point grid average agrees with the exact Haar mean (degree < n)"
+       (let* ((F (torus+ (torus-constant 1 2/3) (torus+ (torus-cos '(2)) (torus-sin '(3)))))
+              (pi4 (* 4 (atan 1.0)))
+              (grid (torus-average (lambda (i) (torus-eval F (list (/ (* 2 pi4 i) 8)))) 8)))
+         (< (abs (- grid 2/3)) 1e-14)))
+(let* ((b1 (torus-field 1 (list (list (cons 0 1/4))) (lambda (th) (rn-sqr (rn-sin (rn* 2 (car th)))))))
+       (b2 (torus-field 1 (list (list (cons 1/2 3/4))) (lambda (th) (rn-sqr (rn-sin (rn* 2 (car th)))))))
+       (b3 (torus-field 1 (list (list (cons 7/8 1/8))) (lambda (th) 1))))
+  (check "disjoint supports: product is the certified zero field" (torus-field-zero? (torus-field* b1 b2)))
+  (check "wrapping arc [7/8,1/8] meets [0,1/4]" (not (torus-field-zero? (torus-field* b1 b3))))
+  (check "support intersection is exact"
+         (equal? (torus-field-support (torus-field* b1 b3)) (list (list (cons 0 1/8)))))
+  (check "touching closed arcs are not disjoint"
+         (not (torus-supports-disjoint? (list (list (cons 0 1/4))) (list (list (cons 1/4 1/2)))))))
+;; enclosure-bounded mean: <exp(cos theta)> = I0(1) = sum 1/(4^k k!^2)
+(let* ((field (torus-field 1 (list (list (cons 0 1))) (lambda (th) (rn-exp (rn-cos (car th))))))
+       (m (torus-field-mean field 1e-9))
+       (i0 (let loop ((k 0) (a 0)) (if (> k 30) a (loop (+ k 1) (+ a (/ 1 (* (ipow 4 k) (fact k) (fact k))))))))
+       (tail (/ 1 (* (ipow 4 31) (fact 31) (fact 31)))))
+  (check "Haar mean of exp(cos) encloses I0(1) within 1e-9"
+         (and (covers? m (cons i0 (+ i0 (* 2 tail))))
+              (<= (- (ex (cdr m)) (ex (car m))) (ex 1e-9)))))
+
+;; ═══ 6. element tensors ══════════════════════════════════════════════════
+(display ";; --- interval / Taylor-model element tensors ---") (newline)
+(define A (itensor-from-list '(2 2) (list 1 2 3 4)))
+(define B (itensor-from-list '(2 2) (list 1/2 -1 0 1/3)))
+;; P(t) = sum((t A)^2 @ B): exact polynomial in t
+(define (P t) (itensor-sum (itensor-matmul (itensor-sqr (itensor-scale A t)) B)))
+;; closed form: (tA)^2 elementwise = t^2 [1 4; 9 16]; @ B = t^2 [1/2 1/3; 9/2 -11/3]; sum = 5/3 t^2
+(check "element tensor program on exact numbers is exact" (equal? (P 3/5) (* 5/3 9/25)))
+(check "native derivative through the tensor program" (equal? (derivative P 3/5) (* 10/3 3/5)))
+(check "jet tensor: second Taylor coefficient is exactly 5/3"
+       (equal? (ijet-coeff (P (ijet-var (cons 3/5 3/5) 2)) 2) (cons 5/3 5/3)))
+(check "interval tensor encloses the range of 5/3 t^2 on [-1/2, 1]"
+       (covers? (P (cons -1/2 1)) (cons 0 5/3)))
+(check "Taylor-model tensor bound encloses P on its domain"
+       (let ((b (tm-bound (P (tm-var 0 1/2 3)))))
+         (and (covers? b (cons 0 (* 5/3 1/4))))))
+(let* ((E (itensor-exp (itensor-scale A (cons 1/10 1/10))))
+       (bnd (itensor->bounds E)))
+  (check "outward f64 bounds of exp(A/10) contain the exact series brackets"
+         (let ((lo (tensor->vector (car bnd))) (hi (tensor->vector (cdr bnd))))
+           (let lp ((i 0) (ok #t))
+             (if (< i 4)
+                 (lp (+ i 1) (and ok (covers? (cons (vector-ref lo i) (vector-ref hi i))
+                                              (exp-bracket (/ (+ i 1) 10)))))
+                 ok))))
+  (check "dense bounds round-trip through bounds->itensor"
+         (equal? (itensor-data (itensor-intervals (bounds->itensor (car bnd) (cdr bnd))))
+                 (itensor-data (bounds->itensor (car bnd) (cdr bnd))))))
+;; derivative enclosure of a tensor program vs. the tensor-valued Taylor tower
+(let* ((T0 (reshape (vector->tensor (vector 1.0 2.0 3.0 4.0)) (list 2 2)))
+       (Q (lambda (t) (itensor-sum (itensor-exp (itensor-scale (tensor->itensor T0) t)))))
+       (j (Q (ijet-var (cons 1/10 1/10) 1)))
+       (native (derivative Q 0.1)))
+  (check "jet derivative of sum(exp(tA)) encloses the native AD value within 1 ulp"
+         (let ((d (ijet-coeff j 1)))
+           (and (<= (fl-next-down (car d)) native) (<= native (fl-next-up (cdr d)))))))
+
+;; ═══ 7. Taylor models ════════════════════════════════════════════════════
+(display ";; --- certified Taylor models ---") (newline)
+;; a rigorous model evaluated at an exact point: exact polynomial part plus
+;; the remainder interval
+(define (tm-eval-local tm x)
+  (let* ((t (- x (tm-center tm)))
+         (p (let lp ((cs (tm-coeffs tm)) (k 0) (acc 0))
+              (if (null? cs) acc (lp (cdr cs) (+ k 1) (+ acc (* (car cs) (ipow t k))))))))
+    (ia+ (cons p p) (tm-remainder tm))))
+(define two60 (ipow 2 60))
+(let ((tm (taylor-model-certified (lambda (x) (rn-exp (rn-sin x))) 1/2 1/4 6)))
+  (check "taylor-model-certified is a rigorous model" (tm-rigorous? tm))
+  (check "taylor-model-certified of exp(sin x) contains f at 9 points of [1/4,3/4]"
+         (let lp ((i 0) (ok #t))
+           (if (> i 8) ok
+               (let* ((x (+ 1/4 (* i 1/16)))
+                      (sb (sin-bracket x))
+                      (s1 (/ (floor (* (car sb) two60)) two60))
+                      (s2 (/ (+ 1 (floor (* (cdr sb) two60))) two60))
+                      (truth (cons (car (exp-bracket s1)) (cdr (exp-bracket s2)))))
+                 (lp (+ i 1) (and ok (covers? (tm-eval-local tm x) truth))))))))
+(check "tm-deriv of a polynomial model is exact"
+       (let* ((m (tm-integrate (tm-var 0 1/2 4))) (d (tm-deriv m)))
+         (equal? (tm-coeffs d) (list 0 1 0 0 0))))
+(check "tm-deriv refuses a model with a nonzero remainder"
+       (raises? (lambda () (tm-deriv (tm-exp (tm-var 0 1/4 4) 4)))))
+
+(display "----") (newline)
+(display "rigorous-numerics tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: rigorous_numerics_test") (newline) (exit 0))
+    (begin (display "FAIL: rigorous_numerics_test") (newline) (exit 1)))

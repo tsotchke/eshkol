@@ -1,11 +1,10 @@
 ;; tests/stdlib/certified_enclosures_test.esk
 ;;
 ;; core.ad.rigorous_interval / core.ad.rigorous_taylor_models: PROVEN
-;; enclosures the runtime can vouch for, layered beneath the existing
-;; VALIDATED (epsilon-widening / sampled-remainder) core.ad.interval and
-;; core.ad.taylor_models, which this file also checks stay byte-for-byte
-;; unchanged by default. See docs/reference/stdlib/certified-enclosures.md
-;; for the derivations this file is checking against.
+;; enclosures the runtime can vouch for. Since v1.5.0 (ADR-0050) every
+;; core.ad.interval operation uses them by default; section 6 checks that.
+;; See docs/reference/stdlib/certified-enclosures.md for the derivations
+;; this file is checking against.
 ;;
 ;;   1. OUTWARD ROUNDING     fl-next-up / fl-next-down actually bracket
 ;;                           their argument on adversarial inputs (0.1,
@@ -484,17 +483,17 @@
            (dense-contained? drng (lambda (x) x) (exact->inexact x0) (exact->inexact (tm-radius dg)) NS))))
 
 ;; ═══════════════════════════════════════════════════════════════════════
-;;  6. rigorous? flag on core.ad.interval: default unchanged, opt-in works
+;;  6. core.ad.interval: directed rounding is the default; the flag is accepted
 ;; ═══════════════════════════════════════════════════════════════════════
-(display ";; --- interval-add/... rigorous? flag routes correctly ---") (newline)
+(display ";; --- interval-add/...: directed rounding by default ---") (newline)
 
 (let ((default-r (interval-add (cons 0.1 0.1) (cons 0.2 0.2)))
       (rigorous-r (interval-add (cons 0.1 0.1) (cons 0.2 0.2) #t))
       (ia-r (ia+ (cons 0.1 0.1) (cons 0.2 0.2))))
   (check "interval-add rigorous?=#t matches ia+ exactly"
          (and (= (car rigorous-r) (car ia-r)) (= (cdr rigorous-r) (cdr ia-r))))
-  (check "interval-add default still contains the same value default did before"
-         (and (<= (car default-r) 0.30000000000000004) (>= (cdr default-r) 0.30000000000000004))))
+  (check "interval-add default is the directed-rounding ia+"
+         (and (= (car default-r) (car ia-r)) (= (cdr default-r) (cdr ia-r)))))
 
 ;; ═══════════════════════════════════════════════════════════════════════
 (display "----") (newline)

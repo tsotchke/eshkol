@@ -6294,6 +6294,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: certified_enclosures_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ADR-0050 rigorous numerics: directed rounding as the core.ad.interval
+    # default, interval Taylor jets / gradients, certified sup/inf over
+    # parameter boxes, torus fields with exact Haar means, interval and
+    # Taylor-model element tensors, all against exact rational ground truth.
+    # JIT and AOT here; tests/vm_parity/corpus/102_rigorous_numerics.esk
+    # carries the VM-parity leg (run_vm_parity.sh).
+    add_test(
+        NAME rigorous_numerics_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/rigorous_numerics_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(rigorous_numerics_runtime_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rigorous_numerics_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME rigorous_numerics_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/rigorous_numerics_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/rigorous_numerics_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/rigorous_numerics_aot'"
+    )
+    set_tests_properties(rigorous_numerics_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: rigorous_numerics_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # Sparse signed rows -> tensor changes -> finite matrix-product updates.
     # Both legs import the module from this checkout, never the installed lib/.
     add_test(
