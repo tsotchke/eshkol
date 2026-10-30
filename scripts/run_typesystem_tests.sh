@@ -78,6 +78,13 @@ if [ ! -d "$BUILD_DIR" ]; then
     exit 1
 fi
 
+# The build directory as a path usable from the repository root, absolute or
+# relative.
+case "$BUILD_DIR" in
+    /*) BD="$BUILD_DIR" ;;
+    *)  BD="./$BUILD_DIR" ;;
+esac
+
 if [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     echo -e "${RED}Error: eshkol-run not found. Run make first.${NC}"
     exit 1
@@ -96,7 +103,24 @@ TEST_ERR="$ESHKOL_TEST_COMPILE_LOG"
 echo "Testing type checker enforcement..."
 echo ""
 
-for test_file in tests/typesystem/*.esk; do
+# ESHKOL_TYPESYSTEM_GLOB narrows the run to a colon-separated list of globs
+# (the CTest entry typesystem_dependent_corpus runs the dependent-type and
+# bidirectional-checking fixtures this way).
+fixture_globs="${ESHKOL_TYPESYSTEM_GLOB:-tests/typesystem/*.esk}"
+fixture_list=()
+IFS=':' read -r -a fixture_patterns <<< "$fixture_globs"
+for pattern in "${fixture_patterns[@]}"; do
+    for f in $pattern; do fixture_list+=("$f"); done
+done
+
+existing_fixtures=0
+for f in "${fixture_list[@]}"; do [ -e "$f" ] && existing_fixtures=$((existing_fixtures + 1)); done
+if [ "$existing_fixtures" -eq 0 ]; then
+    echo -e "${RED}Error: no fixture matches ${fixture_globs}${NC}"
+    exit 1
+fi
+
+for test_file in "${fixture_list[@]}"; do
     [ -e "$test_file" ] || continue
 
     test_name=$(basename "$test_file")
@@ -114,7 +138,7 @@ for test_file in tests/typesystem/*.esk; do
     expect_compile=$(grep '^;; EXPECT-COMPILE:' "$test_file" | head -1 | sed 's/;; EXPECT-COMPILE: *//')
 
     # Build compiler flags
-    flags="-L./$BUILD_DIR"
+    flags="-L$BD"
     case "$mode" in
         strict-types) flags="$flags --strict-types" ;;
         types-strict) flags="$flags --types=strict" ;;
@@ -134,7 +158,7 @@ for test_file in tests/typesystem/*.esk; do
     # unlike a trailing `|| true`, this preserves the real status: the exit code
     # IS the assertion below, so it must survive.
     compile_exit=0
-    ./$BUILD_DIR/eshkol-run "$test_file" $flags -o "$ESHKOL_TEST_BIN" \
+    "$BD"/eshkol-run "$test_file" $flags -o "$ESHKOL_TEST_BIN" \
         > /dev/null 2>"$ESHKOL_TEST_COMPILE_LOG" || compile_exit=$?
 
     test_passed=true
@@ -199,7 +223,7 @@ for test_file in tests/typesystem/*.esk; do
     if [ "$expect_compile" = "fail" ]; then
         jit_cache="$WORK_DIR/jitcache/$test_name"
         rm -rf "$jit_cache"
-        ESHKOL_JIT_CACHE_DIR="$jit_cache" ./$BUILD_DIR/eshkol-run "$test_file" $flags -r \
+        ESHKOL_JIT_CACHE_DIR="$jit_cache" "$BD"/eshkol-run "$test_file" $flags -r \
             > /dev/null 2>&1 || true
         if [ -d "$jit_cache" ] && [ -n "$(find "$jit_cache" -name 'run-*' -type f -print -quit 2>/dev/null)" ]; then
             test_passed=false
@@ -276,7 +300,7 @@ else
 
         eshkol_checked_rm "$TEST_BIN"
         coverage_exit=0
-        ./$BUILD_DIR/eshkol-run "$coverage_src" -L./"$BUILD_DIR" --strict-types \
+        "$BD"/eshkol-run "$coverage_src" -L"$BD" --strict-types \
             -o "$TEST_BIN" > /dev/null 2>"$TEST_ERR" || coverage_exit=$?
 
         if [ "$coverage_exit" -ne 0 ]; then

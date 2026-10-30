@@ -1,0 +1,12 @@
+;; Type families (ADR-0042): (Matrix real 2 3) has two rows, so a literal
+;; with three rows is refused, and the row whose length is wrong is named.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: definition of 'm': expected (vector (vector Float64 3) 2), got a vector of 3 elements
+
+(define-type (Matrix (a : (universe 0)) (m : integer) (n : integer))
+  (vector (vector a n) m))
+
+(: m (Matrix real 2 3))
+(define m (vector (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0) (vector 7.0 8.0 9.0)))
+(display m)

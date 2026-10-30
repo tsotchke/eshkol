@@ -3674,6 +3674,12 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
         enforceLinearRegions(regions, expr);
     }
 
+    // A let-bound index variable is not in scope where the let's value is
+    // used: a result type that still mentions one (it was not unfolded to
+    // its definition) is known only up to that index, so it is erased.
+    if (body_result.success && env_.isTermType(body_result.inferred_type)) {
+        body_result.inferred_type = closeOverScope(body_result.inferred_type);
+    }
     ctx_.popScope();
 
     co_return body_result;
@@ -6703,6 +6709,21 @@ void TypeChecker::bindStableTerm(const std::string& name, const eshkol_ast_t* sc
     }
 }
 
+TypeId TypeChecker::closeOverScope(TypeId t) {
+    TermStore& terms = env_.terms();
+    const TermRef term = terms.normalize(env_.termOf(t));
+    for (TermRef local : ctx_.innermostTerms()) {
+        std::vector<TermRef> stack{term};
+        while (!stack.empty()) {
+            const TermRef x = stack.back();
+            stack.pop_back();
+            if (x == local) return env_.eraseTerm(term);
+            for (TermRef a : terms.node(x).args) stack.push_back(a);
+        }
+    }
+    return t;
+}
+
 void TypeChecker::noteAssignment(const std::string& name, const eshkol_ast_t* site) {
     auto t = ctx_.lookupTerm(name);
     if (!t) return;
@@ -6929,9 +6950,29 @@ TermRef TypeChecker::resolveTerm(const hott_type_expr_t* e, ResolveEnv& env, Ter
         }
 
         case HOTT_TYPE_APP: {
-            if (pos == TermPosition::Index) return fail(spelled(e) + " is a type, not an index");
             const std::string head = e->app.head ? e->app.head : "";
             const auto& app = e->app;
+            // A stable projection in an index position: (car p), (cdr p),
+            // (vector-length v) -- the same index terms expressions denote.
+            if (pos != TermPosition::Type &&
+                (head == "car" || head == "cdr" || head == "vector-length") && app.num_args == 1) {
+                const TermRef a = resolveTerm(app.args[0], env, TermPosition::Index);
+                if (a == kNoTerm) return kNoTerm;
+                if (head != "vector-length") return terms.op(head, {a});
+                // The length of a vector variable is the index of its type.
+                const TermNode an = terms.node(a);
+                if (an.kind == TermKind::Free && app.args[0]->kind == HOTT_TYPE_VAR &&
+                    app.args[0]->var_name) {
+                    if (auto vt = ctx_.lookup(app.args[0]->var_name); vt && env_.isTermType(*vt)) {
+                        const TermNode vn = terms.node(terms.normalize(env_.termOf(*vt)));
+                        if (vn.kind == TermKind::App && vn.name == "vector" && vn.args.size() == 2) {
+                            return vn.args[1];
+                        }
+                    }
+                }
+                return terms.op(head, {a});
+            }
+            if (pos == TermPosition::Index) return fail(spelled(e) + " is a type, not an index");
             if (head == "vector" && app.num_args == 2) {
                 const TermRef element = resolveTerm(app.args[0], env, TermPosition::Type);
                 const TermRef length = resolveTerm(app.args[1], env, TermPosition::Index);
@@ -7086,18 +7127,27 @@ TypeChecker::Signature TypeChecker::resolveSignature(const eshkol_ast_t* params,
         dependent = param_types && usesDependentSyntax(param_types[i]);
     }
     sig.dependent = dependent;
+    TermStore& terms = env_.terms();
     if (!dependent) {
+        // Each parameter still has an index term: an annotation inside the
+        // body may name it, and an inferred result may mention it.
         for (uint64_t i = 0; i < num_params; ++i) {
             if (!params || params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
-            sig.param_types.push_back(param_types && param_types[i] ? resolveType(param_types[i])
-                                                                    : BuiltinTypes::Value);
+            {
+                ResolveSiteGuard guard(*this, site);
+                sig.param_types.push_back(param_types && param_types[i]
+                                              ? resolveType(param_types[i])
+                                              : BuiltinTypes::Value);
+            }
+            const uint64_t stamp = terms.freshStamp();
+            sig.stamps.push_back(stamp);
+            sig.param_terms.push_back(terms.freeVar(stamp, params[i].variable.id));
         }
         return sig;
     }
 
     // A telescope: each parameter's annotation is resolved where the earlier
     // parameters are bound as program variables.
-    TermStore& terms = env_.terms();
     ResolveEnv env;
     env.allow_implicit = true;
     env.implicits = &sig.implicits;
@@ -7128,7 +7178,13 @@ TypeChecker::Signature TypeChecker::resolveSignature(const eshkol_ast_t* params,
 }
 
 TypeId TypeChecker::closeSignature(const Signature& sig, TypeId result_inner, bool variadic) {
-    if (!sig.dependent) return env_.makeFunctionType(sig.param_types, result_inner, variadic);
+    // A signature with no dependent type anywhere is the nominal signature
+    // it has always been.
+    bool any_term = involvesDependentType(result_inner);
+    for (TypeId p : sig.param_types) any_term = any_term || involvesDependentType(p);
+    if (!sig.dependent && !any_term) {
+        return env_.makeFunctionType(sig.param_types, result_inner, variadic);
+    }
     TermStore& terms = env_.terms();
     std::vector<uint64_t> scope;
     std::vector<std::string> implicit_names;
@@ -7177,7 +7233,7 @@ void TypeChecker::bindSignature(const Signature& sig, const eshkol_ast_t* params
         } else {
             ctx_.bind(name, type);
         }
-        if (sig.dependent && k < sig.param_terms.size() && sig.param_terms[k]) {
+        if (k < sig.param_terms.size() && sig.param_terms[k]) {
             ctx_.bindTerm(name, *sig.param_terms[k]);
         } else {
             bindStableTerm(name, body, std::nullopt);

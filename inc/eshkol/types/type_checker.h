@@ -146,6 +146,14 @@ public:
     std::optional<TermRef> lookupTerm(const std::string& name) const;
     /** Remove @p name's index term from the innermost scope. */
     void dropTerm(const std::string& name);
+    /** The index terms bound in the innermost scope. */
+    std::vector<TermRef> innermostTerms() const {
+        std::vector<TermRef> out;
+        if (!term_scopes_.empty()) {
+            for (const auto& entry : term_scopes_.back()) out.push_back(entry.second);
+        }
+        return out;
+    }
 
     // Linear type binding (Phase 6)
     //
@@ -748,6 +756,8 @@ private:
      */
     std::set<uint64_t> assigned_stamps_;
     std::set<uint64_t> annotated_stamps_;
+    /** @p t with any index variable of the innermost scope erased (it is leaving scope). */
+    TypeId closeOverScope(TypeId t);
     /** Note `set!` of @p name at @p site against its index term, if any. */
     void noteAssignment(const std::string& name, const eshkol_ast_t* site);
     /** Types declared by `(: name type)` and not yet consumed by a define. */
