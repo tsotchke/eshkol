@@ -1,0 +1,86 @@
+;;; Native scoped residence for ordinary immutable DBSP circuits.
+(require core.dbsp.circuit)
+(provide call-with-dbsp-resident dbsp-resident-step dbsp-resident-release!
+         dbsp-resident-output dbsp-resident-delta dbsp-resident-work
+         dbsp-resident-stats dbsp-resident-compact!)
+
+(extern i64 rr-open i64 :real eshkol_resident_open)
+(extern void rr-close i64 :real eshkol_resident_close)
+(extern void rr-enter i64 :real eshkol_resident_enter)
+(extern void rr-leave i64 :real eshkol_resident_leave)
+(extern i64 rr-hold i64 ptr :real eshkol_resident_hold)
+(extern void rr-get i64 i64 ptr :real eshkol_resident_get)
+(extern void rr-export-raw i64 ptr :real eshkol_resident_export)
+(extern void rr-release i64 i64 :real eshkol_resident_release)
+(extern void rr-compact i64 i32 :real eshkol_resident_compact)
+(extern i64 rr-stat i64 i32 :real eshkol_resident_stat)
+
+(define (rr-token value)
+  (if (not (and (integer? value) (exact? value) (> value 0) (<= value 9223372036854775807)))
+      (error "resident handles must be positive exact signed-word integers")) value)
+
+;; Private root borrows never cross the operation boundary. Copy observations
+;; (including nested row payloads) into the caller's domain before returning.
+(define (rr-read owner snapshot)
+  (rr-token snapshot)
+  (let ((holder (cons #f '()))) (rr-get owner snapshot holder) (car holder)))
+(define (rr-export owner value)
+  (let ((holder (cons value '()))) (rr-export-raw owner holder) (car holder)))
+(define (rr-operation owner thunk)
+  (rr-token owner)
+  (dynamic-wind
+    (lambda () (rr-enter owner))
+    (lambda ()
+      (guard (e (else (raise (rr-export owner e))))
+        (with-region (thunk))))
+    (lambda () (rr-leave owner))))
+
+;; The owner is valid only within this dynamic extent. Snapshots are explicit
+;; generation-checked handles; retaining a handle retains its complete graph.
+;; threshold is a compaction trigger, not a cap on legitimate live state.
+;; Pure circuit callbacks must not capture/invoke nonlocal control or publish
+;; internal objects through external mutation. Native only; no VM reclamation
+;; claim. Borrowing/compaction refuses parallel execution and enclosing AD tapes.
+(define (call-with-dbsp-resident snapshot threshold procedure)
+  (dbsp-circuit-work snapshot)
+  (if (not (and (procedure? procedure) (integer? threshold) (exact? threshold)
+                (>= threshold 65536) (<= threshold 1073741824)))
+      (error "resident requires a procedure and a 64KiB..1GiB compaction threshold"))
+  (let ((owner (rr-open threshold)))
+    (dynamic-wind
+      (lambda () (rr-stat owner 0))
+      (lambda ()
+        (let ((initial (rr-hold owner (cons (vector snapshot (zset-empty)) '()))))
+          (procedure owner initial)))
+      (lambda () (rr-close owner)))))
+(define (dbsp-resident-step owner snapshot changes)
+  (rr-token owner) (rr-token snapshot)
+  ;; Import input rows before borrowing; even caller nursery objects become
+  ;; owned data, rather than pointers into a nursery reclaimed after the tick.
+  (let ((input (rr-hold owner (cons changes '()))))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        (let ((next (rr-operation owner (lambda ()
+          (let* ((record (rr-read owner snapshot)) (delta (rr-read owner input))
+                 (step (dbsp-circuit-step (vector-ref record 0) delta)))
+            (rr-hold owner (cons (vector (car step) (cdr step)) '())))))))
+          (guard (e (else (rr-release owner next) (raise e)))
+            (rr-compact owner 0) next)))
+      (lambda () (rr-release owner input)))))
+(define (dbsp-resident-release! owner snapshot)
+  (rr-release (rr-token owner) (rr-token snapshot)))
+(define (dbsp-resident-output owner snapshot)
+  (rr-operation owner (lambda ()
+    (rr-export owner (dbsp-circuit-output (vector-ref (rr-read owner snapshot) 0))))))
+(define (dbsp-resident-delta owner snapshot)
+  (rr-operation owner (lambda () (rr-export owner (vector-ref (rr-read owner snapshot) 1)))))
+(define (dbsp-resident-work owner snapshot)
+  (rr-operation owner (lambda ()
+    (rr-export owner (dbsp-circuit-work (vector-ref (rr-read owner snapshot) 0))))))
+(define (dbsp-resident-stats owner)
+  (rr-token owner)
+  (vector (rr-stat owner 0) (rr-stat owner 1) (rr-stat owner 2) (rr-stat owner 3) (rr-stat owner 4)))
+(define (dbsp-resident-compact! owner)
+  (rr-token owner)
+  (rr-compact owner 1) (dbsp-resident-stats owner))
