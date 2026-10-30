@@ -42,4 +42,4 @@
 (define t10 (current-time-ms))
 (define sols (length (all-choices (lambda () (let* ((a (choose-range 1 12)) (b (choose-range 1 12))) (if (= (* a b) 24) (list a b) (fail)))))))
 (define t11 (current-time-ms))
-(per-op "multi-shot choice (per decide)" 300 t10 t11)
+(display "multi-shot choice search, 12x12 space: ") (display (- t11 t10)) (display " ms, ") (display sols) (display " solutions") (newline)
