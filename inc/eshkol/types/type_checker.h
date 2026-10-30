@@ -18,6 +18,7 @@
 #include <eshkol/util/continuation_task.h>
 #include <vector>
 #include <map>
+#include <memory>
 #include <set>
 #include <optional>
 #include <string>
@@ -448,6 +449,8 @@ private:
  *       reportError(result);
  *   }
  */
+class StructuralChecker;
+
 class TypeChecker {
 public:
     /**
@@ -665,6 +668,7 @@ public:
     struct LinearUseAnalysis {
         bool decidable = true;      // false: body left the decidable fragment
         int  uses = 0;              // worst-case uses along any single path
+        int  min_uses = 0;          // fewest uses along any single path
         const char* blocker = "";   // name of the form that ended decidability
         // Non-null when a bare reference to the binding was stored into an
         // untyped container (`cons`, `vector`, …). The container's type carries
@@ -705,17 +709,58 @@ public:
      */
     void enforceLinearBindings(const std::vector<std::string>& linear_names,
                                const eshkol_ast_t* body,
-                               const eshkol_ast_t* site);
+                               const eshkol_ast_t* site,
+                               bool strict = false);
 
     /** As enforceLinearBindings(), but each name carries its own scope region. */
     void enforceLinearRegions(
         const std::vector<std::pair<std::string, std::vector<const eshkol_ast_t*>>>& regions,
-        const eshkol_ast_t* site);
+        const eshkol_ast_t* site,
+        bool strict = false);
 
-    /** Turn one analysis verdict into the right diagnostic (or none). */
+    /**
+     * Turn one analysis verdict into the right diagnostic (or none).
+     * @p strict (session endpoints, one-shot closures; ADR-0046) also
+     * requires a use on every path and treats an undecidable body as a
+     * violation rather than a warning.
+     */
     void reportLinearVerdict(const std::string& name,
                              const LinearUseAnalysis& verdict,
-                             const eshkol_ast_t* site);
+                             const eshkol_ast_t* site,
+                             bool strict = false);
+
+    /**
+     * Mark parameter @p index of the named let whose operation payload is
+     * @p named_let_op as an enforced linear binder: aliasing a tracked value
+     * into it counts as one use (the loop owns it from then on).
+     */
+    void markEnforcedLoopParam(const void* named_let_op, size_t index) {
+        enforced_loop_params_[named_let_op].insert(index);
+    }
+
+    // === Structural layer (ADR-0046: rows, higher rank, sessions) ===
+
+    /**
+     * Give the structural layer the whole program before the first form is
+     * checked, so forward references to structurally typed definitions
+     * resolve. Optional: without it (the REPL) forms are taken one by one.
+     */
+    void beginProgram(const eshkol_ast_t* asts, size_t num_asts);
+
+    /**
+     * Structural enforcement point: a program the structural layer has
+     * proven ill-typed (a row, rank or protocol violation). Fatal in every
+     * mode except `--unsafe`, exactly like reportLinearViolation().
+     */
+    void reportStructuralViolation(const std::string& msg, const eshkol_ast_t* node = nullptr);
+    /** True if any structural violation was reported. */
+    bool hasStructuralViolations() const { return structural_violations_ > 0; }
+    /** Number of structural violations reported. */
+    size_t structuralViolations() const { return structural_violations_; }
+    /** The structural layer of this checker. */
+    StructuralChecker& structural();
+
+    ~TypeChecker();
 
     /** Append " (line L:C)" for @p node when it carries a plausible position. */
     static void appendLocation(std::string& msg, const eshkol_ast_t* node);
@@ -724,6 +769,9 @@ private:
     bool strict_types_ = false;
     bool unsafe_mode_ = false;
     size_t linearity_violations_ = 0;
+    size_t structural_violations_ = 0;
+    std::map<const void*, std::set<size_t>> enforced_loop_params_;
+    std::unique_ptr<StructuralChecker> structural_;
     size_t obligation_violations_ = 0;
 
     // ---- Bidirectional checking and dependent types (ADR-0042) ----------

@@ -1,0 +1,7 @@
+;; Extending a record with a label it already has is rejected (rows lack
+;; duplicate labels).
+;; ENGINES: jit aot vm
+;; EXPECT-STDERR: the label `x` would occur twice in one row
+(require stdlib)
+(require core.records)
+(display (record-ref (record-extend (record 'x 1) 'x 2) 'x))

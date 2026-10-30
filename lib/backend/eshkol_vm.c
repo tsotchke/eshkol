@@ -1398,6 +1398,24 @@ static int vm_source_carries_linear_annotation(const char* source) {
     return 0;
 }
 
+/**
+ * @brief True when @p source carries structural types (ADR-0046): a record,
+ * channel-endpoint, one-shot or quantified type former, or the record/session
+ * libraries whose operations the structural layer types. Such a program has
+ * row, rank and protocol obligations the bridge decides, exactly as it
+ * decides linearity.
+ */
+static int vm_source_carries_structural_types(const char* source) {
+    static const char* const kMarkers[] = {
+        "core.records", "core.sessions", "(forall", "(chan ", "(record ", "(-o "
+    };
+    if (!source) return 0;
+    for (size_t i = 0; i < sizeof(kMarkers) / sizeof(kMarkers[0]); ++i) {
+        if (strstr(source, kMarkers[i])) return 1;
+    }
+    return 0;
+}
+
 /* The installed implementation, or NULL. See inc/eshkol/backend/vm.h for why
  * this is a hook and not a direct call: this translation unit ships inside
  * libeshkol-runtime.a, which is linked into every program the compiler emits,
@@ -1534,7 +1552,8 @@ static int vm_reject_dependent_violations(const char* source, const char* source
  */
 static int vm_reject_linear_violations(const char* source, const char* source_name) {
     if (vm_reject_dependent_violations(source, source_name)) return 1;
-    if (!source || !vm_source_carries_linear_annotation(source)) return 0;
+    if (!source || (!vm_source_carries_linear_annotation(source) &&
+                    !vm_source_carries_structural_types(source))) return 0;
 
     if (!g_vm_linear_check) {
         /* No front end installed — a freestanding or embedded build. Refuse
@@ -1551,7 +1570,7 @@ static int vm_reject_linear_violations(const char* source, const char* source_na
         /* The bridge has already printed each violation, with the same wording
          * the native engine uses — one rule, one diagnostic. */
         vm_compile_error("refusing to compile a program that violates linear "
-                         "(no-cloning) typing",
+                         "(no-cloning) or structural (record, rank, protocol) typing",
                          "linear types are use-exactly-once; run with --unsafe "
                          "to bypass (no-cloning is then NOT enforced)");
         return 1;

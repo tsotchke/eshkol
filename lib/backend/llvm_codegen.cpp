@@ -2730,6 +2730,7 @@ public:
                 eshkol::hott::TypeChecker type_checker(type_env,
                     cfg->strict_types, cfg->unsafe_mode);
                 seedTypeCheckerWithReplFunctions(type_checker, type_env);
+                type_checker.beginProgram(asts_to_use, num_asts_to_use);
 
                 // Type check all top-level forms (definitions AND expressions)
                 // Note: const_cast is safe here because we're intentionally annotating
@@ -2785,6 +2786,17 @@ public:
                                  type_checker.linearityViolations());
                     eshkol_error("Refusing to generate code for a program that "
                                  "violates linear (no-cloning) typing");
+                    return std::make_pair(nullptr, nullptr);
+                }
+
+                // Row, rank and protocol violations (ADR-0046) are proofs of
+                // ill-typing in the same sense, and refuse codegen the same way.
+                if (type_checker.hasStructuralViolations() && !cfg->unsafe_mode) {
+                    eshkol_error("HoTT: %zu structural type violation(s) detected "
+                                 "(records, higher-rank types, session protocols)",
+                                 type_checker.structuralViolations());
+                    eshkol_error("Refusing to generate code for a program that "
+                                 "violates its structural types");
                     return std::make_pair(nullptr, nullptr);
                 }
 

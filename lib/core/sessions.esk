@@ -1,0 +1,160 @@
+;; sessions.esk — binary session-typed channels
+;;
+;; (require core.sessions)
+;;
+;; A session endpoint is a channel end whose protocol is a type (ADR-0046):
+;;
+;;   (chan (! number (? string end)))   send a number, receive a string, close
+;;   (chan (offer (add (? number (? number (! number end)))) (quit end)))
+;;   (chan (rec loop (choose (more (! number loop)) (done end))))
+;;
+;; The structural type checker proves, at compile time, that every endpoint
+;; is used exactly once along every path and that each operation is the one
+;; its protocol permits next; the two ends of a pair have dual protocols.
+;; Every operation consumes the endpoint it is given and returns the
+;; endpoint for the rest of the protocol:
+;;
+;;   (session-send c v)            (chan (! t p)) t -> (chan p)
+;;   (session-recv c)              (chan (? t p))   -> (values t (chan p))
+;;   (session-select c 'label)     (chan (choose (label p) ...)) -> (chan p)
+;;   (session-offer c 'l1 h1 ...)  (chan (offer (l1 p1) ...)), hi : (-o (chan pi) a) -> a
+;;   (session-close c)             (chan end) -> null
+;;   (make-session-pair)           -> (values (chan p) (chan (dual p)))
+;;   (session-fork proc)           proc : (-o (chan p) any), runs on a worker
+;;                                 thread; returns the (chan (dual p)) end
+;;   (tcp-session handle)          an endpoint over a connected TCP handle
+;;
+;; Local endpoints are a pair of bounded core.channels queues. TCP endpoints
+;; carry one message per line in `write` syntax; the remote peer is not
+;; trusted, so session-offer checks every received label against the labels
+;; it handles (a protocol monitor at the boundary).
+;;
+;; Representation: (vector 'eshkol-session kind a b)
+;;   kind 'local: a = inbound channel, b = outbound channel
+;;   kind 'tcp:   a = TCP handle, b = buffered input text
+
+(require stdlib)
+(require core.channels)
+(require core.threads)
+(require core.net)
+
+(provide make-session-pair session-send session-recv session-select session-offer
+         session-close session-fork tcp-session session-endpoint?)
+
+(define -session-capacity 64)
+(define -session-timeout-ms 30000)
+
+(define (session-endpoint? v)
+  "True for a value made by make-session-pair, session-fork or tcp-session."
+  (and (vector? v) (= (vector-length v) 4) (eq? (vector-ref v 0) 'eshkol-session)))
+
+(define (-session-check ep who)
+  (if (session-endpoint? ep) ep
+      (error (string-append (symbol->string who) ": not a session endpoint"))))
+
+(define (make-session-pair)
+  "Two connected local endpoints with dual protocols."
+  (let ((ab (make-channel -session-capacity))
+        (ba (make-channel -session-capacity)))
+    (values (vector 'eshkol-session 'local ba ab)
+            (vector 'eshkol-session 'local ab ba))))
+
+(define (tcp-session handle)
+  "An endpoint over a connected TCP handle (from tcp-connect or tcp-accept)."
+  (vector 'eshkol-session 'tcp handle ""))
+
+;; ── TCP codec: one `write`-syntax datum per line ─────────────────────────
+
+(define (-session-encode v)
+  (let ((port (open-output-string)))
+    (write v port)
+    (string-append (get-output-string port) "\n")))
+
+(define (-session-tcp-write h text)
+  (let loop ((text text))
+    (if (> (string-length text) 0)
+        (let ((n (tcp-write h text -session-timeout-ms)))
+          (if (network-error? n)
+              (error "session-send: the connection failed" (network-error-code n))
+              (loop (substring text n (string-length text))))))))
+
+(define (-session-newline-index s)
+  (let loop ((i 0))
+    (cond ((= i (string-length s)) #f)
+          ((char=? (string-ref s i) #\newline) i)
+          (else (loop (+ i 1))))))
+
+(define (-session-tcp-read ep)
+  (let loop ()
+    (let* ((buf (vector-ref ep 3))
+           (nl (-session-newline-index buf)))
+      (if nl
+          (begin
+            (vector-set! ep 3 (substring buf (+ nl 1) (string-length buf)))
+            (read (open-input-string (substring buf 0 nl))))
+          (let ((chunk (tcp-read (vector-ref ep 2) 4096 -session-timeout-ms)))
+            (cond ((network-error? chunk)
+                   (error "session-recv: the connection failed" (network-error-code chunk)))
+                  ((= (string-length chunk) 0)
+                   (error "session-recv: the peer closed the session early"))
+                  (else (vector-set! ep 3 (string-append buf chunk)) (loop))))))))
+
+;; ── transport-independent messages ─────────────────────────────────────
+
+(define (-session-put ep v)
+  (if (eq? (vector-ref ep 1) 'local)
+      (channel-send! (vector-ref ep 3) v)
+      (-session-tcp-write (vector-ref ep 2) (-session-encode v))))
+
+(define (-session-take ep)
+  (if (eq? (vector-ref ep 1) 'local)
+      (let ((v (channel-recv! (vector-ref ep 2))))
+        (if (eq? v (channel-closed-sentinel))
+            (error "session-recv: the peer closed the session early")
+            v))
+      (-session-tcp-read ep)))
+
+(define (session-send ep v)
+  "Send v; return the endpoint for the rest of the protocol."
+  (-session-put (-session-check ep 'session-send) v)
+  ep)
+
+(define (session-recv ep)
+  "Receive a value; return it and the endpoint for the rest of the protocol."
+  (let ((v (-session-take (-session-check ep 'session-recv))))
+    (values v ep)))
+
+(define (session-select ep label)
+  "Choose the branch label of an internal choice."
+  (-session-put (-session-check ep 'session-select) (list 'eshkol-session-label label))
+  ep)
+
+(define (-session-label-of msg)
+  (if (and (pair? msg) (eq? (car msg) 'eshkol-session-label) (pair? (cdr msg)))
+      (cadr msg)
+      (error "session-offer: protocol violation: expected a branch label" msg)))
+
+(define (session-offer ep . clauses)
+  "Receive the peer's choice and run the handler for that label on the endpoint."
+  (let ((label (-session-label-of (-session-take (-session-check ep 'session-offer)))))
+    (let loop ((cs clauses))
+      (cond ((null? cs)
+             (error "session-offer: protocol violation: unexpected label" label))
+            ((null? (cdr cs)) (error "session-offer: a label has no handler"))
+            ((eq? (car cs) label) ((cadr cs) ep))
+            (else (loop (cddr cs)))))))
+
+(define (session-close ep)
+  "End the session."
+  (let ((ep (-session-check ep 'session-close)))
+    (if (eq? (vector-ref ep 1) 'local)
+        (channel-close! (vector-ref ep 3))
+        (tcp-close (vector-ref ep 2)))
+    '()))
+
+(define (session-fork proc)
+  "Run (proc end) on a worker thread and return the dual end."
+  (call-with-values make-session-pair
+    (lambda (mine theirs)
+      (make-thread (lambda () (proc mine)))
+      theirs)))

@@ -8170,6 +8170,40 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# ADR-0046: structural types (row polymorphism, arbitrary rank, session types).
+# The solver contract runs standalone; the gate runs every fixture under
+# tests/types_ext on JIT, AOT and the bytecode VM.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/structural_types_test.cpp")
+    add_executable(structural_types_test tests/types/structural_types_test.cpp
+                   lib/types/structural_types.cpp)
+    target_compile_features(structural_types_test PRIVATE cxx_std_20)
+    target_include_directories(structural_types_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME structural_types_test COMMAND structural_types_test)
+    set_tests_properties(structural_types_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: structural type solver"
+        FAIL_REGULAR_EXPRESSION "FAIL ")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/types_ext/types_ext_gate.sh")
+    if(NOT WIN32)
+        set(ESHKOL_TYPES_EXT_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_TYPES_EXT_VM "none")
+    endif()
+    add_test(NAME types_ext_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/types_ext/types_ext_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_TYPES_EXT_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/types-ext-gate"
+            "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(types_ext_gate PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: structural types gate"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/dependent_engine_parity_gate.sh")
     # ADR-0042: the VM refuses and runs the same dependent-typed programs as

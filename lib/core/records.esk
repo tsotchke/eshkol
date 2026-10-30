@@ -1,0 +1,102 @@
+;; records.esk — extensible records with row-polymorphic types
+;;
+;; (require core.records)
+;;
+;; A record is an immutable map from labels (symbols) to values. Records are
+;; structural: two records with the same labels have the same type whatever
+;; created them, and a function that reads only the field `x` accepts every
+;; record that has an `x`. The structural type layer (ADR-0046) types the
+;; operations below with row polymorphism; the label argument of each
+;; operation must be a quoted symbol literal so the label is known statically:
+;;
+;;   (record 'x 1 'y 2.0)        : (record (x number) (y number))
+;;   (record-ref r 'x)           : r : (record (x a) r') => a
+;;   (record-extend r 'z v)      : r : (record r') with no z => (record (z t) r')
+;;   (record-remove r 'x)        : r : (record (x a) r') => (record r')
+;;   (record-update r 'x v)      : r : (record (x a) r') => (record (x t) r')
+;;
+;; A function such as
+;;   (define (norm1 p) (+ (abs (record-ref p 'x)) (abs (record-ref p 'y))))
+;; gets the principal type (forall (r) (-> (record (x number) (y number) r) number)).
+;; Untyped code may call the same operations; the runtime then checks labels.
+;;
+;; Representation: (vector 'eshkol-record labels values) with parallel lists.
+
+(require stdlib)
+
+(provide record record? record-ref record-extend record-remove record-update
+         record-labels record->alist record-has?)
+
+(define (-record-make labels vals) (vector 'eshkol-record labels vals))
+(define (-record-labels r) (vector-ref r 1))
+(define (-record-values r) (vector-ref r 2))
+
+(define (record? v)
+  "True for a value built by record, record-extend, record-remove or record-update."
+  (and (vector? v) (= (vector-length v) 3) (eq? (vector-ref v 0) 'eshkol-record)))
+
+(define (-record-check r who)
+  (if (record? r) r (error (string-append (symbol->string who) ": not a record"))))
+
+(define (-record-index labels label)
+  (let loop ((ls labels) (i 0))
+    (cond ((null? ls) #f)
+          ((eq? (car ls) label) i)
+          (else (loop (cdr ls) (+ i 1))))))
+
+(define (record . args)
+  "Build a record from alternating labels and values: (record 'x 1 'y 2)."
+  (let loop ((rest args) (labels '()) (vals '()))
+    (cond ((null? rest) (-record-make (reverse labels) (reverse vals)))
+          ((null? (cdr rest)) (error "record: a label has no value"))
+          ((not (symbol? (car rest))) (error "record: labels must be symbols"))
+          ((-record-index labels (car rest)) (error "record: duplicate label"))
+          (else (loop (cddr rest) (cons (car rest) labels) (cons (cadr rest) vals))))))
+
+(define (record-has? r label)
+  "True if the record has the field label."
+  (if (-record-index (-record-labels (-record-check r 'record-has?)) label) #t #f))
+
+(define (record-ref r label)
+  "The value of field label; an error if the record has no such field."
+  (let* ((r (-record-check r 'record-ref))
+         (i (-record-index (-record-labels r) label)))
+    (if i (list-ref (-record-values r) i)
+        (error "record-ref: no such field" label))))
+
+(define (record-extend r label value)
+  "A new record with the additional field label; an error if it is present."
+  (let ((r (-record-check r 'record-extend)))
+    (if (-record-index (-record-labels r) label)
+        (error "record-extend: field already present" label)
+        (-record-make (cons label (-record-labels r)) (cons value (-record-values r))))))
+
+(define (record-remove r label)
+  "A new record without the field label; an error if it is absent."
+  (let ((r (-record-check r 'record-remove)))
+    (if (-record-index (-record-labels r) label)
+        (let loop ((ls (-record-labels r)) (vs (-record-values r)) (nl '()) (nv '()))
+          (cond ((null? ls) (-record-make (reverse nl) (reverse nv)))
+                ((eq? (car ls) label) (loop (cdr ls) (cdr vs) nl nv))
+                (else (loop (cdr ls) (cdr vs) (cons (car ls) nl) (cons (car vs) nv)))))
+        (error "record-remove: no such field" label))))
+
+(define (record-update r label value)
+  "A new record whose field label holds value; an error if it is absent."
+  (let ((r (-record-check r 'record-update)))
+    (if (-record-index (-record-labels r) label)
+        (-record-make (-record-labels r)
+                      (let loop ((ls (-record-labels r)) (vs (-record-values r)))
+                        (cond ((null? ls) '())
+                              ((eq? (car ls) label) (cons value (cdr vs)))
+                              (else (cons (car vs) (loop (cdr ls) (cdr vs)))))))
+        (error "record-update: no such field" label))))
+
+(define (record-labels r)
+  "The field labels, in the record's order."
+  (-record-labels (-record-check r 'record-labels)))
+
+(define (record->alist r)
+  "The fields as an association list ((label . value) ...)."
+  (let ((r (-record-check r 'record->alist)))
+    (map cons (-record-labels r) (-record-values r))))

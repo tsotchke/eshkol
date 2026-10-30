@@ -1,0 +1,8 @@
+;; An offer must handle every label of the protocol, no more and no fewer.
+;; ENGINES: jit aot vm
+;; EXPECT-STDERR: Type error
+(require stdlib)
+(require core.sessions)
+(define (server (c : (chan (offer (add (? number end)) (quit end))))) : null
+  (session-offer c
+    'add (lambda (c) (let-values (((x c) (session-recv c))) (session-close c)))))

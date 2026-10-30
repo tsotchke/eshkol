@@ -1,0 +1,33 @@
+;; Arbitrary-rank polymorphism (ADR-0046): rank-2 arguments used at two
+;; types, Church numerals as rank-2 combinators, and subsumption between a
+;; let-polymorphic function and a rank-2 parameter.
+;; ENGINES: jit aot vm
+;; EXPECT-SCHEME: apply-both : (-> (forall (a) (-> a a)) number string number)
+;; EXPECT-SCHEME: twice : (forall (a) (-> (-> a a) a a))
+;; EXPECT-OUTPUT: 7
+;; EXPECT-OUTPUT: 3
+;; EXPECT-OUTPUT: 2
+;; EXPECT-OUTPUT: 4
+;; EXPECT-OUTPUT: ****
+(require stdlib)
+
+(define (apply-both (f : (forall (a) (-> a a))) (n : number) (s : string)) : number
+  (+ (f n) (string-length (f s))))
+
+(define (identity x) x)
+
+(display (apply-both (lambda (x) x) 4 "abc")) (newline)
+(display (apply-both identity 1 "xy")) (newline)
+
+;; Church numerals: a numeral is (forall (a) (-> (-> a a) a a)).
+(define (twice f x) (f (f x)))
+(define (to-int (n : (forall (a) (-> (-> a a) a a)))) : number
+  (n (lambda (k) (+ k 1)) 0))
+(define (square-numeral (n : (forall (a) (-> (-> a a) a a)))) : number
+  (to-int (lambda (f x) (n (lambda (y) (n f y)) x))))
+(define (stars (n : (forall (a) (-> (-> a a) a a)))) : string
+  (n (lambda (s) (string-append s "*")) ""))
+
+(display (to-int twice)) (newline)
+(display (square-numeral twice)) (newline)
+(display (stars (lambda (f x) (twice f (twice f x))))) (newline)

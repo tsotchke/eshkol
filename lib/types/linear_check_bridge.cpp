@@ -21,9 +21,11 @@
  * before. One source of truth, and a divergence between the engines becomes
  * impossible by construction rather than by discipline.
  *
- * This bridge deliberately reports ONLY the linear verdict. Gradual typing's
- * other findings belong to the engine that is generating code and are none of
- * the VM's business; a type warning here would be noise the VM cannot act on.
+ * This bridge deliberately reports ONLY the proven verdicts: linearity and the
+ * structural layer's row, rank and protocol violations (ADR-0046). Gradual
+ * typing's other findings belong to the engine that is generating code and
+ * are none of the VM's business; a type warning here would be noise the VM
+ * cannot act on.
  */
 
 #include "eshkol/eshkol.h"
@@ -108,6 +110,8 @@ int checkSource(const char* source, const char* source_name, size_t* linear,
     const bool unsafe = cfg ? cfg->unsafe_mode != 0 : false;
     eshkol::hott::TypeChecker checker(env, /*strict_types=*/false, unsafe);
 
+    checker.beginProgram(flat.data(), flat.size());
+
     // Register type aliases first, exactly as the native path does, so a linear
     // type reached through a `define-type` is resolved and not silently missed.
     for (auto& a : flat) {
@@ -120,7 +124,10 @@ int checkSource(const char* source, const char* source_name, size_t* linear,
         checker.synthesize(&a);
     }
 
-    *linear = checker.linearityViolations();
+    // Structural violations (ADR-0046: rows, higher rank, session protocols)
+    // are proofs of ill-typing like a clone, so they travel with the linear
+    // verdict and the VM refuses them the same way.
+    *linear = checker.linearityViolations() + checker.structuralViolations();
     *obligations = checker.obligationViolations();
     return 0;
 }

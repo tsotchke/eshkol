@@ -149,4 +149,4 @@
 (display ((the (-> integer integer) identity-fn) 9)) (newline)
 (display (the (+ string number) "either"))         (newline)
 (display (the (* integer string) (cons 1 "a")))    (newline)
-(display (the (forall (a) a) 3))                   (newline)
+(display ((the (forall (a) (-> a a)) identity-fn) 3)) (newline)
