@@ -54,7 +54,8 @@
 (check "smith normal form: invariant factors 2 6 12"
        (equal? '(2 6 12) (smith-diagonal (value c-snf))))
 (define c-snf-rect (keep! (certify-smith-normal-form (vector (vector 4 6 8) (vector 6 9 12)) "snf 2x3")))
-(check "smith normal form of a rank-1 2x3 matrix: (2)" (equal? '(2) (smith-diagonal (value c-snf-rect))))
+(check "smith normal form of a rank-1 2x3 matrix with coprime entries: (1)"
+       (equal? '(1) (smith-diagonal (value c-snf-rect))))
 
 (define c-sol (keep! (certify-linear-solution (vector (vector 2 1) (vector 1 3)) (vector 3 5) "2x2 solve")))
 (check "linear solution: (4/5, 7/5)" (equal? (vector 4/5 7/5) (value c-sol)))

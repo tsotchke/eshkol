@@ -57,6 +57,7 @@ documentation hub lists the same records in
 | [0033](0033-core-sheaf-finite-sites.md) | `core.sheaf`: one sheaf-theory facility on finite sites | Proposed — implemented in `core.sheaf` | 2026-10-24 | `lib/core/sheaf.esk`, `lib/core/sheaf/`, `lib/core/integer_linalg.esk`; suite `tests/stdlib/sheaf_test.esk`; reference [`sheaf.md`](../../reference/stdlib/sheaf.md) |
 | [0034](0034-ring-carriers-functor-of-points.md) | Ring carriers: the functor-of-points evaluation model | Proposed | 2026-10-24 | — (evidence program [`mathematics_functor_of_points.esk`](../../../examples/mathematics_functor_of_points.esk); first stage targets v1.4.1) |
 | [0035](0035-kripke-joyal-semantics.md) | Kripke-Joyal semantics for local truth | Proposed — library implemented in `core.topos` | 2026-10-24 | `lib/core/topos.esk`; suites `tests/stdlib/topos_test.esk`, `topos_corpus_test.esk`, `topos_corpus_sheaf_test.esk`, `topos_reductions_test.esk`, `topos_jtranslation_test.esk`, `topos_local_ring_test.esk`; reference [`topos.md`](../../reference/stdlib/topos.md) |
+| [0047](0047-certificates-and-independent-checker.md) | Certificates, an independent checker and a Lean export | Proposed — implemented in `core.certificate` and `tools/certcheck` | 2026-10-30 | `lib/core/certificate.esk`, `tools/certcheck/`; suites `tests/stdlib/certificate_test.esk`, `tests/certificates/`; reference [`certificate.md`](../../reference/stdlib/certificate.md) |
 
 ## Numbering
 

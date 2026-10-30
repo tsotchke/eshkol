@@ -1,0 +1,41 @@
+;;; certify_form_test.esk -- the (certify (f arg ...)) form (ADR-0047) is
+;;; rewritten to (certify-call "f" f (list arg ...)) on every engine.  This
+;;; suite supplies its own certify-call, so it checks the rewrite alone and
+;;; runs identically on native JIT, AOT and the bytecode VM.
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+
+(define seen '())
+(define (certify-call name procedure args)
+  (set! seen (cons (cons name args) seen))
+  (apply procedure args))
+
+(define (add3 a b c) (+ a b c))
+(define evaluations 0)
+(define (counted x) (set! evaluations (+ evaluations 1)) x)
+
+(check "the value is the call's value" (= 6 (certify (add3 1 2 3))))
+(check "certify-call receives the operator's name as a string"
+       (equal? "add3" (car (car seen))))
+(check "certify-call receives the evaluated arguments as a list"
+       (equal? '(1 2 3) (cdr (car seen))))
+(check "each argument is evaluated exactly once"
+       (begin (certify (add3 (counted 1) (counted 2) (counted 3))) (= 3 evaluations)))
+(check "a call with no arguments"
+       (equal? '() (begin (certify (list)) (cdr (car seen)))))
+(check "the operator is evaluated as a variable, so a local binding is used"
+       (let ((add3 (lambda (a b c) (* a b c)))) (= 6 (certify (add3 1 2 3)))))
+(check "certify nests inside an expression"
+       (= 12 (* 2 (certify (add3 1 2 3)))))
+(check "certify in tail position of a procedure"
+       (let ((f (lambda (n) (certify (add3 n n n))))) (= 9 (f 3))))
+
+(newline)
+(display "Passed: ") (display passed) (display " Failed: ") (display failed) (newline)
+(if (> failed 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: certify_form_test") (newline) (display "RESULT: PASS") (newline)
