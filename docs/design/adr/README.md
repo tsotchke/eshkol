@@ -56,6 +56,7 @@ documentation hub lists the same records in
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
 | [0033](0033-core-sheaf-finite-sites.md) | `core.sheaf`: one sheaf-theory facility on finite sites | Proposed — implemented in `core.sheaf` | 2026-10-24 | `lib/core/sheaf.esk`, `lib/core/sheaf/`, `lib/core/integer_linalg.esk`; suite `tests/stdlib/sheaf_test.esk`; reference [`sheaf.md`](../../reference/stdlib/sheaf.md) |
 | [0035](0035-kripke-joyal-semantics.md) | Kripke-Joyal semantics for local truth | Proposed — library implemented in `core.topos` | 2026-10-24 | `lib/core/topos.esk`; suites `tests/stdlib/topos_test.esk`, `topos_corpus_test.esk`, `topos_corpus_sheaf_test.esk`, `topos_reductions_test.esk`, `topos_jtranslation_test.esk`, `topos_local_ring_test.esk`; reference [`topos.md`](../../reference/stdlib/topos.md) |
+| [0036](0036-core-category-finite-categories.md) | `core.category`: finite category theory as the shared base layer | Proposed — implemented in `core.category` | 2026-10-29 | `lib/core/category.esk`, `lib/core/category/`; suites `tests/stdlib/category_test.esk`, `category_s62_test.esk`; reference [`category.md`](../../reference/stdlib/category.md) |
 
 ## Numbering
 

@@ -2520,6 +2520,22 @@ oracles:
         label: 'core.topos (ADR-0035): the Mitchell-Benabou language of Sh(C, J) for finite sites, Kripke-Joyal forcing cross-checked against the Omega-valued interpretation on an enumerated corpus over five sites, the Kripke and Beth reductions, the j-translation, soundness of intuitionistic higher-order logic with classical-law counter-witnesses, and the internally local structure sheaf of Spec(Z/n); the topos suites, the library-based presheaf-topos example in JIT and AOT, and the reference-page examples all pass'
         action: ./scripts/run_topos_gate.sh
 
+      # core.category (ADR-0036): finite category theory on core.sheaf.site's
+      # representation, and the S6.2 acceptance (descent as a Kan extension,
+      # sheafification as a reflector). Producer: scripts/run_category_gate.sh
+      # runs the ten CTest entries that own the behaviour (category_test,
+      # category_s62_test and the three examples written on the library, JIT
+      # and AOT) and every documentation example on the reference page; PASS
+      # only when all of them ran and passed.
+      - id: v14_core_category
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_category"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.category (ADR-0036): functors, natural transformations, functor and comma categories, limits, colimits, ends, coends, Yoneda, Grothendieck constructions, Kan extensions by both formulas with Lan -| F^* -| Ran, adjunctions with triangle identities, monads, nerves and derived limits; S6.2: a -| i with both triangle identities, the sheafification monad, Cech and cohomological descent, and the numbers of the sheaf and descent examples reproduced categorically; the suites, the three library-based examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_category_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
