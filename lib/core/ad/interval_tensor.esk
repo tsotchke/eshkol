@@ -86,11 +86,22 @@
 (define (itensor-ref x . idx) (vector-ref (itensor-data x) (it-flat-index (itensor-shape x) idx)))
 
 ;; ── Dense f64 boundary ────────────────────────────────────────────────────
+;; Element access goes through a flat reshape plus tensor-ref / tensor-set!,
+;; which both engines (native and bytecode VM) provide.
+(define (it-tensor-flat t)                  ; Scheme vector of a tensor's entries
+  (let* ((shape (tensor-shape t)) (n (it-product shape))
+         (flat (reshape t (list n))) (v (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (tensor-ref flat i)) (loop (+ i 1))) v))))
+
 (define (tensor->itensor t)
-  (it-make (tensor-shape t) (tensor->vector t)))
+  (it-make (tensor-shape t) (it-tensor-flat t)))
 
 ;; an f64 tensor from a Scheme vector of numbers, with the given shape
-(define (it-dense shape v) (reshape (vector->tensor v) shape))
+(define (it-dense shape v)
+  (let* ((n (vector-length v)) (t (make-tensor (list n) 0.0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (tensor-set! t i (vector-ref v i)) (loop (+ i 1))) (reshape t shape)))))
 
 ;; (lower . upper) f64 tensors; each bound rounded outward to binary64
 (define (itensor->bounds x)
@@ -105,7 +116,7 @@
           (cons (it-dense (itensor-shape x) lo) (it-dense (itensor-shape x) hi))))))
 
 (define (bounds->itensor lo hi)
-  (let* ((lv (tensor->vector lo)) (hv (tensor->vector hi))
+  (let* ((lv (it-tensor-flat lo)) (hv (it-tensor-flat hi))
          (n (vector-length lv)) (d (make-vector n 0)))
     (let loop ((i 0))
       (if (< i n)
@@ -206,7 +217,7 @@
 ;; element tensor of exact numbers.
 (define (itensor-contains-tensor? x t)
   (let* ((d (itensor-data x))
-         (tv (if (itensor? t) (itensor-data t) (tensor->vector t)))
+         (tv (if (itensor? t) (itensor-data t) (it-tensor-flat t)))
          (n (vector-length d)))
     (and (= n (vector-length tv))
          (let loop ((i 0))
