@@ -313,7 +313,7 @@ def export(doc, source_name):
     out = "\n".join(lines) + "\n\n" + PRELUDE
     for claim, stmts in theorems:
         out += f"\n-- {claim['kind']} {claim['label']!r} {claim['id']}\n"
-        out += "\n\n".join(stmts) + "\n"
+        out += "\n\n".join("set_option maxRecDepth 100000 in\n" + st for st in stmts) + "\n"
     return out, len(theorems), skipped
 
 

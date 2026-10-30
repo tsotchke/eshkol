@@ -4452,14 +4452,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certify_form_aot${CMAKE_EXECUTABLE_SUFFIX}"
         "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
-    set(_certify_form_tests certify_form_jit certify_form_aot)
-    if(TARGET eshkol-vm-standalone-test)
-        add_test(NAME certify_form_direct_vm
-            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certify_form_test.esk")
-        list(APPEND _certify_form_tests certify_form_direct_vm)
-    endif()
-    set_tests_properties(${_certify_form_tests} PROPERTIES
+    set_tests_properties(certify_form_jit certify_form_aot PROPERTIES
         TIMEOUT 600
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "PASS: certify_form_test"
@@ -14400,6 +14393,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         add_test(NAME certified_solve_direct_vm
             COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certified_solve_test.esk")
+    endif()
+    # ADR-0047: the (certify ...) rewrite on the bytecode VM (registered here,
+    # after the VM test driver target exists).
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME certify_form_direct_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certify_form_test.esk")
+        set_tests_properties(certify_form_direct_vm PROPERTIES TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: certify_form_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Unhandled exception|fatal signal")
     endif()
     set(_certified_solve_tests certified_solve_jit certified_solve_aot)
     if(TARGET eshkol-vm-standalone-test)
