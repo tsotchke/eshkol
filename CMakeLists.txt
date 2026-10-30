@@ -4437,6 +4437,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 900
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
             PASS_REGULAR_EXPRESSION "PASS: ${_nlab_suite}_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # core.category: finite category theory on core.sheaf.site's representation
 # (ADR-0036): functors, natural transformations, (co)limits, ends, coends,
 # Yoneda, Kan extensions, adjunctions, monads, derived limits, and descent and
