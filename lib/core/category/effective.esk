@@ -1,0 +1,635 @@
+;;; core.category.effective -- effectively given categories: categories whose
+;;; objects and arrows are produced on demand by procedures, so that infinite
+;;; categories (monoids and groups, countable posets, the simplex category,
+;;; FinSet, Mat_R) are values just as finite ones are.
+;;;
+;;; Usage: (require core.category.effective)
+;;;
+;;; Sources: F. Sergeraert, J. Rubio, "Constructive algebraic topology",
+;;; Bull. Sci. Math. 126 (2002) (locally effective versus effective objects:
+;;; the model this module follows for categories); S. Mac Lane, "Categories
+;;; for the Working Mathematician", 2nd ed. (1998), I.1-I.3, II.8 (categories
+;;; given by generators and relations), IV.1 (adjunctions, triangle
+;;; identities); E. Riehl, "Category Theory in Context" (2016), 1.1-1.4, 4.2;
+;;; nLab: "category", "functor", "natural transformation", "adjoint functor",
+;;; "nerve".
+;;;
+;;; Design: ADR-0054 (docs/design/adr/0054-effective-and-presented-categories.md);
+;;; reference: docs/reference/stdlib/category-effective.md.
+;;;
+;;; Representation (public and stable; core.category.presented,
+;;; core.category.standard and core.category.effective_kan build on it):
+;;;
+;;;   enumerator  #(enumerator stage bound)
+;;;       `stage` is a procedure n -> the finite list of the items of stage n
+;;;       (n = 0, 1, 2, ...); every item lies in exactly one stage. `bound`
+;;;       is #f when infinitely many stages may be inhabited, or an integer N
+;;;       such that every stage n >= N is empty: the enumerator is then
+;;;       finite and `enumerator->list` lists it. Stages are memoized. A list
+;;;       is accepted wherever an enumerator is expected (one stage, bound 1).
+;;;   effective category
+;;;       #(effective-category name objects object? hom compose identity
+;;;                            source target arrow=? props)
+;;;       `objects` an enumerator of the objects, or #f when the objects are
+;;;       only given by the predicate `object?`; objects are canonical values
+;;;       compared with equal?. `hom` is a procedure (a b) -> an enumerator
+;;;       (or list) of the arrows a -> b, each arrow occurring once up to
+;;;       `arrow=?`. `compose` is (g f) -> g o f, called only on composable
+;;;       arrows; `identity` x -> 1_x; `source` and `target` read an arrow's
+;;;       endpoints; `arrow=?` decides equality of parallel arrows. `props`
+;;;       is an association list of declared structure: 'generators (a list
+;;;       of arrows that generate under composition), 'relations (pairs of
+;;;       composable lists of generators, composition order, whose composites
+;;;       agree and which present the category), 'thin (at most one arrow
+;;;       between two objects), 'finite-category (the core.sheaf.site value
+;;;       it came from).
+;;;   effective functor     #(effective-functor name C D object arrow props)
+;;;   transformation        a procedure x -> the component at x (an arrow)
+;;;   adjunction            #(effective-adjunction F G unit counit)
+;;;       F : C -> D left adjoint to G : D -> C; `unit` c -> eta_c : c -> GFc,
+;;;       `counit` d -> eps_d : FGd -> d.
+;;;   effective set functor #(effective-set-functor C object arrow)
+;;;       covariant C -> Set with finite values: `object` x -> the list of the
+;;;       elements of X(x) (equal?), `arrow` f -> a procedure on elements.
+;;;
+;;; What the checks mean. A law over an infinite category cannot be decided
+;;; by enumeration, so every *-violations procedure takes the objects and
+;;; arrows it checks, checks exactly those, and returns the list of
+;;; failures (empty when all hold). When a category is presented (the
+;;; 'generators and 'relations properties, or a core.category.presented
+;;; value), a functor out of it is determined by the images of the
+;;; generators and is a functor exactly when the relations hold in the
+;;; target; a transformation is natural exactly when it is natural on the
+;;; generators. Those checks are then complete, not samples, and the
+;;; procedures that use them say so in their names (*-generator-violations).
+;;;
+;;; Refusals are R7RS error objects whose message is the name of the
+;;; condition and whose irritants name the operation and the witness:
+;;;   enumeration-infinite        (operation what)
+;;;   category-not-finite         (operation category witness)
+;;;   objects-not-enumerated      (operation category)
+;;;   not-composable              (operation g f)
+;;;   composite-outside-hom       (operation g f composite)
+;;;   nerve-not-enumerable        (operation degree witness)
+;;;   presentation-undecided-within-budget (operation presentation budget)
+;;;   limit-does-not-exist        (operation category diagram witness)
+;;;   limit-not-computable        (operation category reason)
+;;;   comma-category-not-finite   (operation functor object)
+;;; A refusal never returns a substitute value.
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.simplicial.sset)
+(require core.simplicial.nerve)
+
+(provide category-refuse category-refusal? category-refusal-kind category-refusal-irritants
+         make-enumerator list->enumerator as-enumerator enumerator? enumerator-stage enumerator-bound
+         enumerator-finite? enumerator-up-to enumerator-take enumerator-find enumerator->list enumerator-count
+         enumerator-map enumerator-filter enumerator-append enumerator-product enumerator-concat
+         naturals-enumerator integers-enumerator
+         make-effective-category effective-category? effective-category-name effective-category-objects
+         effective-category-object? effective-category-hom effective-category-hom-list effective-category-hom-up-to
+         effective-category-compose effective-category-compose-list effective-category-identity
+         effective-category-source effective-category-target effective-category-arrow=?
+         effective-category-property effective-category-with-properties effective-category-identity?
+         effective-category-object-list effective-category-finite? effective-category-laws-violations
+         effective-category-arrows-up-to
+         finite-category->effective effective->finite-category effective-opposite effective-full-subcategory
+         effective-product-category
+         make-effective-functor effective-functor? effective-functor-name effective-functor-source
+         effective-functor-target effective-functor-object effective-functor-arrow effective-functor-property
+         effective-identity-functor effective-functor-compose effective-functor-opposite
+         effective-functor-violations effective-functor-generator-violations
+         finite-functor->effective effective-functor->finite
+         effective-transformation-violations effective-transformation-generator-violations
+         effective-identity-transformation effective-transformation-compose effective-whisker-left effective-whisker-right
+         make-effective-adjunction effective-adjunction? effective-adjunction-left effective-adjunction-right
+         effective-adjunction-unit effective-adjunction-counit effective-adjunction-violations
+         effective-adjunction-hom-bijection-violations effective-adjunction-transpose effective-adjunction-cotranspose
+         make-effective-set-functor effective-set-functor? effective-set-functor-category
+         effective-set-functor-object effective-set-functor-arrow effective-set-functor-violations
+         effective-category-nerve effective-nerve-simplices effective-nerve-boundary effective-nerve-chain-data)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix ce-)
+;; ---------------------------------------------------------------------------
+(define (ce-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ce-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (ce-all? p (cdr xs))) (else #f)))
+(define (ce-find p xs) (cond ((null? xs) #f) ((p (car xs)) (car xs)) (else (ce-find p (cdr xs)))))
+(define (ce-position-by same? x xs)
+  (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((same? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (ce-memo1 proc)
+  (let ((t (make-hash-table)))
+    (lambda (n) (let ((hit (hash-table-ref/default t n 'ce-none)))
+                  (if (eq? hit 'ce-none) (let ((v (proc n))) (hash-table-set! t n v) v) hit)))))
+(define (ce-memo2 proc)
+  (let ((t (make-hash-table)))
+    (lambda (a b) (let* ((k (cons a b)) (hit (hash-table-ref/default t k 'ce-none)))
+                    (if (eq? hit 'ce-none) (let ((v (proc a b))) (hash-table-set! t k v) v) hit)))))
+(define (ce-flatmap f xs) (let loop ((l xs) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (append (reverse (f (car l))) acc)))))
+
+;; ---------------------------------------------------------------------------
+;; Refusals
+;; ---------------------------------------------------------------------------
+(define ce-refusal-kinds
+  (list "enumeration-infinite" "category-not-finite" "objects-not-enumerated" "not-composable"
+        "composite-outside-hom" "nerve-not-enumerable" "presentation-undecided-within-budget"
+        "limit-does-not-exist" "limit-not-computable" "comma-category-not-finite"))
+(define (category-refuse kind . irritants) (apply error (symbol->string kind) irritants))
+(define (category-refusal? e)
+  (and (error-object? e) (string? (error-object-message e))
+       (if (member (error-object-message e) ce-refusal-kinds) #t #f)))
+(define (category-refusal-kind e) (if (category-refusal? e) (string->symbol (error-object-message e)) #f))
+(define (category-refusal-irritants e) (if (category-refusal? e) (error-object-irritants e) '()))
+
+;; ---------------------------------------------------------------------------
+;; Enumerators
+;; ---------------------------------------------------------------------------
+(define (make-enumerator stage . bound) (vector 'enumerator (ce-memo1 stage) (if (null? bound) #f (car bound))))
+(define (list->enumerator xs) (vector 'enumerator (lambda (n) (if (= n 0) xs '())) 1))
+(define (enumerator? e) (and (vector? e) (= 3 (vector-length e)) (eq? (vector-ref e 0) 'enumerator)))
+(define (as-enumerator x) (if (enumerator? x) x (list->enumerator x)))
+(define (enumerator-bound e) (vector-ref (as-enumerator e) 2))
+(define (enumerator-finite? e) (if (enumerator-bound e) #t #f))
+(define (enumerator-stage e0 n)
+  (let ((e (as-enumerator e0)))
+    (if (or (< n 0) (and (vector-ref e 2) (>= n (vector-ref e 2)))) '() ((vector-ref e 1) n))))
+;; the items of stages 0..n, in stage order
+(define (enumerator-up-to e n)
+  (let loop ((k n) (acc '())) (if (< k 0) acc (loop (- k 1) (append (enumerator-stage e k) acc)))))
+;; at most k items from stages 0..max-stage
+(define (enumerator-take e k max-stage)
+  (let loop ((s 0) (acc '()) (have 0))
+    (if (or (>= have k) (> s max-stage)) (let cut ((l (reverse acc)) (i 0) (out '())) (if (or (null? l) (= i k)) (reverse out) (cut (cdr l) (+ i 1) (cons (car l) out))))
+        (let ((st (enumerator-stage e s))) (loop (+ s 1) (append (reverse st) acc) (+ have (length st)))))))
+;; the first item satisfying p within stages 0..max-stage, or #f
+(define (enumerator-find p e max-stage)
+  (let loop ((s 0)) (if (> s max-stage) #f (let ((hit (ce-find p (enumerator-stage e s)))) (if hit hit (loop (+ s 1)))))))
+(define (enumerator->list e)
+  (let ((b (enumerator-bound e)))
+    (if b (enumerator-up-to e (- b 1)) (category-refuse 'enumeration-infinite 'enumerator->list e))))
+(define (enumerator-count e) (length (enumerator->list e)))
+(define (enumerator-map f e) (let ((e (as-enumerator e))) (make-enumerator (lambda (n) (map f (enumerator-stage e n))) (enumerator-bound e))))
+(define (enumerator-filter p e) (let ((e (as-enumerator e))) (make-enumerator (lambda (n) (filter p (enumerator-stage e n))) (enumerator-bound e))))
+(define (enumerator-append e1 e2)
+  (let ((b1 (enumerator-bound e1)) (b2 (enumerator-bound e2)))
+    (make-enumerator (lambda (n) (append (enumerator-stage e1 n) (enumerator-stage e2 n))) (if (and b1 b2) (max b1 b2) #f))))
+;; pairs (x . y), stage n holding the pairs from stages i + j = n
+(define (enumerator-product e1 e2)
+  (let ((b1 (enumerator-bound e1)) (b2 (enumerator-bound e2)))
+    (make-enumerator (lambda (n) (ce-flatmap (lambda (i) (ce-flatmap (lambda (x) (map (lambda (y) (cons x y)) (enumerator-stage e2 (- n i))))
+                                                                     (enumerator-stage e1 i)))
+                                             (ce-range (+ n 1))))
+                     (if (and b1 b2) (max 1 (- (+ b1 b2) 1)) #f))))
+;; the union of the enumerators (f x) over the items x of e, stage n
+;; holding stage j of (f x) for x in stage i, i + j = n
+(define (enumerator-concat f e)
+  (let ((inner (ce-memo1 (lambda (x) (as-enumerator (f x))))))
+    (make-enumerator (lambda (n) (ce-flatmap (lambda (i) (ce-flatmap (lambda (x) (enumerator-stage (inner x) (- n i))) (enumerator-stage e i)))
+                                             (ce-range (+ n 1)))))))
+(define (naturals-enumerator) (make-enumerator (lambda (n) (list n))))
+(define (integers-enumerator) (make-enumerator (lambda (n) (if (= n 0) (list 0) (list n (- n))))))
+
+;; ---------------------------------------------------------------------------
+;; Effective categories
+;; ---------------------------------------------------------------------------
+(define (make-effective-category name objects object? hom compose identity source target arrow=? . props)
+  (let ((objs (if objects (as-enumerator objects) #f)))
+    (vector 'effective-category name objs
+            (or object? (if (and objs (enumerator-finite? objs))
+                            (lambda (x) (if (member x (enumerator->list objs)) #t #f))
+                            #f))
+            (ce-memo2 (lambda (a b) (as-enumerator (hom a b))))
+            compose identity source target (or arrow=? equal?) (if (null? props) '() (car props)))))
+(define (effective-category? E) (and (vector? E) (= 11 (vector-length E)) (eq? (vector-ref E 0) 'effective-category)))
+(define (effective-category-name E) (vector-ref E 1))
+(define (effective-category-objects E) (or (vector-ref E 2) (category-refuse 'objects-not-enumerated 'effective-category-objects (vector-ref E 1))))
+(define (effective-category-object? E x) (let ((p (vector-ref E 3))) (if p (p x) (category-refuse 'objects-not-enumerated 'effective-category-object? (vector-ref E 1)))))
+(define (effective-category-hom E a b) ((vector-ref E 4) a b))
+(define (effective-category-hom-list E a b)
+  (let ((h (effective-category-hom E a b)))
+    (if (enumerator-finite? h) (enumerator->list h) (category-refuse 'enumeration-infinite 'effective-category-hom-list (vector-ref E 1) (list a b)))))
+(define (effective-category-hom-up-to E a b n) (enumerator-up-to (effective-category-hom E a b) n))
+(define (effective-category-source E f) ((vector-ref E 7) f))
+(define (effective-category-target E f) ((vector-ref E 8) f))
+(define (effective-category-arrow=? E f g)
+  (and (equal? (effective-category-source E f) (effective-category-source E g))
+       (equal? (effective-category-target E f) (effective-category-target E g))
+       (if ((vector-ref E 9) f g) #t #f)))
+(define (effective-category-identity E x) ((vector-ref E 6) x))
+(define (effective-category-identity? E f)
+  (and (equal? (effective-category-source E f) (effective-category-target E f))
+       (effective-category-arrow=? E f (effective-category-identity E (effective-category-source E f)))))
+(define (effective-category-compose E g f)
+  (if (equal? (effective-category-target E f) (effective-category-source E g))
+      ((vector-ref E 5) g f)
+      (category-refuse 'not-composable 'effective-category-compose g f)))
+;; (fk ... f1) |-> fk o ... o f1 (composition order); the empty list needs an object
+(define (effective-category-compose-list E arrows . object)
+  (cond ((null? arrows) (if (null? object) (error "effective-category-compose-list: the empty composite needs an object") (effective-category-identity E (car object))))
+        ((null? (cdr arrows)) (car arrows))
+        (else (effective-category-compose E (car arrows) (effective-category-compose-list E (cdr arrows))))))
+(define (effective-category-property E key) (let ((p (assq key (vector-ref E 10)))) (if p (cdr p) #f)))
+(define (effective-category-with-properties E props)
+  (let ((v (list->vector (vector->list E)))) (vector-set! v 10 (append props (vector-ref E 10))) v))
+(define (effective-category-object-list E)
+  (let ((objs (effective-category-objects E)))
+    (if (enumerator-finite? objs) (enumerator->list objs) (category-refuse 'category-not-finite 'effective-category-object-list (vector-ref E 1) 'objects))))
+;; every arrow between the listed objects from hom stages 0..n
+(define (effective-category-arrows-up-to E objs n)
+  (ce-flatmap (lambda (a) (ce-flatmap (lambda (b) (effective-category-hom-up-to E a b n)) objs)) objs))
+;; finite: finitely many objects and every hom-set finite (decided from the bounds)
+(define (effective-category-finite? E)
+  (and (vector-ref E 2) (enumerator-finite? (vector-ref E 2))
+       (let ((objs (effective-category-object-list E)))
+         (ce-all? (lambda (a) (ce-all? (lambda (b) (enumerator-finite? (effective-category-hom E a b))) objs)) objs))))
+
+;; Identity, endpoint and associativity laws on the given objects and on the
+;; arrows between them from hom stages 0..n: exactly those arrows are checked.
+(define (effective-category-laws-violations E objs n)
+  (let* ((arrows (effective-category-arrows-up-to E objs n)) (out '())
+         (src (lambda (f) (effective-category-source E f))) (tgt (lambda (f) (effective-category-target E f)))
+         (same? (lambda (f g) (effective-category-arrow=? E f g)))
+         (note (lambda (v) (set! out (cons v out)))))
+    (for-each (lambda (x) (let ((i (effective-category-identity E x)))
+                            (if (not (and (equal? (src i) x) (equal? (tgt i) x))) (note (list 'identity-endpoints x)))))
+              objs)
+    (for-each (lambda (f)
+                (if (not (same? (effective-category-compose E f (effective-category-identity E (src f))) f)) (note (list 'right-unit f)))
+                (if (not (same? (effective-category-compose E (effective-category-identity E (tgt f)) f) f)) (note (list 'left-unit f))))
+              arrows)
+    (for-each (lambda (f)
+                (for-each (lambda (g)
+                            (if (equal? (tgt f) (src g))
+                                (let ((gf (effective-category-compose E g f)))
+                                  (if (not (and (equal? (src gf) (src f)) (equal? (tgt gf) (tgt g)))) (note (list 'composite-endpoints g f)))
+                                  (for-each (lambda (h)
+                                              (if (equal? (tgt g) (src h))
+                                                  (if (not (same? (effective-category-compose E h gf) (effective-category-compose E (effective-category-compose E h g) f)))
+                                                      (note (list 'associativity h g f)))))
+                                            arrows))))
+                          arrows))
+              arrows)
+    (reverse out)))
+
+;; ---------------------------------------------------------------------------
+;; Finite categories as a special case, and back
+;; ---------------------------------------------------------------------------
+(define (finite-category->effective C . name)
+  (let ((n (category-object-count C)))
+    (make-effective-category (if (null? name) "finite category" (car name))
+                             (ce-range n) (lambda (x) (and (integer? x) (exact? x) (>= x 0) (< x n)))
+                             (lambda (a b) (category-hom C a b))
+                             (lambda (g f) (category-compose C g f))
+                             (lambda (x) (category-identity C x))
+                             (lambda (f) (arrow-source C f)) (lambda (f) (arrow-target C f))
+                             eqv?
+                             (list (cons 'finite-category C)
+                                   (cons 'generators (filter (lambda (a) (not (= a (category-identity C (arrow-source C a)))))
+                                                             (ce-range (category-arrow-count C))))))))
+;; A finite effective category as a core.sheaf.site finite-category: object i
+;; is the i-th object of the enumeration (its label), arrows are numbered hom
+;; by hom (their names are the effective arrows). Refused when an object
+;; enumeration or a hom-set is not finite.
+(define (effective->finite-category E)
+  (if (not (effective-category-finite? E))
+      (category-refuse 'category-not-finite 'effective->finite-category (effective-category-name E)
+                       (if (and (vector-ref E 2) (enumerator-finite? (vector-ref E 2)))
+                           (let ((objs (effective-category-object-list E)))
+                             (ce-find (lambda (p) (not (enumerator-finite? (effective-category-hom E (car p) (cdr p)))))
+                                      (ce-flatmap (lambda (a) (map (lambda (b) (cons a b)) objs)) objs)))
+                           'objects)))
+  (let* ((objs (effective-category-object-list E)) (n (length objs))
+         (oindex (let ((t (make-hash-table))) (let loop ((l objs) (i 0)) (if (pair? l) (begin (hash-table-set! t (car l) i) (loop (cdr l) (+ i 1))))) t))
+         (oi (lambda (x) (hash-table-ref/default oindex x #f)))
+         (homs (make-hash-table)) (arrows '()) (count 0))
+    (for-each (lambda (a) (for-each (lambda (b)
+                                      (let ((fs (effective-category-hom-list E a b)) (entries '()))
+                                        (for-each (lambda (f) (set! entries (cons (cons count f) entries))
+                                                    (set! arrows (cons (vector (oi a) (oi b) f) arrows)) (set! count (+ count 1)))
+                                                  fs)
+                                        (hash-table-set! homs (cons (oi a) (oi b)) (reverse entries))))
+                                    objs))
+              objs)
+    (let* ((av (list->vector (reverse arrows)))
+           (lookup (lambda (ia ib f)
+                     (let ((hit (ce-find (lambda (e) (effective-category-arrow=? E (cdr e) f)) (hash-table-ref/default homs (cons ia ib) '()))))
+                       (if hit (car hit) #f))))
+           (compose (lambda (gi fi)
+                      (let* ((f (vector-ref (vector-ref av fi) 2)) (g (vector-ref (vector-ref av gi) 2))
+                             (gf (effective-category-compose E g f))
+                             (k (lookup (vector-ref (vector-ref av fi) 0) (vector-ref (vector-ref av gi) 1) gf)))
+                        (or k (category-refuse 'composite-outside-hom 'effective->finite-category g f gf))))))
+      (make-finite-category n (vector->list av) compose
+                            (map (lambda (x) (or (lookup (oi x) (oi x) (effective-category-identity E x))
+                                                 (category-refuse 'composite-outside-hom 'effective->finite-category 'identity x)))
+                                 objs)
+                            objs))))
+
+;; ---------------------------------------------------------------------------
+;; Opposite, full subcategories, products
+;; ---------------------------------------------------------------------------
+(define (effective-opposite E)
+  (make-effective-category (list 'opposite (effective-category-name E)) (vector-ref E 2) (vector-ref E 3)
+                           (lambda (a b) (effective-category-hom E b a))
+                           (lambda (g f) (effective-category-compose E f g))
+                           (vector-ref E 6) (vector-ref E 8) (vector-ref E 7) (vector-ref E 9)
+                           (let ((gens (effective-category-property E 'generators))
+                                 (rels (effective-category-property E 'relations)))
+                             (append (if gens (list (cons 'generators gens)) '())
+                                     (if rels (list (cons 'relations (map (lambda (r) (cons (reverse (car r)) (reverse (cdr r)))) rels))) '())
+                                     (if (effective-category-property E 'thin) (list (cons 'thin #t)) '())
+                                     (list (cons 'opposite-of E))))))
+;; the full subcategory on the objects of an enumerator (or list)
+(define (effective-full-subcategory E objects . name)
+  (let ((objs (as-enumerator objects)))
+    (make-effective-category (if (null? name) (list 'full-subcategory (effective-category-name E)) (car name))
+                             objs #f
+                             (lambda (a b) (effective-category-hom E a b))
+                             (vector-ref E 5) (vector-ref E 6) (vector-ref E 7) (vector-ref E 8) (vector-ref E 9)
+                             (if (effective-category-property E 'thin) (list (cons 'thin #t)) '()))))
+;; C x D: objects and arrows are pairs
+(define (effective-product-category C D)
+  (make-effective-category (list 'product (effective-category-name C) (effective-category-name D))
+                           (if (and (vector-ref C 2) (vector-ref D 2)) (enumerator-product (vector-ref C 2) (vector-ref D 2)) #f)
+                           (if (and (vector-ref C 3) (vector-ref D 3))
+                               (lambda (x) (and (pair? x) (effective-category-object? C (car x)) (effective-category-object? D (cdr x))))
+                               #f)
+                           (lambda (a b) (enumerator-product (effective-category-hom C (car a) (car b)) (effective-category-hom D (cdr a) (cdr b))))
+                           (lambda (g f) (cons (effective-category-compose C (car g) (car f)) (effective-category-compose D (cdr g) (cdr f))))
+                           (lambda (x) (cons (effective-category-identity C (car x)) (effective-category-identity D (cdr x))))
+                           (lambda (f) (cons (effective-category-source C (car f)) (effective-category-source D (cdr f))))
+                           (lambda (f) (cons (effective-category-target C (car f)) (effective-category-target D (cdr f))))
+                           (lambda (f g) (and (effective-category-arrow=? C (car f) (car g)) (effective-category-arrow=? D (cdr f) (cdr g))))))
+
+;; ---------------------------------------------------------------------------
+;; Functors
+;; ---------------------------------------------------------------------------
+(define (make-effective-functor C D object arrow . more)
+  (vector 'effective-functor (if (and (pair? more) (not (pair? (car more)))) (car more) "functor") C D object arrow
+          (let ((props (ce-find pair? more))) (or props '()))))
+(define (effective-functor? F) (and (vector? F) (= 7 (vector-length F)) (eq? (vector-ref F 0) 'effective-functor)))
+(define (effective-functor-name F) (vector-ref F 1))
+(define (effective-functor-source F) (vector-ref F 2))
+(define (effective-functor-target F) (vector-ref F 3))
+(define (effective-functor-object F x) ((vector-ref F 4) x))
+(define (effective-functor-arrow F f) ((vector-ref F 5) f))
+(define (effective-functor-property F key) (let ((p (assq key (vector-ref F 6)))) (if p (cdr p) #f)))
+(define (effective-identity-functor C) (make-effective-functor C C (lambda (x) x) (lambda (f) f) "identity"))
+(define (effective-functor-compose G F)
+  (make-effective-functor (effective-functor-source F) (effective-functor-target G)
+                          (lambda (x) (effective-functor-object G (effective-functor-object F x)))
+                          (lambda (f) (effective-functor-arrow G (effective-functor-arrow F f)))
+                          (list 'compose (effective-functor-name G) (effective-functor-name F))))
+(define (effective-functor-opposite F)
+  (make-effective-functor (effective-opposite (effective-functor-source F)) (effective-opposite (effective-functor-target F))
+                          (vector-ref F 4) (vector-ref F 5) (list 'opposite (effective-functor-name F)) (vector-ref F 6)))
+;; identities at objs, endpoints of every arrow, and F(g o f) = F g o F f for
+;; every composable pair among arrows: exactly these are checked
+(define (effective-functor-violations F objs arrows)
+  (let* ((C (effective-functor-source F)) (D (effective-functor-target F)) (out '())
+         (note (lambda (v) (set! out (cons v out)))))
+    (for-each (lambda (x) (if (not (effective-category-arrow=? D (effective-functor-arrow F (effective-category-identity C x))
+                                                                (effective-category-identity D (effective-functor-object F x))))
+                              (note (list 'identity x))))
+              objs)
+    (for-each (lambda (f)
+                (let ((Ff (effective-functor-arrow F f)))
+                  (if (not (and (equal? (effective-category-source D Ff) (effective-functor-object F (effective-category-source C f)))
+                                (equal? (effective-category-target D Ff) (effective-functor-object F (effective-category-target C f)))))
+                      (note (list 'endpoints f)))))
+              arrows)
+    (for-each (lambda (f) (for-each (lambda (g)
+                                      (if (equal? (effective-category-target C f) (effective-category-source C g))
+                                          (if (not (effective-category-arrow=? D (effective-functor-arrow F (effective-category-compose C g f))
+                                                                               (effective-category-compose D (effective-functor-arrow F g) (effective-functor-arrow F f))))
+                                              (note (list 'composite g f)))))
+                                    arrows))
+              arrows)
+    (reverse out)))
+;; For a presented source (properties 'generators and 'relations, objects
+;; finite or listed in objs): endpoints of every generator image, every
+;; relation preserved, identities preserved at objs, and F agrees on each
+;; relation side with the composite of the generator images. When F is the
+;; extension of its generator images, an empty result proves F a functor.
+(define (effective-functor-generator-violations F . objs)
+  (let* ((C (effective-functor-source F)) (D (effective-functor-target F))
+         (gens (or (effective-category-property C 'generators) (error "effective-functor-generator-violations: the source declares no generators")))
+         (rels (or (effective-category-property C 'relations) '()))
+         (os (if (null? objs) (effective-category-object-list C) (car objs)))
+         (image (lambda (w x) (if (null? w) (effective-category-identity D (effective-functor-object F x))
+                                  (effective-category-compose-list D (map (lambda (g) (effective-functor-arrow F g)) w)))))
+         (out '()) (note (lambda (v) (set! out (cons v out)))))
+    (for-each (lambda (x) (if (not (effective-category-arrow=? D (effective-functor-arrow F (effective-category-identity C x))
+                                                                (effective-category-identity D (effective-functor-object F x))))
+                              (note (list 'identity x))))
+              os)
+    (for-each (lambda (g) (let ((Fg (effective-functor-arrow F g)))
+                            (if (not (and (equal? (effective-category-source D Fg) (effective-functor-object F (effective-category-source C g)))
+                                          (equal? (effective-category-target D Fg) (effective-functor-object F (effective-category-target C g)))))
+                                (note (list 'generator-endpoints g)))))
+              gens)
+    (for-each (lambda (r)
+                (let* ((x (effective-category-source C (car (if (null? (car r)) (cdr r) (car r)))))
+                       (l (image (car r) x)) (rr (image (cdr r) x)))
+                  (if (not (effective-category-arrow=? D l rr)) (note (list 'relation r)))))
+              rels)
+    (reverse out)))
+;; a functor of core.category.functor between finite categories, as an effective functor
+(define (finite-functor->effective F0 C D)
+  (make-effective-functor C D (lambda (x) (vector-ref (vector-ref F0 3) x)) (lambda (f) (vector-ref (vector-ref F0 4) f)) "finite functor"))
+;; the object and arrow vectors of a functor between finite effective
+;; categories, in the numbering of effective->finite-category of each:
+;; (objects . arrows), ready for core.category.functor's make-functor
+(define (effective-functor->finite F)
+  (let* ((C (effective-functor-source F)) (D (effective-functor-target F))
+         (FC (effective->finite-category C)) (FD (effective->finite-category D))
+         (oD (effective-category-object-list D))
+         (arrow-index (lambda (fd)
+                        (let loop ((a 0))
+                          (cond ((= a (category-arrow-count FD)) (category-refuse 'composite-outside-hom 'effective-functor->finite fd))
+                                ((effective-category-arrow=? D (arrow-name FD a) fd) a)
+                                (else (loop (+ a 1))))))))
+    (list FC FD
+          (list->vector (map (lambda (x) (ce-position-by equal? (effective-functor-object F x) oD)) (effective-category-object-list C)))
+          (list->vector (map (lambda (a) (arrow-index (effective-functor-arrow F (arrow-name FC a)))) (ce-range (category-arrow-count FC)))))))
+
+;; ---------------------------------------------------------------------------
+;; Natural transformations (alpha : x -> component)
+;; ---------------------------------------------------------------------------
+;; components alpha_x : F x -> G x at objs, and G f o alpha_a = alpha_b o F f
+;; for every arrow f in arrows: exactly these are checked
+(define (effective-transformation-violations F G alpha objs arrows)
+  (let* ((C (effective-functor-source F)) (D (effective-functor-target F)) (out '())
+         (note (lambda (v) (set! out (cons v out)))))
+    (for-each (lambda (x) (let ((ax (alpha x)))
+                            (if (not (and (equal? (effective-category-source D ax) (effective-functor-object F x))
+                                          (equal? (effective-category-target D ax) (effective-functor-object G x))))
+                                (note (list 'component-endpoints x)))))
+              objs)
+    (for-each (lambda (f)
+                (let ((a (effective-category-source C f)) (b (effective-category-target C f)))
+                  (if (not (effective-category-arrow=? D (effective-category-compose D (effective-functor-arrow G f) (alpha a))
+                                                       (effective-category-compose D (alpha b) (effective-functor-arrow F f))))
+                      (note (list 'naturality f)))))
+              arrows)
+    (reverse out)))
+;; naturality on the declared generators of the source (and components at
+;; every object of a finitely-many-object source): complete for a
+;; category generated by them
+(define (effective-transformation-generator-violations F G alpha . objs)
+  (let ((C (effective-functor-source F)))
+    (effective-transformation-violations F G alpha (if (null? objs) (effective-category-object-list C) (car objs))
+                                         (or (effective-category-property C 'generators)
+                                             (error "effective-transformation-generator-violations: the source declares no generators")))))
+(define (effective-identity-transformation F) (lambda (x) (effective-category-identity (effective-functor-target F) (effective-functor-object F x))))
+;; vertical composite (beta . alpha)_x = beta_x o alpha_x
+(define (effective-transformation-compose D beta alpha) (lambda (x) (effective-category-compose D (beta x) (alpha x))))
+;; (alpha H)_x = alpha_{H x};  (K alpha)_x = K(alpha_x)
+(define (effective-whisker-left alpha H) (lambda (x) (alpha (effective-functor-object H x))))
+(define (effective-whisker-right K alpha) (lambda (x) (effective-functor-arrow K (alpha x))))
+
+;; ---------------------------------------------------------------------------
+;; Adjunctions F -| G with unit and counit
+;; ---------------------------------------------------------------------------
+(define (make-effective-adjunction F G unit counit) (vector 'effective-adjunction F G unit counit))
+(define (effective-adjunction? A) (and (vector? A) (= 5 (vector-length A)) (eq? (vector-ref A 0) 'effective-adjunction)))
+(define (effective-adjunction-left A) (vector-ref A 1))
+(define (effective-adjunction-right A) (vector-ref A 2))
+(define (effective-adjunction-unit A) (vector-ref A 3))
+(define (effective-adjunction-counit A) (vector-ref A 4))
+;; triangle identities eps_{Fc} o F(eta_c) = 1_{Fc} at every c in objsC and
+;; G(eps_d) o eta_{Gd} = 1_{Gd} at every d in objsD; naturality of the unit
+;; on arrowsC and of the counit on arrowsD; component endpoints
+(define (effective-adjunction-violations A objsC objsD arrowsC arrowsD)
+  (let* ((F (vector-ref A 1)) (G (vector-ref A 2)) (eta (vector-ref A 3)) (eps (vector-ref A 4))
+         (C (effective-functor-source F)) (D (effective-functor-target F))
+         (GF (effective-functor-compose G F)) (FG (effective-functor-compose F G))
+         (out '()) (note (lambda (v) (set! out (cons v out)))))
+    (for-each (lambda (c) (if (not (effective-category-arrow=? D (effective-category-compose D (eps (effective-functor-object F c)) (effective-functor-arrow F (eta c)))
+                                                                (effective-category-identity D (effective-functor-object F c))))
+                              (note (list 'left-triangle c))))
+              objsC)
+    (for-each (lambda (d) (if (not (effective-category-arrow=? C (effective-category-compose C (effective-functor-arrow G (eps d)) (eta (effective-functor-object G d)))
+                                                                (effective-category-identity C (effective-functor-object G d))))
+                              (note (list 'right-triangle d))))
+              objsD)
+    (for-each (lambda (v) (note (cons 'unit v))) (effective-transformation-violations (effective-identity-functor C) GF eta objsC arrowsC))
+    (for-each (lambda (v) (note (cons 'counit v))) (effective-transformation-violations FG (effective-identity-functor D) eps objsD arrowsD))
+    (reverse out)))
+;; h : F c -> d  |->  G h o eta_c : c -> G d
+(define (effective-adjunction-transpose A c h)
+  (let ((G (vector-ref A 2)) (C (effective-functor-source (vector-ref A 1))))
+    (effective-category-compose C (effective-functor-arrow G h) ((vector-ref A 3) c))))
+;; k : c -> G d  |->  eps_d o F k : F c -> d
+(define (effective-adjunction-cotranspose A d k)
+  (let ((F (vector-ref A 1)) (D (effective-functor-target (vector-ref A 1))))
+    (effective-category-compose D ((vector-ref A 4) d) (effective-functor-arrow F k))))
+;; D(Fc, d) ~ C(c, Gd): both round trips are identities on hom stages 0..n,
+;; for every pair (c . d) listed
+(define (effective-adjunction-hom-bijection-violations A pairs n)
+  (let* ((F (vector-ref A 1)) (G (vector-ref A 2)) (C (effective-functor-source F)) (D (effective-functor-target F))
+         (out '()) (note (lambda (v) (set! out (cons v out)))))
+    (for-each (lambda (p)
+                (let ((c (car p)) (d (cdr p)))
+                  (for-each (lambda (h) (if (not (effective-category-arrow=? D (effective-adjunction-cotranspose A d (effective-adjunction-transpose A c h)) h))
+                                            (note (list 'left-round-trip c d h))))
+                            (effective-category-hom-up-to D (effective-functor-object F c) d n))
+                  (for-each (lambda (k) (if (not (effective-category-arrow=? C (effective-adjunction-transpose A c (effective-adjunction-cotranspose A d k)) k))
+                                            (note (list 'right-round-trip c d k))))
+                            (effective-category-hom-up-to C c (effective-functor-object G d) n))))
+              pairs)
+    (reverse out)))
+
+;; ---------------------------------------------------------------------------
+;; Set-valued functors with finite values
+;; ---------------------------------------------------------------------------
+(define (make-effective-set-functor C object arrow) (vector 'effective-set-functor C (ce-memo1 object) arrow))
+(define (effective-set-functor? X) (and (vector? X) (= 4 (vector-length X)) (eq? (vector-ref X 0) 'effective-set-functor)))
+(define (effective-set-functor-category X) (vector-ref X 1))
+(define (effective-set-functor-object X x) ((vector-ref X 2) x))
+(define (effective-set-functor-arrow X f) ((vector-ref X 3) f))
+;; X(1_x) = 1, X(f) lands in X(target f), X(g o f) = X(g) X(f), on the given objects and arrows
+(define (effective-set-functor-violations X objs arrows)
+  (let* ((C (vector-ref X 1)) (out '()) (note (lambda (v) (set! out (cons v out)))))
+    (for-each (lambda (x) (let ((idx (effective-set-functor-arrow X (effective-category-identity C x))))
+                            (if (not (ce-all? (lambda (e) (equal? (idx e) e)) (effective-set-functor-object X x))) (note (list 'identity x)))))
+              objs)
+    (for-each (lambda (f) (let ((Xf (effective-set-functor-arrow X f)) (tgt (effective-set-functor-object X (effective-category-target C f))))
+                            (if (not (ce-all? (lambda (e) (member (Xf e) tgt)) (effective-set-functor-object X (effective-category-source C f))))
+                                (note (list 'codomain f)))))
+              arrows)
+    (for-each (lambda (f) (for-each (lambda (g)
+                                      (if (equal? (effective-category-target C f) (effective-category-source C g))
+                                          (let ((Xgf (effective-set-functor-arrow X (effective-category-compose C g f)))
+                                                (Xg (effective-set-functor-arrow X g)) (Xf (effective-set-functor-arrow X f)))
+                                            (if (not (ce-all? (lambda (e) (equal? (Xgf e) (Xg (Xf e)))) (effective-set-functor-object X (effective-category-source C f))))
+                                                (note (list 'composite g f))))))
+                                    arrows))
+              arrows)
+    (reverse out)))
+
+;; ---------------------------------------------------------------------------
+;; The nerve: a simplicial set of core.simplicial.sset, locally effective
+;; ---------------------------------------------------------------------------
+;; Simplices are (x0 f1 ... fn), f_{i+1} after f_i, exactly as in
+;; core.simplicial.nerve's finite-category-nerve; faces compose arrows and
+;; drop identities through nerve-string-normal-form, so every face and
+;; degeneracy is computed for every category. Listing the nondegenerate
+;; n-simplices needs finitely many objects and finite hom-sets; otherwise it
+;; is refused by name, and effective-nerve-simplices lists those built from
+;; hom stages 0..bound.
+(define (ce-nondegenerate-strings E n hom-arrows)
+  (let ((objs (effective-category-object-list E))
+        (nonid (lambda (a) (filter (lambda (f) (not (effective-category-identity? E f)))
+                                   (ce-flatmap (lambda (b) (hom-arrows a b)) (effective-category-object-list E))))))
+    (if (= n 0) (map list objs)
+        (let loop ((k 0) (acc (map (lambda (x) (cons x '())) objs)))   ;; (x0 . reversed arrows), current target
+          (if (= k n)
+              (map (lambda (p) (cons (car p) (reverse (cdr p)))) acc)
+              (loop (+ k 1)
+                    (ce-flatmap (lambda (p) (let ((t (if (null? (cdr p)) (car p) (effective-category-target E (cadr p)))))
+                                              (map (lambda (f) (cons (car p) (cons f (cdr p)))) (nonid t))))
+                                acc)))))))
+;; d_i of a nondegenerate n-simplex value, as a core.simplicial simplex
+(define (ce-nerve-face E n i x)
+  (let* ((identity? (lambda (f) (effective-category-identity? E f))) (arrows (cdr x)) (x0 (car x)))
+    (cond ((= i 0) (nerve-string-normal-form identity? (effective-category-target E (car arrows)) (cdr arrows)))
+          ((= i n) (nerve-string-normal-form identity? x0 (reverse (cdr (reverse arrows)))))
+          (else (let loop ((l arrows) (j 1) (before '()))
+                  (if (= j i)
+                      (nerve-string-normal-form identity? x0 (append (reverse before) (cons (effective-category-compose E (cadr l) (car l)) (cddr l))))
+                      (loop (cdr l) (+ j 1) (cons (car l) before))))))))
+(define (ce-nerve-basis E n)
+  (if (not (effective-category-finite? E)) (category-refuse 'nerve-not-enumerable 'effective-category-nerve n (effective-category-name E)))
+  (ce-nondegenerate-strings E n (lambda (a b) (effective-category-hom-list E a b))))
+(define (effective-category-nerve E)
+  (make-simplicial-set (list 'nerve (effective-category-name E))
+                       (lambda (n) (ce-nerve-basis E n))
+                       (lambda (n i x) (ce-nerve-face E n i x))
+                       #f))
+;; nondegenerate n-simplices whose arrows come from hom stages 0..bound
+;; (objects must be finitely many)
+(define (effective-nerve-simplices E n bound)
+  (ce-nondegenerate-strings E n (lambda (a b) (effective-category-hom-up-to E a b bound))))
+;; the normalized boundary of a nondegenerate n-simplex value, as a list of
+;; (simplex-value . coefficient) pairs (degenerate faces dropped, equal faces
+;; added, first occurrence first): the convention of core.effective.chain's
+;; linear combinations
+(define (effective-nerve-boundary E n x)
+  (if (= n 0) '()
+      (let ((t (make-hash-table)) (order '()))
+        (for-each (lambda (i)
+                    (let ((f (ce-nerve-face E n i x)))
+                      (if (simplex-nondegenerate? f)
+                          (let* ((v (simplex-base f)) (old (hash-table-ref/default t v #f)))
+                            (if (not old) (set! order (cons v order)))
+                            (hash-table-set! t v (+ (or old 0) (if (even? i) 1 -1)))))))
+                  (ce-range (+ n 1)))
+        (filter (lambda (p) (not (= 0 (cdr p)))) (map (lambda (v) (cons v (hash-table-ref/default t v 0))) (reverse order))))))
+;; (basis d) for core.effective.chain's (make-effective-complex name basis d):
+;; basis n is the list of nondegenerate n-simplices when E is finite and #f
+;; otherwise (a locally effective complex); d is the normalized boundary
+(define (effective-nerve-chain-data E)
+  (list (lambda (n) (if (effective-category-finite? E) (ce-nerve-basis E n) #f))
+        (lambda (n x) (effective-nerve-boundary E n x))))
