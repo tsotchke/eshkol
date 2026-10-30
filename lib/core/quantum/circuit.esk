@@ -88,11 +88,11 @@
 (define (qparam-index a) (vector-ref a 1))
 (define (qparam-coefficient a) (vector-ref a 2))
 
-;; #t, or an error naming what is wrong with gate g on n wires
+;; #t, or an error naming the rule gate g on n wires breaks
 (define (qgate-check g n)
   (if (not (qgate-known? g)) (error "core.quantum.circuit: unknown gate" g))
   (let ((k (qgate-arity g)) (a (caddr (qg-entry (car g)))))
-    (if (not (= (length g) (+ 1 k a))) (error "core.quantum.circuit: wrong number of operands" g))
+    (if (not (= (length g) (+ 1 k a))) (error "core.quantum.circuit: the operand count differs from the gate's" g))
     (for-each (lambda (w)
                 (if (not (and (integer? w) (exact? w) (>= w 0) (< w n)))
                     (error "core.quantum.circuit: wire out of range" g n)))

@@ -6,9 +6,9 @@
 
 (require core.quantum)
 
-(define-quantum-region qr (split-wrong)
+(define-quantum-region qr (split-missized)
   (qsplit (qalloc qr 3) 1
           (lambda ((a : qreg<2>) (b : qreg<2>))
             (append (qmeasure a) (qmeasure b)))))
 
-(display (split-wrong))
+(display (split-missized))

@@ -1158,7 +1158,7 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       no-discard, measurement consumes); mismatches fatal on both engines
 - [x] `define-quantum-region` scoping for qubit allocation and deallocation -
       BUILT for v2.0-starlight (ADR-0048): region capability `qregion`, compile-time
-      leak, discard and escape checks, run-time guards for untyped code
+      unconsumed-qubit, discard and escape checks, run-time guards for untyped code
 - [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9.
       BUILT for v2.0-starlight on today's linear judgment (ADR-0048): regions
       compile (optimise, route) each block before measuring; QAOA in

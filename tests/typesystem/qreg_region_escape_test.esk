@@ -7,7 +7,7 @@
 
 (require core.quantum)
 
-(define-quantum-region qr (leaks-out)
+(define-quantum-region qr (escapes-region)
   (qh (qalloc qr 2) 0))
 
-(display (leaks-out))
+(display (escapes-region))

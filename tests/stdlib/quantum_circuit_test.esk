@@ -39,7 +39,7 @@
 ;; ---------------------------------------------------------------------------
 ;; 1. Construction and validation
 ;; ---------------------------------------------------------------------------
-(check "make-qcircuit refuses an unknown gate name, a wrong operand count, and a negative or non-exact wire"
+(check "make-qcircuit refuses an unknown gate name, an operand count that differs from the gate's, and a negative or non-exact wire"
        (and (raises? (lambda () (make-qcircuit 1 (list (list 'FOO 0)))))
             (raises? (lambda () (make-qcircuit 2 (list (list 'CNOT 0)))))
             (raises? (lambda () (make-qcircuit 1 (list (list 'H 0 1)))))

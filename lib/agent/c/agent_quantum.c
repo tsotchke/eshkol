@@ -795,7 +795,7 @@ static double qexpect_evaluate(int64_t h, const double* params, size_t count, do
         return unavailable_double("moonlab-expectation: invalid program handle or parameters");
     }
     if (count != (size_t)p->num_params) {
-        return unavailable_double("moonlab-expectation: parameter vector has the wrong length");
+        return unavailable_double("moonlab-expectation: the parameter vector length differs from the program's parameter count");
     }
     if (p->nterms == 0) return unavailable_double("moonlab-expectation: the observable has no terms");
     moonlab_diff_circuit_t* c = moonlab_diff_circuit_create(p->num_qubits);

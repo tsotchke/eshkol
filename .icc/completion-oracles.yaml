@@ -4240,5 +4240,5 @@ oracles:
           event_names: ["v20_quantum_types"]
           event_values: ["PASS"]
         severity: high
-        label: 'Quantum registers (ADR-0048): qreg<n>/qidx<n> dimensions unified at every call and fatal on mismatch, out-of-range and repeated qubits, clones, leaks, discards and region escapes refused on the native and bytecode engines; quantum regions at run time; the circuit optimiser and SABRE router sound on random circuits exactly over Q(zeta_m); QAOA exact on the state vector with AD gradients and p=1 closed forms; the same QAOA on Moonlab with the Moonlab adjoint gradient equal to Eshkol AD; reference-page examples in JIT and AOT'
+        label: 'Quantum registers (ADR-0048): qreg<n>/qidx<n> dimensions unified at every call and fatal on mismatch, out-of-range and repeated qubits, clones, unconsumed registers, discards and region escapes refused on the native and bytecode engines; quantum regions at run time; the circuit optimiser and SABRE router sound on random circuits exactly over Q(zeta_m); QAOA exact on the state vector with AD gradients and p=1 closed forms; the same QAOA on Moonlab with the Moonlab adjoint gradient equal to Eshkol AD; reference-page examples in JIT and AOT'
         action: ./scripts/run_quantum_types_gate.sh
