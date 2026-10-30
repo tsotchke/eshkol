@@ -64,11 +64,16 @@ def _run_gp(script: str) -> str:
 
 
 def _gp_matrix_literal(rows: List[List]) -> str:
+    """A GP matrix literal that is unambiguously a MATRIX (t_MAT), even
+    with one row: bracket-with-semicolons syntax collapses a single row
+    with no semicolon to a plain VECTOR (t_VEC), which matrank/matsnf
+    then reject outright ("incorrect type"); Mat(...) forces the matrix
+    type in every case, single row or not."""
     def cell(x) -> str:
         from fractions import Fraction
         f = Fraction(x)
         return str(f.numerator) if f.denominator == 1 else f"{f.numerator}/{f.denominator}"
-    return "[" + ";".join(",".join(cell(x) for x in row) for row in rows) + "]"
+    return "Mat([" + ";".join(",".join(cell(x) for x in row) for row in rows) + "])"
 
 
 def gp_version() -> str:
@@ -89,7 +94,7 @@ def gp_smith_normal_form(rows: List[List[int]]) -> List[int]:
 
 
 def gp_rank_mod_p(rows: List[List[int]], p: int) -> int:
-    mat = "[" + ";".join(",".join(f"Mod({x},{p})" for x in row) for row in rows) + "]"
+    mat = "Mat([" + ";".join(",".join(f"Mod({x},{p})" for x in row) for row in rows) + "])"
     out = _run_gp(f"print(matrank({mat}))")
     return int(out)
 
