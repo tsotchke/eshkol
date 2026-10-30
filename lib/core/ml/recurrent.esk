@@ -1,0 +1,145 @@
+;;
+;; core.ml.recurrent — LSTM and GRU cells (v1.5.0-intelligence, ADR-0049).
+;;
+;; The two standard gated recurrent cells, written over generic arithmetic on
+;; a flat parameter vector theta, so the built-in AD operators differentiate a
+;; whole unrolled sequence exactly: `(gradient loss theta)` is backpropagation
+;; through time with no hand-written backward pass, and `derivative` gives the
+;; same numbers in forward mode.
+;;
+;; LSTM (Hochreiter & Schmidhuber 1997, with a forget gate):
+;;   i = sigma(W_i [x; h] + b_i)      f = sigma(W_f [x; h] + b_f)
+;;   g = tanh (W_g [x; h] + b_g)      o = sigma(W_o [x; h] + b_o)
+;;   c' = f * c + i * g               h' = o * tanh(c')
+;;
+;; GRU (Cho et al. 2014; the convention PyTorch's nn.GRU uses):
+;;   r = sigma(W_ir x + W_hr h + b_r)
+;;   z = sigma(W_iz x + W_hz h + b_z)
+;;   n = tanh (W_in x + b_in + r * (W_hn h + b_hn))
+;;   h' = (1 - z) * n + z * h
+;;
+;; Parameter layout (row-major, one block per gate, starting at `off`):
+;;   LSTM: gates i, f, g, o; each H rows of [W_x (I) | W_h (H) | b (1)]
+;;         -> 4 H (I + H + 1) parameters
+;;   GRU : gates r, z; each H rows of [W_x | W_h | b], then the candidate gate
+;;         n as H rows of [W_in (I) | b_in (1) | W_hn (H) | b_hn (1)]
+;;         -> 3 H (I + H + 1) + H parameters
+;; A dense readout y = W h + b with W of shape O x H follows the same rule.
+;;
+;; States are vectors; `lstm-cell` returns (h' . c'), `gru-cell` returns h'.
+;;
+
+(provide lstm-param-count gru-param-count readout-param-count
+         lstm-init-params! gru-init-params! readout-init-params! make-params
+         lstm-cell gru-cell lstm-run gru-run readout
+         rnn-sigmoid)
+
+(define (rnn-sigmoid z) (/ 1.0 (+ 1.0 (exp (- z)))))
+
+(define (lstm-param-count input hidden) (* 4 hidden (+ input hidden 1)))
+(define (gru-param-count input hidden) (+ (* 3 hidden (+ input hidden 1)) hidden))
+(define (readout-param-count hidden out) (* out (+ hidden 1)))
+
+;; a zero parameter vector of length n
+(define (make-params n) (make-vector n 0.0))
+
+;; deterministic uniform values in [-scale, scale) from an LCG seed
+(define (rnn-fill! theta off n scale seed)
+  (let loop ((i 0) (s seed))
+    (if (< i n)
+        (let ((s2 (modulo (+ (* s 1103515245) 12345) 2147483648)))
+          (vector-set! theta (+ off i) (* scale (- (/ (exact->inexact (modulo s2 20000)) 10000.0) 1.0)))
+          (loop (+ i 1) s2))))
+  theta)
+
+;; Glorot-scale init, forget-gate bias 1 (Jozefowicz et al. 2015)
+(define (lstm-init-params! theta off input hidden seed)
+  (let* ((cols (+ input hidden 1)) (gate (* hidden cols)))
+    (rnn-fill! theta off (* 4 gate) (/ 1.0 (sqrt (exact->inexact (+ input hidden)))) seed)
+    (let loop ((r 0))
+      (if (< r hidden)
+          (begin (vector-set! theta (+ off gate (* r cols) (- cols 1)) 1.0) (loop (+ r 1)))))
+    theta))
+
+(define (gru-init-params! theta off input hidden seed)
+  (rnn-fill! theta off (gru-param-count input hidden)
+             (/ 1.0 (sqrt (exact->inexact (+ input hidden)))) seed))
+
+(define (readout-init-params! theta off hidden out seed)
+  (rnn-fill! theta off (readout-param-count hidden out) (/ 1.0 (sqrt (exact->inexact hidden))) seed))
+
+;; sum_k W[row, k] [x; h]_k + b[row] for a row block [W_x | W_h | b]
+(define (rnn-affine theta base input hidden x h)
+  (let ((xs (let loop ((k 0) (s 0.0))
+              (if (< k input) (loop (+ k 1) (+ s (* (vector-ref theta (+ base k)) (vector-ref x k)))) s))))
+    (let loop ((k 0) (s xs))
+      (if (< k hidden)
+          (loop (+ k 1) (+ s (* (vector-ref theta (+ base input k)) (vector-ref h k))))
+          (+ s (vector-ref theta (+ base input hidden)))))))
+
+(define (lstm-cell theta off input hidden x h c)
+  (let* ((cols (+ input hidden 1)) (gate (* hidden cols))
+         (h2 (make-vector hidden 0.0)) (c2 (make-vector hidden 0.0)))
+    (let loop ((r 0))
+      (if (< r hidden)
+          (let* ((row (+ off (* r cols)))
+                 (ig (rnn-sigmoid (rnn-affine theta row input hidden x h)))
+                 (fg (rnn-sigmoid (rnn-affine theta (+ row gate) input hidden x h)))
+                 (gg (tanh (rnn-affine theta (+ row (* 2 gate)) input hidden x h)))
+                 (og (rnn-sigmoid (rnn-affine theta (+ row (* 3 gate)) input hidden x h)))
+                 (cn (+ (* fg (vector-ref c r)) (* ig gg))))
+            (vector-set! c2 r cn)
+            (vector-set! h2 r (* og (tanh cn)))
+            (loop (+ r 1)))))
+    (cons h2 c2)))
+
+(define (gru-cell theta off input hidden x h)
+  (let* ((cols (+ input hidden 1)) (gate (* hidden cols))
+         (nbase (+ off (* 2 gate)))
+         (ncols (+ input hidden 2))
+         (h2 (make-vector hidden 0.0)))
+    (let loop ((r 0))
+      (if (< r hidden)
+          (let* ((row (+ off (* r cols)))
+                 (rg (rnn-sigmoid (rnn-affine theta row input hidden x h)))
+                 (zg (rnn-sigmoid (rnn-affine theta (+ row gate) input hidden x h)))
+                 (nrow (+ nbase (* r ncols)))
+                 ;; W_in x + b_in
+                 (nx (let lx ((k 0) (s (vector-ref theta (+ nrow input))))
+                       (if (< k input) (lx (+ k 1) (+ s (* (vector-ref theta (+ nrow k)) (vector-ref x k)))) s)))
+                 ;; W_hn h + b_hn
+                 (nh (let lh ((k 0) (s (vector-ref theta (+ nrow input 1 hidden))))
+                       (if (< k hidden) (lh (+ k 1) (+ s (* (vector-ref theta (+ nrow input 1 k)) (vector-ref h k)))) s)))
+                 (ng (tanh (+ nx (* rg nh)))))
+            (vector-set! h2 r (+ (* (- 1.0 zg) ng) (* zg (vector-ref h r))))
+            (loop (+ r 1)))))
+    h2))
+
+;; Unroll over a list of input vectors from zero state. Returns the list of
+;; hidden states (in time order) consed onto the final cell state:
+;;   lstm-run -> (hs . c-final)     gru-run -> hs
+(define (lstm-run theta off input hidden xs)
+  (let loop ((xs xs) (h (make-vector hidden 0.0)) (c (make-vector hidden 0.0)) (hs '()))
+    (if (pair? xs)
+        (let ((hc (lstm-cell theta off input hidden (car xs) h c)))
+          (loop (cdr xs) (car hc) (cdr hc) (cons (car hc) hs)))
+        (cons (let rev ((l hs) (acc '())) (if (pair? l) (rev (cdr l) (cons (car l) acc)) acc)) c))))
+
+(define (gru-run theta off input hidden xs)
+  (let loop ((xs xs) (h (make-vector hidden 0.0)) (hs '()))
+    (if (pair? xs)
+        (let ((h2 (gru-cell theta off input hidden (car xs) h)))
+          (loop (cdr xs) h2 (cons h2 hs)))
+        (let rev ((l hs) (acc '())) (if (pair? l) (rev (cdr l) (cons (car l) acc)) acc)))))
+
+;; y = W h + b, W of shape out x hidden stored row-major as [W_row | b]
+(define (readout theta off hidden out h)
+  (let ((y (make-vector out 0.0)) (cols (+ hidden 1)))
+    (let loop ((r 0))
+      (if (< r out)
+          (begin
+            (vector-set! y r
+              (let acc ((k 0) (s (vector-ref theta (+ off (* r cols) hidden))))
+                (if (< k hidden) (acc (+ k 1) (+ s (* (vector-ref theta (+ off (* r cols) k)) (vector-ref h k)))) s)))
+            (loop (+ r 1)))))
+    y))

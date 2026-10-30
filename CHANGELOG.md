@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The neuro-symbolic bridge (v1.5.0, ADR-0049).** Every knowledge-base
+  symbol can carry a learnable embedding, and the bridge is differentiated by
+  the built-in AD operators over one flat parameter vector.
+  `core.ml.neurosymbolic` attaches embedding tables to the KB, soft-unifies
+  terms through the engine's own `walk` and `unify`, and answers queries by
+  attention over soft-unification proof scores; `core.ml.diff_logic` runs
+  forward chaining with soft truth values and learns rule bodies that are read
+  back as clauses and asserted into the KB; `core.ml.recurrent` provides LSTM
+  and GRU cells trained by reverse-mode backpropagation through time; and
+  `core.ml.gradient_estimators` adds Gumbel-Softmax, straight-through and
+  score-function estimators that compose with `gradient`. The new builtin
+  `stop-gradient` returns a number's primal on the native backend, the VM and
+  the browser lane. Reverse mode through a named-let loop that keeps AD nodes
+  only inside a list now records each iteration's own node.
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix
   calculus (#794), coupled polynomial root towers (#795), preflighted packed

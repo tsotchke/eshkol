@@ -1,0 +1,166 @@
+;; core.ml.recurrent — LSTM and GRU cells: closed-form one-step derivatives,
+;; reverse mode == forward mode through unrolled sequences (backpropagation
+;; through time with no hand-written backward pass), and two learning tasks.
+
+(require core.ml.recurrent)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display name) (newline))))
+
+(define (vmaxabs-diff a b)
+  (let loop ((i 0) (m 0.0))
+    (if (< i (vector-length a)) (loop (+ i 1) (max m (abs (- (vector-ref a i) (vector-ref b i))))) m)))
+
+(define (forward-gradient f theta)
+  (let* ((n (vector-length theta)) (g (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! g i
+              (derivative (lambda (s)
+                            (let ((th (make-vector n 0.0)))
+                              (let fill ((k 0))
+                                (if (< k n)
+                                    (begin (vector-set! th k (if (= k i) (+ (vector-ref theta k) s) (vector-ref theta k)))
+                                           (fill (+ k 1)))))
+                              (f th)))
+                          0.0))
+            (loop (+ i 1)))))
+    g))
+
+(define (sgd! theta loss steps lr)
+  (let train ((k 0))
+    (if (< k steps)
+        (let ((g (gradient loss theta)))
+          (let upd ((i 0))
+            (if (< i (vector-length theta))
+                (begin (vector-set! theta i (- (vector-ref theta i) (* lr (vector-ref g i)))) (upd (+ i 1)))))
+          (train (+ k 1))))))
+
+(define (sig z) (/ 1.0 (+ 1.0 (exp (- z)))))
+
+;; ── layout ──
+(check "lstm parameter count 4H(I+H+1)" (= (lstm-param-count 2 3) 72))
+(check "gru parameter count 3H(I+H+1)+H" (= (gru-param-count 2 3) 57))
+(check "readout parameter count O(H+1)" (= (readout-param-count 3 2) 8))
+
+;; ── LSTM one step from zero state, I = H = 1: closed forms ──
+;; rows: i = [a_i w_i b_i] at 0..2, f at 3..5, g at 6..8, o at 9..11
+(define th1 (vector 0.7 0.0 0.1  0.3 0.0 1.0  -0.4 0.0 0.2  0.5 0.0 -0.3))
+(define x1 (vector 0.9))
+(define (lstm-h theta) (vector-ref (car (lstm-cell theta 0 1 1 x1 (vector 0.0) (vector 0.0))) 0))
+(define gi (sig (+ (* 0.7 0.9) 0.1)))
+(define gg (tanh (+ (* -0.4 0.9) 0.2)))
+(define go (sig (+ (* 0.5 0.9) -0.3)))
+(define c1 (* gi gg))
+(check "lstm forward: h = o tanh(i g)" (< (abs (- (lstm-h th1) (* go (tanh c1)))) 1e-15))
+(define gl (gradient lstm-h th1))
+(check "lstm dh/db_o = o(1-o) tanh(c)" (< (abs (- (vector-ref gl 11) (* go (- 1.0 go) (tanh c1)))) 1e-14))
+(check "lstm dh/db_i = o (1-tanh^2 c) g i(1-i)"
+       (< (abs (- (vector-ref gl 2) (* go (- 1.0 (* (tanh c1) (tanh c1))) gg gi (- 1.0 gi)))) 1e-14))
+(check "lstm dh/db_g = o (1-tanh^2 c) i (1-g^2)"
+       (< (abs (- (vector-ref gl 8) (* go (- 1.0 (* (tanh c1) (tanh c1))) gi (- 1.0 (* gg gg))))) 1e-14))
+(check "lstm forget gate has no effect from zero cell state" (= (vector-ref gl 5) 0.0))
+
+;; ── GRU one step from zero state, I = H = 1: closed forms ──
+;; r = [a_r w_r b_r] 0..2, z = 3..5, n = [W_in b_in W_hn b_hn] 6..9
+(define th2 (vector 0.4 0.0 -0.2  -0.6 0.0 0.3  0.8 0.1 0.0 0.5))
+(define (gru-h theta) (vector-ref (gru-cell theta 0 1 1 x1 (vector 0.0)) 0))
+(define rr (sig (+ (* 0.4 0.9) -0.2)))
+(define zz (sig (+ (* -0.6 0.9) 0.3)))
+(define nn (tanh (+ (* 0.8 0.9) 0.1 (* rr 0.5))))
+(check "gru forward: h = (1-z) n" (< (abs (- (gru-h th2) (* (- 1.0 zz) nn))) 1e-15))
+(define gr (gradient gru-h th2))
+(check "gru dh/db_z = -z(1-z) n" (< (abs (- (vector-ref gr 5) (- (* zz (- 1.0 zz) nn)))) 1e-14))
+(check "gru dh/db_in = (1-z)(1-n^2)" (< (abs (- (vector-ref gr 7) (* (- 1.0 zz) (- 1.0 (* nn nn))))) 1e-14))
+(check "gru dh/db_hn = (1-z)(1-n^2) r" (< (abs (- (vector-ref gr 9) (* (- 1.0 zz) (- 1.0 (* nn nn)) rr))) 1e-14))
+(check "gru dh/db_r = (1-z)(1-n^2) b_hn r(1-r)"
+       (< (abs (- (vector-ref gr 2) (* (- 1.0 zz) (- 1.0 (* nn nn)) 0.5 rr (- 1.0 rr)))) 1e-14))
+
+;; ── BPTT: reverse == forward over a 4-step sequence, I = 2, H = 3 ──
+(define seq (list (vector 0.5 -1.0) (vector 0.2 0.3) (vector -0.7 0.1) (vector 0.9 0.4)))
+(define nl (+ (lstm-param-count 2 3) (readout-param-count 3 1)))
+(define thl (make-params nl))
+(lstm-init-params! thl 0 2 3 11)
+(readout-init-params! thl (lstm-param-count 2 3) 3 1 12)
+(define (lstm-loss theta)
+  (let* ((run (lstm-run theta 0 2 3 seq))
+         (hs (car run))
+         (y (vector-ref (readout theta (lstm-param-count 2 3) 3 1 (let last ((l hs)) (if (pair? (cdr l)) (last (cdr l)) (car l)))) 0)))
+    (* (- y 0.5) (- y 0.5))))
+(define gl-rev (gradient lstm-loss thl))
+(check "lstm BPTT: gradient is non-trivial" (> (vmaxabs-diff gl-rev (make-vector nl 0.0)) 1e-3))
+(check "lstm BPTT: reverse == forward (1e-12)" (< (vmaxabs-diff gl-rev (forward-gradient lstm-loss thl)) 1e-12))
+
+(define ng (+ (gru-param-count 2 3) (readout-param-count 3 1)))
+(define thg (make-params ng))
+(gru-init-params! thg 0 2 3 21)
+(readout-init-params! thg (gru-param-count 2 3) 3 1 22)
+(define (gru-loss theta)
+  (let* ((hs (gru-run theta 0 2 3 seq))
+         (y (vector-ref (readout theta (gru-param-count 2 3) 3 1 (let last ((l hs)) (if (pair? (cdr l)) (last (cdr l)) (car l)))) 0)))
+    (* (- y 0.5) (- y 0.5))))
+(define gg-rev (gradient gru-loss thg))
+(check "gru BPTT: gradient is non-trivial" (> (vmaxabs-diff gg-rev (make-vector ng 0.0)) 1e-3))
+(check "gru BPTT: reverse == forward (1e-12)" (< (vmaxabs-diff gg-rev (forward-gradient gru-loss thg)) 1e-12))
+
+;; ── learning: an LSTM recalls the FIRST input of a length-5 sequence ──
+(define recall-data
+  (list (list 1.0 0.0 0.0 1.0 0.0) (list -1.0 1.0 0.0 0.0 1.0) (list 1.0 1.0 1.0 0.0 0.0)
+        (list -1.0 0.0 1.0 1.0 0.0) (list 1.0 0.0 1.0 0.0 1.0) (list -1.0 1.0 1.0 1.0 1.0)))
+(define (as-inputs l) (let loop ((l l) (acc '())) (if (pair? l) (loop (cdr l) (cons (vector (car l)) acc)) (reverse acc))))
+(define H 4)
+(define nr (+ (lstm-param-count 1 H) (readout-param-count H 1)))
+(define thr (make-params nr))
+(lstm-init-params! thr 0 1 H 7)
+(readout-init-params! thr (lstm-param-count 1 H) H 1 8)
+(define (recall-out theta s)
+  (let* ((hs (car (lstm-run theta 0 1 H (as-inputs s))))
+         (hT (let last ((l hs)) (if (pair? (cdr l)) (last (cdr l)) (car l)))))
+    (vector-ref (readout theta (lstm-param-count 1 H) H 1 hT) 0)))
+(define (recall-loss theta)
+  (let loop ((ds recall-data) (a 0.0))
+    (if (pair? ds) (let ((d (- (recall-out theta (car ds)) (car (car ds))))) (loop (cdr ds) (+ a (* d d)))) a)))
+(define recall0 (recall-loss thr))
+(sgd! thr recall-loss 300 0.1)
+(define recall1 (recall-loss thr))
+(display "lstm recall loss ") (display recall0) (display " -> ") (display recall1) (newline)
+(check "lstm learns first-input recall (loss < 1e-2)" (< recall1 1e-2))
+(check "lstm recall: sign of every output correct"
+       (let loop ((ds recall-data) (ok #t))
+         (if (pair? ds) (loop (cdr ds) (and ok (> (* (recall-out thr (car ds)) (car (car ds))) 0.0))) ok)))
+
+;; ── learning: a GRU counts the ones in a binary sequence (output count / 4) ──
+(define count-data
+  (list (list 0.0 0.0 0.0 0.0) (list 1.0 0.0 0.0 0.0) (list 0.0 1.0 1.0 0.0) (list 1.0 1.0 1.0 0.0)
+        (list 1.0 1.0 1.0 1.0) (list 0.0 0.0 1.0 0.0) (list 1.0 0.0 1.0 1.0) (list 0.0 1.0 0.0 1.0)))
+(define (count-target s) (/ (let loop ((l s) (c 0.0)) (if (pair? l) (loop (cdr l) (+ c (car l))) c)) 4.0))
+(define ncnt (+ (gru-param-count 1 H) (readout-param-count H 1)))
+(define thc (make-params ncnt))
+(gru-init-params! thc 0 1 H 31)
+(readout-init-params! thc (gru-param-count 1 H) H 1 32)
+(define (count-out theta s)
+  (let* ((hs (gru-run theta 0 1 H (as-inputs s)))
+         (hT (let last ((l hs)) (if (pair? (cdr l)) (last (cdr l)) (car l)))))
+    (vector-ref (readout theta (gru-param-count 1 H) H 1 hT) 0)))
+(define (count-loss theta)
+  (let loop ((ds count-data) (a 0.0))
+    (if (pair? ds) (let ((d (- (count-out theta (car ds)) (count-target (car ds))))) (loop (cdr ds) (+ a (* d d)))) a)))
+(define count0 (count-loss thc))
+(sgd! thc count-loss 300 0.05)
+(define count1 (count-loss thc))
+(display "gru count loss ") (display count0) (display " -> ") (display count1) (newline)
+(check "gru learns to count (loss < 1e-2)" (< count1 1e-2))
+(check "gru count: held-out (0 1 1 1) rounds to 3"
+       (= (round (* 4.0 (count-out thc (list 0.0 1.0 1.0 1.0)))) 3.0))
+
+(check "no finite differences anywhere" (= (ad-finite-difference-evals) 0))
+
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0) (begin (display "ALL TESTS PASSED") (newline)))

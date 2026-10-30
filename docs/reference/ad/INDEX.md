@@ -28,6 +28,7 @@ pass, numeric-type boundary) see the breakdown:
 | `hessian` | ℝⁿ→ℝ | `(hessian f pt)` | `#((48))` for x⁴ @2 |
 | `laplacian` | ℝⁿ→ℝ | `(laplacian f pt)` | `4` for x²+y² @(3,4) |
 | `directional-derivative` | ℝⁿ→ℝ | `(directional-derivative f pt dir)` | `6` |
+| `stop-gradient` | any | `(stop-gradient x)` | `3` for `(derivative (lambda (x) (* x (stop-gradient x))) 3.0)` |
 | `divergence` | ℝⁿ→ℝⁿ | `(divergence f pt)` | `14` |
 | `curl` | ℝ³→ℝ³ | `(curl f pt)` | `#(0 0 0)` |
 | `diff` | AST→AST | `(diff f 'x)` | symbolic, compile-time |

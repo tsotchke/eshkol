@@ -222,6 +222,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0027 — Recursive Taylor level carrier](design/adr/0027-recursive-taylor-level-carrier.md) — nested differentiation carries enclosing levels in its coefficients
 - [ADR 0028 — One number syntax recognizer](design/adr/0028-one-number-syntax-recognizer.md) — program literals and datum readers share the R7RS grammar
 - [ADR 0029 — Browser VM WebGPU dispatch](design/adr/0029-browser-vm-webgpu-dispatch.md) — browser tensor operations use the shared GPU dispatch seam
+- [ADR 0049 — Neuro-symbolic bridge](design/adr/0049-neuro-symbolic-bridge.md) — symbol embeddings, soft unification, differentiable logic, LSTM/GRU and gradient estimators differentiated by the built-in AD operators
 
 ## Testing and Quality Gates
 

@@ -1,0 +1,23 @@
+; stop-gradient must agree between the native and VM engines (native
+; eshkol_stop_gradient_tagged, VM native id 2252): the value is unchanged,
+; every enclosing derivative pass sees a constant, an exact point stays
+; exact, and non-numbers pass through. The straight-through identity
+; s + stop-gradient(h - s) has the value h and the derivative of s. Only
+; PASS/FAIL lines are printed so stdout is byte-identical across engines.
+
+(define (report name ok)
+  (display (if ok "PASS: " "FAIL: ")) (display name) (newline))
+
+(define (close? a b) (< (abs (- a b)) 1e-12))
+
+(report "value unchanged" (= (stop-gradient 2.5) 2.5))
+(report "symbol passes through" (eq? (stop-gradient 'a) 'a))
+(report "derivative of x*sg(x)" (close? (derivative (lambda (x) (* x (stop-gradient x))) 3.0) 3.0))
+(report "gradient of x*sg(x)"
+        (close? (vector-ref (gradient (lambda (v) (* (vector-ref v 0) (stop-gradient (vector-ref v 0)))) (vector 3.0)) 0) 3.0))
+(report "second derivative of x^2 sg(x)" (close? (derivative-n (lambda (x) (* x x (stop-gradient x))) 2.0 2) 4.0))
+(report "exact point stays exact" (equal? (derivative (lambda (x) (* x (stop-gradient x))) 1/3) 1/3))
+(report "straight-through value"
+        (= (let ((s 0.3)) (+ s (stop-gradient (- 1.0 s)))) 1.0))
+(report "straight-through derivative"
+        (close? (derivative (lambda (x) (let ((s (* x x))) (+ s (stop-gradient (- 7.0 s))))) 1.5) 3.0))

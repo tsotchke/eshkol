@@ -899,12 +899,21 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 **Flagship:** `core.dbsp` GA (W1) + native-product PGO in the release
 workflow (ADR-0007 Phase 1).
 
-- [ ] Symbol embeddings (learnable vector representations of KB symbols)
-- [ ] Soft unification (differentiable similarity — gradients flow through matching)
-- [ ] LSTM and GRU cells (standard recurrent neural architectures)
-- [ ] Differentiable logic programs (gradients flow through rule application)
-- [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
-- [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through)
+- [x] Symbol embeddings (learnable vector representations of KB symbols) —
+      `core.ml.neurosymbolic`: tables attached to the KB, parameter view
+      differentiated by `gradient` (ADR-0049)
+- [x] Soft unification (differentiable similarity — gradients flow through matching) —
+      `soft-unify-terms` extends the engine's `unify` (ADR-0049)
+- [x] LSTM and GRU cells (standard recurrent neural architectures) —
+      `core.ml.recurrent`, BPTT by the built-in reverse mode (ADR-0049)
+- [x] Differentiable logic programs (gradients flow through rule application) —
+      `core.ml.diff_logic`: soft forward chaining, learnable rule templates,
+      learned clauses read back and asserted into the KB (ADR-0049)
+- [x] Attention over knowledge base (neural query mechanism over symbolic facts) —
+      `neural-query` over soft-unification proof scores (ADR-0049)
+- [x] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through) —
+      `stop-gradient` builtin; Gumbel-Softmax, straight-through, score-function
+      estimators with their bias/variance properties tested (ADR-0049)
 - [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors
 - [ ] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
       angular means, evaluation at a phase map with full chain-rule

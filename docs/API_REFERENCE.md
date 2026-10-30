@@ -649,6 +649,25 @@ Computes Hessian matrix (matrix of second derivatives).
 
 ---
 
+#### `stop-gradient`
+
+**Syntax:** `(stop-gradient x)` → the value of `x`
+
+Returns `x` with every derivative carrier removed, so every enclosing
+`derivative`, `derivative-n`, `taylor`, `gradient` or `jacobian` pass treats
+the result as a constant. A non-carrier is returned unchanged; an exact
+primal stays exact. The straight-through identity
+`(+ s (stop-gradient (- h s)))` has the value `h` and the derivative of `s`.
+
+```scheme
+(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; => 3
+(derivative (lambda (x) (* x (stop-gradient x))) 1/3)   ; => 1/3
+```
+
+**Implementation:** `eshkol_stop_gradient_tagged` in
+[lib/core/runtime_taylor.c](../lib/core/runtime_taylor.c); VM native id 2252.
+Design: [ADR-0049](design/adr/0049-neuro-symbolic-bridge.md).
+
 ### Vector Calculus Operators
 
 #### `divergence`

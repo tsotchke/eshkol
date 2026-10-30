@@ -30,7 +30,11 @@
 (provide gumbel-softmax gumbel-softmax-det
          straight-through straight-through-round straight-through-onehot
          categorical-pick argmax-onehot softmax
-         sample-gumbel-noise)
+         sample-gumbel-noise
+         ;; native-AD forms (any carrier; `gradient`/`derivative` flow through)
+         st-value st-round st-softmax gumbel-softmax-relaxed gumbel-softmax-st
+         st-bernoulli gumbel-max-sample categorical-log-prob
+         score-function-gradient categorical-expectation-gradient)
 
 ;; ── Internal list/vector helpers ──
 ;; Self-contained: this is a core module loaded BEFORE the list stdlib, so we
@@ -189,3 +193,127 @@
 ;; keeping a usable gradient.
 (define (straight-through-onehot t probs-node)
   (straight-through t probs-node (argmax-onehot (node-value probs-node))))
+
+;; ════════════════════════════════════════════════════════════════════════
+;; Native-AD estimators
+;; ════════════════════════════════════════════════════════════════════════
+;; The functions above record custom ops on the stateful tape. The ones below
+;; are written over generic arithmetic and the `stop-gradient` builtin, so they
+;; compose with any loss differentiated by `gradient` (reverse mode) or
+;; `derivative` (forward mode), with no tape object in sight.
+;;
+;; The straight-through identity: for a soft surrogate s and a hard value h,
+;;     s + stop-gradient(h - s)
+;; has the VALUE h and the DERIVATIVE of s.
+;;
+;; Properties (Bengio et al. 2013; Jang et al. 2017; Maddison et al. 2017):
+;;   * gumbel-max-sample is an EXACT sampler: argmax(logits + g), g iid
+;;     Gumbel(0,1), is distributed as Categorical(softmax(logits)).
+;;   * score-function-gradient (REINFORCE) is UNBIASED for
+;;     d/dlogits E_{k ~ Cat(p)}[f(k)], with variance that grows with the spread
+;;     of f; its mean is categorical-expectation-gradient.
+;;   * gumbel-softmax-relaxed is a reparameterised sample of the Concrete
+;;     distribution. Its gradient is a low-variance estimator of the gradient of
+;;     the RELAXED objective; as an estimator of the discrete gradient it is
+;;     BIASED, the bias shrinking as tau -> 0 while the variance grows (as
+;;     1/tau for the largest logits).
+;;   * gumbel-softmax-st, st-softmax, st-bernoulli and st-round are BIASED:
+;;     the forward pass is exactly discrete, the backward pass is the soft
+;;     surrogate's. They are exact only where the surrogate is locally linear.
+
+(define (ge-length-of x) (if (vector? x) (vector-length x) (let loop ((l x) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n))))
+(define (ge-ref x i) (if (vector? x) (vector-ref x i) (let loop ((l x) (k i)) (if (= k 0) (car l) (loop (cdr l) (- k 1))))))
+
+;; value h, derivative of s
+(define (st-value s h) (+ s (stop-gradient (- h s))))
+
+;; round in the forward pass, identity in the backward pass
+(define (st-round x) (st-value x (round (stop-gradient x))))
+
+;; carrier-generic softmax of a list or vector of logits scaled by 1/tau
+(define (ge-softmax-scaled logits tau)
+  (let* ((n (ge-length-of logits))
+         (mx (let loop ((i 1) (m (stop-gradient (ge-ref logits 0))))
+               (if (< i n) (loop (+ i 1) (max m (stop-gradient (ge-ref logits i)))) m)))
+         (ex (make-vector n 0.0)))
+    (let loop ((i 0) (sum 0.0))
+      (if (< i n)
+          (let ((e (exp (/ (- (ge-ref logits i) mx) tau))))
+            (vector-set! ex i e)
+            (loop (+ i 1) (+ sum e)))
+          (let div ((k 0))
+            (if (< k n) (begin (vector-set! ex k (/ (vector-ref ex k) sum)) (div (+ k 1))) ex))))))
+
+(define (ge-onehot-of-argmax v)
+  (let* ((n (vector-length v)) (k (categorical-pick (ge-primal-vector v))) (r (make-vector n 0.0)))
+    (vector-set! r k 1.0)
+    r))
+
+(define (ge-primal-vector v)
+  (let* ((n (vector-length v)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (stop-gradient (vector-ref v i))) (loop (+ i 1))) r))))
+
+(define (ge-st-vector soft hard)
+  (let* ((n (vector-length soft)) (r (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (st-value (vector-ref soft i) (vector-ref hard i))) (loop (+ i 1))) r))))
+
+;; one-hot of argmax(logits) forward, softmax(logits) derivative backward
+(define (st-softmax logits)
+  (let ((soft (ge-softmax-scaled logits 1.0)))
+    (ge-st-vector soft (ge-onehot-of-argmax soft))))
+
+;; Concrete / Gumbel-Softmax sample softmax((logits + noise) / tau); `noise` a
+;; list or vector of Gumbel(0,1) draws (sample-gumbel-noise)
+(define (gumbel-softmax-relaxed logits noise tau)
+  (let* ((n (ge-length-of logits)) (z (make-vector n 0.0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! z i (+ (ge-ref logits i) (ge-ref noise i))) (loop (+ i 1)))))
+    (ge-softmax-scaled z tau)))
+
+;; straight-through Gumbel-Softmax: the exact Gumbel-max one-hot forward,
+;; the relaxed sample's derivative backward
+(define (gumbel-softmax-st logits noise tau)
+  (let ((soft (gumbel-softmax-relaxed logits noise tau)))
+    (ge-st-vector soft (ge-onehot-of-argmax soft))))
+
+;; Bernoulli(sigmoid(a)) sample with uniform u: 1 when u < sigmoid(a), else 0;
+;; derivative of sigmoid(a)
+(define (st-bernoulli a u)
+  (let ((p (/ 1.0 (+ 1.0 (exp (- a))))))
+    (st-value p (if (< (stop-gradient p) u) 0.0 1.0))))
+
+;; exact categorical sample: index of argmax(logits + noise)
+(define (gumbel-max-sample logits noise)
+  (let ((n (ge-length-of logits)))
+    (let loop ((i 1) (best 0) (bv (+ (stop-gradient (ge-ref logits 0)) (ge-ref noise 0))))
+      (if (< i n)
+          (let ((v (+ (stop-gradient (ge-ref logits i)) (ge-ref noise i))))
+            (if (> v bv) (loop (+ i 1) i v) (loop (+ i 1) best bv)))
+          best))))
+
+;; log softmax(logits)[k] (carrier-generic)
+(define (categorical-log-prob logits k)
+  (let* ((n (ge-length-of logits))
+         (mx (let loop ((i 1) (m (stop-gradient (ge-ref logits 0))))
+               (if (< i n) (loop (+ i 1) (max m (stop-gradient (ge-ref logits i)))) m)))
+         (lse (let loop ((i 0) (s 0.0))
+                (if (< i n) (loop (+ i 1) (+ s (exp (- (ge-ref logits i) mx)))) (+ mx (log s))))))
+    (- (ge-ref logits k) lse)))
+
+;; REINFORCE: f(k) * d/dlogits log p_k = f(k) (e_k - p), a plain vector
+(define (score-function-gradient logits k fk)
+  (let* ((p (softmax (ge-primal-vector (ge-vec-of logits)))) (n (vector-length p)) (g (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! g i (* fk (- (if (= i k) 1.0 0.0) (vector-ref p i)))) (loop (+ i 1)))
+          g))))
+
+;; the exact gradient d/dlogits sum_k p_k f_k = p (f - E_p f), a plain vector;
+;; `fvals` lists f(0) ... f(n-1)
+(define (categorical-expectation-gradient logits fvals)
+  (let* ((p (softmax (ge-primal-vector (ge-vec-of logits)))) (n (vector-length p))
+         (ef (let loop ((i 0) (s 0.0)) (if (< i n) (loop (+ i 1) (+ s (* (vector-ref p i) (ge-ref fvals i)))) s)))
+         (g (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! g i (* (vector-ref p i) (- (ge-ref fvals i) ef))) (loop (+ i 1)))
+          g))))
