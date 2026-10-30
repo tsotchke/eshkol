@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-30",
+  "qualified_source_revision": "72a3908fae62d6f384c08aadfe9910b61ef35e7f",
+  "compiler_release": "v1.3.6-evolve Linux x64 lite",
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "source_manifest_sha256": "60d60c1095b35531df32c464d0c65869056e108623b2c3caba9cfa7869fca6a9",
+  "source_manifest_verified_before_gate": true,
+  "source_manifest_verified_after_gate": true,
+  "caller_jit_cache": "1",
+  "gate_jit_executable_cache": "0",
+  "jit_compile_threads": 1,
+  "engines": [
+    "in-process JIT",
+    "separately compiled AOT-O0"
+  ],
+  "library_checks_per_engine": 4668,
+  "independent_comparisons_per_engine": 2251,
+  "emitted_comparisons_per_engine": 571,
+  "self_hosted_comparisons_per_engine": 41,
+  "polynomial_verifier_checks_per_engine": 64,
+  "complete_receipts_verified": true,
+  "integer_entry_refusal_both_engines": true,
+  "source_hashes": {
+    "CMakeLists.txt": "25f28487624783d8f2aacd4333d6ed668fbae3de5352f21f7c62403a710d8984",
+    "lib/core/compiler/mix.esk": "662f63c06d663fea7d3f52c8bbf996119feb71f2dc43b1c2e2de22fd7cbe3e13",
+    "lib/core/compiler/mix/runtime.esk": "7637137d5792701c684ec01b742c4e4c3a9816316998a768739fb3236189495c",
+    "lib/core/compiler/mix/source.esk": "868e342cba99a2fa64bba198a88b4625eebbab5553dde88a832914ab95ff56f9",
+    "lib/core/compiler/mix/emit.esk": "dbfcd8e3b58b4e7ac6ff68a34990dfbe31de9c92fff4cdc686468e4fe01b0e00",
+    "tests/stdlib/mix_test.esk": "82baa04fca3f75af2e101218cdf49f8cb69439a8b85d72684e5f53fbd7e801f9",
+    "tests/stdlib/mix_fixtures.esk": "94d44d2aa8c0519575ee31d915bd334d1b1d220a4c9c973a6aa6bcf710153cdf",
+    "scripts/run_mix_gate.sh": "97ff8c3365a4916d5b5b0c89bf9c7b385a71585072fa47347c91e5882f7f0712",
+    "examples/mix/generate.esk": "8c5f7369e3872a9ae588d9a17971ffc32a52fa6160757e1de28c3f08aa4d58af",
+    "examples/mix/README.md": "245ff4cb5fb9909de425b7d041449fb9d2135a30e46038128db8999e0f0a4b62",
+    "docs/reference/stdlib/mix.md": "b911eb2b61ce7ebd6990a587ba19a35330243c0fbc0de4e3055732d18659db3b",
+    "docs/reference/stdlib/INDEX.md": "289031d258fc2abbc3f71f318bc74826fd79acbf01b1ad1edf3b4d0d04aa1032",
+    "lib/core/compiler/mix/verify.esk": "4a78f6d39c04a91dfb70c46cf725a1538909e061b73d8964286e9d8a9a412dd6",
+    "tests/stdlib/mix_verify_test.esk": "3527c2c091949d29d7df664a5436f3c3dd615df0e257d01ff5b84cff1ced3b76",
+    "scripts/run_mix_verify_gate.sh": "b9c31666bce1d675288c12f968ddbe48d5257c8a08dfa9aa316126ffebae78b7"
+  },
+  "environment": {
+    "platform": "Linux x86_64",
+    "container_base": "Ubuntu 22.04",
+    "image_id": "sha256:549e945a2634f548c2fcb31035cb0a055974a45f9ea70db5b7cf5e62919f184c",
+    "compiler_internals_rebuilt": false,
+    "container_cpu_limit": 2,
+    "container_memory_gib": 6,
+    "per_process_address_space_kib": 4194304
+  },
+  "gates": [
+    {
+      "gate": "scripts/run_mix_gate.sh",
+      "returncode": 0,
+      "elapsed_seconds": 58.64,
+      "stdout_sha256": "5f3b7a1c1a9088509156227349f063b52bae7d7e643158244832213b4edabbca"
+    },
+    {
+      "gate": "scripts/run_mix_verify_gate.sh",
+      "returncode": 0,
+      "elapsed_seconds": 18.49,
+      "stdout_sha256": "01586d2e5a8c3e306f79a9e75d29e7c5874afed8531b85249dba1bae24b24e9e"
+    }
+  ],
+  "qualification_limits": "No native-code proof, general Jones optimality, throughput improvement, full upstream CTest/CI, VM/WASM or Windows claim.",
+  "previous_receipt": "repro/mix/results.toml",
+  "previous_receipt_sha256": "26304c9537dc35f4194e992ae75f90b546ed55251425d855325328b11498b337"
+}
