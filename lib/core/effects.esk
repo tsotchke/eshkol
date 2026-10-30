@@ -1,0 +1,266 @@
+;;; core.effects - the standard library of algebraic effects (ADR-0045)
+;;;
+;;;   (require core.effects)
+;;;
+;;; Each effect is declared with `define-effect` and comes with the handlers
+;;; that give it meaning. Handlers are ordinary procedures taking a thunk, so
+;;; they compose by nesting:
+;;;
+;;;   (with-store 0 (lambda ()
+;;;     (with-reader 10 (lambda ()
+;;;       (put (+ (get) (ask)))
+;;;       (get)))))                        ; => 10
+;;;
+;;; Store     (get) (put v)                 with-store, run-store, run-store/pure
+;;; Reader    (ask)                         with-reader, local-reader
+;;; Writer    (tell x)                      run-writer
+;;; Throw     (throw x)                     catch-throw, throw->result
+;;; Choice    (decide) (fail)               all-choices, first-choice;
+;;;                                         choose, choose-range
+;;; Yield     (yield v)                     for-each-yield, generator->list,
+;;;                                         generator-fold, make-generator
+;;; Async     (async-spawn thunk) (async-yield) (async-sleep ms)
+;;;           (await-fd fd events) (await task)
+;;;                                         run-async; await-readable, await-writable
+;;;
+;;; Cost model (docs/reference/language/effects.md): Store, Reader, Writer and
+;;; the iterating Yield handlers resume in tail position, so their operations
+;;; run in place and capture no continuation. Throw unwinds. Choice, the
+;;; pulling generator and Async resume from elsewhere, so each such operation
+;;; captures its continuation.
+
+(require core.control.effects)
+
+(provide Store get put with-store run-store run-store/pure
+         Reader ask with-reader local-reader
+         Writer tell run-writer
+         Throw throw catch-throw throw->result
+         Choice decide fail choose choose-range all-choices first-choice
+         Yield yield for-each-yield generator->list generator-fold
+         make-generator generator-done?
+         Async async-spawn async-yield async-sleep await-fd await
+         await-readable await-writable run-async async-task?)
+
+;;; ── Store: one mutable cell ───────────────────────────────────────────────
+
+(define-effect Store (get) (put v))
+
+;; The cell lives outside any resumption: a resumed branch sees the latest
+;; value (state shared across Choice branches).
+(define (with-store init thunk)
+  (let ((cell init))
+    (handle (thunk)
+      (fun (get) cell)
+      (fun (put v) (set! cell v) v))))
+
+;; => (result . final-state)
+(define (run-store init thunk)
+  (let ((cell init))
+    (handle (thunk)
+      (return (x) (cons x cell))
+      (fun (get) cell)
+      (fun (put v) (set! cell v) v))))
+
+;; The state-passing handler of Plotkin and Pretnar: the handled computation
+;; denotes a function of the state, so each resumed branch carries its own
+;; state (state local to Choice branches). => (result . final-state)
+(define (run-store/pure init thunk)
+  ((handle (thunk)
+     (return (x) (lambda (s) (cons x s)))
+     ((get) k (lambda (s) ((k s) s)))
+     ((put v) k (lambda (s) ((k v) v))))
+   init))
+
+;;; ── Reader: an environment ────────────────────────────────────────────────
+
+(define-effect Reader (ask))
+
+(define (with-reader env thunk)
+  (handle (thunk)
+    (fun (ask) env)))
+
+(define (local-reader f thunk)
+  (with-reader (f (ask)) thunk))
+
+;;; ── Writer: an output log ─────────────────────────────────────────────────
+
+(define-effect Writer (tell x))
+
+;; => (result . items-in-order)
+(define (run-writer thunk)
+  (let ((out '()))
+    (handle (thunk)
+      (return (x) (cons x (reverse out)))
+      (fun (tell x) (set! out (cons x out)) x))))
+
+;;; ── Throw: exceptions as an effect ────────────────────────────────────────
+
+(define-effect Throw (throw x))
+
+(define (catch-throw thunk on-throw)
+  (handle (thunk)
+    ((throw x) k (on-throw x))))
+
+;; => (ok . value) or (thrown . x)
+(define (throw->result thunk)
+  (handle (thunk)
+    (return (x) (cons 'ok x))
+    ((throw x) k (cons 'thrown x))))
+
+;;; ── Choice: nondeterminism ────────────────────────────────────────────────
+
+(define-effect Choice (decide) (fail))
+
+(define (choose options)
+  (cond ((null? options) (fail))
+        ((decide) (car options))
+        (else (choose (cdr options)))))
+
+(define (choose-range lo hi)
+  (cond ((> lo hi) (fail))
+        ((decide) lo)
+        (else (choose-range (+ lo 1) hi))))
+
+;; Every result, in depth-first order.
+(define (all-choices thunk)
+  (handle (thunk)
+    (return (x) (list x))
+    ((decide) k (append (k #t) (k #f)))
+    ((fail) k '())))
+
+;; The first result found by backtracking, or `none` when every branch fails.
+(define (first-choice thunk none)
+  (let ((found (handle (thunk)
+                 (return (x) (list x))
+                 ((decide) k (let ((r (k #t))) (if (null? r) (k #f) r)))
+                 ((fail) k '()))))
+    (if (null? found) none (car found))))
+
+;;; ── Yield: generators and iterators ───────────────────────────────────────
+
+(define-effect Yield (yield v))
+
+;; (yield v) returns what the consumer sends: the value of (f v) here.
+(define (for-each-yield f thunk)
+  (handle (thunk)
+    (fun (yield v) (f v))))
+
+(define (generator->list thunk)
+  (let ((acc '()))
+    (handle (thunk)
+      (return (x) (reverse acc))
+      (fun (yield v) (set! acc (cons v acc)) #f))))
+
+(define (generator-fold f init thunk)
+  (let ((acc init))
+    (handle (thunk)
+      (return (x) acc)
+      (fun (yield v) (set! acc (f v acc)) #f))))
+
+(define %generator-done (vector 'generator-done))
+(define (generator-done? x) (eq? x %generator-done))
+
+;; A pulling generator: each call of the returned procedure runs the
+;; computation to its next yield and returns the yielded value; after the
+;; computation returns, every call answers a value satisfying generator-done?.
+(define (make-generator thunk)
+  (let ((resume #f)
+        (finished #f))
+    (lambda ()
+      (cond (finished %generator-done)
+            (resume (let ((k resume)) (set! resume #f) (k #f)))
+            (else
+             (handle (thunk)
+               (return (x) (set! finished #t) %generator-done)
+               ((yield v) k (set! resume k) v)))))))
+
+;;; ── Async: cooperative tasks on the event loop ────────────────────────────
+
+(define-effect Async
+  (async-spawn thunk)
+  (async-yield)
+  (async-sleep ms)
+  (await-fd fd events)
+  (await task))
+
+(define (await-readable fd) (await-fd fd 1))
+(define (await-writable fd) (await-fd fd 2))
+
+;; A task: #(async-task done? value waiters)
+(define (%make-task) (vector 'async-task #f #f '()))
+(define (async-task? x)
+  (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'async-task)))
+
+;; Run `main` and every task it spawns to completion; returns main's value.
+;; Tasks switch only at Async operations. Waiting on descriptors and timers
+;; goes through one event loop (make-event-loop / event-loop-poll).
+(define (run-async main)
+  (let ((queue '())
+        (timers '())                     ; ((deadline . thunk) ...)
+        (watches '())                    ; ((fd events . resume) ...)
+        (loop #f)
+        (main-task (%make-task)))
+    (define (enqueue! th) (set! queue (append queue (list th))))
+    (define (finish! task value)
+      (vector-set! task 1 #t)
+      (vector-set! task 2 value)
+      (for-each (lambda (w) (enqueue! (lambda () (w value)))) (reverse (vector-ref task 3)))
+      (vector-set! task 3 '()))
+    (define (start thunk task)
+      (handle (thunk)
+        (return (x) (finish! task x) 'finished)
+        ((async-spawn th) k
+         (let ((t (%make-task)))
+           (enqueue! (lambda () (start th t)))
+           (enqueue! (lambda () (k t)))
+           'suspended))
+        ((async-yield) k (enqueue! (lambda () (k #t))) 'suspended)
+        ((async-sleep ms) k
+         (set! timers (cons (cons (+ (current-time-ms) ms) (lambda () (k #t))) timers))
+         'suspended)
+        ((await-fd fd events) k
+         (if (not loop) (set! loop (make-event-loop 64)))
+         (event-loop-add-fd! loop fd events)
+         (set! watches (cons (cons fd (cons events (lambda (r) (k r)))) watches))
+         'suspended)
+        ((await t) k
+         (if (vector-ref t 1)
+             (k (vector-ref t 2))
+             (begin (vector-set! t 3 (cons (lambda (v) (k v)) (vector-ref t 3)))
+                    'suspended)))))
+    (define (due-timers! now)
+      (let ((ready (filter (lambda (t) (<= (car t) now)) timers)))
+        (set! timers (filter (lambda (t) (> (car t) now)) timers))
+        (for-each (lambda (t) (enqueue! (cdr t))) (reverse ready))))
+    (define (wait!)
+      (let* ((now (current-time-ms))
+             (next (if (null? timers) #f (apply min (map car timers))))
+             (timeout (cond ((not next) -1) ((<= next now) 0) (else (- next now)))))
+        (if (null? watches)
+            (if (> timeout 0) (sleep-ms timeout))
+            (for-each
+             (lambda (ready)
+               (let ((w (assv (car ready) watches)))
+                 (if w
+                     (begin
+                       (set! watches (filter (lambda (x) (not (eq? x w))) watches))
+                       (event-loop-remove-fd! loop (car w))
+                       (enqueue! (lambda () ((cddr w) (cdr ready))))))))
+             (event-loop-poll loop timeout)))
+        (due-timers! (current-time-ms))))
+    (define (run!)
+      (cond ((pair? queue)
+             (let ((th (car queue)))
+               (set! queue (cdr queue))
+               (th)
+               (run!)))
+            ((or (pair? timers) (pair? watches))
+             (wait!)
+             (run!))
+            (else 'idle)))
+    (enqueue! (lambda () (start main main-task)))
+    (run!)
+    (if loop (event-loop-close loop))
+    (if (vector-ref main-task 1)
+        (vector-ref main-task 2)
+        (error "run-async: the main task is waiting on a task that never completes"))))

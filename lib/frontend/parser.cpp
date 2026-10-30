@@ -21,6 +21,7 @@
 #include <eshkol/frontend/binding_forms.h>
 #include <eshkol/frontend/syntax_color.h>
 #include <eshkol/frontend/syntax_datum.h>
+#include <eshkol/frontend/effect_syntax_core.h>
 #include "parser_task.h"
 
 #include <string.h>
@@ -1506,6 +1507,82 @@ static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Tok
         }
     }
 }
+
+/* ── Algebraic-effect forms (ADR-0045) ──────────────────────────────────────
+ * `define-effect`, `handle`, `handle-shallow` and `declare-effects` are
+ * lowered by the one lowering both engines share (effect_syntax_core.h). This
+ * adapter converts reader syntax to that neutral tree and back. Atoms keep the
+ * datum they were read from (the lowering never makes new atoms); symbols and
+ * lists the lowering introduces take the form's own position. */
+static eshkol_syn* effect_datum_to_syn(const eshkol::SyntaxDatum& datum) {
+    using Kind = eshkol::SyntaxDatum::Kind;
+    eshkol_syn_kind kind = ESHKOL_SYN_ATOM;
+    switch (datum.kind) {
+        case Kind::Symbol: kind = ESHKOL_SYN_SYMBOL; break;
+        case Kind::Atom: kind = ESHKOL_SYN_ATOM; break;
+        case Kind::List: kind = ESHKOL_SYN_LIST; break;
+        case Kind::Vector: kind = ESHKOL_SYN_VECTOR; break;
+        case Kind::Prefix: kind = ESHKOL_SYN_PREFIX; break;
+    }
+    eshkol_syn* node = eshkol_syn_new(kind, datum.text.c_str(), &datum);
+    if (!node) return nullptr;
+    node->dotted = datum.dotted ? 1 : 0;
+    for (const auto& item : datum.items) {
+        if (!eshkol_syn_push(node, effect_datum_to_syn(item))) {
+            eshkol_syn_free(node);
+            return nullptr;
+        }
+    }
+    return node;
+}
+
+static eshkol::SyntaxDatum effect_syn_to_datum(const eshkol_syn* node, uint32_t line,
+                                               uint32_t column) {
+    using Kind = eshkol::SyntaxDatum::Kind;
+    const auto* origin = static_cast<const eshkol::SyntaxDatum*>(node->origin);
+    eshkol::SyntaxDatum datum;
+    if (origin && (node->kind == ESHKOL_SYN_ATOM || node->kind == ESHKOL_SYN_VECTOR ||
+                   node->kind == ESHKOL_SYN_PREFIX || node->kind == ESHKOL_SYN_SYMBOL)) {
+        datum.token_type = origin->token_type;
+        datum.verbatim = origin->verbatim;
+        datum.text = origin->text;
+    }
+    datum.line = origin ? origin->line : line;
+    datum.column = origin ? origin->column : column;
+    switch (node->kind) {
+        case ESHKOL_SYN_SYMBOL: datum.kind = Kind::Symbol; datum.text = node->text; break;
+        case ESHKOL_SYN_ATOM: datum.kind = Kind::Atom; break;
+        case ESHKOL_SYN_PREFIX: datum.kind = Kind::Prefix; datum.text = node->text; break;
+        case ESHKOL_SYN_LIST: datum.kind = Kind::List; datum.text = "("; break;
+        case ESHKOL_SYN_VECTOR: datum.kind = Kind::Vector; break;
+    }
+    datum.dotted = node->dotted != 0;
+    for (int i = 0; i < node->n_items; ++i)
+        datum.items.push_back(effect_syn_to_datum(node->items[i], datum.line, datum.column));
+    return datum;
+}
+
+/** @return 1 lowered into @p out, 0 not an effect form, -1 error in @p error. */
+static int lower_effect_datum(const eshkol::SyntaxDatum& form, eshkol::SyntaxDatum& out,
+                              std::string& error) {
+    eshkol_syn* syn = effect_datum_to_syn(form);
+    if (!syn) { error = "out of memory reading an effect form"; return -1; }
+    if (eshkol_effect_form_of(syn) == ESHKOL_EFFECT_FORM_NONE) {
+        eshkol_syn_free(syn);
+        return 0;
+    }
+    char message[256];
+    eshkol_syn* lowered = eshkol_effect_lower(syn, message, sizeof(message));
+    eshkol_syn_free(syn);
+    if (!lowered) { error = message; return -1; }
+    out = effect_syn_to_datum(lowered, form.line, form.column);
+    eshkol_syn_free(lowered);
+    return 1;
+}
+
+/* Set when a form headed by an effect keyword turned out not to be one: the
+ * re-parse of that same form is an ordinary call, not a second lowering. */
+static thread_local bool g_effect_form_is_call = false;
 
 /** @brief Read a `(syntax-rules [ellipsis] (literal ...) (pattern template) ...)`
  *         transformer whose opening `(` has been consumed. */
@@ -5232,6 +5309,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     // Consume the top-level-form flag before anything nested is parsed.
     const bool toplevel_form = g_parse_toplevel_form;
     g_parse_toplevel_form = false;
+    // Consumed the same way: it applies to this list only, never a nested one.
+    const bool effect_form_is_call = g_effect_form_is_call;
+    g_effect_form_is_call = false;
     ast.type = ESHKOL_OP;
     std::vector<eshkol_ast_t> elements;
 
@@ -5270,6 +5350,42 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         }
         eshkol::syntax_record_use(call.node_id, std::move(use));
         co_return call;
+    }
+    // Algebraic-effect forms (ADR-0045): read as syntax, lowered by the shared
+    // lowering, and the lowered form parsed in its place. A user macro of the
+    // same name was handled just above and takes precedence.
+    if (token.type == TOKEN_SYMBOL && !effect_form_is_call &&
+        eshkol_effect_keyword(token.value.c_str()) &&
+        !eshkol_syntax_is_colored(token.value.c_str())) {
+        eshkol::SyntaxDatum form;
+        tokenizer.pushBack(token);
+        Token open = head_token;
+        open.type = TOKEN_LPAREN;
+        open.value = "(";
+        if (!read_syntax_datum(tokenizer, open, form)) {
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        eshkol::SyntaxDatum lowered;
+        std::string error;
+        const int status = lower_effect_datum(form, lowered, error);
+        if (status < 0) {
+            PARSE_ERROR_AT(token, "%s", error.c_str());
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        g_effect_form_is_call = status == 0;
+        std::set<std::string> names = g_parser_macro_names ? *g_parser_macro_names
+                                                           : std::set<std::string>{};
+        eshkol_ast_t result;
+        if (toplevel_form) {
+            eshkol::ToplevelFormParseScope toplevel_scope;
+            result = eshkol::parse_syntax_datum(status > 0 ? lowered : form, names);
+        } else {
+            result = eshkol::parse_syntax_datum(status > 0 ? lowered : form, names);
+        }
+        g_effect_form_is_call = false;
+        co_return result;
     }
     // A head that a macro expansion colored names whatever its spelling meant
     // where the macro was defined (ADR-0026). Keyword grammar dispatches on the

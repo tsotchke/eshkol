@@ -1,0 +1,310 @@
+;;; core.control.effects - algebraic effects and handlers (ADR-0045)
+;;;
+;;; The runtime under `define-effect`, `handle` and `handle-shallow`. Those
+;;; forms are lowered by inc/eshkol/frontend/effect_syntax_core.h (the same
+;;; lowering on the native compiler and on the bytecode VM) into calls of the
+;;; %effect- procedures below. Programs normally use the forms; the
+;;; procedures are documented in docs/reference/language/effects.md.
+;;;
+;;;   (define-effect Store (get) (put v))
+;;;   (handle (begin (put (+ (get) 1)) (get))
+;;;     (fun (get) cell)
+;;;     ((put v) k (set! cell v) (k v)))
+;;;
+;;; Model (Plotkin-Pretnar handlers over delimited control):
+;;;
+;;; - The handler context is a stack of frames, innermost first. Performing an
+;;;   operation finds the innermost frame with a clause for it.
+;;; - A clause runs with the handler's OUTER handlers in scope, so an
+;;;   operation performed inside a clause goes to an enclosing handler.
+;;; - Deep handlers stay installed around the resumed computation; shallow
+;;;   handlers do not.
+;;; - Delimited control is built from the language's re-entrant `call/cc` and
+;;;   one mutable delimiter per frame (Filinski's construction): the frame's
+;;;   delimiter is the continuation that receives the result of the handled
+;;;   computation - the `handle` form itself, or the site of the resumption
+;;;   that is currently running it.
+;;;
+;;; The lowering classifies each clause by how it uses its resumption, and each
+;;; class has its own strategy (see effect_syntax_core.h):
+;;;
+;;;   tail          runs in place at the operation; captures nothing
+;;;   abort         unwinds to the delimiter and runs there; captures the
+;;;                 delimiter once per `handle` evaluation
+;;;   general-tail  captures the operation's continuation; the resumption
+;;;                 jumps into it without capturing the resumption site
+;;;   general       captures the operation's continuation and, at each
+;;;                 resumption, the resumption site
+;;;
+;;; A `handle` whose clauses are all `tail` is "light": it installs a frame
+;;; with `dynamic-wind` and captures no continuation at all.
+
+(provide %effect-make %effect-operation %effect-clause %effect-handle
+         %effect-identity %effect-declare
+         effect? effect-name effect-operation-names
+         effect-operation? effect-operation-name effect-operation-effect
+         effect-operation-arity effect-handled? unhandled-effect-error?
+         effect-handler-depth)
+
+;;; ── effects and operations ────────────────────────────────────────────────
+
+;; An effect: #(%effect name descriptors)
+(define (%effect-make name) (vector '%effect name '()))
+
+(define (effect? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) '%effect)))
+
+(define (effect-name e) (vector-ref e 1))
+
+(define (effect-operation-names e)
+  (map (lambda (d) (vector-ref d 2)) (reverse (vector-ref e 2))))
+
+;; An operation descriptor: #(%effect-op effect name arity); arity -1 = variadic.
+;; The operation itself is a procedure; the registry maps it to its descriptor,
+;; which is how a handler clause naming the procedure finds the descriptor.
+(define %effect-op-registry '())
+
+(define (%effect-formals-arity formals)
+  (cond ((null? formals) 0)
+        ((pair? formals)
+         (let ((rest (%effect-formals-arity (cdr formals))))
+           (if (< rest 0) -1 (+ rest 1))))
+        (else -1)))
+
+(define (%effect-operation eff name formals)
+  (let* ((arity (%effect-formals-arity formals))
+         (desc (vector '%effect-op eff name arity))
+         (proc (cond ((= arity 0) (lambda () (%effect-perform desc 0 #f #f #f '())))
+                     ((= arity 1) (lambda (a) (%effect-perform desc 1 a #f #f '())))
+                     ((= arity 2) (lambda (a b) (%effect-perform desc 2 a b #f '())))
+                     ((= arity 3) (lambda (a b c) (%effect-perform desc 3 a b c '())))
+                     (else (lambda args (%effect-perform desc -1 #f #f #f args))))))
+    (vector-set! eff 2 (cons desc (vector-ref eff 2)))
+    (set! %effect-op-registry (cons (cons proc desc) %effect-op-registry))
+    proc))
+
+(define (%effect-op-desc proc)
+  (let ((hit (assq proc %effect-op-registry)))
+    (if hit
+        (cdr hit)
+        (error "handle: a clause names a procedure that is not an effect operation" proc))))
+
+(define (effect-operation? x)
+  (and (procedure? x) (assq x %effect-op-registry) #t))
+(define (effect-operation-name op) (vector-ref (%effect-op-desc op) 2))
+(define (effect-operation-effect op) (vector-ref (%effect-op-desc op) 1))
+(define (effect-operation-arity op) (vector-ref (%effect-op-desc op) 3))
+
+;; Declarations are read by the compiler's effect checker; at run time they
+;; only name what they declared.
+(define (%effect-declare name row) name)
+
+;;; ── the handler context ───────────────────────────────────────────────────
+
+;; Innermost first. %effect-transfer is #t while a handler transfer (an
+;; escape to a delimiter, or a resumption) is crossing dynamic-wind
+;; boundaries: frames then leave the stack to the transfer, which sets it.
+(define %effect-stack '())
+(define %effect-transfer #f)
+
+(define (effect-handler-depth) (length %effect-stack))
+
+;; Frame slots:
+;;   0 tag              1 clauses           2 return proc or #f
+;;   3 delimiter        4 shallow?          5 the handle form's own delimiter
+;;   6 resumed shallow? 7 entered once?     8 left normally?
+(define (%frame-clauses f) (vector-ref f 1))
+(define (%frame-delim f) (vector-ref f 3))
+(define (%frame-shallow? f) (vector-ref f 4))
+
+(define (%stack-after f s) (%stack-after-1 f s s))
+(define (%stack-after-1 f s t)
+  (cond ((null? t) s)
+        ((eq? (car t) f) (cdr t))
+        (else (%stack-after-1 f s (cdr t)))))
+
+;; The frames of s down to f (f included when include?), innermost first.
+(define (%stack-prefix f s include?)
+  (%stack-prefix-1 f s include? '()))
+(define (%stack-prefix-1 f t include? acc)
+  (cond ((null? t) (reverse acc))
+        ((eq? (car t) f) (reverse (if include? (cons f acc) acc)))
+        (else (%stack-prefix-1 f (cdr t) include? (cons (car t) acc)))))
+
+;; A clause: #(descriptor kind proc)
+(define (%effect-clause op kind proc)
+  (vector (%effect-op-desc op) kind proc))
+
+(define (%find-clause clauses desc)
+  (cond ((null? clauses) #f)
+        ((eq? (vector-ref (car clauses) 0) desc) (car clauses))
+        (else (%find-clause (cdr clauses) desc))))
+
+(define (effect-handled? op)
+  (%effect-handled-1 (%effect-op-desc op) %effect-stack))
+(define (%effect-handled-1 desc s)
+  (cond ((null? s) #f)
+        ((%find-clause (%frame-clauses (car s)) desc) #t)
+        (else (%effect-handled-1 desc (cdr s)))))
+
+(define (unhandled-effect-error? x)
+  (and (error-object? x)
+       (equal? (error-object-message x) "unhandled effect operation")))
+
+;;; ── performing ────────────────────────────────────────────────────────────
+;;; Arguments travel as n/a/b/c (n <= 3) or as a list (n = -1), so performing
+;;; an operation handled in place allocates nothing.
+
+(define (%effect-perform desc n a b c rest)
+  (%effect-search desc %effect-stack n a b c rest))
+
+(define (%effect-search desc s n a b c rest)
+  (if (null? s)
+      (error "unhandled effect operation"
+             (effect-name (vector-ref desc 1)) (vector-ref desc 2))
+      (let ((cl (%find-clause (%frame-clauses (car s)) desc)))
+        (if cl
+            (%effect-dispatch (car s) s cl n a b c rest)
+            (%effect-search desc (cdr s) n a b c rest)))))
+
+(define (%effect-call proc n a b c rest)
+  (cond ((= n 0) (proc))
+        ((= n 1) (proc a))
+        ((= n 2) (proc a b))
+        ((= n 3) (proc a b c))
+        (else (apply proc rest))))
+
+(define (%effect-call/k proc k n a b c rest)
+  (cond ((= n 0) (proc k))
+        ((= n 1) (proc k a))
+        ((= n 2) (proc k a b))
+        ((= n 3) (proc k a b c))
+        (else (apply proc k rest))))
+
+(define (%effect-identity x) x)
+
+(define (%effect-dispatch frame s clause n a b c rest)
+  (let ((kind (vector-ref clause 1)))
+    (cond
+      ((eq? kind 'tail) (%effect-run-tail frame s (vector-ref clause 2) n a b c rest))
+      ((eq? kind 'abort) (%effect-run-abort frame s (vector-ref clause 2) n a b c rest))
+      (else (%effect-run-general frame s (vector-ref clause 2)
+                                 (eq? kind 'general-tail) n a b c rest)))))
+
+;; In place: the clause's value is the operation's result.
+(define (%effect-run-tail frame s proc n a b c rest)
+  (let ((saved %effect-stack)
+        (outer (cdr s)))
+    (set! %effect-stack outer)
+    (let ((v (%effect-call proc n a b c rest)))
+      (if (eq? %effect-stack outer)
+          (set! %effect-stack saved)
+          ;; a clause operation was resumed elsewhere: rebuild relative to now
+          (set! %effect-stack (append (%stack-prefix frame saved #t) %effect-stack)))
+      v)))
+
+;; Transfer control to frame's delimiter and run thunk there.
+(define (%effect-escape frame target-stack thunk)
+  (set! %effect-stack target-stack)
+  (set! %effect-transfer #t)
+  ((%frame-delim frame) (lambda () (set! %effect-transfer #f) (thunk))))
+
+(define (%effect-run-abort frame s proc n a b c rest)
+  (%effect-escape frame (cdr s) (lambda () (%effect-call proc n a b c rest))))
+
+(define (%effect-run-general frame s proc tail? n a b c rest)
+  (let ((v (call/cc
+            (lambda (resume-k)
+              (let ((prefix (%stack-prefix frame %effect-stack (not (%frame-shallow? frame)))))
+                (%effect-escape frame (cdr s)
+                  (lambda ()
+                    (%effect-call/k proc (%make-resumption frame prefix resume-k tail?)
+                                    n a b c rest))))))))
+    (set! %effect-transfer #f)
+    v))
+
+;; The resumption handed to a clause. It reinstalls the frames that were
+;; between the operation and the handler (the handler itself unless shallow)
+;; on top of the handler context at the resumption site.
+(define (%make-resumption frame prefix resume-k tail?)
+  (if tail?
+      (lambda (v)
+        (if (%frame-shallow? frame) (vector-set! frame 6 #t))
+        (set! %effect-stack (append prefix %effect-stack))
+        (set! %effect-transfer #t)
+        (resume-k v))
+      (lambda (v)
+        (let ((saved-delim (%frame-delim frame))
+              (saved-shallow (vector-ref frame 6)))
+          (let ((r ((call/cc
+                     (lambda (back)
+                       (vector-set! frame 3 back)
+                       (if (%frame-shallow? frame) (vector-set! frame 6 #t))
+                       (set! %effect-stack (append prefix %effect-stack))
+                       (set! %effect-transfer #t)
+                       (resume-k v))))))
+            (vector-set! frame 3 saved-delim)
+            (vector-set! frame 6 saved-shallow)
+            r)))))
+
+;;; ── installing a handler ──────────────────────────────────────────────────
+
+;; dynamic-wind keeps the stack right when control leaves or re-enters the
+;; handled computation by other means (raise to an outer guard, an escape
+;; continuation, re-entry of a continuation captured inside it).
+(define (%frame-before frame)
+  (lambda ()
+    (if (or (not (vector-ref frame 7)) (not %effect-transfer))
+        (begin (vector-set! frame 7 #t)
+               (set! %effect-stack (cons frame %effect-stack))))))
+
+(define (%frame-after frame)
+  (lambda ()
+    (cond ((vector-ref frame 8) (vector-set! frame 8 #f))
+          ((not %effect-transfer)
+           (set! %effect-stack (%stack-after frame %effect-stack))))))
+
+(define (%frame-complete! frame)
+  (set! %effect-stack (%stack-after frame %effect-stack))
+  (vector-set! frame 8 #t))
+
+(define (%effect-handle mode depth return clauses body)
+  (let ((frame (vector '%effect-frame clauses
+                       (if (eq? return %effect-identity) #f return)
+                       #f (eq? depth 'shallow) #f #f #f #f)))
+    (if (eq? mode 'light)
+        (%effect-handle-light frame body)
+        (%effect-handle-full frame body))))
+
+(define (%effect-handle-light frame body)
+  (let ((v (dynamic-wind
+             (%frame-before frame)
+             (lambda () (let ((v (body))) (%frame-complete! frame) v))
+             (%frame-after frame)))
+        (ret (vector-ref frame 2)))
+    (if ret (ret v) v)))
+
+;; An exception raised by a computation that a resumption is running belongs
+;; to the resumption site; the guard forwards it there.
+(define (%effect-handle-full frame body)
+  ((call/cc
+    (lambda (ret0)
+      (vector-set! frame 3 ret0)
+      (vector-set! frame 5 ret0)
+      (let ((v (dynamic-wind
+                 (%frame-before frame)
+                 (lambda ()
+                   (let ((v (guard (e ((not (eq? (%frame-delim frame) (vector-ref frame 5)))
+                                       (%effect-escape frame (%stack-after frame %effect-stack)
+                                                       (lambda () (raise e)))))
+                              (body))))
+                     (%frame-complete! frame)
+                     v))
+                 (%frame-after frame))))
+        (let* ((ret (vector-ref frame 2))
+               (thunk (if (or (vector-ref frame 6) (not ret))
+                          (lambda () v)
+                          (lambda () (ret v)))))
+          (if (eq? (%frame-delim frame) ret0)
+              thunk
+              (%effect-escape frame %effect-stack thunk))))))))
