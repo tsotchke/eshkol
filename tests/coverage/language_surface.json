@@ -15,6 +15,7 @@
         "core.ad.taylor_models",
         "core.alist",
         "core.capabilities",
+        "core.control.effects",
         "core.control.trampoline",
         "core.data.base64",
         "core.data.csv",
@@ -2214,6 +2215,407 @@
             {
               "name": "capability-sync-runtime!",
               "line": 39
+            }
+          ]
+        },
+        {
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "required_by": [
+            "stdlib"
+          ],
+          "stdlib_visibility": "stdlib_root_required_module",
+          "requires": [],
+          "exports": [
+            {
+              "name": "%effect-clause",
+              "line": 42,
+              "definition_line": 135,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 135,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-declare",
+              "line": 43,
+              "definition_line": 100,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 100,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-handle",
+              "line": 42,
+              "definition_line": 271,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 271,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-identity",
+              "line": 43,
+              "definition_line": 184,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 184,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-make",
+              "line": 42,
+              "definition_line": 52,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 52,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-operation",
+              "line": 42,
+              "definition_line": 74,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 74,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-handled?",
+              "line": 46,
+              "definition_line": 143,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 143,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-handler-depth",
+              "line": 47,
+              "definition_line": 110,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 110,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-name",
+              "line": 44,
+              "definition_line": 57,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 57,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-arity",
+              "line": 46,
+              "definition_line": 96,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 96,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-effect",
+              "line": 45,
+              "definition_line": 95,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 95,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-name",
+              "line": 45,
+              "definition_line": 94,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 94,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-names",
+              "line": 44,
+              "definition_line": 59,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 59,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation?",
+              "line": 45,
+              "definition_line": 92,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 92,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect?",
+              "line": 44,
+              "definition_line": 54,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 54,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "unhandled-effect-error?",
+              "line": 46,
+              "definition_line": 150,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 150,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            }
+          ],
+          "top_level_definitions": [
+            {
+              "name": "%effect-call",
+              "line": 170
+            },
+            {
+              "name": "%effect-call/k",
+              "line": 177
+            },
+            {
+              "name": "%effect-clause",
+              "line": 135
+            },
+            {
+              "name": "%effect-declare",
+              "line": 100
+            },
+            {
+              "name": "%effect-dispatch",
+              "line": 186
+            },
+            {
+              "name": "%effect-escape",
+              "line": 207
+            },
+            {
+              "name": "%effect-formals-arity",
+              "line": 67
+            },
+            {
+              "name": "%effect-handle",
+              "line": 271
+            },
+            {
+              "name": "%effect-handle-full",
+              "line": 289
+            },
+            {
+              "name": "%effect-handle-light",
+              "line": 279
+            },
+            {
+              "name": "%effect-handled-1",
+              "line": 145
+            },
+            {
+              "name": "%effect-identity",
+              "line": 184
+            },
+            {
+              "name": "%effect-make",
+              "line": 52
+            },
+            {
+              "name": "%effect-op-desc",
+              "line": 86
+            },
+            {
+              "name": "%effect-op-registry",
+              "line": 65
+            },
+            {
+              "name": "%effect-operation",
+              "line": 74
+            },
+            {
+              "name": "%effect-perform",
+              "line": 158
+            },
+            {
+              "name": "%effect-run-abort",
+              "line": 212
+            },
+            {
+              "name": "%effect-run-general",
+              "line": 215
+            },
+            {
+              "name": "%effect-run-tail",
+              "line": 195
+            },
+            {
+              "name": "%effect-search",
+              "line": 161
+            },
+            {
+              "name": "%effect-stack",
+              "line": 107
+            },
+            {
+              "name": "%effect-transfer",
+              "line": 108
+            },
+            {
+              "name": "%find-clause",
+              "line": 138
+            },
+            {
+              "name": "%frame-after",
+              "line": 261
+            },
+            {
+              "name": "%frame-before",
+              "line": 255
+            },
+            {
+              "name": "%frame-clauses",
+              "line": 116
+            },
+            {
+              "name": "%frame-complete!",
+              "line": 267
+            },
+            {
+              "name": "%frame-delim",
+              "line": 117
+            },
+            {
+              "name": "%frame-shallow?",
+              "line": 118
+            },
+            {
+              "name": "%make-resumption",
+              "line": 229
+            },
+            {
+              "name": "%stack-after",
+              "line": 120
+            },
+            {
+              "name": "%stack-after-1",
+              "line": 121
+            },
+            {
+              "name": "%stack-prefix",
+              "line": 127
+            },
+            {
+              "name": "%stack-prefix-1",
+              "line": 129
+            },
+            {
+              "name": "effect-handled?",
+              "line": 143
+            },
+            {
+              "name": "effect-handler-depth",
+              "line": 110
+            },
+            {
+              "name": "effect-name",
+              "line": 57
+            },
+            {
+              "name": "effect-operation-arity",
+              "line": 96
+            },
+            {
+              "name": "effect-operation-effect",
+              "line": 95
+            },
+            {
+              "name": "effect-operation-name",
+              "line": 94
+            },
+            {
+              "name": "effect-operation-names",
+              "line": 59
+            },
+            {
+              "name": "effect-operation?",
+              "line": 92
+            },
+            {
+              "name": "effect?",
+              "line": 54
+            },
+            {
+              "name": "unhandled-effect-error?",
+              "line": 150
             }
           ]
         },
@@ -9803,163 +10205,167 @@
               "line": 25
             },
             {
-              "module": "core.list.compound",
-              "line": 28
-            },
-            {
-              "module": "core.list.generate",
+              "module": "core.control.effects",
               "line": 29
             },
             {
-              "module": "core.list.transform",
-              "line": 30
-            },
-            {
-              "module": "core.list.query",
-              "line": 31
-            },
-            {
-              "module": "core.list.sort",
+              "module": "core.list.compound",
               "line": 32
             },
             {
-              "module": "core.list.higher_order",
+              "module": "core.list.generate",
               "line": 33
             },
             {
-              "module": "core.list.search",
+              "module": "core.list.transform",
               "line": 34
             },
             {
-              "module": "core.list.convert",
+              "module": "core.list.query",
               "line": 35
             },
             {
-              "module": "core.strings",
+              "module": "core.list.sort",
+              "line": 36
+            },
+            {
+              "module": "core.list.higher_order",
+              "line": 37
+            },
+            {
+              "module": "core.list.search",
               "line": 38
             },
             {
+              "module": "core.list.convert",
+              "line": 39
+            },
+            {
+              "module": "core.strings",
+              "line": 42
+            },
+            {
               "module": "core.alist",
-              "line": 41
+              "line": 45
             },
             {
               "module": "core.files",
-              "line": 44
+              "line": 48
             },
             {
               "module": "core.capabilities",
-              "line": 47
+              "line": 51
             },
             {
               "module": "core.sexp",
-              "line": 50
+              "line": 54
             },
             {
               "module": "core.json",
-              "line": 53
-            },
-            {
-              "module": "core.data.csv",
-              "line": 56
-            },
-            {
-              "module": "core.data.dataframe",
               "line": 57
             },
             {
-              "module": "core.data.base64",
-              "line": 58
+              "module": "core.data.csv",
+              "line": 60
             },
             {
-              "module": "core.plot",
+              "module": "core.data.dataframe",
               "line": 61
             },
             {
+              "module": "core.data.base64",
+              "line": 62
+            },
+            {
+              "module": "core.plot",
+              "line": 65
+            },
+            {
               "module": "core.reflection",
-              "line": 64
+              "line": 68
             },
             {
               "module": "core.url",
-              "line": 67
+              "line": 71
             },
             {
               "module": "core.streams",
-              "line": 70
+              "line": 74
             },
             {
               "module": "core.json_schema",
-              "line": 73
+              "line": 77
             },
             {
               "module": "signal.fft",
-              "line": 111
-            },
-            {
-              "module": "signal.filters",
-              "line": 112
-            },
-            {
-              "module": "core.manifold",
               "line": 115
             },
             {
-              "module": "core.exact_linalg",
+              "module": "signal.filters",
+              "line": 116
+            },
+            {
+              "module": "core.manifold",
               "line": 119
             },
             {
-              "module": "core.symbolic",
+              "module": "core.exact_linalg",
               "line": 123
             },
             {
+              "module": "core.symbolic",
+              "line": 127
+            },
+            {
               "module": "core.pde.ns-residual",
-              "line": 129
+              "line": 133
             },
             {
               "module": "core.ad.taylor_models",
-              "line": 137
+              "line": 141
             },
             {
               "module": "ml.optimization",
-              "line": 140
+              "line": 144
             }
           ],
           "exports": [],
           "top_level_definitions": [
             {
               "name": "__keyword-arg",
-              "line": 95
+              "line": 99
             },
             {
               "name": "__keyword-args-validate",
-              "line": 86
+              "line": 90
             },
             {
               "name": "__keyword-member?",
-              "line": 79
+              "line": 83
             },
             {
               "name": "current-time-us",
-              "line": 150
-            },
-            {
-              "name": "random-normal-tensor",
-              "line": 146
-            },
-            {
-              "name": "random-tensor",
-              "line": 143
-            },
-            {
-              "name": "time-it",
-              "line": 164
-            },
-            {
-              "name": "time-ns",
               "line": 154
             },
             {
+              "name": "random-normal-tensor",
+              "line": 150
+            },
+            {
+              "name": "random-tensor",
+              "line": 147
+            },
+            {
+              "name": "time-it",
+              "line": 168
+            },
+            {
+              "name": "time-ns",
+              "line": 158
+            },
+            {
               "name": "time-us",
-              "line": 160
+              "line": 164
             }
           ]
         }
@@ -9977,9 +10383,9 @@
     "builtins_in_llvm_aot_dispatch": 799,
     "builtins_aot_only": 242,
     "quantum_agent_ffi_builtins": 22,
-    "special_forms": 116,
+    "special_forms": 120,
     "ast_ops": 113,
-    "prelude": 472
+    "prelude": 488
   },
   "builtins_by_category": {
     "ffi_system": 302,
@@ -10001,9 +10407,9 @@
   },
   "special_forms_by_category": {
     "tensor_ad": 29,
-    "control_flow": 24,
+    "control_flow": 26,
     "consciousness": 24,
-    "binding_form": 14,
+    "binding_form": 16,
     "module": 8,
     "macro_syntax": 8,
     "memory_region": 6,
@@ -22865,8 +23271,18 @@
       "category": "tensor_ad"
     },
     {
+      "name": "declare-effects",
+      "op": "ESHKOL_CALL_OP",
+      "category": "binding_form"
+    },
+    {
       "name": "define",
       "op": "ESHKOL_DEFINE_OP",
+      "category": "binding_form"
+    },
+    {
+      "name": "define-effect",
+      "op": "ESHKOL_SEQUENCE_OP",
       "category": "binding_form"
     },
     {
@@ -23042,6 +23458,16 @@
     {
       "name": "guard",
       "op": "ESHKOL_GUARD_OP",
+      "category": "control_flow"
+    },
+    {
+      "name": "handle",
+      "op": "ESHKOL_CALL_OP",
+      "category": "control_flow"
+    },
+    {
+      "name": "handle-shallow",
+      "op": "ESHKOL_CALL_OP",
       "category": "control_flow"
     },
     {
@@ -23387,6 +23813,426 @@
   ],
   "prelude": [
     {
+      "name": "%effect-clause",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 135,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 135,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-clause",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-clause",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-clause",
+            "line": 135,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 135,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 135,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-clause",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-clause",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-clause",
+            "line": 135,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-clause"
+    },
+    {
+      "name": "%effect-declare",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 100,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-declare",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-declare",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-declare",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 100,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-declare",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-declare",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-declare",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-declare"
+    },
+    {
+      "name": "%effect-handle",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 271,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 271,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-handle",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-handle",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-handle",
+            "line": 271,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 271,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 271,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-handle",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-handle",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-handle",
+            "line": 271,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-handle"
+    },
+    {
+      "name": "%effect-identity",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 184,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 184,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-identity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-identity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-identity",
+            "line": 184,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 184,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 184,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-identity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-identity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-identity",
+            "line": 184,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-identity"
+    },
+    {
+      "name": "%effect-make",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 52,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-make",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-make",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-make",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 52,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-make",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-make",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-make",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-make"
+    },
+    {
+      "name": "%effect-operation",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 74,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-operation",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-operation",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-operation",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 74,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-operation",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-operation",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-operation",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-operation"
+    },
+    {
       "name": "*",
       "category": "numeric",
       "also_builtin": true,
@@ -23438,11 +24284,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 95,
+          "line": 99,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 95,
+            "line": 99,
             "chain": [
               "stdlib"
             ]
@@ -23454,7 +24300,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-arg",
-            "line": 95,
+            "line": 99,
             "chain": [
               "stdlib"
             ]
@@ -23476,11 +24322,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 86,
+          "line": 90,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 86,
+            "line": 90,
             "chain": [
               "stdlib"
             ]
@@ -23492,7 +24338,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-args-validate",
-            "line": 86,
+            "line": 90,
             "chain": [
               "stdlib"
             ]
@@ -23514,11 +24360,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 79,
+          "line": 83,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 79,
+            "line": 83,
             "chain": [
               "stdlib"
             ]
@@ -23530,7 +24376,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-member?",
-            "line": 79,
+            "line": 83,
             "chain": [
               "stdlib"
             ]
@@ -30204,11 +31050,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 150,
+          "line": 154,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 150,
+            "line": 154,
             "chain": [
               "stdlib"
             ]
@@ -30220,7 +31066,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "current-time-us",
-            "line": 150,
+            "line": 154,
             "chain": [
               "stdlib"
             ]
@@ -30730,6 +31576,636 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.list.transform:lib/core/list/transform.esk#drop-right"
+    },
+    {
+      "name": "effect-handled?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 143,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 143,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handled?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handled?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handled?",
+            "line": 143,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 143,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 143,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handled?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handled?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handled?",
+            "line": 143,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handled?"
+    },
+    {
+      "name": "effect-handler-depth",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 47,
+          "defined_at_top_level": true,
+          "definition_line": 110,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 110,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handler-depth",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handler-depth",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handler-depth",
+            "line": 110,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 47,
+          "defined_at_top_level": true,
+          "definition_line": 110,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 110,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handler-depth",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handler-depth",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handler-depth",
+            "line": 110,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handler-depth"
+    },
+    {
+      "name": "effect-name",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 57,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-name",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 57,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-name",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-name"
+    },
+    {
+      "name": "effect-operation-arity",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 96,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-arity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-arity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-arity",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 96,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-arity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-arity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-arity",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-arity"
+    },
+    {
+      "name": "effect-operation-effect",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 95,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-effect",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-effect",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-effect",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 95,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-effect",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-effect",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-effect",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-effect"
+    },
+    {
+      "name": "effect-operation-name",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 94,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-name",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 94,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-name",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-name"
+    },
+    {
+      "name": "effect-operation-names",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 59,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-names",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-names",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-names",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 59,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-names",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-names",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-names",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-names"
+    },
+    {
+      "name": "effect-operation?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 92,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation?",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 92,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation?",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation?"
+    },
+    {
+      "name": "effect?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 54,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect?",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 54,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect?",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect?"
     },
     {
       "name": "eighth",
@@ -43270,11 +44746,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 146,
+          "line": 150,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 146,
+            "line": 150,
             "chain": [
               "stdlib"
             ]
@@ -43286,7 +44762,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-normal-tensor",
-            "line": 146,
+            "line": 150,
             "chain": [
               "stdlib"
             ]
@@ -43308,11 +44784,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 143,
+          "line": 147,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 143,
+            "line": 147,
             "chain": [
               "stdlib"
             ]
@@ -43324,7 +44800,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-tensor",
-            "line": 143,
+            "line": 147,
             "chain": [
               "stdlib"
             ]
@@ -49418,11 +50894,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 164,
+          "line": 168,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 164,
+            "line": 168,
             "chain": [
               "stdlib"
             ]
@@ -49434,7 +50910,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-it",
-            "line": 164,
+            "line": 168,
             "chain": [
               "stdlib"
             ]
@@ -49456,11 +50932,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 154,
+          "line": 158,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 154,
+            "line": 158,
             "chain": [
               "stdlib"
             ]
@@ -49472,7 +50948,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-ns",
-            "line": 154,
+            "line": 158,
             "chain": [
               "stdlib"
             ]
@@ -49494,11 +50970,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 160,
+          "line": 164,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 160,
+            "line": 164,
             "chain": [
               "stdlib"
             ]
@@ -49510,7 +50986,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-us",
-            "line": 160,
+            "line": 164,
             "chain": [
               "stdlib"
             ]
@@ -52699,6 +54175,76 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.functional.curry:lib/core/functional/curry.esk#uncurry2"
+    },
+    {
+      "name": "unhandled-effect-error?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 150,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 150,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "unhandled-effect-error?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#unhandled-effect-error?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "unhandled-effect-error?",
+            "line": 150,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 150,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 150,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "unhandled-effect-error?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#unhandled-effect-error?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "unhandled-effect-error?",
+            "line": 150,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#unhandled-effect-error?"
     },
     {
       "name": "unzip",
