@@ -2,7 +2,7 @@ schema_version = 1
 license = "MIT"
 base_commit = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
 prepared_tree_oid = "2d74c92d8128b7da396ebbcfb16c89200fb85d98"
-review_status = "draft-jit-blocked"
+review_status = "review-ready"
 
 [[source_prerequisite]]
 name = "observable"

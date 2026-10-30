@@ -1,6 +1,6 @@
 # Maintain signed Hawkes forecasts and sensitivities through DBSP
 
-Status: draft-jit-blocked. Selected MIT contribution by Richard Hoekstra.
+Status: JIT/AOT qualified. Selected MIT contribution by Richard Hoekstra.
 
 Dependencies: PR 1; observable. Prerequisite implementations are outside this patch. `SOURCE.toml` records exact identities.
 
@@ -38,8 +38,16 @@ canonical identity detects accidental mutation; it is not a signature or an
 admission mechanism for hostile deserialized vectors. Import untrusted sources
 through full `forecast-plan` admission, never by forging a live state vector.
 
-The published 1.3.6 JIT crashes on this combined consumer, even with serialized
-JIT compilation; AOT-O0 passes. `run_live_gate.py --jit` reproduces the failed
-qualification and does not silently accept it. The standalone forecast and
-cost gates pass JIT/AOT. Full-consumer AOT-O2 exceeded the 240-second budget;
-no success at that optimization level is claimed.
+The additive-group zero predicate calls `zero?` through a lambda. Passing the
+builtin directly as a first-class value (`every zero?`) made the published
+1.3.6 JIT crash during forecast admission when these modules were combined.
+The wrapper preserves the predicate while avoiding that consumer crash; it
+does not change the compiler. The full consumer now passes in-process JIT
+with `ESHKOL_JIT_CACHE=0` and AOT-O0. The gate requires both routes by default,
+compares their complete output, and checks all sixteen ensemble snapshots
+against the full-model oracle. `--jit` remains a compatibility alias.
+
+`results.json` records this fresh qualification, including the executable and
+source identities. Earlier archived AOT-only receipts remain historical.
+Full-consumer AOT-O2 exceeded the earlier 240-second budget; no success at
+that optimization level is claimed.

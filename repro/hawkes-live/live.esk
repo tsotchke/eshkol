@@ -42,10 +42,12 @@
                   (fc-rational? h) (> h 0) (<= h 1/8) (or (not seed) (memq seed names))))
         (error "Live forecast target or time/seed contract is unsupported"))
     (fc-alist names parameters)
+    ;; Keep zero? a direct call: passing the builtin itself crashes the 1.3.6
+    ;; in-process JIT during admission when these consumer modules are combined.
     (let* ((group (make-dbsp-group (lambda () (make-list width 0))
                     (lambda (a b) (map lf-add a b))
                     (lambda (a) (map (lambda (x) (lf-rational (- x))) a))
-                    (lambda (a) (every zero? a))))
+                    (lambda (a) (every (lambda (value) (zero? value)) a))))
            (lift (lambda (row)
              (let ((result (fc-run-admitted owned parameters (lf-point row) steps h seed)))
                (cons 1 (lf-flat (forecast-query-coefficients result))))))
