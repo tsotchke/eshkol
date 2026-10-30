@@ -1,0 +1,275 @@
+;; core.monoidal.zx: soundness of every rewrite rule over the phases k pi/4,
+;; checked exactly ([[lhs]] = s [[rhs]] over Q(zeta_8)), refusals outside the
+;; rules' patterns, Clifford+T circuits against an independent state-vector
+;; semantics, simplification, and the ZX generators as string-diagram boxes.
+(require stdlib)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+(require core.monoidal.network)
+(require core.monoidal.diagram)
+(require core.monoidal.zx)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (range n) (iota n))
+(define (tuples k xs) (if (= k 0) (list '()) (let ((rest (tuples (- k 1) xs))) (apply append (map (lambda (x) (map (lambda (t) (cons x t)) rest)) xs)))))
+(define (subsets xs) (if (null? xs) (list '()) (let ((r (subsets (cdr xs)))) (append r (map (lambda (s) (cons (car xs) s)) r)))))
+(define seed 4142)
+(define (rand n) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) n))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+
+(define K (cyclotomic-scalars 8))
+(define phases (map (lambda (k) (/ k 4)) (range 8)))
+(define colours '(Z X))
+(define (other c) (if (eq? c 'Z) 'X 'Z))
+
+;; a rule instance is (name lhs rewrite-thunk); it is sound when
+;; [[lhs]] = s [[rhs]] for (rhs . s) = (rewrite-thunk)
+(define rule-counts '())
+(define (count-rule! name ok)
+  (let ((p (assoc name rule-counts)))
+    (if p (set-cdr! p (list (+ 1 (cadr p)) (+ (if ok 1 0) (caddr p))))
+        (set! rule-counts (cons (list name 1 (if ok 1 0)) rule-counts)))))
+(define (sound! name lhs rewrite)
+  (let* ((r (rewrite lhs)) (ok (zx-equal-up-to? lhs (car r) (cdr r) K)))
+    (if (not ok) (begin (display "unsound instance of ") (display name) (newline)))
+    (count-rule! name ok)
+    ok))
+;; boundary nodes: inputs 100.., outputs 200..
+(define (ins m) (map (lambda (i) (+ 100 i)) (range m)))
+(define (outs n) (map (lambda (i) (+ 200 i)) (range n)))
+(define (bnodes ids) (map (lambda (i) (list i 'B)) ids))
+(define (etype) (if (= 0 (rand 2)) 'plain 'hadamard))
+
+;; ---------------------------------------------------------------------------
+;; The generators
+;; ---------------------------------------------------------------------------
+(define H (zx-hadamard-map K))
+(define (hs k) (if (= k 0) (linear-map-identity K '()) (apply linear-map-tensor-all (make-list k H))))
+(check "Z(a) on one wire is diag(1, e^{i a}); H is its own inverse"
+       (and (all? (lambda (p) (linear-map-equal? (zx-spider-map K 'Z p 1 1)
+                                                 (linear-map K '(2) '(2) (lambda (r c) (cond ((not (= r c)) (scalars-zero K)) ((= r 0) (scalars-one K)) (else (scalars-phase K p)))))))
+                  phases)
+            (linear-map-equal? (linear-map-compose H H) (linear-map-identity K '(2)))))
+(check "colour change on matrices: X(a) = H..H Z(a) H..H for every phase and 0 <= m, n <= 2 (72 cases)"
+       (all? (lambda (c) (let ((p (car c)) (m (cadr c)) (n (caddr c)))
+                           (linear-map-equal? (zx-spider-map K 'X p m n) (linear-map-compose-all (hs m) (zx-spider-map K 'Z p m n) (hs n)))))
+             (apply append (map (lambda (p) (map (lambda (mn) (cons p mn)) (tuples 2 (range 3)))) phases))))
+(check "a spider graph evaluates to its spider map; a phase-free spider with no legs is the scalar 2"
+       (and (all? (lambda (c) (linear-map-equal? (zx-evaluate (zx-spider-graph (car c) (cadr c) 1 2) K) (zx-spider-map K (car c) (cadr c) 1 2)))
+                  (apply append (map (lambda (c) (map (lambda (p) (list c p)) phases)) colours)))
+            (scalars-equal? K (linear-map-scalar-value (zx-evaluate (zx-graph-from '((0 Z 0)) '() '() '()) K)) (scalars-embed K 2))))
+
+;; ---------------------------------------------------------------------------
+;; Rule soundness over the phases k pi/4
+;; ---------------------------------------------------------------------------
+;; (f) fusion: u (phase a, m inputs, one extra output when x = 1) joined to v
+;; (phase b, n outputs) by one or two plain edges; both colours
+(for-each (lambda (c)
+            (for-each (lambda (ab)
+                        (for-each (lambda (shape)
+                                    (let* ((m (car shape)) (n (cadr shape)) (k (caddr shape)) (x (cadddr shape))
+                                           (g (zx-graph-from (append (list (list 0 c (car ab)) (list 1 c (cadr ab))) (bnodes (ins m)) (bnodes (outs (+ n x))))
+                                                             (append (map (lambda (i) (list i 0)) (ins m)) (make-list k (list 0 1))
+                                                                     (map (lambda (o) (list 1 o)) (outs n)) (if (= x 1) (list (list 0 (+ 200 n))) '()))
+                                                             (ins m) (outs (+ n x)))))
+                                      (sound! 'fusion g (lambda (g) (zx-fuse g 0 1)))))
+                                  '((1 1 1 0) (0 2 1 1) (1 1 2 0) (2 0 1 0))))
+                      (tuples 2 phases)))
+          colours)
+;; (id) a phase-free two-legged spider between two spiders, every pair of edge
+;; types, both colours, with phases on the neighbours
+(for-each (lambda (c)
+            (for-each (lambda (ts)
+                        (for-each (lambda (p)
+                                    (let ((g (zx-graph-from (list (list 0 'Z p) (list 1 c 0) (list 2 'X (- 2 p)) (list 100 'B) (list 200 'B))
+                                                            (list (list 100 0) (list 0 1 (car ts)) (list 1 2 (cadr ts)) (list 2 200)) (ins 1) (outs 1))))
+                                      (sound! 'identity g (lambda (g) (zx-remove-identity g 1)))))
+                                  phases))
+                      (tuples 2 '(plain hadamard))))
+          colours)
+;; plain self-loops
+(for-each (lambda (c) (for-each (lambda (p) (sound! 'self-loop (zx-graph-from (list (list 0 c p) (list 100 'B) (list 200 'B)) (list (list 100 0) (list 0 0) (list 0 200)) (ins 1) (outs 1))
+                                                    (lambda (g) (zx-remove-self-loop g 0))))
+                                phases))
+          colours)
+;; (h) colour change with 0..3 legs of random types
+(for-each (lambda (c)
+            (for-each (lambda (p)
+                        (for-each (lambda (k)
+                                    (let ((g (zx-graph-from (append (list (list 0 c p)) (bnodes (ins (quotient k 2))) (bnodes (outs (- k (quotient k 2)))))
+                                                            (map (lambda (b) (list 0 b (etype))) (append (ins (quotient k 2)) (outs (- k (quotient k 2)))))
+                                                            (ins (quotient k 2)) (outs (- k (quotient k 2))))))
+                                      (sound! 'color-change g (lambda (g) (zx-color-change g 0)))))
+                                  (range 4)))
+                      phases))
+          colours)
+;; H boxes: to an edge, two cancelling, Euler decomposition, every edge-type pair
+(for-each (lambda (ts)
+            (let ((g1 (zx-graph-from '((0 H) (100 B) (200 B)) (list (list 100 0 (car ts)) (list 0 200 (cadr ts))) (ins 1) (outs 1)))
+                  (g2 (zx-graph-from '((0 H) (1 H) (2 Z 1/4) (100 B) (200 B)) (list (list 100 2) (list 2 0 (car ts)) (list 0 1) (list 1 200 (cadr ts))) (ins 1) (outs 1))))
+              (sound! 'h-box->edge g1 (lambda (g) (zx-h-box->edge g 0)))
+              (sound! 'hh-cancel g2 (lambda (g) (zx-hh-cancel g 0 1)))
+              (sound! 'euler g1 (lambda (g) (zx-euler g 0)))))
+          (tuples 2 '(plain hadamard)))
+;; (pi) a NOT of the other colour through a spider with n = 0, 1, 2 other legs
+(for-each (lambda (c)
+            (for-each (lambda (p)
+                        (for-each (lambda (n)
+                                    (let ((g (zx-graph-from (append (list (list 0 (other c) 1) (list 1 c p)) (bnodes (ins 1)) (bnodes (outs n)))
+                                                            (append (list (list 100 0 (etype)) (list 0 1)) (map (lambda (o) (list 1 o (etype))) (outs n)))
+                                                            (ins 1) (outs n))))
+                                      (sound! 'pi-copy g (lambda (g) (zx-pi-copy g 0 1)))))
+                                  (range 3)))
+                      phases))
+          colours)
+;; (c) a basis state a pi of the other colour copied through a spider with
+;; phase b and n = 0..3 other legs
+(for-each (lambda (c)
+            (for-each (lambda (a)
+                        (for-each (lambda (p)
+                                    (for-each (lambda (n)
+                                                (let ((g (zx-graph-from (append (list (list 0 (other c) a) (list 1 c p)) (bnodes (outs n)))
+                                                                        (append (list (list 0 1)) (map (lambda (o) (list 1 o (etype))) (outs n)))
+                                                                        '() (outs n))))
+                                                  (sound! 'state-copy g (lambda (g) (zx-state-copy g 0 1)))))
+                                              (range 4)))
+                                  phases))
+                      '(0 1)))
+          colours)
+;; (b) bialgebra, inputs and outputs in both orientations and edge types
+(for-each (lambda (ts)
+            (let ((g (zx-graph-from '((0 Z 0) (1 X 0) (100 B) (101 B) (200 B) (201 B))
+                                    (list (list 100 0 (car ts)) (list 101 0) (list 0 1) (list 1 200 (cadr ts)) (list 1 201)) (ins 2) (outs 2)))
+                  (g2 (zx-graph-from '((0 Z 0) (1 X 0) (100 B) (101 B) (200 B) (201 B))
+                                     (list (list 100 1 (car ts)) (list 101 1) (list 0 1) (list 0 200 (cadr ts)) (list 0 201)) (ins 2) (outs 2))))
+              (sound! 'bialgebra g (lambda (g) (zx-bialgebra g 0 1)))
+              (sound! 'bialgebra g2 (lambda (g) (zx-bialgebra g 0 1)))))
+          (tuples 2 '(plain hadamard)))
+;; (ho) Hopf for every pair of phases, with one further leg on each spider
+(for-each (lambda (ab)
+            (sound! 'hopf (zx-graph-from (list (list 0 'Z (car ab)) (list 1 'X (cadr ab)) (list 100 'B) (list 200 'B))
+                                         (list (list 100 0) (list 0 1) (list 0 1) (list 1 200)) (ins 1) (outs 1))
+                    (lambda (g) (zx-hopf g 0 1))))
+          (tuples 2 phases))
+;; Hadamard Hopf and Hadamard self-loops
+(for-each (lambda (ab)
+            (sound! 'hadamard-hopf (zx-graph-from (list (list 0 'Z (car ab)) (list 1 'Z (cadr ab)) (list 100 'B) (list 200 'B))
+                                                  (list (list 100 0) (list 0 1 'hadamard) (list 0 1 'hadamard) (list 1 200)) (ins 1) (outs 1))
+                    (lambda (g) (zx-hadamard-hopf g 0 1))))
+          (tuples 2 phases))
+(for-each (lambda (p) (for-each (lambda (n)
+                                  (sound! 'hadamard-self-loop (zx-graph-from (append (list (list 0 'Z p)) (bnodes (outs n))) (append (list (list 0 0 'hadamard)) (map (lambda (o) (list 0 o)) (outs n))) '() (outs n))
+                                          (lambda (g) (zx-hadamard-self-loop g 0))))
+                                '(0 1 2)))
+          phases)
+;; (lc) a +-pi/2 spider with k = 1..3 neighbours, every pattern of edges among
+;; them, neighbours with random phases and one boundary each; and k = 4 with
+;; four random patterns
+(define (lc-graph k a pattern)
+  (let ((ns (map (lambda (i) (+ 1 i)) (range k))))
+    (zx-graph-from (append (list (list 0 'Z a)) (map (lambda (v) (list v 'Z (list-ref phases (rand 8)))) ns) (bnodes (outs k)))
+                   (append (map (lambda (v) (list 0 v 'hadamard)) ns) (map (lambda (pr) (list (car pr) (cdr pr) 'hadamard)) pattern)
+                           (map (lambda (v) (list v (+ 199 v))) ns))
+                   '() (outs k))))
+(define (pairs xs) (if (null? xs) '() (append (map (lambda (y) (cons (car xs) y)) (cdr xs)) (pairs (cdr xs)))))
+(for-each (lambda (a)
+            (for-each (lambda (k) (for-each (lambda (pattern) (sound! 'local-complement (lc-graph k a pattern) (lambda (g) (zx-local-complement g 0))))
+                                            (subsets (pairs (map (lambda (i) (+ 1 i)) (range k))))))
+                      '(1 2 3))
+            (for-each (lambda (i) (sound! 'local-complement (lc-graph 4 a (filter (lambda (pr) (= 0 (rand 2))) (pairs '(1 2 3 4)))) (lambda (g) (zx-local-complement g 0))))
+                      (range 4)))
+          (list 1/2 3/2))
+;; (p) pivot: |A|, |B|, |C| in {0, 1, 2}, phases of u, v in {0, pi}, random
+;; edges among the neighbours
+(define (pivot-graph na nb nc pu pv)
+  (let* ((A (map (lambda (i) (+ 10 i)) (range na))) (B (map (lambda (i) (+ 20 i)) (range nb))) (C (map (lambda (i) (+ 30 i)) (range nc))) (all (append A B C)))
+    (zx-graph-from (append (list (list 0 'Z pu) (list 1 'Z pv)) (map (lambda (v) (list v 'Z (list-ref phases (rand 8)))) all) (bnodes (map (lambda (v) (+ 190 v)) all)))
+                   (append (list (list 0 1 'hadamard)) (map (lambda (v) (list 0 v 'hadamard)) (append A C)) (map (lambda (v) (list 1 v 'hadamard)) (append B C))
+                           (map (lambda (pr) (list (car pr) (cdr pr) 'hadamard)) (filter (lambda (pr) (= 0 (rand 2))) (pairs all)))
+                           (map (lambda (v) (list v (+ 190 v))) all))
+                   '() (map (lambda (v) (+ 190 v)) all))))
+(for-each (lambda (sizes) (for-each (lambda (ph) (sound! 'pivot (pivot-graph (car sizes) (cadr sizes) (caddr sizes) (car ph) (cadr ph)) (lambda (g) (zx-pivot g 0 1))))
+                                    (tuples 2 '(0 1))))
+          (tuples 3 '(0 1 2)))
+
+(define total-instances (apply + (map cadr rule-counts)))
+(define sound-instances (apply + (map caddr rule-counts)))
+(display "rule soundness (instances sound/checked): ")
+(for-each (lambda (r) (display (car r)) (display " ") (display (caddr r)) (display "/") (display (cadr r)) (display "; ")) (reverse rule-counts))
+(newline)
+(display "rule soundness total: ") (display sound-instances) (display "/") (display total-instances) (newline)
+(check "every rewrite rule is sound on every instance over the phases k pi/4" (and (> total-instances 1000) (= total-instances sound-instances)))
+(check "fifteen rules are exercised" (= 15 (length rule-counts)))
+
+;; ---------------------------------------------------------------------------
+;; Refusals outside the patterns
+;; ---------------------------------------------------------------------------
+(define two (zx-graph-from '((0 Z 1/4) (1 X 0) (100 B) (200 B)) '((100 0) (0 1) (1 200)) '(100) '(200)))
+(check "rules refuse: fusing different colours, removing a phase spider, lc on phase 0, pivot on phase pi/2, Hopf with one edge"
+       (and (raises? (lambda () (zx-fuse two 0 1))) (raises? (lambda () (zx-remove-identity two 0)))
+            (raises? (lambda () (zx-local-complement (lc-graph 2 0 '()) 0))) (raises? (lambda () (zx-pivot (pivot-graph 1 1 0 1/2 0) 0 1)))
+            (raises? (lambda () (zx-hopf two 0 1))) (raises? (lambda () (zx-local-complement (lc-graph 2 1/2 '()) 1)))))
+
+;; ---------------------------------------------------------------------------
+;; Circuits
+;; ---------------------------------------------------------------------------
+(define one-qubit-gates '(H X Y Z S Sdg T Tdg))
+(define (random-gate n)
+  (if (or (= n 1) (< (rand 10) 6))
+      (let ((q (rand n)) (r (rand 10)))
+        (cond ((< r 8) (list (list-ref one-qubit-gates r) q)) ((= r 8) (list 'P q (list-ref phases (rand 8)))) (else (list 'XP q (list-ref phases (rand 8))))))
+      (let* ((a (rand n)) (b (modulo (+ a 1 (rand (- n 1))) n)))
+        (list (list-ref '(CNOT CZ SWAP) (rand 3)) a b))))
+(define (random-circuit n len) (map (lambda (i) (random-gate n)) (range len)))
+(define (zx-unitary n gates)
+  (let ((r (circuit->zx n gates))) (linear-map-scale (zx-evaluate (car r) K) (zx-scalar->element K (cdr r)))))
+(define circuits (append (map (lambda (i) (cons 1 (random-circuit 1 (+ 3 (rand 6))))) (range 6))
+                         (map (lambda (i) (cons 2 (random-circuit 2 (+ 4 (rand 8))))) (range 10))
+                         (map (lambda (i) (cons 3 (random-circuit 3 (+ 6 (rand 8))))) (range 10))
+                         (map (lambda (i) (cons 4 (random-circuit 4 (+ 6 (rand 6))))) (range 4))))
+(check "30 random Clifford+T circuits on 1-4 qubits: the ZX graph times its scalar is the unitary, exactly"
+       (all? (lambda (c) (linear-map-equal? (zx-unitary (car c) (cdr c)) (circuit->unitary K (car c) (cdr c)))) circuits))
+(define simplified (map (lambda (c) (let* ((r (circuit->zx (car c) (cdr c))) (s (zx-simplify (car r))))
+                                      (list c r s)))
+                        circuits))
+(check "simplification is exact: [[circuit]] = s s' [[simplified]], and the result is graph-like"
+       (all? (lambda (x) (let ((c (car x)) (r (cadr x)) (s (caddr x)))
+                           (and (zx-graph-like? (car s))
+                                (linear-map-equal? (circuit->unitary K (car c) (cdr c))
+                                                   (linear-map-scale (zx-evaluate (car s) K) (zx-scalar->element K (zx-scalar-mul (cdr r) (cdr s))))))))
+             simplified))
+(define before (apply + (map (lambda (x) (zx-spider-count (car (cadr x)))) simplified)))
+(define after (apply + (map (lambda (x) (zx-spider-count (car (caddr x)))) simplified)))
+(display "spiders before/after simplification over 30 circuits: ") (display before) (display " -> ") (display after) (newline)
+(check "simplification removes spiders" (< after before))
+(define (simplifies-to-wires? n gates)
+  (let* ((r (circuit->zx n gates)) (s (zx-simplify (car r))))
+    (and (= 0 (zx-spider-count (car s)))
+         (linear-map-equal? (circuit->unitary K n gates) (linear-map-scale (zx-evaluate (car s) K) (zx-scalar->element K (zx-scalar-mul (cdr r) (cdr s))))))))
+(check "CNOT CNOT, H H, CZ CZ, T^8, S Sdg and three CNOTs against SWAP SWAP all simplify to bare wires"
+       (and (simplifies-to-wires? 2 '((CNOT 0 1) (CNOT 0 1))) (simplifies-to-wires? 1 '((H 0) (H 0))) (simplifies-to-wires? 2 '((CZ 0 1) (CZ 1 0)))
+            (simplifies-to-wires? 1 '((T 0) (T 0) (T 0) (T 0) (T 0) (T 0) (T 0) (T 0))) (simplifies-to-wires? 1 '((S 0) (Sdg 0)))
+            (simplifies-to-wires? 2 '((CNOT 0 1) (CNOT 1 0) (CNOT 0 1) (SWAP 0 1)))))
+(check "H Z H = X and H CZ H = CNOT, by evaluation of their ZX graphs"
+       (and (linear-map-equal? (zx-unitary 1 '((H 0) (Z 0) (H 0))) (zx-unitary 1 '((X 0))))
+            (linear-map-equal? (zx-unitary 2 '((H 1) (CZ 0 1) (H 1))) (zx-unitary 2 '((CNOT 0 1))))))
+(check "a GHZ circuit: amplitudes 1/sqrt 2 at 000 and 111, Pauli expectations <ZZI> = 1, <XXX> = 1, <ZII> = 0"
+       (let* ((g '((H 0) (CNOT 0 1) (CNOT 1 2))) (st (circuit-state K 3 g)) (h (scalars-inverse-sqrt2 K)))
+         (and (scalars-equal? K (vector-ref st 0) h) (scalars-equal? K (vector-ref st 7) h)
+              (scalars-equal? K (circuit-pauli-expectation K 3 g '(Z Z I)) (scalars-one K))
+              (scalars-equal? K (circuit-pauli-expectation K 3 g '(X X X)) (scalars-one K))
+              (scalars-zero? K (circuit-pauli-expectation K 3 g '(Z I I))))))
+(check "ZX generators as string-diagram boxes: (Z 0 1 2) (x) id ; id (x) (X 0 2 1) evaluates to CNOT / sqrt 2"
+       (let* ((ib (zx-box-interpretation K))
+              (d (diagram-then (diagram-tensor (diagram-box (list 'Z 0 1 2) '(q) '(q q)) (diagram-identity '(q)))
+                               (diagram-tensor (diagram-identity '(q)) (diagram-box (list 'X 0 2 1) '(q q) '(q))))))
+         (and (linear-map-equal? (linear-map-scale (diagram-evaluate d K (car ib) (cdr ib)) (scalars-sqrt2 K)) (circuit->unitary K 2 '((CNOT 0 1))))
+              (linear-map-equal? (diagram-evaluate d K (car ib) (cdr ib)) (diagram-evaluate-network d K (car ib) (cdr ib))))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: zx_test") (newline) (display "RESULT: PASS") (newline)

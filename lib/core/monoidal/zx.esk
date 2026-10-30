@@ -67,7 +67,7 @@
          zx-add-node zx-add-edge zx-remove-node zx-remove-edge zx-set-node zx-degree zx-edges-between
          zx-normalize-phase zx-scalar zx-scalar? zx-scalar-one zx-scalar-mul zx-scalar->element zx-scalar-sqrt2-power
          zx-scalar-phase zx-scalar-rational
-         zx-spider-map zx-hadamard-map zx-spider-graph zx-evaluate zx-equal-up-to? zx-proportional
+         zx-spider-map zx-hadamard-map zx-spider-graph zx-box-interpretation zx-evaluate zx-equal-up-to? zx-proportional
          zx-fuse zx-remove-identity zx-remove-self-loop zx-color-change zx-h-box->edge zx-hh-cancel
          zx-pi-copy zx-state-copy zx-bialgebra zx-hopf zx-euler zx-hadamard-hopf zx-hadamard-self-loop
          zx-local-complement zx-pivot
@@ -177,6 +177,15 @@
 (define (zx-hadamard-map S)
   (let ((h (scalars-inverse-sqrt2 S)))
     (linear-map S '(2) '(2) (lambda (r c) (if (and (= r 1) (= c 1)) (scalars-neg S h) h)))))
+;; ZX generators as boxes of core.monoidal.diagram: the names (Z p m n),
+;; (X p m n) and H, every wire of type qubit (dimension 2); returns the pair
+;; (dims . boxes) of procedures that diagram-evaluate takes
+(define (zx-box-interpretation S)
+  (cons (lambda (type) 2)
+        (lambda (name)
+          (cond ((eq? name 'H) (zx-hadamard-map S))
+                ((and (pair? name) (memq (car name) '(Z X)) (= 4 (length name))) (zx-spider-map S (car name) (cadr name) (caddr name) (cadddr name)))
+                (else (error "core.monoidal.zx: not a ZX generator" name))))))
 ;; the graph of one spider with m inputs and n outputs
 (define (zx-spider-graph kind p m n)
   (zx-graph-from (append (list (list 0 kind p)) (map (lambda (i) (list (+ 1 i) 'B)) (zx-range (+ m n))))

@@ -69,7 +69,7 @@
                (ndv (list->vector new-dims)) (k (length legs))
                (n (tensor-size T)) (in (tensor-entries T)) (out (make-vector n #f))
                (digits (make-vector k 0)))
-          (if (not (= k (length old))) (error "core.monoidal.network: permutation of the wrong length" legs old))
+          (if (not (= k (length old))) (error "core.monoidal.network: permutation has another length than the legs" legs old))
           ;; walk the new indices in order with an odometer, tracking the source offset
           (let loop ((i 0) (src 0))
             (if (< i n)
