@@ -149,6 +149,7 @@
             (equal? HZ-TWIST0 HZ-SPLIT)
             (equal? HZ-TWIST (list (list 0 1 '()) (list 1 0 (list 2)) (list 2 0 '())))))
 
+(define (expt2 b) (if (= b 0) 1 (* 2 (expt2 (- b 1)))))
 ;; negative control: without the tetrahedron equation the "3-simplices" do not form a simplicial set.
 ;; For the split 2-type (d = 0) a labelling satisfies the four triangle equations exactly when the
 ;; edge labels are a 1-cocycle; every triangle label is then free.
@@ -161,7 +162,6 @@
             (loop (+ code 1)
                   (if (all? (lambda (t) (= 0 (modulo (- (g (car t) (caddr t)) (g (car t) (cadr t)) (g (cadr t) (caddr t))) 2))) tris)
                       (+ count 1) count)))))))
-(define (expt2 b) (if (= b 0) 1 (* 2 (expt2 (- b 1)))))
 (check "negative control -- dropping the tetrahedron equation admits more 3-simplices for the split 2-type (128 against 64)"
        (and (= 128 (loose-3-simplex-count)) (= 64 (length (crossed-module-simplices SPLIT 3)))))
 (check "negative control -- degree 1 cannot separate the 2-types: dim H^1 = 1 for all of them"

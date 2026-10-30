@@ -71,6 +71,7 @@
     (if (= n 0)
         (map (lambda (x) (list x)) (nv-range (category-object-count C)))
         (nv-category-extend C nonid n #f '()))))
+(define (nv-head l k) (let loop ((l l) (k k) (acc '())) (if (= k 0) (reverse acc) (loop (cdr l) (- k 1) (cons (car l) acc)))))
 (define (finite-category-nerve C)
   (let ((identity? (lambda (a) (= a (category-identity C (arrow-source C a))))))
     (make-simplicial-set
@@ -85,7 +86,6 @@
                   (nerve-string-normal-form identity? x0
                                             (append (nv-head arrows (- i 1)) (cons gf (list-tail arrows (+ i 1))))))))))
      #f)))
-(define (nv-head l k) (let loop ((l l) (k k) (acc '())) (if (= k 0) (reverse acc) (loop (cdr l) (- k 1) (cons (car l) acc)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Posets: the nerve is the order complex (strict chains are the
@@ -159,29 +159,63 @@
            (vector 'simplex (simplex-surjection s) (cdr (simplex-base s))))))
      #f)))
 
+(define (nv-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
 ;; ---------------------------------------------------------------------------
 ;; The nerve of a crossed module (a strict 2-group)
 ;; ---------------------------------------------------------------------------
 (define (nv-pairs nv) (fold-left append '() (map (lambda (i) (map (lambda (j) (list i j)) (nv-range-from (+ i 1) nv))) (nv-range nv))))
 (define (nv-triples nv)
   (fold-left append '() (map (lambda (p) (map (lambda (k) (append p (list k))) (nv-range-from (+ (cadr p) 1) nv))) (nv-pairs nv))))
-(define (nv-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
 (define (nv-position item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
 
 ;; tables per vertex count, built once and kept
 (define nv-xm-table-cache (make-hash-table))
-(define (nv-xm-tables nv)
-  (or (hash-table-ref/default nv-xm-table-cache nv #f)
-      (let ((T (nv-xm-tables-build nv))) (hash-table-set! nv-xm-table-cache nv T) T)))
 (define (nv-xm-tables-build nv)
   (let* ((ps (nv-pairs nv)) (ts (nv-triples nv))
          (pidx (make-hash-table)) (tidx (make-hash-table)))
     (let loop ((l ps) (i 0)) (if (not (null? l)) (begin (hash-table-set! pidx (car l) i) (loop (cdr l) (+ i 1)))))
     (let loop ((l ts) (i 0)) (if (not (null? l)) (begin (hash-table-set! tidx (car l) i) (loop (cdr l) (+ i 1)))))
     (vector ps ts pidx tidx)))
+(define (nv-xm-tables nv)
+  (or (hash-table-ref/default nv-xm-table-cache nv #f)
+      (let ((T (nv-xm-tables-build nv))) (hash-table-set! nv-xm-table-cache nv T) T)))
+;; the tables for up to 8 vertices are built when the module loads, so that
+;; faces computed inside a memory region never fill the cache from there
+(let loop ((nv 0)) (if (<= nv 8) (begin (nv-xm-tables nv) (loop (+ nv 1)))))
 (define (nv-eidx T i j) (hash-table-ref/default (vector-ref T 2) (list i j) -1))
 (define (nv-tidx T i j k) (hash-table-ref/default (vector-ref T 3) (list i j k) -1))
 
+(define (nv-xm-tetra-ok? X M T g m q)
+  (let ((i (car q)) (j (cadr q)) (k (caddr q)) (l (cadddr q)))
+    (= (group-mul M (vector-ref m (nv-tidx T i j l)) (crossed-module-act X (vector-ref g (nv-eidx T i j)) (vector-ref m (nv-tidx T j k l))))
+       (group-mul M (vector-ref m (nv-tidx T i k l)) (vector-ref m (nv-tidx T i j k))))))
+;; the pruned search: with tl = #f assign the edge ei (every element of N);
+;; otherwise label the triangles in tl, which edge ei completed, by the
+;; solutions of their triangle equations, checking each tetrahedron a
+;; triangle completes
+(define (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out ei tl)
+  (cond ((not tl)
+         (if (= ei ne)
+             (vector-set! out 0 (cons (list (vector->list g) (vector->list m)) (vector-ref out 0)))
+             (let loop ((v 0))
+               (if (< v (group-order N))
+                   (begin
+                     (vector-set! g ei v)
+                     (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out ei (vector-ref tri-by-edge ei))
+                     (loop (+ v 1)))))))
+        ((null? tl) (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out (+ ei 1) #f))
+        (else
+         (let* ((t (car tl)) (i (car t)) (j (cadr t)) (k (caddr t)) (ti (nv-tidx T i j k))
+                ;; d(m) = g_ik (g_ij g_jk)^-1
+                (target (group-mul N (vector-ref g (nv-eidx T i k))
+                                   (group-inv N (group-mul N (vector-ref g (nv-eidx T i j)) (vector-ref g (nv-eidx T j k)))))))
+           (let mloop ((ms (vector-ref preimages target)))
+             (if (not (null? ms))
+                 (begin
+                   (vector-set! m ti (car ms))
+                   (if (nv-all? (lambda (q) (nv-xm-tetra-ok? X M T g m q)) (vector-ref quad-by-tri ti))
+                       (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out ei (cdr tl)))
+                   (mloop (cdr ms)))))))))
 ;; every n-simplex of the nerve by a pruned search: edges in lexicographic
 ;; order; when an edge completes a triangle its label ranges over the
 ;; solutions of the triangle equation, and when a triangle completes a
@@ -198,35 +232,8 @@
     (let loop ((x (- (group-order M) 1)))
       (if (>= x 0)
           (let ((d (crossed-module-boundary X x))) (vector-set! preimages d (cons x (vector-ref preimages d))) (loop (- x 1)))))
-    (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out 0)
+    (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out 0 #f)
     (reverse (vector-ref out 0))))
-(define (nv-xm-tetra-ok? X M T g m q)
-  (let ((i (car q)) (j (cadr q)) (k (caddr q)) (l (cadddr q)))
-    (= (group-mul M (vector-ref m (nv-tidx T i j l)) (crossed-module-act X (vector-ref g (nv-eidx T i j)) (vector-ref m (nv-tidx T j k l))))
-       (group-mul M (vector-ref m (nv-tidx T i k l)) (vector-ref m (nv-tidx T i j k))))))
-(define (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out ei)
-  (if (= ei ne)
-      (vector-set! out 0 (cons (list (vector->list g) (vector->list m)) (vector-ref out 0)))
-      (let loop ((v 0))
-        (if (< v (group-order N))
-            (begin
-              (vector-set! g ei v)
-              (nv-xm-triangles X M N T g m ne tri-by-edge quad-by-tri preimages out ei (vector-ref tri-by-edge ei))
-              (loop (+ v 1)))))))
-(define (nv-xm-triangles X M N T g m ne tri-by-edge quad-by-tri preimages out ei tl)
-  (if (null? tl)
-      (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out (+ ei 1))
-      (let* ((t (car tl)) (i (car t)) (j (cadr t)) (k (caddr t)) (ti (nv-tidx T i j k))
-             ;; d(m) = g_ik (g_ij g_jk)^-1
-             (target (group-mul N (vector-ref g (nv-eidx T i k))
-                                (group-inv N (group-mul N (vector-ref g (nv-eidx T i j)) (vector-ref g (nv-eidx T j k)))))))
-        (let mloop ((ms (vector-ref preimages target)))
-          (if (not (null? ms))
-              (begin
-                (vector-set! m ti (car ms))
-                (if (nv-all? (lambda (q) (nv-xm-tetra-ok? X M T g m q)) (vector-ref quad-by-tri ti))
-                    (nv-xm-triangles X M N T g m ne tri-by-edge quad-by-tri preimages out ei (cdr tl)))
-                (mloop (cdr ms))))))))
 
 ;; d_v: delete vertex v and relabel
 (define (crossed-module-simplex-face n v s)
@@ -249,10 +256,8 @@
 ;; all simplices of each degree are enumerated, so this is meant for the
 ;; low degrees used by horn and homotopy computations
 (define (crossed-module-nerve X)
-  (let ((cache (make-hash-table)))
-    (simplicial-set-from-all
-     "crossed module nerve"
-     (lambda (n) (or (hash-table-ref/default cache n #f)
-                     (let ((ss (crossed-module-simplices X n))) (hash-table-set! cache n ss) ss)))
-     (lambda (n i s) (crossed-module-simplex-face n i s))
-     (lambda (n j s) (crossed-module-simplex-degeneracy X n j s)))))
+  (simplicial-set-from-all
+   "crossed module nerve"
+   (lambda (n) (crossed-module-simplices X n))
+   (lambda (n i s) (crossed-module-simplex-face n i s))
+   (lambda (n j s) (crossed-module-simplex-degeneracy X n j s))))

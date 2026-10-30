@@ -161,6 +161,11 @@
 (define (group-homomorphism? G H f)
   (fg-all? (lambda (a) (fg-all? (lambda (b) (= (f (group-mul G a b)) (group-mul H (f a) (f b)))) (group-elements G))) (group-elements G)))
 
+(define (fg-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (fg-any? pred (cdr xs)))))
+(define (fg-any-coset? G K reps g)
+  (cond ((null? reps) #f)
+        ((memv (group-mul G (group-inv G (car reps)) g) K) #t)
+        (else (fg-any-coset? G K (cdr reps) g))))
 ;; G / K for a normal subgroup K (a list of elements): returns
 ;; (list Q section projection) with Q the quotient group whose element i is
 ;; the coset of the i-th smallest coset representative, section i -> that
@@ -179,11 +184,6 @@
     (list (make-finite-group (length reps) (lambda (i j) (vector-ref proj (group-mul G (vector-ref rv i) (vector-ref rv j)))))
           (lambda (i) (vector-ref rv i))
           (lambda (g) (vector-ref proj g)))))
-(define (fg-any-coset? G K reps g)
-  (cond ((null? reps) #f)
-        ((memv (group-mul G (group-inv G (car reps)) g) K) #t)
-        (else (fg-any-coset? G K (cdr reps) g))))
-(define (fg-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (fg-any? pred (cdr xs)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Crossed modules

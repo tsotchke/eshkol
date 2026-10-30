@@ -117,7 +117,7 @@
              (list (simplex-boundary 2) (simplex-boundary 3) (standard-simplex 1))))
 (check "skeleta: the 2-skeleton of BZ/3 keeps (1 2 4) and nothing above"
        (equal? (counts (simplicial-skeleton (classifying-space Z3) 2) 3) (list 1 2 4 0)))
-(check "a Delta-complex with a face of the wrong dimension is refused when used"
+(check "a Delta-complex with a face of another dimension is refused when used"
        (raises? (lambda () (simplicial-set-face (make-simplicial-set "bad" (lambda (n) (if (< n 2) (list 0) '())) (lambda (n i x) (simplex 0 1)) 1)
                                                 0 (simplex 0 1)))))
 

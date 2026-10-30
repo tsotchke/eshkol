@@ -308,8 +308,7 @@
     (let loop ((e eta) (acc '()))
       (if (null? (cdr e)) (reverse acc)
           (loop (cdr e) (cons (if (= (car e) (cadr e)) 0 (vector-ref x (car e))) acc))))))
-;; the phases of all flat colourings: sum over tetrahedra of eps * omega(g01, g12, g23), mod 2
-(define (flat-phases M G w)
+(define (flat-phases-in M G w)
   (let* ((X (m-complex M)) (eps (list->vector (map car (m-tets M)))) (ntets (vector-length eps)))
     (simplicial-maps-fold X (classifying-space G)
                           (lambda (image acc)
@@ -319,6 +318,9 @@
                                                 (loop (+ t 1) (+ s (* (vector-ref eps t) (w (car g) (cadr g) (caddr g)))))))))
                                   acc))
                           '())))
+;; the phases of all flat colourings: sum over tetrahedra of eps * omega(g01, g12, g23), mod 2
+(define (flat-phases M G w)
+  (with-region (flat-phases-in M G w)))
 (define (state-sum M G w)
   (let ((r (reduce-phases (flat-phases M G w))))
     (if (= 0 (cadr r)) (/ (car r) (ipow (g-order G) (m-vertices M))) 'unsupported-phase)))
@@ -356,9 +358,9 @@
 (check "negative control -- swapping two edges of one tetrahedron of S^3 breaks Z(S^3) = 1/8 for D_4 and for the type III theory"
        (let* ((t (car (m-tets S3m)))
               (swapped (append (list-head-n t 5) (list (list-ref t 5) (list-ref t 6) (list-ref t 7) (list-ref t 9) (list-ref t 8) (list-ref t 10))))
-              (broken (vector 5 (vector-ref S3m 1) (cons swapped (cdr (m-tets S3m))))))
-         (and (not (equal? 1/8 (state-sum broken D4 trivial-cocycle)))
-              (not (equal? 1/8 (state-sum broken Z2Z2Z2 type-III))))))
+              (altered (vector 5 (vector-ref S3m 1) (cons swapped (cdr (m-tets S3m))))))
+         (and (not (equal? 1/8 (state-sum altered D4 trivial-cocycle)))
+              (not (equal? 1/8 (state-sum altered Z2Z2Z2 type-III))))))
 
 (display "Group cohomology of the groups of order eight and their twisted doubles") (newline)
 (display "Passed: ") (display pass-count) (newline)

@@ -39,13 +39,6 @@
     (for-each (lambda (s) (hash-table-set! t s (list->vector (simplicial-set-faces Y s)))) (simplicial-set-simplices Y d))
     t))
 
-;; every compatible horn Lambda^n_k (n >= 1), as lists of n simplices of
-;; dimension n - 1 ordered by face index
-(define (simplicial-horns Y n k)
-  (let* ((cands (simplicial-set-simplices Y (- n 1)))
-         (ft (if (>= n 2) (kn-face-table Y (- n 1)) #f))
-         (slots (filter (lambda (j) (not (= j k))) (kn-range (+ n 1)))))
-    (kn-horn-extend Y n ft cands slots '() '())))
 ;; chosen: list of (j . y) already placed, in decreasing j
 (define (kn-horn-extend Y n ft cands slots chosen acc)
   (if (null? slots)
@@ -61,6 +54,13 @@
                          (kn-horn-extend Y n ft cands (cdr slots) (cons (cons j y) chosen) acc)
                          acc))
                    acc cands))))
+;; every compatible horn Lambda^n_k (n >= 1), as lists of n simplices of
+;; dimension n - 1 ordered by face index
+(define (simplicial-horns Y n k)
+  (let* ((cands (simplicial-set-simplices Y (- n 1)))
+         (ft (if (>= n 2) (kn-face-table Y (- n 1)) #f))
+         (slots (filter (lambda (j) (not (= j k))) (kn-range (+ n 1)))))
+    (kn-horn-extend Y n ft cands slots '() '())))
 
 ;; hash: horn (faces except the k-th) -> number of n-simplices filling it
 (define (horn-filler-table Y n k)
@@ -168,6 +168,35 @@
                       (hash-table-set! assigned best #t)
                       (loop (cons best order) (filter (lambda (e) (not (equal? e best))) edges) higher))))))))))
 
+(define (kn-boundary-key ids base)
+  (let loop ((l ids) (k 0) (scale 1)) (if (null? l) k (loop (cdr l) (+ k (* scale (car l))) (* scale (+ base 1))))))
+;; the number of the image of a face (position . eta) of an item
+(define (kn-face-image Y order ys yid memo f face)
+  (let* ((p (car face)) (k (vector-ref f p)))
+    (if (not (cdr face)) k
+        (let ((key (cons k (cdr face))))
+          (or (hash-table-ref/default memo (cons (car (vector-ref order p)) key) #f)
+              (let* ((eta (cdr face)) (d (- (length eta) 1))
+                     (s (simplicial-set-operator Y (vector-ref (vector-ref ys (car (vector-ref order p))) k) eta))
+                     (id (hash-table-ref/default (vector-ref yid d) s -1)))
+                (hash-table-set! memo (cons (car (vector-ref order p)) key) id)
+                id))))))
+(define (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc acc i)
+  (if (= i nitems)
+      (proc image acc)
+      (let* ((n (car (vector-ref order i)))
+             (key (if (= n 0) 0
+                      (let ((base (+ 1 (vector-length (vector-ref ys (- n 1))))))
+                        (let loop ((fs (vector-ref item-faces i)) (k 0) (scale 1))
+                          (if (null? fs) k
+                              (loop (cdr fs) (+ k (* scale (kn-face-image Y order ys yid memo f (car fs)))) (* scale base)))))))
+             (cands (reverse (hash-table-ref/default (vector-ref by-boundary n) key '()))))
+        (let loop ((cs cands) (acc acc))
+          (if (null? cs)
+              (begin (vector-set! f i -1) acc)
+              (begin
+                (vector-set! f i (car cs))
+                (loop (cdr cs) (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc acc (+ i 1)))))))))
 ;; fold proc over every simplicial map f : X -> Y; proc receives (image acc)
 ;; with image a procedure (n x) -> f(x) for x nondegenerate in X_n.
 ;; The simplices of Y are numbered per dimension; a simplex of Y_n is found
@@ -213,31 +242,4 @@
     (let ((image (lambda (n x) (let ((i (hash-table-ref/default pos (cons n x) #f)))
                                  (if (and i (>= (vector-ref f i) 0)) (vector-ref (vector-ref ys n) (vector-ref f i)) #f)))))
       (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc init 0))))
-(define (kn-boundary-key ids base)
-  (let loop ((l ids) (k 0) (scale 1)) (if (null? l) k (loop (cdr l) (+ k (* scale (car l))) (* scale (+ base 1))))))
-;; the number of the image of a face (position . eta) of an item
-(define (kn-face-image Y order ys yid memo f face)
-  (let* ((p (car face)) (k (vector-ref f p)))
-    (if (not (cdr face)) k
-        (let ((key (cons k (cdr face))))
-          (or (hash-table-ref/default memo (cons (car (vector-ref order p)) key) #f)
-              (let* ((eta (cdr face)) (d (- (length eta) 1))
-                     (s (simplicial-set-operator Y (vector-ref (vector-ref ys (car (vector-ref order p))) k) eta))
-                     (id (hash-table-ref/default (vector-ref yid d) s -1)))
-                (hash-table-set! memo (cons (car (vector-ref order p)) key) id)
-                id))))))
-(define (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc acc i)
-  (if (= i nitems)
-      (proc image acc)
-      (let* ((n (car (vector-ref order i)))
-             (key (if (= n 0) 0
-                      (kn-boundary-key (map (lambda (face) (kn-face-image Y order ys yid memo f face)) (vector-ref item-faces i))
-                                       (vector-length (vector-ref ys (- n 1))))))
-             (cands (reverse (hash-table-ref/default (vector-ref by-boundary n) key '()))))
-        (let loop ((cs cands) (acc acc))
-          (if (null? cs)
-              (begin (vector-set! f i -1) acc)
-              (begin
-                (vector-set! f i (car cs))
-                (loop (cdr cs) (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc acc (+ i 1)))))))))
 (define (simplicial-maps-count X Y) (simplicial-maps-fold X Y (lambda (image acc) (+ acc 1)) 0))

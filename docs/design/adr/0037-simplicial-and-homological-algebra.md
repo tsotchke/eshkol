@@ -136,6 +136,13 @@ builds on.
   the category lane (ADR-0036).
 - Programs that load the whole libraries pay JIT compilation time; a program
   can require only the layers it uses.
+- The libraries also run on the bytecode VM (four of the examples are VM
+  tests): each module defines a procedure before any procedure that calls it,
+  because the VM compiles a module's top level in order, and the
+  computations that build large temporaries (boundary matrices, cochain
+  products, eliminations, homology) run inside `with-region`, which both
+  engines reclaim; simplicial-set bases are computed before a region is
+  entered, so only results leave it.
 - `simplicial-set-simplices` enumerates every simplex of a degree, so horn and
   homotopy computations are for low degrees; chains use nondegenerate
   simplices only. Dense matrices bound complexes to thousands of cells.
