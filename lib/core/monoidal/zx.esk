@@ -1,0 +1,584 @@
+;;; core.monoidal.zx -- the ZX-calculus: graphs of Z and X spiders with
+;;; phases, Hadamard boxes and Hadamard edges; their exact evaluation as
+;;; matrices over a cyclotomic field; the standard rewrite rules, each
+;;; returning the rewritten graph and the scalar it costs; graph-like
+;;; simplification (spider fusion, identity removal, Hopf, local
+;;; complementation and pivoting); and Clifford+T circuits, both as ZX graphs
+;;; and as exact unitaries.
+;;;
+;;; Usage: (require core.monoidal.zx)   or   (require core.monoidal)
+;;;
+;;; Representation (public):
+;;;   phase      an exact rational p, read as the angle p pi (mod 2)
+;;;   graph      #(zx-graph nodes edges inputs outputs next)
+;;;     nodes    a list of #(id kind phase), kind Z, X, H (a Hadamard box,
+;;;              two legs) or B (a boundary, one leg)
+;;;     edges    a list of #(eid a b type), type plain or hadamard; parallel
+;;;              edges and self-loops are allowed
+;;;     inputs, outputs  lists of boundary node ids, in order
+;;;   (zx-graph-from nodes edges inputs outputs) builds a graph from
+;;;   (id kind phase) and (a b) / (a b hadamard) lists.
+;;;   scalar     #(zx-scalar a p q) = sqrt(2)^a e^{i pi p} q, q exact rational
+;;;
+;;; Semantics (B. Coecke, R. Duncan, "Interacting quantum observables",
+;;; 2011; J. van de Wetering, "ZX-calculus for the working quantum computer
+;;; scientist", 2020, section 3): with k legs, Z(a) has entry 1 at |0..0>,
+;;; e^{i a} at |1..1> and 0 elsewhere; X(a) = |+..+><+..+| + e^{i a}|-..-><-..-|,
+;;; whose entry at a bit string b is 2^{-k/2} (1 + e^{i a} (-1)^{|b|});
+;;; H = (1/sqrt 2) [[1, 1], [1, -1]]. A Hadamard edge is a plain edge with an
+;;; H box on it. The matrix of a graph is the contraction of its tensor
+;;; network (core.monoidal.network), inputs to outputs, over Q(zeta_n) with
+;;; 8 | n and every phase p having n p / 2 an integer (Q(zeta_8) for
+;;; multiples of pi/4).
+;;;
+;;; Rewrite rules: every rule is a procedure (rule g ...) -> (g' . s) with
+;;; [[g]] = s [[g']] exactly, and refuses (an error naming the rule and the
+;;; condition) when its pattern does not match. They are the rules of van de
+;;; Wetering's survey, figure 1 and sections 4-5, in scalar-exact form:
+;;;   zx-fuse              (f)   spider fusion along plain edges
+;;;   zx-remove-identity   (id)  a phase-free spider with two legs is a wire
+;;;   zx-remove-self-loop        a plain self-loop on a spider
+;;;   zx-color-change      (h)   X(a) = H..H Z(a) H..H
+;;;   zx-h-box->edge             an H box between two plain edges
+;;;   zx-hh-cancel         (hh)  two adjacent H boxes
+;;;   zx-pi-copy           (pi)  a NOT through a spider, scalar e^{i a}
+;;;   zx-state-copy        (c)   a basis state through a spider
+;;;   zx-bialgebra         (b)   Z and X spiders with three legs each
+;;;   zx-hopf              (ho)  two parallel edges between Z and X
+;;;   zx-euler             (eu)  H = e^{-i pi/4} Z(pi/2) X(pi/2) Z(pi/2)
+;;;   zx-hadamard-hopf           two parallel Hadamard edges between Z spiders
+;;;   zx-hadamard-self-loop      a Hadamard self-loop on a Z spider
+;;;   zx-local-complement  (lc)  R. Duncan, A. Kissinger, S. Perdrix,
+;;;   zx-pivot             (p)   J. van de Wetering, "Graph-theoretic
+;;;                              simplification of quantum circuits with the
+;;;                              ZX-calculus", Quantum 4 (2020)
+;;;
+;;; Sources: as above; B. Coecke, A. Kissinger, "Picturing Quantum Processes"
+;;; (2017), ch. 9; P. Selinger, "A survey of graphical languages for
+;;; monoidal categories" (2011); nLab: "ZX-calculus", "Frobenius algebra".
+
+(require stdlib)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+(require core.monoidal.network)
+
+(provide zx-graph? zx-graph-from zx-empty-graph zx-nodes zx-edges zx-inputs zx-outputs
+         zx-node zx-node-kind zx-node-phase zx-spiders zx-spider-count zx-edge-count zx-incident zx-neighbors
+         zx-add-node zx-add-edge zx-remove-node zx-remove-edge zx-set-node zx-degree zx-edges-between
+         zx-normalize-phase zx-scalar zx-scalar? zx-scalar-one zx-scalar-mul zx-scalar->element zx-scalar-sqrt2-power
+         zx-scalar-phase zx-scalar-rational
+         zx-spider-map zx-hadamard-map zx-spider-graph zx-evaluate zx-equal-up-to? zx-proportional
+         zx-fuse zx-remove-identity zx-remove-self-loop zx-color-change zx-h-box->edge zx-hh-cancel
+         zx-pi-copy zx-state-copy zx-bialgebra zx-hopf zx-euler zx-hadamard-hopf zx-hadamard-self-loop
+         zx-local-complement zx-pivot
+         zx-to-graph-like zx-simplify zx-graph-like?
+         circuit-qubits circuit->zx circuit->unitary circuit-apply circuit-state circuit-gate-count
+         pauli-expectation circuit-pauli-expectation)
+
+(define (zx-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (zx-normalize-phase p)
+  (if (not (and (number? p) (exact? p) (rational? p))) (error "core.monoidal.zx: a phase is an exact rational multiple of pi" p))
+  (- p (* 2 (floor (/ p 2)))))
+
+;; ---------------------------------------------------------------------------
+;; Scalars sqrt(2)^a e^{i pi p} q
+;; ---------------------------------------------------------------------------
+(define (zx-scalar a p q) (vector 'zx-scalar a (zx-normalize-phase p) q))
+(define (zx-scalar? s) (and (vector? s) (= 4 (vector-length s)) (eq? (vector-ref s 0) 'zx-scalar)))
+(define (zx-scalar-sqrt2-power s) (vector-ref s 1))
+(define (zx-scalar-phase s) (vector-ref s 2))
+(define (zx-scalar-rational s) (vector-ref s 3))
+(define (zx-scalar-one) (zx-scalar 0 0 1))
+(define (zx-scalar-mul s t)
+  (let ((a (+ (vector-ref s 1) (vector-ref t 1))))
+    ;; keep the sqrt(2) power in {0, 1}: sqrt(2)^2 = 2 moves into q
+    (zx-scalar (modulo a 2) (+ (vector-ref s 2) (vector-ref t 2))
+               (* (vector-ref s 3) (vector-ref t 3) (expt 2 (quotient (- a (modulo a 2)) 2))))))
+(define (zx-scalar->element S s)
+  (scalars-mul S (scalars-mul S (scalars-expt S (scalars-sqrt2 S) (vector-ref s 1)) (scalars-phase S (vector-ref s 2)))
+               (scalars-embed S (vector-ref s 3))))
+
+;; ---------------------------------------------------------------------------
+;; Graphs
+;; ---------------------------------------------------------------------------
+(define (zx-make nodes edges inputs outputs next) (vector 'zx-graph nodes edges inputs outputs next))
+(define (zx-graph? g) (and (vector? g) (= 6 (vector-length g)) (eq? (vector-ref g 0) 'zx-graph)))
+(define (zx-nodes g) (vector-ref g 1))
+(define (zx-edges g) (vector-ref g 2))
+(define (zx-inputs g) (vector-ref g 3))
+(define (zx-outputs g) (vector-ref g 4))
+(define (zx-next g) (vector-ref g 5))
+(define (zx-empty-graph) (zx-make '() '() '() '() 0))
+(define (zx-node g id)
+  (let loop ((l (zx-nodes g))) (cond ((null? l) (error "core.monoidal.zx: no such node" id)) ((= (vector-ref (car l) 0) id) (car l)) (else (loop (cdr l))))))
+(define (zx-has-node? g id) (let loop ((l (zx-nodes g))) (cond ((null? l) #f) ((= (vector-ref (car l) 0) id) #t) (else (loop (cdr l))))))
+(define (zx-node-kind g id) (vector-ref (zx-node g id) 1))
+(define (zx-node-phase g id) (vector-ref (zx-node g id) 2))
+(define (zx-spiders g) (map (lambda (n) (vector-ref n 0)) (filter (lambda (n) (memq (vector-ref n 1) '(Z X))) (zx-nodes g))))
+(define (zx-spider-count g) (length (zx-spiders g)))
+(define (zx-edge-count g) (length (zx-edges g)))
+(define (zx-check-kind kind) (if (not (memq kind '(Z X H B))) (error "core.monoidal.zx: node kind is Z, X, H or B" kind)) kind)
+(define (zx-add-node g kind phase)
+  (let ((id (zx-next g)))
+    (cons (zx-make (append (zx-nodes g) (list (vector id (zx-check-kind kind) (zx-normalize-phase phase))))
+                   (zx-edges g) (zx-inputs g) (zx-outputs g) (+ id 1))
+          id)))
+(define (zx-add-edge g a b . type)
+  (let ((t (if (null? type) 'plain (car type))))
+    (if (not (memq t '(plain hadamard))) (error "core.monoidal.zx: edge type is plain or hadamard" t))
+    (zx-node g a) (zx-node g b)
+    (zx-make (zx-nodes g) (append (zx-edges g) (list (vector (zx-next g) a b t))) (zx-inputs g) (zx-outputs g) (+ 1 (zx-next g)))))
+(define (zx-remove-edge g eid)
+  (zx-make (zx-nodes g) (filter (lambda (e) (not (= (vector-ref e 0) eid))) (zx-edges g)) (zx-inputs g) (zx-outputs g) (zx-next g)))
+(define (zx-remove-node g id)
+  (zx-make (filter (lambda (n) (not (= (vector-ref n 0) id))) (zx-nodes g))
+           (filter (lambda (e) (not (or (= (vector-ref e 1) id) (= (vector-ref e 2) id)))) (zx-edges g))
+           (zx-inputs g) (zx-outputs g) (zx-next g)))
+(define (zx-set-node g id kind phase)
+  (zx-make (map (lambda (n) (if (= (vector-ref n 0) id) (vector id (zx-check-kind kind) (zx-normalize-phase phase)) n)) (zx-nodes g))
+           (zx-edges g) (zx-inputs g) (zx-outputs g) (zx-next g)))
+;; incident edge ends: a self-loop occurs twice
+(define (zx-incident g id)
+  (apply append (map (lambda (e) (append (if (= (vector-ref e 1) id) (list e) '()) (if (= (vector-ref e 2) id) (list e) '()))) (zx-edges g))))
+(define (zx-degree g id) (length (zx-incident g id)))
+(define (zx-other e id) (if (= (vector-ref e 1) id) (vector-ref e 2) (vector-ref e 1)))
+(define (zx-self-loop? e) (= (vector-ref e 1) (vector-ref e 2)))
+(define (zx-edges-between g a b)
+  (filter (lambda (e) (or (and (= (vector-ref e 1) a) (= (vector-ref e 2) b)) (and (= (vector-ref e 1) b) (= (vector-ref e 2) a)))) (zx-edges g)))
+(define (zx-neighbors g id)
+  (let loop ((l (zx-incident g id)) (acc '()))
+    (if (null? l) (reverse acc)
+        (let ((o (zx-other (car l) id))) (loop (cdr l) (if (or (= o id) (memv o acc)) acc (cons o acc)))))))
+(define (zx-graph-from nodes edges inputs outputs)
+  (let* ((ns (map (lambda (n) (vector (car n) (zx-check-kind (cadr n)) (zx-normalize-phase (if (pair? (cddr n)) (caddr n) 0)))) nodes))
+         (next (+ 1 (apply max (cons -1 (map car nodes)))))
+         (es (let loop ((l edges) (i next) (acc '()))
+               (if (null? l) (reverse acc)
+                   (loop (cdr l) (+ i 1) (cons (vector i (car (car l)) (cadr (car l)) (if (pair? (cddr (car l))) (caddr (car l)) 'plain)) acc))))))
+    (zx-make ns es inputs outputs (+ next (length edges)))))
+
+;; ---------------------------------------------------------------------------
+;; Matrices
+;; ---------------------------------------------------------------------------
+(define (zx-bits k idx) (let loop ((i 0) (idx idx) (c 0)) (if (= i k) c (loop (+ i 1) (quotient idx 2) (+ c (remainder idx 2))))))
+;; the spider of colour kind (Z or X), phase p, m inputs and n outputs, as a
+;; linear map (2 ... 2) -> (2 ... 2)
+(define (zx-spider-map S kind p m n)
+  (let* ((k (+ m n)) (zero (scalars-zero S)) (one (scalars-one S)) (w (scalars-phase S (zx-normalize-phase p)))
+         (all1-in (- (expt 2 m) 1)) (all1-out (- (expt 2 n) 1)))
+    (case kind
+      ((Z) (linear-map S (make-list m 2) (make-list n 2)
+                       (lambda (r c) (cond ((= k 0) (scalars-add S one w))
+                                           ((and (= r 0) (= c 0)) one) ((and (= r all1-out) (= c all1-in)) w) (else zero)))))
+      ((X) (let ((norm (scalars-expt S (scalars-inverse-sqrt2 S) k)))
+             (linear-map S (make-list m 2) (make-list n 2)
+                         (lambda (r c) (scalars-mul S norm (if (even? (+ (zx-bits n r) (zx-bits m c))) (scalars-add S one w) (scalars-sub S one w)))))))
+      (else (error "core.monoidal.zx: spider colour is Z or X" kind)))))
+(define (zx-hadamard-map S)
+  (let ((h (scalars-inverse-sqrt2 S)))
+    (linear-map S '(2) '(2) (lambda (r c) (if (and (= r 1) (= c 1)) (scalars-neg S h) h)))))
+;; the graph of one spider with m inputs and n outputs
+(define (zx-spider-graph kind p m n)
+  (zx-graph-from (append (list (list 0 kind p)) (map (lambda (i) (list (+ 1 i) 'B)) (zx-range (+ m n))))
+                 (map (lambda (i) (list (+ 1 i) 0)) (zx-range (+ m n)))
+                 (map (lambda (i) (+ 1 i)) (zx-range m)) (map (lambda (i) (+ 1 m i)) (zx-range n))))
+
+;; the matrix of a graph: inputs -> outputs, by contracting its network
+(define (zx-evaluate g S)
+  (let* ((ins (zx-inputs g)) (outs (zx-outputs g))
+         (blabel (lambda (id) (let ((i (let loop ((l ins) (k 0)) (cond ((null? l) #f) ((= (car l) id) k) (else (loop (cdr l) (+ k 1)))))))
+                                (if i (list 'in i)
+                                    (let ((o (let loop ((l outs) (k 0)) (cond ((null? l) #f) ((= (car l) id) k) (else (loop (cdr l) (+ k 1)))))))
+                                      (if o (list 'out o) (error "core.monoidal.zx: a boundary node that is neither an input nor an output" id)))))))
+         (boundary? (lambda (id) (eq? (zx-node-kind g id) 'B)))
+         ;; the label of edge e at its end on node id (side 0 = a, 1 = b)
+         (end-label (lambda (e side)
+                      (let ((id (vector-ref e (+ 1 side))))
+                        (cond ((boundary? id) (blabel id))
+                              ((eq? (vector-ref e 3) 'hadamard) (list 'h (vector-ref e 0) side))
+                              ((and (boundary? (vector-ref e (- 2 side))) (eq? (vector-ref e 3) 'plain)) (blabel (vector-ref e (- 2 side))))
+                              (else (list 'e (vector-ref e 0)))))))
+         (edge-tensors
+          (apply append
+                 (map (lambda (e)
+                        (let ((a (end-label e 0)) (b (end-label e 1)))
+                          (cond ((eq? (vector-ref e 3) 'hadamard) (list (linear-map->tensor (zx-hadamard-map S) (list a) (list b))))
+                                ((and (boundary? (vector-ref e 1)) (boundary? (vector-ref e 2)))
+                                 (list (linear-map->tensor (linear-map-cup S '(2)) (list a b) '())))
+                                (else '()))))
+                      (zx-edges g))))
+         (node-tensors
+          (map (lambda (n)
+                 (let* ((id (vector-ref n 0))
+                        (legs (apply append (map (lambda (e) (append (if (= (vector-ref e 1) id) (list (end-label e 0)) '())
+                                                                     (if (= (vector-ref e 2) id) (list (end-label e 1)) '())))
+                                                 (zx-edges g))))
+                        (k (length legs)))
+                   (case (vector-ref n 1)
+                     ((Z X) (linear-map->tensor (zx-spider-map S (vector-ref n 1) (vector-ref n 2) 0 k) legs '()))
+                     ((H) (if (not (= k 2)) (error "core.monoidal.zx: an H box has two legs" id))
+                          (linear-map->tensor (zx-hadamard-map S) (list (car legs)) (list (cadr legs))))
+                     (else (error "core.monoidal.zx: unknown node kind" (vector-ref n 1))))))
+               (filter (lambda (n) (not (eq? (vector-ref n 1) 'B))) (zx-nodes g)))))
+    (for-each (lambda (id) (if (not (= 1 (zx-degree g id))) (error "core.monoidal.zx: a boundary has exactly one edge" id))) (append ins outs))
+    (network-evaluate S (append node-tensors edge-tensors)
+                      (map (lambda (k) (list 'out k)) (zx-range (length outs)))
+                      (map (lambda (k) (list 'in k)) (zx-range (length ins))))))
+;; [[g]] = s [[h]] for the zx-scalar s
+(define (zx-equal-up-to? g h s S) (linear-map-equal? (zx-evaluate g S) (linear-map-scale (zx-evaluate h S) (zx-scalar->element S s))))
+;; the element c with [[g]] = c [[h]], or #f
+(define (zx-proportional g h S) (linear-map-proportional (zx-evaluate g S) (zx-evaluate h S)))
+
+;; ---------------------------------------------------------------------------
+;; Rewrite rules
+;; ---------------------------------------------------------------------------
+(define (zx-refuse rule why . what) (apply error (string-append "core.monoidal.zx: " rule ": " why) what))
+(define (zx-spider? g id) (memq (zx-node-kind g id) '(Z X)))
+(define (zx-toggle t) (if (eq? t 'plain) 'hadamard 'plain))
+(define (zx-combine t1 t2) (if (eq? t1 t2) 'plain 'hadamard))
+
+;; (f) fuse v into u: same colour, joined by at least one plain edge; the
+;; other plain edges between them become plain self-loops and are removed,
+;; Hadamard edges between them become Hadamard self-loops on u
+(define (zx-fuse g u v)
+  (if (= u v) (zx-refuse "fuse" "a spider does not fuse with itself" u))
+  (if (not (and (zx-spider? g u) (eq? (zx-node-kind g u) (zx-node-kind g v)))) (zx-refuse "fuse" "two spiders of one colour are needed" u v))
+  (let* ((between (zx-edges-between g u v)) (plain (filter (lambda (e) (eq? (vector-ref e 3) 'plain)) between)))
+    (if (null? plain) (zx-refuse "fuse" "the spiders are not joined by a plain edge" u v))
+    (let* ((g1 (zx-set-node g u (zx-node-kind g u) (+ (zx-node-phase g u) (zx-node-phase g v))))
+           (moved (map (lambda (e) (vector (vector-ref e 0) (if (= (vector-ref e 1) v) u (vector-ref e 1)) (if (= (vector-ref e 2) v) u (vector-ref e 2)) (vector-ref e 3)))
+                       (filter (lambda (e) (not (memq e plain))) (zx-edges g1))))
+           (g2 (zx-make (filter (lambda (n) (not (= (vector-ref n 0) v))) (zx-nodes g1)) moved (zx-inputs g) (zx-outputs g) (zx-next g))))
+      (let loop ((g2 g2) (s (zx-scalar-one)))
+        (let ((loops (filter (lambda (e) (and (zx-self-loop? e) (= (vector-ref e 1) u) (eq? (vector-ref e 3) 'plain))) (zx-edges g2))))
+          (if (null? loops) (cons g2 s)
+              (let ((r (zx-remove-self-loop g2 u))) (loop (car r) (zx-scalar-mul s (cdr r))))))))))
+;; a plain self-loop on a spider: removed at no cost
+(define (zx-remove-self-loop g v)
+  (if (not (zx-spider? g v)) (zx-refuse "remove-self-loop" "a spider is needed" v))
+  (let ((loops (filter (lambda (e) (and (zx-self-loop? e) (= (vector-ref e 1) v) (eq? (vector-ref e 3) 'plain))) (zx-edges g))))
+    (if (null? loops) (zx-refuse "remove-self-loop" "no plain self-loop" v))
+    (cons (zx-remove-edge g (vector-ref (car loops) 0)) (zx-scalar-one))))
+;; (id) a phase-free spider with two legs (not a loop) is a wire; its two
+;; edges join, a Hadamard on either end kept (two cancel)
+(define (zx-remove-identity g v)
+  (if (not (and (zx-spider? g v) (= 0 (zx-node-phase g v)))) (zx-refuse "remove-identity" "a phase-free spider is needed" v))
+  (let ((inc (zx-incident g v)))
+    (if (not (and (= 2 (length inc)) (not (zx-self-loop? (car inc))))) (zx-refuse "remove-identity" "the spider needs exactly two legs, not a loop" v))
+    (let* ((e1 (car inc)) (e2 (cadr inc)) (a (zx-other e1 v)) (b (zx-other e2 v)))
+      (cons (zx-add-edge (zx-remove-node g v) a b (zx-combine (vector-ref e1 3) (vector-ref e2 3))) (zx-scalar-one)))))
+;; (h) colour change: every leg of v toggles plain <-> Hadamard
+(define (zx-color-change g v)
+  (if (not (zx-spider? g v)) (zx-refuse "color-change" "a spider is needed" v))
+  (let ((g1 (zx-set-node g v (if (eq? (zx-node-kind g v) 'Z) 'X 'Z) (zx-node-phase g v))))
+    (cons (zx-make (zx-nodes g1)
+                   (map (lambda (e) (cond ((zx-self-loop? e) e)
+                                          ((or (= (vector-ref e 1) v) (= (vector-ref e 2) v)) (vector (vector-ref e 0) (vector-ref e 1) (vector-ref e 2) (zx-toggle (vector-ref e 3))))
+                                          (else e)))
+                        (zx-edges g1))
+                   (zx-inputs g) (zx-outputs g) (zx-next g))
+          (zx-scalar-one))))
+;; an H box becomes a Hadamard edge between its neighbours
+(define (zx-h-box->edge g h)
+  (if (not (eq? (zx-node-kind g h) 'H)) (zx-refuse "h-box->edge" "an H box is needed" h))
+  (let ((inc (zx-incident g h)))
+    (if (not (and (= 2 (length inc)) (not (zx-self-loop? (car inc))))) (zx-refuse "h-box->edge" "the H box needs two legs" h))
+    (let ((e1 (car inc)) (e2 (cadr inc)))
+      (cons (zx-add-edge (zx-remove-node g h) (zx-other e1 h) (zx-other e2 h) (zx-toggle (zx-combine (vector-ref e1 3) (vector-ref e2 3)))) (zx-scalar-one)))))
+;; (hh) two H boxes joined by a plain edge are a wire
+(define (zx-hh-cancel g h1 h2)
+  (if (not (and (eq? (zx-node-kind g h1) 'H) (eq? (zx-node-kind g h2) 'H) (not (= h1 h2)))) (zx-refuse "hh-cancel" "two H boxes are needed" h1 h2))
+  (let ((between (filter (lambda (e) (eq? (vector-ref e 3) 'plain)) (zx-edges-between g h1 h2))))
+    (if (not (= 1 (length between))) (zx-refuse "hh-cancel" "the H boxes must share exactly one plain edge" h1 h2))
+    (let* ((o1 (car (filter (lambda (e) (not (eq? e (car between)))) (zx-incident g h1))))
+           (o2 (car (filter (lambda (e) (not (eq? e (car between)))) (zx-incident g h2)))))
+      (cons (zx-add-edge (zx-remove-node (zx-remove-node g h1) h2) (zx-other o1 h1) (zx-other o2 h2) (zx-combine (vector-ref o1 3) (vector-ref o2 3)))
+            (zx-scalar-one)))))
+;; (pi) a two-legged spider of the other colour with phase pi, joined to v by
+;; a plain edge, passes through v: v's phase a becomes -a, every other leg of
+;; v gets a phase-pi spider of that colour, and the scalar is e^{i a}
+(define (zx-pi-copy g n v)
+  (if (not (and (zx-spider? g v) (zx-spider? g n) (not (eq? (zx-node-kind g n) (zx-node-kind g v))) (= 1 (zx-node-phase g n))))
+      (zx-refuse "pi-copy" "a phase-pi spider of the other colour is needed" n v))
+  (let ((ninc (zx-incident g n)) (vinc (zx-incident g v)))
+    (if (not (= 2 (length ninc))) (zx-refuse "pi-copy" "the pi spider needs two legs" n))
+    (if (pair? (filter zx-self-loop? vinc)) (zx-refuse "pi-copy" "the spider has a self-loop" v))
+    (let* ((link (filter (lambda (e) (and (= v (zx-other e n)) (eq? (vector-ref e 3) 'plain))) ninc)))
+      (if (not (= 1 (length link))) (zx-refuse "pi-copy" "the pi spider must share exactly one plain edge with the spider" n v))
+      (let* ((outer (car (filter (lambda (e) (not (eq? e (car link)))) ninc)))
+             (u (zx-other outer n)) (alpha (zx-node-phase g v)) (colour (zx-node-kind g n))
+             (others (filter (lambda (e) (not (eq? e (car link)))) vinc))
+             (g1 (zx-set-node (zx-remove-node g n) v (zx-node-kind g v) (- alpha)))
+             (g2 (zx-add-edge g1 u v (vector-ref outer 3))))
+        ;; put a pi spider on every other leg of v
+        (let loop ((es others) (g3 g2))
+          (if (null? es) (cons g3 (zx-scalar 0 alpha 1))
+              (let* ((e (car es)) (w (zx-other e v)) (r (zx-add-node (zx-remove-edge g3 (vector-ref e 0)) colour 1)) (m (cdr r)))
+                (loop (cdr es) (zx-add-edge (zx-add-edge (car r) v m 'plain) m w (vector-ref e 3))))))))))
+;; (c) a one-legged spider of the other colour with phase a pi (a = 0 or 1),
+;; joined to v by a plain edge, is copied onto v's other n legs; v (phase b)
+;; disappears; scalar sqrt(2)^{1-n} e^{i pi a b}
+(define (zx-state-copy g s v)
+  (if (not (and (zx-spider? g v) (zx-spider? g s) (not (eq? (zx-node-kind g s) (zx-node-kind g v))) (memv (zx-node-phase g s) '(0 1))))
+      (zx-refuse "state-copy" "a basis state of the other colour is needed" s v))
+  (let ((sinc (zx-incident g s)) (vinc (zx-incident g v)))
+    (if (not (and (= 1 (length sinc)) (= v (zx-other (car sinc) s)) (eq? 'plain (vector-ref (car sinc) 3))))
+        (zx-refuse "state-copy" "the state must have one plain edge to the spider" s v))
+    (if (pair? (filter zx-self-loop? vinc)) (zx-refuse "state-copy" "the spider has a self-loop" v))
+    (let* ((others (filter (lambda (e) (not (eq? e (car sinc)))) vinc)) (n (length others))
+           (a (zx-node-phase g s)) (b (zx-node-phase g v)) (colour (zx-node-kind g s))
+           (g1 (zx-remove-node (zx-remove-node g s) v)))
+      (let loop ((es others) (g2 g1))
+        (if (null? es) (cons g2 (zx-scalar (- 1 n) (* a b) 1))
+            (let* ((e (car es)) (r (zx-add-node g2 colour a)))
+              (loop (cdr es) (zx-add-edge (car r) (cdr r) (zx-other e v) (vector-ref e 3)))))))))
+;; (b) a phase-free Z spider and a phase-free X spider, each with three legs
+;; and joined by one plain edge, become two X and two Z spiders joined
+;; completely; scalar sqrt(2)
+(define (zx-bialgebra g z x)
+  (if (not (and (eq? (zx-node-kind g z) 'Z) (eq? (zx-node-kind g x) 'X) (= 0 (zx-node-phase g z)) (= 0 (zx-node-phase g x))))
+      (zx-refuse "bialgebra" "a phase-free Z and a phase-free X spider are needed" z x))
+  (let ((zinc (zx-incident g z)) (xinc (zx-incident g x)) (link (zx-edges-between g z x)))
+    (if (not (and (= 3 (length zinc)) (= 3 (length xinc)) (= 1 (length link)) (eq? 'plain (vector-ref (car link) 3))
+                  (null? (filter zx-self-loop? (append zinc xinc)))))
+        (zx-refuse "bialgebra" "three legs each and one plain edge between them are needed" z x))
+    (let* ((zo (filter (lambda (e) (not (eq? e (car link)))) zinc)) (xo (filter (lambda (e) (not (eq? e (car link)))) xinc))
+           (g0 (zx-remove-node (zx-remove-node g z) x))
+           (r1 (zx-add-node g0 'X 0)) (r2 (zx-add-node (car r1) 'X 0)) (r3 (zx-add-node (car r2) 'Z 0)) (r4 (zx-add-node (car r3) 'Z 0))
+           (x1 (cdr r1)) (x2 (cdr r2)) (z1 (cdr r3)) (z2 (cdr r4))
+           (g5 (car r4))
+           (g6 (zx-add-edge (zx-add-edge g5 x1 (zx-other (car zo) z) (vector-ref (car zo) 3)) x2 (zx-other (cadr zo) z) (vector-ref (cadr zo) 3)))
+           (g7 (zx-add-edge (zx-add-edge g6 z1 (zx-other (car xo) x) (vector-ref (car xo) 3)) z2 (zx-other (cadr xo) x) (vector-ref (cadr xo) 3)))
+           (g8 (zx-add-edge (zx-add-edge (zx-add-edge (zx-add-edge g7 x1 z1) x1 z2) x2 z1) x2 z2)))
+      (cons g8 (zx-scalar 1 0 1)))))
+;; (ho) two plain edges between a Z and an X spider disappear; scalar 1/2
+(define (zx-hopf g u v)
+  (if (not (and (zx-spider? g u) (zx-spider? g v) (not (eq? (zx-node-kind g u) (zx-node-kind g v)))))
+      (zx-refuse "hopf" "spiders of different colours are needed" u v))
+  (let ((plain (filter (lambda (e) (eq? 'plain (vector-ref e 3))) (zx-edges-between g u v))))
+    (if (< (length plain) 2) (zx-refuse "hopf" "two parallel plain edges are needed" u v))
+    (cons (zx-remove-edge (zx-remove-edge g (vector-ref (car plain) 0)) (vector-ref (cadr plain) 0)) (zx-scalar 0 0 (/ 1 2)))))
+;; (eu) an H box is e^{-i pi/4} Z(pi/2) X(pi/2) Z(pi/2)
+(define (zx-euler g h)
+  (if (not (eq? (zx-node-kind g h) 'H)) (zx-refuse "euler" "an H box is needed" h))
+  (let ((inc (zx-incident g h)))
+    (if (not (and (= 2 (length inc)) (not (zx-self-loop? (car inc))))) (zx-refuse "euler" "the H box needs two legs" h))
+    (let* ((e1 (car inc)) (e2 (cadr inc)) (a (zx-other e1 h)) (b (zx-other e2 h))
+           (r1 (zx-add-node (zx-remove-node g h) 'Z (/ 1 2))) (r2 (zx-add-node (car r1) 'X (/ 1 2))) (r3 (zx-add-node (car r2) 'Z (/ 1 2)))
+           (g4 (zx-add-edge (zx-add-edge (zx-add-edge (zx-add-edge (car r3) a (cdr r1) (vector-ref e1 3)) (cdr r1) (cdr r2)) (cdr r2) (cdr r3)) (cdr r3) b (vector-ref e2 3))))
+      (cons g4 (zx-scalar 0 (- (/ 1 4)) 1)))))
+;; two parallel Hadamard edges between Z spiders cancel; scalar 1/2
+(define (zx-hadamard-hopf g u v)
+  (if (not (and (eq? 'Z (zx-node-kind g u)) (eq? 'Z (zx-node-kind g v)) (not (= u v)))) (zx-refuse "hadamard-hopf" "two Z spiders are needed" u v))
+  (let ((had (filter (lambda (e) (eq? 'hadamard (vector-ref e 3))) (zx-edges-between g u v))))
+    (if (< (length had) 2) (zx-refuse "hadamard-hopf" "two parallel Hadamard edges are needed" u v))
+    (cons (zx-remove-edge (zx-remove-edge g (vector-ref (car had) 0)) (vector-ref (cadr had) 0)) (zx-scalar 0 0 (/ 1 2)))))
+;; a Hadamard self-loop on Z(a) is Z(a + pi), scalar 1/sqrt(2)
+(define (zx-hadamard-self-loop g v)
+  (if (not (eq? 'Z (zx-node-kind g v))) (zx-refuse "hadamard-self-loop" "a Z spider is needed" v))
+  (let ((loops (filter (lambda (e) (and (zx-self-loop? e) (= v (vector-ref e 1)) (eq? 'hadamard (vector-ref e 3)))) (zx-edges g))))
+    (if (null? loops) (zx-refuse "hadamard-self-loop" "no Hadamard self-loop" v))
+    (cons (zx-set-node (zx-remove-edge g (vector-ref (car loops) 0)) v 'Z (+ 1 (zx-node-phase g v))) (zx-scalar -1 0 1))))
+
+;; graph-like: Z spiders only, spiders joined by single Hadamard edges, no
+;; self-loops, every boundary on a spider by a plain or Hadamard edge
+(define (zx-interior? g v) (null? (filter (lambda (w) (eq? 'B (zx-node-kind g w))) (zx-neighbors g v))))
+(define (zx-hadamard-only? g v)
+  (null? (filter (lambda (e) (not (and (eq? 'hadamard (vector-ref e 3)) (not (zx-self-loop? e)) (eq? 'Z (zx-node-kind g (zx-other e v)))))) (zx-incident g v))))
+;; (lc) an interior Z spider with phase +-pi/2 whose edges are all Hadamard
+;; edges to Z spiders is removed: its neighbourhood is complemented and every
+;; neighbour's phase decreases by its phase; scalar sqrt(2)^{d - (k-1)}
+;; e^{+-i pi/4} for k neighbours, d the number of edges added minus the
+;; number removed (each Hadamard edge carries its 1/sqrt(2))
+(define (zx-local-complement g v)
+  (if (not (and (eq? 'Z (zx-node-kind g v)) (memv (zx-node-phase g v) (list (/ 1 2) (/ 3 2)))))
+      (zx-refuse "local-complement" "a Z spider with phase +-pi/2 is needed" v))
+  (if (not (and (zx-interior? g v) (zx-hadamard-only? g v) (= (length (zx-incident g v)) (length (zx-neighbors g v)))))
+      (zx-refuse "local-complement" "an interior spider with single Hadamard edges to Z spiders is needed" v))
+  (let* ((ns (zx-neighbors g v)) (k (length ns)) (a (zx-node-phase g v))
+         (g1 (zx-remove-node g v))
+         (g2 (let loop ((l ns) (g1 g1)) (if (null? l) g1 (loop (cdr l) (zx-set-node g1 (car l) 'Z (- (zx-node-phase g1 (car l)) a))))))
+         (t (zx-toggle-pairs g2 (zx-pairs ns))))
+    (cons (car t) (zx-scalar (- (cdr t) (- k 1)) (if (= a (/ 1 2)) (/ 1 4) (- (/ 1 4))) 1))))
+(define (zx-pairs xs) (if (null? xs) '() (append (map (lambda (y) (cons (car xs) y)) (cdr xs)) (zx-pairs (cdr xs)))))
+(define (zx-cross xs ys) (apply append (map (lambda (x) (map (lambda (y) (cons x y)) ys)) xs)))
+;; toggle a single Hadamard edge between each pair (Z spiders); returns
+;; (g' . edges added minus edges removed)
+(define (zx-toggle-pairs g pairs)
+  (let loop ((ps pairs) (g g) (delta 0))
+    (if (null? ps) (cons g delta)
+        (let* ((a (car (car ps))) (b (cdr (car ps))) (had (filter (lambda (e) (eq? 'hadamard (vector-ref e 3))) (zx-edges-between g a b))))
+          (if (pair? had)
+              (loop (cdr ps) (zx-remove-edge g (vector-ref (car had) 0)) (- delta 1))
+              (loop (cdr ps) (zx-add-edge g a b 'hadamard) (+ delta 1)))))))
+;; (p) two interior Z spiders u, v with phases in {0, pi}, joined by a
+;; Hadamard edge, all their edges Hadamard edges to Z spiders, are removed:
+;; with A the neighbours of u only, B of v only and C of both, the edges
+;; A-B, A-C and B-C are toggled, A gains v's phase, B gains u's phase, C
+;; gains both and pi; scalar sqrt(2)^{d + 1 - |A| - |B| - 2|C|} (-1)^{a_u a_v},
+;; d the number of edges added minus the number removed
+(define (zx-pivot g u v)
+  (if (not (and (eq? 'Z (zx-node-kind g u)) (eq? 'Z (zx-node-kind g v)) (memv (zx-node-phase g u) '(0 1)) (memv (zx-node-phase g v) '(0 1))))
+      (zx-refuse "pivot" "two Z spiders with phases 0 or pi are needed" u v))
+  (if (not (and (zx-interior? g u) (zx-interior? g v) (zx-hadamard-only? g u) (zx-hadamard-only? g v)
+                (= (length (zx-incident g u)) (length (zx-neighbors g u))) (= (length (zx-incident g v)) (length (zx-neighbors g v)))
+                (memv v (zx-neighbors g u))))
+      (zx-refuse "pivot" "adjacent interior spiders with single Hadamard edges to Z spiders are needed" u v))
+  (let* ((nu (filter (lambda (w) (not (= w v))) (zx-neighbors g u))) (nv (filter (lambda (w) (not (= w u))) (zx-neighbors g v)))
+         (C (filter (lambda (w) (memv w nv)) nu)) (A (filter (lambda (w) (not (memv w C))) nu)) (B (filter (lambda (w) (not (memv w C))) nv))
+         (pu (zx-node-phase g u)) (pv (zx-node-phase g v))
+         (g1 (zx-remove-node (zx-remove-node g u) v))
+         (shift (lambda (g ws p) (let loop ((l ws) (g g)) (if (null? l) g (loop (cdr l) (zx-set-node g (car l) 'Z (+ p (zx-node-phase g (car l)))))))))
+         (g2 (shift (shift (shift g1 A pv) B pu) C (+ pu pv 1)))
+         (t (zx-toggle-pairs g2 (append (zx-cross A B) (zx-cross A C) (zx-cross B C)))))
+    (cons (car t) (zx-scalar (- (+ (cdr t) 1) (length A) (length B) (* 2 (length C))) (* pu pv) 1))))
+
+;; ---------------------------------------------------------------------------
+;; Simplification
+;; ---------------------------------------------------------------------------
+(define (zx-first pred xs) (cond ((null? xs) #f) ((pred (car xs)) (car xs)) (else (zx-first pred (cdr xs)))))
+(define (zx-graph-like? g)
+  (and (null? (filter (lambda (n) (memq (vector-ref n 1) '(X H))) (zx-nodes g)))
+       (null? (filter zx-self-loop? (zx-edges g)))
+       (let ((spiders (zx-spiders g)))
+         (and (null? (filter (lambda (e) (and (memv (vector-ref e 1) spiders) (memv (vector-ref e 2) spiders) (eq? 'plain (vector-ref e 3)))) (zx-edges g)))
+              (null? (filter (lambda (p) (> (length (zx-edges-between g (car p) (cdr p))) 1)) (zx-pairs spiders)))))))
+;; apply `step` (g -> (g' . s) or #f) until it returns #f
+(define (zx-exhaust g s step)
+  (let loop ((g g) (s s))
+    (let ((r (step g))) (if r (loop (car r) (zx-scalar-mul s (cdr r))) (cons g s)))))
+;; one step of the graph-like normalisation, or #f
+(define (zx-graph-like-step g)
+  (let ((h (zx-first (lambda (id) (eq? 'H (zx-node-kind g id))) (map (lambda (n) (vector-ref n 0)) (zx-nodes g)))))
+    (if h (zx-h-box->edge g h)
+        (let ((x (zx-first (lambda (id) (eq? 'X (zx-node-kind g id))) (zx-spiders g))))
+          (if x (zx-color-change g x)
+              (let ((e (zx-first (lambda (e) (and (eq? 'plain (vector-ref e 3)) (not (zx-self-loop? e))
+                                                   (eq? 'Z (zx-node-kind g (vector-ref e 1))) (eq? 'Z (zx-node-kind g (vector-ref e 2)))))
+                                 (zx-edges g))))
+                (if e (zx-fuse g (vector-ref e 1) (vector-ref e 2))
+                    (let ((l (zx-first (lambda (e) (and (zx-self-loop? e) (eq? 'Z (zx-node-kind g (vector-ref e 1))))) (zx-edges g))))
+                      (if l (if (eq? 'plain (vector-ref l 3)) (zx-remove-self-loop g (vector-ref l 1)) (zx-hadamard-self-loop g (vector-ref l 1)))
+                          (let ((e (zx-first (lambda (e) (and (eq? 'hadamard (vector-ref e 3)) (not (zx-self-loop? e))
+                                                               (eq? 'Z (zx-node-kind g (vector-ref e 1))) (eq? 'Z (zx-node-kind g (vector-ref e 2)))
+                                                               (> (length (filter (lambda (f) (eq? 'hadamard (vector-ref f 3))) (zx-edges-between g (vector-ref e 1) (vector-ref e 2)))) 1)))
+                                             (zx-edges g))))
+                            (if e (zx-hadamard-hopf g (vector-ref e 1) (vector-ref e 2)) #f)))))))))))
+;; to graph-like form: H boxes to edges, X to Z, fusion, loops, parallel edges
+(define (zx-to-graph-like g) (zx-exhaust g (zx-scalar-one) zx-graph-like-step))
+;; graph-like simplification: identity removal, local complementation and
+;; pivoting until none applies (R. Duncan et al., Quantum 4, 2020)
+(define (zx-simplify-step g)
+  (or (zx-graph-like-step g)
+      (let ((v (zx-first (lambda (v) (and (= 0 (zx-node-phase g v)) (= 2 (length (zx-incident g v))) (not (zx-self-loop? (car (zx-incident g v))))))
+                         (zx-spiders g))))
+        (if v (zx-remove-identity g v)
+            (let ((v (zx-first (lambda (v) (and (memv (zx-node-phase g v) (list (/ 1 2) (/ 3 2))) (zx-interior? g v) (zx-hadamard-only? g v)
+                                                (= (length (zx-incident g v)) (length (zx-neighbors g v)))))
+                               (zx-spiders g))))
+              (if v (zx-local-complement g v)
+                  (let ((e (zx-first (lambda (e) (let ((u (vector-ref e 1)) (v (vector-ref e 2)))
+                                                   (and (eq? 'hadamard (vector-ref e 3)) (not (= u v))
+                                                        (eq? 'Z (zx-node-kind g u)) (eq? 'Z (zx-node-kind g v))
+                                                        (memv (zx-node-phase g u) '(0 1)) (memv (zx-node-phase g v) '(0 1))
+                                                        (zx-interior? g u) (zx-interior? g v) (zx-hadamard-only? g u) (zx-hadamard-only? g v)
+                                                        (= (length (zx-incident g u)) (length (zx-neighbors g u)))
+                                                        (= (length (zx-incident g v)) (length (zx-neighbors g v))))))
+                                     (zx-edges g))))
+                    (if e (zx-pivot g (vector-ref e 1) (vector-ref e 2)) #f))))))))
+(define (zx-simplify g) (zx-exhaust g (zx-scalar-one) zx-simplify-step))
+
+;; ---------------------------------------------------------------------------
+;; Circuits
+;; ---------------------------------------------------------------------------
+;; A circuit is a list of gates on qubits 0 .. n-1:
+;;   (H q) (X q) (Y q) (Z q) (S q) (Sdg q) (T q) (Tdg q)
+;;   (P q p)  diag(1, e^{i pi p})     (XP q p)  H P(p) H
+;;   (CNOT c t) (CZ a b) (SWAP a b)
+;; Qubit 0 is the first tensor factor (the most significant bit).
+(define (circuit-gate-count c) (length c))
+(define (circuit-qubits c) (+ 1 (apply max (cons -1 (apply append (map (lambda (g) (filter (lambda (x) (and (integer? x) (exact? x))) (list-head-safe (cdr g) (if (memq (car g) '(P XP)) 1 2)))) c))))))
+(define (list-head-safe xs k) (if (or (= k 0) (null? xs)) '() (cons (car xs) (list-head-safe (cdr xs) (- k 1)))))
+(define (zx-gate-phase g)
+  (case (car g) ((Z) 1) ((S) (/ 1 2)) ((Sdg) (/ 3 2)) ((T) (/ 1 4)) ((Tdg) (/ 7 4)) ((P) (caddr g)) (else #f)))
+
+;; the ZX graph of a circuit on n qubits and the scalar s with U = s [[g]]
+(define (circuit->zx n gates)
+  (let* ((g0 (zx-graph-from (map (lambda (q) (list q 'B)) (zx-range n)) '() (zx-range n) '()))
+         (front (list->vector (zx-range n))) (pending (make-vector n 'plain)))
+    (let loop ((gs gates) (g g0) (s (zx-scalar-one)))
+      (define (attach g q kind p) ;; a new spider on wire q -> (g . id)
+        (let* ((r (zx-add-node g kind p)) (g1 (zx-add-edge (car r) (vector-ref front q) (cdr r) (vector-ref pending q))))
+          (vector-set! front q (cdr r)) (vector-set! pending q 'plain)
+          (cons g1 (cdr r))))
+      (if (null? gs)
+          ;; outputs
+          (let out ((q 0) (g g) (outs '()))
+            (if (= q n)
+                (cons (zx-make (zx-nodes g) (zx-edges g) (zx-inputs g) (reverse outs) (zx-next g)) s)
+                (let* ((r (zx-add-node g 'B 0)) (g1 (zx-add-edge (car r) (vector-ref front q) (cdr r) (vector-ref pending q))))
+                  (out (+ q 1) g1 (cons (cdr r) outs)))))
+          (let* ((gate (car gs)) (kind (car gate)))
+            (cond ((eq? kind 'H) (let ((q (cadr gate))) (vector-set! pending q (zx-toggle (vector-ref pending q))) (loop (cdr gs) g s)))
+                  ((zx-gate-phase gate) (loop (cdr gs) (car (attach g (cadr gate) 'Z (zx-gate-phase gate))) s))
+                  ((eq? kind 'X) (loop (cdr gs) (car (attach g (cadr gate) 'X 1)) s))
+                  ((eq? kind 'XP) (loop (cdr gs) (car (attach g (cadr gate) 'X (caddr gate))) s))
+                  ((eq? kind 'Y) (let* ((g1 (car (attach g (cadr gate) 'Z 1))) (g2 (car (attach g1 (cadr gate) 'X 1))))
+                                   (loop (cdr gs) g2 (zx-scalar-mul s (zx-scalar 0 (/ 1 2) 1)))))
+                  ((eq? kind 'CNOT) (let* ((r1 (attach g (cadr gate) 'Z 0)) (r2 (attach (car r1) (caddr gate) 'X 0)))
+                                      (loop (cdr gs) (zx-add-edge (car r2) (cdr r1) (cdr r2) 'plain) (zx-scalar-mul s (zx-scalar 1 0 1)))))
+                  ((eq? kind 'CZ) (let* ((r1 (attach g (cadr gate) 'Z 0)) (r2 (attach (car r1) (caddr gate) 'Z 0)))
+                                    (loop (cdr gs) (zx-add-edge (car r2) (cdr r1) (cdr r2) 'hadamard) (zx-scalar-mul s (zx-scalar 1 0 1)))))
+                  ((eq? kind 'SWAP) (let ((a (cadr gate)) (b (caddr gate)))
+                                      (let ((f (vector-ref front a)) (p (vector-ref pending a)))
+                                        (vector-set! front a (vector-ref front b)) (vector-set! pending a (vector-ref pending b))
+                                        (vector-set! front b f) (vector-set! pending b p))
+                                      (loop (cdr gs) g s)))
+                  (else (error "core.monoidal.zx: unknown gate" gate))))))))
+
+;; exact state-vector semantics, independent of the ZX graph: a state is a
+;; vector of 2^n elements, basis index with qubit 0 most significant
+(define (circuit-apply S n state gate)
+  (let* ((N (expt 2 n)) (bit (lambda (q) (expt 2 (- n 1 q)))) (zero (scalars-zero S))
+         (out (make-vector N zero)) (h (scalars-inverse-sqrt2 S)) (i1 (scalars-root S (quotient (scalars-order S) 4))))
+    (define (one-qubit q m00 m01 m10 m11)
+      (let ((b (bit q)))
+        (do ((x 0 (+ x 1))) ((= x N) out)
+          (if (= 0 (remainder (quotient x b) 2))
+              (let ((a0 (vector-ref state x)) (a1 (vector-ref state (+ x b))))
+                (vector-set! out x (scalars-add S (scalars-mul S m00 a0) (scalars-mul S m01 a1)))
+                (vector-set! out (+ x b) (scalars-add S (scalars-mul S m10 a0) (scalars-mul S m11 a1))))))))
+    (define (permute f) (do ((x 0 (+ x 1))) ((= x N) out) (vector-set! out (f x) (vector-ref state x))))
+    (define (diagonal f) (do ((x 0 (+ x 1))) ((= x N) out) (vector-set! out x (scalars-mul S (f x) (vector-ref state x)))))
+    (define (on? x q) (= 1 (remainder (quotient x (bit q)) 2)))
+    (let ((kind (car gate)) (one (scalars-one S)))
+      (cond ((eq? kind 'H) (one-qubit (cadr gate) h h h (scalars-neg S h)))
+            ((eq? kind 'X) (one-qubit (cadr gate) zero one one zero))
+            ((eq? kind 'Y) (one-qubit (cadr gate) zero (scalars-neg S i1) i1 zero))
+            ((zx-gate-phase gate) (let ((w (scalars-phase S (zx-gate-phase gate)))) (diagonal (lambda (x) (if (on? x (cadr gate)) w one)))))
+            ((eq? kind 'XP) (let* ((w (scalars-phase S (zx-normalize-phase (caddr gate)))) (half (scalars-embed S (/ 1 2)))
+                                   (p (scalars-mul S half (scalars-add S one w))) (m (scalars-mul S half (scalars-sub S one w))))
+                              (one-qubit (cadr gate) p m m p)))
+            ((eq? kind 'CNOT) (let ((c (cadr gate)) (t (caddr gate))) (permute (lambda (x) (if (on? x c) (if (on? x t) (- x (bit t)) (+ x (bit t))) x)))))
+            ((eq? kind 'CZ) (let ((a (cadr gate)) (b (caddr gate))) (diagonal (lambda (x) (if (and (on? x a) (on? x b)) (scalars-neg S one) one)))))
+            ((eq? kind 'SWAP) (let ((a (cadr gate)) (b (caddr gate)))
+                                (permute (lambda (x) (if (eq? (on? x a) (on? x b)) x
+                                                         (+ x (if (on? x a) (- (bit b) (bit a)) (- (bit a) (bit b)))))))))
+            (else (error "core.monoidal.zx: unknown gate" gate))))))
+(define (circuit-state S n gates . initial)
+  (let ((st (if (pair? initial) (car initial)
+                (let ((v (make-vector (expt 2 n) (scalars-zero S)))) (vector-set! v 0 (scalars-one S)) v))))
+    (let loop ((gs gates) (st st)) (if (null? gs) st (loop (cdr gs) (circuit-apply S n st (car gs)))))))
+;; the unitary, column by column
+(define (circuit->unitary S n gates)
+  (let* ((N (expt 2 n))
+         (cols (list->vector (map (lambda (c) (let ((v (make-vector N (scalars-zero S)))) (vector-set! v c (scalars-one S)) (circuit-state S n gates v))) (zx-range N)))))
+    (linear-map S (make-list n 2) (make-list n 2) (lambda (r c) (vector-ref (vector-ref cols c) r)))))
+;; <psi| P |psi> for a Pauli string, a list of I, X, Y, Z per qubit
+(define (pauli-expectation S n psi paulis)
+  (let* ((gates (apply append (map (lambda (p q) (case p ((I) '()) ((X) (list (list 'X q))) ((Y) (list (list 'Y q))) ((Z) (list (list 'Z q)))
+                                                       (else (error "core.monoidal.zx: Pauli letter is I, X, Y or Z" p))))
+                                   paulis (zx-range n))))
+         (phi (circuit-state S n gates psi)))
+    (scalars-sum S (map (lambda (i) (scalars-mul S (scalars-conj S (vector-ref psi i)) (vector-ref phi i))) (zx-range (vector-length psi))))))
+(define (circuit-pauli-expectation S n gates paulis) (pauli-expectation S n (circuit-state S n gates) paulis))

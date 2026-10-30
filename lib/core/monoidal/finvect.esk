@@ -262,4 +262,4 @@
                                    (if (not (scalars-zero? S x))
                                        (do ((k 0 (+ k 1))) ((= k (* 2 n)))
                                          (vector-set! other k (scalars-sub S (vector-ref other k) (scalars-mul S x (vector-ref row k))))))))))
-                         (column (+ c 1))))))))))))
+                         (column (+ c 1)))))))))))
