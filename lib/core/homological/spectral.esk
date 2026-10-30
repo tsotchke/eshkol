@@ -1,0 +1,199 @@
+;;; core.homological.spectral -- the spectral sequence of a filtered cochain
+;;; complex, page by page, with its differentials, and its convergence to
+;;; the associated graded of the filtration on cohomology; the two spectral
+;;; sequences of a double complex.
+;;;
+;;; Usage: (require core.homological.spectral)   or   (require core.homological)
+;;;
+;;; Sources: J. McCleary, "A User's Guide to Spectral Sequences" (2nd ed.,
+;;; 2001), 2.2 (the spectral sequence of a filtered differential graded
+;;; module: Z_r, B_r, E_r and Theorem 2.6), 2.4 (double complexes); C. A.
+;;; Weibel, "An Introduction to Homological Algebra" (1994), 5.4-5.6;
+;;; P. Deligne, "Theorie de Hodge III", Publ. IHES 44 (1974), 5.3
+;;; (cohomological descent and its spectral sequence).
+;;;
+;;; A filtered complex is #(filtered-complex C filtration) with C a cochain
+;;; complex of core.homological.complex and filtration a procedure n ->
+;;; vector giving the filtration degree p of each basis vector of C^n;
+;;; F^p C^n is spanned by the basis vectors of degree >= p (a decreasing
+;;; filtration by coordinate subspaces). D must preserve it, which
+;;; `filtered-complex-violations` checks. With n the total degree:
+;;;   Z_r^{p,n} = { x in F^p C^n : D x in F^{p+r} C^{n+1} }   (Z_{-1} = F^p)
+;;;   B_r^{p,n} = D Z_{r-1}^{p-r+1, n-1} + Z_{r-1}^{p+1, n}
+;;;   E_r^{p,n} = Z_r^{p,n} / B_r^{p,n}
+;;; computed exactly: over Z as lattices (Smith normal form, torsion
+;;; visible), over a field by ranks. d_r : E_r^{p,n} -> E_r^{p+r,n+1} is
+;;; induced by D. A page entry is (p q betti torsion) with q = n - p.
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.ring)
+(require core.homological.complex)
+(require core.homological.abelian)
+
+(provide make-filtered-complex filtered-complex? filtered-complex-complex filtered-complex-degree
+         filtered-complex-violations filtered-complex-range
+         spectral-sequence-entry spectral-sequence-page spectral-sequence-differential-rank
+         spectral-sequence-page-violations spectral-sequence-limit-page
+         filtration-graded-cohomology spectral-sequence-convergence-violations
+         double-complex-filtered-complex)
+
+(define (ssq-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ssq-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
+(define (ssq-rows A) (if A (vector-length A) 0))
+(define (ssq-cols A) (if (and A (> (vector-length A) 0)) (vector-length (vector-ref A 0)) 0))
+
+(define (make-filtered-complex C filtration) (vector 'filtered-complex C filtration (make-hash-table)))
+(define (filtered-complex? X) (and (vector? X) (= 4 (vector-length X)) (eq? (vector-ref X 0) 'filtered-complex)))
+(define (filtered-complex-complex X) (vector-ref X 1))
+(define (filtered-complex-degree X n)
+  (let ((h (vector-ref X 3)))
+    (or (hash-table-ref/default h n #f)
+        (let ((v (if (and (>= n 0) (<= n (complex-top-degree (vector-ref X 1)))) ((vector-ref X 2) n) (make-vector 0 0))))
+          (hash-table-set! h n v) v))))
+;; (pmin pmax) over every basis vector
+(define (filtered-complex-range X)
+  (let ((all (fold-left append '() (map (lambda (n) (vector->list (filtered-complex-degree X n)))
+                                        (ssq-range (+ (complex-top-degree (filtered-complex-complex X)) 1))))))
+    (if (null? all) (list 0 0) (list (fold-left min (car all) all) (fold-left max (car all) all)))))
+(define (ssq-dim X n) (complex-dim (filtered-complex-complex X) n))
+;; D e_j has a nonzero coefficient on e_i with filt(i) < filt(j)
+(define (filtered-complex-violations X)
+  (let* ((C (filtered-complex-complex X)) (out '()))
+    (for-each (lambda (n)
+                (let ((D (complex-map C n)) (fs (filtered-complex-degree X n)) (ft (filtered-complex-degree X (+ n 1))))
+                  (if (and D (> (ssq-rows D) 0) (<= (+ n 1) (complex-top-degree C)))
+                      (let li ((i 0))
+                        (if (< i (ssq-rows D))
+                            (begin
+                              (let lj ((j 0))
+                                (if (< j (ssq-cols D))
+                                    (begin
+                                      (if (and (not (equal? (integer-matrix-ref D i j) 0)) (< (vector-ref ft i) (vector-ref fs j)))
+                                          (set! out (cons (list n i j) out)))
+                                      (lj (+ j 1)))))
+                              (li (+ i 1))))))))
+              (ssq-range (+ (complex-top-degree C) 1)))
+    (reverse out)))
+
+;; basis vectors of F^p C^n (indices) and the generators of Z_r^{p,n}
+(define (ssq-indices X n pred)
+  (let ((fs (filtered-complex-degree X n)))
+    (filter (lambda (j) (pred (vector-ref fs j))) (ssq-range (vector-length fs)))))
+(define (ssq-embed idx coords dim)               ;; coordinates on idx -> vector in C^n
+  (let ((v (make-vector dim 0)))
+    (let loop ((is idx) (k 0)) (if (not (null? is)) (begin (vector-set! v (car is) (vector-ref coords k)) (loop (cdr is) (+ k 1)))))
+    v))
+;; Z_r^{p,n}; the condition on D x needs the filtration of C^{n+1}, so a
+;; complex carrying D_top answers only for n < top
+(define (ssq-Z X r p n)
+  (let* ((C (filtered-complex-complex X)) (dim (ssq-dim X n))
+         (src (ssq-indices X n (lambda (f) (>= f p)))) (D (complex-map C n)))
+    (cond ((null? src) '())
+          ((or (< r 0) (not D) (= 0 (ssq-rows D))) (map (lambda (j) (let ((v (make-vector dim 0))) (vector-set! v j 1) v)) src))
+          ((>= n (complex-top-degree C))
+           (error "core.homological.spectral: degree at or above the top of the filtered complex (build it one degree further)" n))
+          (else
+           (let* ((ft (filtered-complex-degree X (+ n 1)))
+                  (rows (filter (lambda (i) (< (vector-ref ft i) (+ p r))) (ssq-range (ssq-rows D))))
+                  (A (if (null? rows) #f
+                         (list->vector (map (lambda (i) (list->vector (map (lambda (j) (integer-matrix-ref D i j)) src))) rows)))))
+             (map (lambda (k) (ssq-embed src k dim)) (coefficient-kernel (complex-ring C) A (length src))))))))
+(define (ssq-D-image X n vs)                     ;; D applied to vectors of C^n
+  (let* ((C (filtered-complex-complex X)) (D (complex-map C n)))
+    (if (or (not D) (= 0 (ssq-rows D))) '() (map (lambda (v) (integer-matrix-vector D v)) vs))))
+(define (ssq-B X r p n)
+  (append (if (> n 0) (ssq-D-image X (- n 1) (ssq-Z X (- r 1) (+ (- p r) 1) (- n 1))) '())
+          (ssq-Z X (- r 1) (+ p 1) n)))
+(define (ssq-cols-matrix vs dim) (if (null? vs) #f (integer-matrix-from-columns vs dim)))
+;; E_r^{p,q} as (betti torsion), n = p + q
+(define (spectral-sequence-entry X r p q)
+  (let* ((n (+ p q)) (R (complex-ring (filtered-complex-complex X))) (dim (ssq-dim X n)))
+    (if (or (< n 0) (> n (complex-top-degree (filtered-complex-complex X)))) (list 0 '())
+        (let ((Z (ssq-Z X r p n)) (B (ssq-B X r p n)))
+          (if (eq? (coefficient-kind R) 'Z)
+              (lattice-quotient-invariants Z B dim)
+              (list (- (coefficient-rank R (ssq-cols-matrix Z dim)) (coefficient-rank R (ssq-cols-matrix B dim))) '()))))))
+;; every nonzero entry (p q betti torsion) of E_r with total degree <= nmax
+(define (spectral-sequence-page X r nmax)
+  (let* ((pr (filtered-complex-range X)) (pmin (car pr)) (pmax (cadr pr)))
+    (filter (lambda (e) (or (> (caddr e) 0) (not (null? (cadddr e)))))
+            (fold-left append '()
+                       (map (lambda (n) (map (lambda (p) (let ((e (spectral-sequence-entry X r p (- n p)))) (list p (- n p) (car e) (cadr e))))
+                                             (ssq-range-from pmin (+ pmax 1))))
+                            (ssq-range (+ nmax 1)))))))
+;; over a field: rank of d_r : E_r^{p,q} -> E_r^{p+r,q-r+1}
+;;   = dim(D Z_r^{p,n} + B_r^{p+r,n+1}) - dim B_r^{p+r,n+1}
+(define (spectral-sequence-differential-rank X r p q)
+  (let* ((n (+ p q)) (C (filtered-complex-complex X)) (R (complex-ring C)))
+    (if (eq? (coefficient-kind R) 'Z) (error "spectral-sequence-differential-rank: needs field coefficients"))
+    (if (or (< n 0) (>= n (complex-top-degree C))) 0
+        (let* ((dim (ssq-dim X (+ n 1))) (img (ssq-D-image X n (ssq-Z X r p n))) (B (ssq-B X r (+ p r) (+ n 1))))
+          (- (coefficient-rank R (ssq-cols-matrix (append img B) dim)) (coefficient-rank R (ssq-cols-matrix B dim)))))))
+;; over a field: every (r p q) with dim E_{r+1}^{p,q} /= dim E_r^{p,q} -
+;; rank(d_r out of (p,q)) - rank(d_r into (p,q)), for 0 <= r <= rmax and
+;; total degree < nmax: E_{r+1} is the cohomology of (E_r, d_r)
+(define (spectral-sequence-page-violations X rmax nmax)
+  (let* ((pr (filtered-complex-range X)) (pmin (car pr)) (pmax (cadr pr)) (out '()))
+    (for-each
+     (lambda (r)
+       (for-each
+        (lambda (n)
+          (for-each
+           (lambda (p)
+             (let* ((q (- n p))
+                    (e (car (spectral-sequence-entry X r p q)))
+                    (e2 (car (spectral-sequence-entry X (+ r 1) p q)))
+                    (dout (spectral-sequence-differential-rank X r p q))
+                    (din (spectral-sequence-differential-rank X r (- p r) (+ (- q 1) r))))
+               (if (not (= e2 (- e dout din))) (set! out (cons (list r p q e e2 dout din) out)))))
+           (ssq-range-from pmin (+ pmax 1))))
+        (ssq-range nmax)))
+     (ssq-range (+ rmax 1)))
+    (reverse out)))
+;; the page from which every differential in degrees <= nmax vanishes: the
+;; filtration is finite, so r = pmax - pmin + 1 suffices
+(define (spectral-sequence-limit-page X) (let ((pr (filtered-complex-range X))) (+ 1 (- (cadr pr) (car pr)))))
+
+;; gr^p H^n = F^p H^n / F^{p+1} H^n with F^p H^n the classes represented in
+;; F^p C^n: (Z^n cap F^p + B^n) / (Z^n cap F^{p+1} + B^n)
+(define (ssq-cocycles-in X p n)                  ;; cocycles in F^p C^n
+  (let* ((C (filtered-complex-complex X)) (dim (ssq-dim X n))
+         (src (ssq-indices X n (lambda (f) (>= f p)))) (D (complex-map C n)))
+    (cond ((null? src) '())
+          ((or (not D) (= 0 (ssq-rows D))) (map (lambda (j) (let ((v (make-vector dim 0))) (vector-set! v j 1) v)) src))
+          (else
+           (let ((A (list->vector (map (lambda (i) (list->vector (map (lambda (j) (integer-matrix-ref D i j)) src))) (ssq-range (ssq-rows D))))))
+             (map (lambda (k) (ssq-embed src k dim)) (coefficient-kernel (complex-ring C) A (length src))))))))
+(define (filtration-graded-cohomology X p n)
+  (let* ((C (filtered-complex-complex X)) (R (complex-ring C)) (dim (ssq-dim X n))
+         (B (if (> n 0) (ssq-D-image X (- n 1) (map (lambda (j) (let ((v (make-vector (ssq-dim X (- n 1)) 0))) (vector-set! v j 1) v)) (ssq-range (ssq-dim X (- n 1))))) '()))
+         (L (append (ssq-cocycles-in X p n) B)) (S (append (ssq-cocycles-in X (+ p 1) n) B)))
+    (if (eq? (coefficient-kind R) 'Z)
+        (lattice-quotient-invariants L S dim)
+        (list (- (coefficient-rank R (ssq-cols-matrix L dim)) (coefficient-rank R (ssq-cols-matrix S dim))) '()))))
+;; every (p q E_inf gr) where E_infinity^{p,q} and gr^p H^{p+q} differ, total
+;; degree <= nmax (H^nmax needs D_nmax: the complex must carry it)
+(define (spectral-sequence-convergence-violations X nmax)
+  (let* ((pr (filtered-complex-range X)) (rinf (spectral-sequence-limit-page X)) (out '()))
+    (for-each (lambda (n)
+                (for-each (lambda (p)
+                            (let ((e (spectral-sequence-entry X rinf p (- n p))) (g (filtration-graded-cohomology X p n)))
+                              (if (not (equal? e g)) (set! out (cons (list p (- n p) e g) out)))))
+                          (ssq-range-from (car pr) (+ (cadr pr) 1))))
+              (ssq-range (+ nmax 1)))
+    (reverse out)))
+
+;; the filtration of Tot(X) by columns (by = 'columns: p) or rows ('rows: q),
+;; built through total degree nmax + 1 so that every page and the limit are
+;; exact in total degrees <= nmax
+(define (double-complex-filtered-complex X nmax by)
+  (let ((T (total-complex X (+ nmax 1))))
+    (make-filtered-complex T
+                           (lambda (n)
+                             (let ((v (make-vector (complex-dim T n) 0)))
+                               (for-each (lambda (b)
+                                           (let ((p (car b)) (q (cadr b)) (off (caddr b)))
+                                             (let loop ((i 0)) (if (< i (double-complex-dim X p q)) (begin (vector-set! v (+ off i) (if (eq? by 'rows) q p)) (loop (+ i 1)))))))
+                                         (total-complex-offsets X n))
+                               v)))))

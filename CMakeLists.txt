@@ -4344,6 +4344,32 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.simplicial and core.homological (ADR-0037): simplicial sets, nerves,
+# Kan complexes, mapping spaces; complexes over ring carriers, homology with
+# torsion, cones, Ext/Tor, spectral sequences, cup and cup-i products,
+# Steenrod squares, group cohomology. Each suite cross-checks against closed
+# forms and independent computations.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_sh_suite simplicial_test homological_test)
+        string(REPLACE "_test" "" _sh_name ${_sh_suite})
+        add_test(NAME ${_sh_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sh_suite}.esk")
+        add_test(NAME ${_sh_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sh_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sh_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=900"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_sh_name}_jit ${_sh_name}_aot PROPERTIES
+            TIMEOUT 2400
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_sh_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # core.topos: the internal language of the topos of a finite site, with
 # Kripke-Joyal forcing cross-checked against the Omega-valued interpretation,
 # the Kripke and Beth reductions, soundness of intuitionistic higher-order
@@ -4492,6 +4518,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(yetter_three_torus_finite_model_jit PROPERTIES TIMEOUT 900)
         set_tests_properties(yetter_three_torus_finite_model_aot PROPERTIES TIMEOUT 900)
     endif()
+    # The algebraic-topology examples written on core.simplicial and
+    # core.homological (ADR-0037) compile those libraries with the program,
+    # so each gets the budget of a library suite.
+    set(ESHKOL_SIMPLICIAL_EXAMPLES hocolim_kan_complexes_horns hocolim_two_groups_postnikov
+        dw_cohomology_rings_cup_products dw_cohomology_rings_nonabelian dw_group_cohomology_order_eight
+        postnikov_four_manifolds_second_k sheaf_descent_hypercohomology)
+    foreach(_sx ${ESHKOL_SIMPLICIAL_EXAMPLES})
+        if(TEST ${_sx}_jit)
+            set_property(TEST ${_sx}_jit APPEND PROPERTY ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+            set_tests_properties(${_sx}_jit ${_sx}_aot PROPERTIES TIMEOUT 1200)
+        endif()
+    endforeach()
 endif()
 
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
