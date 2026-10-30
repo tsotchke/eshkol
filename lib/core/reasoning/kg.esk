@@ -1,0 +1,302 @@
+;;; core.reasoning.kg -- an RDF-style triple store with a SPARQL-like query
+;;; language.
+;;;
+;;; Usage: (require core.reasoning.kg)
+;;;
+;;;   (define g (make-triple-store))
+;;;   (kg-add! g 'alice 'knows 'bob)
+;;;   (kg-add! g 'bob 'age 34)
+;;;   (kg-select g '(select (?x ?a)
+;;;                  (where (?x knows ?y) (?y age ?a) (filter (> ?a 30)))))
+;;;   ;; => ((alice 34))
+;;;
+;;; A triple is (subject predicate object); any value Eshkol hash tables key
+;;; by `equal?` can occupy a position. The store keeps three indexes over the
+;;; same set of triples -- SPO (subject -> predicate -> objects), POS
+;;; (predicate -> object -> subjects) and OSP (object -> subject ->
+;;; predicates) -- so a triple pattern with any combination of bound
+;;; positions is answered from one index without a scan.
+;;;
+;;; Queries: a basic graph pattern is a list of triple patterns whose
+;;; positions are constants or logic variables. Solutions are
+;;; consciousness-engine substitutions extended by `unify`, so `(walk '?x s)`
+;;; reads a binding. Patterns are joined in a greedy order: at each step the
+;;; pattern with the fewest index matches given the variables bound so far.
+;;; The select form adds FILTER expressions, OPTIONAL groups (left outer
+;;; join), UNION of groups, DISTINCT, ORDER BY, LIMIT/OFFSET and COUNT.
+;;;
+;;; Reference: docs/reference/stdlib/reasoning.md; design: ADR-0051.
+;;; Sources: W3C, "RDF 1.1 Concepts and Abstract Syntax" (2014); W3C,
+;;; "SPARQL 1.1 Query Language" (2013); C. Weiss, P. Karras, A. Bernstein,
+;;; "Hexastore: sextuple indexing for semantic web data management"
+;;; (VLDB 2008); A. Harth, S. Decker, "Optimized index structures for
+;;; querying RDF from the Web" (2005).
+
+(require stdlib)
+
+(provide make-triple-store triple-store? kg-add! kg-remove! kg-contains? kg-size
+         kg-triples kg-match kg-count kg-subjects kg-predicates kg-objects
+         kg-query kg-select kg-load! kg-index-consistent?)
+
+;; store: #(triple-store spo pos osp size)
+(define (make-triple-store) (vector 'triple-store (make-hash-table) (make-hash-table) (make-hash-table) 0))
+(define (triple-store? g) (and (vector? g) (= (vector-length g) 5) (eq? (vector-ref g 0) 'triple-store)))
+(define (kg-check g) (if (not (triple-store? g)) (error "kg: expected a store made by make-triple-store")))
+(define (kg-size g) (kg-check g) (vector-ref g 4))
+
+;; index level helpers: idx[a][b] is a hash set of c
+(define (kg-level-ref idx a) (hash-ref idx a #f))
+(define (kg-set-ref idx a b) (let ((l (hash-ref idx a #f))) (and l (hash-ref l b #f))))
+(define (kg-index-add! idx a b c)
+  (let* ((l (or (hash-ref idx a #f) (let ((h (make-hash-table))) (hash-set! idx a h) h)))
+         (s (or (hash-ref l b #f) (let ((h (make-hash-table))) (hash-set! l b h) h))))
+    (hash-set! s c #t)))
+(define (kg-index-remove! idx a b c)
+  (let ((l (hash-ref idx a #f)))
+    (if l (let ((s (hash-ref l b #f)))
+            (if s (begin (hash-remove! s c)
+                         (if (= (hash-count s) 0) (hash-remove! l b))
+                         (if (= (hash-count l) 0) (hash-remove! idx a))))))))
+
+(define (kg-contains? g s p o)
+  (kg-check g)
+  (let ((set (kg-set-ref (vector-ref g 1) s p))) (and set (hash-ref set o #f) #t)))
+(define (kg-add! g s p o)
+  (kg-check g)
+  (if (kg-contains? g s p o) #f
+      (begin (kg-index-add! (vector-ref g 1) s p o)
+             (kg-index-add! (vector-ref g 2) p o s)
+             (kg-index-add! (vector-ref g 3) o s p)
+             (vector-set! g 4 (+ (vector-ref g 4) 1))
+             #t)))
+(define (kg-remove! g s p o)
+  (kg-check g)
+  (if (not (kg-contains? g s p o)) #f
+      (begin (kg-index-remove! (vector-ref g 1) s p o)
+             (kg-index-remove! (vector-ref g 2) p o s)
+             (kg-index-remove! (vector-ref g 3) o s p)
+             (vector-set! g 4 (- (vector-ref g 4) 1))
+             #t)))
+(define (kg-load! g triples)
+  (for-each (lambda (t) (kg-add! g (car t) (cadr t) (caddr t))) triples) g)
+
+(define (kg-free? x) (logic-var? x))
+
+;; All triples matching a pattern; a position is bound unless it is a logic
+;; variable. Each combination of bound positions is answered by one index.
+(define (kg-match g s p o)
+  (kg-check g)
+  (let ((spo (vector-ref g 1)) (pos (vector-ref g 2)) (osp (vector-ref g 3))
+        (bs (not (kg-free? s))) (bp (not (kg-free? p))) (bo (not (kg-free? o))))
+    (define (keys h) (if h (hash-keys h) '()))
+    (cond
+      ((and bs bp bo) (if (kg-contains? g s p o) (list (list s p o)) '()))
+      ((and bs bp) (map (lambda (x) (list s p x)) (keys (kg-set-ref spo s p))))
+      ((and bp bo) (map (lambda (x) (list x p o)) (keys (kg-set-ref pos p o))))
+      ((and bo bs) (map (lambda (x) (list s x o)) (keys (kg-set-ref osp o s))))
+      (bs (let ((l (kg-level-ref spo s)))
+            (apply append (map (lambda (q) (map (lambda (x) (list s q x)) (keys (hash-ref l q #f)))) (keys l)))))
+      (bp (let ((l (kg-level-ref pos p)))
+            (apply append (map (lambda (x) (map (lambda (y) (list y p x)) (keys (hash-ref l x #f)))) (keys l)))))
+      (bo (let ((l (kg-level-ref osp o)))
+            (apply append (map (lambda (y) (map (lambda (q) (list y q o)) (keys (hash-ref l y #f)))) (keys l)))))
+      (else (kg-triples g)))))
+
+;; Number of triples matching a pattern, from index sizes.
+(define (kg-count g s p o)
+  (kg-check g)
+  (let ((spo (vector-ref g 1)) (pos (vector-ref g 2)) (osp (vector-ref g 3))
+        (bs (not (kg-free? s))) (bp (not (kg-free? p))) (bo (not (kg-free? o))))
+    (define (size h) (if h (hash-count h) 0))
+    (define (sum-level l) (if l (fold-left + 0 (map (lambda (k) (hash-count (hash-ref l k #f))) (hash-keys l))) 0))
+    (cond ((and bs bp bo) (if (kg-contains? g s p o) 1 0))
+          ((and bs bp) (size (kg-set-ref spo s p)))
+          ((and bp bo) (size (kg-set-ref pos p o)))
+          ((and bo bs) (size (kg-set-ref osp o s)))
+          (bs (sum-level (kg-level-ref spo s)))
+          (bp (sum-level (kg-level-ref pos p)))
+          (bo (sum-level (kg-level-ref osp o)))
+          (else (vector-ref g 4)))))
+
+(define (kg-triples g)
+  (kg-check g)
+  (let ((spo (vector-ref g 1)))
+    (apply append
+           (map (lambda (s)
+                  (let ((l (hash-ref spo s #f)))
+                    (apply append (map (lambda (p) (map (lambda (o) (list s p o)) (hash-keys (hash-ref l p #f))))
+                                       (hash-keys l)))))
+                (hash-keys spo)))))
+(define (kg-subjects g) (kg-check g) (hash-keys (vector-ref g 1)))
+(define (kg-predicates g) (kg-check g) (hash-keys (vector-ref g 2)))
+(define (kg-objects g) (kg-check g) (hash-keys (vector-ref g 3)))
+
+;; The three indexes describe the same triple set.
+(define (kg-index-consistent? g)
+  (let* ((ts (kg-triples g)))
+    (and (= (length ts) (vector-ref g 4))
+         (let all ((ts ts))
+           (or (null? ts)
+               (let ((s (car (car ts))) (p (cadr (car ts))) (o (caddr (car ts))))
+                 (and (kg-set-ref (vector-ref g 2) p o) (hash-ref (kg-set-ref (vector-ref g 2) p o) s #f)
+                      (kg-set-ref (vector-ref g 3) o s) (hash-ref (kg-set-ref (vector-ref g 3) o s) p #f)
+                      (all (cdr ts))))))
+         (= (length ts) (kg-count-level (vector-ref g 2)))
+         (= (length ts) (kg-count-level (vector-ref g 3))))))
+(define (kg-count-level idx)
+  (fold-left + 0 (map (lambda (a) (let ((l (hash-ref idx a #f)))
+                                    (fold-left + 0 (map (lambda (b) (hash-count (hash-ref l b #f))) (hash-keys l)))))
+                      (hash-keys idx))))
+
+;; ---------------------------------------------------------------------------
+;; Basic graph patterns
+;; ---------------------------------------------------------------------------
+(define (kg-resolve x s) (if (kg-free? x) (walk x s) x))
+(define (kg-pattern-vars tp) (filter kg-free? tp))
+
+;; Solutions of one triple pattern under substitution s.
+(define (kg-extend g tp s)
+  (let ((rs (kg-resolve (car tp) s)) (rp (kg-resolve (cadr tp) s)) (ro (kg-resolve (caddr tp) s)))
+    (let loop ((ts (kg-match g rs rp ro)) (out '()))
+      (if (null? ts) (reverse out)
+          (let ((s2 (unify (list rs rp ro) (car ts) s)))
+            (loop (cdr ts) (if s2 (cons s2 out) out)))))))
+
+;; Greedy join order: fewest index matches given which variables are bound.
+(define (kg-order g patterns bound)
+  (if (null? patterns) '()
+      (let* ((score (lambda (tp)
+                      ;; matches counted with constants only, discounted for
+                      ;; each position an earlier pattern binds
+                      (let ((free-if-bound (lambda (x) (if (member x bound) '?_ x)))
+                            (nb (length (filter (lambda (v) (member v bound)) (kg-pattern-vars tp)))))
+                        (/ (kg-count g (free-if-bound (car tp)) (free-if-bound (cadr tp)) (free-if-bound (caddr tp)))
+                           (+ 1 (* 10 nb))))))
+             (best (fold-left (lambda (b tp) (if (< (score tp) (score b)) tp b)) (car patterns) (cdr patterns))))
+        (cons best (kg-order g (kg-remove-first best patterns) (append (kg-pattern-vars best) bound))))))
+(define (kg-remove-first x l) (cond ((null? l) '()) ((eq? (car l) x) (cdr l)) (else (cons (car l) (kg-remove-first x (cdr l))))))
+
+;; Solutions (substitutions) of a basic graph pattern.
+(define (kg-query g patterns . opt)
+  (kg-check g)
+  (for-each (lambda (tp) (if (not (and (list? tp) (= (length tp) 3))) (error "kg-query: a triple pattern has three positions" tp)))
+            patterns)
+  (let ((start (if (null? opt) (make-substitution) (car opt))))
+    (let join ((ps (kg-order g patterns '())) (sols (list start)))
+      (if (or (null? ps) (null? sols)) sols
+          (join (cdr ps) (apply append (map (lambda (s) (kg-extend g (car ps) s)) sols)))))))
+
+;; ---------------------------------------------------------------------------
+;; The select form
+;; ---------------------------------------------------------------------------
+;; (select (?v ...) | * | (count)
+;;   (where element ...)            element: triple pattern | (filter e)
+;;   [(order-by ?v | (desc ?v) ...)] [(limit n)] [(offset n)] [(distinct)])
+;; where-elements also include (optional element ...) and
+;; (union (element ...) (element ...) ...).
+(define (kg-eval-expr e s)
+  (cond ((kg-free? e) (let ((v (walk e s))) (if (kg-free? v) (error "kg: filter reads an unbound variable" e) v)))
+        ((pair? e)
+         (let ((op (car e)))
+           (cond
+             ((eq? op 'bound) (not (kg-free? (walk (cadr e) s))))
+             ((eq? op 'and) (let all ((xs (cdr e))) (or (null? xs) (and (kg-eval-expr (car xs) s) (all (cdr xs))))))
+             ((eq? op 'or) (let any ((xs (cdr e))) (and (pair? xs) (or (kg-eval-expr (car xs) s) (any (cdr xs))))))
+             ((eq? op 'not) (not (kg-eval-expr (cadr e) s)))
+             ((eq? op 'quote) (cadr e))
+             (else
+              (let ((args (map (lambda (x) (kg-eval-expr x s)) (cdr e))))
+                (cond ((eq? op '=) (equal? (car args) (cadr args)))
+                      ((eq? op '/=) (not (equal? (car args) (cadr args))))
+                      ((eq? op '<) (kg-less? (car args) (cadr args)))
+                      ((eq? op '>) (kg-less? (cadr args) (car args)))
+                      ((eq? op '<=) (not (kg-less? (cadr args) (car args))))
+                      ((eq? op '>=) (not (kg-less? (car args) (cadr args))))
+                      ((eq? op '+) (apply + args)) ((eq? op '-) (apply - args))
+                      ((eq? op '*) (apply * args)) ((eq? op '/) (apply / args))
+                      ((eq? op 'str) (kg-string (car args)))
+                      ((eq? op 'contains) (kg-contains-string? (kg-string (car args)) (kg-string (cadr args))))
+                      ((eq? op 'number?) (number? (car args)))
+                      (else (error "kg: unknown filter operator" op))))))))
+        (else e)))
+(define (kg-string x) (cond ((string? x) x) ((symbol? x) (symbol->string x)) ((number? x) (number->string x)) (else "")))
+(define (kg-contains-string? s sub)
+  (let ((n (string-length s)) (m (string-length sub)))
+    (let loop ((i 0)) (and (<= (+ i m) n) (or (string=? (substring s i (+ i m)) sub) (loop (+ i 1)))))))
+;; Total order for ORDER BY and comparisons: numbers, then strings and
+;; symbols by spelling.
+(define (kg-less? a b)
+  (cond ((and (number? a) (number? b)) (< a b))
+        ((number? a) #t) ((number? b) #f)
+        (else (string<? (kg-string a) (kg-string b)))))
+
+(define (kg-eval-group g elements sols)
+  (if (null? elements) sols
+      (let ((el (car elements)))
+        (cond
+          ((and (pair? el) (eq? (car el) 'filter))
+           (kg-eval-group g (cdr elements) (filter (lambda (s) (kg-eval-expr (cadr el) s)) sols)))
+          ((and (pair? el) (eq? (car el) 'optional))
+           (kg-eval-group g (cdr elements)
+                          (apply append (map (lambda (s) (let ((ext (kg-eval-group g (cdr el) (list s))))
+                                                           (if (null? ext) (list s) ext)))
+                                             sols))))
+          ((and (pair? el) (eq? (car el) 'union))
+           (kg-eval-group g (cdr elements)
+                          (apply append (map (lambda (branch) (kg-eval-group g branch sols)) (cdr el)))))
+          (else
+           ;; a maximal run of triple patterns is one basic graph pattern
+           (let split ((rest elements) (bgp '()))
+             (if (and (pair? rest) (pair? (car rest)) (not (memq (car (car rest)) '(filter optional union))))
+                 (split (cdr rest) (cons (car rest) bgp))
+                 (kg-eval-group g rest
+                                (apply append (map (lambda (s) (kg-query g (reverse bgp) s)) sols))))))))))
+
+(define (kg-clause q name)
+  (let loop ((cs (cddr q))) (cond ((null? cs) #f) ((eq? (car (car cs)) name) (car cs)) (else (loop (cdr cs))))))
+
+(define (kg-select g q)
+  (kg-check g)
+  (if (not (and (pair? q) (eq? (car q) 'select) (pair? (cdr q)))) (error "kg-select: expected (select vars (where ...) ...)" q))
+  (let* ((where (kg-clause q 'where))
+         (sols (kg-eval-group g (if where (cdr where) '()) (list (make-substitution))))
+         (proj (cadr q))
+         (vars (cond ((eq? proj '*) (kg-where-vars (if where (cdr where) '())))
+                     ((and (pair? proj) (eq? (car proj) 'count)) '())
+                     (else proj)))
+         (row-of (lambda (s) (map (lambda (v) (let ((x (walk v s))) (if (kg-free? x) #f x))) vars)))
+         (order (kg-clause q 'order-by))
+         (sorted (if order
+                     (sort sols (lambda (a b)
+                                  (let cmp ((keys (cdr order)))
+                                    (if (null? keys) #f
+                                        (let* ((k (car keys)) (desc (and (pair? k) (eq? (car k) 'desc)))
+                                               (v (if (pair? k) (cadr k) k))
+                                               (x (walk v a)) (y (walk v b)))
+                                          (cond ((kg-less? x y) (not desc))
+                                                ((kg-less? y x) desc)
+                                                (else (cmp (cdr keys)))))))))
+                     sols))
+         (rows (map row-of sorted))
+         (rows (if (kg-clause q 'distinct)
+                   (let dedup ((rs rows) (seen (make-hash-table)) (out '()))
+                     (cond ((null? rs) (reverse out))
+                           ((hash-ref seen (car rs) #f) (dedup (cdr rs) seen out))
+                           (else (hash-set! seen (car rs) #t) (dedup (cdr rs) seen (cons (car rs) out)))))
+                   rows))
+         (offset (let ((c (kg-clause q 'offset))) (if c (cadr c) 0)))
+         (limit (let ((c (kg-clause q 'limit))) (if c (cadr c) #f)))
+         (rows (let drop ((rs rows) (k offset)) (if (or (= k 0) (null? rs)) rs (drop (cdr rs) (- k 1)))))
+         (rows (if limit (let take ((rs rows) (k limit)) (if (or (= k 0) (null? rs)) '() (cons (car rs) (take (cdr rs) (- k 1))))) rows)))
+    (if (and (pair? proj) (eq? (car proj) 'count)) (length rows) rows)))
+
+(define (kg-where-vars elements)
+  (let loop ((es elements) (out '()))
+    (if (null? es) (reverse out)
+        (let ((e (car es)))
+          (loop (cdr es)
+                (cond ((and (pair? e) (memq (car e) '(optional))) (append (reverse (kg-where-vars (cdr e))) out))
+                      ((and (pair? e) (eq? (car e) 'union))
+                       (append (reverse (apply append (map kg-where-vars (cdr e)))) out))
+                      ((and (pair? e) (eq? (car e) 'filter)) out)
+                      (else (fold-left (lambda (acc v) (if (member v acc) acc (cons v acc))) out (kg-pattern-vars e)))))))))
