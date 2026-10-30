@@ -1,4 +1,4 @@
-;; Dependent types (ADR-0042): the implicit index n of dot is fixed to 3 by
+;; Dependent types (ADR-0042): the implicit index n of dot is determined as 3 by
 ;; the first argument, so a vector of length 2 in the second position is a
 ;; failed obligation. It is a compile-time error in the default mode.
 ;; EXPECT-MODE: default

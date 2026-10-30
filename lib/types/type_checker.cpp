@@ -7307,7 +7307,7 @@ TypeId TypeChecker::applyDependent(TypeId callee, const eshkol_ast_t* expr,
                 judgeTails(arg, expected, CheckSite{label, true, false});
             }
         } else {
-            // The domain mentions an index the call has not fixed yet:
+            // The domain mentions an index the call has not determined yet:
             // unification fixes it from this argument. Against a nominal
             // argument only the erasure can be judged.
             const bool erased_ok = rel.isConsistentSubtype(env_.erase(actual), env_.eraseTerm(dom));

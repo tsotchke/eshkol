@@ -1032,7 +1032,7 @@ records the decision.
 5. **Obligations.** It is a compile-time error, in every mode except
    `--unsafe`, when an index is not definitionally equal to the one a type
    requires, a family argument's universe exceeds its parameter's, a Pi, Sigma
-   or family type is ill-formed or applied to the wrong number of arguments,
+   or family type is ill-formed or applied to a number of arguments other than its arity,
    or a variable a dependent type names is assigned with `set!`. A vector
    index known statically to be outside a length known statically is a type
    error with the mode's severity (a warning in gradual mode). An index that is

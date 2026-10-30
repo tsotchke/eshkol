@@ -751,7 +751,7 @@ This design enables rapid prototyping with progressive type safety.
 
 | Finding | `--types=gradual` (default) | `--types=strict` (`--strict-types`) | `--unsafe` |
 |---|---|---|---|
-| A failed dependent-type obligation: an index that is not definitionally equal to the one required, a universe inconsistency, an ill-formed Pi/Sigma/family type, a family or dependent call with the wrong number of arguments, assigning a variable an annotation uses as an index | error | error | not reported |
+| A failed dependent-type obligation: an index that is not definitionally equal to the one required, a universe inconsistency, an ill-formed Pi/Sigma/family type, a family or dependent call whose number of arguments is not its arity, assigning a variable an annotation uses as an index | error | error | not reported |
 | A nominal type mismatch, including those the checking direction finds, and a vector index known statically to be outside a length known statically | warning | error | not reported |
 | A linearity violation | error | error | not reported |
 | An index not known statically at a typed boundary | accepted | accepted | accepted |

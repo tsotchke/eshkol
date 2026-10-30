@@ -1,5 +1,5 @@
 ;; Type families (ADR-0042): (Matrix real 2 3) has two rows, so a literal
-;; with three rows is refused, and the row whose length is wrong is named.
+;; with three rows is refused, and the row whose length does not match is named.
 ;; EXPECT-MODE: default
 ;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: definition of 'm': expected (vector (vector Float64 3) 2), got a vector of 3 elements

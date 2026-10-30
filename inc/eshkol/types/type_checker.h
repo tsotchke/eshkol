@@ -640,7 +640,7 @@ public:
      * dependent fragment that is provably not met -- an index that is not
      * definitionally equal to the one required, a universe inconsistency, an
      * ill-formed Pi/Sigma/family type, a dependent application with the
-     * wrong arity, an assigned index variable. Only programs that write dependent
+     * an arity mismatch, an assigned index variable. Only programs that write dependent
      * types can incur one, so it is fatal in every mode except `--unsafe`,
      * like a linearity violation.
      */

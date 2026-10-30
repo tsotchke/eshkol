@@ -1,6 +1,6 @@
 # ADR 0042: Dependent type enforcement — bidirectional checking over one core term language
 
-- Status: Accepted — implemented for the v1.9.0-types rung (this record's stages 1-4); stages 5-7 planned
+- Status: Proposed — implemented for the v1.9.0-types rung (this record's stages 1-4); stages 5-7 planned
 - Date: 2026-10-30
 - Decision owners: language, types, frontend, bytecode VM
 - Scope: the v1.9.0-types rung of [ADR 0004](0004-type-system-trajectory.md): the checking
@@ -143,7 +143,7 @@ still mentions a variable of that `let` is erased when it leaves scope.
 
 | Finding | `--types=gradual` (default) | `--types=strict` (`--strict-types`) | `--unsafe` |
 |---|---|---|---|
-| A failed obligation of the dependent fragment: an index not definitionally equal to the one required, a universe inconsistency, an ill-formed Pi/Sigma/family type, a family or dependent call with the wrong number of arguments, assigning an index variable | **error** | **error** | not reported |
+| A failed obligation of the dependent fragment: an index not definitionally equal to the one required, a universe inconsistency, an ill-formed Pi/Sigma/family type, a family or dependent call whose number of arguments is not its arity, assigning an index variable | **error** | **error** | not reported |
 | A nominal mismatch, including those the checking direction finds, and a vector index known statically to be outside a length known statically | warning | **error** | not reported |
 | A linearity violation (unchanged) | error | error | not reported |
 | An index not known statically at a typed boundary (a `Vector` of unknown length passed where `(vector real 3)` is expected) | accepted | accepted | accepted |
