@@ -776,7 +776,9 @@ private:
     bool involvesDependentType(TypeId t) const;
     /** Report that a value of @p actual reached a slot of @p expected, at the right severity. */
     void reportFlowFailure(const eshkol_ast_t* node, const std::string& label,
-                           TypeId expected, TypeId actual);
+                           TypeId expected, TypeId actual, const CheckSite& site);
+    /** True if the flow fails only in its dependent part (indices, universes). */
+    bool isDependentFailure(TypeId actual, TypeId expected, const CheckSite& site) const;
     /** Whether a value of @p actual may flow where @p site expects @p expected. */
     bool flowAccepted(TypeId actual, TypeId expected, const CheckSite& site) const;
 

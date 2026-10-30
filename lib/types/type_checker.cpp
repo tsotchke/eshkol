@@ -1324,8 +1324,8 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
                         " ...) contradicts the inferred type " +
                         env_.getTypeName(inner.inferred_type) + "; no value can satisfy it";
                     if (!ascriptionIsBelievable(inner.inferred_type, ascribed)) {
-                        if (involvesDependentType(ascribed) ||
-                            involvesDependentType(inner.inferred_type)) {
+                        if (ascriptionIsBelievable(env_.erase(inner.inferred_type),
+                                                   env_.erase(ascribed))) {
                             reportObligation(contradiction, expr);
                         } else {
                             reportTypeIssue(contradiction, expr);
@@ -3108,15 +3108,11 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
                         }
 
                         if (!compatible) {
-                            std::string msg = "argument " + std::to_string(i + 1) + " of '" +
+                            const std::string label = "argument " + std::to_string(i + 1) + " of '" +
                                 std::string(func_expr->type == ESHKOL_VAR ? func_expr->variable.id : "<lambda>") +
-                                "': expected " + env_.getTypeName(expected) +
-                                ", got " + env_.getTypeName(actual);
-                            if (involvesDependentType(expected) || involvesDependentType(actual)) {
-                                reportObligation(msg, &call.variables[i]);
-                            } else {
-                                reportTypeIssue(msg, &call.variables[i]);
-                            }
+                                "'";
+                            reportFlowFailure(&call.variables[i], label, expected, actual,
+                                              CheckSite{label, true, false});
                             continue;
                         }
                     }
@@ -3342,7 +3338,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
             const CheckSite site{"definition of '" + eshkol_syntax_source_text(def.name) + "'",
                                  false, false};
             if (!TypeRelation(env_).isConsistentSubtype(final_func_type, want)) {
-                reportFlowFailure(expr, site.label, want, final_func_type);
+                reportFlowFailure(expr, site.label, want, final_func_type, site);
             } else {
                 (co_await checkDefineAgainst(expr, want, site));
             }
@@ -6391,11 +6387,23 @@ bool TypeChecker::flowAccepted(TypeId actual, TypeId expected, const CheckSite& 
     return site.numeric && isNumericType(env_, expected) && isNumericType(env_, actual);
 }
 
+bool TypeChecker::isDependentFailure(TypeId actual, TypeId expected, const CheckSite& site) const {
+    // A failure is an obligation of the dependent fragment when the erased
+    // types would flow and only the dependent part (an index, a universe)
+    // does not. A vector where a number is expected is a nominal mismatch,
+    // whatever its length.
+    if (!involvesDependentType(expected) && !involvesDependentType(actual)) return false;
+    return flowAccepted(env_.erase(actual), env_.erase(expected), site);
+}
+
 void TypeChecker::reportFlowFailure(const eshkol_ast_t* node, const std::string& label,
-                                    TypeId expected, TypeId actual) {
+                                    TypeId expected, TypeId actual, const CheckSite& site) {
+    // Against a nominal expected type the found type is spelled as its
+    // erasure, the type the nominal judgment compares.
+    const TypeId shown = involvesDependentType(expected) ? actual : env_.erase(actual);
     const std::string msg = label + ": expected " + env_.getTypeName(expected) + ", got " +
-                            env_.getTypeName(actual);
-    if (involvesDependentType(expected) || involvesDependentType(actual)) {
+                            env_.getTypeName(shown);
+    if (isDependentFailure(actual, expected, site)) {
         reportObligation(msg, node);
     } else {
         reportTypeIssue(msg, node);
@@ -6531,7 +6539,7 @@ size_t TypeChecker::judgeLeaf(const eshkol_ast_t* leaf, TypeId expected, const C
     }
     const TypeId actual = preciseTypeOf(leaf);
     if (flowAccepted(actual, expected, site)) return 0;
-    reportFlowFailure(leaf, site.label, expected, actual);
+    reportFlowFailure(leaf, site.label, expected, actual, site);
     return 1;
 }
 
@@ -7284,22 +7292,29 @@ TypeId TypeChecker::applyDependent(TypeId callee, const eshkol_ast_t* expr,
             // A closed domain: the ordinary flow judgment and its tails.
             const TypeId expected = env_.typeFromTerm(dom);
             if (!flowAccepted(actual, expected, CheckSite{label, true, false})) {
-                reportFlowFailure(arg, label, expected, actual);
+                reportFlowFailure(arg, label, expected, actual, CheckSite{label, true, false});
             } else {
                 judgeTails(arg, expected, CheckSite{label, true, false});
             }
-        } else if (env_.isTermType(actual)) {
+        } else {
             // The domain mentions an index the call has not fixed yet:
-            // unification fixes it from this argument.
-            if (terms.unify(env_.termOf(actual), dom, leaf, /*solve=*/true) == TermEq::Unequal) {
-                reportObligation(label + ": expected " + env_.printTerm(terms.normalize(dom)) +
-                                     ", got " + env_.getTypeName(actual),
-                                 arg);
+            // unification fixes it from this argument. Against a nominal
+            // argument only the erasure can be judged.
+            const bool erased_ok = rel.isConsistentSubtype(env_.erase(actual), env_.eraseTerm(dom));
+            const bool ok = env_.isTermType(actual)
+                                ? erased_ok && terms.unify(env_.termOf(actual), dom, leaf,
+                                                           /*solve=*/true) != TermEq::Unequal
+                                : erased_ok;
+            if (!ok) {
+                const std::string msg = label + ": expected " +
+                                        env_.printTerm(terms.normalize(dom)) + ", got " +
+                                        env_.getTypeName(actual);
+                if (erased_ok) {
+                    reportObligation(msg, arg);
+                } else {
+                    reportTypeIssue(msg, arg);
+                }
             }
-        } else if (!rel.isConsistentSubtype(actual, env_.eraseTerm(dom))) {
-            reportObligation(label + ": expected " + env_.printTerm(terms.normalize(dom)) +
-                                 ", got " + env_.getTypeName(actual),
-                             arg);
         }
         auto value = indexTermOf(arg);
         values.push_back(value ? *value : terms.freshMeta());
