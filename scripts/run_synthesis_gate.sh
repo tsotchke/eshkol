@@ -9,10 +9,11 @@
 #   synthesis_hole_diagnostics      the completion diagnostic
 #   synthesis_holes_strict_types    completions pass the checker with type errors fatal
 #   synthesis_hole_refusal_{jit,aot} a hole with no completion stops compilation
+#   synthesis_hole_vm_named         the bytecode compiler names an unbound hole
 #
 # It writes one event to $TRACE_DIR/v17_synthesis.jsonl:
 #   {"kind": "v1_7_synthesis", "name": "v17_synthesis", "value": PASS|FAIL}
-# PASS only when all ten entries ran and passed. A missing entry is a FAIL.
+# PASS only when all eleven entries ran and passed. A missing entry is a FAIL.
 #
 #   BUILD_DIR  (env, default "build")   the CMake build directory
 #   TRACE_DIR  (env, default scripts/icc_traces)
@@ -44,8 +45,8 @@ TRACE_FILE="$TRACE_DIR/v17_synthesis.jsonl"
 WORK="$BUILD_DIR_PATH/test-work/synthesis-gate"
 mkdir -p "$WORK"
 
-TESTS='^(synthesis_test_jit|synthesis_test_aot|gnn_test_jit|gnn_test_aot|synthesis_holes_test_jit|synthesis_holes_test_aot|synthesis_hole_diagnostics|synthesis_holes_strict_types|synthesis_hole_refusal_jit|synthesis_hole_refusal_aot)$'
-EXPECTED=10
+TESTS='^(synthesis_test_jit|synthesis_test_aot|gnn_test_jit|gnn_test_aot|synthesis_holes_test_jit|synthesis_holes_test_aot|synthesis_hole_diagnostics|synthesis_holes_strict_types|synthesis_hole_refusal_jit|synthesis_hole_refusal_aot|synthesis_hole_vm_named)$'
+EXPECTED=11
 
 emit_event() { # PASS|FAIL snippet
     python3 - "$TRACE_FILE" "$1" "$2" <<'PY'

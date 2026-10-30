@@ -5229,7 +5229,15 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (node->symbol[0] == '?') {
+        if (strcmp(node->symbol, "??") == 0) {
+            /* An unbound `??` is a synthesis hole (ADR-0052). Holes are
+             * completed by the native compiler's type checker; this compiler
+             * has none, so it names the hole instead of reading it as data. */
+            vm_compile_error("synthesis hole ?? is completed by the native compiler "
+                             "(eshkol-run -r or a native build); the bytecode compiler does not complete holes",
+                             node->symbol);
+            chunk_emit(c, OP_NIL, 0);
+        } else if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
         } else if (vm_private_import_matches_unqualified(node->symbol)) {
             vm_compile_error("module-private binding is not visible to this importer",

@@ -4370,6 +4370,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ENVIRONMENT "ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? in 'f': no well-typed completion of type"
         FAIL_REGULAR_EXPRESSION "fatal signal")
+    # The bytecode compiler has no type checker; it names an unbound hole.
+    add_test(NAME synthesis_hole_vm_named
+        COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm --emit-eskb
+                "${CMAKE_CURRENT_BINARY_DIR}/synthesis_hole_unfillable.eskb"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk")
+    set_tests_properties(synthesis_hole_vm_named PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? is completed by the native compiler"
+        FAIL_REGULAR_EXPRESSION "fatal signal")
     add_test(NAME synthesis_hole_refusal_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
         "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk"
