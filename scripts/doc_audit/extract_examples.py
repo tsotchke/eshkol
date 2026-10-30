@@ -89,6 +89,7 @@ GATED_SCOPES = {
     "upgrading": ["docs/UPGRADING.md"],
     # Reference pages join one page at a time, like the guides.
     "reference": ["docs/reference/stdlib/ring.md", "docs/reference/stdlib/multimodular.md"],
+    "reference-groebner": ["docs/reference/stdlib/groebner.md"],
 }
 
 SKIP_REASONS = (

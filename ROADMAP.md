@@ -859,6 +859,16 @@ under the same discipline that made `Qubit` linear.
       example runs on the libraries
 - [ ] `core.symbolic` coefficient fields and `core.dbsp` weights taking a
       `core.ring` carrier (ADR-0034, library rung)
+- [x] Groebner bases on ring carriers (ADR-0040): `core.ring` gains
+      K[x1..xn] under lex, grlex, grevlex, block, elimination and weight
+      orders; `core.groebner` gives division, Buchberger with the
+      Gebauer-Moeller criteria, reduced bases over Q, F_p and other field
+      carriers, the multimodular method over Q with an exact check over Q,
+      membership, elimination, intersection, quotient, saturation, radical
+      membership, dimension, Hilbert polynomials and zero-dimensional
+      triangular form and solutions. Gates: `groebner_jit`/`groebner_aot`
+      and the 180-case SymPy cross-check (criterion `v14_groebner`).
+      Planned for v1.4.1: F4-style reduction, FGLM, triangular decomposition
 
 ---
 

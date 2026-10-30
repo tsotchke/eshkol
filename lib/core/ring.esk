@@ -21,6 +21,8 @@
 ;;;   (make-zmod m)   Z/m; a field exactly when m is prime
 ;;;   (make-jets K n) K[e]/e^n over any carrier K (n = 2: dual numbers)
 ;;;   (make-polys K)  K[x] over any carrier K
+;;;   (make-polys K (x1 ... xn) [order])
+;;;                   K[x1..xn], sparse, under a monomial order
 ;;;   (zset-group-ring op identity inverse)
 ;;;                   Z[G] for an abelian group G, as core.dbsp Z-sets
 ;;; and core.algebraic_domain makes every number field Q(alpha) and its
@@ -60,6 +62,8 @@
   make-jet jet-seed jet-constant jet-coefficients jet-coefficient
   ring-poly ring-poly-variable ring-poly-coefficients ring-poly-degree
   ring-poly-leading ring-poly-eval
+  ring-poly-variables ring-poly-variable-names ring-poly-monomial-order
+  ring-poly-terms ring-poly-leading-monomial monomial-compare
   ;; ring maps
   make-ring-map ring-map? ring-map-apply ring-map-source ring-map-target
   ring-map-compose ring-base-change zmod-reduction jet-primal
@@ -120,7 +124,7 @@
 (define rc-family-table
   (list (list 1 'integers) (list 2 'rationals) (list 3 'flonums)
         (list 4 'zmod) (list 5 'jets) (list 6 'polys) (list 7 'group-ring)
-        (list 8 'algebraic) (list 9 'numeric-tower) (list 64 'user)))
+        (list 8 'algebraic) (list 9 'numeric-tower) (list 10 'mpolys) (list 64 'user)))
 (define (ring-families) rc-family-table)
 
 (define (ring-carrier? x)
@@ -475,10 +479,14 @@
 ;;   3. Q enters a Q-algebra (and the IEEE tier, by rounding: rule 5).
 ;;   4. a K-element enters K[e]/e^n, K[x] and the other carriers over K as a
 ;;      constant, along any chain of bases.
+;;   5. a carrier may declare what else enters it (its extra 'enters, a
+;;      procedure from a carrier to a map or #f): K[x1..xn] admits the
+;;      polynomials over K in some of its variables.
 (define (rc-embedding C R)
   (cond ((ring-carrier=? C R) (lambda (x) (rc-rep-of C x)))
         ((= (vector-ref C 2) 1) (vector-ref R 17))
         ((and (= (vector-ref C 2) 2) (vector-ref R 22)) (vector-ref R 22))
+        ((let ((enters (rc-extra R 'enters))) (and enters (enters C))) => (lambda (m) m))
         ((and (vector-ref R 11) (vector-ref R 24))
          (let ((m (rc-embedding C (vector-ref R 11))) (constant (vector-ref R 24)))
            (and m (lambda (x) (constant (m x))))))
@@ -815,12 +823,16 @@
 
 (define (make-polys K . variable)
   (rc-check K "make-polys")
-  (let* ((var (if (null? variable) 'x (car variable)))
-         (params (list K var)))
-    (if (not (symbol? var)) (error "make-polys: the variable must be a symbol" var))
-    (if (rc-interned? K)
-        (rc-intern 6 params (lambda () (rc-build-polys K var)))
-        (rc-build-polys K var))))
+  (if (and (pair? variable) (list? (car variable)))
+      (rc-make-mpolys K (car variable) (if (pair? (cdr variable)) (cadr variable) 'grevlex))
+      (let* ((var (if (null? variable) 'x (car variable)))
+             (params (list K var)))
+        (if (not (symbol? var)) (error "make-polys: the variable must be a symbol" var))
+        (if (and (pair? variable) (pair? (cdr variable)))
+            (error "make-polys: a monomial order needs a list of variables" (cadr variable)))
+        (if (rc-interned? K)
+            (rc-intern 6 params (lambda () (rc-build-polys K var)))
+            (rc-build-polys K var)))))
 
 (define (rc-build-polys K var)
   (let* ((box (vector #f))
@@ -965,36 +977,465 @@
     (vector-set! P 13 (constant kone))
     P))
 
-(define (rc-polys-check P who)
-  (rc-check P who)
-  (if (not (= (vector-ref P 2) 6)) (error (string-append who ": expected a polynomial carrier K[x]") (vector-ref P 5)))
-  P)
 (define (rc-poly-element x who)
   (if (and (rc-located? x) (= (vector-ref (vector-ref x 1) 2) 6)) x
       (error (string-append who ": expected a polynomial") x)))
-;; The polynomial with the given coefficients, lowest degree first.
+;; The polynomial with the given coefficients, lowest degree first; over
+;; K[x1..xn], the polynomial with the given terms (coefficient e1 ... en).
 (define (ring-poly P coefficients)
-  (rc-polys-check P "ring-poly")
+  (rc-any-polys-check P "ring-poly")
+  (if (rc-mpolys? P)
+      ((rc-extra P 'from-terms) (rc-mp-spec-terms P coefficients))
+      (let ((K (vector-ref P 11)))
+        ;; the sum with zero trims trailing zero coefficients
+        ((vector-ref P 14)
+         (vector 'ring-element-v1 P (map (lambda (c) (rc-admit K c 'ring-poly)) coefficients))
+         (vector-ref P 12)))))
+;; The variable of K[x], or the named variable of K[x1..xn].
+(define (ring-poly-variable P . name)
+  (rc-any-polys-check P "ring-poly-variable")
   (let ((K (vector-ref P 11)))
-    ;; the sum with zero trims trailing zero coefficients
-    ((vector-ref P 14)
-     (vector 'ring-element-v1 P (map (lambda (c) (rc-admit K c 'ring-poly)) coefficients))
-     (vector-ref P 12))))
-(define (ring-poly-variable P)
-  (rc-polys-check P "ring-poly-variable")
-  (let ((K (vector-ref P 11)))
-    (vector 'ring-element-v1 P
-            (if ((vector-ref K 18) (vector-ref K 13) (vector-ref K 12)) '() (list (vector-ref K 12) (vector-ref K 13))))))
+    (if (rc-mpolys? P)
+        (let* ((vars (rc-extra P 'variables))
+               (i (if (and (pair? name) (rc-index-of (car name) vars)) (rc-index-of (car name) vars)
+                      (error "ring-poly-variable: name one of the variables" (if (pair? name) (car name) #f) vars)))
+               (e (make-vector (length vars) 0)))
+          (vector-set! e i 1)
+          ((rc-extra P 'from-terms)
+           (if ((vector-ref K 18) (vector-ref K 13) (vector-ref K 12)) '() (list (cons e (vector-ref K 13))))))
+        (begin
+          (if (and (pair? name) (not (eq? (car name) (rc-extra P 'variable))))
+              (error "ring-poly-variable: not the variable of this carrier" (car name) (rc-extra P 'variable)))
+          (vector 'ring-element-v1 P
+                  (if ((vector-ref K 18) (vector-ref K 13) (vector-ref K 12)) '() (list (vector-ref K 12) (vector-ref K 13))))))))
 (define (ring-poly-coefficients p) (vector-ref (rc-poly-element p "ring-poly-coefficients") 2))
-(define (ring-poly-degree p) (- (length (ring-poly-coefficients p)) 1))
+;; The terms (coefficient e1 ... en), leading term first.
+(define (ring-poly-terms p)
+  (let ((x (rc-any-poly-element p "ring-poly-terms")))
+    (if (= (vector-ref (vector-ref x 1) 2) 10)
+        (map (lambda (t) (cons (cdr t) (vector->list (car t)))) (vector-ref x 2))
+        (let ((kzero? (let ((K (vector-ref (vector-ref x 1) 11))) (lambda (c) ((vector-ref K 18) c (vector-ref K 12))))))
+          (let loop ((cs (vector-ref x 2)) (d 0) (acc '()))
+            (cond ((null? cs) acc)
+                  ((kzero? (car cs)) (loop (cdr cs) (+ d 1) acc))
+                  (else (loop (cdr cs) (+ d 1) (cons (list (car cs) d) acc)))))))))
+;; The total degree; -1 for the zero polynomial.
+(define (ring-poly-degree p)
+  (let ((x (rc-any-poly-element p "ring-poly-degree")))
+    (if (= (vector-ref (vector-ref x 1) 2) 10)
+        (let loop ((ts (vector-ref x 2)) (d -1))
+          (if (null? ts) d
+              (loop (cdr ts) (max d (rc-mono-degree (car (car ts)) 0 (vector-length (car (car ts))))))))
+        (- (length (vector-ref x 2)) 1))))
+;; The leading coefficient (zero for the zero polynomial).
 (define (ring-poly-leading p)
-  (let ((cs (ring-poly-coefficients p)))
-    (if (null? cs) (vector-ref (vector-ref (vector-ref p 1) 11) 12) (list-ref cs (- (length cs) 1)))))
-;; Horner evaluation at c in the coefficient carrier.
+  (let ((x (rc-any-poly-element p "ring-poly-leading")))
+    (if (= (vector-ref (vector-ref x 1) 2) 10)
+        (if (null? (vector-ref x 2)) (vector-ref (vector-ref (vector-ref x 1) 11) 12) (cdr (car (vector-ref x 2))))
+        (let ((cs (vector-ref x 2)))
+          (if (null? cs) (vector-ref (vector-ref (vector-ref x 1) 11) 12) (list-ref cs (- (length cs) 1)))))))
+;; The exponents of the leading monomial; refused for the zero polynomial.
+(define (ring-poly-leading-monomial p)
+  (let ((x (rc-any-poly-element p "ring-poly-leading-monomial")))
+    (cond ((null? (vector-ref x 2)) (error "ring-poly-leading-monomial: the zero polynomial has no leading monomial"))
+          ((= (vector-ref (vector-ref x 1) 2) 10) (vector->list (car (car (vector-ref x 2)))))
+          (else (list (- (length (vector-ref x 2)) 1))))))
+;; sum_t c_t prod_i x_i^e_i over a carrier S, coefficients through embed.
+(define (rc-mp-evaluate ts xs S embed)
+  (let ((add (vector-ref S 14)) (mul (vector-ref S 16)) (one (vector-ref S 13)))
+    (let loop ((ts ts) (acc (vector-ref S 12)))
+      (if (null? ts)
+          acc
+          (let ((e (car (car ts))))
+            (loop (cdr ts)
+                  (add acc
+                       (let mono ((i 0) (m (embed (cdr (car ts)))))
+                         (if (= i (vector-length e)) m
+                             (mono (+ i 1)
+                                   (let pw ((b (vector-ref xs i)) (k (vector-ref e i)) (r m))
+                                     (cond ((= k 0) r)
+                                           ((odd? k) (pw (mul b b) (quotient k 2) (mul r b)))
+                                           (else (pw (mul b b) (quotient k 2) r))))))))))))))
+(define (rc-mp-points P S a who)
+  (let ((n (length (rc-extra P 'variables))))
+    (if (not (and (list? a) (= (length a) n)))
+        (error (string-append who ": expected one value per variable") a n))
+    (list->vector (map (lambda (c) (rc-admit S c (string->symbol who))) a))))
+;; Horner evaluation at c in the coefficient carrier; over K[x1..xn], at
+;; the list of values c.
 (define (ring-poly-eval p c)
-  (let* ((P (vector-ref (rc-poly-element p "ring-poly-eval") 1)) (K (vector-ref P 11)) (x (rc-admit K c 'ring-poly-eval)))
-    (let loop ((r (reverse (vector-ref p 2))) (acc (vector-ref K 12)))
-      (if (null? r) acc (loop (cdr r) ((vector-ref K 14) ((vector-ref K 16) acc x) (car r)))))))
+  (let* ((P (vector-ref (rc-any-poly-element p "ring-poly-eval") 1)) (K (vector-ref P 11)))
+    (if (= (vector-ref P 2) 10)
+        (rc-mp-evaluate (vector-ref p 2) (rc-mp-points P K c "ring-poly-eval") K (lambda (x) x))
+        (let ((x (rc-admit K c 'ring-poly-eval)))
+          (let loop ((r (reverse (vector-ref p 2))) (acc (vector-ref K 12)))
+            (if (null? r) acc (loop (cdr r) ((vector-ref K 14) ((vector-ref K 16) acc x) (car r)))))))))
+
+;; ===========================================================================
+;; K[x1, ..., xn]: sparse polynomials under a monomial order
+;; ===========================================================================
+;;
+;; (make-polys K (list x1 ... xn) [order]) is the polynomial ring in the
+;; variables x1 > x2 > ... > xn over K. An element is located:
+;; (ring-element-v1 P terms), the terms (exponent-vector . coefficient)
+;; with nonzero coefficients in strictly decreasing monomial order, so the
+;; leading term comes first and the constant term, the least monomial
+;; under every monomial order, comes last.
+;;
+;; The monomial order is a parameter of the carrier: the same variables
+;; under two orders are two carriers, and each enters the other by
+;; re-sorting its terms. Orders:
+;;   lex                    lexicographic
+;;   grlex                  total degree, ties by lex
+;;   grevlex                total degree, ties by reverse lexicographic
+;;                          (the default)
+;;   (block (k1 o1) (k2 o2) ...)
+;;                          the product order: the first k1 exponents
+;;                          under o1, ties by the next k2 under o2, ...
+;;   (elimination k)        (block (k grevlex) (n-k grevlex)); its
+;;                          Groebner bases eliminate x1 .. xk
+;;   (weight (w1 ... wn) [o])
+;;                          the weight w . a (exact integers wi >= 0),
+;;                          ties by o (default grevlex)
+;;   (homogenized o)        the total degree of all n exponents, ties by o
+;;                          on the first n - 1: the order of a
+;;                          homogenization with the last variable
+;; A polynomial over K in a subset of the variables (under any order, or a
+;; univariate K[x] with x among them) enters K[x1..xn] by placing its
+;; exponents; a K-element enters as a constant.
+
+(define (rc-mono-degree a lo hi)
+  (let loop ((i lo) (d 0)) (if (= i hi) d (loop (+ i 1) (+ d (vector-ref a i))))))
+(define (rc-lex-cmp a b lo hi)
+  (let loop ((i lo))
+    (if (= i hi) 0
+        (let ((x (vector-ref a i)) (y (vector-ref b i)))
+          (cond ((> x y) 1) ((< x y) -1) (else (loop (+ i 1))))))))
+;; Reverse lexicographic tie-break: at the last differing exponent the
+;; smaller exponent is the larger monomial.
+(define (rc-revlex-cmp a b lo hi)
+  (let loop ((i (- hi 1)))
+    (if (< i lo) 0
+        (let ((x (vector-ref a i)) (y (vector-ref b i)))
+          (cond ((< x y) 1) ((> x y) -1) (else (loop (- i 1))))))))
+(define (rc-degree-then tie lo hi)
+  (lambda (a b)
+    (let ((da (rc-mono-degree a lo hi)) (db (rc-mono-degree b lo hi)))
+      (cond ((> da db) 1) ((< da db) -1) (else (tie a b))))))
+
+;; The comparison (a b) -> -1, 0 or 1 of a canonical order on the
+;; exponents lo .. hi-1.
+(define (rc-order-procedure spec lo hi)
+  (cond ((eq? spec 'lex) (lambda (a b) (rc-lex-cmp a b lo hi)))
+        ((eq? spec 'grlex) (rc-degree-then (lambda (a b) (rc-lex-cmp a b lo hi)) lo hi))
+        ((eq? spec 'grevlex) (rc-degree-then (lambda (a b) (rc-revlex-cmp a b lo hi)) lo hi))
+        ((eq? (car spec) 'block)
+         (let loop ((bs (cdr spec)) (start lo) (acc '()))
+           (if (null? bs)
+               (let ((cmps (reverse acc)))
+                 (lambda (a b)
+                   (let next ((cs cmps))
+                     (if (null? cs) 0
+                         (let ((c ((car cs) a b))) (if (= c 0) (next (cdr cs)) c))))))
+               (let ((k (car (car bs))))
+                 (loop (cdr bs) (+ start k)
+                       (cons (rc-order-procedure (cadr (car bs)) start (+ start k)) acc))))))
+        ((eq? (car spec) 'weight)
+         (let ((w (list->vector (cadr spec))) (tie (rc-order-procedure (caddr spec) lo hi)))
+           (lambda (a b)
+             (let loop ((i lo) (wa 0) (wb 0))
+               (if (= i hi)
+                   (cond ((> wa wb) 1) ((< wa wb) -1) (else (tie a b)))
+                   (let ((wi (vector-ref w (- i lo))))
+                     (loop (+ i 1) (+ wa (* wi (vector-ref a i))) (+ wb (* wi (vector-ref b i))))))))))
+        (else (rc-degree-then (rc-order-procedure (cadr spec) lo (- hi 1)) lo hi))))
+
+;; The canonical form of an order for n variables, or an error naming it.
+(define (rc-canonical-order spec n)
+  (cond ((memq spec '(lex grlex grevlex)) spec)
+        ((not (and (pair? spec) (list? spec) (pair? (cdr spec))))
+         (error "make-polys: unknown monomial order" spec))
+        ((eq? (car spec) 'elimination)
+         (let ((k (cadr spec)))
+           (if (not (and (null? (cddr spec)) (rc-exact-integer? k) (>= k 1) (< k n)))
+               (error "make-polys: (elimination k) needs 1 <= k < number of variables" k n))
+           (list 'block (list k 'grevlex) (list (- n k) 'grevlex))))
+        ((eq? (car spec) 'block)
+         (let loop ((bs (cdr spec)) (total 0) (acc '()))
+           (cond ((null? bs)
+                  (if (= total n) (cons 'block (reverse acc))
+                      (error "make-polys: block sizes must add up to the number of variables" total n)))
+                 ((and (list? (car bs)) (= (length (car bs)) 2)
+                       (rc-exact-integer? (car (car bs))) (>= (car (car bs)) 1))
+                  (let ((k (car (car bs))))
+                    (loop (cdr bs) (+ total k) (cons (list k (rc-canonical-order (cadr (car bs)) k)) acc))))
+                 (else (error "make-polys: a block is (size order)" (car bs))))))
+        ((eq? (car spec) 'weight)
+         (let ((w (cadr spec)))
+           (if (not (and (list? w) (= (length w) n)
+                         (let ok ((w w)) (or (null? w) (and (rc-exact-integer? (car w)) (>= (car w) 0) (ok (cdr w)))))))
+               (error "make-polys: a weight is a list of n exact integers >= 0" w n))
+           (list 'weight w (rc-canonical-order (if (pair? (cddr spec)) (caddr spec) 'grevlex) n))))
+        ((eq? (car spec) 'homogenized)
+         (if (< n 2) (error "make-polys: (homogenized o) needs at least two variables" n))
+         (list 'homogenized (rc-canonical-order (cadr spec) (- n 1))))
+        (else (error "make-polys: unknown monomial order" spec))))
+
+(define (rc-order-name spec) (if (symbol? spec) (symbol->string spec) (symbol->string (car spec))))
+
+(define (rc-append-reverse rev tail)
+  (if (null? rev) tail (rc-append-reverse (cdr rev) (cons (car rev) tail))))
+(define (rc-mono=? a b)
+  (let loop ((i (- (vector-length a) 1)))
+    (or (< i 0) (and (= (vector-ref a i) (vector-ref b i)) (loop (- i 1))))))
+(define (rc-mono-mul a b)
+  (let* ((n (vector-length a)) (v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (+ (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))))
+    v))
+(define (rc-mono-constant? a)
+  (let loop ((i (- (vector-length a) 1))) (or (< i 0) (and (= (vector-ref a i) 0) (loop (- i 1))))))
+
+;; Sum of two term lists: a merge, cancelling terms that sum to zero.
+;; Loops keep their state in accumulators, so no list operation here
+;; recurses once per term.
+(define (rc-mp-merge a b cmp kadd kzero?)
+  (let loop ((a a) (b b) (acc '()))
+    (cond ((null? a) (rc-append-reverse acc b))
+          ((null? b) (rc-append-reverse acc a))
+          (else
+           (let ((c (cmp (car (car a)) (car (car b)))))
+             (cond ((> c 0) (loop (cdr a) b (cons (car a) acc)))
+                   ((< c 0) (loop a (cdr b) (cons (car b) acc)))
+                   (else (let ((s (kadd (cdr (car a)) (cdr (car b)))))
+                           (loop (cdr a) (cdr b) (if (kzero? s) acc (cons (cons (car (car a)) s) acc)))))))))))
+;; c x^m times a term list; a monomial order is multiplicative, so the
+;; order of the terms is kept.
+(define (rc-mp-shift ts m c kmul kzero?)
+  (let loop ((ts ts) (acc '()))
+    (if (null? ts)
+        (reverse acc)
+        (let ((p (kmul c (cdr (car ts)))))
+          (loop (cdr ts) (if (kzero? p) acc (cons (cons (rc-mono-mul (car (car ts)) m) p) acc)))))))
+;; Product: the shifted copies of b, merged pairwise (depth log2 of the
+;; number of terms of a).
+(define (rc-mp-mul a b cmp kadd kmul kzero?)
+  (if (or (null? a) (null? b))
+      '()
+      (let ((va (list->vector a)))
+        (let rec ((lo 0) (hi (vector-length va)))
+          (if (= (- hi lo) 1)
+              (rc-mp-shift b (car (vector-ref va lo)) (cdr (vector-ref va lo)) kmul kzero?)
+              (let ((mid (quotient (+ lo hi) 2)))
+                (rc-mp-merge (rec lo mid) (rec mid hi) cmp kadd kzero?)))))))
+(define (rc-mp-sort ts cmp) (sort ts (lambda (s t) (> (cmp (car s) (car t)) 0))))
+
+;; The positions of the variables of `from` among `to`, or #f.
+(define (rc-mp-placement from to)
+  (let loop ((vs from) (acc '()))
+    (if (null? vs)
+        (list->vector (reverse acc))
+        (let ((i (rc-index-of (car vs) to)))
+          (and i (loop (cdr vs) (cons i acc)))))))
+(define (rc-mp-place e placement n)
+  (let ((v (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i (vector-length placement))
+          (begin (vector-set! v (vector-ref placement i) (vector-ref e i)) (loop (+ i 1)))))
+    v))
+
+(define (rc-mp-variables-check vars)
+  (if (not (and (list? vars) (pair? vars)))
+      (error "make-polys: the variables are a nonempty list of symbols" vars))
+  (let loop ((vs vars))
+    (if (pair? vs)
+        (begin
+          (if (not (symbol? (car vs))) (error "make-polys: a variable must be a symbol" (car vs)))
+          (if (memq (car vs) (cdr vs)) (error "make-polys: a variable occurs twice" (car vs)))
+          (loop (cdr vs))))))
+
+(define (rc-make-mpolys K vars order)
+  (rc-mp-variables-check vars)
+  (let* ((n (length vars)) (canonical (rc-canonical-order order n)) (params (list K vars canonical)))
+    (if (rc-interned? K)
+        (rc-intern 10 params (lambda () (rc-build-mpolys K vars canonical)))
+        (rc-build-mpolys K vars canonical))))
+
+;; The carrier's operations are thin closures over the top-level procedures
+;; below, which take the carrier P (its slots hold K's operations).
+(define (rc-mp-name K vars order)
+  (string-append (vector-ref K 5) "["
+                 (let join ((vs (cdr vars)) (s (symbol->string (car vars))))
+                   (if (null? vs) s (join (cdr vs) (string-append s "," (symbol->string (car vs))))))
+                 (if (eq? order 'grevlex) "" (string-append "; " (rc-order-name order)))
+                 "]"))
+(define (rc-mp-kzero? K c) ((vector-ref K 18) c (vector-ref K 12)))
+(define (rc-mp-same? K x y)
+  (let ((keq (vector-ref K 18)))
+    (let loop ((x x) (y y))
+      (cond ((and (null? x) (null? y)) #t)
+            ((or (null? x) (null? y)) #f)
+            (else (and (rc-mono=? (car (car x)) (car (car y)))
+                       (keq (cdr (car x)) (cdr (car y)))
+                       (loop (cdr x) (cdr y))))))))
+(define (rc-mp-nilpotent-coefficient? K c)
+  (if (vector-ref K 32) ((vector-ref K 32) c) (rc-mp-kzero? K c)))
+;; a unit: a unit constant term plus nilpotent coefficients
+(define (rc-mp-unit? K ts)
+  (let loop ((ts ts))
+    (cond ((null? ts) #f)
+          ((null? (cdr ts)) (and (rc-mono-constant? (car (car ts))) ((vector-ref K 19) (cdr (car ts)))))
+          (else (and (rc-mp-nilpotent-coefficient? K (cdr (car ts))) (loop (cdr ts)))))))
+;; Newton's iteration v <- v(2 - uv), which closes because 1 - uv is nilpotent.
+(define (rc-mp-inverse P u)
+  (let* ((K (vector-ref P 11)) (add (vector-ref P 14)) (neg (vector-ref P 15)) (mul (vector-ref P 16))
+         (one (vector-ref P 13)) (constant (vector-ref P 24))
+         (two (constant ((vector-ref K 14) (vector-ref K 13) (vector-ref K 13)))))
+    (if (not (rc-mp-unit? K (vector-ref u 2))) (rc-refuse 'ring-not-a-unit 'r-inv (vector-ref P 5) u))
+    (let loop ((v (constant ((vector-ref K 20) (cdr (car (reverse (vector-ref u 2))))))) (steps 0))
+      (let ((uv (mul u v)))
+        (cond ((rc-mp-same? K (vector-ref uv 2) (vector-ref one 2)) v)
+              ((> steps 128) (error "K[x1..xn] inverse: Newton iteration did not close" (vector-ref P 5)))
+              (else (loop (mul v (add two (neg uv))) (+ steps 1))))))))
+;; What enters P besides K: polynomials over K in some of P's variables,
+;; placed and re-sorted.
+(define (rc-mp-enters P C)
+  (let* ((K (vector-ref P 11)) (vars (rc-extra P 'variables)) (n (length vars))
+         (cmp (rc-extra P 'compare)) (wrap (rc-extra P 'from-terms)))
+    (cond ((and (= (vector-ref C 2) 10) (ring-carrier=? (vector-ref C 11) K))
+           (let ((placement (rc-mp-placement (rc-extra C 'variables) vars)))
+             (and placement
+                  (lambda (x)
+                    (wrap (rc-mp-sort (map (lambda (t) (cons (rc-mp-place (car t) placement n) (cdr t)))
+                                           (vector-ref x 2))
+                                      cmp))))))
+          ((and (= (vector-ref C 2) 6) (ring-carrier=? (vector-ref C 11) K)
+                (memq (rc-extra C 'variable) vars))
+           (let ((i (rc-index-of (rc-extra C 'variable) vars)))
+             (lambda (x)
+               (let loop ((cs (vector-ref x 2)) (d 0) (acc '()))
+                 (cond ((null? cs) (wrap (rc-mp-sort acc cmp)))
+                       ((rc-mp-kzero? K (car cs)) (loop (cdr cs) (+ d 1) acc))
+                       (else (let ((e (make-vector n 0)))
+                               (vector-set! e i d)
+                               (loop (cdr cs) (+ d 1) (cons (cons e (car cs)) acc)))))))))
+          (else #f))))
+
+;; a / b for b dividing a over a coefficient domain with exact quotients:
+;; the division algorithm by b alone. In a domain LT(b) divides LT(a) when b
+;; divides a, so a leading term it does not divide proves b does not.
+(define (rc-mp-exact-quotient P a b)
+  (let* ((K (vector-ref P 11)) (kquot (rc-exact-quotient K)) (kneg (vector-ref K 15)) (kmul (vector-ref K 16))
+         (cmp (rc-extra P 'compare)) (kadd (vector-ref K 14)) (kzero? (lambda (c) (rc-mp-kzero? K c)))
+         (tb (vector-ref b 2)))
+    (if (null? tb) (error "exact quotient in K[x1..xn]: division by zero" (vector-ref P 5)))
+    (let ((lm (car (car tb))) (lc (cdr (car tb))))
+      (let loop ((r (vector-ref a 2)) (q '()))
+        (cond ((null? r) ((rc-extra P 'from-terms) (reverse q)))
+              ((not (let div ((i 0)) (or (= i (vector-length lm)) (and (<= (vector-ref lm i) (vector-ref (car (car r)) i)) (div (+ i 1))))))
+               (error "exact quotient in K[x1..xn]: the divisor does not divide" (vector-ref P 5)))
+              (else
+               (let* ((m (let ((v (make-vector (vector-length lm) 0)))
+                           (let fill ((i 0))
+                             (if (< i (vector-length lm))
+                                 (begin (vector-set! v i (- (vector-ref (car (car r)) i) (vector-ref lm i))) (fill (+ i 1)))))
+                           v))
+                      (c (kquot (cdr (car r)) lc)))
+                 (loop (rc-mp-merge r (rc-mp-shift tb m (kneg c) kmul kzero?) cmp kadd kzero?)
+                       (cons (cons m c) q)))))))))
+
+(define (rc-build-mpolys K vars order)
+  (let* ((box (vector #f))
+         (n (length vars))
+         (cmp (rc-order-procedure order 0 n))
+         (kadd (vector-ref K 14)) (kneg (vector-ref K 15)) (kmul (vector-ref K 16))
+         (kzero? (lambda (c) (rc-mp-kzero? K c)))
+         (zero-mono (make-vector n 0))
+         (wrap (lambda (ts) (vector 'ring-element-v1 (vector-ref box 0) ts)))
+         (constant (lambda (c) (wrap (if (kzero? c) '() (list (cons zero-mono c))))))
+         (P (rc-descriptor 10 'mpolys (list K vars order) (rc-mp-name K vars order)
+              (list (cons 'characteristic (vector-ref K 6)) (cons 'field? #f)
+                    (cons 'lawful? (vector-ref K 8)) (cons 'exact? (vector-ref K 9))
+                    (cons 'tier (vector-ref K 33)) (cons 'base K)
+                    (cons 'zero #f) (cons 'one #f)
+                    (cons 'add (lambda (a b) (wrap (rc-mp-merge (vector-ref a 2) (vector-ref b 2) cmp kadd kzero?))))
+                    (cons 'neg (lambda (a) (wrap (map (lambda (t) (cons (car t) (kneg (cdr t)))) (vector-ref a 2)))))
+                    (cons 'mul (lambda (a b) (wrap (rc-mp-mul (vector-ref a 2) (vector-ref b 2) cmp kadd kmul kzero?))))
+                    (cons 'from-integer (lambda (m) (constant ((vector-ref K 17) m))))
+                    (cons 'from-rational (if (vector-ref K 22) (lambda (q) (constant ((vector-ref K 22) q))) #f))
+                    (cons 'admit-rational (if (vector-ref K 23) (lambda (q) (constant ((vector-ref K 23) q))) #f))
+                    (cons 'constant constant)
+                    (cons 'equal? (lambda (a b) (rc-mp-same? K (vector-ref a 2) (vector-ref b 2))))
+                    (cons 'unit? (lambda (a) (rc-mp-unit? K (vector-ref a 2))))
+                    (cons 'inverse (lambda (u) (rc-mp-inverse (vector-ref box 0) u))) (cons 'inverse-checks? #t)
+                    (cons 'member? (lambda (x) (and (rc-located? x) (eq? (vector-ref x 1) (vector-ref box 0)))))
+                    (cons 'nilpotent? (lambda (a) (let loop ((ts (vector-ref a 2)))
+                                                    (or (null? ts) (and (rc-mp-nilpotent-coefficient? K (cdr (car ts))) (loop (cdr ts)))))))
+                    (cons 'self-locating? #t)
+                    (cons 'extra (list (cons 'variables vars) (cons 'order order) (cons 'compare cmp)
+                                       (cons 'terms (lambda (x) (vector-ref x 2))) (cons 'from-terms wrap)
+                                       (cons 'enters (lambda (C) (rc-mp-enters (vector-ref box 0) C)))
+                                       (cons 'integral-domain (if (rc-integral-domain? K) #t #f))
+                                       (cons 'exact-quotient
+                                             (and (rc-integral-domain? K) (rc-exact-quotient K)
+                                                  (lambda (a b) (rc-mp-exact-quotient (vector-ref box 0) a b))))))))))
+    (vector-set! box 0 P)
+    (vector-set! P 12 (wrap '()))
+    (vector-set! P 13 (constant (vector-ref K 13)))
+    P))
+
+(define (rc-mpolys? P) (and (ring-carrier? P) (= (vector-ref P 2) 10)))
+(define (rc-any-polys-check P who)
+  (rc-check P who)
+  (if (not (or (= (vector-ref P 2) 6) (= (vector-ref P 2) 10)))
+      (error (string-append who ": expected a polynomial carrier") (vector-ref P 5)))
+  P)
+(define (rc-any-poly-element x who)
+  (if (and (rc-located? x) (let ((f (vector-ref (vector-ref x 1) 2))) (or (= f 6) (= f 10)))) x
+      (error (string-append who ": expected a polynomial") x)))
+
+;; The variable names, and the monomial order (a univariate K[x] is lex).
+(define (ring-poly-variable-names P)
+  (rc-any-polys-check P "ring-poly-variable-names")
+  (if (rc-mpolys? P) (rc-extra P 'variables) (list (rc-extra P 'variable))))
+(define (ring-poly-monomial-order P)
+  (rc-any-polys-check P "ring-poly-monomial-order")
+  (if (rc-mpolys? P) (rc-extra P 'order) 'lex))
+;; The variables as elements, in order.
+(define (ring-poly-variables P)
+  (rc-any-polys-check P "ring-poly-variables")
+  (map (lambda (v) (ring-poly-variable P v)) (ring-poly-variable-names P)))
+;; Compare two exponent lists under the carrier's order: -1, 0 or 1.
+(define (monomial-compare P a b)
+  (rc-any-polys-check P "monomial-compare")
+  (let ((n (length (ring-poly-variable-names P))))
+    (if (not (and (list? a) (list? b) (= (length a) n) (= (length b) n)))
+        (error "monomial-compare: expected two exponent lists of the number of variables" a b n))
+    (if (rc-mpolys? P)
+        ((rc-extra P 'compare) (list->vector a) (list->vector b))
+        (let ((x (car a)) (y (car b))) (cond ((> x y) 1) ((< x y) -1) (else 0))))))
+
+(define (rc-mp-spec-terms P spec)
+  (let* ((K (vector-ref P 11)) (n (length (rc-extra P 'variables))) (cmp (rc-extra P 'compare))
+         (kadd (vector-ref K 14)) (kzero? (lambda (c) ((vector-ref K 18) c (vector-ref K 12)))))
+    (let loop ((spec spec) (acc '()))
+      (if (null? spec)
+          ;; sort, then add the coefficients of equal monomials in one pass
+          (let fold ((ts (rc-mp-sort acc cmp)) (out '()))
+            (cond ((null? ts)
+                   (let drop ((out out) (keep '()))
+                     (cond ((null? out) keep)
+                           ((kzero? (cdr (car out))) (drop (cdr out) keep))
+                           (else (drop (cdr out) (cons (car out) keep))))))
+                  ((and (pair? out) (rc-mono=? (car (car ts)) (car (car out))))
+                   (fold (cdr ts) (cons (cons (car (car out)) (kadd (cdr (car out)) (cdr (car ts)))) (cdr out))))
+                  (else (fold (cdr ts) (cons (car ts) out)))))
+          (let ((t (car spec)))
+            (if (not (and (list? t) (= (length t) (+ n 1))
+                          (let ok ((es (cdr t))) (or (null? es) (and (rc-exact-integer? (car es)) (>= (car es) 0) (ok (cdr es)))))))
+                (error "ring-poly: a term is (coefficient e1 ... en) with exponents >= 0" t n))
+            (let ((c (rc-admit K (car t) 'ring-poly)))
+              (loop (cdr spec) (if (kzero? c) acc (cons (cons (list->vector (cdr t)) c) acc)))))))))
 
 ;; ===========================================================================
 ;; Z[G]: group rings as core.dbsp Z-sets
@@ -1141,17 +1582,22 @@
   (rc-jets-check J "jet-primal")
   (make-ring-map J (vector-ref J 11) (vector-ref J 26) "primal"))
 ;; K[x] -> S, x -> a, for a carrier S that K enters: evaluation is the ring
-;; map, and x -> a + e gives K[x] -> K[e]/e^n.
+;; map, and x -> a + e gives K[x] -> K[e]/e^n. Over K[x1..xn], a is the
+;; list of the images of the variables.
 (define (ring-poly-evaluation P S a)
-  (rc-polys-check P "ring-poly-evaluation") (rc-check S "ring-poly-evaluation")
-  (let* ((K (vector-ref P 11)) (m (rc-embedding K S)) (x (rc-admit S a 'ring-poly-evaluation))
+  (rc-any-polys-check P "ring-poly-evaluation") (rc-check S "ring-poly-evaluation")
+  (let* ((K (vector-ref P 11)) (m (rc-embedding K S))
          (add (vector-ref S 14)) (mul (vector-ref S 16)))
     (if (not m) (rc-refuse 'ring-no-common-carrier 'ring-poly-evaluation (vector-ref K 5) (vector-ref S 5)))
-    (make-ring-map P S
-      (lambda (p)
-        (let loop ((r (reverse (vector-ref p 2))) (acc (vector-ref S 12)))
-          (if (null? r) acc (loop (cdr r) (add (mul acc x) (m (car r)))))))
-      "evaluation")))
+    (if (rc-mpolys? P)
+        (let ((xs (rc-mp-points P S a "ring-poly-evaluation")))
+          (make-ring-map P S (lambda (p) (rc-mp-evaluate (vector-ref p 2) xs S m)) "evaluation"))
+        (let ((x (rc-admit S a 'ring-poly-evaluation)))
+          (make-ring-map P S
+            (lambda (p)
+              (let loop ((r (reverse (vector-ref p 2))) (acc (vector-ref S 12)))
+                (if (null? r) acc (loop (cdr r) (add (mul acc x) (m (car r)))))))
+            "evaluation")))))
 ;; Z[G] -> S induced by a character chi: G -> units of S.
 (define (group-ring-character Zg S chi)
   (rc-check Zg "group-ring-character") (rc-check S "group-ring-character")
