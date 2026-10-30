@@ -31,6 +31,7 @@
 ;;
 ;;   exact integer    {"t":"z","v":"<decimal string, sign included>"}
 ;;   exact rational   {"t":"q","n":"<num string>","d":"<den string>"}   (d > 0, lowest terms)
+;;   finite double    {"t":"dyadic","m":"<int string>","e":"<int string>"}  the exact value m * 2^e
 ;;   matrix           {"t":"mat","rows":R,"cols":C,"data":[[<value>...]...]}
 ;;   vector           {"t":"vec","n":N,"data":[<value>...]}
 ;;   polynomial       {"t":"poly","var":"<name>","deg":D,"coeffs":[<value>...]}  (lowest degree first)
@@ -61,6 +62,15 @@
 ;;
 ;; The JSON Schema for both is scripts/math_crosscheck/transcript_schema.json;
 ;; the reference page is docs/reference/stdlib/transcript.md.
+;;
+;; A claim may carry further fields after "output" (core.certificate adds
+;; "witness", "premises" and a sha256 "id"; ADR-0047).  The hash rule is
+;; the same for every claim: fnv1a-64 of the canonical JSON text of every
+;; field except "hash", in the order written.  For a four-field claim this
+;; is exactly the rule above.  transcript-open-as and transcript-open-path
+;; bind a handle to another environment variable, an explicit path, or
+;; another document schema (core.certificate uses "eshkol.certificate.v1"
+;; and ESHKOL_CERTIFICATES).
 
 (require stdlib)
 (require core.merkle)
@@ -69,8 +79,9 @@
 (provide
   ;; handle lifecycle
   transcript-open transcript-active? transcript-record! transcript-close!
+  transcript-open-as transcript-open-path transcript-record-claim! transcript-seal-claim
   ;; canonical value encoders
-  tv-int tv-rat tv-bool tv-string tv-opaque
+  tv-int tv-rat tv-float tv-bool tv-string tv-opaque
   tv-list tv-int-list tv-rat-list
   tv-vector tv-matrix-rows tv-matrix-vec tv-matrix
   tv-poly)
@@ -91,6 +102,27 @@
       (list (cons "t" "q")
             (cons "n" (number->string (numerator q)))
             (cons "d" (number->string (denominator q))))))
+
+(define (tv-float x)
+  "Encode a finite double EXACTLY as m * 2^e (m, e exact integers; m odd
+   or zero), so a reader recovers the very binary64 value with no decimal
+   rounding.  An exact argument is encoded as tv-rat would."
+  (cond ((exact? x) (tv-rat x))
+        ((not (= x x)) (error "tv-float: NaN has no exact value"))
+        ((> (abs x) 1.7976931348623157e308) (error "tv-float: an infinity has no exact value" x))
+        ((= x 0.0) (list (cons "t" "dyadic") (cons "m" "0") (cons "e" "0")))
+        (else
+         ;; Doubling and halving a binary64 are exact, so the loops below
+         ;; only move the binary point.
+         (let up ((y x) (e 0))
+           (if (not (integer? y))
+               (up (* y 2.0) (- e 1))
+               (let down ((y y) (e e))
+                 (if (integer? (/ y 2.0))
+                     (down (/ y 2.0) (+ e 1))
+                     (list (cons "t" "dyadic")
+                           (cons "m" (number->string (inexact->exact y)))
+                           (cons "e" (number->string e))))))))))
 
 (define (tv-bool b) (list (cons "t" "bool") (cons "v" (if b #t #f))))
 (define (tv-string s) (list (cons "t" "str") (cons "v" s)))
@@ -143,25 +175,50 @@
 ;; ---------------------------------------------------------------------
 ;; Handle
 ;; ---------------------------------------------------------------------
-;; A handle is (vector 'eshkol-transcript active? program-name path box)
+;; A handle is (vector 'eshkol-transcript active? program-name path box schema)
 ;; where box is a one-element vector holding the claims collected so far
 ;; (newest first); mutating box is how transcript-record! "mutates" a
 ;; handle built from immutable fields.
+
+(define (transcript-open-path program-name path schema)
+  "An ACTIVE handle bound to an explicit output path and document schema,
+   independent of any environment variable."
+  (vector 'eshkol-transcript #t program-name path (vector '()) schema))
+
+(define (transcript-open-as program-name env-var schema)
+  "A handle that is active iff the environment variable env-var names a
+   non-empty path; otherwise every call on it is a no-op."
+  (let ((path (get-environment-variable env-var)))
+    (if (and path (string? path) (not (string=? path "")))
+        (transcript-open-path program-name path schema)
+        (vector 'eshkol-transcript #f program-name #f (vector '()) schema))))
 
 (define (transcript-open program-name)
   "Returns a transcript handle for program-name.  Active (recording
    claims and, on transcript-close!, writing a file) iff the
    ESHKOL_TRANSCRIPT environment variable is set to a non-empty path;
    otherwise every subsequent call on this handle is a no-op."
-  (let ((path (get-environment-variable "ESHKOL_TRANSCRIPT")))
-    (if (and path (string? path) (not (string=? path "")))
-        (vector 'eshkol-transcript #t program-name path (vector '()))
-        (vector 'eshkol-transcript #f program-name #f (vector '())))))
+  (transcript-open-as program-name "ESHKOL_TRANSCRIPT" "eshkol.transcript.v1"))
 
 (define (transcript-active? h) (vector-ref h 1))
 
 (define (transcript-claim-alist kind label inputs output)
   (list (cons "kind" kind) (cons "label" label) (cons "inputs" inputs) (cons "output" output)))
+
+(define (transcript-seal-claim claim)
+  "claim: an ordered alist of fields (kind, label, inputs, output, then
+   any further fields).  Returns the same alist with \"hash\" appended:
+   fnv1a-64 of the canonical JSON text of every field, in order."
+  (append claim (list (cons "hash" (hash->hex (fnv1a-64 (json-stringify claim)))))))
+
+(define (transcript-record-claim! h claim)
+  "Record one claim given as an ordered field alist (see
+   transcript-seal-claim).  No-op returning #f when h is inactive."
+  (if (transcript-active? h)
+      (let ((box (vector-ref h 4)))
+        (vector-set! box 0 (cons (transcript-seal-claim claim) (vector-ref box 0)))
+        #t)
+      #f))
 
 (define (transcript-record! h kind label inputs output)
   "Record one claim.  kind/label: strings.  inputs: an alist of
@@ -169,23 +226,19 @@
    computes nothing beyond the handle check) when h is inactive; never
    prints anything, so it never changes a program's visible output."
   (if (transcript-active? h)
-      (let* ((claim (transcript-claim-alist kind label inputs output))
-             (digest (hash->hex (fnv1a-64 (json-stringify claim))))
-             (full (append claim (list (cons "hash" digest))))
-             (box (vector-ref h 4)))
-        (vector-set! box 0 (cons full (vector-ref box 0)))
-        #t)
+      (transcript-record-claim! h (transcript-claim-alist kind label inputs output))
       #f))
 
 (define (transcript-close! h)
   "Write every claim collected so far (oldest first) as one JSON document
    to the handle's path.  No-op, and no file is touched, when h is
-   inactive."
+   inactive.  The handle stays usable: a later record and close rewrites
+   the document with every claim so far."
   (if (transcript-active? h)
       (let* ((claims (reverse (vector-ref (vector-ref h 4) 0)))
-             (doc (list (cons "schema" "eshkol.transcript.v1")
+             (doc (list (cons "schema" (vector-ref h 5))
                         (cons "program" (vector-ref h 2))
-                        (cons "claims" claims))))
+                        (cons "claims" (list->vector claims)))))
         (json-write-file (vector-ref h 3) doc)
         #t)
       #f))

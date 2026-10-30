@@ -59,6 +59,8 @@ def decode(v: Any):
         return int(v["v"])
     if t == "q":
         return Fraction(int(v["n"]), int(v["d"]))
+    if t == "dyadic":
+        return Fraction(int(v["m"])) * Fraction(2) ** int(v["e"])
     if t == "bool":
         return bool(v["v"])
     if t == "str":
@@ -75,12 +77,10 @@ def decode(v: Any):
 
 
 def recompute_hash(claim: Dict[str, Any]) -> str:
-    without_hash = {
-        "kind": claim["kind"],
-        "label": claim["label"],
-        "inputs": claim["inputs"],
-        "output": claim["output"],
-    }
+    """fnv1a-64 of the canonical JSON text of every field before "hash", in
+    the order written: {kind,label,inputs,output} for a transcript claim,
+    plus witness, premises and id for a core.certificate claim (ADR-0047)."""
+    without_hash = {k: v for k, v in claim.items() if k != "hash"}
     text = json.dumps(without_hash, separators=(",", ":"))
     return em.hash_hex16(em.fnv1a_64(text))
 
@@ -156,8 +156,9 @@ def replay_claim(claim: Dict[str, Any]):
 
 def check_file(path: Path) -> bool:
     doc = json.loads(path.read_text())
-    if doc.get("schema") != "eshkol.transcript.v1":
-        print(f"{path}: FAIL schema != eshkol.transcript.v1 (got {doc.get('schema')!r})")
+    if doc.get("schema") not in ("eshkol.transcript.v1", "eshkol.certificate.v1"):
+        print(f"{path}: FAIL schema is neither eshkol.transcript.v1 nor eshkol.certificate.v1 "
+              f"(got {doc.get('schema')!r})")
         return False
     ok_all = True
     claims = doc.get("claims", [])

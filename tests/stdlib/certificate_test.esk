@@ -1,0 +1,164 @@
+;;; certificate_test.esk -- core.certificate: every certificate kind computes
+;;; the same value as the library that owns it, carries a well-formed claim,
+;;; and is written as an eshkol.certificate.v1 document; the (certify ...)
+;;; form returns the plain value.
+;;;
+;;; ESHKOL_CERTIFICATE_TEST_DOC=<path>  also write every explicit certificate
+;;;                                    to <path> (the round-trip test then runs
+;;;                                    tools/certcheck/eshkol_certcheck.py on it)
+;;; ESHKOL_CERTIFICATES=<path>         the (certify ...) forms below append
+;;;                                    their certificates to <path>
+
+(require stdlib)
+(require core.certificate)
+(require core.transcript)
+(require core.json)
+(require core.integer_linalg)
+(require core.ring)
+(require core.ad.taylor_models)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: ") (display label) (newline))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+
+(define certs '())
+(define (keep! c) (set! certs (cons c certs)) c)
+(define (value c) (certificate-value c))
+(define (well-formed? c kind)
+  (and (certificate? c) (equal? kind (certificate-kind c))
+       (let ((id (certificate-id c))) (and (string? id) (= 71 (string-length id))))))
+
+;; --- exact linear algebra ------------------------------------------------
+(define A-rank (vector (vector 1 2 3) (vector 2 4 6) (vector 1 0 1)))
+(define c-rank (keep! (certify-rank A-rank "rank 3x3")))
+(check "rank: value 2 and a well-formed claim" (and (= 2 (value c-rank)) (well-formed? c-rank "rank")))
+(define c-rank0 (keep! (certify-rank (vector (vector 0 0) (vector 0 0)) "rank zero")))
+(check "rank of the zero matrix is 0" (= 0 (value c-rank0)))
+
+(define A-det (vector (vector 0 2 1) (vector 1 1 0) (vector 3 0 2)))
+(define c-det (keep! (certify-determinant A-det "det with a row swap")))
+(check "determinant: -7, equal to exact-det" (and (= -7 (value c-det)) (= (exact-det A-det) (value c-det))))
+(define c-det-q (keep! (certify-determinant (vector (vector 1/2 1/3) (vector 1/4 1)) "rational det")))
+(check "determinant over Q: 5/12" (= 5/12 (value c-det-q)))
+(define plu (exact-plu A-det))
+(check "exact-plu: P A = L U with sign -1"
+       (and (= -1 (cadddr plu))
+            (equal? (exact-matrix-mul (cadr plu) (caddr plu))
+                    (list->vector (map (lambda (i) (vector-ref A-det i)) (car plu))))))
+
+(define A-snf (vector (vector 2 4 4) (vector -6 6 12) (vector 10 -4 -16)))
+(define c-snf (keep! (certify-smith-normal-form A-snf "snf 3x3")))
+(check "smith normal form: invariant factors 2 6 12"
+       (equal? '(2 6 12) (smith-diagonal (value c-snf))))
+(define c-snf-rect (keep! (certify-smith-normal-form (vector (vector 4 6 8) (vector 6 9 12)) "snf 2x3")))
+(check "smith normal form of a rank-1 2x3 matrix: (2)" (equal? '(2) (smith-diagonal (value c-snf-rect))))
+
+(define c-sol (keep! (certify-linear-solution (vector (vector 2 1) (vector 1 3)) (vector 3 5) "2x2 solve")))
+(check "linear solution: (4/5, 7/5)" (equal? (vector 4/5 7/5) (value c-sol)))
+
+(define c-enc (keep! (certify-solve-enclosure
+                       (vector (vector 4 1) (vector 1 3)) (vector 1 2)
+                       (vector 909/10000 6364/10000)
+                       (vector (vector 2727/10000 -909/10000) (vector -909/10000 3636/10000)))))
+(check "solve enclosure: proved for a well-conditioned 2x2"
+       (eq? 'proved (vector-ref (value c-enc) 1)))
+
+(define c-psd (keep! (certify-psd (vector (vector 2 1) (vector 1 2)) "psd yes")))
+(define c-npsd (keep! (certify-psd (vector (vector 1 2) (vector 2 1)) "psd no")))
+(check "psd: [[2,1],[1,2]] factors, [[1,2],[2,1]] has a negative direction"
+       (and (psd-factor? (value c-psd)) (not (psd-factor? (value c-npsd)))))
+
+;; --- gcds ----------------------------------------------------------------
+(define c-gcd (keep! (certify-integer-gcd 240 46 "gcd 240 46")))
+(check "integer gcd 240 46 = 2 with Bezout coefficients"
+       (let ((gst (value c-gcd))) (and (= 2 (car gst)) (= 2 (+ (* 240 (cadr gst)) (* 46 (caddr gst)))))))
+(define big (- (expt 2 89) 1))
+(define c-gcd-big (keep! (certify-integer-gcd (* 3 big) (* -5 big) "gcd bignum")))
+(check "integer gcd of bignums" (= big (car (value c-gcd-big))))
+(define c-pgcd (keep! (certify-poly-gcd (vector -2 1 1) (vector 3 -4 1) "poly gcd")))
+(check "poly gcd of (x-1)(x+2) and (x-1)(x-3) is x - 1" (equal? (vector -1 1) (car (value c-pgcd))))
+(check "exact-poly-inverse-mod still inverts x modulo x^2 + 1"
+       (equal? (vector 0 -1) (exact-poly-inverse-mod (vector 0 1) (vector 1 0 1))))
+
+;; --- polynomial identities -----------------------------------------------
+(define c-id (keep! (certify-polynomial-identity '(expt (+ x y) 2) '(+ (* x x) (* 2 x y) (* y y)) "binomial square")))
+(define c-nid (keep! (certify-polynomial-identity '(* (+ x 1) (- x 1)) '(- (* x x) 2) "not an identity")))
+(check "polynomial identity: (x+y)^2 holds, (x+1)(x-1) = x^2 - 2 does not"
+       (and (value c-id) (not (value c-nid))))
+
+;; --- primality -----------------------------------------------------------
+(define c-p1 (keep! (certify-primality 1000003 "1000003")))
+(define c-p2 (keep! (certify-primality (- (expt 2 61) 1) "2^61 - 1")))
+(define c-p3 (keep! (certify-primality 561 "561")))
+(define c-p4 (keep! (certify-primality 1 "one")))
+(define c-p5 (keep! (certify-primality 2 "two")))
+(define c-p6 (keep! (certify-primality 1000000 "even")))
+(check "primality values: prime, prime, composite, not prime, prime, composite"
+       (equal? (list #t #t #f #f #t #f) (map value (list c-p1 c-p2 c-p3 c-p4 c-p5 c-p6))))
+(check "exact-gcdext and exact-expt-mod"
+       (and (equal? (list 6 -1 1) (exact-gcdext 12 18)) (= 1 (exact-expt-mod 3 1000002 1000003))))
+
+;; --- enclosures ----------------------------------------------------------
+(define c-range (keep! (certify-polynomial-range (list 0 -2 0 1) 0 2 "x^3 - 2x on [0, 2]")))
+(check "polynomial range encloses x^3 - 2x on [0, 2]"
+       (let ((r (value c-range))) (and (<= (car r) -11/10) (>= (cdr r) 4))))
+(define tm (taylor-model exp 0.0 0.5 4))
+(define c-tm (keep! (certify-taylor-model-range tm "exp on [-0.5, 0.5], order 4")))
+(check "taylor-model range is (tm-range tm) and contains exp(0.5)"
+       (let ((r (value c-tm))) (and (equal? r (tm-range tm)) (<= (car r) 1.0) (>= (cdr r) (exp 0.5)))))
+(check "tv-float records a double exactly"
+       (and (equal? (tv-float 0.5) (list (cons "t" "dyadic") (cons "m" "1") (cons "e" "-1")))
+            (equal? (tv-float -3.0) (list (cons "t" "dyadic") (cons "m" "-3") (cons "e" "0")))
+            (equal? (tv-float 0.1) (list (cons "t" "dyadic") (cons "m" "3602879701896397") (cons "e" "-55")))))
+
+;; --- cochains ------------------------------------------------------------
+(define c-coc (keep! (certify-cocycle (vector (vector 1 -1 0) (vector 0 1 -1)) (vector 1 1 1) "constant cocycle")))
+(check "cocycle: the constant cochain is closed" (value c-coc))
+(define c-cls (keep! (certify-cohomology-class (vector (vector 2) (vector 0)) (vector 1 0) "Z/2 class")))
+(define c-cob (keep! (certify-cohomology-class (vector (vector 2) (vector 0)) (vector 4 0) "coboundary")))
+(check "cohomology class: (1,0) is not in 2Z x 0, (4,0) is" (and (not (value c-cls)) (value c-cob)))
+
+;; --- claim format --------------------------------------------------------
+(define parsed (json-parse (certificate->json c-gcd)))
+(check "certificate->json carries kind, witness, premises, id and hash"
+       (and (equal? "integer_gcd" (json-get parsed "kind"))
+            (equal? (number->string (cadr (value c-gcd)))
+                    (json-get (json-get (json-get parsed "witness") "s") "v"))
+            (= 16 (string-length (json-get parsed "hash")))))
+(check "a Taylor-model claim lists its remainder premise; other kinds list none"
+       (and (= 1 (vector-length (cdr (assoc "premises" (certificate-claim c-tm)))))
+            (= 0 (vector-length (cdr (assoc "premises" (certificate-claim c-gcd)))))))
+(check "identical inputs give identical ids; different inputs differ"
+       (and (equal? (certificate-id (certify-integer-gcd 240 46 "gcd 240 46")) (certificate-id c-gcd))
+            (not (equal? (certificate-id c-gcd) (certificate-id c-gcd-big)))))
+
+;; --- the (certify ...) form ----------------------------------------------
+(check "(certify (exact-det M)) is (exact-det M)" (= -7 (certify (exact-det A-det))))
+(check "(certify (gcd 240 46)) is 2" (= 2 (certify (gcd 240 46))))
+(check "(certify (exact-prime? 1000003)) is #t" (certify (exact-prime? 1000003)))
+(check "(certify (smith-normal-form A)) is the Smith form"
+       (equal? '(2 6 12) (smith-diagonal (certify (smith-normal-form A-snf)))))
+(check "(certify (exact-rank M)) is 2" (= 2 (certify (exact-rank A-rank))))
+(check "the default registry covers the certified primitives"
+       (and (member "exact-det" (certifier-names)) (member "tm-range" (certifier-names))))
+(register-certifier! "square-free-part"
+  (lambda (args) (make-certificate "integer_gcd" "user" (list) (tv-int 0) (list) '() 'unused)))
+(check "register-certifier! adds a name" (member "square-free-part" (certifier-names)))
+
+;; --- write the explicit certificates ---------------------------------------
+(define doc-path (get-environment-variable "ESHKOL_CERTIFICATE_TEST_DOC"))
+(if (and doc-path (string? doc-path) (not (string=? doc-path "")))
+    (begin
+      (certificate-write-file doc-path "certificate_test" (reverse certs))
+      (let ((doc (json-read-file doc-path)))
+        (check "the written document has the certificate schema and every claim"
+               (and (equal? "eshkol.certificate.v1" (json-get doc "schema"))
+                    (= (length certs) (length (json-get doc "claims"))))))))
+
+(newline)
+(display "Passed: ") (display passed) (display " Failed: ") (display failed) (newline)
+(if (> failed 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: certificate_test") (newline) (display "RESULT: PASS") (newline)

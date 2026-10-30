@@ -1,7 +1,7 @@
 ;;; Checked rational polynomial arithmetic. Coefficients run low degree first.
 (require stdlib)
 (provide exact-poly exact-poly-zero? exact-poly-sub exact-poly-scale exact-poly-mul
-         exact-poly-divmod exact-poly-inverse-mod exact-poly-eval
+         exact-poly-divmod exact-poly-gcdext exact-poly-inverse-mod exact-poly-eval
          exact-poly-real-root-count exact-poly-isolate)
 
 ;; Public constructor always owns coefficients and refuses inexact data.
@@ -33,17 +33,30 @@
   (let ((v (ep-input p)))
     (let loop ((i (- (vector-length v) 1)) (out 0))
       (if (< i 0) out (loop (- i 1) (ep+ (ep* out x) (vector-ref v i)))))))
+;; (exact-poly-gcdext a b) -> (list g s t) with s*a + t*b = g, where g is
+;; the monic gcd of a and b in Q[x] (the zero polynomial when both are
+;; zero). Extended Euclid over the field Q; every result is owned.
+(define (exact-poly-gcdext a b)
+  (let euclid ((r0 (ep-trim (ep-input a))) (r1 (ep-trim (ep-input b)))
+               (s0 (vector 1)) (s1 (vector 0)) (t0 (vector 0)) (t1 (vector 1)))
+    (if (ep-zero? r1)
+        (if (ep-zero? r0)
+            (list (vector 0) (vector 0) (vector 0))
+            (let ((c (ep/ 1 (vector-ref r0 (- (vector-length r0) 1)))))
+              (list (ep-poly-scale r0 c) (ep-poly-scale s0 c) (ep-poly-scale t0 c))))
+        (let ((qr (ep-divmod r0 r1)))
+          (euclid r1 (cdr qr) s1 (ep-poly-sub s0 (ep-poly-mul (car qr) s1))
+                  t1 (ep-poly-sub t0 (ep-poly-mul (car qr) t1)))))))
+
+;; The inverse of a modulo a nonconstant modulus: the Bezout coefficient of
+;; a when the monic gcd is 1, reduced modulo the modulus.
 (define (exact-poly-inverse-mod a modulus)
   (let ((m (ep-trim (ep-input modulus))) (v (ep-trim (ep-input a))))
     (if (<= (vector-length m) 1) (error "Polynomial modulus must be nonconstant"))
-    (let euclid ((r0 m) (r1 v) (t0 (vector 0)) (t1 (vector 1)))
-      (if (ep-zero? r1)
-          (begin
-            (if (or (ep-zero? r0) (not (= (vector-length r0) 1)))
-                (error "Polynomial is not a unit modulo the modulus"))
-            (cdr (ep-divmod (ep-poly-scale t0 (ep/ 1 (vector-ref r0 0))) m)))
-          (let ((qr (ep-divmod r0 r1)))
-            (euclid r1 (cdr qr) t1 (ep-poly-sub t0 (ep-poly-mul (car qr) t1))))))))
+    (let ((gst (exact-poly-gcdext v m)))
+      (if (not (and (= (vector-length (car gst)) 1) (= (vector-ref (car gst) 0) 1)))
+          (error "Polynomial is not a unit modulo the modulus"))
+      (cdr (ep-divmod (cadr gst) m)))))
 
 (define (ep-derivative p)
   (let* ((degree (- (vector-length p) 1)) (out (make-vector (max 1 degree) 0)))

@@ -4421,6 +4421,62 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endif()
 endif()
 
+# core.certificate (ADR-0047): certificates for certified steps, an
+# independent checker outside the compiler (tools/certcheck, Python standard
+# library only), a tamper suite and a Lean 4 export of the decidable facts.
+# certificate_roundtrip_* run the suite with certificate emission on, check
+# every emitted claim with eshkol_certcheck.py, require every altered claim to
+# be rejected and export the Lean theorems. The fixture and Lean-currency
+# tests need only python3. Lean itself is not a build dependency: the
+# exported files are checked with `lean` where it is installed
+# (scripts/run_certificate_gate.sh, docs/reports/CERTIFICATE_LEAN_CHECK.md).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME certificate_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certificate_test.esk")
+    add_test(NAME certificate_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/certificate_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/certificate_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(certificate_jit certificate_aot PROPERTIES
+        TIMEOUT 900
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: certificate_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME certificate_roundtrip_jit
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/run_certificate_roundtrip.py"
+                $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}/test-work/certificate-roundtrip-jit")
+        add_test(NAME certificate_roundtrip_aot
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/run_certificate_roundtrip.py"
+                $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}/test-work/certificate-roundtrip-aot"
+                --aot "${CMAKE_CURRENT_BINARY_DIR}/test-work/certificate-roundtrip-aot/certificate_test${CMAKE_EXECUTABLE_SUFFIX}"
+                "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(certificate_roundtrip_jit certificate_roundtrip_aot PROPERTIES
+            TIMEOUT 1500
+            PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+            FAIL_REGULAR_EXPRESSION "RESULT: FAIL|Traceback")
+        add_test(NAME certificate_check_fixtures
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/certcheck/eshkol_certcheck.py"
+                --dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/fixtures")
+        add_test(NAME certificate_tamper_fixtures
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/certcheck/tamper_suite.py"
+                --dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/fixtures")
+        add_test(NAME certificate_lean_export_current
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/certcheck/lean_export.py"
+                --check --dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/fixtures"
+                --out-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/certificates/lean")
+        set_tests_properties(certificate_check_fixtures PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: ALL ACCEPTED" FAIL_REGULAR_EXPRESSION "RESULT: REJECTED|Traceback")
+        set_tests_properties(certificate_tamper_fixtures PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: ALL REJECTED" FAIL_REGULAR_EXPRESSION "RESULT: TAMPER ACCEPTED|Traceback")
+        set_tests_properties(certificate_lean_export_current PROPERTIES TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: LEAN EXPORT CURRENT" FAIL_REGULAR_EXPRESSION "OUT OF DATE|Traceback")
+    endif()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #
