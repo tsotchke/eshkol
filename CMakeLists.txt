@@ -4324,6 +4324,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# Scoped hawkes-forecast consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-forecast/CTest.cmake")
+
 # core.ring and core.multimodular (ADR-0034, library rung): the ring-law gate
 # (exhaustive on small lawful carriers, seeded on infinite ones, refusals,
 # coercion lattice, ring maps), the IEEE tier against its per-operation
@@ -4448,6 +4451,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(yetter_three_torus_finite_model_aot PROPERTIES TIMEOUT 900)
     endif()
 endif()
+
+# Scoped hawkes-live consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-live/CTest.cmake")
 
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
