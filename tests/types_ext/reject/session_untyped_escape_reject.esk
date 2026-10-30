@@ -3,5 +3,5 @@
 ;; EXPECT-STDERR: flows into code whose type is not known here
 (require stdlib)
 (require core.sessions)
-(define (leak (c : (chan end))) : null
+(define (drop-endpoint (c : (chan end))) : null
   (display c))

@@ -1,6 +1,6 @@
 # ADR-0046: Structural types: row polymorphism, arbitrary rank and session types
 
-- **Status:** Accepted — implemented for v1.9.0 (`inc/eshkol/types/structural_types.h`, `lib/types/structural_types.cpp`, `lib/types/structural_checker.cpp`, `lib/core/records.esk`, `lib/core/sessions.esk`)
+- **Status:** Proposed — implemented for v1.9.0, awaiting the root's ruling (`inc/eshkol/types/structural_types.h`, `lib/types/structural_types.cpp`, `lib/types/structural_checker.cpp`, `lib/core/records.esk`, `lib/core/sessions.esk`)
 - **Date:** 2026-10-30
 - **Decision owners:** Eshkol type-system maintainers
 - **Builds on:** ADR-0004 (one quantitative dependent type system), ADR-0013 (one gradual type relation)

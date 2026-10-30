@@ -6,4 +6,4 @@
 (define (st-new (tok : (st s)) (v : a)) : (st-ref s a) (vector v))
 (define (run-st (action : (forall (s) (-> (st s) a)))) : a
   (action (vector 'st-token)))
-(define leaked (run-st (lambda (tok) (st-new tok 0))))
+(define escaped (run-st (lambda (tok) (st-new tok 0))))
