@@ -4391,6 +4391,41 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# core.monoidal: monoidal, braided, symmetric, compact closed and dagger
+# structure with every coherence law a check, FinVect over exact carriers,
+# string diagrams with a normal form, and the ZX-calculus with exact rule
+# soundness over Q(zeta_8) and Clifford+T circuits (ADR-0041).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_monoidal_suite monoidal_test zx_test)
+        add_test(NAME ${_monoidal_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_monoidal_suite}.esk")
+        add_test(NAME ${_monoidal_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_monoidal_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_monoidal_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=1200"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_monoidal_suite}_jit ${_monoidal_suite}_aot PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_monoidal_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+    # ZX evaluation against Moonlab's state-vector simulator: only in builds
+    # that link Moonlab (agent.quantum).
+    if(ESHKOL_QUANTUM_ENABLED)
+        add_test(NAME zx_moonlab_crosscheck
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/quantum/zx_moonlab_crosscheck_test.esk"
+                    "-L${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(zx_moonlab_crosscheck PROPERTIES
+            TIMEOUT 1500
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "zx_moonlab_crosscheck_test: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL|error:|Unhandled exception|fatal signal")
+    endif()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #

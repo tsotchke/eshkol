@@ -783,6 +783,18 @@ under the same discipline that made `Qubit` linear.
       The finite-categories, sheafification and homotopy-colimit examples run
       on it, and the S6.2 suite reproduces the numbers of the sheaf and
       descent examples categorically
+- [x] Monoidal categories, string diagrams and the ZX-calculus as a library
+      (ADR-0041): `core.monoidal` gives monoidal, braided, symmetric, compact
+      closed and dagger structure and monoidal functors as data, with the
+      pentagon, triangle, hexagons, snake equations and functor coherence
+      checked exactly on core.category's finite categories (including the
+      skeletal categories of 3-cocycles) and on FinVect over Z, Q and
+      Q(zeta_n); string diagrams evaluated compositionally and as tensor
+      networks, with a normal form deciding equality in the free symmetric
+      compact closed setting; and the ZX-calculus evaluated exactly over
+      Q(zeta_8), with every rewrite rule sound on every instance over the
+      phases k pi/4, Clifford+T circuits, graph-like simplification, and a
+      cross-check against Moonlab's simulator in quantum builds
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
