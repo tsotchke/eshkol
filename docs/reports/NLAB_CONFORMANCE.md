@@ -92,7 +92,7 @@ polynomial rings, Z[C_n] and Z[C2 x C2]; groups are Z/n, Z/2 x Z/2, S_3, Q_8.
 | group algebra | `nlab_ring_test` | 2 | #1 r* in Z[C5] and Z[C2 x C2] equals the convolution formula on sample pairs; #2 (n, p, characters C_n -> F_p^x, gcd(n, p - 1)); the character t -> 3 of Z[C5] -> F_11 is a ring map |
 | functor of points | `nlab_ring_test` | 2 | #1 (\|circle(F_p)\| for odd p <= 31; \|Hom(Z[t]/(t^2+1), Z/n)\| for n = 2, 3, 5, 13, 25, 65); #2 (\|circle(Z/mn)\|, \|circle(Z/m)\| \|circle(Z/n)\|) for (5 13) (3 7) (4 5) |
 | jet | `nlab_ring_test` | 1 | #1 5-jet of 1/(1 + x) at 2; polynomial jets = Taylor coefficients |
-| Smith normal form | `nlab_ring_test` | 2 | #1 (diagonal of P A Q, diagonal?, \|det P\|, \|det Q\|) for six integer matrices; #2 (nonzero invariant factors, rows, det or #f) for six matrices |
+| Smith normal form | `nlab_ring_test` | 2 | #1 (diagonal of P A Q, diagonal?, \|det P\|, \|det Q\|, ring-det = multimodular-det?) for six integer matrices; #2 (nonzero invariant factors, rows, det or #f) for six matrices |
 | prime spectrum | `nlab_ring_test` | 1 | #1 \|Spec Z/n\| for n = 12, 30, 49, 60 (primes dividing n); preimages of primes are prime |
 | Kan extension | `nlab_category_test` | 3 | #1 Lan = coend formula and Ran = end formula, canonically isomorphic; functors checked; #2 (\|Lan_! G\|, \|colim G\|, \|Ran_! G\|, \|lim G\|) for two span diagrams; #3 (unit bijective along a full inclusion?, along discrete 2 -> arrow?) |
 | adjoint functor | `nlab_category_test` | 2 | #1 R d for d = 0, 1; hom-bijection violations; right adjoint of 0 \|-> 1, 1 \|-> 2; #2 (triangle-identity violations, functors D -> C, those right adjoint to L) |
@@ -144,8 +144,6 @@ Each row is a claim the suite does not compute yet, with what it needs.
   are filed under the page that holds them. nLab has no page "Chinese remainder
   theorem"; the theorem is checked as stated on "multiplicative group of
   integers modulo n".
-- `ring-det` over Z eliminates with unit pivots, so the unimodularity of the
-  Smith transforms is checked with `multimodular-det`.
 - Adding a claim: write it in the suite with its quote, add its row to
   `tests/nlab/claims.tsv`, and update the coverage line at the top of this
   page; `scripts/run_nlab_conformance.sh` checks all three agree.

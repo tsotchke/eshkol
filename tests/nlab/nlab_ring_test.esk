@@ -315,10 +315,13 @@
 ;; ∈ Mat_{m × m}(R) such that the product matrix PAQ is of the following form" —
 ;; diagonal, with P and Q unimodular over Z
 (let ((rows (map (lambda (A) (let* ((s (smith-normal-form A)) (U (cadr s)) (V (caddr s)) (D (integer-matrix-mul (integer-matrix-mul U A) V)))
-                               (list (diagonal-of D) (diagonal? D) (abs (multimodular-det (rows-of U))) (abs (multimodular-det (rows-of V))))))
+                               ;; det by fraction-free elimination over Z, cross-checked multimodularly
+                               (list (diagonal-of D) (diagonal? D) (abs (ring-det integers (rows-of U))) (abs (ring-det integers (rows-of V)))
+                                     (and (= (ring-det integers (rows-of U)) (multimodular-det (rows-of U)))
+                                          (= (ring-det integers (rows-of V)) (multimodular-det (rows-of V)))))))
                  snf-cases)))
-  (claim "Smith normal form" 1 "(diagonal of P A Q, diagonal?, |det P|, |det Q|) for six integer matrices" rows
-         (all? (lambda (r) (and (cadr r) (= 1 (caddr r)) (= 1 (cadddr r)))) rows)))
+  (claim "Smith normal form" 1 "(diagonal of P A Q, diagonal?, |det P|, |det Q|, ring-det = multimodular-det?) for six integer matrices" rows
+         (all? (lambda (r) (and (cadr r) (= 1 (caddr r)) (= 1 (cadddr r)) (list-ref r 4))) rows)))
 ;; [Smith normal form#2] "each a_i divides a_{i+1}", and for a square matrix the
 ;; product of the diagonal is +-det A (cross-checked with the multimodular determinant)
 (let ((rows (map (lambda (A) (list (car (smith-normal-form A)) (integer-matrix-rows A)
