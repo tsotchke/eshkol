@@ -896,6 +896,8 @@ static void compile_hott_form(FuncChunk* c, Node* node) {
         } else {
             compile_quote(c, datum);
         }
+    } else {
+        chunk_emit(c, OP_VOID, 0);  /* a declaration is an expression with no value */
     }
     free(result);
 }

@@ -35,14 +35,12 @@ bool toSx(const SyntaxDatum& d, cubical::Sx& out, std::string& err) {
             out.text = d.text;
             return true;
         case K::Atom: {
+            // Numerals are natural numbers; the reader's other atoms (the
+            // binder colon `:` is its own token) are kernel symbols.
             bool digits = !d.text.empty();
             for (char c : d.text)
                 if (c < '0' || c > '9') digits = false;
-            if (!digits) {
-                err = "`" + d.text + "` is not part of the HoTT syntax";
-                return false;
-            }
-            out.kind = cubical::Sx::Kind::Number;
+            out.kind = digits ? cubical::Sx::Kind::Number : cubical::Sx::Kind::Symbol;
             out.text = d.text;
             return true;
         }
