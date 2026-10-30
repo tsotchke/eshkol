@@ -11696,9 +11696,8 @@ private:
                 // (hott decl...) is compile-time only. (hott-eval term) was
                 // replaced by its normal form when the type checker ran; one
                 // still here means it was never elaborated.
-                if (eshkol::hott::hottFormIsEval(ast)) {
-                    eshkol_error("hott-eval at line %u was not elaborated by the HoTT kernel",
-                                 (unsigned)ast->line);
+                if (op->hott_op.is_eval) {
+                    eshkol_error("a hott-eval form was not elaborated by the HoTT kernel");
                     fatal_codegen_error_ = true;
                 }
                 co_return packNullToTaggedValue();

@@ -3167,6 +3167,9 @@ typedef struct eshkol_operation {
             struct eshkol_ast *expr;        // Wrapped expression (evaluated verbatim at runtime)
         } the_op;                           // (the type expr) - expression-level checked cast
         struct {
+            uint8_t is_eval;                // 1: (hott-eval term); 0: (hott decl...)
+        } hott_op;                          // operands: the reader datum under the node id
+        struct {
             char **type_vars;               // Quantified type variable names
             uint64_t num_vars;
             hott_type_expr_t *body;         // Body type expression

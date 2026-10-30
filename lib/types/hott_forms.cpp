@@ -71,9 +71,8 @@ std::shared_ptr<const SyntaxDatum> datumOf(const eshkol_ast_t* ast) {
 }  // namespace
 
 bool hottFormIsEval(const eshkol_ast_t* ast) {
-    auto d = datumOf(ast);
-    return d && d->kind == SyntaxDatum::Kind::List && !d->items.empty() &&
-           d->items[0].text == "hott-eval";
+    return ast && ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_HOTT_OP &&
+           ast->operation.hott_op.is_eval != 0;
 }
 
 HottFormOutcome elaborateHottForm(cubical::Kernel& kernel, eshkol_ast_t* ast) {

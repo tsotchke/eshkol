@@ -5289,6 +5289,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             co_return ast;
         }
         ast.operation.op = ESHKOL_HOTT_OP;
+        ast.operation.hott_op.is_eval = token.value == "hott-eval" ? 1 : 0;
         eshkol::syntax_record_use(ast.node_id, std::move(form));
         co_return ast;
     }

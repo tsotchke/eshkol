@@ -371,6 +371,15 @@ bool occurs(const V& v, Dim d) {
     return false;
 }
 
+// Substitution keeps sharing: a value none of whose parts change is returned
+// as is (no rebuilding, no re-reduction), which is the common case.
+static bool sameSys(const VSys& a, const VSys& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].face != b[i].face || a[i].v != b[i].v || a[i].v2 != b[i].v2) return false;
+    return true;
+}
+
 V act(const V& v, Dim d, const Formula& r) {
     if (!v) return v;
     switch (v->k) {
@@ -393,10 +402,10 @@ V act(const V& v, Dim d, const Formula& r) {
             return mkPair(a, b);
         }
         case Val::K::PathP: {
+            V a = act(v->a, d, r), b = act(v->b, d, r), c = act(v->c, d, r);
+            if (a == v->a && b == v->b && c == v->c) return v;
             auto n = std::make_shared<Val>(*v);
-            n->a = act(v->a, d, r);
-            n->b = act(v->b, d, r);
-            n->c = act(v->c, d, r);
+            n->a = a; n->b = b; n->c = c;
             return n;
         }
         case Val::K::PLam: {
@@ -412,34 +421,78 @@ V act(const V& v, Dim d, const Formula& r) {
         }
         case Val::K::Data: {
             std::vector<V> ps;
-            for (auto& p : v->params) ps.push_back(act(p, d, r));
+            bool same = true;
+            for (auto& p : v->params) { ps.push_back(act(p, d, r)); same = same && ps.back() == p; }
+            if (same) return v;
             return mkData(v->data, v->levels, std::move(ps));
         }
         case Val::K::Con: {
             std::vector<V> ps, as;
             std::vector<Formula> ds;
-            for (auto& p : v->params) ps.push_back(act(p, d, r));
-            for (auto& p : v->args) as.push_back(act(p, d, r));
-            for (auto& f : v->dims) ds.push_back(f.subst(d, r));
+            bool same = true;
+            for (auto& p : v->params) { ps.push_back(act(p, d, r)); same = same && ps.back() == p; }
+            for (auto& p : v->args) { as.push_back(act(p, d, r)); same = same && as.back() == p; }
+            for (auto& f : v->dims) {
+                if (f.mentions(d)) { ds.push_back(f.subst(d, r)); same = false; }
+                else ds.push_back(f);
+            }
+            if (same) return v;
             return mkCon(v->data, v->levels, std::move(ps), v->con, std::move(as), std::move(ds));
         }
-        case Val::K::Glue: return mkGlue(act(v->a, d, r), actSys(v->sys, d, r));
-        case Val::K::GlueElem: return mkGlueElem(actSys(v->sys, d, r), act(v->a, d, r));
-        case Val::K::HComp: return hcomp(act(v->a, d, r), actSys(v->sys, d, r), act(v->b, d, r));
-        case Val::K::Transp: return transp(act(v->a, d, r), v->f.subst(d, r), act(v->b, d, r));
+        case Val::K::Glue: {
+            V a = act(v->a, d, r);
+            VSys s = actSys(v->sys, d, r);
+            if (a == v->a && sameSys(s, v->sys)) return v;
+            return mkGlue(a, std::move(s));
+        }
+        case Val::K::GlueElem: {
+            V a = act(v->a, d, r);
+            VSys s = actSys(v->sys, d, r);
+            if (a == v->a && sameSys(s, v->sys)) return v;
+            return mkGlueElem(std::move(s), a);
+        }
+        case Val::K::HComp: {
+            V a = act(v->a, d, r), b = act(v->b, d, r);
+            VSys s = actSys(v->sys, d, r);
+            if (a == v->a && b == v->b && sameSys(s, v->sys)) return v;
+            return hcomp(a, std::move(s), b);
+        }
+        case Val::K::Transp: {
+            V a = act(v->a, d, r), b = act(v->b, d, r);
+            if (a == v->a && b == v->b && !v->f.mentions(d)) return v;
+            return transp(a, v->f.subst(d, r), b);
+        }
         case Val::K::Var: {
-            if (!v->a || !occurs(v->a, d)) return v;
+            if (!v->a) return v;
+            V t = act(v->a, d, r);
+            if (t == v->a) return v;
             auto n = std::make_shared<Val>(*v);
-            n->a = act(v->a, d, r);
+            n->a = t;
             return n;
         }
-        case Val::K::App: return app(act(v->a, d, r), act(v->b, d, r));
-        case Val::K::Fst: return vfst(act(v->a, d, r));
-        case Val::K::Snd: return vsnd(act(v->a, d, r));
-        case Val::K::PApp:
-            return papp(act(v->a, d, r), v->f.subst(d, r), act(v->b, d, r), act(v->c, d, r));
-        case Val::K::SplitApp: return app(act(v->a, d, r), act(v->b, d, r));
-        case Val::K::Unglue: return unglue(act(v->a, d, r), act(v->b, d, r), actSys(v->sys, d, r));
+        case Val::K::App:
+        case Val::K::SplitApp: {
+            V a = act(v->a, d, r), b = act(v->b, d, r);
+            if (a == v->a && b == v->b) return v;
+            return app(a, b);
+        }
+        case Val::K::Fst:
+        case Val::K::Snd: {
+            V a = act(v->a, d, r);
+            if (a == v->a) return v;
+            return v->k == Val::K::Fst ? vfst(a) : vsnd(a);
+        }
+        case Val::K::PApp: {
+            V a = act(v->a, d, r), b = act(v->b, d, r), c = act(v->c, d, r);
+            if (a == v->a && b == v->b && c == v->c && !v->f.mentions(d)) return v;
+            return papp(a, v->f.subst(d, r), b, c);
+        }
+        case Val::K::Unglue: {
+            V a = act(v->a, d, r), b = act(v->b, d, r);
+            VSys s = actSys(v->sys, d, r);
+            if (a == v->a && b == v->b && sameSys(s, v->sys)) return v;
+            return unglue(a, b, std::move(s));
+        }
     }
     return v;
 }
