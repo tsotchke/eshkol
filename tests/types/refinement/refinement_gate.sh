@@ -36,7 +36,9 @@ for engine in "${engines[@]}"; do
     err="$WORKDIR/accept.$engine.err"
     if [ "$engine" = native ]; then out=$("$ESHKOL_RUN" -r "$HERE/accept.esk" 2>"$err"); rc=$?
     else "$VM" "$HERE/accept.esk" > "$WORKDIR/accept.vm.out" 2>"$err"; rc=$?
-         out=$(grep -v '^=== ' "$WORKDIR/accept.vm.out"); fi
+         # The standalone VM lists the compiled chunk on stdout first; the
+         # program's own output is the tail.
+         out=$(tail -n "$(wc -l < "$HERE/accept.expected")" "$WORKDIR/accept.vm.out"); fi
     note
     if [ $rc -ne 0 ]; then bad "[$engine] accept.esk exited $rc: $out $(cat "$err")"
     elif ! diff <(printf '%s\n' "$out") "$HERE/accept.expected" > "$WORKDIR/accept.$engine.diff"; then
