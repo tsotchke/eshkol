@@ -112,7 +112,7 @@ static bool sameSplit(const V& s1, const V& s2) {
     // Same split term: compare the captured environments as normal forms.
     // Level bindings are skipped: elaboration leaves levels rigid (no
     // binding) while an instantiated global binds them; the comparison is
-    // typed by the caller, which already fixes the levels.
+    // typed by the caller, which already determines the levels.
     auto skipLevels = [](const Env* e) {
         while (e && e->kind == Env::Kind::Level) e = e->next.get();
         return e;

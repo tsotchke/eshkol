@@ -23,7 +23,7 @@ sources:
 ---
 # ADR-0043: Identity types, univalence and higher inductive types
 
-**Status:** Accepted
+**Status:** Proposed
 **Date:** 2026-10-30
 **Scope:** the identity types of Eshkol's HoTT layer, path induction,
 transport, function extensionality, univalence, higher inductive types, and
@@ -102,7 +102,7 @@ These hold by evaluation; the kernel's conversion checker decides them.
   With an empty system, `hcomp` is the identity.
 - **Univalence**: `ua e` is the Glue line `Glue B [i=0 |-> (A, e), i=1 |-> (B,
   idEquiv B)]`, and `transport (ua e) x` reduces to `transp^B (fst e x)`;
-  when `B` is an inductive type with fixed parameters that is `fst e x`
+  when `B` is an inductive type with constant parameters that is `fst e x`
   itself. `transport (ua sucEquiv) (pos 4)` is `(pos 5)`.
 - **Function extensionality**: `funExt h = \i x. h x i`; `happly (funExt h)`
   is `h` definitionally.

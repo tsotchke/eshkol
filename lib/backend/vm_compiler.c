@@ -821,7 +821,7 @@ static EshkolHottFormFn g_vm_hott_form = NULL;
 
 void eshkol_vm_install_hott_form(EshkolHottFormFn fn) { g_vm_hott_form = fn; }
 
-/* A new compilation unit: a fresh kernel, so declarations never leak between programs. */
+/* A new compilation unit: a fresh kernel, so declarations never carry over between programs. */
 static void vm_hott_begin_unit(void) {
     if (!g_vm_hott_form) return;
     int ok = 1;

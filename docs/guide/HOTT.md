@@ -47,7 +47,7 @@ Output:
 2
 ```
 
-`example` asks the compiler to check a statement. A wrong one stops the
+`example` asks the compiler to check a statement. A false one stops the
 compile: `(example (Path Nat 2 3) (refl 0 Nat 2))` is a type error.
 
 ## Transport and path induction
