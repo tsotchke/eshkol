@@ -56,6 +56,7 @@
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/backend/tensorcore_codegen.h>
 #include <eshkol/types/type_checker.h>
+#include <eshkol/types/effect_check.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
 #include <eshkol/logger.h>
@@ -2764,6 +2765,11 @@ public:
                         type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                     }
                 }
+
+                // Effect rows (ADR-0045): infer every procedure's latent
+                // effects and check them against `declare-effects`. Findings
+                // go through the same enforcement point as type errors.
+                eshkol::effects::checkProgram(asts_to_use, num_asts_to_use, type_checker);
 
                 // A linearity violation is fatal in EVERY mode but --unsafe.
                 // Checked before the --strict-types branch below because it is
