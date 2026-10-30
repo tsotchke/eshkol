@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Atlas-only cross-check of core.transcript claims against PARI/GP and SymPy.
+"""Cross-check of core.transcript claims against PARI/GP and SymPy, for a
+host with both installed.
 
 scripts/math_crosscheck/replay_check.py already recomputes every known claim
 kind with a pure-Python-stdlib implementation (exact_math.py) and needs
@@ -8,9 +9,8 @@ nothing beyond Python 3, so CTest runs it in ordinary CI. This script is the
 computer algebra systems -- PARI/GP (determinant, Smith normal form, rank mod
 p) and SymPy (determinant, Smith normal form, polynomial gcd) -- that are not
 installed on every CI host, so it is not wired into CTest; it is meant to be
-run by hand (or by a lane script) wherever both tools are available, which at
-the time of writing means atlas only (`/opt/homebrew/bin/gp`, SymPy via the
-system python3).
+run by hand (or by a lane script) wherever both tools are available (`gp` on
+`PATH`, SymPy via the system python3).
 
 Usage:
     python3 crosscheck_pari_sympy.py FILE.json [FILE2.json ...]

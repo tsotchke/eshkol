@@ -138,8 +138,8 @@ polynomial gcd over Z[x] -- and compares against `"output"` (the
 `rank_mod_p`, `gram_matrix_rank_mod_p`, `gcd`, `character_count`. An unknown
 kind is reported `SKIPPED`, not `AGREE`, and does not by itself fail the run.
 
-`scripts/math_crosscheck/crosscheck_pari_sympy.py` is the atlas-only sibling:
-it additionally checks `determinant`/`smith_normal_form`/`rank_mod_p`/`gcd`
+`scripts/math_crosscheck/crosscheck_pari_sympy.py` is the sibling for a host
+with PARI/GP and SymPy installed: it additionally checks `determinant`/`smith_normal_form`/`rank_mod_p`/`gcd`
 claims against PARI/GP's `matdet`/`matsnf`/`matrank`/`gcd` and SymPy's
 `Matrix.det`/`Matrix.rank`/`Poly.gcd`, and writes a JSON receipt recording the
 tool versions used (PARI/GP and SymPy are not installed on every host, unlike

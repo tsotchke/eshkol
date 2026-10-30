@@ -213,8 +213,9 @@
 
 ;; Transcript the 6x6 13-digit determinant and the large-coefficient
 ;; polynomial gcd already checked above against exact-det / Euclid over
-;; Q[x]: an independent recomputation (replay_check.py, or PARI/GP on
-;; atlas) is a direct cross-check of both bignum-exact results.
+;; Q[x]: an independent recomputation (replay_check.py, or PARI/GP via
+;; crosscheck_pari_sympy.py) is a direct cross-check of both bignum-exact
+;; results.
 (transcript-record! TRANSCRIPT "determinant" "A13_6x6_13digit"
   (list (cons "matrix" (tv-matrix-vec A13)))
   (tv-int (exact-det A13)))

@@ -412,7 +412,8 @@
 ;; (49 x 343) whose rank decides whether the ten cubic monomials are
 ;; independent -- the crux of Part 4. An independent recomputation of
 ;; rank mod p (scripts/math_crosscheck/replay_check.py, or PARI/GP's
-;; rank over GF(p) on atlas) is a direct cross-check of these claims.
+;; rank over GF(p) via crosscheck_pari_sympy.py) is a direct cross-check
+;; of these claims.
 (for-each
   (lambda (spec)
     (let* ((label (car spec)) (G (cadr spec)) (n (caddr spec)) (p (list-ref spec 3))

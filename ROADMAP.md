@@ -776,9 +776,10 @@ under the same discipline that made `Qubit` linear.
       JSON claim (reusing `core.merkle`'s hash), off by default and never
       changing a program's output. `scripts/math_crosscheck/replay_check.py`
       independently recomputes every known claim kind from a pure-Python
-      implementation (CTest-runnable, no third-party package); the atlas-only
-      `crosscheck_pari_sympy.py` additionally checks against PARI/GP and
-      SymPy. Wired into `mathematics_group_cohomology_order_eight`,
+      implementation (CTest-runnable, no third-party package);
+      `crosscheck_pari_sympy.py`, for a host with PARI/GP and SymPy
+      installed, additionally checks against PARI/GP and SymPy. Wired
+      into `mathematics_group_cohomology_order_eight`,
       `mathematics_cohomology_rings_cup_products`,
       `mathematics_fermat_hodge_classes_sweep` and `multimodular_test`
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)

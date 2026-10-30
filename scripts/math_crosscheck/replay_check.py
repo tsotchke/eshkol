@@ -14,8 +14,8 @@ For every claim in every given transcript file this script:
 
 It needs only the Python 3 standard library -- no PARI/GP, no SymPy, no
 third-party package -- so it is the piece CTest can run in ordinary CI.
-scripts/math_crosscheck/crosscheck_pari_sympy.py is the atlas-only
-sibling that additionally checks against PARI/GP and SymPy.
+scripts/math_crosscheck/crosscheck_pari_sympy.py is the sibling for a
+host with PARI/GP and SymPy installed, additionally checking against them.
 
 Usage:
     python3 replay_check.py FILE.json [FILE2.json ...]

@@ -143,7 +143,7 @@
 ;; written (field order kind,label,inputs,output); re-deriving it from a
 ;; round trip through Eshkol's own json-parse is not a valid check here,
 ;; because core.json represents a JSON object as a hash-table with
-;; unspecified key order, while the hash is defined over a fixed order.
+;; unspecified key order, while the hash is defined over a stated order.
 ;; An external reader that preserves object key order (any JSON library
 ;; built on an ordered map, e.g. Python's json module) can and does
 ;; re-derive it; see scripts/math_crosscheck/replay_check.py.

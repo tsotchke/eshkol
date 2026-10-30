@@ -4,8 +4,9 @@ mathematical claims recorded by core.transcript (lib/core/transcript.esk).
 
 No third-party dependencies (no numpy, no sympy): this module backs
 replay_check.py, which CTest runs in CI with only the Python standard
-library.  crosscheck_pari_sympy.py (atlas-only) additionally compares
-against PARI/GP and SymPy as the independent-tool cross-check; this module
+library.  crosscheck_pari_sympy.py, for a host with PARI/GP and SymPy
+installed, additionally compares against them as the independent-tool
+cross-check; this module
 is a THIRD, independently-written implementation of the same algorithms,
 used as the always-available CI-side replay.
 

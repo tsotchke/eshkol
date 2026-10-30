@@ -182,8 +182,8 @@
 (define verdict (cond ((not (equal? griff shio)) "FAIL") ((< gap 0) "FAIL") (else "PASS")))
 (define receipt-label (string-append "fermat_m" (number->string m) "_n" (number->string n)))
 ;; The Gram matrix's rank mod p is exactly gram_rank_mod_p above: an
-;; independent recomputation (replay_check.py, or PARI/GP on atlas)
-;; cross-checks it directly. griffiths/shioda cross-check each other
+;; independent recomputation (replay_check.py, or PARI/GP via
+;; crosscheck_pari_sympy.py) cross-checks it directly. griffiths/shioda cross-check each other
 ;; (two independently derived Hodge-number counts, compared for equality).
 (transcript-record! TRANSCRIPT "gram_matrix_rank_mod_p" receipt-label
   (list (cons "gram_matrix" (tv-matrix-vec G)) (cons "prime" (tv-int prime)))

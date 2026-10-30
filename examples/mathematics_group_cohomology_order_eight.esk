@@ -341,8 +341,9 @@
 ;; their Smith normal forms for S_3 and the five groups of order eight --
 ;; H_1's torsion (the abelianization, checked above) comes directly from
 ;; these two SNFs, so an independent recomputation of this transcript
-;; (scripts/math_crosscheck/replay_check.py, or PARI/GP's matsnf on
-;; atlas) is a genuine cross-check of the printed H_1 claims. The degree-3
+;; (scripts/math_crosscheck/replay_check.py, or PARI/GP's matsnf via
+;; crosscheck_pari_sympy.py) is a genuine cross-check of the printed H_1
+;; claims. The degree-3
 ;; boundary (needed for H_2/H_3) is left out here: for Z/8 its matrix
 ;; reaches 343 x 2401 entries, too large for a committed transcript
 ;; fixture.
