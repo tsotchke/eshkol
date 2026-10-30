@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "engines": [
+    "jit",
+    "aot-O0"
+  ],
+  "checks_per_engine": 23,
+  "contexts": 15,
+  "ambient_dimension": 15,
+  "mean_dimension": 4,
+  "covariance_dimension": 11,
+  "nonzero_mean_second_coefficients": 15,
+  "method": "one RK4 step, h=1/16",
+  "oracle": "differentiate exact polynomials from the full 15-coordinate source model",
+  "linalg_source_compiled_explicitly": true,
+  "stdout_sha256": "8ac4a5eca5d3f24fffffca129c90358a1bd209d011fda1c9a67e96327ca0c939",
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "files_sha256": {
+    "repro/hawkes-forecast/source.esk": "5eb5b62aec891cfc6d3fa1e745359153b2e13de6a643951a1a1f3f6f40b40230",
+    "repro/hawkes-forecast/forecast.esk": "42878f2d76687822190def7d617b4fd7fe7e96a46f24ad70fc38fba6e9b04ecd",
+    "repro/hawkes-forecast/forecast_test.esk": "b5f8461e530577f4ddb63c429b4b85d04de93cfa05cde0c361c067e7e0636913",
+    "repro/hawkes-forecast/oracle.py": "f64fc7640a4f29bb8348b057825280158790cbbaef6a9c059c0c0e7c28cb9a19",
+    "repro/hawkes-forecast/run_forecast_gate.py": "98dbecfc4f37b54428648ec3777bfbc24f5c08244ef4cbb9821fe4ff0dc49469"
+  }
+}
