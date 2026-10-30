@@ -68,7 +68,7 @@
          eilenberg-zilber-status eilenberg-zilber-critical-simplex
          eilenberg-zilber-reduction eilenberg-zilber-formula-reduction
          alexander-whitney eilenberg-maclane-shuffle shih-homotopy shuffles
-         make-twisted-product twisted-product-twisting twisting-function-violations
+         product-space make-twisted-product twisted-product-twisting twisting-function-violations
          twisted-eilenberg-zilber-reduction twisted-product-space
          k-pi-1-group k-pi-1-reduction k-pi-1-simplex classifying-normal-form classifying-group classifying-status classifying-bar-reduction
          classifying-space-of eilenberg-maclane-space eilenberg-maclane-group-modulus)
@@ -347,6 +347,21 @@
                     (lambda (n v) (alexander-whitney X Y v))
                     (lambda (n w) (eilenberg-maclane-shuffle X Y w))
                     (lambda (n v) (shih-homotopy X Y v)))))
+
+;; the effective homology of a product: the Eilenberg-Zilber reduction
+;; followed by the tensor product of the two reductions (the critical
+;; differential of an untwisted product is the tensor differential, so the
+;; perturbation is zero; it is still checked to lower the first degree)
+(define (product-space name Aspace Bspace)
+  (let* ((A (effective-space-simplicial-set Aspace)) (B (effective-space-simplicial-set Bspace))
+         (P (simplicial-product A B)) (CA (effective-space-chains Aspace)) (CB (effective-space-chains Bspace))
+         (CP (simplicial-effective-chains P #f))
+         (r1 (es-ez-vf-reduction P A B CP CA CB))
+         (r0 (tensor-reduction (effective-space-reduction Aspace) (effective-space-reduction Bspace)))
+         (crit (reduction-small r1)) (Td (reduction-big r0))
+         (r2 (perturb-reduction r0 (lambda (n w) (lc-sub (effective-complex-d-cell crit n w) (effective-complex-d-cell Td n w)))
+                                (cons (lambda (w) (car (car (word-letters w)))) 1))))
+    (make-effective-space name P CP (compose-reductions r1 r2) #f)))
 
 ;; ---------------------------------------------------------------------------
 ;; Twisted cartesian products B x_tau F

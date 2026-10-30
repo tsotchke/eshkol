@@ -49,11 +49,16 @@
 (require core.simplicial.kan)
 (require core.homological.complex)
 (require core.homological.simplicial)
+(require core.effective.chain)
+(require core.effective.perturbation)
+(require core.effective.simplicial)
+(require core.effective.homotopy)
+(require core.integer_linalg)
 
-(provide finite-space-hypercover hypercover-piece-point hypercover-open hypercover-boundaries
+(provide finite-space-hypercover finite-space-cech-nerve hypercover-space hypercover-piece-point hypercover-open hypercover-boundaries
          hypercover-violations hypercover-level-counts
          mod-p-cohomology-dimensions two-type-cardinalities mapping-space-cardinality
-         cup-square-three-type-cardinality)
+         cup-square-three-type-cardinality uct-cohomology-order postnikov-cardinalities)
 
 ;; ---------------------------------------------------------------------------
 ;; Private helpers (prefix hc-)
@@ -68,11 +73,12 @@
 ;; ---------------------------------------------------------------------------
 ;; The hypercover
 ;; ---------------------------------------------------------------------------
-;; piece values: (piece n y beta) with y the point whose minimal open is the
-;; piece and beta the list of faces (simplices of level n-1); level 0:
-;; (piece 0 y (i)) with i the index of the open of the cover
-(define (hypercover-piece-point x) (cadr (cdr x)))
-(define (hypercover-open X s) (finite-space-down-set X (hypercover-piece-point (simplex-base s))))
+;; piece values: (piece n (y . U) beta) with U the open of the piece (U_y for
+;; the point y of a hypercover by cones; a component for a Cech nerve) and
+;; beta the list of faces (simplices of level n-1); level 0:
+;; (piece 0 (y . U) (i)) with i the index of the open of the cover
+(define (hypercover-piece-point x) (car (caddr x)))
+(define (hypercover-open X s) (cdr (caddr (simplex-base s))))
 ;; compatible boundaries of an n-simplex (n >= 1) made of (n-1)-simplices of H
 (define (hypercover-boundaries H n)
   (let ((S (simplicial-set-simplices H (- n 1))))
@@ -94,22 +100,36 @@
                                     (hc-range n)))
               (simplicial-set-simplices H (- n 1)))
     t))
-(define (finite-space-hypercover X cover nmax)
+;; refine: the pieces over an open V (maximal points for the hypercover by
+;; cones, connected components for the Cech nerve), as (point . open) pairs
+(define (hc-cones X V) (map (lambda (y) (cons y (finite-space-down-set X y))) (hc-maximal X V)))
+(define (hc-components X V) (map (lambda (c) (cons c c)) (finite-space-components X V)))
+(define (hc-build X cover nmax refine name)
   (letrec ((H (make-simplicial-set
-               "hypercover"
+               name
                (lambda (n)
                  (if (= n 0)
-                     (apply append (map (lambda (U i) (map (lambda (y) (list 'piece 0 y (list i))) (hc-maximal X U))) cover (hc-range (length cover))))
+                     (apply append (map (lambda (U i) (map (lambda (yo) (list 'piece 0 yo (list i))) (refine X U))) cover (hc-range (length cover))))
                      (let ((degenerate (hc-degenerate-boundaries H n)))
                        (apply append
                               (map (lambda (beta)
                                      (if (hash-table-ref/default degenerate beta #f) '()
                                          (let ((V (fold-left hc-intersect (hypercover-open X (car beta)) (map (lambda (s) (hypercover-open X s)) (cdr beta)))))
-                                           (map (lambda (y) (list 'piece n y beta)) (hc-maximal X V)))))
+                                           (map (lambda (yo) (list 'piece n yo beta)) (refine X V)))))
                                    (hypercover-boundaries H n))))))
                (lambda (n i x) (list-ref (cadddr x) i))
                nmax)))
     H))
+(define (finite-space-hypercover X cover nmax) (hc-build X cover nmax hc-cones "hypercover"))
+;; the Cech nerve as a simplicial set: n-simplices are the tuples of opens of
+;; the cover with a connected component of their intersection (built by the
+;; same recursion, without refining a component)
+(define (finite-space-cech-nerve X cover nmax) (hc-build X cover nmax hc-components "Cech nerve"))
+;; the effective space of a truncated hypercover (or nerve): its chains are of
+;; finite type through nmax and are reduced by a collapse matching
+(define (hypercover-space H nmax)
+  (let ((C (simplicial-effective-chains H #t)))
+    (make-effective-space (simplicial-set-name H) H C (finite-complex-reduction C nmax (simplicial-set-name H)) #f)))
 (define (hypercover-level-counts H nmax) (map (lambda (n) (simplicial-set-count H n)) (hc-range (+ nmax 1))))
 ;; the hypercover conditions through level nmax: every piece is a cone
 ;; contained in the opens of its faces, the level-0 pieces cover X, and over
@@ -183,3 +203,54 @@
                                                       (let fill ((i 0)) (if (< i n) (begin (vector-set! w i (modulo (+ (vector-ref u i) (vector-ref (car vs) i)) 2)) (fill (+ i 1)))))
                                                       w))
                                         acc))))))
+
+;; ---------------------------------------------------------------------------
+;; Mapping spaces into 2-types and 3-types through effective homology
+;; ---------------------------------------------------------------------------
+;; |H^n(K; Z/m)| from integral homology rows (k betti torsion), by universal
+;; coefficients: Hom(H_n, Z/m) (+) Ext(H_(n-1), Z/m)
+(define (uct-cohomology-order H n m)
+  (let ((hom (let ((row (list-ref H n))) (* (expt m (cadr row)) (fold-left * 1 (map (lambda (d) (gcd d m)) (caddr row))))))
+        (ext (if (= n 0) 1 (fold-left * 1 (map (lambda (d) (gcd d m)) (caddr (list-ref H (- n 1))))))))
+    (* hom ext)))
+(define (hc-dot u v) (let loop ((i 0) (s 0)) (if (= i (vector-length u)) s (loop (+ i 1) (+ s (* (vector-ref u i) (vector-ref v i)))))))
+;; For an effective space S whose integral homology through degree 3 has no
+;; 2-torsion (so every class of H^2(S; Z/2) has an integral lift and
+;; H^4(S; Z/4) is detected on integral 4-cycles): the homotopy cardinalities
+;;   (2-types  |Map(S, BZ/2)|  |Map(S, K(Z/2,2))|  product)
+;;   (A=Z/2 B=Z/4  k = 0  k = Pontryagin square)
+;;   (A=B=Z/2      k = 0  k = iota u iota)
+;; for the 3-types K(B,3) x_k K(A,2), by the fibration formula. A class x
+;; with integral cocycle lift x~ has P(x) = x~ u x~ mod 4 (x~ u_1 d x~ = 0);
+;; it vanishes when x~ u x~ evaluates to 0 mod 4 on every 4-cycle g(z), z a
+;; cycle of the small complex, the cup product taken by the Alexander-Whitney
+;; formula on the simplices of S and x~ = phi o f on 2-simplices.
+(define (postnikov-cardinalities S)
+  (let* ((E (effective-space-small S)) (r (effective-space-reduction S)) (X (effective-space-simplicial-set S))
+         (H (effective-complex-homology E 3))
+         (two? (lambda (k) (hc-any? (lambda (d) (even? d)) (caddr (list-ref H k))))))
+    (if (hc-any? two? (list 1 2 3))
+        (error "postnikov-cardinalities: integral homology with 2-torsion in degrees 1-3 (planned for v1.4.1: classes without integral lifts)" H))
+    (let* ((o (lambda (n m) (uct-cohomology-order H n m)))
+           (hf (homology-functional E 2)) (inv (car hf))
+           (UL (if (cadr hf) (integer-matrix-mul (cadr hf) (caddr hf)) #f))
+           (lifts (filter (lambda (v) v) (map (lambda (i) (if (= 0 (list-ref inv i)) (vector-ref UL i) #f)) (hc-range (length inv)))))
+           (n2 (effective-complex-rank E 2))
+           (xt (lambda (eps) (let ((w (make-vector n2 0)))
+                               (for-each (lambda (e v) (if (= e 1) (let fill ((i 0)) (if (< i n2) (begin (vector-set! w i (+ (vector-ref w i) (vector-ref v i))) (fill (+ i 1))))))) eps lifts)
+                               w)))
+           (cycles (integer-kernel (effective-complex-matrix E 4) (effective-complex-rank E 4)))
+           (big-cycles (map (lambda (z) (reduction-g r 4 (effective-complex-combination E 4 z))) cycles))
+           (value2 (lambda (w s) (if (simplex-degenerate? s) 0 (hc-dot w (effective-complex-vector E 2 (reduction-f-cell r 2 (simplex-base s)))))))
+           (square-on (lambda (w c) (fold-left + 0 (map (lambda (p) (let ((s (simplex (car p) 4)))
+                                                                       (* (cdr p) (value2 w (simplicial-set-front-face X s 2)) (value2 w (simplicial-set-back-face X s 2)))))
+                                                         c))))
+           (epss (let loop ((k (length lifts)) (acc (list '()))) (if (= k 0) acc (loop (- k 1) (append (map (lambda (e) (cons 0 e)) acc) (map (lambda (e) (cons 1 e)) acc))))))
+           (squares (map (lambda (eps) (let ((w (xt eps))) (map (lambda (c) (square-on w c)) big-cycles))) epss))
+           (count (lambda (m) (length (filter (lambda (vals) (hc-all? (lambda (v) (= 0 (modulo v m))) vals)) squares))))
+           (b (/ (o 1 2) (o 0 2))) (k2 (/ (* (o 2 2) (o 0 2)) (o 1 2)))
+           (fibre4 (* (/ (o 0 2) (o 1 2)) (/ (* (o 3 4) (o 1 4)) (* (o 2 4) (o 0 4)))))
+           (fibre2 (* (/ (o 0 2) (o 1 2)) (/ (* (o 3 2) (o 1 2)) (* (o 2 2) (o 0 2))))))
+      (list (list b k2 (* b k2))
+            (list (* (o 2 2) fibre4) (* (count 4) fibre4))
+            (list (* (o 2 2) fibre2) (* (count 2) fibre2))))))

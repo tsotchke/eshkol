@@ -47,7 +47,7 @@
 (require core.effective.chain)
 
 (provide perturb-reduction perturb-small perturbation-series
-         vector-field-reduction vector-field-critical?
+         vector-field-reduction vector-field-critical? collapse-matching finite-complex-reduction
          make-word word? word-letters word-length word-degree word-letter-degree word-letter-cell
          tensor-complex tensor-reduction bar-complex bar-reduction word-tensor-d)
 
@@ -173,6 +173,71 @@
                                 (else (lc-negate (lc-relabel lab (pi-kind 'critical n (effective-complex-d C (+ n 1) (hsrc n c)))))))))
                       (lambda (n e) (g-crit n (unlab e)))
                       (lambda (n c) (if (eq? 'source (kind n c)) (hsrc n c) '()))))))
+
+;; ---------------------------------------------------------------------------
+;; A vector field on a complex of finite type by collapses
+;; ---------------------------------------------------------------------------
+;; The cells of degrees 0 .. top: a face a of b whose only remaining coface
+;; is b, with incidence +1 or -1, is collapsed with it (a source, b target);
+;; when no free face is left, a remaining cell of the largest degree becomes
+;; critical and is removed. The pairs of a sequence of collapses form an
+;; acyclic matching (the gradient of the collapses), so the field is
+;; admissible; vector-field-reduction checks every V-path anyway.
+;; Returns a status procedure (n cell) -> 'critical | (source . b) | (target . a).
+(define (collapse-matching C top)
+  (let* ((key (lambda (n c) (cons n c)))
+         (status (make-hash-table)) (alive (make-hash-table))
+         (faces (make-hash-table)) (cofaces (make-hash-table)) (count (make-hash-table))
+         (queue '()))
+    (define (push-if-free! n a)
+      (if (and (hash-table-ref/default alive (key n a) #f) (= 1 (hash-table-ref/default count (key n a) 0)) (< n top))
+          (set! queue (cons (cons n a) queue))))
+    (define (remove! n c)
+      (hash-table-set! alive (key n c) #f)
+      (for-each (lambda (p) (let ((fk (key (- n 1) (car p))))
+                              (hash-table-set! count fk (- (hash-table-ref/default count fk 0) 1))
+                              (push-if-free! (- n 1) (car p))))
+                (hash-table-ref/default faces (key n c) '())))
+    (define (the-coface n a)
+      (let loop ((l (hash-table-ref/default cofaces (key n a) '())))
+        (cond ((null? l) #f) ((hash-table-ref/default alive (key (+ n 1) (car (car l))) #f) (car l)) (else (loop (cdr l))))))
+    (for-each (lambda (n)
+                (for-each (lambda (c)
+                            (let ((k (key n c)) (fs (effective-complex-d-cell C n c)))
+                              (hash-table-set! alive k #t)
+                              (hash-table-set! faces k fs)
+                              (if (not (hash-table-ref/default count k #f)) (hash-table-set! count k 0))
+                              (for-each (lambda (p)
+                                          (let ((fk (key (- n 1) (car p))))
+                                            (hash-table-set! cofaces fk (cons (cons c (cdr p)) (hash-table-ref/default cofaces fk '())))
+                                            (hash-table-set! count fk (+ 1 (hash-table-ref/default count fk 0)))))
+                                        fs)))
+                          (effective-complex-basis C n)))
+              (pt-range (+ top 1)))
+    (for-each (lambda (n) (for-each (lambda (c) (push-if-free! n c)) (effective-complex-basis C n))) (pt-range top))
+    (let loop ((top-left top))
+      (let drain ()
+        (if (pair? queue)
+            (let* ((item (car queue)) (n (car item)) (a (cdr item)))
+              (set! queue (cdr queue))
+              (if (and (hash-table-ref/default alive (key n a) #f) (= 1 (hash-table-ref/default count (key n a) 0)))
+                  (let* ((bp (the-coface n a)) (b (car bp)))
+                    (if (or (= (cdr bp) 1) (= (cdr bp) -1))
+                        (begin (hash-table-set! status (key n a) (cons 'source b))
+                               (hash-table-set! status (key (+ n 1) b) (cons 'target a))
+                               (remove! (+ n 1) b) (remove! n a)))))
+              (drain))))
+      ;; stuck: a remaining cell of the largest degree becomes critical
+      (let find ((d top-left))
+        (if (>= d 0)
+            (let ((c (let scan ((l (effective-complex-basis C d))) (cond ((null? l) #f) ((hash-table-ref/default alive (key d (car l)) #f) (car l)) (else (scan (cdr l)))))))
+              (if c (begin (hash-table-set! status (key d c) 'critical) (remove! d c) (loop d))
+                  (find (- d 1)))))))
+    (lambda (n c) (hash-table-ref/default status (key n c) 'critical))))
+;; the reduction of a complex of finite type (through degree top) onto the
+;; critical cells of its collapse matching
+(define (finite-complex-reduction C top name)
+  (vector-field-reduction C (collapse-matching C top) name #f #f #f))
 
 ;; ---------------------------------------------------------------------------
 ;; Words: tensor products and bar constructions
