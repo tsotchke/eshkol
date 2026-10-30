@@ -1859,7 +1859,7 @@
     },
     {
       "path": "examples/mathematics_descent_hypercohomology.esk",
-      "source_sha256": "23357094a281f812660d347b3ad067fe29e3ed4cd5ceae19784d8ded349d5c6a",
+      "source_sha256": "b4937e4ec4e24c1b85bf1e4d618bbaf372a3551be48518d54a786dbf29ab06f1",
       "title": "Descent double complexes and hypercohomology",
       "kind": "mathematics",
       "purpose": "Show why a non-Leray cover needs derived sections rather than plain Cech sections.",
@@ -2562,7 +2562,7 @@
     },
     {
       "path": "examples/mathematics_group_cohomology_order_eight.esk",
-      "source_sha256": "f9da1f7b565545a95dd21a39c02e99958aca22a312ffabf28cbbea04152b6600",
+      "source_sha256": "252bc911d0c07754d6452e3720959803966217c411dd7e7523f94254db2a9dc0",
       "title": "Integral homology and twists of order-eight groups",
       "kind": "mathematics",
       "purpose": "Compare torsion homology and twisted-double invariants across small groups.",
@@ -2601,15 +2601,15 @@
           "text": "(define (mod2 x) (modulo x 2))                 ;; phases as integers over the denominator 2"
         },
         {
-          "line": 346,
+          "line": 348,
           "text": "(check \"Z(RP^3) for the type III theory is 3/4: only the all-ones element picks up the sign\""
         },
         {
-          "line": 348,
+          "line": 350,
           "text": "(check \"Z(RP^3) untwisted counts homomorphisms Z/2 -> G over |G|: 6/8 for D_4, 2/8 for Q_8\""
         },
         {
-          "line": 356,
+          "line": 358,
           "text": "(check \"negative control -- swapping two edges of one tetrahedron of S^3 breaks Z(S^3) = 1/8 for D_4 and for the type III theory\""
         }
       ],
@@ -4437,7 +4437,7 @@
     },
     {
       "path": "examples/mathematics_two_groups_postnikov.esk",
-      "source_sha256": "c817bb5ef26618f87cfd5ed732d6b6fb31ebba4416933b35a7116f761eb515e5",
+      "source_sha256": "9505c71277d108885e9f1bf58b44b2fce60904851a07d4708bf16c61a13c2c11",
       "title": "Crossed-module nerves and Postnikov data",
       "kind": "mathematics",
       "purpose": "Distinguish 2-types with identical π₁ and π₂ using k-sensitive cohomology.",
