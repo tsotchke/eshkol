@@ -2498,6 +2498,17 @@ oracles:
   - name: v1.5-release
     aliases: [v1.5, release-1.5, intelligence]
     requires:
+      # ADR-0050 rigorous numerics (v1.5.0 items: directed rounding as the
+      # core.ad.interval default, compact-set bounds, torus averaging).
+      - test_evidence: true
+        severity: high
+        label: Directed-rounding intervals, interval jets, certified box sup/inf and torus means contain exact rational ground truth under JIT
+        action: ctest --test-dir build --output-on-failure -R '^rigorous_numerics_runtime_smoke$'
+      - test_evidence: true
+        severity: high
+        label: Directed-rounding intervals, interval jets, certified box sup/inf and torus means contain exact rational ground truth under AOT
+        action: ctest --test-dir build --output-on-failure -R '^rigorous_numerics_aot_smoke$'
+
       - runtime_event:
           event_kinds: [ad_reverse_highorder]
           event_names: ["ad_taylor_p5_reverse_over_taylor"]
