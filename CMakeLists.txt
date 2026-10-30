@@ -4423,7 +4423,7 @@ endif()
 # docs/reports/NLAB_CONFORMANCE.md and scripts/run_nlab_conformance.sh
 # counts the claims.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    foreach(_nlab_suite nlab_topos nlab_space nlab_ring nlab_category nlab_simplicial)
+    foreach(_nlab_suite nlab_topos nlab_space nlab_ring nlab_category nlab_simplicial nlab_category_effective)
         add_test(NAME ${_nlab_suite}_jit
             COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk")
         add_test(NAME ${_nlab_suite}_aot COMMAND ${CMAKE_COMMAND}

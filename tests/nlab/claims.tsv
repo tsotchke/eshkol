@@ -142,3 +142,17 @@ Cech cohomology	3	planned	a statement about infinite (paracompact) spaces	-
 torus	3	planned	topological complexity (a homotopy invariant, not a finite enumeration)	-
 sphere	3	planned	topological complexity (a homotopy invariant, not a finite enumeration)	-
 Klein bottle	2	planned	topological complexity (a homotopy invariant, not a finite enumeration)	-
+free monoid	1	computed	nlab_category_effective_test	-
+free monoid	2	computed	nlab_category_effective_test	-
+free monoid	3	computed	nlab_category_effective_test	-
+free category	1	computed	nlab_category_effective_test	-
+simplex category	1	computed	nlab_category_effective_test	-
+simplex category	2	computed	nlab_category_effective_test	-
+simplex category	3	computed	nlab_category_effective_test	-
+coskeleton	1	computed	nlab_category_effective_test	-
+coskeleton	2	computed	nlab_category_effective_test	-
+coskeleton	3	computed	nlab_category_effective_test	-
+adjoint functor	3	computed	nlab_category_effective_test	-
+FinSet	1	computed	nlab_category_effective_test	-
+matrix	1	computed	nlab_category_effective_test	-
+FinSet	2	planned	exponentials and the subobject classifier of the FinSet skeleton as effective-category constructions (core.category.standard)	-

@@ -7,18 +7,19 @@ Eshkol program on the mathematics libraries: [`core.sheaf`](../reference/stdlib/
 [`core.topos`](../reference/stdlib/topos.md), [`core.ring`](../reference/stdlib/ring.md),
 [`core.multimodular`](../reference/stdlib/multimodular.md),
 [`core.integer_linalg`](../reference/stdlib/integer_linalg.md), `core.category`
-(ADR-0036), and `core.simplicial` with `core.homological` (ADR-0037). Every
+(ADR-0036) with its effective layer for infinite categories (ADR-0054), and
+`core.simplicial` with `core.homological` (ADR-0037). Every
 check can fail: it compares the library's answer with an independent
 computation (a definition re-evaluated by enumeration, a second algorithm, a
 closed formula) or with the value nLab states.
 
-<!-- nlab-coverage: pages=51 computed-pages=50 computed=132 planned=9 -->
+<!-- nlab-coverage: pages=57 computed-pages=56 computed=145 planned=10 -->
 
 | | Pages | Claims |
 |---|---:|---:|
-| Computed, passing in native JIT and AOT | 50 | 132 |
-| Listed, not yet computed (facility named below) | 1 further page, and 8 of the pages above | 9 |
-| Total | 51 | 141 |
+| Computed, passing in native JIT and AOT | 56 | 145 |
+| Listed, not yet computed (facility named below) | 1 further page, and 9 of the pages above | 10 |
+| Total | 57 | 155 |
 
 ## How it runs
 
@@ -28,17 +29,18 @@ closed formula) or with the value nLab states.
 | [`tests/nlab/nlab_space_test.esk`](../../tests/nlab/nlab_space_test.esk) | sheaves, sheafification, descent, Cech cohomology, finite spaces and the homotopy types they model, Euler characteristics, nerves |
 | [`tests/nlab/nlab_ring_test.esk`](../../tests/nlab/nlab_ring_test.esk) | dual numbers, local rings, nilpotents, units mod n and the Chinese remainder theorem, quadratic reciprocity, group algebras, functor of points, jets, Smith normal form, prime spectra |
 | [`tests/nlab/nlab_category_test.esk`](../../tests/nlab/nlab_category_test.esk) | Kan extensions, adjunctions, ends, comma categories |
+| [`tests/nlab/nlab_category_effective_test.esk`](../../tests/nlab/nlab_category_effective_test.esk) | infinite categories: free monoids and free categories by Knuth-Bendix normal forms, the simplex category and its presentation, the FinSet skeleton, Mat_R, adjunctions between infinite categories, skeleta and coskeleta as Kan extensions |
 | [`tests/nlab/nlab_simplicial_test.esk`](../../tests/nlab/nlab_simplicial_test.esk) | simplicial sets, Kan complexes, nerves, the bar construction, group cohomology, cup products, Steenrod squares, spectral sequences, crossed modules, Postnikov sections |
 | [`tests/nlab/claims.tsv`](../../tests/nlab/claims.tsv) | the manifest: one row per claim, computed or planned |
-| [`scripts/run_nlab_conformance.sh`](../../scripts/run_nlab_conformance.sh) | runs the ten CTest entries and checks every claim line against the manifest and the coverage line above |
+| [`scripts/run_nlab_conformance.sh`](../../scripts/run_nlab_conformance.sh) | runs the twelve CTest entries and checks every claim line against the manifest and the coverage line above |
 
 Each claim prints one line, `PASS: [page#k] <what was computed> => <value>`, so
 the output is the evidence. The header comment of each claim quotes the nLab
-sentence it checks. CTest: `nlab_{topos,space,ring,category,simplicial}_{jit,aot}`;
+sentence it checks. CTest: `nlab_{topos,space,ring,category,simplicial,category_effective}_{jit,aot}`;
 ICC criterion `v14_nlab_conformance`.
 
 ```text
-ctest --test-dir build --output-on-failure -R '^nlab_(topos|space|ring|category|simplicial)_(jit|aot)$'
+ctest --test-dir build --output-on-failure -R '^nlab_(topos|space|ring|category|simplicial|category_effective)_(jit|aot)$'
 BUILD_DIR=build ./scripts/run_nlab_conformance.sh
 ```
 
@@ -96,6 +98,13 @@ polynomial rings, Z[C_n] and Z[C2 x C2]; groups are Z/n, Z/2 x Z/2, S_3, Q_8.
 | prime spectrum | `nlab_ring_test` | 1 | #1 \|Spec Z/n\| for n = 12, 30, 49, 60 (primes dividing n); preimages of primes are prime |
 | Kan extension | `nlab_category_test` | 3 | #1 Lan = coend formula and Ran = end formula, canonically isomorphic; functors checked; #2 (\|Lan_! G\|, \|colim G\|, \|Ran_! G\|, \|lim G\|) for two span diagrams; #3 (unit bijective along a full inclusion?, along discrete 2 -> arrow?) |
 | adjoint functor | `nlab_category_test` | 2 | #1 R d for d = 0, 1; hom-bijection violations; right adjoint of 0 \|-> 1, 1 \|-> 2; #2 (triangle-identity violations, functors D -> C, those right adjoint to L) |
+| adjoint functor | `nlab_category_effective_test` | 1 | #3 triangle identities, naturality and hom bijection for free -\| forgetful between FinSet and pointed finite sets, and for ceiling -\| (Z -> Q) -\| floor |
+| free monoid | `nlab_category_effective_test` | 3 | #1 the free monoid on one generator is isomorphic to (N, +) (exact on the generator); #2 3^n normal forms of length n, composition is concatenation; #3 Mon(S*, M) ~ Set(S, UM) on generators for M = Z/3 and (N, +) |
+| free category | `nlab_category_effective_test` | 1 | #1 paths of each length in the free category on a quiver with cycles, against a brute-force count of edge tuples |
+| simplex category | `nlab_category_effective_test` | 3 | #1 the simplicial identities up to [6]; #2 every map a composite of faces and degeneracies, and the presentation of Delta_{<=3} completed by Knuth-Bendix and bijective onto Delta_{<=3}; #3 \|FinOrd(m, n)\| = binomial(n + m - 1, m) |
+| coskeleton | `nlab_category_effective_test` | 3 | #1 nerves of four categories are 2-coskeletal (degrees 3, 4); #2 tr cosk = id, cosk_1 tr_1 N BZ/2 larger than N BZ/2; #3 sk_1 tr_1 Delta[2] in degrees 0..2 |
+| FinSet | `nlab_category_effective_test` | 1 | #1 the skeleton: \|FinSet(m, n)\| = n^m and the category laws |
+| matrix | `nlab_category_effective_test` | 1 | #1 Mat_Z, Mat_Q, Mat_{Z/5} satisfy the category laws |
 | end | `nlab_category_test` | 1 | #1 (\|end of Y(c)^X(c)\|, \|Nat(X, Y)\|) for six pairs |
 | comma category | `nlab_category_test` | 2 | #1 (\|ob C/c\|, \|arrows into c\|, \|ar C/c\|, morphisms counted) per object of five categories; #2 (\|ob (id/id)\|, \|ar C\|, \|ar (id/id)\|, commutative squares) for four categories |
 | simplicial set | `nlab_simplicial_test` | 2 | #1 \|Delta[n]_m\| for n, m = 0..3; #2 simplicial-identity violations through degree 3 for Delta[3], its boundary, a horn, BZ/3, the nerve of a span |
@@ -134,6 +143,7 @@ Each row is a claim the suite does not compute yet, with what it needs.
 | Cech cohomology #3 | "If X is a paracompact space the canonical morphism Ȟ(X,A) → H(X,A) from Čech cohomology to abelian sheaf cohomology is an isomorphism" | a statement about infinite spaces; its finite counterpart (Leray covers) is Cech cohomology #1 | - |
 | torus #3 | "One has TC(Tⁿ) = n + 1 for the topological complexity" | topological complexity is a homotopy invariant, not a finite enumeration | - |
 | sphere #3 | "TC(S^n) = 2 when n is odd; TC(S^n) = 3 when n is even." | as above | - |
+| FinSet #2 | "The category FinSet is an elementary topos" | exponentials and the subobject classifier of the FinSet skeleton as effective-category constructions: Planned for v1.4.1 | the finite limits and colimits are computed today (`category_effective_test`) |
 | Klein bottle #2 | "The topological complexity of the Klein bottle is 4 (with convention TC(*)=0)." | as above | - |
 
 ## Notes on the method

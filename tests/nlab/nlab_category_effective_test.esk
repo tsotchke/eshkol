@@ -1,0 +1,220 @@
+;;; nLab conformance: infinite categories -- free monoids and free categories,
+;;; the simplex category, the skeleton of FinSet, categories of matrices,
+;;; adjunctions between infinite categories, and coskeleta.
+;;;
+;;; Each claim below is quoted from the nLab page named in its header
+;;; (https://ncatlab.org/nlab/show/<page>, read 2026-10-30) and decided with
+;;; the effective-category layer (ADR-0054): core.category.effective,
+;;; core.category.presented, core.category.standard and
+;;; core.category.effective_kan. A statement about an infinite category is
+;;; decided exactly where it reduces to finitely many generators, relations
+;;; or degrees, and otherwise on the finite range each claim names. A claim
+;;; prints "PASS: [page#k] ..." or "FAIL: [page#k] ..." with the computed
+;;; value. Coverage and planned claims: docs/reports/NLAB_CONFORMANCE.md.
+(require stdlib)
+(require core.ring)
+(require core.category)
+(require core.category.effective)
+(require core.category.presented)
+(require core.category.standard)
+(require core.category.effective_kan)
+
+(define passed 0)
+(define failed 0)
+(define (claim page k text value ok)
+  (if ok
+      (begin (set! passed (+ passed 1)) (display "PASS: "))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ")))
+  (display "[") (display page) (display "#") (display k) (display "] ")
+  (display text) (display " => ") (write value) (newline))
+(define (all? p xs) (cond ((null? xs) #t) ((p (car xs)) (all? p (cdr xs))) (else #f)))
+(define (range n) (iota n))
+(define (range-from a b) (if (>= a b) '() (cons a (range-from (+ a 1) b))))
+(define (pairs xs ys) (apply append (map (lambda (x) (map (lambda (y) (cons x y)) ys)) xs)))
+(define (distinct? xs) (cond ((null? xs) #t) ((member (car xs) (cdr xs)) #f) (else (distinct? (cdr xs)))))
+(define (binomial n k) (if (or (< k 0) (> k n)) 0 (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (quotient (* acc (- n i)) (+ i 1)))))))
+(define (lists k xs) (if (= k 0) (list '()) (apply append (map (lambda (x) (map (lambda (r) (cons x r)) (lists (- k 1) xs))) xs))))
+
+;; [free monoid#1] "If S is the point, then S* is N; the only information in a
+;; list of indistinguishable points is the length of the list. The monoid
+;; operation on N is addition."
+;; The free monoid on one generator (a presented category, Knuth-Bendix
+;; complete with no rules) and the effective category (N, +): x |-> 1 is a
+;; functor (exact: no relations), n |-> x^n is a functor on 0..12, and both
+;; composites are identities (on the generator; on 0..40).
+(let* ((FM (free-monoid (list 'x))) (N (naturals-additive-monoid))
+       (to (presented-functor FM N (list 0) (list 1)))
+       (from (make-effective-functor N (presented->effective FM) (lambda (o) 0) (lambda (n) (presented-arrow FM (map (lambda (i) 'x) (range n)) 0)) "N -> x*"))
+       (gen (presented-generator-arrow FM 'x))
+       (v (list (presented-functor-violations to) (effective-functor-violations from (list 0) (range 13))
+                (equal? (effective-functor-arrow from (effective-functor-arrow to gen)) gen)
+                (all? (lambda (n) (= n (effective-functor-arrow to (effective-functor-arrow from n)))) (range 41)))))
+  (claim "free monoid" 1 "x* ~ (N, +): (functor violations both ways, composite on x, composite on 0..40)" v
+         (and (null? (car v)) (null? (cadr v)) (caddr v) (cadddr v))))
+
+;; [free monoid#2] "Given a set S, the free monoid on S is the set S* of all
+;; lists (finite sequences) of elements of S, made into a monoid via
+;; concatenation."
+;; S = {a, b, c}: the normal forms of length n are all 3^n lists, and the
+;; composite of two arrows is the concatenation of their lists.
+(let* ((FM (free-monoid (list 'a 'b 'c))) (E (presented->effective FM))
+       (counts (map (lambda (n) (length (enumerator-stage (presented-hom FM 0 0) n))) (range 6)))
+       (words (enumerator-up-to (presented-hom FM 0 0) 2))
+       (concat (all? (lambda (g) (all? (lambda (f) (equal? (caddr (effective-category-compose E g f)) (append (caddr g) (caddr f)))) words)) words)))
+  (claim "free monoid" 2 "|lists of length n| for n = 0..5 (3^n), composition is concatenation on lists of length <= 2"
+         (list counts concat) (and (equal? counts (map (lambda (n) (expt 3 n)) (range 6))) concat)))
+
+;; [free monoid#3] "The free functor from Set to Mon takes S to S*... Combined
+;; with its right adjoint forgetful functor this is the list monad whose
+;; modules are monoids."
+;; The adjunction as a hom bijection Mon(S*, M) ~ Set(S, U M), checked on
+;; generators: S = {x, y}; for M = Z/3 (presented <a | a^3>) every one of the
+;; 3^2 maps S -> U M extends to exactly one monoid map (relations checked:
+;; S* has none), the extensions are distinct, and restricting to S gives the
+;; map back; for M = (N, +) the same on the 4^2 maps into {0, 1, 2, 3}.
+(define (free-adjunction-check M elems)
+  (let* ((FS (free-monoid (list 'x 'y)))
+         (homs (map (lambda (g) (cons g (presented-functor FS M (list 0) g))) (lists 2 elems))))
+    (list (length homs)
+          (all? (lambda (p) (null? (presented-functor-violations (cdr p)))) homs)
+          (distinct? (map (lambda (p) (map (lambda (s) (effective-functor-arrow (cdr p) (presented-arrow FS (list s)))) (list 'x 'y 'x))) homs))
+          (all? (lambda (p) (equal? (map (lambda (s) (effective-functor-arrow (cdr p) (presented-generator-arrow FS s))) (list 'x 'y)) (car p))) homs))))
+(let* ((Z3 (presented-group (list 'a) (list (list 'a 'a 'a))))
+       (Z3e (presented->effective Z3))
+       (r1 (free-adjunction-check Z3e (enumerator->list (presented-hom Z3 0 0))))
+       (r2 (free-adjunction-check (naturals-additive-monoid) (range 4))))
+  (claim "free monoid" 3 "Mon({x,y}*, M) ~ Set({x,y}, U M) on generators: (count, all functors, distinct, restriction) for M = Z/3 and M = (N, +) on 0..3"
+         (list r1 r2) (and (equal? r1 (list 9 #t #t #t)) (equal? r2 (list 16 #t #t #t)))))
+
+;; [free category#1] "morphisms are the tuples of composable edges, hence the
+;; morphisms freely generated from these (directed) edges."
+;; The quiver f : 0 -> 1, g : 1 -> 2, h : 0 -> 2, k : 2 -> 0, l : 1 -> 1: the
+;; arrows 0 -> 2 of each length n <= 6 are counted by brute force over all
+;; n-tuples of edges and from the free category's hom enumerator.
+(let* ((edges (list (list 0 1 'f) (list 1 2 'g) (list 0 2 'h) (list 2 0 'k) (list 1 1 'l)))
+       (FC (free-category-on-quiver 3 edges))
+       (brute (lambda (n) (length (filter (lambda (t) (and (= 0 (car (car t))) (= 2 (cadr (list-ref t (- n 1))))
+                                                             (let ok ((l t)) (or (null? (cdr l)) (and (= (cadr (car l)) (car (cadr l))) (ok (cdr l)))))))
+                                          (lists n edges)))))
+       (lib (map (lambda (n) (length (enumerator-stage (presented-hom FC 0 2) n))) (range-from 1 7)))
+       (bf (map brute (range-from 1 7))))
+  (claim "free category" 1 "|paths 0 -> 2 of length n|, n = 1..6: (library, brute force over edge tuples)" (list lib bf) (equal? lib bf)))
+
+;; [simplex category#1] "subject to the following relations, called the
+;; simplicial relations or simplicial identities": d_i^{n+1} o d_j^n =
+;; d_{j+1}^{n+1} o d_i^n (i <= j), s_j^n o s_i^{n+1} = s_i^n o s_{j+1}^{n+1}
+;; (i <= j), and the three cases of s_j o d_i.
+;; All identities with every object <= [6], computed on the monotone maps.
+(let ((v (delta-cosimplicial-identity-violations 6)))
+  (claim "simplex category" 1 "violations of the simplicial identities in Delta up to [6]" v (null? v)))
+
+;; [simplex category#2] Delta has "morphisms generated by (are all
+;; expressible as finite compositions of) the following two elementary kinds
+;; of maps" (the coface and codegeneracy maps).
+;; (a) every monotone map [m] -> [n], m, n <= 4, is the composite of the faces
+;; and degeneracies of its normal form, and distinct maps have distinct
+;; normal forms; (b) the category presented by faces, degeneracies and the
+;; simplicial identities in degrees <= 3 completes (Knuth-Bendix) and maps
+;; bijectively onto Delta_{<=3} on every hom-set.
+(let* ((Dl (simplex-category))
+       (a (all? (lambda (p) (let ((fs (effective-category-hom-list Dl (car p) (cdr p))))
+                              (and (distinct? (map delta-normal-form fs))
+                                   (all? (lambda (f) (let ((nf (delta-normal-form f))) (equal? f (delta-from-normal-form (car f) (cadr f) (car nf) (cadr nf))))) fs))))
+                (pairs (range 5) (range 5))))
+       (P (present-category (delta-truncated-presentation 3))) (F (delta-truncated-functor P))
+       (b (and (presented-category-complete? P) (null? (presented-functor-violations F))
+               (all? (lambda (p) (let ((im (map (lambda (f) (effective-functor-arrow F f)) (enumerator->list (presented-hom P (car p) (cdr p))))))
+                                   (and (distinct? im) (= (length im) (length (effective-category-hom-list Dl (car p) (cdr p)))))))
+                     (pairs (range 4) (range 4))))))
+  (claim "simplex category" 2 "(every map a composite of faces and degeneracies, m, n <= 4; the presentation of Delta_{<=3} is complete and bijective on homs)"
+         (list a b) (and a b)))
+
+;; [simplex category#3] "|Delta_a(m,n)| = (n+m-1 choose m)" in the augmented
+;; simplex category (FinOrd).
+(let* ((FO (finord-category))
+       (rows (map (lambda (p) (list (car p) (cdr p) (length (effective-category-hom-list FO (car p) (cdr p))))) (pairs (range 5) (range 5)))))
+  (claim "simplex category" 3 "|FinOrd(m, n)| = binomial(n + m - 1, m) for m, n = 0..4 (with |FinOrd(0, n)| = 1)"
+         (map caddr rows) (all? (lambda (r) (= (caddr r) (if (= (car r) 0) 1 (binomial (+ (car r) (cadr r) -1) (car r))))) rows)))
+
+;; [coskeleton#1] "The simplicial nerve of a category (i.e. of a 1-category)
+;; is a 2-coskeletal simplicial set"
+;; For the walking arrow, BZ/2, BZ/3 and the commutative square: the unit
+;; N C -> cosk_2 tr_2 N C (a right Kan extension along Delta_{<=2} -> Delta,
+;; comma categories finite) is a bijection in degree 3, and in degree 4 for
+;; the walking arrow and BZ/2.
+(let* ((cats (list (walking-arrow-category) (cyclic-group-category 2) (cyclic-group-category 3) (commutative-square-category)))
+       (rows (map (lambda (C) (let ((N (nerve-presheaf (finite-category->effective C))))
+                                (list (length (effective-set-functor-object N 3)) (presheaf-unit-bijective? N 2 3)
+                                      (if (<= (category-arrow-count C) 3) (presheaf-unit-bijective? N 2 4) 'not-run))))
+                  cats)))
+  (claim "coskeleton" 1 "(|N C_3|, unit bijective in degree 3, in degree 4 for the two smallest) for four categories" rows
+         (all? (lambda (r) (and (cadr r) (caddr r))) rows)))
+
+;; [coskeleton#2] The coskeleton is "a fully faithful right adjoint, given by
+;; right Kan extension" (of the truncation).
+;; Fully faithful: truncating cosk_n Y gives back Y. For Y = tr_1 N(BZ/2) and
+;; tr_2 N(BZ/3): the counit (tr cosk Y)_k -> Y_k (the entry of a family at
+;; (k, 1)) is a bijection in every degree k <= n; and cosk_1 tr_1 N(BZ/2) is
+;; strictly larger than N(BZ/2) in degree 2 (8 against 4).
+(define (counit-bijective? Y n)
+  (let* ((F (effective-functor-opposite (simplex-inclusion-functor n))) (R (effective-ran F Y)))
+    (all? (lambda (k) (let ((images (map (lambda (fam) (effective-ran-counit F Y k fam)) (effective-set-functor-object R k))))
+                        (and (distinct? images) (= (length images) (length (effective-set-functor-object Y k))))))
+          (range (+ n 1)))))
+(let* ((N2 (nerve-presheaf (finite-category->effective (cyclic-group-category 2))))
+       (N3 (nerve-presheaf (finite-category->effective (cyclic-group-category 3))))
+       (b1 (counit-bijective? (truncate-presheaf N2 1) 1)) (b2 (counit-bijective? (truncate-presheaf N3 2) 2))
+       (sizes (list (length (effective-set-functor-object (coskeleton (truncate-presheaf N2 1) 1) 2)) (length (effective-set-functor-object N2 2)))))
+  (claim "coskeleton" 2 "(tr cosk_1 = id on tr_1 N BZ/2, tr cosk_2 = id on tr_2 N BZ/3, |cosk_1 tr_1 N BZ/2 in degree 2| vs |N BZ/2 in degree 2|)"
+         (list b1 b2 sizes) (and b1 b2 (equal? sizes (list 8 4)))))
+
+;; [coskeleton#3] The skeleton is "a fully faithful left adjoint, given by
+;; left Kan extension".
+;; sk_1 tr_1 Delta[2] restricted back to degrees <= 1 has Delta[2]'s 3 and 6
+;; simplices; in degree 2 it has the 9 degenerate simplices of the 10.
+(let* ((D2 (simplex-presheaf 2)) (sk (skeleton (truncate-presheaf D2 1) 1))
+       (sizes (map (lambda (m) (length (effective-set-functor-object sk m))) (range 3))))
+  (claim "coskeleton" 3 "|sk_1 tr_1 Delta[2]| in degrees 0, 1, 2" sizes (equal? sizes (list 3 6 9))))
+
+;; [adjoint functor#3] "The adjunction unit and adjunction counit satisfy the
+;; triangle identities"
+;; Between infinite categories: free -| forgetful from FinSet to pointed
+;; finite sets (objects <= 4, all arrows between them), and
+;; ceiling -| (Z -> Q) -| floor on the rationals of height <= 4 and the
+;; integers |n| <= 4: triangle identities, naturality of unit and counit, and
+;; the hom bijection.
+(let* ((S (finset-category)) (Pt (pointed-finset-category)) (PA (pointed-set-adjunction))
+       (FC (floor-ceiling-adjunctions)) (Qp (rationals-poset)) (Zp (integers-poset))
+       (qs (enumerator-up-to (rationals-enumerator) 4)) (ns (enumerator-up-to (integers-enumerator) 4))
+       (v (list (length (effective-adjunction-violations PA (range 5) (range-from 1 5) (effective-category-arrows-up-to S (range 4) 0)
+                                                         (effective-category-arrows-up-to Pt (range-from 1 5) 0)))
+                (length (effective-adjunction-hom-bijection-violations PA (pairs (range 4) (range-from 1 5)) 0))
+                (length (effective-adjunction-violations (car FC) qs ns (effective-category-arrows-up-to Qp qs 0) (effective-category-arrows-up-to Zp ns 0)))
+                (length (effective-adjunction-hom-bijection-violations (car FC) (pairs qs ns) 0))
+                (length (effective-adjunction-violations (cdr FC) ns qs (effective-category-arrows-up-to Zp ns 0) (effective-category-arrows-up-to Qp qs 0)))
+                (length (effective-adjunction-hom-bijection-violations (cdr FC) (pairs ns qs) 0)))))
+  (claim "adjoint functor" 3 "violation counts (free -| forget pointed sets: triangles+naturality, hom bijection; ceiling -| i; i -| floor)"
+         v (all? (lambda (x) (= x 0)) v)))
+
+;; [FinSet#1] "there is one object for each natural number n (including
+;; n = 0), and a morphism from m to n is an m-tuple (f_0, ..., f_{m-1}) of
+;; numbers satisfying 0 <= f_i < n."
+;; The effective skeleton of FinSet: |hom(m, n)| = n^m for m, n <= 4 and the
+;; category laws on objects <= 3.
+(let* ((S (finset-category))
+       (counts (map (lambda (p) (length (effective-category-hom-list S (car p) (cdr p)))) (pairs (range 5) (range 5))))
+       (laws (effective-category-laws-violations S (range 4) 0)))
+  (claim "FinSet" 1 "|FinSet(m, n)| for m, n = 0..4 and law violations on objects <= 3" (list counts (length laws))
+         (and (equal? counts (map (lambda (p) (expt (cdr p) (car p))) (pairs (range 5) (range 5)))) (null? laws))))
+
+;; [matrix#1] "matrices over X may be taken as the morphisms of a category
+;; Mat_X whose composition is matrix multiplication."
+;; Mat_Z, Mat_Q and Mat_{Z/5}: identity and associativity on the objects
+;; 0 and 1 and the arrows of hom stages 0..2 (Z/5: every arrow).
+(let* ((rows (map (lambda (R) (length (effective-category-laws-violations (matrix-category R) (range 2) (if (eq? (ring-carrier-family R) 'zmod) 0 2))))
+                  (list integers rationals (make-zmod 5)))))
+  (claim "matrix" 1 "law violations of Mat_Z, Mat_Q, Mat_{Z/5} on objects 0, 1" rows (equal? rows (list 0 0 0))))
+
+(if (= failed 0)
+    (begin (display "PASS: nlab_category_effective_test (") (display passed) (display " claims)") (newline))
+    (begin (display "FAIL: nlab_category_effective_test (") (display failed) (display " of ") (display (+ passed failed)) (display " claims failed)") (newline)))
