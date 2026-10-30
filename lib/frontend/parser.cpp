@@ -2605,6 +2605,283 @@ static hott_type_expr_t* parsePrimitiveType(const std::string& spelled) {
     return hott_make_type_var(name.c_str());
 }
 
+static ParserTask<hott_type_expr_t*> parseTypeApplicationArgument(SchemeTokenizer& tokenizer);
+// Parse the rest of a parenthesised type expression whose `(` (@p token) has
+// already been consumed. Shared by parseTypeExpression() and by type
+// application arguments, which must look past the `(` before deciding whether
+// the datum is a type at all.
+static ParserTask<hott_type_expr_t*> parseTypeExpressionAfterLParen(SchemeTokenizer& tokenizer,
+                                                                    Token token) {
+    // Compound type expression
+    Token first = tokenizer.nextToken();
+    decolor_symbol_token(first);
+
+    if (first.type == TOKEN_RPAREN) {
+        // Empty parens () - treat as null/unit type
+        co_return hott_make_null_type();
+    }
+
+    if (first.type == TOKEN_ARROW) {
+        // Arrow type: (-> param1 param2 ... return)
+        std::vector<hott_type_expr_t*> param_types;
+
+        while (true) {
+            Token peek = tokenizer.peekToken();
+            if (peek.type == TOKEN_RPAREN) {
+                tokenizer.nextToken();  // consume the )
+                // End of arrow type - last element was return type
+                if (param_types.empty()) {
+                    PARSE_ERROR_AT(token, "arrow type requires at least a return type");
+                    co_return nullptr;
+                }
+                // Pop last as return type
+                hott_type_expr_t* return_type = param_types.back();
+                param_types.pop_back();
+
+                std::vector<hott_type_expr_t*> slots(param_types.size(), nullptr);
+                hott_type_expr_t* result = hott_make_arrow_type(
+                    slots.data(), slots.size(), nullptr);
+                for (size_t i = 0; i < param_types.size(); ++i)
+                    result->arrow.param_types[i] = param_types[i];
+                result->arrow.return_type = return_type;
+
+                co_return result;
+            }
+            if (peek.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(token, "unexpected end of input in arrow type");
+                for (auto* p : param_types) hott_free_type_expr(p);
+                co_return nullptr;
+            }
+
+            // Parse next type in the arrow (recursive call handles all cases)
+            hott_type_expr_t* next_type = (co_await parseTypeExpression(tokenizer));
+            if (!next_type) {
+                for (auto* p : param_types) hott_free_type_expr(p);
+                co_return nullptr;
+            }
+            param_types.push_back(next_type);
+        }
+    }
+
+    if (first.type == TOKEN_SYMBOL) {
+        std::string type_name = first.value;
+        std::string lower = type_name;
+        for (auto& c : lower) c = std::tolower((unsigned char)c);
+
+        if (lower == "list") {
+            // (list element-type)
+            hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after list element type");
+                hott_free_type_expr(elem);
+                co_return nullptr;
+            }
+            hott_type_expr_t* result = hott_make_list_type(nullptr);
+            result->container.element_type = elem;
+            co_return result;
+        }
+
+        if (lower == "vector") {
+            // (vector element-type)
+            hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after vector element type");
+                hott_free_type_expr(elem);
+                co_return nullptr;
+            }
+            hott_type_expr_t* result = hott_make_vector_type(nullptr);
+            result->container.element_type = elem;
+            co_return result;
+        }
+
+        if (lower == "tensor") {
+            // (tensor element-type) - same as vector but for multi-dimensional arrays
+            hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after tensor element type");
+                hott_free_type_expr(elem);
+                co_return nullptr;
+            }
+            hott_type_expr_t* result = hott_make_tensor_type(nullptr);
+            result->container.element_type = elem;
+            co_return result;
+        }
+
+        if (lower == "ptr" || lower == "pointer") {
+            // (ptr element-type) - raw pointer type constructor
+            hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after ptr element type");
+                hott_free_type_expr(elem);
+                co_return nullptr;
+            }
+            hott_type_expr_t* result = hott_make_pointer_type(nullptr);
+            result->container.element_type = elem;
+            co_return result;
+        }
+
+        if (lower == "pair") {
+            // (pair left right)
+            hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
+            hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after pair types");
+                hott_free_type_expr(left);
+                hott_free_type_expr(right);
+                co_return nullptr;
+            }
+            hott_type_expr_t* result = hott_make_pair_type(nullptr, nullptr);
+            result->pair.left = left;
+            result->pair.right = right;
+            co_return result;
+        }
+
+        if (lower == "*" || lower == "product") {
+            // (* left right)
+            hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
+            hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after product types");
+                hott_free_type_expr(left);
+                hott_free_type_expr(right);
+                co_return nullptr;
+            }
+            hott_type_expr_t* result = hott_make_product_type(nullptr, nullptr);
+            result->pair.left = left;
+            result->pair.right = right;
+            co_return result;
+        }
+
+        if (lower == "+" || lower == "sum" || lower == "either") {
+            // (+ left right)
+            hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
+            hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after sum types");
+                hott_free_type_expr(left);
+                hott_free_type_expr(right);
+                co_return nullptr;
+            }
+            hott_type_expr_t* result = hott_make_sum_type(nullptr, nullptr);
+            result->sum.left = left;
+            result->sum.right = right;
+            co_return result;
+        }
+
+        if (lower == "forall") {
+            // (forall (a b ...) body-type)
+            Token vars_start = tokenizer.nextToken();
+            if (vars_start.type != TOKEN_LPAREN) {
+                PARSE_ERROR_AT(token, "expected ( after forall");
+                co_return nullptr;
+            }
+
+            // Scratch spellings only: hott_make_forall_type() copies each
+            // name into the AST string owner, so the vector owns these.
+            std::vector<std::string> type_var_names;
+            while (true) {
+                Token var = tokenizer.nextToken();
+                decolor_symbol_token(var);
+                if (var.type == TOKEN_RPAREN) break;
+                if (var.type != TOKEN_SYMBOL) {
+                    PARSE_ERROR_AT(token, "expected type variable name in forall");
+                    co_return nullptr;
+                }
+                type_var_names.push_back(var.value);
+            }
+
+            hott_type_expr_t* body = (co_await parseTypeExpression(tokenizer));
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after forall body");
+                hott_free_type_expr(body);
+                co_return nullptr;
+            }
+
+            std::vector<char*> type_vars;
+            type_vars.reserve(type_var_names.size());
+            for (auto& name : type_var_names) type_vars.push_back(name.data());
+            hott_type_expr_t* result = hott_make_forall_type(
+                type_vars.data(), type_vars.size(), nullptr);
+            result->forall.body = body;
+            co_return result;
+        }
+
+        // Any other head is a named type application `(name arg ...)`:
+        // records and rows, session protocols, channel endpoints, one-shot
+        // arrows `(-o ...)`, `values`, and user type constructors such as
+        // `(st-ref s a)`. The structural type layer (ADR-0046) interprets the
+        // constructor; the gradual TypeId layer resolves an application to
+        // Value. An argument that is not a type (a numeral or a parenthesised
+        // datum in a value-indexed family) is kept as HOTT_TYPE_INVALID so the
+        // application still parses and the layers above treat it as dynamic.
+        std::vector<hott_type_expr_t*> app_args;
+        while (true) {
+            Token peek = tokenizer.peekToken();
+            if (peek.type == TOKEN_RPAREN) {
+                tokenizer.nextToken();
+                break;
+            }
+            if (peek.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(token, "unexpected end of input in type application");
+                co_return nullptr;
+            }
+            hott_type_expr_t* arg = (co_await parseTypeApplicationArgument(tokenizer));
+            if (!arg) co_return nullptr;
+            app_args.push_back(arg);
+        }
+        std::vector<hott_type_expr_t*> slots(app_args.size(), nullptr);
+        // Type constructor names are not lexical bindings a template can
+        // capture (same rule as parsePrimitiveType()).
+        const std::string ctor_name =
+            type_name.substr(0, eshkol_syntax_base_length(type_name.c_str()));
+        hott_type_expr_t* app = hott_make_app_type(ctor_name.c_str(),
+                                                   slots.data(), slots.size());
+        for (size_t k = 0; k < app_args.size(); ++k) app->app.args[k] = app_args[k];
+        co_return app;
+    }
+
+    // Unexpected token in type expression
+    PARSE_ERROR_AT(token, "unexpected token in type expression");
+    co_return nullptr;
+}
+
+// One argument of a named type application. Types parse as types; a numeral,
+// string or other datum (the value index of a value-indexed family) and a
+// parenthesised datum that does not start with a type head parse as
+// HOTT_TYPE_INVALID, which every consumer treats as "not a static type".
+static ParserTask<hott_type_expr_t*> parseTypeApplicationArgument(SchemeTokenizer& tokenizer) {
+    Token peek = tokenizer.peekToken();
+    if (peek.type == TOKEN_LPAREN) {
+        Token lparen = tokenizer.nextToken();
+        Token head = tokenizer.peekToken();
+        if (head.type == TOKEN_SYMBOL || head.type == TOKEN_ARROW ||
+            head.type == TOKEN_RPAREN || head.type == TOKEN_LPAREN) {
+            co_return (co_await parseTypeExpressionAfterLParen(tokenizer, lparen));
+        }
+        int depth = 1;
+        while (depth > 0) {
+            Token t = tokenizer.nextToken();
+            if (t.type == TOKEN_LPAREN) depth++;
+            else if (t.type == TOKEN_RPAREN) depth--;
+            else if (t.type == TOKEN_EOF) break;
+        }
+        co_return hott_make_primitive_type(HOTT_TYPE_INVALID);
+    }
+    if (peek.type == TOKEN_SYMBOL || peek.type == TOKEN_ARROW) {
+        co_return (co_await parseTypeExpression(tokenizer));
+    }
+    tokenizer.nextToken();
+    co_return hott_make_primitive_type(HOTT_TYPE_INVALID);
+}
+
 // Parse a type expression from the tokenizer
 // Handles: primitive types, arrow types, list/vector types, forall, etc.
 // Each child is a fresh arena-owned tree. Attach it to a shallow constructor
@@ -2628,223 +2905,7 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
     }
 
     if (token.type == TOKEN_LPAREN) {
-        // Compound type expression
-        Token first = tokenizer.nextToken();
-        decolor_symbol_token(first);
-
-        if (first.type == TOKEN_RPAREN) {
-            // Empty parens () - treat as null/unit type
-            co_return hott_make_null_type();
-        }
-
-        if (first.type == TOKEN_ARROW) {
-            // Arrow type: (-> param1 param2 ... return)
-            std::vector<hott_type_expr_t*> param_types;
-
-            while (true) {
-                Token peek = tokenizer.peekToken();
-                if (peek.type == TOKEN_RPAREN) {
-                    tokenizer.nextToken();  // consume the )
-                    // End of arrow type - last element was return type
-                    if (param_types.empty()) {
-                        PARSE_ERROR_AT(token, "arrow type requires at least a return type");
-                        co_return nullptr;
-                    }
-                    // Pop last as return type
-                    hott_type_expr_t* return_type = param_types.back();
-                    param_types.pop_back();
-
-                    std::vector<hott_type_expr_t*> slots(param_types.size(), nullptr);
-                    hott_type_expr_t* result = hott_make_arrow_type(
-                        slots.data(), slots.size(), nullptr);
-                    for (size_t i = 0; i < param_types.size(); ++i)
-                        result->arrow.param_types[i] = param_types[i];
-                    result->arrow.return_type = return_type;
-
-                    co_return result;
-                }
-                if (peek.type == TOKEN_EOF) {
-                    PARSE_ERROR_AT(token, "unexpected end of input in arrow type");
-                    for (auto* p : param_types) hott_free_type_expr(p);
-                    co_return nullptr;
-                }
-
-                // Parse next type in the arrow (recursive call handles all cases)
-                hott_type_expr_t* next_type = (co_await parseTypeExpression(tokenizer));
-                if (!next_type) {
-                    for (auto* p : param_types) hott_free_type_expr(p);
-                    co_return nullptr;
-                }
-                param_types.push_back(next_type);
-            }
-        }
-
-        if (first.type == TOKEN_SYMBOL) {
-            std::string type_name = first.value;
-            std::string lower = type_name;
-            for (auto& c : lower) c = std::tolower((unsigned char)c);
-
-            if (lower == "list") {
-                // (list element-type)
-                hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after list element type");
-                    hott_free_type_expr(elem);
-                    co_return nullptr;
-                }
-                hott_type_expr_t* result = hott_make_list_type(nullptr);
-                result->container.element_type = elem;
-                co_return result;
-            }
-
-            if (lower == "vector") {
-                // (vector element-type)
-                hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after vector element type");
-                    hott_free_type_expr(elem);
-                    co_return nullptr;
-                }
-                hott_type_expr_t* result = hott_make_vector_type(nullptr);
-                result->container.element_type = elem;
-                co_return result;
-            }
-
-            if (lower == "tensor") {
-                // (tensor element-type) - same as vector but for multi-dimensional arrays
-                hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after tensor element type");
-                    hott_free_type_expr(elem);
-                    co_return nullptr;
-                }
-                hott_type_expr_t* result = hott_make_tensor_type(nullptr);
-                result->container.element_type = elem;
-                co_return result;
-            }
-
-            if (lower == "ptr" || lower == "pointer") {
-                // (ptr element-type) - raw pointer type constructor
-                hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after ptr element type");
-                    hott_free_type_expr(elem);
-                    co_return nullptr;
-                }
-                hott_type_expr_t* result = hott_make_pointer_type(nullptr);
-                result->container.element_type = elem;
-                co_return result;
-            }
-
-            if (lower == "pair") {
-                // (pair left right)
-                hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
-                hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after pair types");
-                    hott_free_type_expr(left);
-                    hott_free_type_expr(right);
-                    co_return nullptr;
-                }
-                hott_type_expr_t* result = hott_make_pair_type(nullptr, nullptr);
-                result->pair.left = left;
-                result->pair.right = right;
-                co_return result;
-            }
-
-            if (lower == "*" || lower == "product") {
-                // (* left right)
-                hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
-                hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after product types");
-                    hott_free_type_expr(left);
-                    hott_free_type_expr(right);
-                    co_return nullptr;
-                }
-                hott_type_expr_t* result = hott_make_product_type(nullptr, nullptr);
-                result->pair.left = left;
-                result->pair.right = right;
-                co_return result;
-            }
-
-            if (lower == "+" || lower == "sum" || lower == "either") {
-                // (+ left right)
-                hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
-                hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after sum types");
-                    hott_free_type_expr(left);
-                    hott_free_type_expr(right);
-                    co_return nullptr;
-                }
-                hott_type_expr_t* result = hott_make_sum_type(nullptr, nullptr);
-                result->sum.left = left;
-                result->sum.right = right;
-                co_return result;
-            }
-
-            if (lower == "forall") {
-                // (forall (a b ...) body-type)
-                Token vars_start = tokenizer.nextToken();
-                if (vars_start.type != TOKEN_LPAREN) {
-                    PARSE_ERROR_AT(token, "expected ( after forall");
-                    co_return nullptr;
-                }
-
-                // Scratch spellings only: hott_make_forall_type() copies each
-                // name into the AST string owner, so the vector owns these.
-                std::vector<std::string> type_var_names;
-                while (true) {
-                    Token var = tokenizer.nextToken();
-                    decolor_symbol_token(var);
-                    if (var.type == TOKEN_RPAREN) break;
-                    if (var.type != TOKEN_SYMBOL) {
-                        PARSE_ERROR_AT(token, "expected type variable name in forall");
-                        co_return nullptr;
-                    }
-                    type_var_names.push_back(var.value);
-                }
-
-                hott_type_expr_t* body = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after forall body");
-                    hott_free_type_expr(body);
-                    co_return nullptr;
-                }
-
-                std::vector<char*> type_vars;
-                type_vars.reserve(type_var_names.size());
-                for (auto& name : type_var_names) type_vars.push_back(name.data());
-                hott_type_expr_t* result = hott_make_forall_type(
-                    type_vars.data(), type_vars.size(), nullptr);
-                result->forall.body = body;
-                co_return result;
-            }
-
-            // Unknown type constructor - treat as type application or just type name
-            // Skip remaining tokens until )
-            int depth = 1;
-            while (depth > 0) {
-                Token t = tokenizer.nextToken();
-                if (t.type == TOKEN_LPAREN) depth++;
-                else if (t.type == TOKEN_RPAREN) depth--;
-                else if (t.type == TOKEN_EOF) break;
-            }
-            co_return parsePrimitiveType(type_name);
-        }
-
-        // Unexpected token in type expression
-        PARSE_ERROR_AT(token, "unexpected token in type expression");
-        co_return nullptr;
+        co_return (co_await parseTypeExpressionAfterLParen(tokenizer, token));
     }
 
     // Unexpected token

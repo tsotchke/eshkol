@@ -389,6 +389,29 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars,
     return type;
 }
 
+/** @brief Create a HOTT_TYPE_APP type expression `(name args...)`.
+ *
+ * Copies @p name and deep-copies each argument; a NULL argument stays NULL.
+ * The structural type layer (ADR-0046) gives the constructor its meaning:
+ * `record`, `chan`, session protocol formers, `-o`, `values`, or a user
+ * type constructor. */
+hott_type_expr_t* hott_make_app_type(const char* name,
+                                     hott_type_expr_t** args,
+                                     uint64_t num_args) {
+    hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_APP);
+    type->app.name = name ? eshkol_ast_strdup(name) : nullptr;
+    type->app.num_args = num_args;
+    type->app.args = nullptr;
+    if (num_args > 0) {
+        type->app.args = (hott_type_expr_t**)arena_allocate(
+            get_global_arena(), num_args * sizeof(hott_type_expr_t*));
+        for (uint64_t i = 0; i < num_args; i++) {
+            type->app.args[i] = args ? hott_copy_type_expr(args[i]) : nullptr;
+        }
+    }
+    return type;
+}
+
 // Deep copy a type expression
 /** @brief Deep-copy a HoTT type expression, recursively copying nested
  *  type structure (arrow params/return, forall vars/body, container
@@ -448,6 +471,19 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
         case HOTT_TYPE_UNIVERSE:
             copy->universe.level = type->universe.level;
+            break;
+
+        case HOTT_TYPE_APP:
+            copy->app.name = type->app.name ? eshkol_ast_strdup(type->app.name) : nullptr;
+            copy->app.num_args = type->app.num_args;
+            copy->app.args = nullptr;
+            if (type->app.num_args > 0 && type->app.args) {
+                copy->app.args = (hott_type_expr_t**)arena_allocate(get_global_arena(),
+                    type->app.num_args * sizeof(hott_type_expr_t*));
+                for (uint64_t i = 0; i < type->app.num_args; i++) {
+                    copy->app.args[i] = hott_copy_type_expr(type->app.args[i]);
+                }
+            }
             break;
 
         default:
@@ -602,6 +638,16 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
         case HOTT_TYPE_UNIVERSE:
             snprintf(buffer, sizeof(buffer), "Type%u", type->universe.level);
             return arena_strdup(buffer);
+
+        case HOTT_TYPE_APP: {
+            BUF_APPEND("(%s", type->app.name ? type->app.name : "?");
+            for (uint64_t i = 0; i < type->app.num_args; i++) {
+                char* arg_str = hott_type_to_string(type->app.args ? type->app.args[i] : nullptr);
+                BUF_APPEND(" %s", arg_str);
+            }
+            BUF_APPEND(")");
+            return arena_strdup(buffer);
+        }
 
         case HOTT_TYPE_DEPENDENT:
             return arena_strdup("(Pi ...)");

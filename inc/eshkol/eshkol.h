@@ -2551,7 +2551,12 @@ typedef enum {
     // Advanced types (future)
     HOTT_TYPE_DEPENDENT,    // dependent type (Pi type)
     HOTT_TYPE_PATH,         // path type (identity type)
-    HOTT_TYPE_UNIVERSE      // universe level
+    HOTT_TYPE_UNIVERSE,     // universe level
+    // Named type application `(name arg ...)` whose constructor is not one of
+    // the dedicated kinds above: records and rows, session protocols, channel
+    // endpoints, one-shot arrows and user type constructors such as
+    // `(st-ref s a)`. The structural type layer (ADR-0046) interprets it.
+    HOTT_TYPE_APP
 } hott_type_kind_t;
 
 // Forward declaration
@@ -2608,6 +2613,13 @@ typedef struct hott_type_expr {
         struct {
             uint32_t level;  // Universe level (U0, U1, U2, ...)
         } universe;
+
+        // For HOTT_TYPE_APP: constructor name and its type arguments
+        struct {
+            char* name;
+            struct hott_type_expr** args;
+            uint64_t num_args;
+        } app;
     };
 } hott_type_expr_t;
 
@@ -3662,6 +3674,14 @@ hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* r
  * @return Newly allocated type expression.
  */
 hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hott_type_expr_t* body);
+/**
+ * @brief Construct a HOTT_TYPE_APP type expression `(name args...)`.
+ * @param name Constructor name (copied).
+ * @param args Array of @p num_args argument type expressions (deep-copied; entries may be NULL).
+ * @param num_args Number of arguments.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_app_type(const char* name, hott_type_expr_t** args, uint64_t num_args);
 
 // Copy and free type expressions
 /**
