@@ -2535,6 +2535,14 @@ oracles:
         severity: medium
         label: 'core.category (ADR-0036): functors, natural transformations, functor and comma categories, limits, colimits, ends, coends, Yoneda, Grothendieck constructions, Kan extensions by both formulas with Lan -| F^* -| Ran, adjunctions with triangle identities, monads, nerves and derived limits; S6.2: a -| i with both triangle identities, the sheafification monad, Cech and cohomological descent, and the numbers of the sheaf and descent examples reproduced categorically; the suites, the three library-based examples in JIT and AOT, and the reference-page examples all pass'
         action: ./scripts/run_category_gate.sh
+      - id: v14_monoidal_zx
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_monoidal_zx"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.monoidal (ADR-0041): monoidal, braided, symmetric, compact closed and dagger structure as data on core.category finite categories and on FinVect over Z, Q and Q(zeta_n), with pentagon, triangle, hexagons, snakes and monoidal-functor coherence checked exactly; string diagrams evaluated compositionally and as tensor networks with a normal form; the ZX-calculus with every rewrite rule sound on every instance over the phases k pi/4, Clifford+T circuits against an exact state-vector semantics, graph-like simplification; the suites in JIT and AOT, the reference-page examples, and the Moonlab cross-check when a quantum build is given'
+        action: ./scripts/run_monoidal_gate.sh
 
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the

@@ -1,0 +1,43 @@
+;;; core.monoidal -- monoidal categories, string diagrams and the
+;;; ZX-calculus, exactly: the layer of core.category for tensor products.
+;;;
+;;; Usage: (require core.monoidal)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.monoidal.scalars    exact carriers: Z, Q (core.sheaf.module's
+;;;                            rings) and Q(zeta_n) (core.cyclotomic)
+;;;   core.monoidal.finvect    FinVect: exact linear maps between tensor
+;;;                            products, Kronecker tensor, swaps, cups, caps,
+;;;                            dagger
+;;;   core.monoidal.network    tensor networks with labelled legs, contracted
+;;;                            exactly
+;;;   core.monoidal.structure  monoidal, braided, symmetric, compact closed
+;;;                            and dagger structure and monoidal functors as
+;;;                            data, every coherence law a check (pentagon,
+;;;                            triangle, hexagons, snakes), on core.category's
+;;;                            finite categories
+;;;   core.monoidal.vect       FinVect as a strict and as a bracketed monoidal
+;;;                            category, the flattening and base-change functors
+;;;   core.monoidal.diagram    string diagrams: syntax, evaluation two ways,
+;;;                            normal form as a canonical open graph
+;;;   core.monoidal.zx         the ZX-calculus: spiders, Hadamards, exact
+;;;                            evaluation over Q(zeta_n), the rewrite rules
+;;;                            with their scalars, graph-like simplification,
+;;;                            Clifford+T circuits
+;;;
+;;; Reference: docs/reference/stdlib/monoidal.md and zx.md; design: ADR-0041
+;;; (docs/design/adr/0041-core-monoidal-string-diagrams-zx.md).
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician" (1998),
+;;; VII and XI; A. Joyal, R. Street, "The geometry of tensor calculus I"
+;;; (1991) and "Braided tensor categories" (1993); P. Selinger, "A survey of
+;;; graphical languages for monoidal categories" (2011); B. Coecke,
+;;; A. Kissinger, "Picturing Quantum Processes" (2017); J. van de Wetering,
+;;; "ZX-calculus for the working quantum computer scientist" (2020).
+
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+(require core.monoidal.network)
+(require core.monoidal.structure)
+(require core.monoidal.vect)
+(require core.monoidal.diagram)
+(require core.monoidal.zx)

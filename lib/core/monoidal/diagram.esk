@@ -1,0 +1,310 @@
+;;; core.monoidal.diagram -- string diagrams as data: boxes, identities,
+;;; composition, tensor, swaps, cups and caps, typed by lists of wire types;
+;;; evaluation in FinVect two ways (compositionally, and as a tensor network
+;;; of the diagram's open graph); and a normal form, the canonical labelled
+;;; open graph, which decides equality in the free symmetric monoidal
+;;; category with self-dual compact structure on the boxes.
+;;;
+;;; Usage: (require core.monoidal.diagram)   or   (require core.monoidal)
+;;;
+;;; Representation (public):
+;;;   #(diagram kind dom cod data)  kind one of box, id, then, tensor, swap,
+;;;       cup, cap; dom and cod are lists of wire types (any datum).
+;;;       (diagram-box name dom cod), (diagram-identity types),
+;;;       (diagram-then d1 d2 ...) = first d1, then d2, ...,
+;;;       (diagram-tensor d1 d2 ...), (diagram-swap A B) : A B -> B A,
+;;;       (diagram-cup A) : () -> A A, (diagram-cap A) : A A -> ().
+;;;   open graph  #(open-graph inputs outputs nodes edges loops)
+;;;       nodes   a vector of #(name dom cod), one per box
+;;;       a port  (b in k), (b out k) on the boundary, (n i in k), (n i out k)
+;;;               on node i; every port lies on exactly one edge
+;;;       edges   a list of (port . port); loops a list of the wire types of
+;;;               the closed wires that meet no box (each evaluates to the
+;;;               dimension of its type)
+;;;   normal form  (diagram-normal-form d): the open graph with nodes
+;;;       renumbered canonically (breadth first from the boundary ports in
+;;;       order; components without boundary from the root giving the least
+;;;       encoding), edges and loops sorted. Two diagrams have the same normal
+;;;       form exactly when their open graphs are isomorphic by an
+;;;       isomorphism fixing the boundary and the labels.
+;;;
+;;; An interpretation is a pair of procedures: types -> dimension and box
+;;; name -> core.monoidal.finvect linear map (or association lists).
+;;;
+;;; Sources: A. Joyal, R. Street, "The geometry of tensor calculus I", Adv.
+;;; Math. 88 (1991); G. M. Kelly, M. L. Laplaza, "Coherence for compact
+;;; closed categories", JPAA 19 (1980); P. Selinger, "A survey of graphical
+;;; languages for monoidal categories", in New Structures for Physics, LNP
+;;; 813 (2011); B. Coecke, A. Kissinger, "Picturing Quantum Processes"
+;;; (2017), ch. 3-4; nLab: "string diagram", "compact closed category".
+
+(require stdlib)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+(require core.monoidal.network)
+
+(provide diagram? diagram-kind diagram-domain diagram-codomain diagram-data
+         diagram-box diagram-identity diagram-then diagram-tensor diagram-swap diagram-cup diagram-cap
+         diagram-dagger diagram-boxes diagram-size
+         diagram-evaluate diagram->open-graph open-graph? open-graph-inputs open-graph-outputs
+         open-graph-nodes open-graph-edges open-graph-loops open-graph-evaluate diagram-evaluate-network
+         diagram-normal-form diagram-equal-by-normal-form? diagram-equal-by-evaluation? datum<?)
+
+(define (dg-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (dg-make kind dom cod data) (vector 'diagram kind dom cod data))
+(define (diagram? d) (and (vector? d) (= 5 (vector-length d)) (eq? (vector-ref d 0) 'diagram)))
+(define (diagram-kind d) (vector-ref d 1))
+(define (diagram-domain d) (vector-ref d 2))
+(define (diagram-codomain d) (vector-ref d 3))
+(define (diagram-data d) (vector-ref d 4))
+(define (dg-check d) (if (not (diagram? d)) (error "core.monoidal.diagram: not a diagram" d)) d)
+
+(define (diagram-box name dom cod) (dg-make 'box dom cod name))
+(define (diagram-identity types) (dg-make 'id types types #f))
+(define (dg-then2 d1 d2)
+  (dg-check d1) (dg-check d2)
+  (if (not (equal? (diagram-codomain d1) (diagram-domain d2)))
+      (error "core.monoidal.diagram: composite of diagrams whose wires do not match" (diagram-codomain d1) (diagram-domain d2)))
+  (dg-make 'then (diagram-domain d1) (diagram-codomain d2) (cons d1 d2)))
+(define (diagram-then d . ds) (let loop ((acc d) (l ds)) (if (null? l) acc (loop (dg-then2 acc (car l)) (cdr l)))))
+(define (dg-tensor2 d1 d2)
+  (dg-check d1) (dg-check d2)
+  (dg-make 'tensor (append (diagram-domain d1) (diagram-domain d2)) (append (diagram-codomain d1) (diagram-codomain d2)) (cons d1 d2)))
+(define (diagram-tensor d . ds) (let loop ((acc d) (l ds)) (if (null? l) acc (loop (dg-tensor2 acc (car l)) (cdr l)))))
+(define (diagram-swap A B) (dg-make 'swap (append A B) (append B A) (cons A B)))
+(define (diagram-cup A) (dg-make 'cup '() (append A A) A))
+(define (diagram-cap A) (dg-make 'cap (append A A) '() A))
+;; the dagger: mirror image; a box f becomes the box (dagger f)
+(define (diagram-dagger d)
+  (case (diagram-kind d)
+    ((box) (let ((name (diagram-data d)))
+             (diagram-box (if (and (pair? name) (eq? (car name) 'dagger)) (cadr name) (list 'dagger name)) (diagram-codomain d) (diagram-domain d))))
+    ((id) d)
+    ((then) (dg-then2 (diagram-dagger (cdr (diagram-data d))) (diagram-dagger (car (diagram-data d)))))
+    ((tensor) (dg-tensor2 (diagram-dagger (car (diagram-data d))) (diagram-dagger (cdr (diagram-data d)))))
+    ((swap) (diagram-swap (cdr (diagram-data d)) (car (diagram-data d))))
+    ((cup) (diagram-cap (diagram-data d)))
+    ((cap) (diagram-cup (diagram-data d)))
+    (else (error "core.monoidal.diagram: unknown diagram kind" (diagram-kind d)))))
+;; the boxes of a diagram, left to right, as (name dom cod)
+(define (diagram-boxes d)
+  (case (diagram-kind d)
+    ((box) (list (list (diagram-data d) (diagram-domain d) (diagram-codomain d))))
+    ((then tensor) (append (diagram-boxes (car (diagram-data d))) (diagram-boxes (cdr (diagram-data d)))))
+    (else '())))
+(define (diagram-size d) (length (diagram-boxes d)))
+
+;; ---------------------------------------------------------------------------
+;; Evaluation in FinVect, compositionally
+;; ---------------------------------------------------------------------------
+(define (dg-lookup table key what)
+  (if (procedure? table) (table key)
+      (let ((p (assoc key table))) (if p (cdr p) (error "core.monoidal.diagram: no interpretation for" what key)))))
+(define (dg-object dims types) (map (lambda (t) (dg-lookup dims t 'type)) types))
+(define (diagram-evaluate d S dims boxes)
+  (let eval ((d d))
+    (case (diagram-kind d)
+      ((box) (let ((f (dg-lookup boxes (diagram-data d) 'box)))
+               (if (not (and (equal? (linear-map-domain f) (dg-object dims (diagram-domain d))) (equal? (linear-map-codomain f) (dg-object dims (diagram-codomain d)))))
+                   (error "core.monoidal.diagram: the box's map does not match its wires" (diagram-data d)))
+               f))
+      ((id) (linear-map-identity S (dg-object dims (diagram-domain d))))
+      ((then) (linear-map-compose (eval (cdr (diagram-data d))) (eval (car (diagram-data d)))))
+      ((tensor) (linear-map-tensor (eval (car (diagram-data d))) (eval (cdr (diagram-data d)))))
+      ((swap) (linear-map-swap S (dg-object dims (car (diagram-data d))) (dg-object dims (cdr (diagram-data d)))))
+      ((cup) (linear-map-cup S (dg-object dims (diagram-data d))))
+      ((cap) (linear-map-cap S (dg-object dims (diagram-data d))))
+      (else (error "core.monoidal.diagram: unknown diagram kind" (diagram-kind d))))))
+
+;; ---------------------------------------------------------------------------
+;; The open graph
+;; ---------------------------------------------------------------------------
+(define (open-graph? g) (and (vector? g) (= 6 (vector-length g)) (eq? (vector-ref g 0) 'open-graph)))
+(define (open-graph-inputs g) (vector-ref g 1))
+(define (open-graph-outputs g) (vector-ref g 2))
+(define (open-graph-nodes g) (vector-ref g 3))
+(define (open-graph-edges g) (vector-ref g 4))
+(define (open-graph-loops g) (vector-ref g 5))
+
+;; Wire segments are fresh integers; ports are lists. Union-find joins the
+;; segments and ports that one wire passes through.
+(define (diagram->open-graph d)
+  (let* ((parent (make-hash-table)) (types (make-hash-table)) (counter 0) (nodes '()) (nnodes 0)
+         (fresh (lambda (type) (let ((v counter)) (set! counter (+ counter 1)) (hash-table-set! types v type) v)))
+         (find (lambda (x) (let loop ((x x)) (let ((p (hash-table-ref/default parent x x))) (if (equal? p x) x (loop p))))))
+         (union (lambda (a b) (let ((ra (find a)) (rb (find b))) (if (not (equal? ra rb)) (hash-table-set! parent ra rb))))))
+    (define (build d) ;; -> (ins . outs): lists of segments
+      (case (diagram-kind d)
+        ((box) (let* ((i nnodes)
+                      (ins (map (lambda (t) (fresh t)) (diagram-domain d)))
+                      (outs (map (lambda (t) (fresh t)) (diagram-codomain d))))
+                 (set! nnodes (+ nnodes 1))
+                 (set! nodes (cons (vector (diagram-data d) (diagram-domain d) (diagram-codomain d)) nodes))
+                 (for-each (lambda (v k) (union v (list 'n i 'in k))) ins (dg-range (length ins)))
+                 (for-each (lambda (v k) (union v (list 'n i 'out k))) outs (dg-range (length outs)))
+                 (cons ins outs)))
+        ((id) (let ((vs (map (lambda (t) (fresh t)) (diagram-domain d)))) (cons vs vs)))
+        ((then) (let ((a (build (car (diagram-data d)))) (b (build (cdr (diagram-data d)))))
+                  (for-each union (cdr a) (car b))
+                  (cons (car a) (cdr b))))
+        ((tensor) (let ((a (build (car (diagram-data d)))) (b (build (cdr (diagram-data d)))))
+                    (cons (append (car a) (car b)) (append (cdr a) (cdr b)))))
+        ((swap) (let ((as (map (lambda (t) (fresh t)) (car (diagram-data d)))) (bs (map (lambda (t) (fresh t)) (cdr (diagram-data d)))))
+                  (cons (append as bs) (append bs as))))
+        ((cup) (let ((as (map (lambda (t) (fresh t)) (diagram-data d)))) (cons '() (append as as))))
+        ((cap) (let ((as (map (lambda (t) (fresh t)) (diagram-data d)))) (cons (append as as) '())))
+        (else (error "core.monoidal.diagram: unknown diagram kind" (diagram-kind d)))))
+    (let* ((io (build d)))
+      (for-each (lambda (v k) (union v (list 'b 'in k))) (car io) (dg-range (length (car io))))
+      (for-each (lambda (v k) (union v (list 'b 'out k))) (cdr io) (dg-range (length (cdr io))))
+      ;; classes: ports per root, and the type of a portless class
+      (let ((ports (make-hash-table)) (roots '()))
+        (define (note x)
+          (let ((r (find x)))
+            (if (not (hash-table-ref/default ports r #f)) (begin (hash-table-set! ports r '()) (set! roots (cons r roots))))
+            (if (pair? x) (hash-table-set! ports r (cons x (hash-table-ref/default ports r '()))))))
+        (for-each note (dg-range counter))
+        (let node-ports ((i 0) (ns (reverse nodes)))
+          (if (pair? ns)
+              (begin (for-each (lambda (k) (note (list 'n i 'in k))) (dg-range (length (vector-ref (car ns) 1))))
+                     (for-each (lambda (k) (note (list 'n i 'out k))) (dg-range (length (vector-ref (car ns) 2))))
+                     (node-ports (+ i 1) (cdr ns)))))
+        (for-each (lambda (k) (note (list 'b 'in k))) (dg-range (length (car io))))
+        (for-each (lambda (k) (note (list 'b 'out k))) (dg-range (length (cdr io))))
+        (let loop ((rs (reverse roots)) (edges '()) (loops '()))
+          (if (null? rs)
+              (vector 'open-graph (diagram-domain d) (diagram-codomain d) (list->vector (reverse nodes)) (reverse edges) (reverse loops))
+              (let ((ps (hash-table-ref/default ports (car rs) '())))
+                (cond ((null? ps)
+                       ;; a closed wire: its type from any segment in the class
+                       (let ((seg (let s ((v 0)) (if (equal? (find v) (car rs)) v (s (+ v 1))))))
+                         (loop (cdr rs) edges (cons (hash-table-ref/default types seg #f) loops))))
+                      ((= 2 (length ps)) (loop (cdr rs) (cons (cons (cadr ps) (car ps)) edges) loops))
+                      (else (error "core.monoidal.diagram: a wire with other than two ends" ps))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Evaluation as a tensor network
+;; ---------------------------------------------------------------------------
+(define (open-graph-evaluate g S dims boxes)
+  (let* ((nodes (open-graph-nodes g)) (n (vector-length nodes))
+         (label (make-hash-table)) (extra '()) (scalar (scalars-one S))
+         (port-type (lambda (p) (if (eq? (car p) 'b)
+                                    (list-ref (if (eq? (cadr p) 'in) (open-graph-inputs g) (open-graph-outputs g)) (caddr p))
+                                    (list-ref (vector-ref (vector-ref nodes (cadr p)) (if (eq? (caddr p) 'in) 1 2)) (cadddr p)))))
+         (boundary-label (lambda (p) (list (cadr p) (caddr p))))
+         (edge-index 0))
+    (for-each (lambda (e)
+                (let ((a (car e)) (b (cdr e)))
+                  (cond ((and (eq? (car a) 'b) (eq? (car b) 'b))
+                         (let ((dim (dg-lookup dims (port-type a) 'type)))
+                           (set! extra (cons (linear-map->tensor (linear-map-cup S (list dim)) (list (boundary-label a) (boundary-label b)) '()) extra))))
+                        ((eq? (car a) 'b) (hash-table-set! label b (boundary-label a)))
+                        ((eq? (car b) 'b) (hash-table-set! label a (boundary-label b)))
+                        (else (hash-table-set! label a (list 'e edge-index)) (hash-table-set! label b (list 'e edge-index))
+                              (set! edge-index (+ edge-index 1))))))
+              (open-graph-edges g))
+    (for-each (lambda (t) (set! scalar (scalars-mul S scalar (scalars-embed S (dg-lookup dims t 'type))))) (open-graph-loops g))
+    (let* ((tensors (map (lambda (i)
+                           (let* ((node (vector-ref nodes i)) (f (dg-lookup boxes (vector-ref node 0) 'box)))
+                             (if (not (and (equal? (linear-map-domain f) (dg-object dims (vector-ref node 1))) (equal? (linear-map-codomain f) (dg-object dims (vector-ref node 2)))))
+                                 (error "core.monoidal.diagram: the box's map does not match its wires" (vector-ref node 0)))
+                             (linear-map->tensor f
+                                                 (map (lambda (k) (hash-table-ref/default label (list 'n i 'out k) #f)) (dg-range (length (vector-ref node 2))))
+                                                 (map (lambda (k) (hash-table-ref/default label (list 'n i 'in k) #f)) (dg-range (length (vector-ref node 1)))))))
+                         (dg-range n)))
+           (outs (map (lambda (k) (list 'out k)) (dg-range (length (open-graph-outputs g)))))
+           (ins (map (lambda (k) (list 'in k)) (dg-range (length (open-graph-inputs g)))))
+           (f (network-evaluate S (append tensors extra) outs ins)))
+      (linear-map-scale (linear-map-retype f (dg-object dims (open-graph-inputs g)) (dg-object dims (open-graph-outputs g))) scalar))))
+(define (diagram-evaluate-network d S dims boxes) (open-graph-evaluate (diagram->open-graph d) S dims boxes))
+
+;; ---------------------------------------------------------------------------
+;; Normal form
+;; ---------------------------------------------------------------------------
+;; a total order on data: numbers < strings < symbols < booleans < () < pairs < vectors
+(define (dt-rank x) (cond ((number? x) 0) ((string? x) 1) ((symbol? x) 2) ((boolean? x) 3) ((null? x) 4) ((pair? x) 5) ((vector? x) 6) (else 7)))
+(define (datum<? a b)
+  (let ((ra (dt-rank a)) (rb (dt-rank b)))
+    (cond ((< ra rb) #t) ((> ra rb) #f)
+          ((= ra 0) (< a b))
+          ((= ra 1) (string<? a b))
+          ((= ra 2) (string<? (symbol->string a) (symbol->string b)))
+          ((= ra 3) (and (not a) b))
+          ((= ra 4) #f)
+          ((= ra 5) (or (datum<? (car a) (car b)) (and (equal? (car a) (car b)) (datum<? (cdr a) (cdr b)))))
+          ((= ra 6) (datum<? (vector->list a) (vector->list b)))
+          (else #f))))
+
+;; renumber the nodes reached breadth first from the given start ports
+(define (dg-bfs g partner numbering next starts)
+  (let ((nodes (open-graph-nodes g)))
+    (let loop ((queue starts) (next next) (order '()))
+      (if (null? queue) (cons next (reverse order))
+          (let* ((p (car queue)) (q (hash-table-ref/default partner p #f)))
+            (if (and q (eq? (car q) 'n) (not (hash-table-ref/default numbering (cadr q) #f)))
+                (let* ((i (cadr q)) (node (vector-ref nodes i))
+                       (own (append (map (lambda (k) (list 'n i 'in k)) (dg-range (length (vector-ref node 1))))
+                                    (map (lambda (k) (list 'n i 'out k)) (dg-range (length (vector-ref node 2)))))))
+                  (hash-table-set! numbering i next)
+                  (loop (append (cdr queue) own) (+ next 1) (cons i order)))
+                (loop (cdr queue) next order)))))))
+(define (dg-renumber-port numbering p) (if (eq? (car p) 'n) (cons 'n (cons (hash-table-ref/default numbering (cadr p) -1) (cddr p))) p))
+(define (dg-encode-edges numbering edges)
+  (sort (map (lambda (e) (let ((a (dg-renumber-port numbering (car e))) (b (dg-renumber-port numbering (cdr e))))
+                           (if (datum<? b a) (list b a) (list a b))))
+             edges)
+        datum<?))
+(define (dg-node-ports node i)
+  (append (map (lambda (k) (list 'n i 'in k)) (dg-range (length (vector-ref node 1))))
+          (map (lambda (k) (list 'n i 'out k)) (dg-range (length (vector-ref node 2))))))
+
+(define (diagram-normal-form d)
+  (let* ((g (if (open-graph? d) d (diagram->open-graph d)))
+         (nodes (open-graph-nodes g)) (n (vector-length nodes))
+         (partner (make-hash-table)))
+    (for-each (lambda (e) (hash-table-set! partner (car e) (cdr e)) (hash-table-set! partner (cdr e) (car e))) (open-graph-edges g))
+    (let* ((numbering (make-hash-table))
+           (starts (append (map (lambda (k) (list 'b 'in k)) (dg-range (length (open-graph-inputs g))))
+                           (map (lambda (k) (list 'b 'out k)) (dg-range (length (open-graph-outputs g))))))
+           (r (dg-bfs g partner numbering 0 (map (lambda (p) p) starts)))
+           (boundary-count (car r)))
+      ;; the components without boundary: canonical root by least encoding
+      (let comp-loop ((next boundary-count) (pieces '()))
+        (let ((rest (filter (lambda (i) (not (hash-table-ref/default numbering i #f))) (dg-range n))))
+          (if (pair? rest)
+              ;; the component of the first remaining node
+              (let* ((probe (make-hash-table))
+                     (members (cdr (begin (hash-table-set! probe (car rest) 0)
+                                          (let ((r (dg-bfs g partner probe 1 (dg-node-ports (vector-ref nodes (car rest)) (car rest)))))
+                                            (cons (car r) (cons (car rest) (cdr r)))))))
+                     (encode-from
+                      (lambda (root)
+                        (let ((num (make-hash-table)))
+                          (hash-table-set! num root 0)
+                          (dg-bfs g partner num 1 (dg-node-ports (vector-ref nodes root) root))
+                          (let* ((order (sort members (lambda (a b) (< (hash-table-ref/default num a 0) (hash-table-ref/default num b 0)))))
+                                 (labels (map (lambda (i) (vector->list (vector-ref nodes i))) order))
+                                 (edges (dg-encode-edges num (filter (lambda (e) (and (eq? (car (car e)) 'n) (memv (cadr (car e)) members))) (open-graph-edges g)))))
+                            (list (list labels edges) num order)))))
+                     (best (let pick ((ms members) (best #f))
+                             (if (null? ms) best
+                                 (let ((enc (encode-from (car ms))))
+                                   (pick (cdr ms) (if (or (not best) (datum<? (car enc) (car best))) enc best)))))))
+                (for-each (lambda (i) (hash-table-set! numbering i -2)) members) ;; placeholder until ordered
+                (comp-loop next (cons best pieces)))
+              ;; order the closed components by encoding and number them
+              (let* ((sorted (sort pieces (lambda (a b) (datum<? (car a) (car b))))))
+                (let assign ((ps sorted) (next next))
+                  (if (pair? ps)
+                      (let* ((num (cadr (car ps))) (order (caddr (car ps))))
+                        (for-each (lambda (i) (hash-table-set! numbering i (+ next (hash-table-ref/default num i 0)))) order)
+                        (assign (cdr ps) (+ next (length order))))))
+                (let* ((renumbered (make-vector n #f)))
+                  (for-each (lambda (i) (vector-set! renumbered (hash-table-ref/default numbering i 0) (vector->list (vector-ref nodes i)))) (dg-range n))
+                  (list (open-graph-inputs g) (open-graph-outputs g) (vector->list renumbered)
+                        (dg-encode-edges numbering (open-graph-edges g))
+                        (sort (open-graph-loops g) datum<?))))))))))
+(define (diagram-equal-by-normal-form? d1 d2) (equal? (diagram-normal-form d1) (diagram-normal-form d2)))
+(define (diagram-equal-by-evaluation? d1 d2 S dims boxes)
+  (and (equal? (diagram-domain d1) (diagram-domain d2)) (equal? (diagram-codomain d1) (diagram-codomain d2))
+       (linear-map-equal? (diagram-evaluate d1 S dims boxes) (diagram-evaluate d2 S dims boxes))))
