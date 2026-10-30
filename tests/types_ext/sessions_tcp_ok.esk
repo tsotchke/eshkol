@@ -1,0 +1,34 @@
+;; A session-typed protocol over a TCP connection (ADR-0046): the same
+;; protocol type and operations as local endpoints; the transport is a
+;; socket from core.net, and session-offer checks the peer's labels.
+;; ENGINES: jit aot
+;; EXPECT-OUTPUT: ("ping:a" "ping:b" "ping:c")
+(require stdlib)
+(require core.sessions)
+(require core.net)
+(require core.threads)
+
+(define-type Echo (rec loop (offer (ping (? string (! string loop)))
+                                   (stop end))))
+
+(define (echo-server (c : (chan Echo))) : null
+  (session-offer c
+    'ping (lambda (c)
+            (let-values (((msg c) (session-recv c)))
+              (echo-server (session-send c (string-append "ping:" msg)))))
+    'stop (lambda (c) (session-close c))))
+
+(define (echo-all (c : (chan (dual Echo))) (msgs : any)) : any
+  (if (null? msgs)
+      (begin (session-close (session-select c 'stop)) '())
+      (let-values (((reply c) (session-recv (session-send (session-select c 'ping) (car msgs)))))
+        (cons reply (echo-all c (cdr msgs))))))
+
+(define listener (tcp-listen "127.0.0.1" 0))
+(define port (net-local-port listener))
+(define server
+  (make-thread (lambda () (echo-server (tcp-session (tcp-accept listener 10000))))))
+(define replies (echo-all (tcp-session (tcp-connect "127.0.0.1" port 10000)) '("a" "b" "c")))
+(write replies) (newline)
+(thread-join server)
+(tcp-close listener)

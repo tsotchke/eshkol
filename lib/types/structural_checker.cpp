@@ -430,6 +430,7 @@ struct StructuralChecker::Impl {
     std::vector<std::pair<TyRef, const eshkol_ast_t*>> obligations;
     std::vector<TyRef> dyn_buffer;
     std::vector<std::pair<TyRef, const eshkol_ast_t*>> record_fields;
+    std::vector<std::pair<TyRef, const eshkol_ast_t*>> discarded;   // values nobody receives
     std::vector<std::map<std::string, TyRef>> tyvar_scopes;
     const eshkol_ast_t* current = nullptr;
 
@@ -1050,7 +1051,7 @@ struct StructuralChecker::Impl {
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
                 for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i) {
-                    inferRho(&op.sequence_op.expressions[i]);
+                    effect(&op.sequence_op.expressions[i]);
                 }
                 return s.dyn();
             case ESHKOL_LET_OP: case ESHKOL_LET_STAR_OP: case ESHKOL_LETREC_OP:
@@ -1062,10 +1063,7 @@ struct StructuralChecker::Impl {
                 return caseForm(e, nullptr);
             case ESHKOL_WHEN_OP:
             case ESHKOL_UNLESS_OP:
-                if (op.call_op.num_vars >= 1) inferRho(&op.call_op.variables[0]);
-                if (op.call_op.num_vars >= 2) {
-                    sequence(op.call_op.variables + 1, op.call_op.num_vars - 1, nullptr);
-                }
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) effect(&op.call_op.variables[i]);
                 return s.dyn();
             case ESHKOL_SET_OP:
                 setForm(e);
@@ -1217,6 +1215,9 @@ struct StructuralChecker::Impl {
                e->operation.call_op.num_vars >= 2;
     }
 
+    /** Evaluate @p e for its effect only; its value must not be linear. */
+    void effect(eshkol_ast_t* e) { discarded.push_back({inferRho(e), e}); }
+
     TyRef resultOrFresh(TyRef expected) {
         return expected ? expected : s.meta(Kind::Type, level);
     }
@@ -1226,9 +1227,9 @@ struct StructuralChecker::Impl {
 
     TyRef ifForm(eshkol_ast_t* e, TyRef expected) {
         auto& c = e->operation.call_op;
-        inferRho(&c.variables[0]);
+        effect(&c.variables[0]);
         if (c.num_vars < 3) {
-            inferRho(&c.variables[1]);
+            effect(&c.variables[1]);
             return s.dyn();
         }
         TyRef join = resultOrFresh(expected);
@@ -1239,7 +1240,7 @@ struct StructuralChecker::Impl {
 
     TyRef sequence(eshkol_ast_t* items, uint64_t n, TyRef expected) {
         if (n == 0) return s.null();
-        for (uint64_t i = 0; i + 1 < n; ++i) inferRho(&items[i]);
+        for (uint64_t i = 0; i + 1 < n; ++i) effect(&items[i]);
         if (expected) {
             checkRho(&items[n - 1], expected);
             return expected;
@@ -1257,14 +1258,14 @@ struct StructuralChecker::Impl {
             auto& cl = clause->operation.call_op;
             const char* test = varName(cl.func);
             const bool is_else = test && std::strcmp(test, "else") == 0;
-            if (!is_else) inferRho(cl.func);
+            if (!is_else) effect(cl.func);
             if (cl.num_vars == 2 && varName(&cl.variables[0]) &&
                 std::strcmp(varName(&cl.variables[0]), "=>") == 0) {
-                inferRho(&cl.variables[1]);
+                effect(&cl.variables[1]);
                 continue;
             }
             if (cl.num_vars == 0) continue;
-            for (uint64_t j = 0; j + 1 < cl.num_vars; ++j) inferRho(&cl.variables[j]);
+            for (uint64_t j = 0; j + 1 < cl.num_vars; ++j) effect(&cl.variables[j]);
             branch(&cl.variables[cl.num_vars - 1], join);
             if (is_else) {
                 has_else = true;
@@ -1288,7 +1289,7 @@ struct StructuralChecker::Impl {
             if (body && body->type == ESHKOL_OP && body->operation.op == ESHKOL_CALL_OP) {
                 auto& bc = body->operation.call_op;
                 if (bc.num_vars == 0) continue;
-                for (uint64_t j = 0; j + 1 < bc.num_vars; ++j) inferRho(&bc.variables[j]);
+                for (uint64_t j = 0; j + 1 < bc.num_vars; ++j) effect(&bc.variables[j]);
                 branch(&bc.variables[bc.num_vars - 1], join);
             } else if (body) {
                 branch(body, join);
@@ -1757,11 +1758,19 @@ struct StructuralChecker::Impl {
         obligations.clear();
         dyn_buffer.clear();
         record_fields.clear();
+        discarded.clear();
         tyvar_scopes.clear();
         current = nullptr;
     }
 
     void finishForm() {
+        for (const auto& d : discarded) {
+            TyRef t = s.zonk(d.first);
+            if (st::TypeStore::isLinear(t)) {
+                fail(d.second, "the linear value of type " + s.show(t) +
+                                   " produced here is discarded; it must be used exactly once");
+            }
+        }
         for (const auto& ob : obligations) {
             TyRef t = s.zonk(ob.first);
             if (st::TypeStore::isLinear(t)) {
@@ -1871,7 +1880,7 @@ struct StructuralChecker::Impl {
 
     void checkExpression(eshkol_ast_t* form) {
         level = 1;
-        inferRho(form);
+        effect(form);
         finishForm();
         level = 0;
     }

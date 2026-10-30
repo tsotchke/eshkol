@@ -1,0 +1,9 @@
+;; Receiving where the protocol says send is a protocol violation.
+;; ENGINES: aot vm
+;; EXPECT-STDERR: cannot match
+(require stdlib)
+(require core.sessions)
+(define (bad (c : (chan (! number end)))) : number
+  (let-values (((x c) (session-recv c)))
+    (session-close c)
+    x))

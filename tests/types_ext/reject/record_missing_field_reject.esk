@@ -1,0 +1,7 @@
+;; Selecting a field the record does not have is a compile-time error.
+;; ENGINES: aot vm
+;; EXPECT-STDERR: no field or label `y`
+(require stdlib)
+(require core.records)
+(define p (record 'x 1))
+(display (record-ref p 'y))

@@ -1,0 +1,8 @@
+;; Exactly once on EVERY path: closing on one branch and dropping on the
+;; other abandons the protocol.
+;; ENGINES: aot vm
+;; EXPECT-STDERR: is not consumed on every path
+(require stdlib)
+(require core.sessions)
+(define (maybe-close (c : (chan end)) (b : boolean)) : null
+  (if b (session-close c) '()))

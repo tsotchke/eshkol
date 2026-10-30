@@ -1,0 +1,9 @@
+;; A closure that captures an endpoint may be called more than once unless
+;; it is one-shot, so capturing it in an ordinary lambda is rejected.
+;; ENGINES: aot vm
+;; EXPECT-STDERR: must be one-shot
+(require stdlib)
+(require core.sessions)
+(define (finish (c : (chan end))) : null
+  (let ((k (lambda () (session-close c))))
+    (k)))

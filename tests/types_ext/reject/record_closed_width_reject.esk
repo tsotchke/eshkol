@@ -1,0 +1,9 @@
+;; Width subtyping only lets MORE fields through: a record lacking a field
+;; the closed annotation requires is rejected.
+;; ENGINES: aot vm
+;; EXPECT-STDERR: has no field `y`
+(require stdlib)
+(require core.records)
+(define (sum-xy (p : (record (x number) (y number)))) : number
+  (+ (record-ref p 'x) (record-ref p 'y)))
+(display (sum-xy (record 'x 1)))

@@ -1,0 +1,7 @@
+;; Selecting a label the peer does not offer is rejected.
+;; ENGINES: aot vm
+;; EXPECT-STDERR: no field or label `mul`
+(require stdlib)
+(require core.sessions)
+(define (client (c : (chan (choose (add (! number end)) (quit end))))) : null
+  (session-close (session-send (session-select c 'mul) 2)))

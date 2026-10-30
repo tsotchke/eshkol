@@ -1,0 +1,8 @@
+;; A signature's row variable is rigid: the body may not claim the removed
+;; field is still there.
+;; ENGINES: aot vm
+;; EXPECT-STDERR: Type error
+(require stdlib)
+(require core.records)
+(define (bad (p : (record (x number) r))) : (record (x number) r)
+  (record-remove p 'x))
