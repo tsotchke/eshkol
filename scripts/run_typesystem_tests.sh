@@ -6,7 +6,7 @@
 # docs/reference/runtime/eshkol-run.md say it does: "Type errors are fatal."
 #
 # Each .esk fixture declares its expectations in header comments:
-#   ;; EXPECT-MODE: strict-types | unsafe | default
+#   ;; EXPECT-MODE: strict-types | types-strict | unsafe | default
 #   ;; EXPECT-COMPILE: fail | ok      (REQUIRED — see below)
 #   ;; EXPECT-STDERR: <pattern>       (this pattern must appear in stderr)
 #   ;; EXPECT-NO-STDERR: <pattern>    (this pattern must NOT appear in stderr)
@@ -117,6 +117,7 @@ for test_file in tests/typesystem/*.esk; do
     flags="-L./$BUILD_DIR"
     case "$mode" in
         strict-types) flags="$flags --strict-types" ;;
+        types-strict) flags="$flags --types=strict" ;;
         unsafe)       flags="$flags --unsafe" ;;
         default)      ;; # no extra flags
         *)            ;; # no extra flags

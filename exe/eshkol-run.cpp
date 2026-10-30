@@ -1338,6 +1338,7 @@ static struct option long_options[] = {
     {"abi-fingerprint", no_argument, nullptr, 266},
     {"embed-stdlib-identity", required_argument, nullptr, 267},
     {"strict-resources", no_argument, nullptr, 268},
+    {"types", required_argument, nullptr, 269},
     {0, 0, 0, 0}
 };
 
@@ -4212,7 +4213,10 @@ static void print_help(int x = 0)
         "\t    this build was compiled against, as KEY=VALUE lines, then exit.\n"
         "\t--debug-info:[-g] = Emit DWARF debug info (enables lldb/gdb source-level debugging).\n"
         "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
-        "\t--strict-types = Type errors are fatal (default: gradual/warnings).\n"
+        "\t--types=gradual|strict = Type-checking mode (default gradual: type mismatches warn).\n"
+        "\t                 strict makes every type error fatal. Dependent-type obligations\n"
+        "\t                 and linearity violations are fatal in both modes.\n"
+        "\t--strict-types = Same as --types=strict.\n"
         "\t--strict-resources = Check core.net resource ownership in the supported native fragment.\n"
         "\t--unsafe = Skip all type checks.\n\n"
         "Eshkol Compiler v%s\n",
@@ -6175,6 +6179,7 @@ int main(int argc, char **argv)
     // the real judgment here means both routes out of this driver enforce ONE
     // rule; see inc/eshkol/backend/vm.h for why the VM takes it as a hook.
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
+    eshkol_vm_install_dependent_check(eshkol_dependent_check_source);
 
     // Baseline for the artifact-emission gate below. Sampled before anything
     // can report a diagnostic, so the gate covers every compilation stage —
@@ -6325,6 +6330,21 @@ int main(int argc, char **argv)
             break;
         case 256:
             strict_types = 1;
+            break;
+        case 269:
+            // --types=gradual|strict (ADR-0042). gradual is the default:
+            // nominal type mismatches warn and compilation continues; strict
+            // makes every type error fatal (the same as --strict-types). In
+            // both, a failed dependent-type obligation and a linearity
+            // violation are fatal.
+            if (optarg && std::string(optarg) == "strict") {
+                strict_types = 1;
+            } else if (optarg && std::string(optarg) == "gradual") {
+                strict_types = 0;
+            } else {
+                eshkol_error("--types takes gradual or strict, got '%s'", optarg ? optarg : "");
+                return 1;
+            }
             break;
         case 257:
             unsafe_mode = 1;

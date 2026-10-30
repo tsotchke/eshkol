@@ -8,6 +8,7 @@
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/differentiation_graph.h>
 #include <eshkol/frontend/syntax_color.h>
+#include <eshkol/frontend/diagnostic.h>
 #include "eshkol/types/type_relation.h"
 #include "../../lib/core/arena_memory.h"
 #include <cstdio>
@@ -27,6 +28,7 @@ namespace eshkol::hott {
 Context::Context() {
     // Start with global scope
     scopes_.push_back({});
+    term_scopes_.push_back({});
     linear_scope_saves_.push_back({});
 }
 
@@ -35,6 +37,7 @@ Context::Context() {
  */
 void Context::pushScope() {
     scopes_.push_back({});
+    term_scopes_.push_back({});
     linear_scope_saves_.push_back({});
 }
 
@@ -63,6 +66,7 @@ void Context::popScope() {
         }
         linear_scope_saves_.pop_back();
         scopes_.pop_back();
+        term_scopes_.pop_back();
     }
 }
 
@@ -76,6 +80,35 @@ void Context::bind(const std::string& name, TypeId type) {
     if (!scopes_.empty()) {
         scopes_.back()[name] = type;
     }
+}
+
+void Context::bindTerm(const std::string& name, TermRef term) {
+    if (!term_scopes_.empty()) term_scopes_.back()[name] = term;
+}
+
+std::optional<TermRef> Context::lookupTerm(const std::string& name) const {
+    // The innermost scope that mentions the name decides: a plain binding
+    // there hides any outer index term.
+    for (size_t i = scopes_.size(); i-- > 0;) {
+        auto term = term_scopes_[i].find(name);
+        if (term != term_scopes_[i].end()) return term->second;
+        if (scopes_[i].count(name)) return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+void Context::dropTerm(const std::string& name) {
+    if (!term_scopes_.empty()) term_scopes_.back().erase(name);
+}
+
+void Context::defineTypeAliasKinds(const std::string& name,
+                                   std::vector<hott_type_expr_t*> kinds) {
+    type_alias_kinds_[name] = std::move(kinds);
+}
+
+const std::vector<hott_type_expr_t*>& Context::getTypeAliasKinds(const std::string& name) const {
+    auto it = type_alias_kinds_.find(name);
+    return it != type_alias_kinds_.end() ? it->second : empty_kinds_;
 }
 
 /**
@@ -1026,50 +1059,44 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeTask(eshkol_ast_t* expr
             co_return TypeCheckResult::error("Cannot synthesize type for this expression");
     }
 
-    co_return storeAndReturn(expr, result, &env_);
+    co_return record(expr, result);
 }
 
 /**
  * @brief Checking-mode entry point: verify @p expr has the expected type, top-down (Γ ⊢ e ⇐ τ).
  *
- * Lambdas get a dedicated checking rule (checkLambdaTask()) so their parameter
- * types can be inferred from @p expected rather than requiring annotations.
- * All other expression kinds fall back to synthesizing @p expr's type and
- * verifying it is consistent with @p expected via
- * TypeRelation::isConsistentSubtype(): a Value expression is accepted, a
- * concrete type must be a subtype.
- * @param expr The expression to check.
- * @param expected The type @p expr is expected to have.
- * @return TypeCheckResult::ok(expected) on success; a type-mismatch error
- * (also recorded via addTypeMismatch()) if synthesis succeeds but the
- * inferred type is not consistent with @p expected; or the failing result from
- * synthesis if that fails first.
+ * The checking judgment is synthesis followed by the tail rule (ADR-0042):
+ * @p expr is synthesized by the ordinary rules, which record each node's
+ * precise type, and then every expression whose value becomes the value of
+ * @p expr -- each branch of an if/cond/case/when/unless, the last
+ * expression of a body -- is judged against @p expected. A join of two
+ * branches can be Value and so consistent with anything; judging the
+ * branches one by one finds the branch that does not fit and reports it
+ * there. A lambda checked against a function type additionally has its
+ * body checked against the codomain with its parameters at the domains
+ * (checkLambdaAgainst()).
+ * @return TypeCheckResult::ok(expected) when every tail fits, else an error
+ * (the mismatch is reported at the tail that does not fit).
  */
 ContinuationTask<TypeCheckResult> TypeChecker::checkTask(eshkol_ast_t* expr, TypeId expected) {
     if (!expr) {
         co_return TypeCheckResult::error("Null expression");
     }
-
-    // Special case: lambda can infer param types from expected
-    if (expr->type == ESHKOL_OP &&
-        expr->operation.op == ESHKOL_LAMBDA_OP) {
-        co_return (co_await checkLambdaTask(expr, expected));
-    }
-
-    // General case: synthesize then check subtyping
     auto result = (co_await synthesizeTask(expr));
     if (!result.success) {
         co_return result;
     }
-
-    if (TypeRelation(env_).isConsistentSubtype(result.inferred_type, expected)) {
-        co_return TypeCheckResult::ok(expected);
+    const CheckSite site{"expression", false, false};
+    size_t reported = judgeTails(expr, expected, site);
+    if (expr->type == ESHKOL_OP && expr->operation.op == ESHKOL_LAMBDA_OP) {
+        (co_await checkLambdaAgainst(expr, expected, site));
     }
-
-    addTypeMismatch(expected, result.inferred_type, expr->line, expr->column);
-    co_return errorAt(expr,
-        "Type mismatch: expected " + env_.getTypeName(expected) +
-        ", got " + env_.getTypeName(result.inferred_type));
+    if (reported > 0) {
+        co_return errorAt(expr,
+            "Type mismatch: expected " + env_.getTypeName(expected) +
+            ", got " + env_.getTypeName(result.inferred_type));
+    }
+    co_return TypeCheckResult::ok(expected);
 }
 
 /**
@@ -1269,7 +1296,11 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
             // evaluates the inner expression verbatim. This is a gradual-typing
             // trust boundary (no runtime check), consistent with `--strict-types`
             // as a whole-program refinement rather than a soundness proof.
-            const TypeId ascribed = resolveType(expr->operation.the_op.type_expr);
+            TypeId ascribed;
+            {
+                ResolveSiteGuard site(*this, expr);
+                ascribed = resolveType(expr->operation.the_op.type_expr);
+            }
             if (expr->operation.the_op.expr) {
                 auto inner = (co_await synthesizeTask(expr->operation.the_op.expr));
                 if (inner.success) {
@@ -1288,13 +1319,24 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
                     // (COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6) still holds,
                     // and a VM program that omits the ascription still
                     // computes the identical result.
+                    const std::string contradiction =
+                        "ascription (the " + env_.getTypeName(ascribed) +
+                        " ...) contradicts the inferred type " +
+                        env_.getTypeName(inner.inferred_type) + "; no value can satisfy it";
                     if (!ascriptionIsBelievable(inner.inferred_type, ascribed)) {
-                        reportTypeIssue(
-                            "ascription (the " + env_.getTypeName(ascribed) +
-                                " ...) contradicts the inferred type " +
-                                env_.getTypeName(inner.inferred_type) +
-                                "; no value can satisfy it",
-                            expr);
+                        if (involvesDependentType(ascribed) ||
+                            involvesDependentType(inner.inferred_type)) {
+                            reportObligation(contradiction, expr);
+                        } else {
+                            reportTypeIssue(contradiction, expr);
+                        }
+                    } else {
+                        // The checking direction: each branch whose value the
+                        // ascription covers must itself be castable to it.
+                        judgeTails(expr->operation.the_op.expr, ascribed,
+                                   CheckSite{"ascription (the " + env_.getTypeName(ascribed) +
+                                                 " ...)",
+                                             false, true});
                     }
                 }
                 if (!inner.success) {
@@ -1317,19 +1359,36 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
 
         case ESHKOL_DEFINE_TYPE_OP: {
             // Type definition - register alias and return null
-            if (expr->operation.define_type_op.name &&
-                expr->operation.define_type_op.type_expr) {
-                // Extract type parameters if present
+            const auto& dt = expr->operation.define_type_op;
+            if (dt.name && dt.type_expr) {
+                // Extract type parameters if present, with their declared
+                // sorts: (m : integer) indexes, (a : (universe 0)) types.
                 std::vector<std::string> type_params;
-                for (uint64_t i = 0; i < expr->operation.define_type_op.num_type_params; i++) {
-                    if (expr->operation.define_type_op.type_params[i]) {
-                        type_params.push_back(expr->operation.define_type_op.type_params[i]);
+                std::vector<hott_type_expr_t*> kinds;
+                bool any_kind = false;
+                for (uint64_t i = 0; i < dt.num_type_params; i++) {
+                    if (dt.type_params[i]) {
+                        type_params.push_back(dt.type_params[i]);
+                        hott_type_expr_t* kind = dt.type_param_kinds ? dt.type_param_kinds[i]
+                                                                     : nullptr;
+                        kinds.push_back(kind);
+                        any_kind = any_kind || kind;
                     }
                 }
-                ctx_.defineTypeAlias(
-                    expr->operation.define_type_op.name,
-                    expr->operation.define_type_op.type_expr,
-                    type_params);
+                ctx_.defineTypeAlias(dt.name, dt.type_expr, type_params);
+                ctx_.defineTypeAliasKinds(dt.name, any_kind ? kinds
+                                                            : std::vector<hott_type_expr_t*>{});
+                if (any_kind) {
+                    // Each declared sort must itself be a sort: a universe or
+                    // a type of index values.
+                    ResolveSiteGuard site(*this, expr);
+                    for (size_t i = 0; i < kinds.size(); ++i) {
+                        if (!kinds[i]) continue;
+                        ResolveEnv kind_env;
+                        kind_env.site = expr;
+                        (void)resolveTerm(kinds[i], kind_env, TermPosition::Type);
+                    }
+                }
             }
             co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
@@ -1400,6 +1459,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
             if (expr->operation.set_op.value) {
                 (co_await synthesizeTask(expr->operation.set_op.value));
             }
+            if (expr->operation.set_op.name) noteAssignment(expr->operation.set_op.name, expr);
             co_return TypeCheckResult::ok(BuiltinTypes::Null);
 
         // Side-effect operations — return Null (void)
@@ -1410,8 +1470,18 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
         case ESHKOL_WS_REGISTER_OP:
         case ESHKOL_DEFINE_SYNTAX_OP:
         case ESHKOL_DEFINE_RECORD_TYPE_OP:
-        case ESHKOL_TYPE_ANNOTATION_OP:
             co_return TypeCheckResult::ok(BuiltinTypes::Null);
+
+        case ESHKOL_TYPE_ANNOTATION_OP: {
+            // (: name type) declares the type the following definition of
+            // name is checked against (ADR-0042).
+            const auto& ann = expr->operation.type_annotation_op;
+            if (ann.name && ann.type_expr) {
+                ResolveSiteGuard site(*this, expr);
+                declared_types_[ann.name] = resolveType(ann.type_expr);
+            }
+            co_return TypeCheckResult::ok(BuiltinTypes::Null);
+        }
 
         case ESHKOL_REQUIRE_OP:
             bindKnownRequireExports(ctx_, env_, expr->operation);
@@ -1649,30 +1719,14 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
 ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLambdaTask(eshkol_ast_t* expr) {
     const auto& lambda = expr->operation.lambda_op;
 
+    // The signature: annotations resolved left to right, a telescope when
+    // they use the dependent type language (ADR-0042).
+    Signature sig = resolveSignature(lambda.parameters, lambda.num_params, lambda.param_types,
+                                     lambda.return_type, expr);
+
     ctx_.pushScope();
-
-    // Collect parameter types and bind parameters in context
-    std::vector<TypeId> param_types;
     std::vector<std::string> linear_params;
-    for (size_t i = 0; i < lambda.num_params; i++) {
-        std::string param_name = lambda.parameters[i].variable.id;
-
-        // Get type from annotation if available
-        TypeId param_type = BuiltinTypes::Value;  // Default
-        if (lambda.param_types && lambda.param_types[i]) {
-            param_type = resolveType(lambda.param_types[i]);
-        }
-
-        param_types.push_back(param_type);
-
-        // Register linear parameters for use-once checking
-        if (param_type.flags & TYPE_FLAG_LINEAR) {
-            ctx_.bindLinear(param_name, param_type);
-            linear_params.push_back(param_name);
-        } else {
-            ctx_.bind(param_name, param_type);
-        }
-    }
+    bindSignature(sig, lambda.parameters, lambda.num_params, lambda.body, linear_params);
 
     // Synthesize body type
     auto body_result = (co_await synthesizeTask(lambda.body));
@@ -1697,26 +1751,33 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLambdaTask(eshkol_ast_t
     // If return type annotation exists, check against it. The check is gradual
     // consistency, not subtyping: a body the checker types as Value is unknown,
     // not wrong, and satisfies any annotation; a concrete body that is not a
-    // subtype (String against Number) is still reported.
+    // subtype (String against Number) is still reported. The checking
+    // direction then judges each tail of the body, so a branch that does not
+    // fit is found even when the join of the branches is Value.
     if (lambda.return_type) {
-        TypeId expected_return = resolveType(lambda.return_type);
-        if (!TypeRelation(env_).isConsistentSubtype(body_result.inferred_type, expected_return)) {
+        TypeId expected_return;
+        if (sig.return_term) {
+            expected_return = env_.typeFromTerm(*sig.return_term);
+        } else {
+            ResolveSiteGuard site(*this, expr);
+            expected_return = resolveType(lambda.return_type);
+        }
+        const CheckSite site{"result of the lambda", false, false};
+        if (involvesDependentType(expected_return) ||
+            involvesDependentType(body_result.inferred_type)) {
+            judgeTails(lambda.body, expected_return, site);
+        } else if (!TypeRelation(env_).isConsistentSubtype(body_result.inferred_type,
+                                                           expected_return)) {
             co_return TypeCheckResult::error(
                 "Lambda body type " + env_.getTypeName(body_result.inferred_type) +
                 " doesn't match return annotation " + env_.getTypeName(expected_return));
+        } else {
+            judgeTails(lambda.body, expected_return, site);
         }
         return_type = expected_return;  // Use annotated type for precision
     }
 
-    // Create proper function type encoding param types and return type
-    if (param_types.empty()) {
-        // Nullary function
-        co_return TypeCheckResult::ok(env_.makeFunctionType({}, return_type,
-                                                         lambda.is_variadic));
-    }
-
-    co_return TypeCheckResult::ok(env_.makeFunctionType(param_types, return_type,
-                                                      lambda.is_variadic));
+    co_return TypeCheckResult::ok(closeSignature(sig, return_type, lambda.is_variadic));
 }
 
 /**
@@ -1943,6 +2004,30 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
         }
 
         // List operations — with parametric pair type tracking
+        if ((func_name == "car" || func_name == "first" || func_name == "cdr" ||
+             func_name == "rest") &&
+            call.num_vars >= 1 && arg_types[0].success &&
+            env_.isTermType(arg_types[0].inferred_type)) {
+            // A dependent pair (ADR-0042): the first projection has the first
+            // component's type; the second has the second component's type
+            // at the first component's value, (car p), when p is stable.
+            TermStore& terms = env_.terms();
+            const TermNode pair = terms.node(terms.normalize(env_.termOf(arg_types[0].inferred_type)));
+            if (pair.kind == TermKind::Sigma) {
+                if (func_name == "car" || func_name == "first") {
+                    co_return TypeCheckResult::ok(env_.typeFromTerm(pair.args[0]));
+                }
+                if (!terms.mentionsBound(pair.args[1], 0)) {
+                    co_return TypeCheckResult::ok(
+                        env_.typeFromTerm(terms.instantiate(pair.args[1], {terms.intLit(0)})));
+                }
+                if (auto p = indexTermOf(&call.variables[0])) {
+                    co_return TypeCheckResult::ok(env_.typeFromTerm(
+                        terms.instantiate(pair.args[1], {terms.op("car", {*p})})));
+                }
+                co_return TypeCheckResult::ok(env_.eraseTerm(pair.args[1]));
+            }
+        }
         if (func_name == "car" || func_name == "first") {
             // If argument is a tracked Pair<A,B>, return A
             if (call.num_vars >= 1 && arg_types[0].success) {
@@ -2708,34 +2793,69 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
             co_return TypeCheckResult::ok(BuiltinTypes::Pointer);
         }
 
-        // Vector operations
-        if (func_name == "vector" || func_name == "make-vector" || func_name == "vector-copy") {
+        // Vector operations. A vector whose length is known statically has
+        // the length-indexed type (vector Value n) (ADR-0042): the length
+        // never changes, the elements may (vector-set!), so only the length
+        // is part of the synthesized type.
+        if (func_name == "vector" || func_name == "make-vector") {
+            TermStore& terms = env_.terms();
+            std::optional<TermRef> length;
+            if (func_name == "vector") {
+                length = terms.intLit(static_cast<int64_t>(call.num_vars));
+            } else if (call.num_vars >= 1) {
+                length = indexTermOf(&call.variables[0]);
+            }
+            if (length) {
+                co_return TypeCheckResult::ok(env_.typeFromTerm(
+                    terms.app("vector", {env_.termOf(BuiltinTypes::Value), *length})));
+            }
             co_return TypeCheckResult::ok(BuiltinTypes::Vector);
         }
-        if (func_name == "vector-ref") {
-            // Dimension checking: if index is a literal, validate non-negative
+        if (func_name == "vector-copy") {
+            co_return TypeCheckResult::ok(BuiltinTypes::Vector);
+        }
+        if (func_name == "vector-ref" || func_name == "vector-set!") {
             if (call.num_vars >= 2) {
                 const eshkol_ast_t& idx_arg = call.variables[1];
+                // Dimension checking: if index is a literal, validate non-negative
                 if (idx_arg.type == ESHKOL_INT64 && idx_arg.int64_val < 0) {
-                    reportTypeIssue("vector-ref: negative index " +
+                    reportTypeIssue(func_name + ": negative index " +
                         std::to_string(idx_arg.int64_val), &idx_arg);
+                } else if (arg_types[0].success && env_.isTermType(arg_types[0].inferred_type)) {
+                    // A length-indexed vector: an index that is known to be
+                    // past the end is a failed obligation.
+                    TermStore& terms = env_.terms();
+                    const TermNode vec =
+                        terms.node(terms.normalize(env_.termOf(arg_types[0].inferred_type)));
+                    auto index = indexTermOf(&idx_arg);
+                    if (vec.kind == TermKind::App && vec.name == "vector" &&
+                        vec.args.size() == 2 && index) {
+                        const TermNode len = terms.node(terms.normalize(vec.args[1]));
+                        const TermNode idx = terms.node(terms.normalize(*index));
+                        if (len.kind == TermKind::IntLit && idx.kind == TermKind::IntLit &&
+                            idx.value >= len.value && idx.value >= 0) {
+                            reportObligation(func_name + ": index " + std::to_string(idx.value) +
+                                                 " is outside " +
+                                                 env_.getTypeName(arg_types[0].inferred_type),
+                                             &idx_arg);
+                        }
+                    }
+                }
+            }
+            if (func_name == "vector-set!") co_return TypeCheckResult::ok(BuiltinTypes::Null);
+            // The element type of a length-indexed vector, when one was declared.
+            if (arg_types[0].success && env_.isTermType(arg_types[0].inferred_type)) {
+                TermStore& terms = env_.terms();
+                const TermNode vec =
+                    terms.node(terms.normalize(env_.termOf(arg_types[0].inferred_type)));
+                if (vec.kind == TermKind::App && vec.name == "vector" && vec.args.size() == 2) {
+                    co_return TypeCheckResult::ok(env_.typeFromTerm(vec.args[0]));
                 }
             }
             co_return TypeCheckResult::ok(BuiltinTypes::Value);
         }
         if (func_name == "vector-length") {
             co_return TypeCheckResult::ok(BuiltinTypes::Int64);
-        }
-        if (func_name == "vector-set!") {
-            // Dimension checking: validate index
-            if (call.num_vars >= 2) {
-                const eshkol_ast_t& idx_arg = call.variables[1];
-                if (idx_arg.type == ESHKOL_INT64 && idx_arg.int64_val < 0) {
-                    reportTypeIssue("vector-set!: negative index " +
-                        std::to_string(idx_arg.int64_val), &idx_arg);
-                }
-            }
-            co_return TypeCheckResult::ok(BuiltinTypes::Null);
         }
         if (func_name == "vector-copy!" || func_name == "vector-fill!") {
             co_return TypeCheckResult::ok(BuiltinTypes::Null);
@@ -2920,6 +3040,15 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
         (co_await synthesizeTask(const_cast<eshkol_ast_t*>(func_expr)));
     }
 
+    // A dependent function: its application instantiates the telescope with
+    // the arguments' index terms and solves its implicit indices (ADR-0042).
+    if (env_.isTermType(func_type)) {
+        const std::string callee =
+            func_expr->type == ESHKOL_VAR ? eshkol_syntax_source_text(func_expr->variable.id)
+                                          : "<lambda>";
+        co_return TypeCheckResult::ok(applyDependent(func_type, expr, arg_types, callee));
+    }
+
     // If we have a proper function type, return its return type
     if (env_.isFunctionType(func_type)) {
         TypeId return_type = env_.getFunctionReturnType(func_type);
@@ -2983,7 +3112,29 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
                                 std::string(func_expr->type == ESHKOL_VAR ? func_expr->variable.id : "<lambda>") +
                                 "': expected " + env_.getTypeName(expected) +
                                 ", got " + env_.getTypeName(actual);
-                            reportTypeIssue(msg, &call.variables[i]);
+                            if (involvesDependentType(expected) || involvesDependentType(actual)) {
+                                reportObligation(msg, &call.variables[i]);
+                            } else {
+                                reportTypeIssue(msg, &call.variables[i]);
+                            }
+                            continue;
+                        }
+                    }
+                    // The checking direction (ADR-0042): the argument is
+                    // checked against the parameter, tail by tail, and a
+                    // lambda argument's body against the parameter's codomain.
+                    if (expected != BuiltinTypes::Value) {
+                        const CheckSite site{
+                            "argument " + std::to_string(i + 1) + " of '" +
+                                std::string(func_expr->type == ESHKOL_VAR ? func_expr->variable.id
+                                                                          : "<lambda>") +
+                                "'",
+                            true, false};
+                        const size_t reported = judgeTails(&call.variables[i], expected, site);
+                        eshkol_ast_t* arg = const_cast<eshkol_ast_t*>(&call.variables[i]);
+                        if (reported == 0 && arg->type == ESHKOL_OP &&
+                            arg->operation.op == ESHKOL_LAMBDA_OP) {
+                            (co_await checkLambdaAgainst(arg, expected, site));
                         }
                     }
                 }
@@ -3066,23 +3217,19 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
         // Function define: (define (name params...) body)
         // Handle like a lambda - bind parameters and check body
 
-        // First, collect parameter types (needed for recursive binding)
-        std::vector<TypeId> param_types;
-        for (size_t i = 0; i < def.num_params; i++) {
-            if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
-                def.parameters[i].variable.id) {
-                TypeId param_type = BuiltinTypes::Value;
-                if (def.param_types && def.param_types[i]) {
-                    param_type = resolveType(def.param_types[i]);
-                }
-                param_types.push_back(param_type);
-            }
-        }
+        // First, collect parameter types (needed for recursive binding): a
+        // telescope when the annotations use the dependent type language.
+        Signature sig = resolveSignature(def.parameters, def.num_params, def.param_types,
+                                         def.return_type, expr);
+        const std::vector<TypeId> param_types = sig.param_types;
 
         // For recursive functions: if we have a return type annotation,
         // pre-bind the function name with its declared type so recursive calls resolve
         TypeId declared_return = BuiltinTypes::Value;
-        if (def.return_type) {
+        if (sig.return_term) {
+            declared_return = env_.typeFromTerm(*sig.return_term);
+        } else if (def.return_type) {
+            ResolveSiteGuard site(*this, expr);
             declared_return = resolveType(def.return_type);
         }
         // Without a return annotation the result is inferred as the least
@@ -3099,8 +3246,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
         std::vector<TypeId> narrowed_param_types;
         std::vector<std::string> linear_params;
         for (size_t pass = 0;; ++pass) {
-            TypeId func_type = env_.makeFunctionType(param_types, recursion_result,
-                                                      def.is_variadic);
+            TypeId func_type = closeSignature(sig, recursion_result, def.is_variadic);
             ctx_.bind(def.name, func_type);
             const SpeculationMark mark = markSpeculation();
             if (infer_result) {
@@ -3110,20 +3256,10 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
             }
             linear_params.clear();
 
-            // Now push scope and bind parameters
+            // Now push scope and bind parameters (linear ones for use-once
+            // checking, and each parameter's index term)
             ctx_.pushScope();
-            for (size_t i = 0; i < def.num_params; i++) {
-                if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
-                    def.parameters[i].variable.id) {
-                    // Register linear parameters for use-once checking
-                    if (param_types[i].flags & TYPE_FLAG_LINEAR) {
-                        ctx_.bindLinear(def.parameters[i].variable.id, param_types[i]);
-                        linear_params.push_back(def.parameters[i].variable.id);
-                    } else {
-                        ctx_.bind(def.parameters[i].variable.id, param_types[i]);
-                    }
-                }
-            }
+            bindSignature(sig, def.parameters, def.num_params, def.value, linear_params);
 
             // Type check the body if present
             if (def.value) {
@@ -3166,24 +3302,52 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
         // Determine return type
         TypeId return_type = value_type.success ? value_type.inferred_type : BuiltinTypes::Value;
         if (def.return_type) {
-            TypeId annotated_return = resolveType(def.return_type);
+            const TypeId annotated_return = declared_return;
             // Check that the body type is consistent with the annotation: a
             // Value body is statically unknown and satisfies any annotation, as
             // a Value argument satisfies any parameter; a concrete body must be
-            // a subtype.
-            if (value_type.success &&
-                !TypeRelation(env_).isConsistentSubtype(value_type.inferred_type, annotated_return)) {
-                co_return errorAt(expr,
-                    "Function '" + std::string(def.name) + "' body type " +
-                    env_.getTypeName(value_type.inferred_type) +
-                    " doesn't match return annotation " + env_.getTypeName(annotated_return));
+            // a subtype. The checking direction then judges each tail of the
+            // body, which finds a branch that does not fit even when the join
+            // of the branches is Value.
+            const CheckSite site{"result of '" + eshkol_syntax_source_text(def.name) + "'",
+                                 false, false};
+            if (value_type.success) {
+                if (involvesDependentType(annotated_return) ||
+                    involvesDependentType(value_type.inferred_type)) {
+                    judgeTails(def.value, annotated_return, site);
+                } else if (!TypeRelation(env_).isConsistentSubtype(value_type.inferred_type,
+                                                                   annotated_return)) {
+                    co_return errorAt(expr,
+                        "Function '" + std::string(def.name) + "' body type " +
+                        env_.getTypeName(value_type.inferred_type) +
+                        " doesn't match return annotation " + env_.getTypeName(annotated_return));
+                } else {
+                    judgeTails(def.value, annotated_return, site);
+                }
             }
             return_type = annotated_return;
         }
 
         // Create function type with narrowed param types and inferred return type
-        TypeId final_func_type = env_.makeFunctionType(narrowed_param_types, return_type,
-                                                        def.is_variadic);
+        Signature final_sig = sig;
+        final_sig.param_types = narrowed_param_types;
+        TypeId final_func_type = closeSignature(final_sig, return_type, def.is_variadic);
+
+        // A declaration (: name type) is the contract the definition is
+        // checked against; callers then see the declared signature.
+        auto declared = declared_types_.find(def.name);
+        if (declared != declared_types_.end()) {
+            const TypeId want = declared->second;
+            declared_types_.erase(declared);
+            const CheckSite site{"definition of '" + eshkol_syntax_source_text(def.name) + "'",
+                                 false, false};
+            if (!TypeRelation(env_).isConsistentSubtype(final_func_type, want)) {
+                reportFlowFailure(expr, site.label, want, final_func_type);
+            } else {
+                (co_await checkDefineAgainst(expr, want, site));
+            }
+            final_func_type = want;
+        }
         value_type = TypeCheckResult::ok(final_func_type);
 
         // Re-bind function name with the full inferred type (overrides pre-binding)
@@ -3194,6 +3358,23 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
             value_type = (co_await synthesizeTask(def.value));
             if (!value_type.success) {
                 co_return value_type;
+            }
+        }
+        // A declaration (: name type): the value is checked against it, and
+        // a dependent declaration is the type later uses see.
+        auto declared = declared_types_.find(def.name);
+        if (declared != declared_types_.end() && def.value) {
+            const TypeId want = declared->second;
+            declared_types_.erase(declared);
+            const CheckSite site{"definition of '" + eshkol_syntax_source_text(def.name) + "'",
+                                 false, false};
+            judgeTails(def.value, want, site);
+            if (def.value->type == ESHKOL_OP && def.value->operation.op == ESHKOL_LAMBDA_OP &&
+                TypeRelation(env_).isConsistentSubtype(value_type.inferred_type, want)) {
+                (co_await checkLambdaAgainst(def.value, want, site));
+            }
+            if (involvesDependentType(want) || env_.getFunctionType(want)) {
+                value_type = TypeCheckResult::ok(want);
             }
         }
     }
@@ -3263,7 +3444,30 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
         // Get binding type from annotation or infer from value
         TypeId binding_type = BuiltinTypes::Value;
         if (let.binding_types && let.binding_types[i]) {
-            binding_type = resolveType(let.binding_types[i]);
+            {
+                ResolveSiteGuard site(*this, &binding);
+                binding_type = resolveType(let.binding_types[i]);
+            }
+            // The checking direction (ADR-0042): the initializer is checked
+            // against the annotation. It is synthesized for the judgment
+            // only -- the annotation is the binding's type, so the AST keeps
+            // what it held before an annotated initializer was checked.
+            if (binding.cons_cell.cdr) {
+                ++ast_write_suppressed_;
+                auto init = (co_await synthesizeTask(binding.cons_cell.cdr));
+                --ast_write_suppressed_;
+                if (init.success) {
+                    const CheckSite site{"binding '" + eshkol_syntax_source_text(name) + "'",
+                                         false, false};
+                    if (judgeTails(binding.cons_cell.cdr, binding_type, site) == 0 &&
+                        binding.cons_cell.cdr->type == ESHKOL_OP &&
+                        binding.cons_cell.cdr->operation.op == ESHKOL_LAMBDA_OP) {
+                        ++ast_write_suppressed_;
+                        (co_await checkLambdaAgainst(binding.cons_cell.cdr, binding_type, site));
+                        --ast_write_suppressed_;
+                    }
+                }
+            }
         } else if (binding.cons_cell.cdr) {
             // A letrec lambda may call itself; its result is inferred as the
             // least fixpoint over those calls (synthesizeRecursiveLambdaTask()).
@@ -3312,6 +3516,16 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
             linear_bindings.push_back({name, i});
         } else {
             ctx_.bind(name, binding_type);
+        }
+        // Its index term: a let-bound variable stands for its initializer's
+        // value in types while nothing assigns it. A named let's variables
+        // are loop parameters and take a new value on every iteration.
+        if (!let.name) {
+            bindStableTerm(name, expr,
+                           binding.cons_cell.cdr ? indexTermOf(binding.cons_cell.cdr)
+                                                 : std::nullopt);
+        } else {
+            ctx_.dropTerm(name);
         }
     }
 
@@ -4530,32 +4744,30 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeQuasiTemplateTask(eshko
 }
 
 /**
- * @brief Checking rule for lambda expressions (Γ ⊢ (lambda ...) ⇐ τ).
+ * @brief Check whether @p type is a function type, and if so extract the
+ * domain of its first parameter and its codomain.
  *
- * Currently a placeholder: rather than propagating @p expected's domain
- * types down into unannotated parameters, it simply defers entirely to the
- * synthesis rule synthesizeLambdaTask(). The @p expected parameter is unused.
- * @return Whatever synthesizeLambdaTask() returns for @p expr.
- */
-ContinuationTask<TypeCheckResult> TypeChecker::checkLambdaTask(eshkol_ast_t* expr, TypeId expected) {
-    // If expected is a function type, use its domain for param types
-    // For now, just synthesize
-    co_return (co_await synthesizeLambdaTask(expr));
-}
-
-/**
- * @brief Check whether @p type is a function type, and if so extract its domain/codomain.
- *
- * Currently simplified: only recognizes the single builtin
- * BuiltinTypes::Function marker and never populates @p domain/@p codomain
- * (both output parameters are unused placeholders for a future
- * parameterized function-type representation).
- * @return True if @p type.id equals BuiltinTypes::Function.id.
+ * A signature (legacy PiType) yields its first parameter (Value for a
+ * nullary signature) and its result; the generic Function type yields Value
+ * for both. A dependent Pi is a function type too; its components may
+ * mention its binders, so they are reported erased.
  */
 bool TypeChecker::isFunctionType(TypeId type, TypeId& domain, TypeId& codomain) const {
-    // Check if type is Function or a parameterized function type
-    // Simplified for now
-    return type.id == BuiltinTypes::Function.id;
+    if (const PiType* pi = env_.getFunctionType(type)) {
+        domain = pi->params.empty() ? BuiltinTypes::Value : pi->params[0].type;
+        codomain = pi->return_type;
+        return true;
+    }
+    if (type == BuiltinTypes::Function || type == BuiltinTypes::Closure) {
+        domain = BuiltinTypes::Value;
+        codomain = BuiltinTypes::Value;
+        return true;
+    }
+    if (env_.isTermType(type)) {
+        const TypeId erased = env_.erase(type);
+        if (env_.getFunctionType(erased)) return isFunctionType(erased, domain, codomain);
+    }
+    return false;
 }
 
 /**
@@ -4597,6 +4809,22 @@ bool TypeChecker::unify(TypeId a, TypeId b) {
  * type_expr, resolves to BuiltinTypes::Value.
  */
 TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
+    // An annotation in the dependent type language resolves to a core term
+    // (ADR-0042); every other annotation resolves exactly as it always has.
+    if (!usesDependentSyntax(type_expr)) return resolveNominalType(type_expr);
+    ResolveEnv env;
+    env.site = resolve_site_;
+    const TermRef term = resolveTerm(type_expr, env, TermPosition::Type);
+    if (term == kNoTerm) return BuiltinTypes::Value;
+    if (!env_.universeOf(env_.typeFromTerm(term))) {
+        reportObligation("ill-formed type: " + env_.printTerm(term) + " is not a type",
+                         resolve_site_);
+        return BuiltinTypes::Value;
+    }
+    return env_.typeFromTerm(term);
+}
+
+TypeId TypeChecker::resolveNominalType(const hott_type_expr_t* type_expr) {
     if (!type_expr) {
         return BuiltinTypes::Value;
     }
@@ -4767,8 +4995,29 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
         loc_msg += ")";
     }
 
-    emitDiagnostic((strict_types_ ? "[ERROR] Type error: " : "[WARN] Type warning: ") +
-                   loc_msg);
+    const std::string line =
+        (strict_types_ ? "[ERROR] Type error: " : "[WARN] Type warning: ") + loc_msg;
+    // A checking pass re-judges code synthesis already judged; it adds only
+    // findings that are new.
+    if (dedupe_depth_ > 0 && emitted_diagnostics_.count(eshkol_syntax_source_text(line))) return;
+    emitDiagnostic(line);
+    eshkol_diagnostic_emit_v1(strict_types_ ? ESHKOL_DIAGNOSTIC_ERROR : ESHKOL_DIAGNOSTIC_WARNING,
+                              node ? node->node_id : ESHKOL_NODE_ID_NONE, "E-TYPE", msg.c_str());
+    addError(msg, node ? node->line : 0, node ? node->column : 0);
+}
+
+void TypeChecker::reportObligation(const std::string& msg, const eshkol_ast_t* node) {
+    if (unsafe_mode_) return;
+
+    std::string loc_msg = msg;
+    appendLocation(loc_msg, node);
+    const std::string line = "[ERROR] Type error: " + loc_msg;
+    if (dedupe_depth_ > 0 && emitted_diagnostics_.count(eshkol_syntax_source_text(line))) return;
+    emitDiagnostic(line);
+    eshkol_diagnostic_emit_v1(ESHKOL_DIAGNOSTIC_ERROR,
+                              node ? node->node_id : ESHKOL_NODE_ID_NONE, "E-TYPE-DEPENDENT",
+                              msg.c_str());
+    obligation_violations_++;
     addError(msg, node ? node->line : 0, node ? node->column : 0);
 }
 
@@ -4784,6 +5033,7 @@ void TypeChecker::emitDiagnostic(const std::string& raw_line) {
     // Every checker diagnostic passes here (deferred ones included), so this
     // is where identifiers get their source spelling back (syntax_color.h).
     const std::string line = eshkol_syntax_source_text(raw_line);
+    emitted_diagnostics_.insert(line);
     if (speculation_depth_ > 0) {
         deferred_diagnostics_.push_back(line);
         return;
@@ -4805,6 +5055,14 @@ void TypeChecker::appendLocation(std::string& msg, const eshkol_ast_t* node) {
     msg += " (line " + std::to_string(node->line);
     if (node->column > 0 && node->column < 100000) {
         msg += ":" + std::to_string(node->column);
+        // The measured extent of the construct, when the reader recorded one.
+        eshkol_source_span_t span{};
+        if (node->node_id != ESHKOL_NODE_ID_NONE && eshkol_node_span_lookup(node->node_id, &span) &&
+            span.has_extent && span.start_line == node->line &&
+            span.start_column == node->column &&
+            (span.end_line != span.start_line || span.end_column != span.start_column)) {
+            msg += "-" + std::to_string(span.end_line) + ":" + std::to_string(span.end_column);
+        }
     }
     msg += ")";
 }
@@ -6070,6 +6328,932 @@ bool TypeChecker::isUnsafe() const {
 // Program-Level Type Checking
 // ============================================================================
 
+// ============================================================================
+// BIDIRECTIONAL CHECKING AND DEPENDENT TYPES (ADR-0042)
+// ============================================================================
+//
+// The checking judgment is synthesis followed by the tail rule: synthesis
+// records every node's precise type (record()), and a check against an
+// expected type judges each tail of the expression -- each branch, the last
+// expression of each body -- at that precise type (judgeTails()). The AST
+// keeps the erased codegen representation, and checking passes that bind
+// variables at types synthesis did not see (a lambda checked against an
+// expected signature) leave the AST untouched, so checking never changes
+// the code that is generated.
+//
+// Dependent types are core terms (type_term.h). Annotations that use the
+// dependent language are resolved by resolveTerm(): Pi and Sigma telescopes,
+// universes, family applications (a define-type family is expanded with its
+// arguments, delta and beta), and index terms over stable program variables.
+// A failed obligation of that fragment is reported by reportObligation(),
+// which is fatal in every mode except --unsafe.
+
+TypeCheckResult TypeChecker::record(eshkol_ast_t* expr, TypeCheckResult result) {
+    if (result.success && expr) {
+        precise_types_[expr] = result.inferred_type;
+        if (ast_write_suppressed_ == 0) return storeAndReturn(expr, result, &env_);
+    }
+    return result;
+}
+
+TypeId TypeChecker::preciseTypeOf(const eshkol_ast_t* expr) const {
+    auto it = precise_types_.find(expr);
+    if (it != precise_types_.end()) return it->second;
+    return BuiltinTypes::Value;
+}
+
+bool TypeChecker::involvesDependentType(TypeId t) const {
+    if (env_.isTermType(t)) return true;
+    if (const PiType* pi = env_.getFunctionType(t)) {
+        for (const auto& param : pi->params) {
+            if (env_.isTermType(param.type)) return true;
+        }
+        return env_.isTermType(pi->return_type);
+    }
+    if (auto elems = env_.getPairElementTypes(t)) {
+        return env_.isTermType(elems->first) || env_.isTermType(elems->second);
+    }
+    return false;
+}
+
+bool TypeChecker::flowAccepted(TypeId actual, TypeId expected, const CheckSite& site) const {
+    TypeRelation rel(env_);
+    if (site.cast) return rel.castable(actual, expected);
+    if (rel.isConsistentSubtype(actual, expected)) return true;
+    // Arguments: R7RS numbers convert, so a numeric value may fill any
+    // numeric slot (the rule synthesizeApplicationTask() applies to calls).
+    return site.numeric && isNumericType(env_, expected) && isNumericType(env_, actual);
+}
+
+void TypeChecker::reportFlowFailure(const eshkol_ast_t* node, const std::string& label,
+                                    TypeId expected, TypeId actual) {
+    const std::string msg = label + ": expected " + env_.getTypeName(expected) + ", got " +
+                            env_.getTypeName(actual);
+    if (involvesDependentType(expected) || involvesDependentType(actual)) {
+        reportObligation(msg, node);
+    } else {
+        reportTypeIssue(msg, node);
+    }
+}
+
+namespace {
+
+/** The callee name of a call, or empty. */
+std::string calleeName(const eshkol_ast_t* e) {
+    if (!e || e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return {};
+    const eshkol_ast_t* f = e->operation.call_op.func;
+    if (!f || f->type != ESHKOL_VAR || !f->variable.id) return {};
+    return eshkol_syntax_source_text(f->variable.id);
+}
+
+}  // namespace
+
+size_t TypeChecker::judgeTails(const eshkol_ast_t* expr, TypeId expected, const CheckSite& site) {
+    if (!expr || !expected.isValid() || expected == BuiltinTypes::Value) return 0;
+    if (expr->type == ESHKOL_OP) {
+        const auto& op = expr->operation;
+        const std::string callee = calleeName(expr);
+        if ((op.op == ESHKOL_IF_OP || callee == "if") && op.call_op.num_vars >= 2) {
+            size_t n = judgeTails(&op.call_op.variables[1], expected, site);
+            if (op.call_op.num_vars >= 3) n += judgeTails(&op.call_op.variables[2], expected, site);
+            return n;
+        }
+        if (callee == "begin" && op.call_op.num_vars > 0) {
+            return judgeTails(&op.call_op.variables[op.call_op.num_vars - 1], expected, site);
+        }
+        switch (op.op) {
+            case ESHKOL_SEQUENCE_OP:
+                if (op.sequence_op.num_expressions > 0 && op.sequence_op.expressions) {
+                    return judgeTails(&op.sequence_op.expressions[op.sequence_op.num_expressions - 1],
+                                      expected, site);
+                }
+                return 0;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                if (!op.let_op.name) return judgeTails(op.let_op.body, expected, site);
+                break;
+            case ESHKOL_COND_OP: {
+                size_t n = 0;
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                    const eshkol_ast_t* clause = &op.call_op.variables[i];
+                    if (clause->type != ESHKOL_OP || clause->operation.op != ESHKOL_CALL_OP) continue;
+                    const auto& cl = clause->operation.call_op;
+                    if (cl.num_vars == 0 || isArrowBody(cl.variables, cl.num_vars)) continue;
+                    n += judgeTails(&cl.variables[cl.num_vars - 1], expected, site);
+                }
+                return n;
+            }
+            case ESHKOL_CASE_OP: {
+                size_t n = 0;
+                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                    const eshkol_ast_t* clause = &op.call_op.variables[i];
+                    if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) continue;
+                    const eshkol_ast_t* body = clause->cons_cell.cdr;
+                    if (body->type == ESHKOL_OP && body->operation.op == ESHKOL_CALL_OP) {
+                        const auto& b = body->operation.call_op;
+                        if (b.num_vars == 0 || isArrowBody(b.variables, b.num_vars)) continue;
+                        n += judgeTails(&b.variables[b.num_vars - 1], expected, site);
+                    }
+                }
+                return n;
+            }
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+                if (op.call_op.num_vars >= 2) {
+                    return judgeTails(&op.call_op.variables[op.call_op.num_vars - 1], expected, site);
+                }
+                return 0;
+            default:
+                break;
+        }
+    }
+    return judgeLeaf(expr, expected, site);
+}
+
+size_t TypeChecker::judgeLeaf(const eshkol_ast_t* leaf, TypeId expected, const CheckSite& site) {
+    TermStore& terms = env_.terms();
+    const std::string callee = calleeName(leaf);
+    if (env_.isTermType(expected) && !callee.empty()) {
+        const TermNode want = terms.node(terms.normalize(env_.termOf(expected)));
+        const auto& call = leaf->operation.call_op;
+        // A vector literal against a length-indexed vector: the length is an
+        // obligation, each element is checked against the element type.
+        if (want.kind == TermKind::App && want.name == "vector" && want.args.size() == 2 &&
+            callee == "vector") {
+            size_t n = 0;
+            const TermEq length = terms.definitionallyEqual(
+                terms.intLit(static_cast<int64_t>(call.num_vars)), want.args[1]);
+            if (length == TermEq::Unequal) {
+                reportObligation(site.label + ": expected " + env_.getTypeName(expected) +
+                                     ", got a vector of " + std::to_string(call.num_vars) +
+                                     " element" + (call.num_vars == 1 ? "" : "s"),
+                                 leaf);
+                ++n;
+            }
+            const TypeId element = env_.typeFromTerm(want.args[0]);
+            for (uint64_t i = 0; i < call.num_vars; ++i) {
+                CheckSite element_site = site;
+                element_site.label = "element " + std::to_string(i + 1) + " of " + site.label;
+                n += judgeTails(&call.variables[i], element, element_site);
+            }
+            return n;
+        }
+        // A pair against a dependent pair: the second component is checked
+        // at the type its first component's value selects.
+        if (want.kind == TermKind::Sigma && callee == "cons" && call.num_vars == 2) {
+            CheckSite first_site = site;
+            first_site.label = "first component of " + site.label;
+            size_t n = judgeTails(&call.variables[0], env_.typeFromTerm(want.args[0]), first_site);
+            TermRef second = want.args[1];
+            CheckSite second_site = site;
+            second_site.label = "second component of " + site.label;
+            if (terms.mentionsBound(second, 0)) {
+                auto value = indexTermOf(&call.variables[0]);
+                if (!value) {
+                    // The first component is not a stable term: what the
+                    // second must be is not known statically.
+                    return n + judgeTails(&call.variables[1], env_.eraseTerm(second), second_site);
+                }
+                second = terms.instantiate(second, {*value});
+            } else {
+                second = terms.instantiate(second, {terms.intLit(0)});
+            }
+            return n + judgeTails(&call.variables[1], env_.typeFromTerm(second), second_site);
+        }
+    }
+    const TypeId actual = preciseTypeOf(leaf);
+    if (flowAccepted(actual, expected, site)) return 0;
+    reportFlowFailure(leaf, site.label, expected, actual);
+    return 1;
+}
+
+ContinuationTask<TypeCheckResult> TypeChecker::checkLambdaAgainst(eshkol_ast_t* expr,
+                                                                  TypeId expected,
+                                                                  const CheckSite& site) {
+    if (!expr || expr->type != ESHKOL_OP || expr->operation.op != ESHKOL_LAMBDA_OP) {
+        co_return TypeCheckResult::ok(expected);
+    }
+    const auto& lambda = expr->operation.lambda_op;
+    co_return (co_await checkAbstractionAgainst(lambda.parameters, lambda.num_params,
+                                                lambda.param_types, lambda.body, expected,
+                                                site, "the lambda"));
+}
+
+ContinuationTask<TypeCheckResult> TypeChecker::checkDefineAgainst(eshkol_ast_t* expr,
+                                                                  TypeId expected,
+                                                                  const CheckSite& site) {
+    const auto& def = expr->operation.define_op;
+    if (!def.is_function || !def.value) co_return TypeCheckResult::ok(expected);
+    co_return (co_await checkAbstractionAgainst(def.parameters, def.num_params, def.param_types,
+                                                def.value, expected, site,
+                                                "'" + eshkol_syntax_source_text(def.name) + "'"));
+}
+
+ContinuationTask<TypeCheckResult> TypeChecker::checkAbstractionAgainst(
+    const eshkol_ast_t* parameters, uint64_t num_params, hott_type_expr_t* const* annotations,
+    eshkol_ast_t* body_expr, TypeId expected, const CheckSite& site, std::string what) {
+    struct {
+        const eshkol_ast_t* parameters;
+        uint64_t num_params;
+        hott_type_expr_t* const* param_types;
+        eshkol_ast_t* body;
+    } lambda{parameters, num_params, annotations, body_expr};
+    TermStore& terms = env_.terms();
+
+    // The expected parameter types and result, with the parameters' own
+    // (rigid) terms substituted where the expected type is dependent.
+    std::vector<TypeId> domains;
+    std::vector<std::optional<TermRef>> param_terms;
+    TypeId codomain = BuiltinTypes::Value;
+    if (const PiType* pi = env_.getFunctionType(expected)) {
+        if (pi->is_variadic || pi->params.size() != lambda.num_params) {
+            co_return TypeCheckResult::ok(expected);
+        }
+        for (const auto& p : pi->params) domains.push_back(p.type);
+        param_terms.assign(domains.size(), std::nullopt);
+        codomain = pi->return_type;
+    } else if (env_.isTermType(expected)) {
+        TermRef t = terms.normalize(env_.termOf(expected));
+        TermNode node = terms.node(t);
+        if (node.kind == TermKind::Pi && (node.value & kPiImplicit)) {
+            // Checking against an index-polymorphic type: its index
+            // variables are rigid (any value) inside the lambda.
+            std::vector<TermRef> rigid;
+            for (size_t j = 0; j + 1 < node.args.size(); ++j) {
+                const std::string hint = j < node.hints.size() ? node.hints[j] : "n";
+                rigid.push_back(terms.freeVar(terms.freshStamp(), hint));
+            }
+            t = terms.normalize(terms.instantiate(node.args.back(), rigid));
+            node = terms.node(t);
+        }
+        if (node.kind != TermKind::Pi || (node.value & kPiVariadic) ||
+            node.args.size() - 1 != lambda.num_params) {
+            co_return TypeCheckResult::ok(expected);
+        }
+        std::vector<TermRef> values;
+        for (size_t i = 0; i + 1 < node.args.size(); ++i) {
+            const TermRef dom = terms.instantiate(node.args[i], values);
+            domains.push_back(env_.typeFromTerm(dom));
+            const std::string name = lambda.parameters[i].variable.id
+                                         ? lambda.parameters[i].variable.id : "x";
+            const TermRef own = terms.freeVar(terms.freshStamp(), name);
+            values.push_back(own);
+            param_terms.push_back(own);
+        }
+        codomain = env_.typeFromTerm(terms.instantiate(node.args.back(), values));
+    } else {
+        co_return TypeCheckResult::ok(expected);
+    }
+
+    ++ast_write_suppressed_;
+    ++dedupe_depth_;
+    ctx_.pushScope();
+    for (size_t i = 0; i < lambda.num_params; ++i) {
+        if (!lambda.parameters[i].variable.id) continue;
+        const std::string name = lambda.parameters[i].variable.id;
+        // A written annotation stays the parameter's type: the expected
+        // domain only supplies what the lambda left unsaid.
+        TypeId type = domains[i];
+        if (lambda.param_types && lambda.param_types[i]) type = resolveType(lambda.param_types[i]);
+        ctx_.bind(name, type);
+        if (param_terms[i]) ctx_.bindTerm(name, *param_terms[i]);
+    }
+    auto body = (co_await synthesizeTask(lambda.body));
+    if (body.success && codomain != BuiltinTypes::Value) {
+        CheckSite body_site = site;
+        body_site.label = "result of " + what + " in " + site.label;
+        body_site.numeric = false;
+        judgeTails(lambda.body, codomain, body_site);
+    }
+    ctx_.popScope();
+    --dedupe_depth_;
+    --ast_write_suppressed_;
+    co_return TypeCheckResult::ok(expected);
+}
+
+std::optional<TermRef> TypeChecker::indexTermOf(const eshkol_ast_t* expr) {
+    if (!expr) return std::nullopt;
+    TermStore& terms = env_.terms();
+    switch (expr->type) {
+        case ESHKOL_INT64:
+            return terms.intLit(expr->int64_val);
+        case ESHKOL_VAR: {
+            if (!expr->variable.id) return std::nullopt;
+            auto t = ctx_.lookupTerm(expr->variable.id);
+            if (!t) return std::nullopt;
+            const TermNode& n = terms.node(*t);
+            if (n.kind == TermKind::Free && assigned_stamps_.count(static_cast<uint64_t>(n.value))) {
+                return std::nullopt;
+            }
+            return t;
+        }
+        case ESHKOL_OP:
+            break;
+        default:
+            return std::nullopt;
+    }
+    const auto& op = expr->operation;
+    std::string head;
+    switch (op.op) {
+        case ESHKOL_ADD_OP: head = "+"; break;
+        case ESHKOL_SUB_OP: head = "-"; break;
+        case ESHKOL_MUL_OP: head = "*"; break;
+        case ESHKOL_CALL_OP: head = calleeName(expr); break;
+        default: return std::nullopt;
+    }
+    if (head.empty() || !op.call_op.variables) return std::nullopt;
+    std::vector<TermRef> args;
+    if (head == "+" || head == "-" || head == "*") {
+        for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+            auto a = indexTermOf(&op.call_op.variables[i]);
+            if (!a) return std::nullopt;
+            args.push_back(*a);
+        }
+        if (args.empty()) return std::nullopt;
+        return terms.normalize(terms.op(head, std::move(args)));
+    }
+    if ((head == "car" || head == "cdr") && op.call_op.num_vars == 1) {
+        auto a = indexTermOf(&op.call_op.variables[0]);
+        if (!a) return std::nullopt;
+        return terms.op(head, {*a});
+    }
+    if (head == "vector-length" && op.call_op.num_vars == 1) {
+        // The length of a length-indexed vector is its index.
+        const TypeId v = preciseTypeOf(&op.call_op.variables[0]);
+        if (!env_.isTermType(v)) return std::nullopt;
+        const TermNode n = terms.node(terms.normalize(env_.termOf(v)));
+        if (n.kind == TermKind::App && n.name == "vector" && n.args.size() == 2 &&
+            !terms.hasUnsolvedMetas(n.args[1])) {
+            return n.args[1];
+        }
+    }
+    return std::nullopt;
+}
+
+void TypeChecker::bindStableTerm(const std::string& name, const eshkol_ast_t* scope_body,
+                                 std::optional<TermRef> definition) {
+    TermStore& terms = env_.terms();
+    const uint64_t stamp = terms.freshStamp();
+    ctx_.bindTerm(name, terms.freeVar(stamp, name));
+    // The value is the definition only while nothing can assign it.
+    if (definition && !(scope_body && exprAssignsVar(scope_body, name))) {
+        terms.defineFree(stamp, *definition);
+    }
+}
+
+void TypeChecker::noteAssignment(const std::string& name, const eshkol_ast_t* site) {
+    auto t = ctx_.lookupTerm(name);
+    if (!t) return;
+    const TermNode& n = env_.terms().node(*t);
+    if (n.kind != TermKind::Free) return;
+    const uint64_t stamp = static_cast<uint64_t>(n.value);
+    assigned_stamps_.insert(stamp);
+    if (annotated_stamps_.count(stamp)) {
+        reportObligation("'" + eshkol_syntax_source_text(name) +
+                             "' occurs in a dependent type and cannot be assigned with set!",
+                         site);
+    }
+}
+
+bool TypeChecker::usesDependentSyntax(const hott_type_expr_t* e) const {
+    // Depth-bounded: an alias that refers to itself is reported where it is resolved.
+    std::vector<std::pair<const hott_type_expr_t*, int>> stack{{e, 0}};
+    while (!stack.empty()) {
+        auto [t, depth] = stack.back();
+        stack.pop_back();
+        if (!t || depth > 64) continue;
+        switch (t->kind) {
+            case HOTT_TYPE_DEPENDENT:
+            case HOTT_TYPE_SIGMA:
+            case HOTT_TYPE_APP:
+            case HOTT_TYPE_INDEX_LIT:
+            case HOTT_TYPE_INDEX_OP:
+            case HOTT_TYPE_UNIVERSE:
+                return true;
+            case HOTT_TYPE_VAR:
+                if (t->var_name) {
+                    if (auto alias = ctx_.lookupTypeAlias(t->var_name)) {
+                        stack.push_back({*alias, depth + 1});
+                    }
+                }
+                break;
+            case HOTT_TYPE_ARROW:
+                for (uint64_t i = 0; i < t->arrow.num_params; ++i) {
+                    stack.push_back({t->arrow.param_types[i], depth + 1});
+                }
+                stack.push_back({t->arrow.return_type, depth + 1});
+                break;
+            case HOTT_TYPE_LIST:
+            case HOTT_TYPE_VECTOR:
+            case HOTT_TYPE_TENSOR:
+            case HOTT_TYPE_POINTER:
+                stack.push_back({t->container.element_type, depth + 1});
+                break;
+            case HOTT_TYPE_PAIR:
+            case HOTT_TYPE_PRODUCT:
+                stack.push_back({t->pair.left, depth + 1});
+                stack.push_back({t->pair.right, depth + 1});
+                break;
+            case HOTT_TYPE_SUM:
+                stack.push_back({t->sum.left, depth + 1});
+                stack.push_back({t->sum.right, depth + 1});
+                break;
+            case HOTT_TYPE_FORALL:
+                stack.push_back({t->forall.body, depth + 1});
+                break;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
+TermRef TypeChecker::resolveTerm(const hott_type_expr_t* e, ResolveEnv& env, TermPosition pos) {
+    TermStore& terms = env_.terms();
+    const TermRef value_term = env_.termOf(BuiltinTypes::Value);
+    if (!e) return pos == TermPosition::Index ? kNoTerm : value_term;
+    auto fail = [&](const std::string& msg) -> TermRef {
+        reportObligation("ill-formed type: " + msg, env.site);
+        return kNoTerm;
+    };
+    auto spelled = [](const hott_type_expr_t* t) {
+        char* text = hott_type_to_string(t);
+        return std::string(text ? text : "?");
+    };
+
+    switch (e->kind) {
+        case HOTT_TYPE_INDEX_LIT:
+            if (pos == TermPosition::Type) {
+                return fail(std::to_string(e->index_value) + " is an index, not a type");
+            }
+            return terms.intLit(e->index_value);
+
+        case HOTT_TYPE_INDEX_OP:
+        case HOTT_TYPE_SUM:
+        case HOTT_TYPE_PRODUCT: {
+            // (+ a b) and (* a b) are sum and product types in a type
+            // position and index arithmetic in an index position; (- a b)
+            // is always arithmetic.
+            const bool arithmetic = e->kind == HOTT_TYPE_INDEX_OP || pos == TermPosition::Index ||
+                                    (pos == TermPosition::Either && [&] {
+                                        ResolveEnv probe = env;
+                                        return phraseIsIndex(e, probe);
+                                    }());
+            if (!arithmetic) break;  // a type former: resolved below
+            if (pos == TermPosition::Type) {
+                return fail(spelled(e) + " is index arithmetic, not a type");
+            }
+            std::string head;
+            std::vector<const hott_type_expr_t*> operands;
+            if (e->kind == HOTT_TYPE_INDEX_OP) {
+                head = e->app.head ? e->app.head : "-";
+                for (uint64_t i = 0; i < e->app.num_args; ++i) operands.push_back(e->app.args[i]);
+            } else if (e->kind == HOTT_TYPE_SUM) {
+                head = "+";
+                operands = {e->sum.left, e->sum.right};
+            } else {
+                head = "*";
+                operands = {e->pair.left, e->pair.right};
+            }
+            std::vector<TermRef> args;
+            for (const auto* operand : operands) {
+                const TermRef a = resolveTerm(operand, env, TermPosition::Index);
+                if (a == kNoTerm) return kNoTerm;
+                args.push_back(a);
+            }
+            return terms.normalize(terms.op(head, std::move(args)));
+        }
+
+        case HOTT_TYPE_VAR: {
+            if (!e->var_name) return value_term;
+            const std::string name = e->var_name;
+            // 1. A binder of an enclosing Pi/Sigma.
+            for (size_t k = env.binders.size(); k-- > 0;) {
+                if (env.binders[k] != name) continue;
+                return terms.bound(static_cast<uint32_t>(env.binders.size() - 1 - k));
+            }
+            // 2. A parameter of the family being expanded.
+            auto arg = env.args.find(name);
+            if (arg != env.args.end()) {
+                return terms.shift(arg->second.first,
+                                   static_cast<int64_t>(env.binders.size() - arg->second.second));
+            }
+            // 3. A stable program variable, in an index position.
+            if (pos != TermPosition::Type) {
+                if (auto t = ctx_.lookupTerm(name)) {
+                    const TermNode& n = terms.node(*t);
+                    if (n.kind == TermKind::Free) {
+                        const uint64_t stamp = static_cast<uint64_t>(n.value);
+                        if (assigned_stamps_.count(stamp)) {
+                            return fail("'" + eshkol_syntax_source_text(name) +
+                                        "' is assigned with set! and cannot occur in a type");
+                        }
+                        annotated_stamps_.insert(stamp);
+                    }
+                    return *t;
+                }
+                if (env.implicits) {
+                    for (const auto& [iname, stamp] : *env.implicits) {
+                        if (iname == name) return terms.freeVar(stamp, name);
+                    }
+                }
+            }
+            // 4. A type: an alias, a builtin name, or a type variable.
+            if (pos != TermPosition::Index) {
+                if (auto alias = ctx_.lookupTypeAlias(name)) {
+                    const auto& kinds = ctx_.getTypeAliasKinds(name);
+                    for (const auto* kind : kinds) {
+                        if (kind) {
+                            return fail("the family " + eshkol_syntax_source_text(name) +
+                                        " needs " + std::to_string(kinds.size()) + " argument" +
+                                        (kinds.size() == 1 ? "" : "s"));
+                        }
+                    }
+                    if (env.alias_depth > 64) {
+                        return fail("the type alias " + eshkol_syntax_source_text(name) +
+                                    " does not terminate");
+                    }
+                    ResolveEnv inner;
+                    inner.site = env.site;
+                    inner.alias_depth = env.alias_depth + 1;
+                    const TermRef body = resolveTerm(*alias, inner, TermPosition::Type);
+                    return body == kNoTerm ? kNoTerm
+                                           : terms.shift(body,
+                                                         static_cast<int64_t>(env.binders.size()));
+                }
+                if (auto builtin = env_.lookupType(name)) return env_.termOf(*builtin);
+                return value_term;  // a type variable: the gradual unknown, as before
+            }
+            // 5. An index variable nothing binds: an implicit binder of the
+            //    signature being resolved, or an error.
+            if (env.allow_implicit && env.implicits) {
+                const uint64_t stamp = terms.freshStamp();
+                env.implicits->push_back({name, stamp});
+                return terms.freeVar(stamp, name);
+            }
+            return fail("unknown index variable '" + eshkol_syntax_source_text(name) + "'");
+        }
+
+        case HOTT_TYPE_UNIVERSE:
+            if (pos == TermPosition::Index) return fail(spelled(e) + " is a type, not an index");
+            return terms.universe(e->universe.level);
+
+        case HOTT_TYPE_DEPENDENT:
+        case HOTT_TYPE_SIGMA: {
+            if (pos == TermPosition::Index) return fail(spelled(e) + " is a type, not an index");
+            const auto& dep = e->dependent;
+            std::vector<TermRef> domains;
+            std::vector<std::string> names;
+            const size_t before = env.binders.size();
+            bool ok = true;
+            for (uint64_t i = 0; i < dep.num_binders && ok; ++i) {
+                const TermRef dom = resolveTerm(dep.binder_types[i], env, TermPosition::Type);
+                if (dom == kNoTerm) {
+                    ok = false;
+                    break;
+                }
+                domains.push_back(dom);
+                names.push_back(dep.binder_names[i] ? dep.binder_names[i] : "_");
+                env.binders.push_back(names.back());
+            }
+            TermRef body = ok ? resolveTerm(dep.body, env, TermPosition::Type) : kNoTerm;
+            env.binders.resize(before);
+            if (body == kNoTerm) return kNoTerm;
+            if (e->kind == HOTT_TYPE_DEPENDENT) {
+                return terms.pi(std::move(domains), body, 0, std::move(names));
+            }
+            for (size_t i = domains.size(); i-- > 0;) body = terms.sigma(domains[i], body, names[i]);
+            return body;
+        }
+
+        case HOTT_TYPE_APP: {
+            if (pos == TermPosition::Index) return fail(spelled(e) + " is a type, not an index");
+            const std::string head = e->app.head ? e->app.head : "";
+            const auto& app = e->app;
+            if (head == "vector" && app.num_args == 2) {
+                const TermRef element = resolveTerm(app.args[0], env, TermPosition::Type);
+                const TermRef length = resolveTerm(app.args[1], env, TermPosition::Index);
+                if (element == kNoTerm || length == kNoTerm) return kNoTerm;
+                return terms.app("vector", {element, length});
+            }
+            if (ctx_.hasTypeAliasParams(head)) {
+                // A define-type family: check each argument against the
+                // parameter's declared sort, then expand the body with the
+                // arguments (delta and beta).
+                const auto& params = ctx_.getTypeAliasParams(head);
+                const auto& kinds = ctx_.getTypeAliasKinds(head);
+                if (app.num_args != params.size()) {
+                    return fail("the family " + eshkol_syntax_source_text(head) + " takes " +
+                                std::to_string(params.size()) + " argument" +
+                                (params.size() == 1 ? "" : "s") + ", found " +
+                                std::to_string(app.num_args));
+                }
+                if (env.alias_depth > 64) {
+                    return fail("the family " + eshkol_syntax_source_text(head) +
+                                " does not terminate");
+                }
+                ResolveEnv inner;
+                inner.site = env.site;
+                inner.alias_depth = env.alias_depth + 1;
+                for (size_t i = 0; i < params.size(); ++i) {
+                    const hott_type_expr_t* kind = i < kinds.size() ? kinds[i] : nullptr;
+                    TermRef arg = kNoTerm;
+                    if (!kind) {
+                        arg = resolveTerm(app.args[i], env, TermPosition::Either);
+                    } else {
+                        ResolveEnv kind_env;
+                        kind_env.site = env.site;
+                        const TermRef sort = resolveTerm(kind, kind_env, TermPosition::Type);
+                        if (sort == kNoTerm) return kNoTerm;
+                        const TermNode sn = terms.node(terms.normalize(sort));
+                        if (sn.kind == TermKind::Universe) {
+                            arg = resolveTerm(app.args[i], env, TermPosition::Type);
+                            if (arg == kNoTerm) return kNoTerm;
+                            const TypeId arg_type = env_.typeFromTerm(arg);
+                            const auto level = terms.hasLooseBound(arg)
+                                                   ? std::optional<uint32_t>(0)
+                                                   : env_.universeOf(arg_type);
+                            if (!level || *level > static_cast<uint32_t>(sn.value)) {
+                                return fail(
+                                    "universe inconsistency: argument " + std::to_string(i + 1) +
+                                    " of " + eshkol_syntax_source_text(head) + ", " +
+                                    env_.printTerm(arg) +
+                                    (level ? ", lives in (universe " + std::to_string(*level) + ")"
+                                           : ", is not a type") +
+                                    ", but parameter " + eshkol_syntax_source_text(params[i]) +
+                                    " ranges over (universe " + std::to_string(sn.value) + ")");
+                            }
+                        } else {
+                            arg = resolveTerm(app.args[i], env, TermPosition::Index);
+                        }
+                    }
+                    if (arg == kNoTerm) return kNoTerm;
+                    // The inner environment starts with no binders, so the
+                    // argument is recorded at depth 0 and shifted under any
+                    // binder the body introduces.
+                    inner.args[params[i]] = {arg, 0};
+                }
+                const auto alias = ctx_.lookupTypeAlias(head);
+                if (!alias) return value_term;
+                const TermRef body = resolveTerm(*alias, inner, TermPosition::Type);
+                return body;
+            }
+            // A builtin type name or an alias without parameters applied to
+            // arguments: the arguments are documentation, as they always
+            // were (HashTable string integer is a HashTable).
+            hott_type_expr_t head_var{};
+            head_var.kind = HOTT_TYPE_VAR;
+            head_var.var_name = const_cast<char*>(head.c_str());
+            return resolveTerm(&head_var, env, TermPosition::Type);
+        }
+
+        case HOTT_TYPE_ARROW: {
+            if (pos == TermPosition::Index) return fail(spelled(e) + " is a type, not an index");
+            const auto& arrow = e->arrow;
+            std::vector<TermRef> domains;
+            for (uint64_t i = 0; i < arrow.num_params; ++i) {
+                const TermRef d = resolveTerm(arrow.param_types ? arrow.param_types[i] : nullptr, env,
+                                              TermPosition::Type);
+                if (d == kNoTerm) return kNoTerm;
+                // A non-dependent arrow: domain i sits under i binders it
+                // does not mention.
+                domains.push_back(terms.shift(d, static_cast<int64_t>(i)));
+            }
+            const TermRef ret = resolveTerm(arrow.return_type, env, TermPosition::Type);
+            if (ret == kNoTerm) return kNoTerm;
+            return terms.pi(std::move(domains),
+                            terms.shift(ret, static_cast<int64_t>(arrow.num_params)), 0);
+        }
+
+        default:
+            break;
+    }
+
+    // Every other form: an index position cannot hold it.
+    if (pos == TermPosition::Index) return fail(spelled(e) + " is a type, not an index");
+    // Sum types keep their arms' dependent precision; the remaining formers
+    // resolve as they always have (element types of list/vector/tensor are
+    // not tracked, products are pairs).
+    if (e->kind == HOTT_TYPE_SUM) {
+        const TermRef l = resolveTerm(e->sum.left, env, TermPosition::Type);
+        const TermRef r = resolveTerm(e->sum.right, env, TermPosition::Type);
+        if (l == kNoTerm || r == kNoTerm) return kNoTerm;
+        if (terms.hasLooseBound(l) || terms.hasLooseBound(r)) return value_term;
+        return env_.termOf(env_.makeSumType({env_.typeFromTerm(l), env_.typeFromTerm(r)}));
+    }
+    if (e->kind == HOTT_TYPE_FORALL) return resolveTerm(e->forall.body, env, TermPosition::Type);
+    return env_.termOf(resolveNominalType(e));
+}
+
+bool TypeChecker::phraseIsIndex(const hott_type_expr_t* e, ResolveEnv& env) {
+    if (!e) return false;
+    switch (e->kind) {
+        case HOTT_TYPE_INDEX_LIT:
+        case HOTT_TYPE_INDEX_OP:
+            return true;
+        case HOTT_TYPE_SUM:
+            return phraseIsIndex(e->sum.left, env) || phraseIsIndex(e->sum.right, env);
+        case HOTT_TYPE_PRODUCT:
+            return phraseIsIndex(e->pair.left, env) || phraseIsIndex(e->pair.right, env);
+        case HOTT_TYPE_VAR: {
+            if (!e->var_name) return false;
+            const std::string name = e->var_name;
+            TermStore& terms = env_.terms();
+            auto arg = env.args.find(name);
+            if (arg != env.args.end()) return terms.isIndexTerm(terms.normalize(arg->second.first));
+            if (ctx_.lookupTerm(name)) return true;
+            if (env.implicits) {
+                for (const auto& entry : *env.implicits) {
+                    if (entry.first == name) return true;
+                }
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
+TypeChecker::Signature TypeChecker::resolveSignature(const eshkol_ast_t* params, uint64_t num_params,
+                                                     hott_type_expr_t* const* param_types,
+                                                     const hott_type_expr_t* return_type,
+                                                     const eshkol_ast_t* site) {
+    Signature sig;
+    bool dependent = usesDependentSyntax(return_type);
+    for (uint64_t i = 0; i < num_params && !dependent; ++i) {
+        dependent = param_types && usesDependentSyntax(param_types[i]);
+    }
+    sig.dependent = dependent;
+    if (!dependent) {
+        for (uint64_t i = 0; i < num_params; ++i) {
+            if (!params || params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
+            sig.param_types.push_back(param_types && param_types[i] ? resolveType(param_types[i])
+                                                                    : BuiltinTypes::Value);
+        }
+        return sig;
+    }
+
+    // A telescope: each parameter's annotation is resolved where the earlier
+    // parameters are bound as program variables.
+    TermStore& terms = env_.terms();
+    ResolveEnv env;
+    env.allow_implicit = true;
+    env.implicits = &sig.implicits;
+    env.site = site;
+    ctx_.pushScope();
+    for (uint64_t i = 0; i < num_params; ++i) {
+        if (!params || params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
+        const std::string name = params[i].variable.id;
+        TermRef dom = param_types && param_types[i]
+                          ? resolveTerm(param_types[i], env, TermPosition::Type)
+                          : env_.termOf(BuiltinTypes::Value);
+        if (dom == kNoTerm) dom = env_.termOf(BuiltinTypes::Value);
+        const TypeId type = env_.typeFromTerm(dom);
+        sig.param_types.push_back(type);
+        const uint64_t stamp = terms.freshStamp();
+        const TermRef own = terms.freeVar(stamp, name);
+        sig.stamps.push_back(stamp);
+        sig.param_terms.push_back(own);
+        ctx_.bind(name, type);
+        ctx_.bindTerm(name, own);
+    }
+    if (return_type) {
+        const TermRef ret = resolveTerm(return_type, env, TermPosition::Type);
+        if (ret != kNoTerm) sig.return_term = ret;
+    }
+    ctx_.popScope();
+    return sig;
+}
+
+TypeId TypeChecker::closeSignature(const Signature& sig, TypeId result_inner, bool variadic) {
+    if (!sig.dependent) return env_.makeFunctionType(sig.param_types, result_inner, variadic);
+    TermStore& terms = env_.terms();
+    std::vector<uint64_t> scope;
+    std::vector<std::string> implicit_names;
+    for (const auto& [name, stamp] : sig.implicits) {
+        scope.push_back(stamp);
+        implicit_names.push_back(name);
+    }
+    std::vector<TermRef> domains;
+    std::vector<std::string> names;
+    for (size_t i = 0; i < sig.param_types.size(); ++i) {
+        domains.push_back(terms.abstractFrees(env_.termOf(sig.param_types[i]), scope));
+        if (i < sig.param_terms.size() && sig.param_terms[i]) {
+            names.push_back(terms.node(*sig.param_terms[i]).name);
+        } else {
+            names.push_back("x");
+        }
+        if (i < sig.stamps.size()) scope.push_back(sig.stamps[i]);
+    }
+    const TermRef body = terms.abstractFrees(env_.termOf(result_inner), scope);
+    TermRef fn = terms.pi(std::move(domains), body, variadic ? kPiVariadic : 0, std::move(names));
+    if (!sig.implicits.empty()) {
+        std::vector<TermRef> index_domains(sig.implicits.size(),
+                                           env_.termOf(BuiltinTypes::Int64));
+        fn = terms.pi(std::move(index_domains), fn, kPiImplicit, std::move(implicit_names));
+    }
+    return env_.typeFromTerm(fn);
+}
+
+void TypeChecker::bindSignature(const Signature& sig, const eshkol_ast_t* params,
+                                uint64_t num_params, const eshkol_ast_t* body,
+                                std::vector<std::string>& linear_params) {
+    TermStore& terms = env_.terms();
+    for (const auto& [name, stamp] : sig.implicits) {
+        // An implicit index variable is type-level only: it has a term but
+        // no runtime binding.
+        ctx_.bindTerm(name, terms.freeVar(stamp, name));
+    }
+    size_t k = 0;
+    for (uint64_t i = 0; i < num_params; ++i) {
+        if (!params || params[i].type != ESHKOL_VAR || !params[i].variable.id) continue;
+        const std::string name = params[i].variable.id;
+        const TypeId type = k < sig.param_types.size() ? sig.param_types[k] : BuiltinTypes::Value;
+        if (type.flags & TYPE_FLAG_LINEAR) {
+            ctx_.bindLinear(name, type);
+            linear_params.push_back(name);
+        } else {
+            ctx_.bind(name, type);
+        }
+        if (sig.dependent && k < sig.param_terms.size() && sig.param_terms[k]) {
+            ctx_.bindTerm(name, *sig.param_terms[k]);
+        } else {
+            bindStableTerm(name, body, std::nullopt);
+        }
+        ++k;
+    }
+}
+
+TypeId TypeChecker::applyDependent(TypeId callee, const eshkol_ast_t* expr,
+                                   const std::vector<TypeCheckResult>& arg_types,
+                                   const std::string& callee_name) {
+    TermStore& terms = env_.terms();
+    TypeRelation rel(env_);
+    TermRef t = terms.normalize(env_.termOf(callee));
+    TermNode node = terms.node(t);
+    if (node.kind == TermKind::Pi && (node.value & kPiImplicit)) {
+        // Implicit index binders become metavariables the arguments solve.
+        std::vector<TermRef> metas;
+        for (size_t j = 0; j + 1 < node.args.size(); ++j) metas.push_back(terms.freshMeta());
+        t = terms.normalize(terms.instantiate(node.args.back(), metas));
+        node = terms.node(t);
+    }
+    if (node.kind != TermKind::Pi) return env_.eraseTerm(t);
+
+    const auto& call = expr->operation.call_op;
+    const size_t count = node.args.size() - 1;
+    const bool variadic = (node.value & kPiVariadic) != 0;
+    if ((!variadic && call.num_vars != count) || (variadic && call.num_vars + 1 < count)) {
+        reportObligation("'" + callee_name + "' expects " + std::to_string(count) + " argument" +
+                             (count == 1 ? "" : "s") + ", got " + std::to_string(call.num_vars),
+                         expr);
+    }
+    const auto leaf = [this, &terms, &rel](uint32_t x, uint32_t y) {
+        return rel.accepts(env_.typeFromTerm(terms.constant(x)),
+                           env_.typeFromTerm(terms.constant(y)))
+                   ? TermEq::Equal
+                   : TermEq::Unequal;
+    };
+
+    std::vector<TermRef> values;
+    const size_t n = std::min<size_t>(count, call.num_vars);
+    for (size_t i = 0; i < n; ++i) {
+        const TermRef dom = terms.normalize(terms.instantiate(node.args[i], values));
+        const TypeId actual = arg_types[i].success ? arg_types[i].inferred_type : BuiltinTypes::Value;
+        const std::string label = "argument " + std::to_string(i + 1) + " of '" + callee_name + "'";
+        const eshkol_ast_t* arg = &call.variables[i];
+        if (!terms.hasUnsolvedMetas(dom)) {
+            // A closed domain: the ordinary flow judgment and its tails.
+            const TypeId expected = env_.typeFromTerm(dom);
+            if (!flowAccepted(actual, expected, CheckSite{label, true, false})) {
+                reportFlowFailure(arg, label, expected, actual);
+            } else {
+                judgeTails(arg, expected, CheckSite{label, true, false});
+            }
+        } else if (env_.isTermType(actual)) {
+            // The domain mentions an index the call has not fixed yet:
+            // unification fixes it from this argument.
+            if (terms.unify(env_.termOf(actual), dom, leaf, /*solve=*/true) == TermEq::Unequal) {
+                reportObligation(label + ": expected " + env_.printTerm(terms.normalize(dom)) +
+                                     ", got " + env_.getTypeName(actual),
+                                 arg);
+            }
+        } else if (!rel.isConsistentSubtype(actual, env_.eraseTerm(dom))) {
+            reportObligation(label + ": expected " + env_.printTerm(terms.normalize(dom)) +
+                                 ", got " + env_.getTypeName(actual),
+                             arg);
+        }
+        auto value = indexTermOf(arg);
+        values.push_back(value ? *value : terms.freshMeta());
+    }
+    while (values.size() < count) values.push_back(terms.freshMeta());
+    const TermRef result = terms.normalize(terms.instantiate(node.args.back(), values));
+    if (terms.hasUnsolvedMetas(result)) return env_.eraseTerm(result);
+    return env_.typeFromTerm(result);
+}
+
 /**
  * @brief Type check a complete program: synthesize the type of every
  * top-level AST in @p asts.
@@ -6094,7 +7278,7 @@ std::vector<TypeCheckResult> typeCheckProgram(
     size_t num_asts,
     bool strict) {
 
-    TypeChecker checker(env);
+    TypeChecker checker(env, strict);
 
     for (size_t i = 0; i < num_asts; i++) {
         auto result = checker.synthesize(&asts[i]);
