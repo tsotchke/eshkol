@@ -49,7 +49,7 @@ nLab "Lawvere theory").
 
 ### 1. One representation of theories, terms and models
 
-`core.theory.equational` (no dependencies) represents:
+`core.theory.equational` (on `core.ring`) represents:
 
 - a **signature** as a list of `(operation arity)`; operation names are any
   data compared with `equal?`, so parameterised families (the scalars
@@ -60,20 +60,30 @@ nLab "Lawvere theory").
 - a **model** as a carrier given by its operations, its equality, and, when
   finite, the list of its canonical elements.
 
-### 2. One law check, which core.ring's law gate uses
+### 2. One law check: core.ring's, generalised
 
-The law check evaluates every equation under every assignment of the samples
+The law check evaluates every law under every assignment of the samples
 (every element of a finite model), extending assignments one variable at a
-time and checking at each prefix the equations with exactly that many
-variables. A violation is `(law value ...)`. This is the loop `core.ring`'s
-`ring-law-violations` ran, generalised: `commutative-ring-theory` lists the
-eight ring laws in the gate's order, `ring-carrier->model` (in `core.ring`)
-presents any carrier as a model of it, and `ring-law-violations` now checks
-the ring laws by this law check and keeps only the carrier protocol's own
+time and checking at each prefix the laws with exactly that many variables.
+A violation is `(law value ...)`. This is the loop `core.ring`'s
+`ring-law-violations` ran, made generic and kept in `core.ring`:
+`law-violations` takes an operation lookup, an arity lookup, an equality, a
+list of `(name lhs rhs)` laws and the samples, and `law-term->procedure`
+compiles a term. The ring laws became the data `ring-law-equations`, which
+`ring-law-violations` checks with it, followed by the carrier protocol's own
 checks (the unit group, `from-integer` as a ring map, the characteristic).
-Carriers, their descriptors and every call site are unchanged; the ring
-suites print the same output. Ring carriers became models through an
+`core.theory.equational` requires `core.ring`, checks every theory's laws with
+the same procedure, and takes `commutative-ring-theory`'s laws from
+`ring-law-equations`; `ring-carrier->model` presents any carrier as a model of
+that theory. Carriers, descriptors and every call site are unchanged and the
+ring suites print the same output: ring carriers became models through an
 adapter, not a rewrite.
+
+The engine stays in `core.ring` rather than in `core.theory` because every
+`core.ring` user, including the algebraic AD libraries on the bytecode VM,
+loads it: the bytecode VM reserves a bounded number of forward-declared
+procedure slots for a whole program, so the engine adds a handful of
+procedures to that closure instead of the whole theory library.
 
 ### 3. Constructions on finite models
 

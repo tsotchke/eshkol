@@ -44,7 +44,7 @@ morphisms n -> m are m-tuples of terms in n variables.
 
 `core.theory` is not part of `(require stdlib)`. Its parts can be required
 alone: `core.theory.equational` (theories, models, laws, constructions;
-no dependencies), `core.theory.free` (free models and the word problem),
+it loads `core.ring`), `core.theory.free` (free models and the word problem),
 `core.theory.finite` (finite models), `core.theory.lawvere` (the Lawvere
 category and interpretations), and `core.theory.topos` (the truth values of a
 `core.topos` topos as a Heyting algebra; it loads `core.topos`, so the
@@ -125,11 +125,13 @@ prefix, checks the equations with exactly that many variables. A violation is
 Every `core.ring` carrier is a model of `commutative-ring-theory`:
 `(ring-carrier->model R [elements])` takes the carrier's own `zero one add neg
 mul` and `equal?`; the model of `Z/m` lists its m elements when m <= 4096
-(a larger one is checked on samples, like an infinite carrier). `core.ring`'s
-`ring-law-violations` checks the ring laws as the equations of
-`commutative-ring-theory` on that model, and adds the carrier protocol's own
-checks (the unit group, `from-integer` as a ring map, the characteristic).
-Carriers, their operations and every call site of `core.ring` are unchanged.
+(a larger one is checked on samples, like an infinite carrier). The law check
+of this library is `core.ring`'s (`law-violations`, `law-term->procedure`),
+and the laws of `commutative-ring-theory` are `core.ring`'s
+`ring-law-equations`, the laws its `ring-law-violations` checks before the
+carrier protocol's own checks (the unit group, `from-integer` as a ring map,
+the characteristic). Carriers, their operations and every call site of
+`core.ring` are unchanged.
 
 ```scheme
 (require core.ring)

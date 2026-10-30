@@ -8,6 +8,7 @@ sources:
   - lib/core/algebraic_domain.esk
   - tests/stdlib/ring_test.esk
   - tests/stdlib/ring_ieee_test.esk
+  - lib/core/theory/equational.esk
 ---
 
 # `core.ring` — ring carriers
@@ -368,6 +369,27 @@ is guarded by its `unit?`, so a non-unit is refused by name.
   'zero 0 'one 1 'add (lambda (a b) (- a b)) 'neg (lambda (a) (- a)) 'mul *
   'from-integer (lambda (n) n) 'equal? = 'unit? (lambda (a) (= (abs a) 1)) 'inverse (lambda (a) a)))
 (display (car (ring-law-violations bad '(1 2 3)))) ;; => (additive-inverse 1)
+```
+
+The ring laws checked here are `ring-law-equations`, a list of
+`(name lhs rhs)` laws over the operation symbols `zero one add neg mul`, and
+the check is `(law-violations op-of arity-of same laws samples)`: every law
+under every assignment of the samples, extended one variable at a time, with
+the laws of each number of variables checked at that prefix; `op-of` gives an
+operation's procedure (its value at arity 0) and `arity-of` its arity.
+`(law-term->procedure op-of arity-of term vars)` compiles one term to a
+procedure of a vector of values. [`core.theory`](theory.md) checks the laws of
+every algebraic theory with them.
+
+```scheme
+(require core.ring)
+(define Z4 (make-zmod 4))
+(define (op-of op) (ring-ref Z4 op))
+(define (arity-of op) (cdr (assq op '((zero . 0) (one . 0) (add . 2) (neg . 1) (mul . 2)))))
+(display (law-violations op-of arity-of (lambda (a b) (= a b)) ring-law-equations '(0 1 2 3))) ;; => ()
+(newline)
+;; x * x = x fails at 2 and 3 in Z/4
+(display (law-violations op-of arity-of (lambda (a b) (= a b)) (list (list 'idempotent '(mul x x) 'x)) '(0 1 2 3))) ;; => ((idempotent 2) (idempotent 3))
 ```
 
 `make-family-carrier` builds a carrier of a registered family (core.algebraic_domain

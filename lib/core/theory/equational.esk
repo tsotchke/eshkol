@@ -2,10 +2,11 @@
 ;;; equational laws, models, law checks, homomorphisms, products,
 ;;; congruences, quotients, interpretations and finite coalgebras.
 ;;;
-;;; ADR-0039 (docs/design/adr/0039-lawvere-theories.md). This module has no
-;;; dependencies, so that core.ring can check its ring laws with it: a ring
-;;; carrier is a model of `commutative-ring-theory`, and `ring-law-violations`
-;;; is the law check below applied to that model.
+;;; ADR-0039 (docs/design/adr/0039-lawvere-theories.md). It generalises
+;;; core.ring's law gate: the law check and term compiler are core.ring's
+;;; (law-violations, law-term->procedure), the laws of commutative-ring-theory
+;;; are core.ring's ring-law-equations, and (ring-carrier->model R) makes any
+;;; ring carrier a model of that theory, with no change to the carrier.
 ;;;
 ;;; A SIGNATURE is a list of operation symbols with arities, ((mul 2) (one 0)
 ;;; (inv 1)). An operation name is any datum compared with equal?, so a
@@ -40,6 +41,8 @@
 ;;; "Universal coalgebra: a theory of systems", Theoret. Comput. Sci. 249
 ;;; (2000); nLab, "Lawvere theory".
 
+(require core.ring)
+
 (provide
   ;; signatures and terms
   make-signature signature? signature-operations signature-arity
@@ -56,7 +59,7 @@
   ;; models
   make-model model? model-theory model-name model-elements model-finite?
   model-size model-operation model-equal? model-member? model-extra model-ref
-  model-evaluate term->procedure
+  model-evaluate term->procedure ring-carrier->model
   ;; laws
   equations-violations model-law-violations model-satisfies?
   ;; homomorphisms
@@ -228,16 +231,6 @@
 ;; Within each theory the equations are listed by number of variables, so
 ;; the law check reports them in the order it meets them.
 
-(define th-ring-equations
-  ;; the order of core.ring's law gate: one variable, two, three
-  (list (list 'additive-identity '(add x (zero)) 'x)
-        (list 'multiplicative-identity '(mul x (one)) 'x)
-        (list 'additive-inverse '(add x (neg x)) '(zero))
-        (list 'additive-commutativity '(add x y) '(add y x))
-        (list 'multiplicative-commutativity '(mul x y) '(mul y x))
-        (list 'additive-associativity '(add (add x y) z) '(add x (add y z)))
-        (list 'multiplicative-associativity '(mul (mul x y) z) '(mul x (mul y z)))
-        (list 'distributivity '(mul x (add y z)) '(add (mul x y) (mul x z)))))
 (define th-ring-signature '((zero 0) (one 0) (add 2) (neg 1) (mul 2)))
 
 (define semigroup-theory
@@ -278,7 +271,7 @@
                      (list 'right-distributivity '(mul (add x y) z) '(add (mul x z) (mul y z))))
                'ring))
 (define commutative-ring-theory
-  (make-theory "commutative rings" th-ring-signature th-ring-equations 'commutative-ring))
+  (make-theory "commutative rings" th-ring-signature ring-law-equations 'commutative-ring))
 
 (define th-lattice-equations
   (list (list 'meet-commutativity '(meet x y) '(meet y x))
@@ -392,32 +385,35 @@
 
 ;; A term compiled against a model: (term->procedure M t vars) is a
 ;; procedure of one vector holding the values of vars, in order.
-(define (term->procedure M t vars) (th-compile M (model-theory M) vars t))
-(define (th-variable-position vars t)
-  (let find ((vs vars) (i 0))
-    (cond ((null? vs) (th-refuse 'theory-ill-formed-term 'term->procedure t))
-          ((eq? (car vs) t) i)
-          (else (find (cdr vs) (+ i 1))))))
-(define (th-compile-list M T vars ts)
-  (if (null? ts) '() (cons (th-compile M T vars (car ts)) (th-compile-list M T vars (cdr ts)))))
-(define (th-apply-all args env) (if (null? args) '() (cons ((car args) env) (th-apply-all (cdr args) env))))
-(define (th-compile M T vars t)
-  (cond
-    ((symbol? t) (let ((i (th-variable-position vars t))) (lambda (env) (vector-ref env i))))
-    ((pair? t)
-     (let ((n (theory-arity T (car t))) (f (model-operation M (car t))))
-       (if (not (and n (list? (cdr t)) (= n (length (cdr t))))) (th-refuse 'theory-ill-formed-term 'term->procedure t))
-       (let ((args (th-compile-list M T vars (cdr t))))
-         (cond ((= n 0) (lambda (env) f))
-               ((= n 1) (let ((a (car args))) (lambda (env) (f (a env)))))
-               ((= n 2) (let ((a (car args)) (b (cadr args))) (lambda (env) (f (a env) (b env)))))
-               (else (lambda (env) (apply f (th-apply-all args env))))))))
-    (else (th-refuse 'theory-ill-formed-term 'term->procedure t))))
+(define (term->procedure M t vars)
+  (let ((T (model-theory M)))
+    (if (not (and (well-formed-term? T t) (th-all? (lambda (v) (memq v vars)) (term-variables t))))
+        (th-refuse 'theory-ill-formed-term 'term->procedure t))
+    (law-term->procedure (lambda (op) (model-operation M op)) (lambda (op) (theory-arity T op)) t vars)))
 
 ;; The value of t in M under env, an alist variable -> element.
 (define (model-evaluate M t env)
   (let ((vars (map (lambda (x) (car x)) env)))
     ((term->procedure M t vars) (list->vector (map (lambda (x) (cdr x)) env)))))
+
+;; A core.ring carrier as a model of commutative-ring-theory: the
+;; descriptor's own zero, one, add, neg, mul and equal?. The model of Z/m
+;; lists its m elements when m <= 4096 (a larger one is checked on samples,
+;; like an infinite carrier); any other carrier lists elements only when
+;; they are given.
+(define (ring-carrier->model R . elements)
+  (if (not (ring-carrier? R)) (error "ring-carrier->model: expected a ring carrier" R))
+  (make-model commutative-ring-theory (ring-carrier-name R)
+              'operations (list (cons 'zero (ring-ref R 'zero)) (cons 'one (ring-ref R 'one))
+                                (cons 'add (ring-ref R 'add)) (cons 'neg (ring-ref R 'neg))
+                                (cons 'mul (ring-ref R 'mul)))
+              'elements (cond ((pair? elements) (car elements))
+                              ((and (eq? (ring-carrier-family R) 'zmod) (<= (car (ring-carrier-parameters R)) 4096))
+                               (iota (car (ring-carrier-parameters R))))
+                              (else #f))
+              'equal? (ring-ref R 'equal?)
+              'member? (ring-ref R 'member?)
+              'extra (list (cons 'ring-carrier R))))
 
 ;; ===========================================================================
 ;; The law check
@@ -428,37 +424,17 @@
         ((model-finite? M) (model-elements M))
         (else (th-refuse 'theory-infinite-model who (model-name M)))))
 
-;; The violations of equations in M over every assignment of samples.
+;; The violations of equations in M over every assignment of samples:
+;; core.ring's law check on M's operations and equality.
 (define (equations-violations M equations samples)
-  (let* ((same (vector-ref M 5))
-         (compiled (map (lambda (e)
-                          (let ((vs (equation-variables e)))
-                            (list (length vs) (equation-name e)
-                                  (term->procedure M (equation-lhs e) vs)
-                                  (term->procedure M (equation-rhs e) vs))))
-                        equations))
-         (depth (fold-left (lambda (m c) (max m (car c))) 0 compiled))
-         (buckets (list->vector (map (lambda (k) (filter (lambda (c) (= (car c) k)) compiled)) (th-range (+ depth 1)))))
-         (env (make-vector depth #f))
-         (bad (vector '())))
-    (th-assign! same buckets env bad samples 0 depth)
-    (reverse (vector-ref bad 0))))
-;; Check the equations of bucket k at the prefix env[0..k), then extend it.
-(define (th-assign! same buckets env bad samples k depth)
-  (th-check-bucket! same (vector-ref buckets k) env bad k)
-  (if (< k depth) (th-assign-each! same buckets env bad samples samples k depth)))
-(define (th-assign-each! same buckets env bad samples xs k depth)
-  (if (pair? xs)
-      (begin (vector-set! env k (car xs))
-             (th-assign! same buckets env bad samples (+ k 1) depth)
-             (th-assign-each! same buckets env bad samples (cdr xs) k depth))))
-(define (th-check-bucket! same cs env bad k)
-  (if (pair? cs)
-      (let ((c (car cs)))
-        (if (not (same ((caddr c) env) ((cadddr c) env)))
-            (vector-set! bad 0 (cons (cons (cadr c) (th-range-values env k)) (vector-ref bad 0))))
-        (th-check-bucket! same (cdr cs) env bad k))))
-(define (th-range-values env k) (map (lambda (i) (vector-ref env i)) (th-range k)))
+  (let ((T (model-theory M)))
+    (for-each (lambda (e)
+                (if (not (and (well-formed-term? T (equation-lhs e)) (well-formed-term? T (equation-rhs e))))
+                    (th-refuse 'theory-ill-formed-term 'equations-violations (equation-name e))))
+              equations)
+    (law-violations (lambda (op) (model-operation M op)) (lambda (op) (theory-arity T op)) (vector-ref M 5)
+                    (map (lambda (e) (list (equation-name e) (equation-lhs e) (equation-rhs e))) equations)
+                    samples)))
 
 ;; (model-law-violations M [samples]): every element of a finite model when
 ;; samples are not given.
