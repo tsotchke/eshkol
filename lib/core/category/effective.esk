@@ -200,7 +200,7 @@
                             (lambda (x) (if (member x (enumerator->list objs)) #t #f))
                             #f))
             (ce-memo2 (lambda (a b) (as-enumerator (hom a b))))
-            compose identity source target (or arrow=? equal?) (if (null? props) '() (car props)))))
+            compose identity source target (or arrow=? (lambda (f g) (equal? f g))) (if (null? props) '() (car props)))))
 (define (effective-category? E) (and (vector? E) (= 11 (vector-length E)) (eq? (vector-ref E 0) 'effective-category)))
 (define (effective-category-name E) (vector-ref E 1))
 (define (effective-category-objects E) (or (vector-ref E 2) (category-refuse 'objects-not-enumerated 'effective-category-objects (vector-ref E 1))))
@@ -283,7 +283,7 @@
                              (lambda (g f) (category-compose C g f))
                              (lambda (x) (category-identity C x))
                              (lambda (f) (arrow-source C f)) (lambda (f) (arrow-target C f))
-                             eqv?
+                             (lambda (f g) (eqv? f g))
                              (list (cons 'finite-category C)
                                    (cons 'generators (filter (lambda (a) (not (= a (category-identity C (arrow-source C a)))))
                                                              (ce-range (category-arrow-count C))))))))
