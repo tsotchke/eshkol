@@ -15172,3 +15172,19 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
         set_tests_properties(vm_binding_read_runtime PROPERTIES TIMEOUT 180)
     endif()
 endif()
+
+# Complete finite-class Busy Beaver proof replay (follow-up source donation).
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME bb_maximality_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/run_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>
+                --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(bb_maximality_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME bb_maximality_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/self_test.py")
+    set_tests_properties(bb_maximality_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
