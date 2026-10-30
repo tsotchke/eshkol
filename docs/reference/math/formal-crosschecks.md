@@ -94,7 +94,7 @@ The gate type-checks every `tests/formal/agda/*.agda` and
 `tests/formal/coq/*.v` file. It refuses a file that contains a postulate, a
 hole, an `Admitted`, an `Axiom`, or a pragma that turns off termination or
 positivity checking. It refuses a Rocq file whose `Print Assumptions` report
-lists an axiom. It also refuses a stale certificate block. When Agda, its
+lists an axiom. It also refuses a certificate block that is out of date. When Agda, its
 `cubical` and `standard-library` libraries, Rocq or python3 is not installed,
 the gate reports SKIP for that part. It never reports a silent PASS. If no
 prover is available, it exits with status 2. Agda finds its libraries through
