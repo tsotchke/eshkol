@@ -1,0 +1,3 @@
+name: eshkol-formal
+include: .
+depend: standard-library-2.3 cubical-0.9
