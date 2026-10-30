@@ -1125,6 +1125,40 @@ remaining name-keyed inference with ADR-0004's place-keyed PlaceId/FlowEnv
 (which closes the laundering residue for linear types and for ownership `move`
 alike, since both are defeated by the same aliasing shape).
 
+#### 3.6.9 Quantum Registers and Regions — `qreg<n>`
+
+A **quantum register** of n qubits has type `qreg<n>` (also written
+`(qreg n)`). It is linear exactly as `Qubit` is (3.6.8): every rule there
+applies to a register binder, and a register computed and dropped in a
+sequence is a discard. A qubit address of a `qreg<n>` has type `qidx<n>`.
+Indices are linear expressions over naturals (`3`, `n`, `n+1`, `m+n`,
+`2*n`); they unify at every application, and an index spelled like an
+integer parameter denotes that argument's compile-time value. A register
+whose size is known only at run time has the bare type `qreg`.
+
+```scheme
+(define (entangle (r : qreg<n>)) : qreg<n> (qcnot (qh r 0) 0 1))
+(define (widen (qr : qregion) (r : qreg<n>)) : qreg<n+1> (qjoin r (qalloc qr 1)))
+(define-quantum-region qr (bell)
+  (qmeasure (entangle (qalloc qr 2))))      ; (qalloc qr 2) : qreg<2>
+```
+
+`(define-quantum-region R (name formals ...) body ...)` and
+`(with-quantum-region (R) body ...)` run their body in a fresh quantum region
+bound to R (type `qregion`); they are `call-with-quantum-region` applied to
+`(lambda ((R : qregion)) body ...)`. Allocation (`qalloc R n`) needs the
+region; the body's result must be classical; a procedure returned from the
+body must not mention R; every register must be measured, released or
+otherwise consumed before the region ends.
+
+The following are compile-time errors in every mode but `--unsafe`, on the
+native and bytecode engines: a known dimension mismatch; a literal `qidx`
+outside its register; the same literal qubit twice in one gate; a register
+used twice, never consumed, or discarded; a register or the region escaping
+the region; a `qsplit` continuation whose register parameters are undeclared
+or mis-sized. Primitives and their types: [`core.quantum`](reference/stdlib/quantum.md);
+design: ADR-0048.
+
 ### 3.7 Module System
 
 #### 3.7.1 `require` - Import Modules
