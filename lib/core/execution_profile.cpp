@@ -250,7 +250,7 @@ namespace {
 // so objects built by eshkol-run and by clang for the freestanding runtime
 // subset (lib/platform/embedded) link without attribute or ABI mismatches.
 constexpr const char* kCortexM4SoftFeatures =
-    "+soft-float,+soft-float-abi,+dsp,+hwdiv,-fpregs,-vfp2,-vfp2sp,-vfp3,"
+    "+soft-float,+dsp,+hwdiv,-fpregs,-vfp2,-vfp2sp,-vfp3,"
     "-vfp3d16,-vfp3d16sp,-vfp3sp,-fp16,-vfp4,-vfp4d16,-vfp4d16sp,-vfp4sp,"
     "-fp-armv8,-fp-armv8d16,-fp-armv8d16sp,-fp-armv8sp,-fullfp16,-fp64,-d32,"
     "-neon,-mve,-mve.fp";
