@@ -8170,6 +8170,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/dependent_engine_parity_gate.sh")
+    # ADR-0042: the VM refuses and runs the same dependent-typed programs as
+    # the native engine. Same VM gating as the linearity parity gate above.
+    add_test(NAME dependent_type_engine_parity_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/dependent_engine_parity_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_LINEAR_PARITY_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/dependent-type-engine-parity")
+    set_tests_properties(dependent_type_engine_parity_gate PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: dependent type engine parity"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
     add_executable(linear_solve_hosted_control_test
         tests/core/linear_solve_hosted_control_test.cpp)
