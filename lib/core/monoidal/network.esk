@@ -1,0 +1,181 @@
+;;; core.monoidal.network -- exact tensor networks: tensors with labelled
+;;; legs over an exact carrier, contraction along shared labels, traces, and
+;;; the evaluation of a whole network to one tensor or one linear map.
+;;;
+;;; Usage: (require core.monoidal.network)   or   (require core.monoidal)
+;;;
+;;; Representation (public):
+;;;   #(tensor S legs dims entries)
+;;;     legs     a list of distinct labels (compared with equal?)
+;;;     dims     the dimension of each leg
+;;;     entries  a flat vector in the mixed radix of dims, first leg most
+;;;              significant (the basis convention of core.monoidal.finvect)
+;;;   A network is a list of tensors in which every label occurs once (an
+;;;   open leg) or twice (an edge, contracted); a label occurring twice in one
+;;;   tensor is a self-loop and is traced.
+;;;
+;;; Contraction reshapes the two tensors into matrices (free legs x shared
+;;; legs) and multiplies them exactly, skipping zero entries; the network is
+;;; contracted greedily, always joining the pair of tensors that share an
+;;; edge with the smallest result. The order changes only the cost: the
+;;; result is the same exact tensor (the sum over all edge labellings).
+;;;
+;;; Sources: R. Penrose, "Applications of negative dimensional tensors"
+;;; (1971); R. Orus, "A practical introduction to tensor networks", Ann.
+;;; Phys. 349 (2014); nLab: "tensor network", "string diagram".
+
+(require stdlib)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+
+(provide make-tensor tensor? tensor-scalars tensor-legs tensor-dims tensor-entries tensor-size
+         tensor-permute tensor-contract tensor-trace tensor-outer network-contract
+         linear-map->tensor tensor->linear-map network-evaluate tensor-scalar-value)
+
+(define (tn-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (tn-product ds) (let loop ((l ds) (acc 1)) (if (null? l) acc (loop (cdr l) (* acc (car l))))))
+(define (tn-position x xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((equal? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (tn-take xs k) (if (= k 0) '() (cons (car xs) (tn-take (cdr xs) (- k 1)))))
+(define (tn-remove-at xs i) (let loop ((l xs) (j 0) (acc '())) (cond ((null? l) (reverse acc)) ((= i j) (loop (cdr l) (+ j 1) acc)) (else (loop (cdr l) (+ j 1) (cons (car l) acc))))))
+
+(define (make-tensor S legs dims entries)
+  (if (not (and (= (length legs) (length dims)) (vector? entries) (= (vector-length entries) (tn-product dims))))
+      (error "core.monoidal.network: tensor shape does not match its entries" legs dims))
+  (vector 'tensor S legs dims entries))
+(define (tensor? T) (and (vector? T) (= 5 (vector-length T)) (eq? (vector-ref T 0) 'tensor)))
+(define (tensor-scalars T) (vector-ref T 1))
+(define (tensor-legs T) (vector-ref T 2))
+(define (tensor-dims T) (vector-ref T 3))
+(define (tensor-entries T) (vector-ref T 4))
+(define (tensor-size T) (vector-length (vector-ref T 4)))
+(define (tensor-scalar-value T)
+  (if (not (null? (tensor-legs T))) (error "core.monoidal.network: tensor has open legs" (tensor-legs T)))
+  (vector-ref (tensor-entries T) 0))
+
+;; strides of a mixed radix, first digit most significant
+(define (tn-strides dims)
+  (let loop ((ds (reverse dims)) (s 1) (acc '()))
+    (if (null? ds) acc (loop (cdr ds) (* s (car ds)) (cons s acc)))))
+
+;; the same tensor with its legs in the order `legs` (a permutation)
+(define (tensor-permute T legs)
+  (let* ((old (tensor-legs T)))
+    (if (equal? legs old) T
+        (let* ((pos (map (lambda (l) (or (tn-position l old) (error "core.monoidal.network: no such leg" l))) legs))
+               (dims (tensor-dims T)) (dv (list->vector dims))
+               (new-dims (map (lambda (p) (vector-ref dv p)) pos))
+               (old-strides (list->vector (tn-strides dims)))
+               (src-strides (list->vector (map (lambda (p) (vector-ref old-strides p)) pos)))
+               (ndv (list->vector new-dims)) (k (length legs))
+               (n (tensor-size T)) (in (tensor-entries T)) (out (make-vector n #f))
+               (digits (make-vector k 0)))
+          (if (not (= k (length old))) (error "core.monoidal.network: permutation of the wrong length" legs old))
+          ;; walk the new indices in order with an odometer, tracking the source offset
+          (let loop ((i 0) (src 0))
+            (if (< i n)
+                (begin
+                  (vector-set! out i (vector-ref in src))
+                  (let carry ((j (- k 1)) (src src))
+                    (if (< j 0) (loop (+ i 1) src)
+                        (let ((d (+ 1 (vector-ref digits j))))
+                          (if (< d (vector-ref ndv j))
+                              (begin (vector-set! digits j d) (loop (+ i 1) (+ src (vector-ref src-strides j))))
+                              (begin (vector-set! digits j 0)
+                                     (carry (- j 1) (- src (* (- d 1) (vector-ref src-strides j))))))))))))
+          (vector 'tensor (tensor-scalars T) legs new-dims out)))))
+
+;; contract A and B along every label they share; legs of the result: the
+;; free legs of A, then those of B, in their orders
+(define (tensor-contract A B)
+  (let* ((S (tensor-scalars A)) (zero (scalars-zero S))
+         (shared (filter (lambda (l) (tn-position l (tensor-legs B))) (tensor-legs A)))
+         (fa (filter (lambda (l) (not (member l shared))) (tensor-legs A)))
+         (fb (filter (lambda (l) (not (member l shared))) (tensor-legs B)))
+         (dim-of (lambda (T l) (list-ref (tensor-dims T) (tn-position l (tensor-legs T)))))
+         (_ (for-each (lambda (l) (if (not (= (dim-of A l) (dim-of B l))) (error "core.monoidal.network: contracted legs differ in dimension" l))) shared))
+         (Ap (tensor-permute A (append fa shared)))
+         (Bp (tensor-permute B (append shared fb)))
+         (m (tn-product (map (lambda (l) (dim-of A l)) fa)))
+         (k (tn-product (map (lambda (l) (dim-of A l)) shared)))
+         (n (tn-product (map (lambda (l) (dim-of B l)) fb)))
+         (ae (tensor-entries Ap)) (be (tensor-entries Bp))
+         (out (make-vector (* m n) zero)))
+    (do ((r 0 (+ r 1))) ((= r m))
+      (do ((j 0 (+ j 1))) ((= j k))
+        (let ((a (vector-ref ae (+ (* r k) j))))
+          (if (not (scalars-zero? S a))
+              (let ((base (* j n)) (obase (* r n)))
+                (do ((c 0 (+ c 1))) ((= c n))
+                  (let ((b (vector-ref be (+ base c))))
+                    (if (not (scalars-zero? S b))
+                        (vector-set! out (+ obase c) (scalars-add S (vector-ref out (+ obase c)) (scalars-mul S a b)))))))))))
+    (vector 'tensor S (append fa fb)
+            (append (map (lambda (l) (dim-of A l)) fa) (map (lambda (l) (dim-of B l)) fb))
+            out)))
+(define (tensor-outer A B) (tensor-contract A B))
+
+;; trace of the legs at positions i < j of T (equal dimensions); used for a
+;; label that occurs twice in one tensor
+(define (tensor-trace-positions T i j)
+  (let* ((S (tensor-scalars T)) (legs (tensor-legs T)) (dims (tensor-dims T))
+         (rest (tn-remove-at (tn-remove-at (tn-range (length legs)) j) i))
+         (lv (list->vector legs)) (dv (list->vector dims))
+         (Tp (tensor-permute (vector 'tensor S (tn-range (length legs)) dims (tensor-entries T)) (append rest (list i j))))
+         (d (vector-ref dv i)) (m (tn-product (map (lambda (p) (vector-ref dv p)) rest)))
+         (e (tensor-entries Tp)) (out (make-vector m (scalars-zero S))))
+    (if (not (= d (vector-ref dv j))) (error "core.monoidal.network: traced legs differ in dimension"))
+    (do ((r 0 (+ r 1))) ((= r m))
+      (do ((a 0 (+ a 1))) ((= a d))
+        (let ((x (vector-ref e (+ (* r d d) (* a d) a))))
+          (if (not (scalars-zero? S x)) (vector-set! out r (scalars-add S (vector-ref out r) x))))))
+    (vector 'tensor S (map (lambda (p) (vector-ref lv p)) rest) (map (lambda (p) (vector-ref dv p)) rest) out)))
+;; trace every label that occurs twice in T
+(define (tensor-trace T)
+  (let loop ((T T))
+    (let find ((ls (tensor-legs T)) (i 0))
+      (cond ((null? ls) T)
+            ((tn-position (car ls) (cdr ls)) (loop (tensor-trace-positions T i (+ i 1 (tn-position (car ls) (cdr ls))))))
+            (else (find (cdr ls) (+ i 1)))))))
+
+;; contract a whole network; `open` lists the open legs in the order wanted
+(define (network-contract S tensors open)
+  (let loop ((ts (map tensor-trace tensors)))
+    (cond ((null? ts) (make-tensor S '() '() (vector (scalars-one S))))
+          ((null? (cdr ts)) (tensor-permute (car ts) open))
+          (else
+           ;; the pair sharing a label with the smallest result; else the two smallest
+           (let* ((tv (list->vector ts)) (n (vector-length tv)) (best #f) (best-cost #f))
+             (do ((i 0 (+ i 1))) ((= i n))
+               (do ((j (+ i 1) (+ j 1))) ((= j n))
+                 (let* ((A (vector-ref tv i)) (B (vector-ref tv j))
+                        (shared (filter (lambda (l) (member l (tensor-legs B))) (tensor-legs A))))
+                   (if (pair? shared)
+                       (let ((cost (quotient (* (tensor-size A) (tensor-size B))
+                                             (let sq ((l shared) (acc 1))
+                                               (if (null? l) (* acc acc)
+                                                   (sq (cdr l) (* acc (list-ref (tensor-dims A) (tn-position (car l) (tensor-legs A))))))))))
+                         (if (or (not best-cost) (< cost best-cost)) (begin (set! best (cons i j)) (set! best-cost cost))))))))
+             (if (not best)
+                 (let* ((sorted (sort (tn-range n) (lambda (i j) (< (tensor-size (vector-ref tv i)) (tensor-size (vector-ref tv j)))))))
+                   (set! best (cons (min (car sorted) (cadr sorted)) (max (car sorted) (cadr sorted))))))
+             (let ((C (tensor-trace (tensor-contract (vector-ref tv (car best)) (vector-ref tv (cdr best))))))
+               (loop (cons C (map (lambda (i) (vector-ref tv i))
+                                  (filter (lambda (i) (not (or (= i (car best)) (= i (cdr best))))) (tn-range n)))))))))))
+
+;; a linear map as a tensor: codomain legs `outs`, then domain legs `ins`
+(define (linear-map->tensor f outs ins)
+  (let* ((S (linear-map-scalars f)) (m (finvect-dimension (linear-map-codomain f))) (n (finvect-dimension (linear-map-domain f)))
+         (e (make-vector (* m n) #f)))
+    (if (not (and (= (length outs) (length (linear-map-codomain f))) (= (length ins) (length (linear-map-domain f)))))
+        (error "core.monoidal.network: one label per wire is needed" outs ins))
+    (do ((r 0 (+ r 1))) ((= r m))
+      (do ((c 0 (+ c 1))) ((= c n)) (vector-set! e (+ (* r n) c) (linear-map-entry f r c))))
+    (make-tensor S (append outs ins) (append (linear-map-codomain f) (linear-map-domain f)) e)))
+;; read a tensor as the linear map ins -> outs
+(define (tensor->linear-map T outs ins)
+  (let* ((Tp (tensor-permute T (append outs ins)))
+         (dims (tensor-dims Tp)) (cod (tn-take dims (length outs))) (dom (list-tail dims (length outs)))
+         (n (tn-product dom)) (e (tensor-entries Tp)))
+    (linear-map (tensor-scalars T) dom cod (lambda (r c) (vector-ref e (+ (* r n) c))))))
+(define (network-evaluate S tensors outs ins)
+  (tensor->linear-map (network-contract S tensors (append outs ins)) outs ins))

@@ -1,0 +1,466 @@
+;;; core.monoidal.structure -- monoidal, braided and symmetric monoidal
+;;; categories and monoidal functors as data, with every coherence law a check
+;;; that returns its violations: functoriality of the tensor, naturality and
+;;; invertibility of the associator and unitors, the pentagon and the
+;;; triangle, the two hexagons, symmetry, and the coherence of a monoidal
+;;; functor (associativity and both unit squares, and the braiding square).
+;;;
+;;; Usage: (require core.monoidal.structure)   or   (require core.monoidal)
+;;;
+;;; Representation (public):
+;;;   category operations  #(category-ops objects arrows source target compose
+;;;                          identity equal? inverse)
+;;;       objects and arrows are the lists the laws are checked over (all of
+;;;       them for a finite category; a chosen sample for FinVect), compose is
+;;;       (g f) -> g o f, inverse is f -> the inverse arrow or #f.
+;;;   monoidal category    #(monoidal-category ops tensor-objects tensor-arrows
+;;;                          unit associator left-unitor right-unitor braiding name)
+;;;       associator (x y z) : (x (x) y) (x) z -> x (x) (y (x) z),
+;;;       left-unitor x : I (x) x -> x, right-unitor x : x (x) I -> x,
+;;;       braiding #f or (x y) : x (x) y -> y (x) x.
+;;;   monoidal functor     #(monoidal-functor M N objects arrows mu epsilon)
+;;;       objects, arrows: procedures; mu (x y) : F x (x) F y -> F(x (x) y);
+;;;       epsilon : I_N -> F(I_M).
+;;;
+;;; Compact closed and dagger structure (self-dual objects, as in FinVect with
+;;; its standard basis): cup x : I -> x (x) x, cap x : x (x) x -> I, and a
+;;; dagger f -> f^dagger, each given as a procedure to the checks.
+;;;
+;;; Constructors:
+;;;   (finite-category-ops C)                core.sheaf.site's finite categories
+;;;   (finite-monoidal-category C T unit a l r [braiding])
+;;;       T a core.category functor C x C -> C (on category-product C C)
+;;;   (monoid-monoidal-category n mul e)     the discrete strict monoidal
+;;;       category of a finite monoid; symmetric when the monoid is commutative
+;;;   (meet-monoidal-category P)             a finite meet-semilattice with top
+;;;       as a cartesian (thin, symmetric) monoidal category
+;;;   (cocycle-monoidal-category n mul e m omega [c])
+;;;       the skeletal monoidal category of a finite group G = (n, mul, e) with
+;;;       every Hom(g, g) = Z/m and associator omega(g, h, k) in Z/m (Mac Lane
+;;;       XI; Joyal-Street, "Braided tensor categories", 1993, section 7): the
+;;;       pentagon holds exactly when omega is a 3-cocycle, and a braiding
+;;;       c(g, h) satisfies the hexagons exactly when (omega, c) is an abelian
+;;;       3-cocycle (Eilenberg-Mac Lane)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), VII.1-VII.2 (monoidal categories, pentagon, triangle), XI.1-XI.2
+;;; (monoidal functors, braided categories, hexagons); A. Joyal, R. Street,
+;;; "Braided tensor categories", Adv. Math. 102 (1993); P. Etingof et al.,
+;;; "Tensor Categories" (2015), 2.1-2.6 and 8.1; nLab: "monoidal category",
+;;; "braided monoidal category", "symmetric monoidal category", "monoidal
+;;; functor", "pentagon identity", "2-group".
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.category.finite)
+(require core.category.functor)
+
+(provide make-category-ops category-ops? category-ops-objects category-ops-arrows finite-category-ops
+         make-monoidal-category monoidal-category? monoidal-category-ops monoidal-tensor monoidal-tensor-arrows
+         monoidal-unit monoidal-associator monoidal-left-unitor monoidal-right-unitor monoidal-braiding
+         monoidal-category-name monoidal-with-braiding
+         monoidal-tensor-violations monoidal-naturality-violations monoidal-isomorphism-violations
+         pentagon-violations triangle-violations monoidal-category-violations monoidal-category?-lawful
+         monoidal-strict? braiding-naturality-violations hexagon-violations symmetry-violations
+         braided-monoidal-violations symmetric-monoidal-violations
+         make-monoidal-functor monoidal-functor? monoidal-functor-source monoidal-functor-target
+         monoidal-functor-object monoidal-functor-arrow monoidal-functor-mu monoidal-functor-epsilon
+         monoidal-functor-violations monoidal-functor-associativity-violations
+         monoidal-functor-unit-violations braided-monoidal-functor-violations identity-monoidal-functor
+         finite-monoidal-category monoid-monoidal-category meet-monoidal-category cocycle-monoidal-category
+         cocycle-arrow cocycle-arrow-object cocycle-arrow-value
+         compact-closed-violations dagger-violations dagger-compact-violations)
+
+(define (ms-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; ---------------------------------------------------------------------------
+;; Category operations
+;; ---------------------------------------------------------------------------
+(define (make-category-ops objects arrows source target compose identity equal inverse)
+  (vector 'category-ops objects arrows source target compose identity equal inverse))
+(define (category-ops? O) (and (vector? O) (= 9 (vector-length O)) (eq? (vector-ref O 0) 'category-ops)))
+(define (category-ops-objects O) (vector-ref O 1))
+(define (category-ops-arrows O) (vector-ref O 2))
+(define (co-src O f) ((vector-ref O 3) f))
+(define (co-tgt O f) ((vector-ref O 4) f))
+(define (co-compose O g f)
+  (let ((h ((vector-ref O 5) g f)))
+    (if (not h) (error "core.monoidal: composite of arrows that do not compose" g f))
+    h))
+(define (co-compose* O . fs) ;; diagram order: f1 first
+  (let loop ((acc (car fs)) (l (cdr fs))) (if (null? l) acc (loop (co-compose O (car l) acc) (cdr l)))))
+(define (co-id O x) ((vector-ref O 6) x))
+(define (co-equal? O f g) ((vector-ref O 7) f g))
+(define (co-inverse O f) ((vector-ref O 8) f))
+(define (co-composable? O g f) (equal? (co-tgt O f) (co-src O g)))
+
+(define (finite-category-ops C)
+  (make-category-ops (category-object-list C) (category-arrow-list C)
+                     (lambda (f) (arrow-source C f)) (lambda (f) (arrow-target C f))
+                     (lambda (g f) (category-compose C g f)) (lambda (x) (category-identity C x))
+                     eqv? (lambda (f) (category-inverse C f))))
+
+;; ---------------------------------------------------------------------------
+;; Monoidal categories
+;; ---------------------------------------------------------------------------
+(define (make-monoidal-category ops tensor-objects tensor-arrows unit associator left-unitor right-unitor . opt)
+  (vector 'monoidal-category ops tensor-objects tensor-arrows unit associator left-unitor right-unitor
+          (if (and (pair? opt) (car opt)) (car opt) #f)
+          (if (and (pair? opt) (pair? (cdr opt))) (cadr opt) 'monoidal-category)))
+(define (monoidal-category? M) (and (vector? M) (= 10 (vector-length M)) (eq? (vector-ref M 0) 'monoidal-category)))
+(define (monoidal-category-ops M) (vector-ref M 1))
+(define (monoidal-tensor M x y) ((vector-ref M 2) x y))
+(define (monoidal-tensor-arrows M f g) ((vector-ref M 3) f g))
+(define (monoidal-unit M) (vector-ref M 4))
+(define (monoidal-associator M x y z) ((vector-ref M 5) x y z))
+(define (monoidal-left-unitor M x) ((vector-ref M 6) x))
+(define (monoidal-right-unitor M x) ((vector-ref M 7) x))
+(define (monoidal-braiding M) (vector-ref M 8))
+(define (monoidal-category-name M) (vector-ref M 9))
+;; the same monoidal category with another braiding
+(define (monoidal-with-braiding M braiding)
+  (let ((v (vector-copy M))) (vector-set! v 8 braiding) v))
+
+(define (ms-pairs xs ys) (apply append (map (lambda (x) (map (lambda (y) (list x y)) ys)) xs)))
+(define (ms-tuples k xs) (if (= k 0) (list '()) (let ((rest (ms-tuples (- k 1) xs))) (apply append (map (lambda (x) (map (lambda (t) (cons x t)) rest)) xs)))))
+(define (ms-collect items test) ;; items whose test fails, as witnesses
+  (let loop ((l items) (out '())) (if (null? l) (reverse out) (loop (cdr l) (if (test (car l)) out (cons (car l) out))))))
+(define (ms-tag tag xs) (map (lambda (x) (cons tag x)) xs))
+(define (ms-typed? O f src tgt) (and (equal? (co-src O f) src) (equal? (co-tgt O f) tgt)))
+
+;; the tensor is a functor C x C -> C: sources and targets, identities, and
+;; the interchange law (g' o f') (x) (g o f) = (g' (x) g) o (f' (x) f)
+(define (monoidal-tensor-violations M)
+  (let* ((O (monoidal-category-ops M)) (obs (category-ops-objects O)) (ars (category-ops-arrows O))
+         (t (lambda (f g) (monoidal-tensor-arrows M f g)))
+         (composable (filter (lambda (p) (co-composable? O (car p) (cadr p))) (ms-pairs ars ars))))
+    (append
+     (ms-tag 'tensor-type
+             (ms-collect (ms-pairs ars ars)
+                         (lambda (p) (ms-typed? O (t (car p) (cadr p))
+                                                (monoidal-tensor M (co-src O (car p)) (co-src O (cadr p)))
+                                                (monoidal-tensor M (co-tgt O (car p)) (co-tgt O (cadr p)))))))
+     (ms-tag 'tensor-identity
+             (ms-collect (ms-pairs obs obs)
+                         (lambda (p) (co-equal? O (t (co-id O (car p)) (co-id O (cadr p))) (co-id O (monoidal-tensor M (car p) (cadr p)))))))
+     (ms-tag 'interchange
+             (ms-collect (ms-pairs composable composable)
+                         (lambda (pq) (let ((g (car (car pq))) (f (cadr (car pq))) (g2 (car (cadr pq))) (f2 (cadr (cadr pq))))
+                                        (co-equal? O (t (co-compose O g f) (co-compose O g2 f2))
+                                                   (co-compose O (t g g2) (t f f2))))))))))
+
+;; naturality of the associator and the unitors in every variable
+(define (monoidal-naturality-violations M)
+  (let* ((O (monoidal-category-ops M)) (ars (category-ops-arrows O)) (I (monoidal-unit M))
+         (t (lambda (f g) (monoidal-tensor-arrows M f g))) (s (lambda (f) (co-src O f))) (r (lambda (f) (co-tgt O f))))
+    (append
+     (ms-tag 'associator-naturality
+             (ms-collect (ms-tuples 3 ars)
+                         (lambda (fgh) (let ((f (car fgh)) (g (cadr fgh)) (h (caddr fgh)))
+                                         (co-equal? O (co-compose O (monoidal-associator M (r f) (r g) (r h)) (t (t f g) h))
+                                                    (co-compose O (t f (t g h)) (monoidal-associator M (s f) (s g) (s h))))))))
+     (ms-tag 'left-unitor-naturality
+             (ms-collect (map list ars)
+                         (lambda (l) (let ((f (car l)))
+                                       (co-equal? O (co-compose O (monoidal-left-unitor M (r f)) (t (co-id O I) f))
+                                                  (co-compose O f (monoidal-left-unitor M (s f))))))))
+     (ms-tag 'right-unitor-naturality
+             (ms-collect (map list ars)
+                         (lambda (l) (let ((f (car l)))
+                                       (co-equal? O (co-compose O (monoidal-right-unitor M (r f)) (t f (co-id O I)))
+                                                  (co-compose O f (monoidal-right-unitor M (s f)))))))))))
+
+;; components have the right sources and targets and are invertible
+(define (monoidal-isomorphism-violations M)
+  (let* ((O (monoidal-category-ops M)) (obs (category-ops-objects O)) (I (monoidal-unit M))
+         (x* (lambda (a b) (monoidal-tensor M a b)))
+         (iso? (lambda (f src tgt) (and (ms-typed? O f src tgt) (co-inverse O f) #t))))
+    (append
+     (ms-tag 'associator
+             (ms-collect (ms-tuples 3 obs)
+                         (lambda (xyz) (let ((x (car xyz)) (y (cadr xyz)) (z (caddr xyz)))
+                                         (iso? (monoidal-associator M x y z) (x* (x* x y) z) (x* x (x* y z)))))))
+     (ms-tag 'left-unitor (ms-collect (map list obs) (lambda (l) (iso? (monoidal-left-unitor M (car l)) (x* I (car l)) (car l)))))
+     (ms-tag 'right-unitor (ms-collect (map list obs) (lambda (l) (iso? (monoidal-right-unitor M (car l)) (x* (car l) I) (car l))))))))
+
+;; alpha_{w,x,y(x)z} o alpha_{w(x)x,y,z}
+;;   = (id_w (x) alpha_{x,y,z}) o alpha_{w,x(x)y,z} o (alpha_{w,x,y} (x) id_z)
+(define (pentagon-violations M)
+  (let* ((O (monoidal-category-ops M)) (x* (lambda (a b) (monoidal-tensor M a b)))
+         (a (lambda (x y z) (monoidal-associator M x y z))) (t (lambda (f g) (monoidal-tensor-arrows M f g))))
+    (ms-tag 'pentagon
+            (ms-collect (ms-tuples 4 (category-ops-objects O))
+                        (lambda (wxyz) (let ((w (car wxyz)) (x (cadr wxyz)) (y (caddr wxyz)) (z (cadddr wxyz)))
+                                         (co-equal? O (co-compose* O (a (x* w x) y z) (a w x (x* y z)))
+                                                    (co-compose* O (t (a w x y) (co-id O z)) (a w (x* x y) z) (t (co-id O w) (a x y z))))))))))
+;; (id_x (x) lambda_y) o alpha_{x,I,y} = rho_x (x) id_y
+(define (triangle-violations M)
+  (let* ((O (monoidal-category-ops M)) (I (monoidal-unit M)) (t (lambda (f g) (monoidal-tensor-arrows M f g))))
+    (ms-tag 'triangle
+            (ms-collect (ms-tuples 2 (category-ops-objects O))
+                        (lambda (xy) (let ((x (car xy)) (y (cadr xy)))
+                                       (co-equal? O (co-compose O (t (co-id O x) (monoidal-left-unitor M y)) (monoidal-associator M x I y))
+                                                  (t (monoidal-right-unitor M x) (co-id O y)))))))))
+(define (monoidal-category-violations M)
+  (let ((v (append (monoidal-isomorphism-violations M) (monoidal-tensor-violations M))))
+    (if (pair? v) v
+        (append (monoidal-naturality-violations M) (pentagon-violations M) (triangle-violations M)))))
+(define (monoidal-category?-lawful M) (null? (monoidal-category-violations M)))
+;; strict: the associator and unitors are identities
+(define (monoidal-strict? M)
+  (let* ((O (monoidal-category-ops M)) (obs (category-ops-objects O)) (I (monoidal-unit M))
+         (identity? (lambda (f) (and (equal? (co-src O f) (co-tgt O f)) (co-equal? O f (co-id O (co-src O f)))))))
+    (and (null? (ms-collect (ms-tuples 3 obs) (lambda (xyz) (identity? (apply (lambda (x y z) (monoidal-associator M x y z)) xyz)))))
+         (null? (ms-collect obs (lambda (x) (and (identity? (monoidal-left-unitor M x)) (identity? (monoidal-right-unitor M x)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Braidings
+;; ---------------------------------------------------------------------------
+(define (ms-braiding M)
+  (let ((c (monoidal-braiding M))) (if (not c) (error "core.monoidal: the monoidal category has no braiding" (monoidal-category-name M))) c))
+(define (braiding-naturality-violations M)
+  (let* ((O (monoidal-category-ops M)) (ars (category-ops-arrows O)) (c (ms-braiding M))
+         (t (lambda (f g) (monoidal-tensor-arrows M f g))))
+    (append
+     (ms-tag 'braiding-type
+             (ms-collect (ms-tuples 2 (category-ops-objects O))
+                         (lambda (xy) (let ((x (car xy)) (y (cadr xy)))
+                                        (and (ms-typed? O (c x y) (monoidal-tensor M x y) (monoidal-tensor M y x)) (co-inverse O (c x y)) #t)))))
+     (ms-tag 'braiding-naturality
+             (ms-collect (ms-tuples 2 ars)
+                         (lambda (fg) (let ((f (car fg)) (g (cadr fg)))
+                                        (co-equal? O (co-compose O (c (co-tgt O f) (co-tgt O g)) (t f g))
+                                                   (co-compose O (t g f) (c (co-src O f) (co-src O g)))))))))))
+;; H1: alpha_{y,z,x} o c_{x,y(x)z} o alpha_{x,y,z}
+;;       = (id_y (x) c_{x,z}) o alpha_{y,x,z} o (c_{x,y} (x) id_z)
+;; H2: alpha^-1_{z,x,y} o c_{x(x)y,z} o alpha^-1_{x,y,z}
+;;       = (c_{x,z} (x) id_y) o alpha^-1_{x,z,y} o (id_x (x) c_{y,z})
+(define (hexagon-violations M)
+  (let* ((O (monoidal-category-ops M)) (c (ms-braiding M)) (x* (lambda (a b) (monoidal-tensor M a b)))
+         (a (lambda (x y z) (monoidal-associator M x y z))) (ai (lambda (x y z) (co-inverse O (monoidal-associator M x y z))))
+         (t (lambda (f g) (monoidal-tensor-arrows M f g))) (id (lambda (x) (co-id O x)))
+         (triples (ms-tuples 3 (category-ops-objects O))))
+    (append
+     (ms-tag 'hexagon-1
+             (ms-collect triples
+                         (lambda (xyz) (let ((x (car xyz)) (y (cadr xyz)) (z (caddr xyz)))
+                                         (co-equal? O (co-compose* O (a x y z) (c x (x* y z)) (a y z x))
+                                                    (co-compose* O (t (c x y) (id z)) (a y x z) (t (id y) (c x z))))))))
+     (ms-tag 'hexagon-2
+             (ms-collect triples
+                         (lambda (xyz) (let ((x (car xyz)) (y (cadr xyz)) (z (caddr xyz)))
+                                         (co-equal? O (co-compose* O (ai x y z) (c (x* x y) z) (ai z x y))
+                                                    (co-compose* O (t (id x) (c y z)) (ai x z y) (t (c x z) (id y)))))))))))
+;; c_{y,x} o c_{x,y} = id
+(define (symmetry-violations M)
+  (let* ((O (monoidal-category-ops M)) (c (ms-braiding M)))
+    (ms-tag 'symmetry
+            (ms-collect (ms-tuples 2 (category-ops-objects O))
+                        (lambda (xy) (let ((x (car xy)) (y (cadr xy)))
+                                       (co-equal? O (co-compose O (c y x) (c x y)) (co-id O (monoidal-tensor M x y)))))))))
+(define (braided-monoidal-violations M)
+  (let ((v (monoidal-category-violations M)))
+    (if (pair? v) v
+        (let ((b (braiding-naturality-violations M))) (if (pair? b) b (hexagon-violations M))))))
+(define (symmetric-monoidal-violations M)
+  (let ((v (braided-monoidal-violations M))) (if (pair? v) v (symmetry-violations M))))
+
+;; ---------------------------------------------------------------------------
+;; Monoidal functors
+;; ---------------------------------------------------------------------------
+(define (make-monoidal-functor M N objects arrows mu epsilon) (vector 'monoidal-functor M N objects arrows mu epsilon))
+(define (monoidal-functor? F) (and (vector? F) (= 7 (vector-length F)) (eq? (vector-ref F 0) 'monoidal-functor)))
+(define (monoidal-functor-source F) (vector-ref F 1))
+(define (monoidal-functor-target F) (vector-ref F 2))
+(define (monoidal-functor-object F x) ((vector-ref F 3) x))
+(define (monoidal-functor-arrow F f) ((vector-ref F 4) f))
+(define (monoidal-functor-mu F x y) ((vector-ref F 5) x y))
+(define (monoidal-functor-epsilon F) (vector-ref F 6))
+(define (identity-monoidal-functor M)
+  (let ((O (monoidal-category-ops M)))
+    (make-monoidal-functor M M (lambda (x) x) (lambda (f) f) (lambda (x y) (co-id O (monoidal-tensor M x y))) (co-id O (monoidal-unit M)))))
+
+;; F(alpha_{x,y,z}) o mu_{x(x)y,z} o (mu_{x,y} (x) id_{Fz})
+;;   = mu_{x,y(x)z} o (id_{Fx} (x) mu_{y,z}) o alpha'_{Fx,Fy,Fz}
+(define (monoidal-functor-associativity-violations F)
+  (let* ((M (monoidal-functor-source F)) (N (monoidal-functor-target F))
+         (OM (monoidal-category-ops M)) (ON (monoidal-category-ops N))
+         (Fo (lambda (x) (monoidal-functor-object F x))) (Fa (lambda (f) (monoidal-functor-arrow F f)))
+         (mu (lambda (x y) (monoidal-functor-mu F x y))) (x* (lambda (a b) (monoidal-tensor M a b)))
+         (t (lambda (f g) (monoidal-tensor-arrows N f g))) (id (lambda (y) (co-id ON y))))
+    (ms-tag 'functor-associativity
+            (ms-collect (ms-tuples 3 (category-ops-objects OM))
+                        (lambda (xyz) (let ((x (car xyz)) (y (cadr xyz)) (z (caddr xyz)))
+                                        (co-equal? ON (co-compose* ON (t (mu x y) (id (Fo z))) (mu (x* x y) z) (Fa (monoidal-associator M x y z)))
+                                                   (co-compose* ON (monoidal-associator N (Fo x) (Fo y) (Fo z)) (t (id (Fo x)) (mu y z)) (mu x (x* y z))))))))))
+;; F(lambda_x) o mu_{I,x} o (epsilon (x) id_{Fx}) = lambda'_{Fx}, and the
+;; same with rho
+(define (monoidal-functor-unit-violations F)
+  (let* ((M (monoidal-functor-source F)) (N (monoidal-functor-target F))
+         (OM (monoidal-category-ops M)) (ON (monoidal-category-ops N)) (I (monoidal-unit M))
+         (Fo (lambda (x) (monoidal-functor-object F x))) (Fa (lambda (f) (monoidal-functor-arrow F f)))
+         (mu (lambda (x y) (monoidal-functor-mu F x y))) (e (monoidal-functor-epsilon F))
+         (t (lambda (f g) (monoidal-tensor-arrows N f g))) (id (lambda (y) (co-id ON y))))
+    (append
+     (ms-tag 'functor-left-unit
+             (ms-collect (map list (category-ops-objects OM))
+                         (lambda (l) (let ((x (car l)))
+                                       (co-equal? ON (co-compose* ON (t e (id (Fo x))) (mu I x) (Fa (monoidal-left-unitor M x)))
+                                                  (monoidal-left-unitor N (Fo x)))))))
+     (ms-tag 'functor-right-unit
+             (ms-collect (map list (category-ops-objects OM))
+                         (lambda (l) (let ((x (car l)))
+                                       (co-equal? ON (co-compose* ON (t (id (Fo x)) e) (mu x I) (Fa (monoidal-right-unitor M x)))
+                                                  (monoidal-right-unitor N (Fo x))))))))))
+;; the functor laws, naturality of mu, and the coherence squares
+(define (monoidal-functor-violations F)
+  (let* ((M (monoidal-functor-source F)) (N (monoidal-functor-target F))
+         (OM (monoidal-category-ops M)) (ON (monoidal-category-ops N)) (ars (category-ops-arrows OM))
+         (Fo (lambda (x) (monoidal-functor-object F x))) (Fa (lambda (f) (monoidal-functor-arrow F f)))
+         (mu (lambda (x y) (monoidal-functor-mu F x y)))
+         (composable (filter (lambda (p) (co-composable? OM (car p) (cadr p))) (ms-pairs ars ars)))
+         (laws (append
+                (ms-tag 'functor-type (ms-collect (map list ars) (lambda (l) (ms-typed? ON (Fa (car l)) (Fo (co-src OM (car l))) (Fo (co-tgt OM (car l)))))))
+                (ms-tag 'functor-identity (ms-collect (map list (category-ops-objects OM)) (lambda (l) (co-equal? ON (Fa (co-id OM (car l))) (co-id ON (Fo (car l)))))))
+                (ms-tag 'functor-composition (ms-collect composable (lambda (p) (co-equal? ON (Fa (co-compose OM (car p) (cadr p))) (co-compose ON (Fa (car p)) (Fa (cadr p)))))))
+                (ms-tag 'mu-type (ms-collect (ms-tuples 2 (category-ops-objects OM))
+                                             (lambda (xy) (ms-typed? ON (mu (car xy) (cadr xy)) (monoidal-tensor N (Fo (car xy)) (Fo (cadr xy))) (Fo (monoidal-tensor M (car xy) (cadr xy)))))))
+                (ms-tag 'epsilon-type (if (ms-typed? ON (monoidal-functor-epsilon F) (monoidal-unit N) (Fo (monoidal-unit M))) '() (list '()))))))
+    (if (pair? laws) laws
+        (append
+         (ms-tag 'mu-naturality
+                 (ms-collect (ms-tuples 2 ars)
+                             (lambda (fg) (let ((f (car fg)) (g (cadr fg)))
+                                            (co-equal? ON (co-compose ON (mu (co-tgt OM f) (co-tgt OM g)) (monoidal-tensor-arrows N (Fa f) (Fa g)))
+                                                       (co-compose ON (Fa (monoidal-tensor-arrows M f g)) (mu (co-src OM f) (co-src OM g))))))))
+         (monoidal-functor-associativity-violations F)
+         (monoidal-functor-unit-violations F)))))
+;; F(c_{x,y}) o mu_{x,y} = mu_{y,x} o c'_{Fx,Fy}
+(define (braided-monoidal-functor-violations F)
+  (let* ((M (monoidal-functor-source F)) (N (monoidal-functor-target F))
+         (OM (monoidal-category-ops M)) (ON (monoidal-category-ops N))
+         (Fo (lambda (x) (monoidal-functor-object F x))) (cM (ms-braiding M)) (cN (ms-braiding N)))
+    (append (monoidal-functor-violations F)
+            (ms-tag 'functor-braiding
+                    (ms-collect (ms-tuples 2 (category-ops-objects OM))
+                                (lambda (xy) (let ((x (car xy)) (y (cadr xy)))
+                                               (co-equal? ON (co-compose ON (monoidal-functor-arrow F (cM x y)) (monoidal-functor-mu F x y))
+                                                          (co-compose ON (monoidal-functor-mu F y x) (cN (Fo x) (Fo y)))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Monoidal structures on finite categories
+;; ---------------------------------------------------------------------------
+;; T: a core.category functor (category-product C C) -> C
+(define (finite-monoidal-category C T unit associator left-unitor right-unitor . braiding)
+  (make-monoidal-category (finite-category-ops C)
+                          (lambda (x y) (functor-object T (category-product-object C C x y)))
+                          (lambda (f g) (functor-arrow T (category-product-arrow C C f g)))
+                          unit associator left-unitor right-unitor
+                          (if (null? braiding) #f (car braiding))
+                          'finite-monoidal-category))
+
+;; the discrete category on a finite monoid (0..n-1, mul, e), strict; the
+;; braiding (identity arrows) exists exactly when mul is commutative
+(define (monoid-monoidal-category n mul e)
+  (let* ((C (discrete-category n))
+         (T (functor-from-procedures (category-product C C) C
+                                     (lambda (p) (mul (quotient p n) (remainder p n)))
+                                     (lambda (a) (category-identity C (mul (quotient a n) (remainder a n))))))
+         (id (lambda (x) (category-identity C x)))
+         (commutative (let loop ((ps (ms-pairs (ms-range n) (ms-range n))))
+                        (or (null? ps) (and (= (mul (car (car ps)) (cadr (car ps))) (mul (cadr (car ps)) (car (car ps)))) (loop (cdr ps)))))))
+    (finite-monoidal-category C T e
+                              (lambda (x y z) (id (mul (mul x y) z)))
+                              id id
+                              (if commutative (lambda (x y) (id (mul x y))) #f))))
+
+;; a finite meet-semilattice with a top object, cartesian monoidal
+(define (meet-monoidal-category P)
+  (let* ((n (category-object-count P))
+         (top (let ((ts (category-terminal-objects P))) (if (null? ts) (error "core.monoidal: no top object") (car ts))))
+         (meet (lambda (x y) (or (category-meet P x y) (error "core.monoidal: no meet" x y))))
+         (arrow (lambda (x y) (or (category-thin-arrow P x y) (error "core.monoidal: no arrow" x y))))
+         (T (functor-from-procedures (category-product P P) P
+                                     (lambda (p) (meet (quotient p n) (remainder p n)))
+                                     (lambda (a) (let* ((m (category-arrow-count P)) (f (quotient a m)) (g (remainder a m)))
+                                                   (arrow (meet (arrow-source P f) (arrow-source P g)) (meet (arrow-target P f) (arrow-target P g))))))))
+    (if (not (category-thin? P)) (error "core.monoidal: meet-monoidal-category needs a thin category"))
+    (finite-monoidal-category P T top
+                              (lambda (x y z) (arrow (meet (meet x y) z) (meet x (meet y z))))
+                              (lambda (x) (arrow (meet top x) x))
+                              (lambda (x) (arrow (meet x top) x))
+                              (lambda (x y) (arrow (meet x y) (meet y x))))))
+
+;; The skeletal monoidal category of a finite group G = (0..n-1, mul, e)
+;; with Hom(g, g) = Z/m: the arrow (g, a) has index g m + a, composition adds
+;; in Z/m, (g, a) (x) (h, b) = (gh, a + b), alpha_{g,h,k} = (ghk, omega(g,h,k)),
+;; rho_g = (g, omega(g,e,e)), lambda_g = (g, -omega(e,e,g)); a braiding
+;; procedure c gives c_{g,h} = (gh, c(g, h)) (G abelian).
+(define (cocycle-arrow m g a) (+ (* g m) (modulo a m)))
+(define (cocycle-arrow-object m f) (quotient f m))
+(define (cocycle-arrow-value m f) (remainder f m))
+(define (cocycle-monoidal-category n mul e m omega . braiding)
+  (let* ((arrows (map (lambda (f) (vector (quotient f m) (quotient f m) (list (quotient f m) (remainder f m)))) (ms-range (* n m))))
+         (C (make-finite-category n arrows
+                                  (lambda (g f) (if (= (quotient g m) (quotient f m)) (cocycle-arrow m (quotient f m) (+ (remainder g m) (remainder f m))) #f))
+                                  (map (lambda (g) (* g m)) (ms-range n))))
+         (T (functor-from-procedures (category-product C C) C
+                                     (lambda (p) (mul (quotient p n) (remainder p n)))
+                                     (lambda (a) (let ((f (quotient a (* n m))) (g (remainder a (* n m))))
+                                                   (cocycle-arrow m (mul (quotient f m) (quotient g m)) (+ (remainder f m) (remainder g m))))))))
+    (finite-monoidal-category C T e
+                              (lambda (x y z) (cocycle-arrow m (mul (mul x y) z) (omega x y z)))
+                              (lambda (x) (cocycle-arrow m x (- (omega e e x))))
+                              (lambda (x) (cocycle-arrow m x (omega x e e)))
+                              (if (null? braiding) #f
+                                  (let ((c (car braiding))) (lambda (x y) (cocycle-arrow m (mul x y) (c x y))))))))
+
+;; ---------------------------------------------------------------------------
+;; Compact closed and dagger structure
+;; ---------------------------------------------------------------------------
+;; the snake (zigzag) equations for self-dual objects:
+;;   lambda_x o (cap_x (x) id) o alpha^-1_{x,x,x} o (id (x) cup_x) o rho^-1_x = id_x
+;;   rho_x o (id (x) cap_x) o alpha_{x,x,x} o (cup_x (x) id) o lambda^-1_x = id_x
+(define (compact-closed-violations M cup cap)
+  (let* ((O (monoidal-category-ops M)) (t (lambda (f g) (monoidal-tensor-arrows M f g))) (id (lambda (x) (co-id O x)))
+         (inv (lambda (f) (or (co-inverse O f) (error "core.monoidal: a structure arrow is not invertible" f)))))
+    (append
+     (ms-tag 'snake-1
+             (ms-collect (map list (category-ops-objects O))
+                         (lambda (l) (let ((x (car l)))
+                                       (co-equal? O (co-compose* O (inv (monoidal-right-unitor M x)) (t (id x) (cup x))
+                                                                 (inv (monoidal-associator M x x x)) (t (cap x) (id x)) (monoidal-left-unitor M x))
+                                                  (id x))))))
+     (ms-tag 'snake-2
+             (ms-collect (map list (category-ops-objects O))
+                         (lambda (l) (let ((x (car l)))
+                                       (co-equal? O (co-compose* O (inv (monoidal-left-unitor M x)) (t (cup x) (id x))
+                                                                 (monoidal-associator M x x x) (t (id x) (cap x)) (monoidal-right-unitor M x))
+                                                  (id x)))))))))
+;; a dagger: identity on objects, contravariant, involutive, monoidal, with
+;; unitary associator, unitors and braiding
+(define (dagger-violations M dagger)
+  (let* ((O (monoidal-category-ops M)) (ars (category-ops-arrows O)) (obs (category-ops-objects O))
+         (d dagger) (t (lambda (f g) (monoidal-tensor-arrows M f g)))
+         (unitary? (lambda (f) (co-equal? O (co-compose O (d f) f) (co-id O (co-src O f)))))
+         (composable (filter (lambda (p) (co-composable? O (car p) (cadr p))) (ms-pairs ars ars))))
+    (append
+     (ms-tag 'dagger-type (ms-collect (map list ars) (lambda (l) (ms-typed? O (d (car l)) (co-tgt O (car l)) (co-src O (car l))))))
+     (ms-tag 'dagger-involution (ms-collect (map list ars) (lambda (l) (co-equal? O (d (d (car l))) (car l)))))
+     (ms-tag 'dagger-identity (ms-collect (map list obs) (lambda (l) (co-equal? O (d (co-id O (car l))) (co-id O (car l))))))
+     (ms-tag 'dagger-contravariance
+             (ms-collect composable (lambda (p) (co-equal? O (d (co-compose O (car p) (cadr p))) (co-compose O (d (cadr p)) (d (car p)))))))
+     (ms-tag 'dagger-tensor (ms-collect (ms-tuples 2 ars) (lambda (p) (co-equal? O (d (t (car p) (cadr p))) (t (d (car p)) (d (cadr p)))))))
+     (ms-tag 'unitary-associator (ms-collect (ms-tuples 3 obs) (lambda (xyz) (unitary? (monoidal-associator M (car xyz) (cadr xyz) (caddr xyz))))))
+     (ms-tag 'unitary-unitors (ms-collect (map list obs) (lambda (l) (and (unitary? (monoidal-left-unitor M (car l))) (unitary? (monoidal-right-unitor M (car l)))))))
+     (if (monoidal-braiding M)
+         (ms-tag 'unitary-braiding (ms-collect (ms-tuples 2 obs) (lambda (xy) (unitary? ((monoidal-braiding M) (car xy) (cadr xy))))))
+         '()))))
+;; dagger compact (Abramsky-Coecke, Selinger): cap_x = cup_x^dagger and the
+;; cup is symmetric, c_{x,x} o cup_x = cup_x
+(define (dagger-compact-violations M dagger cup cap)
+  (let* ((O (monoidal-category-ops M)) (c (ms-braiding M)))
+    (append (compact-closed-violations M cup cap)
+            (dagger-violations M dagger)
+            (ms-tag 'cap-is-cup-dagger (ms-collect (map list (category-ops-objects O)) (lambda (l) (co-equal? O (cap (car l)) (dagger (cup (car l)))))))
+            (ms-tag 'cup-symmetric (ms-collect (map list (category-ops-objects O)) (lambda (l) (co-equal? O (co-compose O (c (car l) (car l)) (cup (car l))) (cup (car l)))))))))

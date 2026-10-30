@@ -1,0 +1,265 @@
+;;; core.monoidal.finvect -- FinVect over an exact carrier: linear maps between
+;;; tensor products of finite-dimensional spaces with exact entries, their
+;;; composition, tensor product (Kronecker), the symmetric braiding, the
+;;; compact closed structure (cups and caps) and the dagger.
+;;;
+;;; Usage: (require core.monoidal.finvect)   or   (require core.monoidal)
+;;;
+;;; Representation (public):
+;;;   object      a list of positive dimensions (d1 ... dk), the space
+;;;               S^d1 (x) ... (x) S^dk; () is the unit, S itself. Tensor of
+;;;               objects is append, so this FinVect is strict monoidal.
+;;;   linear map  #(linear-map S dom cod rows): S an exact-scalars carrier
+;;;               (core.monoidal.scalars), dom and cod objects, rows a vector
+;;;               of |cod| rows of |dom| entries (|(d1 ... dk)| = d1 ... dk).
+;;;               For S = Z or Q the rows are a core.integer_linalg matrix.
+;;;   basis       the basis vector |i1 ... ik> of (d1 ... dk) has the flat
+;;;               index ((i1 d2 + i2) d3 + ...) + ik: the first factor is the
+;;;               most significant digit, and (f (x) g) has entries
+;;;               f[r1, c1] g[r2, c2] at (r1 |cod g| + r2, c1 |dom g| + c2).
+;;;
+;;; The compact structure is the symmetric self-dual one of the standard
+;;; basis: the cup on A is sum_a |a a> : () -> A (x) A and the cap its
+;;; transpose, so the snake equations hold on the nose and A* = A. The dagger
+;;; is the conjugate transpose (the identity conjugation on Z and Q), which
+;;; makes FinVect over Q(zeta_n) a dagger compact category (P. Selinger,
+;;; "Dagger compact closed categories and completely positive maps", 2007).
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician" (1998),
+;;; VII.1 and VII.7; G. M. Kelly, M. L. Laplaza, "Coherence for compact
+;;; closed categories", JPAA 19 (1980); B. Coecke, A. Kissinger, "Picturing
+;;; Quantum Processes" (2017), ch. 4-5; nLab: "Vect", "compact closed
+;;; category", "dagger-compact category".
+
+(require stdlib)
+(require core.monoidal.scalars)
+
+(provide linear-map make-linear-map linear-map? linear-map-scalars linear-map-domain linear-map-codomain
+         linear-map-rows linear-map-entry finvect-dimension
+         linear-map-identity linear-map-zero linear-map-compose linear-map-compose-all linear-map-tensor
+         linear-map-tensor-all linear-map-swap linear-map-permutation linear-map-cup linear-map-cap
+         linear-map-dagger linear-map-transpose linear-map-conjugate linear-map-scale linear-map-add
+         linear-map-equal? linear-map-zero? linear-map-proportional linear-map-apply linear-map-trace
+         linear-map-state linear-map-effect linear-map-basis-state linear-map-scalar linear-map-scalar-value
+         linear-map-from-integer-matrix linear-map-retype linear-map-map-entries linear-map-inverse)
+
+(define (fv-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (finvect-dimension obj) (let loop ((l obj) (acc 1)) (if (null? l) acc (loop (cdr l) (* acc (car l))))))
+(define (fv-check-object obj)
+  (if (not (and (list? obj) (let loop ((l obj)) (or (null? l) (and (integer? (car l)) (exact? (car l)) (> (car l) 0) (loop (cdr l)))))))
+      (error "core.monoidal.finvect: an object is a list of positive dimensions" obj))
+  obj)
+
+(define (make-linear-map S dom cod rows)
+  (fv-check-object dom) (fv-check-object cod)
+  (let ((m (finvect-dimension cod)) (n (finvect-dimension dom)))
+    (if (not (and (vector? rows) (= m (vector-length rows))
+                  (let loop ((i 0)) (or (= i m) (and (vector? (vector-ref rows i)) (= n (vector-length (vector-ref rows i))) (loop (+ i 1)))))))
+        (error "core.monoidal.finvect: rows do not match the shape" dom cod))
+    (vector 'linear-map S dom cod rows)))
+;; entries from a procedure (r c) -> element
+(define (linear-map S dom cod entry)
+  (let ((m (finvect-dimension cod)) (n (finvect-dimension dom)))
+    (make-linear-map S dom cod
+                     (let ((rows (make-vector m #f)))
+                       (do ((r 0 (+ r 1))) ((= r m) rows)
+                         (let ((row (make-vector n #f)))
+                           (do ((c 0 (+ c 1))) ((= c n)) (vector-set! row c (entry r c)))
+                           (vector-set! rows r row)))))))
+(define (linear-map? f) (and (vector? f) (= 5 (vector-length f)) (eq? (vector-ref f 0) 'linear-map)))
+(define (linear-map-scalars f) (vector-ref f 1))
+(define (linear-map-domain f) (vector-ref f 2))
+(define (linear-map-codomain f) (vector-ref f 3))
+(define (linear-map-rows f) (vector-ref f 4))
+(define (linear-map-entry f r c) (vector-ref (vector-ref (vector-ref f 4) r) c))
+(define (fv-rows f) (finvect-dimension (linear-map-codomain f)))
+(define (fv-cols f) (finvect-dimension (linear-map-domain f)))
+;; the same matrix read between other objects of the same total dimensions
+(define (linear-map-retype f dom cod)
+  (if (not (and (= (finvect-dimension dom) (fv-cols f)) (= (finvect-dimension cod) (fv-rows f))))
+      (error "core.monoidal.finvect: retype changes the total dimension" dom cod))
+  (vector 'linear-map (linear-map-scalars f) dom cod (linear-map-rows f)))
+(define (linear-map-map-entries f proc)
+  (let ((S (linear-map-scalars f)))
+    (linear-map S (linear-map-domain f) (linear-map-codomain f) (lambda (r c) (proc (linear-map-entry f r c))))))
+;; a Z or Q matrix of core.integer_linalg (a vector of rows), dom and cod given
+(define (linear-map-from-integer-matrix S dom cod M)
+  (linear-map S dom cod (lambda (r c) (scalars-embed S (vector-ref (vector-ref M r) c)))))
+
+(define (linear-map-identity S obj)
+  (let ((zero (scalars-zero S)) (one (scalars-one S)))
+    (linear-map S obj obj (lambda (r c) (if (= r c) one zero)))))
+(define (linear-map-zero S dom cod) (let ((zero (scalars-zero S))) (linear-map S dom cod (lambda (r c) zero))))
+(define (fv-same-scalars f g)
+  (if (not (equal? (scalars-name (linear-map-scalars f)) (scalars-name (linear-map-scalars g))))
+      (error "core.monoidal.finvect: maps over different carriers" (scalars-name (linear-map-scalars f)) (scalars-name (linear-map-scalars g))))
+  (linear-map-scalars f))
+
+;; g o f (first f, then g); zero entries of f are skipped
+(define (linear-map-compose g f)
+  (let ((S (fv-same-scalars g f)))
+    (if (not (equal? (linear-map-codomain f) (linear-map-domain g)))
+        (error "core.monoidal.finvect: composite of maps whose objects do not match" (linear-map-codomain f) (linear-map-domain g)))
+    (let* ((m (fv-rows g)) (k (fv-rows f)) (n (fv-cols f)) (zero (scalars-zero S))
+           (frows (linear-map-rows f)) (grows (linear-map-rows g))
+           (rows (make-vector m #f)))
+      (do ((r 0 (+ r 1))) ((= r m))
+        (let ((out (make-vector n zero)) (grow (vector-ref grows r)))
+          (do ((j 0 (+ j 1))) ((= j k))
+            (let ((a (vector-ref grow j)))
+              (if (not (scalars-zero? S a))
+                  (let ((frow (vector-ref frows j)))
+                    (do ((c 0 (+ c 1))) ((= c n))
+                      (let ((b (vector-ref frow c)))
+                        (if (not (scalars-zero? S b))
+                            (vector-set! out c (scalars-add S (vector-ref out c) (scalars-mul S a b))))))))))
+          (vector-set! rows r out)))
+      (make-linear-map S (linear-map-domain f) (linear-map-codomain g) rows))))
+;; (linear-map-compose-all f1 f2 ... fk) = fk o ... o f1: the list in diagram order
+(define (linear-map-compose-all f . fs)
+  (let loop ((acc f) (l fs)) (if (null? l) acc (loop (linear-map-compose (car l) acc) (cdr l)))))
+(define (linear-map-tensor f g)
+  (let* ((S (fv-same-scalars f g)) (zero (scalars-zero S))
+         (m2 (fv-rows g)) (n2 (fv-cols g)))
+    (linear-map S (append (linear-map-domain f) (linear-map-domain g)) (append (linear-map-codomain f) (linear-map-codomain g))
+                (lambda (r c)
+                  (let ((a (linear-map-entry f (quotient r m2) (quotient c n2))))
+                    (if (scalars-zero? S a) zero
+                        (let ((b (linear-map-entry g (remainder r m2) (remainder c n2))))
+                          (if (scalars-zero? S b) zero (scalars-mul S a b)))))))))
+(define (linear-map-tensor-all f . fs)
+  (let loop ((acc f) (l fs)) (if (null? l) acc (loop (linear-map-tensor acc (car l)) (cdr l)))))
+
+;; digits of a flat index in the mixed radix of obj, most significant first
+(define (fv-digits obj idx)
+  (let loop ((ds (reverse obj)) (idx idx) (acc '()))
+    (if (null? ds) acc (loop (cdr ds) (quotient idx (car ds)) (cons (remainder idx (car ds)) acc)))))
+(define (fv-index obj digits)
+  (let loop ((ds obj) (gs digits) (acc 0)) (if (null? ds) acc (loop (cdr ds) (cdr gs) (+ (* acc (car ds)) (car gs))))))
+
+;; the wire permutation obj -> (obj[p0] ... obj[pk-1]): output wire j is
+;; input wire p_j
+(define (linear-map-permutation S obj perm)
+  (let* ((ov (list->vector obj)) (cod (map (lambda (p) (vector-ref ov p)) perm))
+         (zero (scalars-zero S)) (one (scalars-one S)))
+    (linear-map S obj cod
+                (lambda (r c)
+                  (let ((dv (list->vector (fv-digits obj c))))
+                    (if (= r (fv-index cod (map (lambda (p) (vector-ref dv p)) perm))) one zero))))))
+;; sigma_{A,B} : A (x) B -> B (x) A
+(define (linear-map-swap S A B)
+  (let ((a (length A)) (b (length B)))
+    (linear-map-permutation S (append A B) (append (map (lambda (j) (+ a j)) (fv-range b)) (fv-range a)))))
+;; the cup eta_A : () -> A (x) A and the cap eps_A : A (x) A -> ()
+(define (linear-map-cup S A)
+  (let ((n (finvect-dimension A)) (zero (scalars-zero S)) (one (scalars-one S)))
+    (linear-map S '() (append A A) (lambda (r c) (if (= (quotient r n) (remainder r n)) one zero)))))
+(define (linear-map-cap S A) (linear-map-transpose (linear-map-cup S A)))
+
+(define (linear-map-transpose f)
+  (linear-map (linear-map-scalars f) (linear-map-codomain f) (linear-map-domain f) (lambda (r c) (linear-map-entry f c r))))
+(define (linear-map-conjugate f)
+  (let ((S (linear-map-scalars f))) (linear-map-map-entries f (lambda (x) (scalars-conj S x)))))
+(define (linear-map-dagger f) (linear-map-conjugate (linear-map-transpose f)))
+(define (linear-map-scale f s)
+  (let ((S (linear-map-scalars f))) (linear-map-map-entries f (lambda (x) (scalars-mul S s x)))))
+(define (linear-map-add f g)
+  (let ((S (fv-same-scalars f g)))
+    (if (not (and (equal? (linear-map-domain f) (linear-map-domain g)) (equal? (linear-map-codomain f) (linear-map-codomain g))))
+        (error "core.monoidal.finvect: sum of maps with different objects"))
+    (linear-map S (linear-map-domain f) (linear-map-codomain f) (lambda (r c) (scalars-add S (linear-map-entry f r c) (linear-map-entry g r c))))))
+
+;; equality of matrices; the objects only need equal total dimensions, so a
+;; map and its retyping compare equal (strictness of the tensor)
+(define (linear-map-equal? f g)
+  (let ((S (fv-same-scalars f g)))
+    (and (= (fv-rows f) (fv-rows g)) (= (fv-cols f) (fv-cols g))
+         (let loop ((r 0))
+           (or (= r (fv-rows f))
+               (and (let inner ((c 0))
+                      (or (= c (fv-cols f))
+                          (and (scalars-equal? S (linear-map-entry f r c) (linear-map-entry g r c)) (inner (+ c 1)))))
+                    (loop (+ r 1))))))))
+(define (linear-map-zero? f)
+  (let ((S (linear-map-scalars f)))
+    (let loop ((r 0))
+      (or (= r (fv-rows f))
+          (and (let inner ((c 0)) (or (= c (fv-cols f)) (and (scalars-zero? S (linear-map-entry f r c)) (inner (+ c 1)))))
+               (loop (+ r 1)))))))
+;; the scalar c with f = c g, or #f when there is none (g = 0 and f /= 0, or
+;; f and g not proportional); 0 when f = 0. Needs a field.
+(define (linear-map-proportional f g)
+  (let ((S (fv-same-scalars f g)))
+    (if (not (and (= (fv-rows f) (fv-rows g)) (= (fv-cols f) (fv-cols g)))) #f
+        (let find ((r 0) (c 0))
+          (cond ((= r (fv-rows g)) (if (linear-map-zero? f) (scalars-zero S) #f))
+                ((= c (fv-cols g)) (find (+ r 1) 0))
+                ((scalars-zero? S (linear-map-entry g r c)) (find r (+ c 1)))
+                (else (let ((s (scalars-div S (linear-map-entry f r c) (linear-map-entry g r c))))
+                        (if (linear-map-equal? f (linear-map-scale g s)) s #f))))))))
+;; f applied to a coordinate vector of its domain
+(define (linear-map-apply f v)
+  (let* ((S (linear-map-scalars f)) (m (fv-rows f)) (n (fv-cols f)) (out (make-vector m (scalars-zero S))))
+    (do ((r 0 (+ r 1))) ((= r m) out)
+      (let ((row (vector-ref (linear-map-rows f) r)))
+        (do ((c 0 (+ c 1))) ((= c n))
+          (let ((a (vector-ref row c)) (b (vector-ref v c)))
+            (if (not (or (scalars-zero? S a) (scalars-zero? S b)))
+                (vector-set! out r (scalars-add S (vector-ref out r) (scalars-mul S a b))))))))))
+(define (linear-map-trace f)
+  (let ((S (linear-map-scalars f)))
+    (if (not (= (fv-rows f) (fv-cols f))) (error "core.monoidal.finvect: trace of a non-square map"))
+    (scalars-sum S (map (lambda (i) (linear-map-entry f i i)) (fv-range (fv-rows f))))))
+;; states () -> A and effects A -> () from coordinate lists or vectors
+(define (linear-map-state S obj coords)
+  (let ((v (if (vector? coords) coords (list->vector coords)))) (linear-map S '() obj (lambda (r c) (vector-ref v r)))))
+(define (linear-map-effect S obj coords)
+  (let ((v (if (vector? coords) coords (list->vector coords)))) (linear-map S obj '() (lambda (r c) (vector-ref v c)))))
+(define (linear-map-basis-state S obj digits)
+  (let ((k (fv-index obj digits)) (zero (scalars-zero S)) (one (scalars-one S)))
+    (linear-map S '() obj (lambda (r c) (if (= r k) one zero)))))
+;; a scalar as a map () -> (), and back
+(define (linear-map-scalar S s) (linear-map S '() '() (lambda (r c) s)))
+(define (linear-map-scalar-value f)
+  (if (not (and (= 1 (fv-rows f)) (= 1 (fv-cols f)))) (error "core.monoidal.finvect: not a scalar" (linear-map-domain f) (linear-map-codomain f)))
+  (linear-map-entry f 0 0))
+
+;; the inverse of an invertible map, by Gauss-Jordan elimination over the
+;; field (over Z: over Q, kept when the inverse is integral); #f when there
+;; is none
+(define (linear-map-inverse f)
+  (let ((S (linear-map-scalars f)))
+    (if (eq? (scalars-name S) 'Z)
+        (let ((g (fv-gauss-inverse (vector 'linear-map (rational-scalars) (linear-map-domain f) (linear-map-codomain f) (linear-map-rows f)))))
+          (and g (let ((rows (linear-map-rows g)))
+                   (let ok ((r 0)) (or (= r (vector-length rows))
+                                       (and (let c ((k 0)) (or (= k (vector-length (vector-ref rows r))) (and (integer? (vector-ref (vector-ref rows r) k)) (c (+ k 1)))))
+                                            (ok (+ r 1))))))
+               (vector 'linear-map S (linear-map-domain g) (linear-map-codomain g) (linear-map-rows g))))
+        (fv-gauss-inverse f))))
+(define (fv-gauss-inverse f)
+  (let* ((S (linear-map-scalars f)) (n (fv-rows f)) (zero (scalars-zero S)) (one (scalars-one S)))
+    (if (not (= n (fv-cols f))) #f
+        (let ((a (make-vector n #f)))
+          (do ((r 0 (+ r 1))) ((= r n))
+            (let ((row (make-vector (* 2 n) zero)))
+              (do ((c 0 (+ c 1))) ((= c n)) (vector-set! row c (linear-map-entry f r c)))
+              (vector-set! row (+ n r) one)
+              (vector-set! a r row)))
+          (let column ((c 0))
+            (if (= c n)
+                (linear-map S (linear-map-codomain f) (linear-map-domain f) (lambda (r k) (vector-ref (vector-ref a r) (+ n k))))
+                (let pivot ((p c))
+                  (cond ((= p n) #f)
+                        ((scalars-zero? S (vector-ref (vector-ref a p) c)) (pivot (+ p 1)))
+                        (else
+                         (let ((t (vector-ref a p))) (vector-set! a p (vector-ref a c)) (vector-set! a c t))
+                         (let* ((row (vector-ref a c)) (inv (scalars-inverse S (vector-ref row c))))
+                           (do ((k 0 (+ k 1))) ((= k (* 2 n))) (vector-set! row k (scalars-mul S inv (vector-ref row k))))
+                           (do ((r 0 (+ r 1))) ((= r n))
+                             (if (not (= r c))
+                                 (let* ((other (vector-ref a r)) (x (vector-ref other c)))
+                                   (if (not (scalars-zero? S x))
+                                       (do ((k 0 (+ k 1))) ((= k (* 2 n)))
+                                         (vector-set! other k (scalars-sub S (vector-ref other k) (scalars-mul S x (vector-ref row k))))))))))
+                         (column (+ c 1))))))))))))
