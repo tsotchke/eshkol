@@ -143,8 +143,8 @@ still mentions a variable of that `let` is erased when it leaves scope.
 
 | Finding | `--types=gradual` (default) | `--types=strict` (`--strict-types`) | `--unsafe` |
 |---|---|---|---|
-| A failed obligation of the dependent fragment: an index not definitionally equal to the one required, a universe inconsistency, an ill-formed Pi/Sigma/family type, a family or dependent call with the wrong number of arguments, a known index out of bounds, assigning an index variable | **error** | **error** | not reported |
-| A nominal mismatch, including those the checking direction finds | warning | **error** | not reported |
+| A failed obligation of the dependent fragment: an index not definitionally equal to the one required, a universe inconsistency, an ill-formed Pi/Sigma/family type, a family or dependent call with the wrong number of arguments, assigning an index variable | **error** | **error** | not reported |
+| A nominal mismatch, including those the checking direction finds, and a vector index known statically to be outside a length known statically | warning | **error** | not reported |
 | A linearity violation (unchanged) | error | error | not reported |
 | An index not known statically at a typed boundary (a `Vector` of unknown length passed where `(vector real 3)` is expected) | accepted | accepted | accepted |
 

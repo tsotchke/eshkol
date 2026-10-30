@@ -640,7 +640,7 @@ public:
      * dependent fragment that is provably not met -- an index that is not
      * definitionally equal to the one required, a universe inconsistency, an
      * ill-formed Pi/Sigma/family type, a dependent application with the
-     * wrong arity, an index out of bounds. Only programs that write dependent
+     * wrong arity, an assigned index variable. Only programs that write dependent
      * types can incur one, so it is fatal in every mode except `--unsafe`,
      * like a linearity violation.
      */
@@ -912,6 +912,7 @@ private:
         size_t deferred;
         size_t linearity;
         std::map<std::string, int> linear_usage;
+        size_t obligations = 0;
     };
     SpeculationMark markSpeculation() const;
     /** Undo what the pass since @p mark recorded. */

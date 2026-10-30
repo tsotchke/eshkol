@@ -82,8 +82,7 @@ output binary is written**. In the default gradual mode the same programs report
 
 **Failed dependent-type obligations are fatal in both modes** (ADR 0042): an
 index that is not definitionally equal to the one a type requires, a universe
-inconsistency, an ill-formed Pi, Sigma or family type, a known index out of
-bounds. Only a program that writes a dependent type can incur one. The bytecode
+inconsistency, an ill-formed Pi, Sigma or family type. Only a program that writes a dependent type can incur one. The bytecode
 VM refuses the same programs.
 
 **Linearity violations are likewise fatal in both modes.** Gradual

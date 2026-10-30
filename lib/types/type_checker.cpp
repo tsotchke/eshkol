@@ -2834,7 +2834,12 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
                         const TermNode idx = terms.node(terms.normalize(*index));
                         if (len.kind == TermKind::IntLit && idx.kind == TermKind::IntLit &&
                             idx.value >= len.value && idx.value >= 0) {
-                            reportObligation(func_name + ": index " + std::to_string(idx.value) +
+                            // An index known statically to be past a
+                            // length known statically: a type error of
+                            // the program's own values, reported with
+                            // the mode's severity (the runtime check
+                            // still raises it as a catchable condition).
+                            reportTypeIssue(func_name + ": index " + std::to_string(idx.value) +
                                                  " is outside " +
                                                  env_.getTypeName(arg_types[0].inferred_type),
                                              &idx_arg);
@@ -3591,6 +3596,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
             const size_t errors_mark = errors_.size();
             const size_t deferred_mark = deferred_diagnostics_.size();
             const size_t linearity_mark = linearity_violations_;
+            const size_t obligation_mark = obligation_violations_;
 
             loop_frames_.push_back(LoopFrame{let.name, loop_scope, loop_type,
                                              std::vector<std::vector<TypeId>>(params.size())});
@@ -3639,6 +3645,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeLetTask(eshkol_ast_t* e
             errors_.resize(errors_mark);
             deferred_diagnostics_.resize(deferred_mark);
             linearity_violations_ = linearity_mark;
+            obligation_violations_ = obligation_mark;
             ctx_.restoreLinearUsage(linear_before);
         }
 
@@ -4039,13 +4046,14 @@ void TypeChecker::noteRecursiveUse(const std::string& name, TypeId bound) {
 
 TypeChecker::SpeculationMark TypeChecker::markSpeculation() const {
     return SpeculationMark{errors_.size(), deferred_diagnostics_.size(), linearity_violations_,
-                           ctx_.snapshotLinearUsage()};
+                           ctx_.snapshotLinearUsage(), obligation_violations_};
 }
 
 void TypeChecker::rollbackSpeculation(const SpeculationMark& mark) {
     errors_.resize(mark.errors);
     deferred_diagnostics_.resize(mark.deferred);
     linearity_violations_ = mark.linearity;
+    obligation_violations_ = mark.obligations;
     ctx_.restoreLinearUsage(mark.linear_usage);
 }
 
@@ -4408,6 +4416,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDoTask(eshkol_ast_t* ex
         const size_t errors_mark = errors_.size();
         const size_t deferred_mark = deferred_diagnostics_.size();
         const size_t linearity_mark = linearity_violations_;
+        const size_t obligation_mark = obligation_violations_;
 
         ++speculation_depth_;
         if (test) (co_await synthesizeTask(test));
@@ -4448,6 +4457,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDoTask(eshkol_ast_t* ex
         errors_.resize(errors_mark);
         deferred_diagnostics_.resize(deferred_mark);
         linearity_violations_ = linearity_mark;
+        obligation_violations_ = obligation_mark;
         ctx_.restoreLinearUsage(linear_before);
     }
 

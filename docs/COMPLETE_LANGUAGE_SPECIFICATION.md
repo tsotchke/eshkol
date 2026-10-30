@@ -1033,8 +1033,9 @@ records the decision.
    `--unsafe`, when an index is not definitionally equal to the one a type
    requires, a family argument's universe exceeds its parameter's, a Pi, Sigma
    or family type is ill-formed or applied to the wrong number of arguments,
-   a vector index known statically is outside a length known statically, or a
-   variable a dependent type names is assigned with `set!`. An index that is
+   or a variable a dependent type names is assigned with `set!`. A vector
+   index known statically to be outside a length known statically is a type
+   error with the mode's severity (a warning in gradual mode). An index that is
    not known statically is accepted. The bytecode VM refuses the same
    programs.
 
