@@ -2546,6 +2546,25 @@ oracles:
         label: Placeholder for v1.5 symbol embeddings, soft unification, LSTM/GRU, differentiable logic, KB attention, and gradient estimators
         action: replace_with_v1_5_intelligence_oracle
 
+  # -----------------------------------------------------------------
+  # v1.6-reasoning readiness -- core.reasoning (ADR-0051).
+  # Producer: scripts/run_reasoning_gate.sh runs the sixteen CTest entries
+  # that own the behaviour (eight suites, JIT and AOT) and every example on
+  # docs/reference/stdlib/reasoning.md; PASS only when all of them ran and
+  # passed.
+  # -----------------------------------------------------------------
+  - name: v1.6-release
+    aliases: [v1.6, release-1.6, reasoning]
+    requires:
+      - id: v16_reasoning
+        runtime_event:
+          event_kinds: [v1_6_reasoning]
+          event_names: ["v16_reasoning"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'core.reasoning (ADR-0051): SLD resolution with cut, negation as failure and linear tabling (naive reverse, n-queens, zebra); stratified Datalog on recursive DBSP circuits with exact signed updates; finite-domain propagation with Regin all-different and branch and bound; CDCL SAT with DRAT proofs checked by an independent checker; SPO/POS/OSP triple store with a select form; TransE/DistMult/ComplEx/RotatE trained with reverse-mode gradients; incremental ansatz search; cross-engine soundness suite; JIT, AOT and the reference-page examples all pass'
+        action: ./scripts/run_reasoning_gate.sh
+
   # ─────────────────────────────────────────────────────────────────
   # SDNC paper reproducibility — the headline claim from
   #   "The Self-Differentiating Neural Computer: Computable Transformers

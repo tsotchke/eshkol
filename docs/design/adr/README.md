@@ -54,6 +54,7 @@ documentation hub lists the same records in
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
 | [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
+| [0051](0051-reasoning.md) | `core.reasoning`: chaining, constraints and SAT, knowledge graphs | Proposed | 2026-10-30 | — (targets v1.6.0-reasoning; library `lib/core/reasoning/`, gate `scripts/run_reasoning_gate.sh`) |
 
 ## Numbering
 

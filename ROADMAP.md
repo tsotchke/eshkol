@@ -953,11 +953,11 @@ below.
 
 **Focus:** Make the logic engine production-grade.
 
-- [ ] Backward chaining inference (Prolog-style goal-directed proof search with backtracking)
-- [ ] Forward chaining inference (production rules with fixed-point derivation)
-- [ ] Constraint solving (finite domain constraints, SAT solver integration)
-- [ ] Knowledge graphs (RDF-style triple store with SPO/POS/OSP indexing)
-- [ ] Knowledge graph embeddings (entity-relation-entity triples as learnable vectors)
+- [x] Backward chaining inference (Prolog-style goal-directed proof search with backtracking): `core.reasoning.prolog`, SLD resolution with cut, negation as failure and linear tabling (ADR-0051)
+- [x] Forward chaining inference (production rules with fixed-point derivation): `core.reasoning.datalog`, stratified Datalog on recursive DBSP circuits
+- [x] Constraint solving (finite domain constraints, SAT solver integration): `core.reasoning.fd` and the CDCL solver `core.reasoning.sat` with DRAT proofs
+- [x] Knowledge graphs (RDF-style triple store with SPO/POS/OSP indexing): `core.reasoning.kg`
+- [x] Knowledge graph embeddings (entity-relation-entity triples as learnable vectors): `core.reasoning.kge` (TransE, DistMult, ComplEx, RotatE)
 - [ ] Staged AD ABI (ADR-0002 Phase G, ADR-0016 grafts): the dense primitive registry as a
       real table, cotangent-layout and error ABI first-class, strict-mode
       kernel flag
@@ -967,7 +967,7 @@ below.
       operators (composing the shipped tensor towers with the shipped Taylor
       models), plus graded coefficient classes whose product and derivative
       rules hold by construction
-- [ ] Incremental knowledge-base evaluation for search over ansatz families:
+- [x] Incremental knowledge-base evaluation for search over ansatz families (`core.reasoning.ansatz`):
       an ansatz family as a query whose answer updates incrementally as
       constraints are added, on the DBSP spine. Both items are used step by
       step in

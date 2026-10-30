@@ -13,7 +13,7 @@ sources:
 `(make-dbsp-circuit inputs declarations output)` builds a pure immutable
 snapshot. Inputs and output are symbols. Declarations name nodes in topological
 order: `(map out in f)`, `(project out in f)`, `(filter out in predicate)`,
-`(union out left right)`, `(distinct out in)`,
+`(union out left right)`, `(difference out left right)`, `(distinct out in)`,
 `(join out left right left-key right-key emit)`, or
 `(aggregate out in key lift group emit)`. Cycles, duplicate names and
 forward references refuse. Construction admits at most 65536 nodes.
@@ -23,6 +23,8 @@ returns `(new-snapshot . output-delta)`. Repeated inputs consolidate before any
 node runs. Only changed consumers enter the topological worklist. Every retained
 row trace and join arrangement uses the shared persistent radix owner. Joins
 include all three finite product terms; distinct retains exact signed counts.
+`difference` is linear: its change is the change of `left` minus the change of
+`right`, so it composes with `distinct` and semijoins to express negation.
 
 `dbsp-circuit-output` and `(dbsp-circuit-input snapshot name)` explicitly
 materialize full canonical Z-sets. `(dbsp-circuit-work snapshot)` returns a
