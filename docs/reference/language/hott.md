@@ -1,3 +1,16 @@
+---
+kind: reference
+status: current
+owner-area: types
+since: v1.9.0
+sources:
+  - inc/eshkol/types/hott_cubical.h
+  - lib/types/cubical/elab.cpp
+  - lib/types/hott_forms.cpp
+  - lib/hott/foundations.esk
+  - lib/hott/circle.esk
+  - tests/hott/programs/pi1_circle.esk
+---
 # HoTT: identity types, univalence and higher inductive types
 
 Eshkol's type system contains a cubical type theory (ADR-0043): identity

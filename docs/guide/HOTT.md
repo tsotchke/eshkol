@@ -1,3 +1,16 @@
+---
+kind: guide
+status: current
+owner-area: types
+since: v1.9.0
+sources:
+  - inc/eshkol/types/hott_cubical.h
+  - lib/types/cubical/elab.cpp
+  - lib/types/hott_forms.cpp
+  - lib/hott/foundations.esk
+  - lib/hott/circle.esk
+  - tests/hott/programs/pi1_circle.esk
+---
 # Homotopy Type Theory in Eshkol
 
 Eshkol's type system includes a cubical type theory in which equality is a
