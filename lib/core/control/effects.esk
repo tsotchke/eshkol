@@ -101,13 +101,16 @@
 
 ;;; ── the handler context ───────────────────────────────────────────────────
 
-;; Innermost first. %effect-transfer is #t while a handler transfer (an
-;; escape to a delimiter, or a resumption) is crossing dynamic-wind
-;; boundaries: frames then leave the stack to the transfer, which sets it.
-(define %effect-stack '())
+;; The handler context - a list of frames, innermost first - is the thread's
+;; dynamic state, read and written with %effect-context / %effect-context-set!
+;; (held by the runtime on native, like the dynamic-wind chain, so a handler
+;; installed inside `with-region` is never copied out of the region).
+;; %effect-transfer is #t while a handler transfer (an escape to a delimiter,
+;; or a resumption) is crossing dynamic-wind boundaries: frames then leave the
+;; context to the transfer, which sets it.
 (define %effect-transfer #f)
 
-(define (effect-handler-depth) (length %effect-stack))
+(define (effect-handler-depth) (length (%effect-context)))
 
 ;; Frame slots:
 ;;   0 tag              1 clauses           2 return proc or #f
@@ -141,7 +144,7 @@
         (else (%find-clause (cdr clauses) desc))))
 
 (define (effect-handled? op)
-  (%effect-handled-1 (%effect-op-desc op) %effect-stack))
+  (%effect-handled-1 (%effect-op-desc op) (%effect-context)))
 (define (%effect-handled-1 desc s)
   (cond ((null? s) #f)
         ((%find-clause (%frame-clauses (car s)) desc) #t)
@@ -156,7 +159,7 @@
 ;;; an operation handled in place allocates nothing.
 
 (define (%effect-perform desc n a b c rest)
-  (%effect-search desc %effect-stack n a b c rest))
+  (%effect-search desc (%effect-context) n a b c rest))
 
 (define (%effect-search desc s n a b c rest)
   (if (null? s)
@@ -193,19 +196,19 @@
 
 ;; In place: the clause's value is the operation's result.
 (define (%effect-run-tail frame s proc n a b c rest)
-  (let ((saved %effect-stack)
+  (let ((saved (%effect-context))
         (outer (cdr s)))
-    (set! %effect-stack outer)
+    (%effect-context-set! outer)
     (let ((v (%effect-call proc n a b c rest)))
-      (if (eq? %effect-stack outer)
-          (set! %effect-stack saved)
+      (if (eq? (%effect-context) outer)
+          (%effect-context-set! saved)
           ;; a clause operation was resumed elsewhere: rebuild relative to now
-          (set! %effect-stack (append (%stack-prefix frame saved #t) %effect-stack)))
+          (%effect-context-set! (append (%stack-prefix frame saved #t) (%effect-context))))
       v)))
 
 ;; Transfer control to frame's delimiter and run thunk there.
 (define (%effect-escape frame target-stack thunk)
-  (set! %effect-stack target-stack)
+  (%effect-context-set! target-stack)
   (set! %effect-transfer #t)
   ((%frame-delim frame) (lambda () (set! %effect-transfer #f) (thunk))))
 
@@ -228,7 +231,7 @@
 (define (%effect-run-general frame s proc tail? n a b c rest)
   (let ((v (call/cc
             (lambda (resume-k)
-              (let* ((prefix (%stack-prefix frame %effect-stack (not (%frame-shallow? frame))))
+              (let* ((prefix (%stack-prefix frame (%effect-context) (not (%frame-shallow? frame))))
                      (snap (%frames-snapshot prefix)))
                 (%effect-escape frame (cdr s)
                   (lambda ()
@@ -245,7 +248,7 @@
       (lambda (v)
         (%frames-restore! prefix snap)
         (if (%frame-shallow? frame) (vector-set! frame 6 #t))
-        (set! %effect-stack (append prefix %effect-stack))
+        (%effect-context-set! (append prefix (%effect-context)))
         (set! %effect-transfer #t)
         (resume-k v))
       (lambda (v)
@@ -256,7 +259,7 @@
                        (%frames-restore! prefix snap)
                        (vector-set! frame 3 back)
                        (if (%frame-shallow? frame) (vector-set! frame 6 #t))
-                       (set! %effect-stack (append prefix %effect-stack))
+                       (%effect-context-set! (append prefix (%effect-context)))
                        (set! %effect-transfer #t)
                        (resume-k v))))))
             (vector-set! frame 3 saved-delim)
@@ -272,16 +275,16 @@
   (lambda ()
     (if (or (not (vector-ref frame 7)) (not %effect-transfer))
         (begin (vector-set! frame 7 #t)
-               (set! %effect-stack (cons frame %effect-stack))))))
+               (%effect-context-set! (cons frame (%effect-context)))))))
 
 (define (%frame-after frame)
   (lambda ()
     (cond ((vector-ref frame 8) (vector-set! frame 8 #f))
           ((not %effect-transfer)
-           (set! %effect-stack (%stack-after frame %effect-stack))))))
+           (%effect-context-set! (%stack-after frame (%effect-context)))))))
 
 (define (%frame-complete! frame)
-  (set! %effect-stack (%stack-after frame %effect-stack))
+  (%effect-context-set! (%stack-after frame (%effect-context)))
   (vector-set! frame 8 #t))
 
 (define (%effect-handle mode depth return clauses body)
@@ -311,7 +314,7 @@
                  (%frame-before frame)
                  (lambda ()
                    (let ((v (guard (e ((not (eq? (%frame-delim frame) (vector-ref frame 5)))
-                                       (%effect-escape frame (%stack-after frame %effect-stack)
+                                       (%effect-escape frame (%stack-after frame (%effect-context))
                                                        (lambda () (raise e)))))
                               (body))))
                      (%frame-complete! frame)
@@ -323,4 +326,4 @@
                           (lambda () (ret v)))))
           (if (eq? (%frame-delim frame) ret0)
               thunk
-              (%effect-escape frame %effect-stack thunk))))))))
+              (%effect-escape frame (%effect-context) thunk))))))))

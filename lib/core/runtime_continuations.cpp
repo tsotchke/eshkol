@@ -31,6 +31,22 @@ extern "C" void __asan_handle_no_return(void);
 // Dynamic extent belongs to the executing thread, like its exception stack.
 thread_local eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
 
+// The algebraic-effect handler context (ADR-0045) is dynamic state of the
+// executing thread too. The runtime holds it, like the dynamic-wind chain and
+// the exception-handler chain, so a handler installed inside `with-region` is
+// referenced rather than copied out through the region store boundary (a
+// copy would separate the handler from the computation it handles). It is a
+// list of handler frames, innermost first; zero-initialised = '().
+thread_local eshkol_tagged_value_t g_effect_context = {};
+
+extern "C" void eshkol_effect_context_get(eshkol_tagged_value_t* out) {
+    if (out) *out = g_effect_context;
+}
+
+extern "C" void eshkol_effect_context_set(const eshkol_tagged_value_t* value) {
+    if (value) g_effect_context = *value;
+}
+
 /* ── Stack-copying re-entrant continuations ──────────────────────────────────
  *
  * `call/cc` records a setjmp point, but a jmp_buf only names a stack address:

@@ -15918,6 +15918,28 @@ private:
         if (func_name == "current-seconds") co_return system_->currentSeconds(op);
         if (func_name == "current-time") co_return system_->currentTime(op);
         if (func_name == "current-time-ms") co_return system_->currentTimeMs(op);
+        // Algebraic effects (ADR-0045): the handler context is thread dynamic
+        // state held by the runtime (runtime_continuations.cpp), read and
+        // written through an entry-block slot.
+        if (func_name == "%effect-context" && op->call_op.num_vars == 0) {
+            Value* slot = createEntryBlockTaggedSlot("effect_context");
+            builder->CreateStore(Constant::getNullValue(tagged_value_type), slot);
+            FunctionCallee get = module->getOrInsertFunction("eshkol_effect_context_get",
+                FunctionType::get(Type::getVoidTy(*context), {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(get, {slot});
+            co_return builder->CreateLoad(tagged_value_type, slot, "effect_context_value");
+        }
+        if (func_name == "%effect-context-set!" && op->call_op.num_vars == 1) {
+            Value* v = (co_await codegenASTTask(&op->call_op.variables[0]));
+            if (!v) co_return nullptr;
+            v = ensureTaggedValue(v);
+            Value* slot = createEntryBlockTaggedSlot("effect_context_new");
+            builder->CreateStore(v, slot);
+            FunctionCallee set = module->getOrInsertFunction("eshkol_effect_context_set",
+                FunctionType::get(Type::getVoidTy(*context), {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(set, {slot});
+            co_return v;
+        }
         if (func_name == "current-time-ns") co_return system_->currentTimeNs(op);
         if (func_name == "exit") co_return system_->exitProgram(op);
         if (func_name == "command-line") co_return system_->commandLine(op);
@@ -23276,6 +23298,50 @@ private:
         builder->restoreIP(ip);
     }
 
+    // The recursion-depth counter is dynamic state a non-local exit must put
+    // back too: the guarded returns a longjmp skips never decrement it, so a
+    // loop that keeps leaving deep code through raise or a continuation would
+    // reach ESHKOL_MAX_STACK without ever being deep. Same discipline as the
+    // AD state above: an entry-block slot written before setjmp, read first
+    // thing on the landing path.
+    // An alloca for one tagged value in the entry block of the current function.
+    Value* createEntryBlockTaggedSlot(const char* name) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint ip = builder->saveIP();
+        BasicBlock& entry = fn->getEntryBlock();
+        builder->SetInsertPoint(&entry, entry.begin());
+        Value* slot = builder->CreateAlloca(tagged_value_type, nullptr, name);
+        builder->restoreIP(ip);
+        return slot;
+    }
+
+    Value* snapshotRecursionDepth() {
+        Function* save = module->getFunction("eshkol_save_recursion_depth");
+        if (!save) {
+            save = Function::Create(FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                                    Function::ExternalLinkage, "eshkol_save_recursion_depth", module.get());
+        }
+        Function* fn = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint ip = builder->saveIP();
+        BasicBlock& entry = fn->getEntryBlock();
+        builder->SetInsertPoint(&entry, entry.begin());
+        Value* slot = builder->CreateAlloca(builder->getInt64Ty(), nullptr, "recursion_depth_snapshot");
+        builder->restoreIP(ip);
+        builder->CreateCall(save, {slot});
+        return slot;
+    }
+    void restoreRecursionDepthAt(BasicBlock* landing, Value* slot) {
+        Function* restore = module->getFunction("eshkol_restore_recursion_depth");
+        if (!restore) {
+            restore = Function::Create(FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false),
+                                       Function::ExternalLinkage, "eshkol_restore_recursion_depth", module.get());
+        }
+        IRBuilderBase::InsertPoint ip = builder->saveIP();
+        builder->SetInsertPoint(landing, landing->getFirstInsertionPt());
+        builder->CreateCall(restore, {slot});
+        builder->restoreIP(ip);
+    }
+
     // Exception handling: guard expression
     // Syntax: (guard (var clause ...) body ...)
     // Sets up setjmp handler, evaluates body, handles exceptions via clauses
@@ -23387,11 +23453,13 @@ private:
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp is called
         AdForwardSnapshot guard_ad_snapshot = snapshotAdForwardState();   // SW-229
+        Value* guard_ad_snapshot_depth = snapshotRecursionDepth();
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "setjmp_result");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
         restoreAdForwardStateAt(handler_block, guard_ad_snapshot);
+        restoreRecursionDepthAt(handler_block, guard_ad_snapshot_depth);
 
         // Try block - evaluate body
         builder->SetInsertPoint(try_block);
@@ -24101,11 +24169,13 @@ private:
 
         // Call setjmp — returns 0 first time, non-zero when continuation is invoked
         AdForwardSnapshot callcc_ad_snapshot = snapshotAdForwardState();  // SW-229
+        Value* callcc_ad_snapshot_depth = snapshotRecursionDepth();
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "callcc_setjmp");
         Value* was_invoked = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(was_invoked, invoked_bb, normal_bb);
         restoreAdForwardStateAt(invoked_bb, callcc_ad_snapshot);
+        restoreRecursionDepthAt(invoked_bb, callcc_ad_snapshot_depth);
 
         // Normal path: call proc with the continuation
         builder->SetInsertPoint(normal_bb);
@@ -24365,11 +24435,13 @@ private:
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp fires
         AdForwardSnapshot weh_ad_snapshot = snapshotAdForwardState();    // SW-229
+        Value* weh_ad_snapshot_depth = snapshotRecursionDepth();
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "weh_setjmp");
         Value* is_exception = builder->CreateICmpNE(setjmp_result, ConstantInt::get(builder->getInt32Ty(), 0));
 
         builder->CreateCondBr(is_exception, handler_block, try_block);
         restoreAdForwardStateAt(handler_block, weh_ad_snapshot);
+        restoreRecursionDepthAt(handler_block, weh_ad_snapshot_depth);
 
         // Try block: call the thunk (0 args)
         builder->SetInsertPoint(try_block);
