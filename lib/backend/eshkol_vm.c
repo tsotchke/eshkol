@@ -1445,6 +1445,52 @@ static int vm_reject_linear_violations(const char* source, const char* source_na
     return 0;
 }
 
+/* True when @p source writes a refinement type: `(Refine` in any case,
+ * followed by whitespace. Aliases are written with the same form. */
+static int vm_source_carries_refinement(const char* source) {
+    static const char kWord[] = "(refine";
+    for (const char* p = source; *p; ++p) {
+        size_t i = 0;
+        while (kWord[i] && p[i] && (char)tolower((unsigned char)p[i]) == kWord[i]) ++i;
+        if (!kWord[i] && (p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r')) return 1;
+    }
+    return 0;
+}
+
+static EshkolSourceCheckFn g_vm_refinement_check = NULL;
+
+void eshkol_vm_install_refinement_check(EshkolSourceCheckFn fn) {
+    g_vm_refinement_check = fn;
+}
+
+/**
+ * @brief Run the native engine's refinement check (ADR-0044) over @p source.
+ * @return 0 to proceed, nonzero when the VM must refuse this program.
+ */
+static int vm_reject_refinement_violations(const char* source, const char* source_name) {
+    if (!source || !vm_source_carries_refinement(source)) return 0;
+    if (!g_vm_refinement_check) {
+        vm_compile_error("this build cannot verify refinement types",
+                         "no refinement checker is installed; link a driver that "
+                         "calls eshkol_vm_install_refinement_check(), or remove the "
+                         "refinement type annotations");
+        return 1;
+    }
+    int errors = g_vm_refinement_check(source, source_name);
+    if (errors > 0) {
+        vm_compile_error("refusing to compile a program whose refinement types do not hold",
+                         "each refinement error above names the obligation and a "
+                         "counterexample; run with --unsafe to bypass");
+        return 1;
+    }
+    if (errors < 0) {
+        vm_compile_error("refusing to compile a program carrying a refinement type "
+                         "that the front end could not analyse",
+                         "an unverified refinement must not run");
+        return 1;
+    }
+    return 0;
+}
 
 /* Global ESKB output path — aliased through CompilerContext */
 #define g_eskb_output_path g_compiler_ctx.eskb_output
@@ -1461,6 +1507,7 @@ static int compile_and_run(const char* source) {
     vm_reset_compilation_unit_modules();
     vm_clear_import_bindings();
     if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
+    if (vm_reject_refinement_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
     vm_seed_entry_module_path(g_source_file_path);
@@ -2087,6 +2134,10 @@ static int emit_eskb_with_options(const char* source,
     const char* saved_source_path = g_compiler_ctx.source_path;
     g_compiler_ctx.source_path = source_path;
     if (vm_reject_linear_violations(source, source_path ? source_path : output_path)) {
+        g_compiler_ctx.source_path = saved_source_path;
+        return -1;
+    }
+    if (vm_reject_refinement_violations(source, source_path ? source_path : output_path)) {
         g_compiler_ctx.source_path = saved_source_path;
         return -1;
     }
@@ -2867,6 +2918,7 @@ int main(int argc, char** argv) {
      * read, so no compilation path can run ahead of it. Without this the VM
      * enforced nothing at all and ran a qubit clone to completion, exit 0. */
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
+    eshkol_vm_install_refinement_check(eshkol_refinement_check_source);
 
     /* SW-10: resolve the documented resource-limit environment variables before
      * anything runs. The VM sources themselves are freestanding-safe and never

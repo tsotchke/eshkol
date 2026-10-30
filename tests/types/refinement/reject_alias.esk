@@ -1,0 +1,4 @@
+;; expect: refinement violated: argument 1 (n) of 'pred-of-pos'
+(define-type Pos (Refine Integer (> x 0)))
+(define (pred-of-pos (n : Pos)) : Integer (- n 1))
+(display (pred-of-pos (- 3 3)))

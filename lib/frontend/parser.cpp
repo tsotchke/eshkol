@@ -2791,6 +2791,36 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
                 co_return result;
             }
 
+            if (lower == "refine") {
+                // (Refine base predicate) or (Refine base binder predicate):
+                // the refinement type {binder : base | predicate} (ADR-0044).
+                // The predicate is an ordinary expression; which forms it may
+                // use is decided by the refinement checker, not here.
+                hott_type_expr_t* base = (co_await parseTypeExpression(tokenizer));
+                if (!base) co_return nullptr;
+                eshkol_ast_t first_expr = (co_await parse_expression(tokenizer));
+                if (first_expr.type == ESHKOL_INVALID) co_return nullptr;
+                std::string binder;
+                eshkol_ast_t predicate = first_expr;
+                if (tokenizer.peekToken().type != TOKEN_RPAREN) {
+                    if (first_expr.type != ESHKOL_VAR || !first_expr.variable.id) {
+                        PARSE_ERROR_AT(token, "expected a binder name in (Refine type binder predicate)");
+                        co_return nullptr;
+                    }
+                    binder = first_expr.variable.id;
+                    predicate = (co_await parse_expression(tokenizer));
+                    if (predicate.type == ESHKOL_INVALID) co_return nullptr;
+                }
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(token, "expected ) after refinement predicate");
+                    co_return nullptr;
+                }
+                eshkol_ast_t* pred = new eshkol_ast_t(predicate);
+                co_return hott_make_refine_type(base, binder.empty() ? nullptr : binder.c_str(),
+                                                pred);
+            }
+
             if (lower == "forall") {
                 // (forall (a b ...) body-type)
                 Token vars_start = tokenizer.nextToken();

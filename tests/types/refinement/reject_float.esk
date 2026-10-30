@@ -1,0 +1,4 @@
+;; expect: refinement not proved: result of 'shrink'
+(define (shrink (x : (Refine Real (> x 1.0)))) : (Refine Real y (> y 0.0))
+  (- x 1.0))
+(display (shrink 1.5))

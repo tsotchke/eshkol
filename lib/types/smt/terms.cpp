@@ -640,6 +640,12 @@ std::optional<Value> eval(Term t, const Model& m) {
 
 }  // namespace
 
+std::optional<std::string> evaluateToString(Term t, const Model& m) {
+    auto v = eval(t, m);
+    if (!v) return std::nullopt;
+    return v->key();
+}
+
 std::optional<bool> evaluate(Term formula, const Model& m) {
     auto v = eval(formula, m);
     if (!v || v->tag != Value::Tag::Bool) return std::nullopt;

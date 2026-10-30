@@ -1,0 +1,7 @@
+;; An unannotated caller cannot establish the precondition: a gradual-boundary
+;; finding (a warning; an error under --strict-types), and the program runs.
+(define (safe-div (n : Integer) (d : (Refine Integer (not (= d 0))))) : Integer
+  (quotient n d))
+(define (unknown-divisor k) (safe-div 10 k))
+(display (unknown-divisor 5))
+(newline)

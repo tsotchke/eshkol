@@ -1,0 +1,4 @@
+;; expect: refinement not proved: result of 'next' must satisfy (> r x)
+(define (next (x : Integer)) : (Refine Integer r (> r x))
+  (if (> x 100) x (+ x 1)))
+(display (next 3))

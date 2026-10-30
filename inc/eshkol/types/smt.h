@@ -303,6 +303,8 @@ struct Model {
 
 /** Evaluate a formula under @p m; nullopt when a variable is unassigned. */
 std::optional<bool> evaluate(Term formula, const Model& m);
+/** The value of any term under @p m as text (a number, true/false, or @class for Obj). */
+std::optional<std::string> evaluateToString(Term t, const Model& m);
 
 struct Outcome {
     Result result = Result::Unknown;

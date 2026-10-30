@@ -1,0 +1,5 @@
+;; expect: refinement violated: value assigned to 'n'
+(define (count-down (n : (Refine Integer (> n 0)))) : Integer
+  (set! n 0)
+  n)
+(display (count-down 5))
