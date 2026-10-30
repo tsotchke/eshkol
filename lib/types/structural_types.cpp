@@ -718,6 +718,11 @@ bool Solver::unify(TyRef a, TyRef b) {
         return unifyRows(a, b);
     }
 
+    if (a->tag == Tag::Skolem || b->tag == Tag::Skolem) {
+        TyRef k = a->tag == Tag::Skolem ? a : b;
+        TyRef o = a->tag == Tag::Skolem ? b : a;
+        return fail("the rigid type variable `" + s_.show(k) + "` cannot be `" + s_.show(o) + "`");
+    }
     if (a->tag != b->tag) {
         return fail("cannot match `" + s_.show(a) + "` with `" + s_.show(b) + "`");
     }

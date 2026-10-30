@@ -400,6 +400,7 @@ struct StructuralChecker::Impl {
     std::map<std::string, Alias> aliases;
     std::map<std::string, const hott_type_expr_t*> annotations;   // (: name T)
     std::set<std::string> modules;
+    std::set<std::string> module_files;          // "core/records.esk" for each required module
     bool program_known = false;
     bool dump = false;
 
@@ -816,6 +817,39 @@ struct StructuralChecker::Impl {
            std::size(kSessionRules));
     }
 
+    void noteModuleFiles(const eshkol_ast_t* form) {
+        const auto& r = form->operation.require_op;
+        for (uint64_t i = 0; i < r.num_modules; ++i) {
+            if (!r.module_names || !r.module_names[i]) continue;
+            std::string path = r.module_names[i];
+            for (char& ch : path) {
+                if (ch == '.') ch = '/';
+            }
+            module_files.insert(path + ".esk");
+        }
+    }
+
+    /**
+     * A form that came from a required library module rather than from the
+     * program. Library code is typed by its signatures (section 2), not by
+     * checking its implementation here, and its definitions do not shadow
+     * those signatures.
+     */
+    bool libraryForm(const eshkol_ast_t* f) {
+        if (!f || module_files.empty()) return false;
+        const char* file = eshkol_source_file_name(f->source_file_id);
+        if (!file) return false;
+        const std::string path = file;
+        for (const auto& suffix : module_files) {
+            if (path.size() >= suffix.size() &&
+                path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+                (path.size() == suffix.size() || path[path.size() - suffix.size() - 1] == '/')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void noteAlias(const eshkol_ast_t* form) {
         const auto& d = form->operation.define_type_op;
         if (!d.name) return;
@@ -893,10 +927,14 @@ struct StructuralChecker::Impl {
 
     void prepare(const eshkol_ast_t* asts, size_t n) {
         program_known = true;
+        for (size_t i = 0; i < n; ++i) {
+            const eshkol_ast_t* f = &asts[i];
+            if (f->type == ESHKOL_OP && f->operation.op == ESHKOL_REQUIRE_OP) noteModuleFiles(f);
+        }
         std::vector<const eshkol_ast_t*> defines;
         for (size_t i = 0; i < n; ++i) {
             const eshkol_ast_t* f = &asts[i];
-            if (f->type != ESHKOL_OP) continue;
+            if (f->type != ESHKOL_OP || libraryForm(f)) continue;
             if (f->operation.op == ESHKOL_DEFINE_OP && f->operation.define_op.name) {
                 user_defined.insert(f->operation.define_op.name);
                 defines.push_back(f);
@@ -910,7 +948,9 @@ struct StructuralChecker::Impl {
         }
         for (size_t i = 0; i < n; ++i) {
             const eshkol_ast_t* f = &asts[i];
-            if (f->type == ESHKOL_OP && f->operation.op == ESHKOL_REQUIRE_OP) activate(f);
+            if (f->type == ESHKOL_OP && f->operation.op == ESHKOL_REQUIRE_OP && !libraryForm(f)) {
+                activate(f);
+            }
         }
         std::set<const eshkol_ast_t*> chosen;
         for (const eshkol_ast_t* f : defines) {
@@ -951,7 +991,7 @@ struct StructuralChecker::Impl {
             }
             for (size_t i = 0; i < n; ++i) {
                 const eshkol_ast_t* f = &asts[i];
-                if (f->type == ESHKOL_OP && f->operation.op != ESHKOL_DEFINE_OP &&
+                if (f->type == ESHKOL_OP && !libraryForm(f) && f->operation.op != ESHKOL_DEFINE_OP &&
                     f->operation.op != ESHKOL_REQUIRE_OP && f->operation.op != ESHKOL_DEFINE_TYPE_OP &&
                     (mentionsStructural(f) || formHasStructuralAnnotation(f))) {
                     grew = pull(f) || grew;
@@ -1488,7 +1528,13 @@ struct StructuralChecker::Impl {
             bindLocal(varName(let.bindings[i].cons_cell.car), params[i], {let.body}, e,
                       static_cast<const void*>(&e->operation), i);
         }
-        checkRho(let.body, result);
+        if (expected) {
+            checkRho(let.body, result);
+        } else {
+            // Inferred, then joined gradually with the result the recursive
+            // calls were given (branches of a loop body may disagree).
+            result = join(result, inferRho(let.body), let.body);
+        }
         fn_stack.pop_back();
         locals.resize(mark);
         return result;
@@ -1959,6 +2005,8 @@ struct StructuralChecker::Impl {
             return;
         }
         auto& op = form->operation;
+        if (op.op == ESHKOL_REQUIRE_OP && !program_known) noteModuleFiles(form);
+        if (libraryForm(form)) return;
         switch (op.op) {
             case ESHKOL_REQUIRE_OP:
                 activate(form);
