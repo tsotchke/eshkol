@@ -183,7 +183,7 @@ Backend specifics:
   Input ports connect to the source whose name matches exactly, otherwise the
   first containing the name.
 - Messages are complete MIDI 1.0 messages; `midi-send!` refuses malformed
-  ones (wrong length, data byte with the high bit, unterminated SysEx,
+  ones (a length that does not match the message, data byte with the high bit, unterminated SysEx,
   undefined status). Incoming byte streams pass through one parser that
   expands running status, delivers interleaved real-time bytes immediately and
   reassembles SysEx up to 1024 bytes.
@@ -207,7 +207,7 @@ lifecycle functions follow section 8 of the multimedia architecture
 functions are the Eshkol language bridge: they take generation-checked
 integer handles from the runtime handle registry
 (`inc/eshkol/core/handle.h`, kinds window/audio-device/MIDI-port), so a closed
-or wrong-kind handle is refused instead of being dereferenced.
+handle, or a handle of another kind, is refused instead of being dereferenced.
 
 ## Verification
 

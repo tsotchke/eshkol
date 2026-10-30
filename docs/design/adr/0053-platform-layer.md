@@ -19,7 +19,7 @@ sources:
 ---
 # ADR-0053: The v1.8.0 platform layer
 
-**Status:** Accepted
+**Status:** Proposed
 **Scope:** Windows and events, real-time audio, MIDI, Vulkan compute in the
 ordinary GPU dispatch, and embedded cross-compilation (ARM and RISC-V bare
 metal).
@@ -84,8 +84,8 @@ MoltenVK) are not present on the machines this rung is built and verified on.
 5. **The Eshkol surface uses the handle registry.** `lib/platform/*.esk`
    call `eshkol_plat_*` bridge functions with generation-checked integer
    handles (new registry kinds: window, audio device, MIDI port), and each
-   platform object carries a kind tag checked on every borrow. A closed or
-   wrong-kind handle is refused, never dereferenced. Opening a device requires
+   platform object carries a kind tag checked on every borrow. A closed
+   handle, or a handle of another kind, is refused, never dereferenced. Opening a device requires
    the `display`, `audio` or `midi` capability under an installed policy.
 
 6. **Vulkan is a backend of the ordinary GPU dispatch.** `gpu_vulkan.c`
