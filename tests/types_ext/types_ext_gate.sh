@@ -34,6 +34,36 @@ check_output() {   # fixture actual-output-file label
     return 0
 }
 
+# A fixture with a `;; PEER: file.esk` header talks to a second process: the
+# peer is compiled once, started before each engine run of the fixture, and
+# must publish its port (one line) in $TYPES_EXT_PORT_FILE and exit 0.
+start_peer() {   # fixture -> sets PEER_PID, exports TYPES_EXT_PORT_FILE
+    PEER_PID=""
+    local peer; peer=$(sed -n 's/^;; PEER: *//p' "$1" | head -1)
+    [ -z "$peer" ] && return 0
+    local pbin="$WORK/$(basename "$peer" .esk).bin"
+    if [ ! -x "$pbin" ]; then
+        "$ESHKOL_RUN" "$HERE/$peer" -L "$LIBDIR" -o "$pbin" > "$WORK/peer.cout" 2> "$WORK/peer.cerr" ||
+            { fail "$(basename "$1"): peer $peer did not compile: $(grep -m2 -i error "$WORK/peer.cerr")"; return 1; }
+    fi
+    export TYPES_EXT_PORT_FILE="$WORK/$(basename "$1" .esk).port"
+    rm -f "$TYPES_EXT_PORT_FILE"
+    timeout 120 "$pbin" > "$WORK/peer.out" 2> "$WORK/peer.err" &
+    PEER_PID=$!
+    for _ in $(seq 1 300); do
+        grep -q . "$TYPES_EXT_PORT_FILE" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    fail "$(basename "$1"): peer published no port"; return 1
+}
+stop_peer() {    # fixture engine
+    [ -z "$PEER_PID" ] && return 0
+    wait "$PEER_PID"; local prc=$?
+    PEER_PID=""
+    [ $prc -eq 0 ] || { fail "$(basename "$1") [$2]: peer exited $prc: $(head -c 300 "$WORK/peer.err")"; return 1; }
+    return 0
+}
+
 for f in "$HERE"/*_ok.esk; do
     name=$(basename "$f" .esk); ok=1
     bin="$WORK/$name.bin"; rm -f "$bin"
@@ -48,11 +78,15 @@ for f in "$HERE"/*_ok.esk; do
             fail "$name: principal type not reported: $scheme (got: $(grep -m1 "\[types\] ${scheme%% :*} :" "$WORK/$name.cerr"))"; ok=0; }
     done < <(sed -n 's/^;; EXPECT-SCHEME: //p' "$f")
     if has_engine "$f" aot; then
+        start_peer "$f" || { ok=0; continue; }
         timeout 120 "$bin" > "$WORK/$name.aot" 2> "$WORK/$name.aot.err" || { fail "$name [aot]: exit $?"; ok=0; }
+        stop_peer "$f" aot || ok=0
         check_output "$f" "$WORK/$name.aot" aot || ok=0
     fi
     if has_engine "$f" jit; then
+        start_peer "$f" || { ok=0; continue; }
         timeout 300 "$ESHKOL_RUN" -r "$f" -L "$LIBDIR" > "$WORK/$name.jit" 2> "$WORK/$name.jit.err" || { fail "$name [jit]: exit $?"; ok=0; }
+        stop_peer "$f" jit || ok=0
         check_output "$f" "$WORK/$name.jit" jit || ok=0
     fi
     if has_engine "$f" vm && [ "$VM" != none ] && [ -x "$VM" ]; then
