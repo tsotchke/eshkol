@@ -1,0 +1,1385 @@
+;;; core.ring -- ring carriers: the functor-of-points evaluation model.
+;;;
+;;; ADR-0034 (docs/design/adr/0034-ring-carriers-functor-of-points.md),
+;;; library rung. A ring carrier is a commutative ring with identity given
+;;; as data: a versioned descriptor holding the ring operations, the unique
+;;; ring map Z -> R, decidable equality, the unit group, and the declared
+;;; capabilities (characteristic, field?, nilpotency, lawful?, exact?,
+;;; primal, order, euclidean, analytic). A program written once against the
+;;; generic operations (r+ r- r* r-neg r-inv r/ r-expt r= r-int) is a
+;;; polynomial or rational map, and running it over a carrier R takes its
+;;; R-points: ordinary, exact, modular, dual-number, Taylor-jet, polynomial
+;;; and group-ring evaluation are the same program over different carriers.
+;;;
+;;; Carriers provided here:
+;;;   integers        Z, exact integers (int64 promoting to bignum)
+;;;   rationals       Q, exact rationals
+;;;   flonums         IEEE 754 binary64, the IEEE tier (specified per
+;;;                   operation, never called a ring: lawful? is #f)
+;;;   numeric-tower   the native numeric tower as one carrier (R7RS
+;;;                   contagion; also carries the compiler's AD values)
+;;;   (make-zmod m)   Z/m; a field exactly when m is prime
+;;;   (make-jets K n) K[e]/e^n over any carrier K (n = 2: dual numbers)
+;;;   (make-polys K)  K[x] over any carrier K
+;;;   (zset-group-ring op identity inverse)
+;;;                   Z[G] for an abelian group G, as core.dbsp Z-sets
+;;; and core.algebraic_domain makes every number field Q(alpha) and its
+;;; exact AD lifts a carrier.
+;;;
+;;; Refusals are R7RS error objects whose message names the condition and
+;;; whose irritants name the operation, the carrier and the element:
+;;;   ring-not-a-unit          (operation carrier element)
+;;;   ring-no-common-carrier   (operation carrier carrier)
+;;;   ring-not-an-element      (operation carrier value)
+;;;   ring-missing-capability  (operation carrier capability)
+;;;   ring-no-ring-map         (operation source target)
+;;; A refusal never returns a substitute value.
+;;;
+;;; Reference: docs/reference/stdlib/ring.md.
+
+(require core.dbsp)
+
+(provide
+  ;; descriptor and registry
+  make-ring-carrier make-family-carrier ring-carrier? ring-ref ring-carrier=?
+  ring-carrier-name ring-carrier-family ring-carrier-family-id
+  ring-carrier-parameters ring-carrier-abi-version ring-carrier-extra ring-abi-version
+  ring-families ring-registered-carriers ring-register-recognizer!
+  ;; generic operations
+  r0 r1 r+ r- r* r-neg r-inv r/ r-expt r= r-int r-zero? r-one? r-unit?
+  r< r-sum r-product r-quotient r-remainder r-gcd r-analytic ring-primal
+  ;; elements, coercion and dynamic dispatch
+  ring-element ring-element? ring-element-value ring-carrier-of ring-member?
+  ring-admit ring-join ring-binary ring-equal?
+  ;; refusals
+  ring-refusal? ring-refusal-kind ring-refusal-irritants
+  ;; carriers
+  integers rationals flonums numeric-tower make-zmod make-jets make-polys
+  zset-group-ring
+  ;; jets and polynomials
+  make-jet jet-seed jet-constant jet-coefficients jet-coefficient
+  ring-poly ring-poly-variable ring-poly-coefficients ring-poly-degree
+  ring-poly-leading ring-poly-eval
+  ;; ring maps
+  make-ring-map ring-map? ring-map-apply ring-map-source ring-map-target
+  ring-map-compose ring-base-change zmod-reduction jet-primal
+  ring-poly-evaluation group-ring-character
+  ;; algorithms over a carrier
+  ring-det ring-solve ring-law-violations exact-prime?
+  ;; interoperation with core.symbolic coefficient fields
+  coefficient-field->ring ring->coefficient-field)
+
+;; ===========================================================================
+;; Refusals
+;; ===========================================================================
+
+(define rc-refusal-kinds
+  (list "ring-not-a-unit" "ring-no-common-carrier" "ring-not-an-element"
+        "ring-missing-capability" "ring-no-ring-map"))
+
+;; An exact integer (int64 or bignum); every engine has integer? and exact?.
+(define (rc-exact-integer? x) (and (number? x) (exact? x) (integer? x)))
+
+(define (rc-refuse kind . irritants)
+  (apply error (symbol->string kind) irritants))
+
+(define (ring-refusal? e)
+  (and (error-object? e)
+       (string? (error-object-message e))
+       (if (member (error-object-message e) rc-refusal-kinds) #t #f)))
+(define (ring-refusal-kind e)
+  (if (ring-refusal? e) (string->symbol (error-object-message e)) #f))
+(define (ring-refusal-irritants e)
+  (if (ring-refusal? e) (error-object-irritants e) '()))
+
+;; ===========================================================================
+;; The descriptor
+;; ===========================================================================
+;;
+;; A carrier descriptor is a vector of 35 slots. Slot 1 is the descriptor
+;; ABI version; adding a family or a capability keeps it, changing the slot
+;; layout or an element representation increments it.
+;;
+;;   0 tag 'ring-carrier-v1     12 zero            24 constant (K -> R)
+;;   1 abi-version (1)          13 one             25 divide
+;;   2 family id                14 add             26 primal
+;;   3 family symbol            15 neg             27 order (<)
+;;   4 canonical parameters     16 mul             28 euclidean
+;;   5 name (string)            17 from-integer    29 analytic (alist)
+;;   6 characteristic           18 equal?          30 extra (alist)
+;;   7 field?                   19 unit?           31 self-locating?
+;;   8 lawful?                  20 inverse         32 nilpotent?
+;;   9 exact?                   21 member?         33 tier
+;;  10 nilpotency               22 from-rational   34 interned?
+;;  11 base                     23 admit-rational
+
+(define rc-descriptor-size 35)
+(define (ring-abi-version) 1)
+
+;; Stable family ids. An id is never reused.
+(define rc-family-table
+  (list (list 1 'integers) (list 2 'rationals) (list 3 'flonums)
+        (list 4 'zmod) (list 5 'jets) (list 6 'polys) (list 7 'group-ring)
+        (list 8 'algebraic) (list 9 'numeric-tower) (list 64 'user)))
+(define (ring-families) rc-family-table)
+
+(define (ring-carrier? x)
+  (and (vector? x) (= (vector-length x) rc-descriptor-size)
+       (eq? (vector-ref x 0) 'ring-carrier-v1)))
+(define (rc-check R who)
+  (if (ring-carrier? R) R (error (string-append who ": expected a ring carrier") R)))
+
+(define (rc-prop props key default)
+  (let ((p (assq key props))) (if p (cdr p) default)))
+
+;; Build a descriptor from an association list of fields.
+(define (rc-descriptor family-id family params name props)
+  (let* ((need (lambda (k)
+                 (let ((p (assq k props)))
+                   (if p (cdr p) (error "make-ring-carrier: missing required field" k name)))))
+         (zero (need 'zero)) (one (need 'one)) (add (need 'add)) (neg (need 'neg))
+         (mul (need 'mul)) (from-integer (need 'from-integer)) (same (need 'equal?))
+         (unit? (need 'unit?)) (inverse0 (need 'inverse))
+         (inverse (if (rc-prop props 'inverse-checks? #f)
+                      inverse0
+                      (lambda (a)
+                        (if (unit? a) (inverse0 a) (rc-refuse 'ring-not-a-unit 'r-inv name a)))))
+         (lawful (rc-prop props 'lawful? #t)))
+    (vector 'ring-carrier-v1 1 family-id family params name
+            (rc-prop props 'characteristic #f) (rc-prop props 'field? #f) lawful
+            (rc-prop props 'exact? #f) (rc-prop props 'nilpotency #f) (rc-prop props 'base #f)
+            zero one add neg mul from-integer same unit? inverse
+            (rc-prop props 'member? (lambda (x) #t))
+            (rc-prop props 'from-rational #f) (rc-prop props 'admit-rational #f)
+            (rc-prop props 'constant #f) (rc-prop props 'divide #f) (rc-prop props 'primal #f)
+            (rc-prop props 'order #f) (rc-prop props 'euclidean #f) (rc-prop props 'analytic #f)
+            (rc-prop props 'extra '()) (rc-prop props 'self-locating? #f)
+            (rc-prop props 'nilpotent? #f)
+            (rc-prop props 'tier (if lawful 'lawful 'unlawful))
+            (rc-prop props 'interned? #f))))
+
+(define (ring-carrier-name R) (vector-ref (rc-check R "ring-carrier-name") 5))
+(define (ring-carrier-family R) (vector-ref (rc-check R "ring-carrier-family") 3))
+(define (ring-carrier-family-id R) (vector-ref (rc-check R "ring-carrier-family-id") 2))
+(define (ring-carrier-parameters R) (vector-ref (rc-check R "ring-carrier-parameters") 4))
+(define (ring-carrier-abi-version R) (vector-ref (rc-check R "ring-carrier-abi-version") 1))
+
+;; Carrier identity: the family and the canonical parameters. Parameters
+;; that are carriers compare as carriers; every other parameter by eqv?, so
+;; an object-valued parameter (an algebraic field, an AD context, a group
+;; given by procedures) is compared by identity.
+(define (rc-key=? a b)
+  (cond ((and (ring-carrier? a) (ring-carrier? b)) (ring-carrier=? a b))
+        ((and (pair? a) (pair? b)) (and (rc-key=? (car a) (car b)) (rc-key=? (cdr a) (cdr b))))
+        (else (eqv? a b))))
+(define (ring-carrier=? A B)
+  (or (eq? A B)
+      (and (ring-carrier? A) (ring-carrier? B)
+           (= (vector-ref A 2) (vector-ref B 2))
+           (not (= (vector-ref A 2) 64))
+           (rc-key=? (vector-ref A 4) (vector-ref B 4)))))
+
+;; The process registry: parameterised carriers whose parameters are
+;; canonical data (numbers, symbols and interned carriers) are interned
+;; once per process into one descriptor. Carriers keyed by an object
+;; identity are compared by that identity and are not retained here.
+(define rc-instances '())
+(define (ring-registered-carriers) (reverse (map cdr rc-instances)))
+(define (rc-lookup family-id params)
+  (let loop ((xs rc-instances))
+    (cond ((null? xs) #f)
+          ((and (= (car (car (car xs))) family-id) (rc-key=? (cdr (car (car xs))) params))
+           (cdr (car xs)))
+          (else (loop (cdr xs))))))
+(define (rc-intern family-id params build)
+  (or (rc-lookup family-id params)
+      (let ((R (build)))
+        (vector-set! R 34 #t)
+        (set! rc-instances (cons (cons (cons family-id params) R) rc-instances))
+        R)))
+(define (rc-interned? R) (vector-ref R 34))
+
+;; A library family builds its carriers here (core.algebraic_domain does).
+(define (make-family-carrier family-id params name props)
+  (let ((row (assv family-id rc-family-table)))
+    (if (not row) (error "make-family-carrier: unknown family id" family-id))
+    (rc-descriptor family-id (cadr row) params name props)))
+
+;; A user carrier: (make-ring-carrier name 'zero z 'one o 'add f ...), the
+;; required fields of the protocol plus any optional capability. User
+;; carriers are compared by identity.
+(define (make-ring-carrier name . fields)
+  (let loop ((fs fields) (props '()))
+    (cond ((null? fs)
+           (rc-descriptor 64 'user (list (cons 'user name))
+                          (if (symbol? name) (symbol->string name) name) props))
+          ((null? (cdr fs)) (error "make-ring-carrier: field without a value" (car fs)))
+          (else (loop (cddr fs) (cons (cons (car fs) (cadr fs)) props))))))
+
+;; Read a field or capability by name.
+(define (ring-ref R key)
+  (rc-check R "ring-ref")
+  (cond ((eq? key 'name) (vector-ref R 5))
+        ((eq? key 'family) (vector-ref R 3))
+        ((eq? key 'family-id) (vector-ref R 2))
+        ((eq? key 'parameters) (vector-ref R 4))
+        ((eq? key 'abi-version) (vector-ref R 1))
+        ((eq? key 'characteristic) (vector-ref R 6))
+        ((eq? key 'field?) (vector-ref R 7))
+        ((eq? key 'lawful?) (vector-ref R 8))
+        ((eq? key 'exact?) (vector-ref R 9))
+        ((eq? key 'nilpotency) (vector-ref R 10))
+        ((eq? key 'base) (vector-ref R 11))
+        ((eq? key 'zero) (vector-ref R 12))
+        ((eq? key 'one) (vector-ref R 13))
+        ((eq? key 'add) (vector-ref R 14))
+        ((eq? key 'neg) (vector-ref R 15))
+        ((eq? key 'sub) (let ((add (vector-ref R 14)) (neg (vector-ref R 15)))
+                          (lambda (a b) (add a (neg b)))))
+        ((eq? key 'mul) (vector-ref R 16))
+        ((eq? key 'from-integer) (vector-ref R 17))
+        ((eq? key 'equal?) (vector-ref R 18))
+        ((eq? key 'unit?) (vector-ref R 19))
+        ((eq? key 'inverse) (vector-ref R 20))
+        ((eq? key 'member?) (vector-ref R 21))
+        ((eq? key 'from-rational) (vector-ref R 22))
+        ((eq? key 'admit-rational) (vector-ref R 23))
+        ((eq? key 'constant) (vector-ref R 24))
+        ((eq? key 'divide) (vector-ref R 25))
+        ((eq? key 'primal) (vector-ref R 26))
+        ((eq? key 'order) (vector-ref R 27))
+        ((eq? key 'euclidean) (vector-ref R 28))
+        ((eq? key 'analytic) (vector-ref R 29))
+        ((eq? key 'tier) (vector-ref R 33))
+        ((eq? key 'nilpotent?) (vector-ref R 32))
+        ((assq key (vector-ref R 30)) => cdr)
+        (else (error "ring-ref: unknown field" key (vector-ref R 5)))))
+(define (rc-extra R key) (let ((p (assq key (vector-ref R 30)))) (if p (cdr p) #f)))
+;; A family's own data, by key (#f when absent).
+(define (ring-carrier-extra R key) (rc-extra (rc-check R "ring-carrier-extra") key))
+;; An integral domain: a field, or a carrier that declares 'integral-domain.
+(define (rc-integral-domain? K) (or (vector-ref K 7) (rc-extra K 'integral-domain)))
+;; a / b for b dividing a: declared by the carrier, or a * b^-1 over a field.
+(define (rc-exact-quotient K)
+  (or (rc-extra K 'exact-quotient)
+      (and (vector-ref K 7)
+           (let ((mul (vector-ref K 16)) (inv (vector-ref K 20))) (lambda (a b) (mul a (inv b)))))))
+
+;; ===========================================================================
+;; Exact -> binary64, rounded once to nearest, ties to even
+;; ===========================================================================
+;;
+;; Rule 5 rounds an exact operand meeting a flonum. The rounding is done
+;; here in exact integer arithmetic so that it is the single correct
+;; rounding the IEEE tier specifies, whatever the size of the numerator and
+;; denominator: the scaled significand is rounded as an exact rational and
+;; the double is assembled from it by exact power-of-two scalings.
+
+(define (rc-bit-length n)               ; n >= 1: the least k with n < 2^k
+  (let up ((k 1))
+    (if (< n (expt 2 k))
+        (let down ((lo (quotient k 2)) (hi k))
+          (if (<= (- hi lo) 1) hi
+              (let ((mid (quotient (+ lo hi) 2))) (if (< n (expt 2 mid)) (down lo mid) (down mid hi)))))
+        (up (* k 2)))))
+(define (rc-floor-log2 a)               ; a exact rational > 0
+  (let ((e (- (rc-bit-length (numerator a)) (rc-bit-length (denominator a)))))
+    (if (< a (expt 2 e)) (- e 1) e)))
+(define (rc-round-half-even x)          ; x exact rational >= 0
+  (let* ((f (floor x)) (r (- x f)))
+    (cond ((< r 1/2) f) ((> r 1/2) (+ f 1)) ((even? f) f) (else (+ f 1)))))
+(define (rc-pow2 k) (exact->inexact (expt 2 k)))   ; exact for -1022 <= k <= 1023
+(define (rc-exact->binary64 q)
+  (cond
+    ((= q 0) 0.0)
+    ;; numerator and denominator are exact doubles: one IEEE division
+    ((and (< (abs (numerator q)) 9007199254740992) (< (denominator q) 9007199254740992))
+     (exact->inexact q))
+    (else
+     (let* ((a (abs q)) (e (rc-floor-log2 a)))
+       (if (>= e 1024)
+           (if (< q 0) (/ -1.0 0.0) (/ 1.0 0.0))
+           (let* ((qe (if (< e -1022) -1074 (- e 52)))
+                  (m (rc-round-half-even (/ a (expt 2 qe)))))
+             (if (>= (* m (expt 2 qe)) (expt 2 1024))
+                 (if (< q 0) (/ -1.0 0.0) (/ 1.0 0.0))
+                 (let ((x (if (< qe -1022)
+                              (* (* (exact->inexact m) (rc-pow2 -537)) (rc-pow2 (+ qe 537)))
+                              (* (exact->inexact m) (rc-pow2 qe)))))
+                   (if (< q 0) (* -1.0 x) x)))))))))
+
+;; ===========================================================================
+;; The tower carriers: Z, Q, binary64 and the native tower
+;; ===========================================================================
+
+(define (rc-exact-rational? x) (and (number? x) (exact? x) (rational? x)))
+(define (rc-flonum? x) (and (number? x) (real? x) (inexact? x)))
+
+(define rc-Z
+  (rc-intern 1 '()
+    (lambda ()
+      (rc-descriptor 1 'integers '() "Z"
+        (list (cons 'characteristic 0) (cons 'field? #f) (cons 'lawful? #t) (cons 'exact? #t)
+              (cons 'zero 0) (cons 'one 1)
+              (cons 'add (lambda (a b) (+ a b)))
+              (cons 'neg (lambda (a) (- a)))
+              (cons 'mul (lambda (a b) (* a b)))
+              (cons 'from-integer (lambda (n) n))
+              (cons 'equal? (lambda (a b) (= a b)))
+              (cons 'unit? (lambda (a) (or (= a 1) (= a -1))))
+              (cons 'inverse (lambda (a) (if (or (= a 1) (= a -1)) a (rc-refuse 'ring-not-a-unit 'r-inv "Z" a))))
+              (cons 'inverse-checks? #t)
+              (cons 'member? rc-exact-integer?)
+              (cons 'divide (lambda (a b) (if (= b 0) (rc-refuse 'ring-not-a-unit 'r/ "Z" b) (/ a b))))
+              (cons 'order (lambda (a b) (< a b)))
+              (cons 'euclidean (vector (lambda (a b) (if (= b 0) (rc-refuse 'ring-not-a-unit 'r-quotient "Z" b) (quotient a b)))
+                                       (lambda (a b) (if (= b 0) (rc-refuse 'ring-not-a-unit 'r-remainder "Z" b) (remainder a b)))
+                                       (lambda (a) (abs a))))
+              (cons 'nilpotent? (lambda (a) (= a 0)))
+              (cons 'self-locating? #t)
+              (cons 'extra (list (cons 'integral-domain #t)
+                                 (cons 'exact-quotient
+                                       (lambda (a b)
+                                         (if (and (not (= b 0)) (= (remainder a b) 0))
+                                             (quotient a b)
+                                             (error "exact quotient in Z: the divisor does not divide" a b)))))))))))
+
+(define rc-Q
+  (rc-intern 2 '()
+    (lambda ()
+      (rc-descriptor 2 'rationals '() "Q"
+        (list (cons 'characteristic 0) (cons 'field? #t) (cons 'lawful? #t) (cons 'exact? #t)
+              (cons 'zero 0) (cons 'one 1)
+              (cons 'add (lambda (a b) (+ a b)))
+              (cons 'neg (lambda (a) (- a)))
+              (cons 'mul (lambda (a b) (* a b)))
+              (cons 'from-integer (lambda (n) n))
+              (cons 'from-rational (lambda (q) q))
+              (cons 'equal? (lambda (a b) (= a b)))
+              (cons 'unit? (lambda (a) (not (= a 0))))
+              (cons 'inverse (lambda (a) (if (= a 0) (rc-refuse 'ring-not-a-unit 'r-inv "Q" a) (/ 1 a))))
+              (cons 'inverse-checks? #t)
+              (cons 'member? rc-exact-rational?)
+              (cons 'order (lambda (a b) (< a b)))
+              (cons 'nilpotent? (lambda (a) (= a 0)))
+              (cons 'self-locating? #t))))))
+
+;; The IEEE tier: elements are binary64 values including -0.0, the
+;; infinities and NaN; equal? is numeric =; every operation is the IEEE
+;; operation rounded to nearest, ties to even, applied once. Negation is
+;; the sign flip and division is one IEEE division, never a multiplication
+;; by a rounded reciprocal.
+(define rc-R
+  (rc-intern 3 '()
+    (lambda ()
+      (rc-descriptor 3 'flonums '() "R (binary64)"
+        (list (cons 'characteristic 0) (cons 'field? #f) (cons 'lawful? #f) (cons 'exact? #f)
+              (cons 'tier 'ieee)
+              (cons 'zero 0.0) (cons 'one 1.0)
+              (cons 'add (lambda (a b) (+ a b)))
+              (cons 'neg (lambda (a) (* -1.0 a)))
+              (cons 'mul (lambda (a b) (* a b)))
+              (cons 'from-integer rc-exact->binary64)
+              (cons 'from-rational rc-exact->binary64)
+              (cons 'equal? (lambda (a b) (= a b)))
+              (cons 'unit? (lambda (a) #t))
+              (cons 'inverse (lambda (a) (/ 1.0 a)))
+              (cons 'inverse-checks? #t)
+              (cons 'divide (lambda (a b) (/ a b)))
+              (cons 'member? rc-flonum?)
+              (cons 'order (lambda (a b) (< a b)))
+              (cons 'analytic (list (cons 'exp (lambda (x) (exp x))) (cons 'log (lambda (x) (log x)))
+                                    (cons 'sin (lambda (x) (sin x))) (cons 'cos (lambda (x) (cos x)))
+                                    (cons 'tan (lambda (x) (tan x))) (cons 'atan (lambda (x) (atan x)))
+                                    (cons 'sqrt (lambda (x) (sqrt x)))))
+              (cons 'nilpotent? (lambda (a) (= a 0.0)))
+              (cons 'self-locating? #t))))))
+
+;; The native numeric tower as one carrier: the built-in generic operations
+;; with R7RS contagion. It accepts every value the native operators accept,
+;; including the compiler's forward-mode AD values, which is how a program
+;; written against core.ring is differentiated by `derivative` and `taylor`.
+;; It mixes exact and IEEE elements, so it is not lawful.
+(define (rc-exact-zero? a) (and (number? a) (exact? a) (= a 0)))
+(define rc-T
+  (rc-intern 9 '()
+    (lambda ()
+      (rc-descriptor 9 'numeric-tower '() "tower"
+        (list (cons 'characteristic 0) (cons 'field? #f) (cons 'lawful? #f) (cons 'exact? #f)
+              (cons 'tier 'tower)
+              (cons 'zero 0) (cons 'one 1)
+              (cons 'add (lambda (a b) (+ a b)))
+              (cons 'neg (lambda (a) (- a)))
+              (cons 'mul (lambda (a b) (* a b)))
+              (cons 'from-integer (lambda (n) n))
+              (cons 'from-rational (lambda (q) q))
+              (cons 'equal? (lambda (a b) (= a b)))
+              (cons 'unit? (lambda (a) (not (rc-exact-zero? a))))
+              (cons 'inverse (lambda (a) (if (rc-exact-zero? a) (rc-refuse 'ring-not-a-unit 'r-inv "tower" a) (/ 1 a))))
+              (cons 'inverse-checks? #t)
+              (cons 'divide (lambda (a b) (if (rc-exact-zero? b) (rc-refuse 'ring-not-a-unit 'r/ "tower" b) (/ a b))))
+              (cons 'member? (lambda (x) (not (rc-located? x))))
+              (cons 'order (lambda (a b) (< a b)))
+              (cons 'analytic (list (cons 'exp (lambda (x) (exp x))) (cons 'log (lambda (x) (log x)))
+                                    (cons 'sin (lambda (x) (sin x))) (cons 'cos (lambda (x) (cos x)))
+                                    (cons 'tan (lambda (x) (tan x))) (cons 'atan (lambda (x) (atan x)))
+                                    (cons 'sqrt (lambda (x) (sqrt x)))))
+              (cons 'self-locating? #t))))))
+
+(define integers rc-Z)
+(define rationals rc-Q)
+(define flonums rc-R)
+(define numeric-tower rc-T)
+
+;; ===========================================================================
+;; Located elements and coercion (ADR-0034 section 5)
+;; ===========================================================================
+;;
+;; An element of Z, Q, binary64, K[e]/e^n, K[x] or an algebraic carrier
+;; records its carrier in its representation. An element of Z/m or of a
+;; group ring is a bare integer or Z-set, which by itself is an element of
+;; Z or of the free Z-module on rows; (ring-element R x) records that it
+;; lives in R.
+
+(define (rc-located? x)
+  (and (vector? x) (= (vector-length x) 3) (eq? (vector-ref x 0) 'ring-element-v1)))
+(define (ring-element? x) (rc-located? x))
+
+(define rc-recognizers '())
+(define (ring-register-recognizer! proc)
+  (set! rc-recognizers (cons proc rc-recognizers))
+  #t)
+(define (rc-recognize x)
+  (let loop ((rs rc-recognizers))
+    (cond ((null? rs) #f)
+          (((car rs) x) => (lambda (R) R))
+          (else (loop (cdr rs))))))
+
+;; The carrier a value names by itself, or #f.
+(define (ring-carrier-of x)
+  (cond ((rc-located? x) (vector-ref x 1))
+        ((not (number? x)) (rc-recognize x))
+        ((rc-exact-integer? x) rc-Z)
+        ((and (exact? x) (rational? x)) rc-Q)
+        ((and (real? x) (inexact? x)) rc-R)
+        (else #f)))
+
+;; The representation of x in its own carrier C.
+(define (rc-rep-of C x)
+  (if (and (rc-located? x) (not (vector-ref C 31))) (vector-ref x 2) x))
+
+;; The implicit coercion lattice: the composite of the edges of rules 1-5,
+;; as a procedure on representations of C, or #f when C does not enter R.
+;;   1. C = R.
+;;   2. Z enters every carrier through from-integer.
+;;   3. Q enters a Q-algebra (and the IEEE tier, by rounding: rule 5).
+;;   4. a K-element enters K[e]/e^n, K[x] and the other carriers over K as a
+;;      constant, along any chain of bases.
+(define (rc-embedding C R)
+  (cond ((ring-carrier=? C R) (lambda (x) (rc-rep-of C x)))
+        ((= (vector-ref C 2) 1) (vector-ref R 17))
+        ((and (= (vector-ref C 2) 2) (vector-ref R 22)) (vector-ref R 22))
+        ((and (vector-ref R 11) (vector-ref R 24))
+         (let ((m (rc-embedding C (vector-ref R 11))) (constant (vector-ref R 24)))
+           (and m (lambda (x) (constant (m x))))))
+        (else #f)))
+
+(define (rc-coerce R x who)
+  (let ((C (ring-carrier-of x)))
+    (if (not C)
+        (rc-refuse 'ring-not-an-element who (vector-ref R 5) x)
+        (let ((m (rc-embedding C R)))
+          (if m
+              (m x)
+              (rc-refuse 'ring-no-common-carrier who (vector-ref C 5) (vector-ref R 5)))))))
+
+;; Admit an operand into R: its own representation passes; anything else
+;; goes through the lattice or is refused (rule 6).
+(define (rc-admit R x who)
+  (if ((vector-ref R 21) x) x (rc-coerce R x who)))
+
+(define (ring-member? R x) (if ((vector-ref (rc-check R "ring-member?") 21) x) #t #f))
+
+;; The element x of R in located form.
+(define (ring-element R x)
+  (rc-check R "ring-element")
+  (let ((r (rc-admit R x 'ring-element)))
+    (if (vector-ref R 31) r (vector 'ring-element-v1 R r))))
+(define (ring-element-value x)
+  (if (and (rc-located? x) (not (vector-ref (vector-ref x 1) 31))) (vector-ref x 2) x))
+
+;; Explicit admission: the implicit lattice, plus the partial map
+;; Q -> Z/m, n/d -> n * d^-1, which refuses when d is not a unit mod m.
+(define (ring-admit R x)
+  (rc-check R "ring-admit")
+  (cond (((vector-ref R 21) x) x)
+        ((and (number? x) (exact? x) (rational? x) (not (rc-exact-integer? x))
+              (not (vector-ref R 22)) (vector-ref R 23))
+         ((vector-ref R 23) x))
+        (else (rc-coerce R x 'ring-admit))))
+
+;; The join of two carriers in the lattice: the carrier both enter.
+(define (ring-join A B)
+  (cond ((rc-embedding A B) B)
+        ((rc-embedding B A) A)
+        (else (rc-refuse 'ring-no-common-carrier 'ring-join (vector-ref A 5) (vector-ref B 5)))))
+
+(define (rc-carrier-or-refuse x who)
+  (or (ring-carrier-of x) (rc-refuse 'ring-not-an-element who "no carrier" x)))
+
+;; Dynamic dispatch on located operands: find the join, base-change both
+;; operands into it, apply its operation; the result is located in the join.
+(define (ring-binary op a b)
+  (let* ((J (ring-join (rc-carrier-or-refuse a 'ring-binary) (rc-carrier-or-refuse b 'ring-binary)))
+         (result (cond ((eq? op 'add) (r+ J a b))
+                       ((eq? op 'sub) (r- J a b))
+                       ((eq? op 'mul) (r* J a b))
+                       ((eq? op 'div) (r/ J a b))
+                       (else (error "ring-binary: unknown operation" op)))))
+    (if (vector-ref J 31) result (vector 'ring-element-v1 J result))))
+(define (ring-equal? a b)
+  (let ((J (ring-join (rc-carrier-or-refuse a 'ring-equal?) (rc-carrier-or-refuse b 'ring-equal?))))
+    (r= J a b)))
+
+;; ===========================================================================
+;; Generic operations: the carrier first
+;; ===========================================================================
+
+(define (r0 R) (vector-ref R 12))
+(define (r1 R) (vector-ref R 13))
+(define (r+ R a b) ((vector-ref R 14) (rc-admit R a 'r+) (rc-admit R b 'r+)))
+(define (r-neg R a) ((vector-ref R 15) (rc-admit R a 'r-neg)))
+(define (r- R a b) ((vector-ref R 14) (rc-admit R a 'r-) ((vector-ref R 15) (rc-admit R b 'r-))))
+(define (r* R a b) ((vector-ref R 16) (rc-admit R a 'r*) (rc-admit R b 'r*)))
+(define (r-int R n)
+  (if (rc-exact-integer? n) ((vector-ref R 17) n) (rc-refuse 'ring-not-an-element 'r-int "Z" n)))
+(define (r= R a b) (if ((vector-ref R 18) (rc-admit R a 'r=) (rc-admit R b 'r=)) #t #f))
+(define (r-zero? R a) (r= R a (vector-ref R 12)))
+(define (r-one? R a) (r= R a (vector-ref R 13)))
+(define (r-unit? R a) (if ((vector-ref R 19) (rc-admit R a 'r-unit?)) #t #f))
+(define (r-inv R a) ((vector-ref R 20) (rc-admit R a 'r-inv)))
+;; a / b = a * b^-1, defined exactly when b is a unit. A carrier may supply
+;; its own division: the IEEE tier divides once (one rounding), and Z
+;; promotes a non-unit divisor to Q along the tower edge.
+(define (r/ R a b)
+  (let ((x (rc-admit R a 'r/)) (y (rc-admit R b 'r/)) (divide (vector-ref R 25)))
+    (if divide (divide x y) ((vector-ref R 16) x ((vector-ref R 20) y)))))
+(define (r-expt R a n)
+  (if (not (rc-exact-integer? n)) (rc-refuse 'ring-not-an-element 'r-expt "Z" n))
+  (let ((mul (vector-ref R 16)) (x (rc-admit R a 'r-expt)))
+    (let loop ((base (if (< n 0) ((vector-ref R 20) x) x)) (k (abs n)) (acc (vector-ref R 13)))
+      (cond ((= k 0) acc)
+            ((odd? k) (loop (if (= k 1) base (mul base base)) (quotient k 2) (mul acc base)))
+            (else (loop (mul base base) (quotient k 2) acc))))))
+(define (r-sum R xs) (let loop ((xs xs) (acc (vector-ref R 12))) (if (null? xs) acc (loop (cdr xs) (r+ R acc (car xs))))))
+(define (r-product R xs) (let loop ((xs xs) (acc (vector-ref R 13))) (if (null? xs) acc (loop (cdr xs) (r* R acc (car xs))))))
+
+(define (rc-capability R slot capability who)
+  (or (vector-ref R slot) (rc-refuse 'ring-missing-capability who (vector-ref R 5) capability)))
+(define (r< R a b)
+  ((rc-capability R 27 'order 'r<) (rc-admit R a 'r<) (rc-admit R b 'r<)))
+(define (r-quotient R a b)
+  ((vector-ref (rc-capability R 28 'euclidean 'r-quotient) 0) (rc-admit R a 'r-quotient) (rc-admit R b 'r-quotient)))
+(define (r-remainder R a b)
+  ((vector-ref (rc-capability R 28 'euclidean 'r-remainder) 1) (rc-admit R a 'r-remainder) (rc-admit R b 'r-remainder)))
+;; The normalised gcd: nonnegative over Z, monic over K[x] for a field K.
+(define (r-gcd R a b)
+  (let* ((e (rc-capability R 28 'euclidean 'r-gcd)) (rem (vector-ref e 1)) (normal (vector-ref e 2))
+         (zero? (lambda (x) ((vector-ref R 18) x (vector-ref R 12)))))
+    (let loop ((a (rc-admit R a 'r-gcd)) (b (rc-admit R b 'r-gcd)))
+      (if (zero? b) (normal a) (loop b (rem a b))))))
+(define (r-analytic R name x)
+  (let ((table (rc-capability R 29 'analytic 'r-analytic)))
+    (let ((f (assq name table)))
+      (if f ((cdr f) (rc-admit R x 'r-analytic))
+          (rc-refuse 'ring-missing-capability 'r-analytic (vector-ref R 5) name)))))
+;; The ring map to the base carrier (e -> 0); branches and comparisons read it.
+(define (ring-primal R x)
+  ((rc-capability R 26 'primal 'ring-primal) (rc-admit R x 'ring-primal)))
+
+;; ===========================================================================
+;; Integer helpers
+;; ===========================================================================
+
+;; The inverse of a modulo m, or #f when gcd(a, m) /= 1.
+(define (rc-mod-inverse a m)
+  (let loop ((r0 m) (r1 (modulo a m)) (t0 0) (t1 1))
+    (if (= r1 0)
+        (if (= r0 1) (modulo t0 m) #f)
+        (let ((q (quotient r0 r1)))
+          (loop r1 (- r0 (* q r1)) t1 (- t0 (* q t1)))))))
+
+(define (rc-expt-mod a e m)
+  (let loop ((b (modulo a m)) (e e) (acc (modulo 1 m)))
+    (cond ((= e 0) acc)
+          ((odd? e) (loop (modulo (* b b) m) (quotient e 2) (modulo (* acc b) m)))
+          (else (loop (modulo (* b b) m) (quotient e 2) acc)))))
+
+(define (rc-integer-length n)
+  (let loop ((n (abs n)) (k 0)) (if (= n 0) k (loop (quotient n 2) (+ k 1)))))
+
+;; Deterministic Miller-Rabin: the bases 2..41 decide primality exactly for
+;; every n below 3317044064679887385961981. Above that bound a modulus is
+;; decided only when a witness proves it composite; otherwise exact-prime?
+;; raises rather than guess.
+(define rc-prime-bound 3317044064679887385961981)
+(define rc-prime-bases (list 2 3 5 7 11 13 17 19 23 29 31 37 41))
+(define (rc-mr-composite? a n d s)
+  (let ((x (rc-expt-mod a d n)))
+    (if (or (= x 1) (= x (- n 1)))
+        #f
+        (let loop ((x x) (r 1))
+          (cond ((>= r s) #t)
+                ((= (modulo (* x x) n) (- n 1)) #f)
+                (else (loop (modulo (* x x) n) (+ r 1))))))))
+(define (exact-prime? n)
+  (if (not (rc-exact-integer? n)) (error "exact-prime?: expected an exact integer" n))
+  (cond ((< n 2) #f)
+        ((memv n rc-prime-bases) #t)
+        ((let small ((bs rc-prime-bases))
+           (and (pair? bs) (or (= (modulo n (car bs)) 0) (small (cdr bs))))) #f)
+        (else
+         (let split ((d (- n 1)) (s 0))
+           (if (even? d)
+               (split (quotient d 2) (+ s 1))
+               (let check ((bs rc-prime-bases))
+                 (cond ((null? bs)
+                        (if (< n rc-prime-bound)
+                            #t
+                            (error "exact-prime?: primality is not decided above 3317044064679887385961981" n)))
+                       ((rc-mr-composite? (car bs) n d s) #f)
+                       (else (check (cdr bs))))))))))
+
+;; ===========================================================================
+;; Z/m
+;; ===========================================================================
+
+(define (make-zmod m)
+  (if (not (and (rc-exact-integer? m) (>= m 1)))
+      (error "make-zmod: modulus must be an exact integer >= 1" m))
+  (rc-intern 4 (list m) (lambda () (rc-build-zmod m))))
+
+(define (rc-build-zmod m)
+  (let* ((name (string-append "Z/" (number->string m)))
+         (prime (exact-prime? m))
+         (len (rc-integer-length m))
+         (unit? (lambda (a) (= (gcd a m) 1))))
+    (rc-descriptor 4 'zmod (list m) name
+      (list (cons 'characteristic m) (cons 'field? prime) (cons 'lawful? #t) (cons 'exact? #t)
+            (cons 'zero 0) (cons 'one (modulo 1 m))
+            (cons 'add (lambda (a b) (let ((s (+ a b))) (if (>= s m) (- s m) s))))
+            (cons 'neg (lambda (a) (if (= a 0) 0 (- m a))))
+            (cons 'mul (lambda (a b) (modulo (* a b) m)))
+            (cons 'from-integer (lambda (n) (modulo n m)))
+            (cons 'equal? (lambda (a b) (= a b)))
+            (cons 'unit? unit?)
+            (cons 'inverse (lambda (a)
+                             (let ((inv (rc-mod-inverse a m)))
+                               (if inv inv (rc-refuse 'ring-not-a-unit 'r-inv name a)))))
+            (cons 'inverse-checks? #t)
+            (cons 'member? (lambda (x) (and (rc-exact-integer? x) (>= x 0) (< x m))))
+            (cons 'admit-rational
+                  (lambda (q)
+                    (let ((inv (rc-mod-inverse (denominator q) m)))
+                      (if inv
+                          (modulo (* (numerator q) inv) m)
+                          (rc-refuse 'ring-not-a-unit 'ring-admit name (denominator q))))))
+            ;; a is nilpotent mod m exactly when a^k = 0 for k = bit length of m
+            (cons 'nilpotent? (lambda (a) (= (rc-expt-mod a len m) 0)))
+            (cons 'extra (list (cons 'modulus m)))))))
+
+;; ===========================================================================
+;; K[e]/e^n: dual numbers and truncated jets over any carrier
+;; ===========================================================================
+;;
+;; An element is located: (ring-element-v1 J coefficients), n coefficients
+;; in K, lowest order first. The product is the truncated Cauchy product;
+;; an element is a unit exactly when its constant term is a unit of K.
+;; Different generators (the optional third argument) are different
+;; carriers: they meet only by explicit nesting.
+
+(define (make-jets K n . generator)
+  (rc-check K "make-jets")
+  (if (not (and (rc-exact-integer? n) (>= n 1)))
+      (error "make-jets: the nilpotency order must be an exact integer >= 1" n))
+  (let* ((gen (if (null? generator) 'e (car generator)))
+         (params (list K n gen)))
+    (if (not (symbol? gen)) (error "make-jets: the generator must be a symbol" gen))
+    (if (rc-interned? K)
+        (rc-intern 5 params (lambda () (rc-build-jets K n gen)))
+        (rc-build-jets K n gen))))
+
+(define (rc-build-jets K n gen)
+  (let* ((box (vector #f))
+         (kzero (vector-ref K 12)) (kone (vector-ref K 13))
+         (kadd (vector-ref K 14)) (kneg (vector-ref K 15)) (kmul (vector-ref K 16))
+         (keq (vector-ref K 18)) (kunit? (vector-ref K 19)) (kinv (vector-ref K 20))
+         (knil? (vector-ref K 32))
+         (g (symbol->string gen))
+         (name (string-append (vector-ref K 5) "[" g "]/" g "^" (number->string n)))
+         (wrap (lambda (cs) (vector 'ring-element-v1 (vector-ref box 0) cs)))
+         (cs-of (lambda (x) (vector-ref x 2)))
+         (zeros (lambda (k) (let loop ((k k) (acc '())) (if (<= k 0) acc (loop (- k 1) (cons kzero acc))))))
+         (constant (lambda (c) (wrap (cons c (zeros (- n 1))))))
+         (mul (lambda (a b)
+                (let ((va (list->vector (cs-of a))) (vb (list->vector (cs-of b))))
+                  (let outer ((k (- n 1)) (acc '()))
+                    (if (< k 0)
+                        (wrap acc)
+                        (outer (- k 1)
+                               (cons (let inner ((j 1) (s (kmul (vector-ref va 0) (vector-ref vb k))))
+                                       (if (> j k) s
+                                           (inner (+ j 1) (kadd s (kmul (vector-ref va j) (vector-ref vb (- k j)))))))
+                                     acc)))))))
+         (unit? (lambda (a) (kunit? (car (cs-of a)))))
+         ;; b0 = a0^-1, b_k = -a0^-1 * sum_{j=1..k} a_j b_{k-j}
+         (inverse (lambda (a)
+                    (if (not (unit? a)) (rc-refuse 'ring-not-a-unit 'r-inv name a))
+                    (let* ((va (list->vector (cs-of a))) (u (kinv (vector-ref va 0)))
+                           (vb (make-vector n kzero)))
+                      (vector-set! vb 0 u)
+                      (let loop ((k 1))
+                        (if (< k n)
+                            (begin
+                              (vector-set! vb k
+                                (kneg (kmul u (let sum ((j 1) (s kzero))
+                                                (if (> j k) s (sum (+ j 1) (kadd s (kmul (vector-ref va j) (vector-ref vb (- k j))))))))))
+                              (loop (+ k 1)))))
+                      (wrap (vector->list vb)))))
+         (from-rational (if (vector-ref K 22) (lambda (q) (constant ((vector-ref K 22) q))) #f))
+         (admit-rational (if (vector-ref K 23) (lambda (q) (constant ((vector-ref K 23) q))) #f))
+         (J (rc-descriptor 5 'jets (list K n gen) name
+              (list (cons 'characteristic (vector-ref K 6))
+                    (cons 'field? (and (= n 1) (vector-ref K 7)))
+                    (cons 'lawful? (vector-ref K 8)) (cons 'exact? (vector-ref K 9))
+                    (cons 'tier (vector-ref K 33))
+                    (cons 'nilpotency n) (cons 'base K)
+                    (cons 'zero #f) (cons 'one #f)
+                    (cons 'add (lambda (a b) (wrap (map kadd (cs-of a) (cs-of b)))))
+                    (cons 'neg (lambda (a) (wrap (map kneg (cs-of a)))))
+                    (cons 'mul mul)
+                    (cons 'from-integer (lambda (m) (constant ((vector-ref K 17) m))))
+                    (cons 'from-rational from-rational)
+                    (cons 'admit-rational admit-rational)
+                    (cons 'constant constant)
+                    (cons 'equal? (lambda (a b)
+                                    (let loop ((x (cs-of a)) (y (cs-of b)))
+                                      (or (null? x) (and (keq (car x) (car y)) (loop (cdr x) (cdr y)))))))
+                    (cons 'unit? unit?)
+                    (cons 'inverse inverse) (cons 'inverse-checks? #t)
+                    (cons 'member? (lambda (x) (and (rc-located? x) (eq? (vector-ref x 1) (vector-ref box 0)))))
+                    (cons 'primal (lambda (a) (car (cs-of a))))
+                    (cons 'nilpotent? (if knil? (lambda (a) (knil? (car (cs-of a)))) #f))
+                    (cons 'self-locating? #t)
+                    (cons 'extra (list (cons 'generator gen)))))))
+    (vector-set! box 0 J)
+    (vector-set! J 12 (constant kzero))
+    (vector-set! J 13 (constant kone))
+    J))
+
+(define (rc-jets-check J who)
+  (rc-check J who)
+  (if (not (= (vector-ref J 2) 5)) (error (string-append who ": expected a jet carrier K[e]/e^n") (vector-ref J 5)))
+  J)
+;; The jet with the given coefficients (padded with zeros to length n).
+(define (make-jet J coefficients)
+  (rc-jets-check J "make-jet")
+  (let ((K (vector-ref J 11)) (n (vector-ref J 10)))
+    (if (> (length coefficients) n) (error "make-jet: more coefficients than the nilpotency order" n))
+    (let ((cs (map (lambda (c) (rc-admit K c 'make-jet)) coefficients)))
+      (vector 'ring-element-v1 J
+              (append cs (let loop ((k (- n (length cs))) (acc '()))
+                           (if (<= k 0) acc (loop (- k 1) (cons (vector-ref K 12) acc)))))))))
+;; The generic point a + e: evaluation there gives the Taylor coefficients.
+(define (jet-seed J a)
+  (rc-jets-check J "jet-seed")
+  (let ((K (vector-ref J 11)))
+    (make-jet J (if (= (vector-ref J 10) 1) (list a) (list a (vector-ref K 13))))))
+(define (jet-constant J c) (rc-jets-check J "jet-constant") ((vector-ref J 24) (rc-admit (vector-ref J 11) c 'jet-constant)))
+(define (rc-jet-element x who)
+  (if (and (rc-located? x) (= (vector-ref (vector-ref x 1) 2) 5)) x
+      (error (string-append who ": expected a jet") x)))
+(define (jet-coefficients x) (vector-ref (rc-jet-element x "jet-coefficients") 2))
+(define (jet-coefficient x i) (list-ref (jet-coefficients x) i))
+
+;; ===========================================================================
+;; K[x]: polynomials over any carrier
+;; ===========================================================================
+;;
+;; An element is located: (ring-element-v1 P coefficients), lowest degree
+;; first, trailing zeros removed, so the zero polynomial has no
+;; coefficients. A polynomial is a unit exactly when its constant term is a
+;; unit of K and every other coefficient is nilpotent in K; its inverse is
+;; reached by Newton's iteration v <- v(2 - uv), which terminates because
+;; 1 - uv is nilpotent.
+
+(define (make-polys K . variable)
+  (rc-check K "make-polys")
+  (let* ((var (if (null? variable) 'x (car variable)))
+         (params (list K var)))
+    (if (not (symbol? var)) (error "make-polys: the variable must be a symbol" var))
+    (if (rc-interned? K)
+        (rc-intern 6 params (lambda () (rc-build-polys K var)))
+        (rc-build-polys K var))))
+
+(define (rc-build-polys K var)
+  (let* ((box (vector #f))
+         (kzero (vector-ref K 12)) (kone (vector-ref K 13))
+         (kadd (vector-ref K 14)) (kneg (vector-ref K 15)) (kmul (vector-ref K 16))
+         (keq (vector-ref K 18)) (kunit? (vector-ref K 19)) (kinv (vector-ref K 20))
+         (knil? (or (vector-ref K 32) (lambda (c) (keq c kzero))))
+         (name (string-append (vector-ref K 5) "[" (symbol->string var) "]"))
+         (kzero? (lambda (c) (keq c kzero)))
+         (trim (lambda (cs)
+                 (let loop ((r (reverse cs)))
+                   (cond ((null? r) '())
+                         ((kzero? (car r)) (loop (cdr r)))
+                         (else (reverse r))))))
+         (wrap (lambda (cs) (vector 'ring-element-v1 (vector-ref box 0) (trim cs))))
+         (cs-of (lambda (x) (vector-ref x 2)))
+         (constant (lambda (c) (wrap (list c))))
+         (add-lists (lambda (a b)
+                      (let loop ((a a) (b b) (acc '()))
+                        (cond ((null? a) (append (reverse acc) b))
+                              ((null? b) (append (reverse acc) a))
+                              (else (loop (cdr a) (cdr b) (cons (kadd (car a) (car b)) acc)))))))
+         (mul (lambda (a b)
+                (let ((ca (cs-of a)) (cb (cs-of b)))
+                  (if (or (null? ca) (null? cb))
+                      (wrap '())
+                      (let* ((va (list->vector ca)) (vb (list->vector cb))
+                             (la (vector-length va)) (lb (vector-length vb))
+                             (out (make-vector (+ la lb -1) kzero)))
+                        (let row ((i 0))
+                          (if (< i la)
+                              (begin
+                                (let col ((j 0))
+                                  (if (< j lb)
+                                      (begin
+                                        (vector-set! out (+ i j) (kadd (vector-ref out (+ i j)) (kmul (vector-ref va i) (vector-ref vb j))))
+                                        (col (+ j 1)))))
+                                (row (+ i 1)))))
+                        (wrap (vector->list out)))))))
+         (same (lambda (a b)
+                 (let loop ((x (cs-of a)) (y (cs-of b)))
+                   (cond ((and (null? x) (null? y)) #t)
+                         ((or (null? x) (null? y)) #f)
+                         (else (and (keq (car x) (car y)) (loop (cdr x) (cdr y))))))))
+         (unit? (lambda (a)
+                  (let ((cs (cs-of a)))
+                    (and (pair? cs) (kunit? (car cs))
+                         (let loop ((r (cdr cs))) (or (null? r) (and (knil? (car r)) (loop (cdr r)))))))))
+         (one-p (constant kone))
+         (two-p (constant (kadd kone kone)))
+         (inverse (lambda (u)
+                    (if (not (unit? u)) (rc-refuse 'ring-not-a-unit 'r-inv name u))
+                    (let loop ((v (constant (kinv (car (cs-of u))))) (steps 0))
+                      (let ((uv (mul u v)))
+                        (cond ((same uv one-p) v)
+                              ((> steps 128) (error "K[x] inverse: Newton iteration did not close" name))
+                              (else (loop (mul v (wrap (add-lists (cs-of two-p) (map kneg (cs-of uv)))))
+                                          (+ steps 1))))))))
+         (field (vector-ref K 7))
+         ;; Division with remainder by a polynomial whose leading coefficient
+         ;; is a unit (every nonzero one when K is a field).
+         (divmod (lambda (a b)
+                   (let ((cb (cs-of b)))
+                     (if (null? cb) (rc-refuse 'ring-not-a-unit 'r-quotient name b))
+                     (let* ((db (- (length cb) 1)) (lb (list-ref cb db)))
+                       (if (not (kunit? lb)) (rc-refuse 'ring-not-a-unit 'r-quotient name b))
+                       (let ((inv (kinv lb)) (vb (list->vector cb)))
+                         (let loop ((r (list->vector (cs-of a))) (q '()))
+                           (let ((dr (let find ((k (- (vector-length r) 1)))
+                                       (cond ((< k 0) -1) ((kzero? (vector-ref r k)) (find (- k 1))) (else k)))))
+                             (if (< dr db)
+                                 (cons (wrap q) (wrap (vector->list r)))
+                                 (let* ((c (kmul (vector-ref r dr) inv)) (shift (- dr db))
+                                        (r2 (vector-copy r)))
+                                   (vector-set! r2 dr kzero)
+                                   (let sub ((j 0))
+                                     (if (< j db)
+                                         (begin
+                                           (vector-set! r2 (+ j shift)
+                                             (kadd (vector-ref r2 (+ j shift)) (kneg (kmul c (vector-ref vb j)))))
+                                           (sub (+ j 1)))))
+                                   (loop r2 (add-lists q (append (let z ((k shift) (acc '())) (if (= k 0) acc (z (- k 1) (cons kzero acc))))
+                                                                 (list c)))))))))))))
+         (monic (lambda (a)
+                  (let ((cs (cs-of a)))
+                    (if (null? cs) a
+                        (let ((inv (kinv (list-ref cs (- (length cs) 1)))))
+                          (wrap (map (lambda (c) (kmul inv c)) cs)))))))
+         (kquot (rc-exact-quotient K))
+         ;; a / b when b divides a, over a coefficient domain with exact
+         ;; quotients: long division by the leading coefficient of b.
+         (exact-quotient
+          (and kquot (rc-integral-domain? K)
+               (lambda (a b)
+                 (let ((cb (cs-of b)))
+                   (if (null? cb) (error "exact quotient in K[x]: division by zero" name))
+                   (let* ((db (- (length cb) 1)) (lb (list-ref cb db)) (vb (list->vector cb)))
+                     (let loop ((r (list->vector (cs-of a))) (q '()))
+                       (let ((dr (let find ((k (- (vector-length r) 1)))
+                                   (cond ((< k 0) -1) ((kzero? (vector-ref r k)) (find (- k 1))) (else k)))))
+                         (cond
+                           ((< dr 0) (wrap q))
+                           ((< dr db) (error "exact quotient in K[x]: the divisor does not divide" name))
+                           (else
+                            (let* ((c (kquot (vector-ref r dr) lb)) (shift (- dr db)) (r2 (vector-copy r)))
+                              (vector-set! r2 dr kzero)
+                              (let sub ((j 0))
+                                (if (< j db)
+                                    (begin
+                                      (vector-set! r2 (+ j shift)
+                                        (kadd (vector-ref r2 (+ j shift)) (kneg (kmul c (vector-ref vb j)))))
+                                      (sub (+ j 1)))))
+                              (loop r2 (add-lists q (append (let z ((k shift) (acc '())) (if (= k 0) acc (z (- k 1) (cons kzero acc))))
+                                                            (list c))))))))))))))
+         (P (rc-descriptor 6 'polys (list K var) name
+              (list (cons 'characteristic (vector-ref K 6)) (cons 'field? #f)
+                    (cons 'lawful? (vector-ref K 8)) (cons 'exact? (vector-ref K 9))
+                    (cons 'tier (vector-ref K 33)) (cons 'base K)
+                    (cons 'zero #f) (cons 'one #f)
+                    (cons 'add (lambda (a b) (wrap (add-lists (cs-of a) (cs-of b)))))
+                    (cons 'neg (lambda (a) (wrap (map kneg (cs-of a)))))
+                    (cons 'mul mul)
+                    (cons 'from-integer (lambda (m) (constant ((vector-ref K 17) m))))
+                    (cons 'from-rational (if (vector-ref K 22) (lambda (q) (constant ((vector-ref K 22) q))) #f))
+                    (cons 'admit-rational (if (vector-ref K 23) (lambda (q) (constant ((vector-ref K 23) q))) #f))
+                    (cons 'constant constant)
+                    (cons 'equal? same) (cons 'unit? unit?)
+                    (cons 'inverse inverse) (cons 'inverse-checks? #t)
+                    (cons 'member? (lambda (x) (and (rc-located? x) (eq? (vector-ref x 1) (vector-ref box 0)))))
+                    (cons 'nilpotent? (lambda (a) (let loop ((r (cs-of a))) (or (null? r) (and (knil? (car r)) (loop (cdr r)))))))
+                    (cons 'euclidean (if field
+                                         (vector (lambda (a b) (car (divmod a b)))
+                                                 (lambda (a b) (cdr (divmod a b)))
+                                                 monic)
+                                         #f))
+                    (cons 'self-locating? #t)
+                    (cons 'extra (list (cons 'variable var)
+                                       (cons 'integral-domain (if (rc-integral-domain? K) #t #f))
+                                       (cons 'exact-quotient exact-quotient)))))))
+    (vector-set! box 0 P)
+    (vector-set! P 12 (wrap '()))
+    (vector-set! P 13 (constant kone))
+    P))
+
+(define (rc-polys-check P who)
+  (rc-check P who)
+  (if (not (= (vector-ref P 2) 6)) (error (string-append who ": expected a polynomial carrier K[x]") (vector-ref P 5)))
+  P)
+(define (rc-poly-element x who)
+  (if (and (rc-located? x) (= (vector-ref (vector-ref x 1) 2) 6)) x
+      (error (string-append who ": expected a polynomial") x)))
+;; The polynomial with the given coefficients, lowest degree first.
+(define (ring-poly P coefficients)
+  (rc-polys-check P "ring-poly")
+  (let ((K (vector-ref P 11)))
+    ;; the sum with zero trims trailing zero coefficients
+    ((vector-ref P 14)
+     (vector 'ring-element-v1 P (map (lambda (c) (rc-admit K c 'ring-poly)) coefficients))
+     (vector-ref P 12))))
+(define (ring-poly-variable P)
+  (rc-polys-check P "ring-poly-variable")
+  (let ((K (vector-ref P 11)))
+    (vector 'ring-element-v1 P
+            (if ((vector-ref K 18) (vector-ref K 13) (vector-ref K 12)) '() (list (vector-ref K 12) (vector-ref K 13))))))
+(define (ring-poly-coefficients p) (vector-ref (rc-poly-element p "ring-poly-coefficients") 2))
+(define (ring-poly-degree p) (- (length (ring-poly-coefficients p)) 1))
+(define (ring-poly-leading p)
+  (let ((cs (ring-poly-coefficients p)))
+    (if (null? cs) (vector-ref (vector-ref (vector-ref p 1) 11) 12) (list-ref cs (- (length cs) 1)))))
+;; Horner evaluation at c in the coefficient carrier.
+(define (ring-poly-eval p c)
+  (let* ((P (vector-ref (rc-poly-element p "ring-poly-eval") 1)) (K (vector-ref P 11)) (x (rc-admit K c 'ring-poly-eval)))
+    (let loop ((r (reverse (vector-ref p 2))) (acc (vector-ref K 12)))
+      (if (null? r) acc (loop (cdr r) ((vector-ref K 14) ((vector-ref K 16) acc x) (car r)))))))
+
+;; ===========================================================================
+;; Z[G]: group rings as core.dbsp Z-sets
+;; ===========================================================================
+;;
+;; For an abelian group G given by its operation, identity and inverse, a
+;; Z-set (a finitely supported function G -> Z) is an element of Z[G]: the
+;; Z-set sum is the ring sum and the ring product is the DBSP join on the
+;; trivial key emitting the group product.
+;;
+;; The unit group is decided exactly from what the caller declares about G,
+;; after two tests that hold for every G: +-g is a unit, and an element whose
+;; augmentation (sum of weights, the ring map Z[G] -> Z) is not +-1 is not.
+;;   (zset-group-ring op e inv [name] 'elements (g0 g1 ...))
+;;     G is finite with these elements (closure is checked). u is a unit
+;;     exactly when the integer matrix of multiplication by u on the basis G
+;;     has determinant +-1; its inverse is the exact solution of u x = 1.
+;;   (zset-group-ring op e inv [name] 'torsion-free #t)
+;;     Z[G] is a domain whose units are exactly the trivial ones +-g.
+;; With neither declaration a unit question beyond the two tests above is
+;; refused (ring-missing-capability ... unit-group) rather than guessed.
+
+(define (rc-group-ring-options rest)
+  (let loop ((xs rest) (name #f) (elements #f) (torsion-free #f))
+    (cond ((null? xs) (list name elements torsion-free))
+          ((eq? (car xs) 'elements)
+           (if (or (null? (cdr xs)) (not (list? (cadr xs))) (null? (cadr xs)))
+               (error "zset-group-ring: 'elements needs a nonempty list of the group's elements"))
+           (loop (cddr xs) name (cadr xs) torsion-free))
+          ((eq? (car xs) 'torsion-free)
+           (if (null? (cdr xs)) (error "zset-group-ring: 'torsion-free needs a value"))
+           (loop (cddr xs) name elements (if (cadr xs) #t #f)))
+          ((and (not name) (or (string? (car xs)) (symbol? (car xs))))
+           (loop (cdr xs) (if (symbol? (car xs)) (symbol->string (car xs)) (car xs)) elements torsion-free))
+          (else (error "zset-group-ring: unexpected option" (car xs))))))
+
+(define (rc-index-of x xs)
+  (let loop ((xs xs) (i 0))
+    (cond ((null? xs) #f) ((equal? (car xs) x) i) (else (loop (cdr xs) (+ i 1))))))
+
+(define (zset-group-ring op identity inverse . options)
+  (if (not (procedure? op)) (error "zset-group-ring: the group operation must be a procedure" op))
+  (if (not (or (procedure? inverse) (not inverse)))
+      (error "zset-group-ring: the group inverse must be a procedure or #f" inverse))
+  (let* ((opts (rc-group-ring-options options))
+         (label (or (car opts) "Z[G]"))
+         (elements (cadr opts))
+         (torsion-free (caddr opts)))
+    (if (and elements torsion-free) (error "zset-group-ring: a finite group is not torsion-free" label))
+    (if elements
+        (begin
+          (if (not inverse) (error "zset-group-ring: a finite group needs its inverse" label))
+          (if (not (rc-index-of identity elements)) (error "zset-group-ring: the identity is not among the elements" identity))
+          (for-each (lambda (g)
+                      (if (not (rc-index-of (inverse g) elements)) (error "zset-group-ring: the elements are not closed under inverse" g))
+                      (for-each (lambda (h)
+                                  (if (not (rc-index-of (op g h) elements))
+                                      (error "zset-group-ring: the elements are not closed under the operation" g h)))
+                                elements))
+                    elements)))
+    (let* ((augmentation (lambda (a) (fold-left (lambda (s e) (+ s (car e))) 0 (zset-entries a))))
+           (trivial? (lambda (a) (and (= (zset-size a) 1) (= (abs (car (car (zset-entries a)))) 1))))
+           ;; The matrix of x -> a x on the basis `elements`: entry (i, j) is the
+           ;; weight of g_i g_j^-1 in a.
+           (mult-matrix (lambda (a)
+                     (list->vector
+                      (map (lambda (gi)
+                             (list->vector (map (lambda (gj) (zset-weight a (op gi (inverse gj)))) elements)))
+                           elements))))
+           (finite-unit? (lambda (a) (= (abs (ring-det rc-Q (mult-matrix a))) 1)))
+           (unit? (lambda (a)
+                    (cond ((trivial? a) #t)
+                          ((not (= (abs (augmentation a)) 1)) #f)
+                          (elements (finite-unit? a))
+                          (torsion-free #f)
+                          (else (rc-refuse 'ring-missing-capability 'r-unit? label 'unit-group))))))
+      (rc-descriptor 7 'group-ring (list op identity inverse) label
+        (list (cons 'characteristic 0) (cons 'field? #f) (cons 'lawful? #t) (cons 'exact? #t)
+              (cons 'zero (zset-empty)) (cons 'one (zset-singleton identity 1))
+              (cons 'add zset-add) (cons 'neg zset-negate)
+              (cons 'mul (lambda (a b) (zset-join a b (lambda (r) 0) (lambda (r) 0) op)))
+              (cons 'from-integer (lambda (n) (zset-singleton identity n)))
+              (cons 'equal? zset=?)
+              (cons 'unit? unit?)
+              (cons 'inverse
+                    (lambda (a)
+                      (cond
+                        ((trivial? a)
+                         (if (not inverse) (rc-refuse 'ring-missing-capability 'r-inv label 'group-inverse))
+                         (let ((e (car (zset-entries a)))) (zset-singleton (inverse (cadr e)) (car e))))
+                        ((not (unit? a)) (rc-refuse 'ring-not-a-unit 'r-inv label a))
+                        (else
+                         ;; u x = 1: solve M x = coordinates of the identity
+                         (let ((x (ring-solve rc-Q (mult-matrix a)
+                                              (map (lambda (g) (if (equal? g identity) 1 0)) elements))))
+                           (zset-from-weighted
+                            (let loop ((gs elements) (i 0) (acc '()))
+                              (if (null? gs) (reverse acc)
+                                  (loop (cdr gs) (+ i 1) (cons (list (vector-ref x i) (car gs)) acc))))))))))
+              (cons 'inverse-checks? #t)
+              (cons 'member? zset?)
+              (cons 'nilpotent? zset-empty?)
+              (cons 'extra (list (cons 'identity identity) (cons 'elements elements)
+                                 (cons 'torsion-free torsion-free))))))))
+
+;; ===========================================================================
+;; Ring maps
+;; ===========================================================================
+
+(define (make-ring-map source target proc . name)
+  (rc-check source "make-ring-map") (rc-check target "make-ring-map")
+  (vector 'ring-map-v1 source target proc (if (null? name) "map" (car name))))
+(define (ring-map? x) (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'ring-map-v1)))
+(define (rc-map-check phi who) (if (ring-map? phi) phi (error (string-append who ": expected a ring map") phi)))
+(define (ring-map-source phi) (vector-ref (rc-map-check phi "ring-map-source") 1))
+(define (ring-map-target phi) (vector-ref (rc-map-check phi "ring-map-target") 2))
+(define (ring-map-apply phi x)
+  (rc-map-check phi "ring-map-apply")
+  ((vector-ref phi 3) (rc-admit (vector-ref phi 1) x 'ring-map-apply)))
+;; g after f.
+(define (ring-map-compose g f)
+  (rc-map-check g "ring-map-compose") (rc-map-check f "ring-map-compose")
+  (if (not (ring-carrier=? (vector-ref f 2) (vector-ref g 1)))
+      (rc-refuse 'ring-no-ring-map 'ring-map-compose (vector-ref (vector-ref f 2) 5) (vector-ref (vector-ref g 1) 5)))
+  (let ((pf (vector-ref f 3)) (pg (vector-ref g 3)) (S (vector-ref g 1)))
+    (make-ring-map (vector-ref f 1) (vector-ref g 2) (lambda (x) (pg (rc-admit S (pf x) 'ring-map-compose))))))
+;; The implicit base change A -> B of the lattice.
+(define (ring-base-change A B)
+  (rc-check A "ring-base-change") (rc-check B "ring-base-change")
+  (let ((m (rc-embedding A B)))
+    (if m (make-ring-map A B m "base change")
+        (rc-refuse 'ring-no-common-carrier 'ring-base-change (vector-ref A 5) (vector-ref B 5)))))
+;; Reduction Z/m -> Z/d for d dividing m (or Z -> Z/d). Explicit: it forgets
+;; information, so it is never a lattice edge.
+(define (zmod-reduction A B)
+  (rc-check A "zmod-reduction") (rc-check B "zmod-reduction")
+  (let ((d (and (= (vector-ref B 2) 4) (car (vector-ref B 4))))
+        (m (cond ((= (vector-ref A 2) 4) (car (vector-ref A 4))) ((= (vector-ref A 2) 1) 0) (else #f))))
+    (if (and d m (= (modulo m d) 0))
+        (make-ring-map A B (lambda (x) (modulo x d)) "reduction")
+        (rc-refuse 'ring-no-ring-map 'zmod-reduction (vector-ref A 5) (vector-ref B 5)))))
+;; K[e]/e^n -> K, e -> 0.
+(define (jet-primal J)
+  (rc-jets-check J "jet-primal")
+  (make-ring-map J (vector-ref J 11) (vector-ref J 26) "primal"))
+;; K[x] -> S, x -> a, for a carrier S that K enters: evaluation is the ring
+;; map, and x -> a + e gives K[x] -> K[e]/e^n.
+(define (ring-poly-evaluation P S a)
+  (rc-polys-check P "ring-poly-evaluation") (rc-check S "ring-poly-evaluation")
+  (let* ((K (vector-ref P 11)) (m (rc-embedding K S)) (x (rc-admit S a 'ring-poly-evaluation))
+         (add (vector-ref S 14)) (mul (vector-ref S 16)))
+    (if (not m) (rc-refuse 'ring-no-common-carrier 'ring-poly-evaluation (vector-ref K 5) (vector-ref S 5)))
+    (make-ring-map P S
+      (lambda (p)
+        (let loop ((r (reverse (vector-ref p 2))) (acc (vector-ref S 12)))
+          (if (null? r) acc (loop (cdr r) (add (mul acc x) (m (car r)))))))
+      "evaluation")))
+;; Z[G] -> S induced by a character chi: G -> units of S.
+(define (group-ring-character Zg S chi)
+  (rc-check Zg "group-ring-character") (rc-check S "group-ring-character")
+  (if (not (= (vector-ref Zg 2) 7)) (error "group-ring-character: expected a group ring" (vector-ref Zg 5)))
+  (make-ring-map Zg S
+    (lambda (z)
+      (let loop ((es (zset-entries z)) (acc (vector-ref S 12)))
+        (if (null? es) acc
+            (loop (cdr es)
+                  ((vector-ref S 14) acc ((vector-ref S 16) ((vector-ref S 17) (car (car es)))
+                                                             (rc-admit S (chi (cadr (car es))) 'group-ring-character)))))))
+    "character"))
+
+;; ===========================================================================
+;; Linear algebra over a carrier: elimination with unit pivots
+;; ===========================================================================
+
+(define (rc-matrix K m who)
+  (let ((rows (cond ((vector? m) (vector->list m)) ((list? m) m) (else (error (string-append who ": expected a matrix") m)))))
+    (list->vector
+     (map (lambda (row)
+            (list->vector (map (lambda (x) (rc-admit K x who))
+                               (cond ((vector? row) (vector->list row)) ((list? row) row)
+                                     (else (error (string-append who ": expected a matrix row") row))))))
+          rows))))
+
+;; The determinant over K. Over a field, Gaussian elimination with unit
+;; pivots. Over an integral domain with exact quotients (Z, K[x] over a
+;; domain, ...), fraction-free Bareiss elimination: any nonzero pivot, each
+;; step divided exactly by the previous pivot, so no unit is ever needed.
+;; Over any other carrier pivots must be units; a column whose remaining
+;; entries are zero gives determinant zero, and a column with nonzero
+;; entries but no unit is refused (ring-not-a-unit) rather than guessed.
+(define (ring-det K m0)
+  (rc-check K "ring-det")
+  (if (and (not (vector-ref K 7)) (rc-integral-domain? K) (rc-exact-quotient K))
+      (rc-det-fraction-free K (rc-matrix K m0 'ring-det))
+      (rc-det-unit-pivots K (rc-matrix K m0 'ring-det))))
+
+(define (rc-det-fraction-free K m)
+  (let* ((n (vector-length m)) (zero (vector-ref K 12)) (one (vector-ref K 13))
+         (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
+         (same (vector-ref K 18)) (quot (rc-exact-quotient K))
+         (zero? (lambda (x) (same x zero))))
+    (if (= n 0)
+        one
+        (let col ((k 0) (sign #f) (prev one))
+          (if (= k (- n 1))
+              (let ((d (vector-ref (vector-ref m k) k))) (if sign (neg d) d))
+              (let find ((p k))
+                (cond
+                  ((= p n) zero)
+                  ((zero? (vector-ref (vector-ref m p) k)) (find (+ p 1)))
+                  (else
+                   (if (not (= p k))
+                       (let ((tmp (vector-ref m p))) (vector-set! m p (vector-ref m k)) (vector-set! m k tmp)))
+                   (let* ((rowk (vector-ref m k)) (pivot (vector-ref rowk k)))
+                     (let rows ((i (+ k 1)))
+                       (if (< i n)
+                           (let* ((rowi (vector-ref m i)) (lead (vector-ref rowi k)))
+                             (let cols ((j (+ k 1)))
+                               (if (< j n)
+                                   (begin
+                                     (vector-set! rowi j
+                                       (quot (add (mul (vector-ref rowi j) pivot) (neg (mul lead (vector-ref rowk j)))) prev))
+                                     (cols (+ j 1)))))
+                             (vector-set! rowi k zero)
+                             (rows (+ i 1)))))
+                     (col (+ k 1) (if (= p k) sign (not sign)) pivot))))))))))
+
+(define (rc-det-unit-pivots K m)
+  (let* ((n (vector-length m))
+         (zero (vector-ref K 12)) (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
+         (same (vector-ref K 18)) (unit? (vector-ref K 19)) (inv (vector-ref K 20))
+         (zero? (lambda (x) (same x zero))))
+    (let col ((k 0) (det (vector-ref K 13)))
+      (if (= k n)
+          det
+          (let find ((p k) (nonunit #f))
+            (cond
+              ((= p n) (if nonunit (rc-refuse 'ring-not-a-unit 'ring-det (vector-ref K 5) nonunit) zero))
+              ((not (unit? (vector-ref (vector-ref m p) k)))
+               (find (+ p 1) (or nonunit (if (zero? (vector-ref (vector-ref m p) k)) #f (vector-ref (vector-ref m p) k)))))
+              (else
+               (let ((det (if (= p k) det (neg det))))
+                 (if (not (= p k))
+                     (let ((tmp (vector-ref m p))) (vector-set! m p (vector-ref m k)) (vector-set! m k tmp)))
+                 (let* ((rowk (vector-ref m k)) (pivot (vector-ref rowk k)) (pinv (inv pivot)))
+                   (let rows ((i (+ k 1)))
+                     (if (< i n)
+                         (let* ((rowi (vector-ref m i)) (factor (mul (vector-ref rowi k) pinv)))
+                           (if (not (zero? factor))
+                               (let cols ((j k))
+                                 (if (< j n)
+                                     (begin
+                                       (vector-set! rowi j (add (vector-ref rowi j) (neg (mul factor (vector-ref rowk j)))))
+                                       (cols (+ j 1))))))
+                           (rows (+ i 1)))))
+                   (col (+ k 1) (mul det pivot)))))))))))
+
+;; The solution of A x = b over K (A square), by Gauss-Jordan elimination
+;; with unit pivots; a singular or non-invertible system is refused
+;; (ring-not-a-unit naming the column's entry).
+(define (ring-solve K A b)
+  (rc-check K "ring-solve")
+  (let* ((m (rc-matrix K A 'ring-solve)) (n (vector-length m))
+         (rhs (list->vector (map (lambda (x) (rc-admit K x 'ring-solve)) (if (vector? b) (vector->list b) b))))
+         (zero (vector-ref K 12)) (add (vector-ref K 14)) (neg (vector-ref K 15)) (mul (vector-ref K 16))
+         (same (vector-ref K 18)) (unit? (vector-ref K 19)) (inv (vector-ref K 20)))
+    (if (not (= (vector-length rhs) n)) (error "ring-solve: the right-hand side and the matrix differ in size (right-hand side length, matrix rows)" (vector-length rhs) n))
+    (let col ((k 0))
+      (if (= k n)
+          rhs
+          (let find ((p k))
+            (cond
+              ((= p n) (rc-refuse 'ring-not-a-unit 'ring-solve (vector-ref K 5) (vector-ref (vector-ref m k) k)))
+              ((not (unit? (vector-ref (vector-ref m p) k))) (find (+ p 1)))
+              (else
+               (if (not (= p k))
+                   (let ((tmp (vector-ref m p)) (tb (vector-ref rhs p)))
+                     (vector-set! m p (vector-ref m k)) (vector-set! m k tmp)
+                     (vector-set! rhs p (vector-ref rhs k)) (vector-set! rhs k tb)))
+               (let* ((rowk (vector-ref m k)) (pinv (inv (vector-ref rowk k))))
+                 (let scale ((j k))
+                   (if (< j n) (begin (vector-set! rowk j (mul pinv (vector-ref rowk j))) (scale (+ j 1)))))
+                 (vector-set! rhs k (mul pinv (vector-ref rhs k)))
+                 (let rows ((i 0))
+                   (if (< i n)
+                       (begin
+                         (if (not (= i k))
+                             (let* ((rowi (vector-ref m i)) (factor (vector-ref rowi k)))
+                               (if (not (same factor zero))
+                                   (begin
+                                     (let cols ((j k))
+                                       (if (< j n)
+                                           (begin
+                                             (vector-set! rowi j (add (vector-ref rowi j) (neg (mul factor (vector-ref rowk j)))))
+                                             (cols (+ j 1)))))
+                                     (vector-set! rhs i (add (vector-ref rhs i) (neg (mul factor (vector-ref rhs k)))))))))
+                         (rows (+ i 1)))))
+                 (col (+ k 1))))))))))
+
+;; ===========================================================================
+;; The law check (ADR-0034 section 4)
+;; ===========================================================================
+;;
+;; (ring-law-violations R samples integer-samples) checks the ring laws as
+;; equalities with the carrier's own equal? on every triple of samples, the
+;; unit group (a * a^-1 = 1 for every unit, a ring-not-a-unit refusal for
+;; every non-unit), that from-integer is a ring map on the integer samples,
+;; and the declared characteristic. It returns the violations as lists
+;; (law element ...); the empty list means every law held. The IEEE tier
+;; and the native tower are not rings, and are refused.
+
+(define rc-default-integer-samples
+  (list 0 1 -1 2 -3 7 1000003 4611686018427387904 9223372036854775807 -9223372036854775808
+        9223372036854775808 18446744073709551616 -170141183460469231731687303715884105728
+        123456789012345678901234567890))
+
+(define (ring-law-violations R samples . integer-samples)
+  (rc-check R "ring-law-violations")
+  (if (not (vector-ref R 8)) (rc-refuse 'ring-missing-capability 'ring-law-violations (vector-ref R 5) 'lawful?))
+  (let* ((ints (if (null? integer-samples) rc-default-integer-samples (car integer-samples)))
+         (xs (map (lambda (x) (rc-admit R x 'ring-law-violations)) samples))
+         (zero (vector-ref R 12)) (one (vector-ref R 13))
+         (add (vector-ref R 14)) (neg (vector-ref R 15)) (mul (vector-ref R 16))
+         (fi (vector-ref R 17)) (same (vector-ref R 18)) (unit? (vector-ref R 19)) (inv (vector-ref R 20))
+         (bad '())
+         (note! (lambda (v) (set! bad (cons v bad)))))
+    (for-each
+     (lambda (a)
+       (if (not (same (add a zero) a)) (note! (list 'additive-identity a)))
+       (if (not (same (mul a one) a)) (note! (list 'multiplicative-identity a)))
+       (if (not (same (add a (neg a)) zero)) (note! (list 'additive-inverse a)))
+       (if (unit? a)
+           (if (not (same (mul a (inv a)) one)) (note! (list 'unit-inverse a)))
+           (if (not (guard (e ((eq? (ring-refusal-kind e) 'ring-not-a-unit) #t) (else #f)) (inv a) #f))
+               (note! (list 'non-unit-refusal a))))
+       (for-each
+        (lambda (b)
+          (if (not (same (add a b) (add b a))) (note! (list 'additive-commutativity a b)))
+          (if (not (same (mul a b) (mul b a))) (note! (list 'multiplicative-commutativity a b)))
+          (for-each
+           (lambda (c)
+             (if (not (same (add (add a b) c) (add a (add b c)))) (note! (list 'additive-associativity a b c)))
+             (if (not (same (mul (mul a b) c) (mul a (mul b c)))) (note! (list 'multiplicative-associativity a b c)))
+             (if (not (same (mul a (add b c)) (add (mul a b) (mul a c)))) (note! (list 'distributivity a b c))))
+           xs))
+        xs))
+     xs)
+    (if (not (same (fi 0) zero)) (note! (list 'from-integer-zero)))
+    (if (not (same (fi 1) one)) (note! (list 'from-integer-one)))
+    (for-each
+     (lambda (m)
+       (for-each
+        (lambda (n)
+          (if (not (same (fi (+ m n)) (add (fi m) (fi n)))) (note! (list 'from-integer-sum m n)))
+          (if (not (same (fi (* m n)) (mul (fi m) (fi n)))) (note! (list 'from-integer-product m n))))
+        ints))
+     ints)
+    (let ((c (vector-ref R 6)))
+      (if c
+          (for-each
+           (lambda (n)
+             (let ((expect (if (= c 0) (= n 0) (= (modulo n c) 0))))
+               (if (not (eq? expect (if (same (fi n) zero) #t #f))) (note! (list 'characteristic n)))))
+           (append ints (if (> c 0) (list c (* 2 c) (- c) (+ c 1) (- c 1) (* c c)) '())))))
+    (reverse bad)))
+
+;; ===========================================================================
+;; Interoperation with core.symbolic coefficient fields
+;; ===========================================================================
+;;
+;; A core.symbolic coefficient-field descriptor #(eshkol-coefficient-field p)
+;; names Q (p = 0) or GF(p). Its elements are exactly the elements of
+;; `rationals` or `(make-zmod p)` (canonical representatives in [0, p)), so
+;; values pass between the two without conversion.
+
+(define (coefficient-field->ring field)
+  (if (not (and (vector? field) (= (vector-length field) 2)
+                (eq? (vector-ref field 0) 'eshkol-coefficient-field)))
+      (error "coefficient-field->ring: expected a coefficient field" field))
+  (let ((p (vector-ref field 1)))
+    (if (= p 0) rc-Q
+        (let ((F (make-zmod p)))
+          (if (vector-ref F 7) F (error "coefficient-field->ring: the modulus is not prime" p))))))
+(define (ring->coefficient-field R)
+  (rc-check R "ring->coefficient-field")
+  (cond ((= (vector-ref R 2) 2) (vector 'eshkol-coefficient-field 0))
+        ((and (= (vector-ref R 2) 4) (vector-ref R 7)) (vector 'eshkol-coefficient-field (car (vector-ref R 4))))
+        (else (rc-refuse 'ring-no-ring-map 'ring->coefficient-field (vector-ref R 5) "coefficient field"))))

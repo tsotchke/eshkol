@@ -1038,7 +1038,7 @@
       "output_lines": 20
     },
     "examples/mathematics_functor_of_points.esk": {
-      "source_sha256": "22e792fcffb22dda5d704a95464f865ae7220370e67ae42838c4462b06b5dd4b",
+      "source_sha256": "1b84cae1ad998c6d74e0917c35c74aa2513c15e54774590cb859cd8ac4ebfb4a",
       "jit": {
         "status": "NOT-RUN"
       },
