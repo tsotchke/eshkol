@@ -2063,46 +2063,62 @@
       "output_lines": 22
     },
     "examples/mathematics_presheaf_topos_internal_logic.esk": {
-      "source_sha256": "11fdc767fc44cda5f0be5a43a347e44463caa810b37d3634905d3c77110163b8",
+      "source_sha256": "770f6106aa41871135d58957317c385335a5d1ce18922c976e4cded3dd7edb9a",
       "jit": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 4.92,
-        "passed": 9,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 4.68
+        "status": "NOT-RUN"
       },
       "aot": {
-        "status": "PASS",
-        "exit": 0,
-        "wall_s": 0.57,
-        "passed": 9,
-        "failed": 0,
-        "result_line": "RESULT: ALL PASS",
-        "cpu_s": 0.38,
-        "compile_exit": 0,
-        "compile_s": 8.82
+        "status": "NOT-RUN"
       },
-      "ctest": [
-        {
-          "name": "cat_presheaf_topos_internal_logic_jit",
-          "status": "Passed",
-          "seconds": 10.6
-        },
-        {
-          "name": "cat_presheaf_topos_internal_logic_aot",
-          "status": "Passed",
-          "seconds": 9.89
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This source now uses core.sheaf and core.topos and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.",
+      "previous_source_receipt": {
+        "release_sha": "60f345def03a73b0b676376db8f64962d48fb0a6",
+        "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+        "record": {
+          "source_sha256": "11fdc767fc44cda5f0be5a43a347e44463caa810b37d3634905d3c77110163b8",
+          "jit": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 4.92,
+            "passed": 9,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 4.68
+          },
+          "aot": {
+            "status": "PASS",
+            "exit": 0,
+            "wall_s": 0.57,
+            "passed": 9,
+            "failed": 0,
+            "result_line": "RESULT: ALL PASS",
+            "cpu_s": 0.38,
+            "compile_exit": 0,
+            "compile_s": 8.82
+          },
+          "ctest": [
+            {
+              "name": "cat_presheaf_topos_internal_logic_jit",
+              "status": "Passed",
+              "seconds": 10.6
+            },
+            {
+              "name": "cat_presheaf_topos_internal_logic_aot",
+              "status": "Passed",
+              "seconds": 9.89
+            }
+          ],
+          "key_output": [
+            "  sizes of Omega(c): walking arrow, pseudocircle, square, BZ/2 = ((2 3) (2 2 5 5) (2 3 3 6) (2))",
+            "  classifier check (sub-presheaves, Nat(X, Omega), all chi natural, pullback of true recovers A, chi injective): walking arrow, pseudocircle = ((18 18 #t #t #t) (19 19 #t #t #t))",
+            "  Grothendieck topologies (count, all give LT topologies, distinct): walking arrow, pseudocircle, BZ/2 = ((4 #t #t) (16 #t #t) (2 #t #t))",
+            "  walking arrow: all natural endomorphisms of Omega satisfying the Lawvere-Tierney axioms, by exhaustion = 4"
+          ],
+          "output_lines": 21
         }
-      ],
-      "key_output": [
-        "  sizes of Omega(c): walking arrow, pseudocircle, square, BZ/2 = ((2 3) (2 2 5 5) (2 3 3 6) (2))",
-        "  classifier check (sub-presheaves, Nat(X, Omega), all chi natural, pullback of true recovers A, chi injective): walking arrow, pseudocircle = ((18 18 #t #t #t) (19 19 #t #t #t))",
-        "  Grothendieck topologies (count, all give LT topologies, distinct): walking arrow, pseudocircle, BZ/2 = ((4 #t #t) (16 #t #t) (2 #t #t))",
-        "  walking arrow: all natural endomorphisms of Omega satisfying the Lawvere-Tierney axioms, by exhaustion = 4"
-      ],
-      "output_lines": 21
+      }
     },
     "examples/mathematics_sheafification_descent_kan.esk": {
       "source_sha256": "72aae0f72e6bb160b435055a394c7cd2f9651f72b7d8a9ba588786d291684a49",
