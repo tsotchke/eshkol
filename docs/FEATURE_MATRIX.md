@@ -824,8 +824,16 @@ are not yet scheduled to a specific release.
 
 ### v1.7.0-synthesis (target: Q3-Q4 2027)
 
-- **Program Synthesis**: Type-directed holes, neural-guided search
-- **Advanced Neural**: Graph Neural Networks
+- **Program Synthesis**: Type-directed holes (`??`, completed by the native
+  compiler under JIT and AOT, [synthesis-holes.md](reference/language/synthesis-holes.md));
+  synthesis from input-output examples (`core.synthesis`: enumeration with
+  observational equivalence, FlashFill and map/filter deduction, 42/42
+  benchmark tasks verified on held-out examples,
+  [synthesis.md](reference/stdlib/synthesis.md)); neural-guided search: the
+  cost hook ships, the learned engines are in Noesis (ADR-0052)
+- **Advanced Neural**: Graph Neural Networks (`ml.gnn`: message passing,
+  sum/mean/max aggregation, GCN, GraphSAGE, graph attention, exact reverse-mode
+  gradients through `ml.autograd`, [gnn.md](reference/stdlib/gnn.md))
 
 ### v1.9.0 (per ADR-0004/ADR-0007, ADR-0000 Stage 12)
 
