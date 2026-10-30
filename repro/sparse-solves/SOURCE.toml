@@ -1,0 +1,8 @@
+schema_version = 1
+license = "MIT"
+upstream_repository = "https://github.com/tsotchke/eshkol"
+upstream_base = "41c8aa2d4e8f966f7cebdca86779ac62eb291943"
+upstream_branch = "feat/v15-neurosymbolic"
+prerequisite_prs = [902]
+source_owners = ["sparse-linear-algebra"]
+scope = "CG and full-orthogonalization symmetric minimum residual over existing CSR, plus explicit implicit JVP/VJP and exact diagonal-dominance enclosures of original-model solution and cotangent errors."
