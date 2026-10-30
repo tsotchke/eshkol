@@ -1,0 +1,46 @@
+;;; Natural numbers and integers (ADR-0043), with the successor
+;;; equivalence of the integers and its univalence path.
+;;; Import with (hott (import numbers)).
+
+(hott
+  (import foundations)
+
+  (data Nat zero (suc (n : Nat)))
+  (builtin natural Nat)
+
+  (define add : (-> Nat Nat Nat)
+    (split (zero (lambda (n) n))
+           ((suc m) (lambda (n) (suc (add m n))))))
+
+  (data Int (pos (n : Nat)) (negsuc (n : Nat)))
+
+  (define suc-neg : (-> Nat Int)
+    (split (zero (pos zero)) ((suc m) (negsuc m))))
+  (define pred-pos : (-> Nat Int)
+    (split (zero (negsuc zero)) ((suc m) (pos m))))
+
+  (define sucInt : (-> Int Int)
+    (split ((pos n) (pos (suc n))) ((negsuc n) (suc-neg n))))
+  (define predInt : (-> Int Int)
+    (split ((pos n) (pred-pos n)) ((negsuc n) (negsuc (suc n)))))
+
+  (define sucPred-pos : (Pi ((n : Nat)) (Path Int (sucInt (predInt (pos n))) (pos n)))
+    (split (zero (refl 0 Int (pos zero)))
+           ((suc m) (refl 0 Int (pos (suc m))))))
+  (define sucPred : (Pi ((x : Int)) (Path Int (sucInt (predInt x)) x))
+    (split ((pos n) (sucPred-pos n))
+           ((negsuc n) (refl 0 Int (negsuc n)))))
+
+  (define predSuc-neg : (Pi ((n : Nat)) (Path Int (predInt (sucInt (negsuc n))) (negsuc n)))
+    (split (zero (refl 0 Int (negsuc zero)))
+           ((suc m) (refl 0 Int (negsuc (suc m))))))
+  (define predSuc : (Pi ((x : Int)) (Path Int (predInt (sucInt x)) x))
+    (split ((pos n) (refl 0 Int (pos n)))
+           ((negsuc n) (predSuc-neg n))))
+
+  (define sucEquiv : (Equiv 0 0 Int Int)
+    (iso-to-equiv 0 Int Int sucInt predInt sucPred predSuc))
+
+  ;; the successor as a path in the universe: transport along it is sucInt
+  (define sucPathInt : (Path U Int Int)
+    (ua 0 Int Int sucEquiv)))
