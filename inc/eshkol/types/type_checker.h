@@ -18,6 +18,7 @@
 #include <eshkol/util/continuation_task.h>
 #include <vector>
 #include <map>
+#include <tuple>
 #include <set>
 #include <optional>
 #include <string>
@@ -187,6 +188,14 @@ public:
             }
         }
     }
+
+    /**
+     * Every binding visible at this point, innermost first, with the depth of
+     * the scope that binds it (0 = global). A name shadowed by an inner scope
+     * appears once, with its innermost binding. Used by `??` hole synthesis
+     * (ADR-0052) to enumerate the terms in scope at a hole.
+     */
+    std::vector<std::tuple<std::string, TypeId, size_t>> visibleBindings() const;
 
 private:
     // Stack of scopes, each scope is a map from name to type
@@ -420,6 +429,28 @@ private:
  *       reportError(result);
  *   }
  */
+class TypeChecker;
+
+/**
+ * @brief Receives every `??` synthesis hole the checker reaches (ADR-0052).
+ *
+ * `??` is an ordinary identifier to the reader. When it is unbound at its use,
+ * the checker treats it as a typed hole: it calls onHole() while the hole's
+ * scope is still live (so `checker.context()` holds exactly the bindings in
+ * scope at the hole) and gives the hole its expected type. A hole the checker
+ * reaches more than once (a named-let body re-synthesized to a fixpoint) is
+ * reported each time; the observer keeps the last report per node.
+ */
+class HoleObserver {
+public:
+    virtual ~HoleObserver() = default;
+    /** @p expected is the type the context requires, or Value if unknown. */
+    virtual void onHole(TypeChecker& checker, eshkol_ast_t* hole, TypeId expected) = 0;
+};
+
+/** True for an occurrence of the hole identifier `??`. */
+bool isSynthesisHole(const eshkol_ast_t* expr);
+
 class TypeChecker {
 public:
     /**
@@ -446,6 +477,31 @@ public:
      * Stores the checked type in expr->inferred_hott_type
      */
     TypeCheckResult check(eshkol_ast_t* expr, TypeId expected);
+
+    // === Synthesis holes (ADR-0052) ===
+
+    /** Install (or clear, with nullptr) the observer that receives `??` holes. */
+    void setHoleObserver(HoleObserver* observer) { hole_observer_ = observer; }
+
+    /**
+     * Record that @p expr, if it is a hole (or a `begin` whose value is one),
+     * is expected to have type @p expected. This is the checking direction for
+     * holes in the positions the synthesis rules already know a type for: a
+     * function body under a return annotation, an argument of a callee with a
+     * known signature, and an `if` test. checkTask() reports a hole with its
+     * expected type directly.
+     */
+    void expectAt(const eshkol_ast_t* expr, TypeId expected);
+
+    /**
+     * Γ ⊢ e ⇐ τ with no lasting effect: errors, deferred diagnostics, linear
+     * use counts and the warning stream are all restored afterwards. Used to
+     * validate hole candidates in the hole's own scope.
+     */
+    TypeCheckResult checkSpeculative(eshkol_ast_t* expr, TypeId expected);
+
+    /** The type environment (type names, function signatures, subtyping). */
+    TypeEnvironment& environment() { return env_; }
 
     // === Error Management ===
 
@@ -736,6 +792,12 @@ private:
     // diagnostics stay subject to the outer loop's decision.
     size_t speculation_depth_ = 0;
     std::vector<std::string> deferred_diagnostics_;
+
+    // `??` holes (ADR-0052): the observer, and the expected types recorded by
+    // expectAt() for hole nodes, keyed by node.
+    HoleObserver* hole_observer_ = nullptr;
+    std::map<const eshkol_ast_t*, TypeId> hole_goals_;
+    TypeCheckResult reportHole(eshkol_ast_t* expr, TypeId expected);
     /** Print one diagnostic line to stderr, or hold it while speculating. */
     void emitDiagnostic(const std::string& line);
 

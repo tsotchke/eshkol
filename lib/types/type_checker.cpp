@@ -3,6 +3,7 @@
  * @brief Implementation of bidirectional type checking for Eshkol's HoTT type system
  */
 
+#include <set>
 #include "../core/taylor_opcodes.h"
 #include "eshkol/types/type_checker.h"
 #include <eshkol/frontend/ast_strings.h>
@@ -104,6 +105,26 @@ std::optional<size_t> Context::bindingScopeOf(const std::string& name) const {
         if (scopes_[i].count(name)) return i;
     }
     return std::nullopt;
+}
+
+/**
+ * @brief Every visible binding, innermost first, each name once (its
+ * innermost binding), with the index of the scope that binds it.
+ */
+std::vector<std::tuple<std::string, TypeId, size_t>> Context::visibleBindings() const {
+    std::vector<std::tuple<std::string, TypeId, size_t>> out;
+    std::set<std::string> seen;
+    for (size_t i = scopes_.size(); i-- > 0;) {
+        for (const auto& kv : scopes_[i]) {
+            if (seen.insert(kv.first).second) out.emplace_back(kv.first, kv.second, i);
+        }
+    }
+    return out;
+}
+
+bool isSynthesisHole(const eshkol_ast_t* expr) {
+    return expr && expr->type == ESHKOL_VAR && expr->variable.id &&
+           std::strcmp(expr->variable.id, "??") == 0;
 }
 
 /**
@@ -983,6 +1004,34 @@ TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
     return synthesizeTask(expr).run();
 }
 
+// ===== `??` synthesis holes (ADR-0052) =====
+
+void TypeChecker::expectAt(const eshkol_ast_t* expr, TypeId expected) {
+    // The value of a body sequence is its last expression.
+    while (expr && expr->type == ESHKOL_OP && expr->operation.op == ESHKOL_SEQUENCE_OP &&
+           expr->operation.sequence_op.num_expressions > 0) {
+        expr = &expr->operation.sequence_op.expressions[expr->operation.sequence_op.num_expressions - 1];
+    }
+    if (isSynthesisHole(expr)) hole_goals_[expr] = expected;
+}
+
+TypeCheckResult TypeChecker::reportHole(eshkol_ast_t* expr, TypeId expected) {
+    if (hole_observer_) hole_observer_->onHole(*this, expr, expected);
+    return TypeCheckResult::ok(expected);
+}
+
+TypeCheckResult TypeChecker::checkSpeculative(eshkol_ast_t* expr, TypeId expected) {
+    const SpeculationMark mark = markSpeculation();
+    HoleObserver* saved = hole_observer_;
+    hole_observer_ = nullptr;
+    ++speculation_depth_;
+    TypeCheckResult result = check(expr, expected);
+    --speculation_depth_;
+    hole_observer_ = saved;
+    rollbackSpeculation(mark);
+    return result;
+}
+
 TypeCheckResult TypeChecker::check(eshkol_ast_t* expr, TypeId expected) {
     return checkTask(expr, expected).run();
 }
@@ -1048,6 +1097,11 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeTask(eshkol_ast_t* expr
 ContinuationTask<TypeCheckResult> TypeChecker::checkTask(eshkol_ast_t* expr, TypeId expected) {
     if (!expr) {
         co_return TypeCheckResult::error("Null expression");
+    }
+
+    // A `??` hole takes the type it is checked against (ADR-0052).
+    if (isSynthesisHole(expr) && !ctx_.lookup("??")) {
+        co_return reportHole(expr, expected);
     }
 
     // Special case: lambda can infer param types from expected
@@ -1135,6 +1189,12 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
     std::string name = expr->variable.id;
     auto type = ctx_.lookup(name);
     if (type && !loop_frames_.empty()) noteRecursiveUse(name, *type);
+    if (!type && name == "??") {
+        // An unbound `??` is a synthesis hole: it has the type its position
+        // expects (recorded by expectAt()), or Value where none is known.
+        auto goal = hole_goals_.find(expr);
+        return reportHole(expr, goal != hole_goals_.end() ? goal->second : BuiltinTypes::Value);
+    }
     if (!type) {
         // Check if it's a builtin arithmetic operator (used as first-class value)
         // These are valid but not in the type context when used as values
@@ -1857,6 +1917,15 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
     // Pre-synthesize all arguments to ensure nested expressions are type-checked
     // (e.g., (display (vector-ref v -1)) must check the vector-ref even though
     // display itself doesn't need arg types for its return type)
+    // A hole argument is expected at the callee's declared parameter type.
+    if (func_expr->type == ESHKOL_VAR && func_expr->variable.id) {
+        if (auto callee = ctx_.lookup(func_expr->variable.id); callee && env_.isFunctionType(*callee)) {
+            const auto params = env_.getFunctionParamTypes(*callee);
+            for (size_t i = 0; i < call.num_vars && i < params.size(); ++i) {
+                expectAt(&call.variables[i], params[i]);
+            }
+        }
+    }
     std::vector<TypeCheckResult> arg_types;
     for (size_t i = 0; i < call.num_vars; ++i) {
         if (should_skip_builtin_designator_arg(i)) {
@@ -3127,6 +3196,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
 
             // Type check the body if present
             if (def.value) {
+                if (def.return_type) expectAt(def.value, declared_return);
                 value_type = (co_await synthesizeTask(def.value));
             }
 
@@ -3661,6 +3731,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeIfTask(eshkol_ast_t* ex
     // nested expressions and recording their inferred types) — matching the
     // pre-synthesis the generic application path used to perform.
     std::vector<PredicateNarrowing> narrowings = collectPredicateNarrowings(cond);
+    expectAt(cond, BuiltinTypes::Boolean);
     (co_await synthesizeTask(cond));
     // Drop any refinement whose variable is reassigned inside the branch.
     std::vector<PredicateNarrowing> active;
