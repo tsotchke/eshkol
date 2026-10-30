@@ -4310,6 +4310,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
+# Scoped sblc-cost-sensitivities consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/sblc-cost-sensitivities/CTest.cmake")
+
 # Shared exact cyclotomic arithmetic; the two consumers remain gated below.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(NAME cyclotomic_jit
