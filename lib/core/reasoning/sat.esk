@@ -41,7 +41,39 @@
 (define (sat-neg l) (if (even? l) (+ l 1) (- l 1)))
 (define (sat-var l) (quotient l 2))
 
+;; Validate the complete data shape before walking or allocating from it.
+;; Floyd's scan also refuses cyclic lists without a size-dependent allocation.
+(define (sat-finite-list? xs)
+  (let loop ((slow xs) (fast xs))
+    (cond ((null? fast) #t)
+          ((not (pair? fast)) #f)
+          ((null? (cdr fast)) #t)
+          ((not (pair? (cdr fast))) #f)
+          (else (let ((slow (cdr slow)) (fast (cddr fast)))
+                  (and (not (eq? slow fast)) (loop slow fast)))))))
+(define (sat-literals? xs)
+  (and (sat-finite-list? xs)
+       (every (lambda (d) (and (number? d) (integer? d) (exact? d) (not (= d 0)))) xs)))
+(define (sat-clauses? clauses)
+  (and (sat-finite-list? clauses) (every sat-literals? clauses)))
+(define (sat-canonical-clause lits)
+  ;; Preserve the first literal: it is the DRAT pivot, not a sorting choice.
+  (let loop ((xs lits) (out '()))
+    (if (null? xs) (reverse out)
+        (loop (cdr xs) (if (memv (car xs) out) out (cons (car xs) out))))))
+(define (sat-tautology? lits)
+  (let loop ((xs lits))
+    (and (pair? xs) (or (memv (- (car xs)) lits) (loop (cdr xs))))))
+(define (sat-canonical-cnf clauses)
+  (filter (lambda (row) (not (sat-tautology? row))) (map sat-canonical-clause clauses)))
+(define (sat-proof-steps? proof)
+  (and (sat-finite-list? proof)
+       (every (lambda (step)
+                (and (pair? step) (memq (car step) '(add delete))
+                     (sat-literals? (cdr step)) (not (sat-tautology? (cdr step))))) proof)))
+
 (define (sat-cnf-variables clauses)
+  (if (not (sat-clauses? clauses)) (error "sat: expected proper finite clauses of nonzero exact integers"))
   (let loop ((cs clauses) (m 0))
     (if (null? cs) m
         (loop (cdr cs)
@@ -379,7 +411,10 @@
 ;; or the RAT property on its first literal; deletions remove one copy of an
 ;; equal clause. The proof must add the empty clause. Returns #t or #f.
 (define (drat-check clauses proof)
-  (let* ((n (max (sat-cnf-variables clauses)
+  (if (not (and (sat-clauses? clauses) (sat-proof-steps? proof))) #f
+  (let* ((clauses (sat-canonical-cnf clauses))
+         (proof (map (lambda (step) (cons (car step) (sat-canonical-clause (cdr step)))) proof))
+         (n (max (sat-cnf-variables clauses)
                  (let loop ((ps proof) (m 0))
                    (if (null? ps) m (loop (cdr ps) (max m (sat-cnf-variables (list (cdr (car ps))))))))))
          (db (make-vector 16 #f)) (count 0)
@@ -469,7 +504,7 @@
                   ((or (rup? lits) (rat? lits))
                    (add! lits)
                    (if (null? lits) #t (step (cdr ps) empty-added)))
-                  (else #f)))))))
+                  (else #f))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; DIMACS / DRAT text
@@ -487,18 +522,46 @@
                  (loop (+ i 1) '() (flush) #f))
                 (else (loop (+ i 1) (cons ch cur) out #f)))))))
 
-;; Parse DIMACS CNF text: returns (num-vars . clauses).
+(define (sat-dimacs-integer token)
+  (let* ((size (string-length token))
+         (start (if (and (> size 0) (or (char=? (string-ref token 0) #\-)
+                                        (char=? (string-ref token 0) #\+))) 1 0)))
+    (if (= start size) (error "dimacs-parse: expected a decimal integer" token))
+    (let digits ((i start))
+      (if (< i size)
+          (if (and (char>=? (string-ref token i) #\0) (char<=? (string-ref token i) #\9))
+              (digits (+ i 1)) (error "dimacs-parse: expected a decimal integer" token))))
+    (let ((value (string->number token)))
+      (if (not (and (number? value) (integer? value) (exact? value)))
+          (error "dimacs-parse: expected an exact integer" token))
+      value)))
+
+;; Parse one complete DIMACS problem, without guessing missing syntax.
 (define (dimacs-parse str)
-  (let loop ((ts (sat-tokens str)) (nv 0) (cur '()) (out '()))
-    (cond ((null? ts) (cons nv (reverse (if (null? cur) out (cons (reverse cur) out)))))
-          ((string=? (car ts) "p")
-           (loop (list-tail ts 4) (string->number (caddr ts)) cur out))
-          (else
-           (let ((x (string->number (car ts))))
-             (if (not x) (error "dimacs-parse: not an integer" (car ts)))
-             (if (= x 0)
-                 (loop (cdr ts) nv '() (cons (reverse cur) out))
-                 (loop (cdr ts) nv (cons x cur) out)))))))
+  (let ((tokens (sat-tokens str)))
+    (if (not (and (>= (length tokens) 4) (string=? (car tokens) "p")
+                  (string=? (cadr tokens) "cnf")))
+        (error "dimacs-parse: expected one p cnf header"))
+    (let ((nv (sat-dimacs-integer (caddr tokens)))
+          (nc (sat-dimacs-integer (cadddr tokens))))
+      (if (or (< nv 0) (< nc 0)) (error "dimacs-parse: negative declaration"))
+      (let loop ((ts (list-tail tokens 4)) (cur '()) (out '()) (count 0))
+        (if (null? ts)
+            (begin
+              (if (or (pair? cur) (not (= count nc)))
+                  (error "dimacs-parse: missing terminator or clause-count mismatch"))
+              (cons nv (reverse out)))
+            (let ((x (sat-dimacs-integer (car ts))))
+              (if (= x 0)
+                  (let ((row (reverse cur)))
+                    (if (>= count nc) (error "dimacs-parse: too many clauses"))
+                    (if (or (sat-tautology? row)
+                            (not (= (length row) (length (sat-canonical-clause row)))))
+                        (error "dimacs-parse: repeated or complementary clause literal"))
+                    (loop (cdr ts) '() (cons row out) (+ count 1)))
+                  (begin
+                    (if (> (abs x) nv) (error "dimacs-parse: literal exceeds variable declaration" x))
+                    (loop (cdr ts) (cons x cur) out count)))))))))
 
 (define (sat-clause-line prefix lits)
   (string-append prefix
@@ -506,14 +569,16 @@
                  "0\n"))
 
 (define (dimacs-format clauses)
-  (fold-left (lambda (acc c) (string-append acc (sat-clause-line "" c)))
-             (string-append "p cnf " (number->string (sat-cnf-variables clauses)) " "
-                            (number->string (length clauses)) "\n")
-             clauses))
+  (let* ((n (sat-cnf-variables clauses)) (rows (sat-canonical-cnf clauses)))
+    (fold-left (lambda (acc c) (string-append acc (sat-clause-line "" c)))
+               (string-append "p cnf " (number->string n) " " (number->string (length rows)) "\n")
+               rows)))
 
 (define (drat-format proof)
+  (if (not (sat-proof-steps? proof)) (error "drat-format: malformed proof steps"))
   (fold-left (lambda (acc step)
-               (string-append acc (sat-clause-line (if (eq? (car step) 'delete) "d " "") (cdr step))))
+               (string-append acc (sat-clause-line (if (eq? (car step) 'delete) "d " "")
+                                                  (sat-canonical-clause (cdr step)))))
              "" proof))
 
 ;; ---------------------------------------------------------------------------

@@ -228,6 +228,24 @@ shares no code with the solver.
 
 Options: `(max-conflicts . n)`, `(num-vars . n)`, `(learned-limit . n)`.
 
+### SAT interchange admission
+
+`dimacs-parse` requires one `p cnf` header, nonnegative exact decimal
+variable/clause declarations, in-range integer literals, the declared number
+of clauses and every zero terminator. Repeated/complementary literals in a
+DIMACS clause refuse; `dimacs-format` canonicalizes logical input clauses
+before serialization. Unused declared variables and explicitly empty clauses
+remain valid.
+
+`drat-check` returns false for malformed, improper or cyclic CNF/proof data,
+unknown step tags and invalid proof literals. Logical source clauses are
+deduplicated and tautologies ignored, as in the solver. Proof literal order
+preserves the RAT pivot. Deletion removes one matching normalized clause,
+including a unit; it never removes every duplicate clause at once.
+`drat-format` rejects malformed proof data and emits deduplicated clauses.
+See [the bounded admission/replay gate](../../../repro/sat-proof-admission/README.md)
+for independent oracles, producer-free checking and qualification limits.
+
 ## Knowledge graphs
 
 ```scheme
