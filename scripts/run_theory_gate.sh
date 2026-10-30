@@ -89,18 +89,20 @@ python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
     --work-dir "$WORK/doc-examples" \
     --no-trace > "$doc_log" 2>&1
 doc_status=$?
-# The harness reports "examples=N executed=E passed=P failed=F" under a
-# "scope=... paths=..." header for every gated scope; the counts that matter
-# are those under the header naming this page. An example that was not
-# executed is not evidence, so all of them must run and pass.
-doc_counts=$(awk -v pages="paths=$PAGES" 'index($0, "doc example gate: ") && index($0, pages) {grab=1; next}
-    grab && match($0, /examples=[0-9]+ executed=[0-9]+ passed=[0-9]+/) {print substr($0, RSTART, RLENGTH); grab=0}' "$doc_log" | tail -n 1)
-doc_examples=$(printf '%s' "$doc_counts" | sed -E 's/examples=([0-9]+).*/\1/')
+# The harness reports "examples=N executed=E passed=P failed=F" for the gated
+# scope that contains the page; with --only, the scope's other pages are not
+# executed, so the page's own examples are counted here (its fenced scheme
+# blocks) and every one of them must have run and passed, none failed. An
+# example that was not executed is not evidence.
+page_examples=$(grep -c '^```scheme' "$REPO_ROOT/$PAGES")
+doc_counts=$(awk -v page="$PAGES" 'index($0, "doc example gate: ") && index($0, page) {grab=1; next}
+    grab && match($0, /executed=[0-9]+ passed=[0-9]+/) {e=substr($0, RSTART, RLENGTH); match($0, /failed=[0-9]+/); print e " " substr($0, RSTART, RLENGTH); grab=0}' "$doc_log" | tail -n 1)
 doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
 doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
-summary="$summary; documentation examples ${doc_counts:-none reported} (exit ${doc_status})"
-if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${doc_examples:-0}" -eq 0 ] \
-   || [ "$doc_executed" -ne "$doc_examples" ] || [ "$doc_passed" -ne "$doc_examples" ]; then
+doc_failed=$(printf '%s' "$doc_counts" | sed -E 's/.*failed=([0-9]+).*/\1/')
+summary="$summary; documentation examples: page has ${page_examples}, ${doc_counts:-none reported} (exit ${doc_status})"
+if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${page_examples:-0}" -eq 0 ] \
+   || [ "$doc_executed" -ne "$page_examples" ] || [ "$doc_passed" -ne "$page_examples" ] || [ "$doc_failed" -ne 0 ]; then
     status=1
 fi
 
