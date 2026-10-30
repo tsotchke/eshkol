@@ -6442,14 +6442,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # v1.5.0 (ADR-0049): LSTM/GRU cells, stop-gradient and the gradient
-    # estimators, plus reverse mode through loops that keep AD nodes only
-    # inside a list. Each program checks reverse mode against forward
+    # estimators, reverse mode through loops that keep AD nodes only inside a
+    # list, and the Noesis substrate modules (HNSW index, BPE tokenizer, CSR
+    # sparse matrices). Each program checks reverse mode against forward
     # mode or a closed form, trains a small model, and asserts that no finite
     # differences ran. JIT and AOT.
     foreach(_ns_case
             "recurrent_cells|tests/ml/recurrent_test.esk"
             "gradient_estimators_native|tests/ml/gradient_estimators_native_test.esk"
-            "loop_list_reverse_mode|tests/autodiff/loop_list_reverse_mode_test.esk")
+            "loop_list_reverse_mode|tests/autodiff/loop_list_reverse_mode_test.esk"
+            "hnsw_index|tests/ml/hnsw_test.esk"
+            "bpe_tokenizer|tests/ml/bpe_test.esk"
+            "sparse_csr|tests/ml/sparse_test.esk")
         string(REPLACE "|" ";" _ns_parts "${_ns_case}")
         list(GET _ns_parts 0 _ns_name)
         list(GET _ns_parts 1 _ns_file)
