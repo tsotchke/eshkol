@@ -1024,8 +1024,10 @@ negative dynamic/FFI cases.
   they claim ownership, lifetime, purity, session, or quantum guarantees. They
   can remain untyped or cross an explicit checked/unsafe boundary, but cannot
   retain a false static guarantee.
-- Full HoTT features such as univalence are deferred. “HoTT-inspired” will no
-  longer be used to imply capabilities absent from the kernel.
+- Full HoTT features are built by ADR-0043 in a separate cubical kernel:
+  identity types, path induction, univalence and higher inductive types, all
+  computing. This kernel stays the small predicative core of the systems
+  types; the two share universes and the proposition reading of ADR-0035.
 
 ## Rejected alternatives
 
