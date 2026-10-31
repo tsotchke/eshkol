@@ -1,0 +1,83 @@
+;;; core.reasoning.ansatz: the incremental survivor set equals a from-scratch
+;;; filter after every change, with fewer constraint evaluations.
+(require stdlib)
+(require core.dbsp)
+(require core.reasoning.ansatz)
+(require core.reasoning.prolog)
+
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+
+;; ---- power-law ansatz y = x^a for x^2 y'' - 2y = 0: a(a-1) = 2
+(define pl (make-ansatz-search))
+(ansatz-add-candidates! pl (ansatz-grid (list '(-3 -5/2 -2 -3/2 -1 -1/2 0 1/2 1 3/2 2 5/2 3))))
+(ansatz-add-constraint! pl 'euler (lambda (row) (let ((a (car row))) (= (- (* a (- a 1)) 2) 0))))
+(check "power-law exponents" (equal? (ansatz-survivors pl) '((-1) (2))))
+
+;; ---- cubic ansatz p(x) = c0 + c1 x + c2 x^2 + c3 x^3, integer coefficients
+(define (p row x) (+ (car row) (* (cadr row) x) (* (caddr row) x x) (* (cadddr row) x x x)))
+(define (dp row x) (+ (cadr row) (* 2 (caddr row) x) (* 3 (cadddr row) x x)))
+(define coeffs '(-3 -2 -1 0 1 2 3))
+(define family (ansatz-grid (list coeffs coeffs coeffs coeffs)))
+(define constraints
+  (list (cons 'root-at-1 (lambda (r) (= (p r 1) 0)))
+        (cons 'value-at-minus-1 (lambda (r) (= (p r -1) 4)))
+        (cons 'slope-at-0 (lambda (r) (= (dp r 0) -2)))
+        (cons 'half-point (lambda (r) (<= (abs (p r 1/2)) 1)))))
+(define (scratch rows active) (filter (lambda (r) (let all ((cs active)) (or (null? cs) (and ((cdr (car cs)) r) (all (cdr cs)))))) rows))
+(define (sorted rows) (sort rows (lambda (a b) (string<? (zset-row-key a) (zset-row-key b)))))
+(define s (make-ansatz-search))
+(ansatz-add-candidates! s family)
+(check "family size" (= (length (ansatz-survivors s)) 2401))
+(define ids '())
+(define agree #t)
+(define scratch-evaluations 0)
+(let add ((cs constraints) (active '()))
+  (if (pair? cs)
+      (let* ((r (ansatz-add-constraint! s (car (car cs)) (cdr (car cs)))) (active (append active (list (car cs)))))
+        (set! ids (append ids (list (car r))))
+        (set! scratch-evaluations (+ scratch-evaluations (* (length active) (length family))))
+        (if (not (equal? (ansatz-survivors s) (sorted (scratch family active)))) (set! agree #f))
+        (add (cdr cs) active))))
+(check "survivors equal the scratch filter after each constraint" agree)
+(check "the constraints pin the polynomial"
+       (equal? (ansatz-survivors s) (sorted (scratch family constraints))))
+(define evals-after-adding (cdr (assq 'evaluations (ansatz-work s))))
+(check "incremental evaluation is cheaper than re-filtering"
+       (< evals-after-adding (quotient scratch-evaluations 2)))
+;; retract the second constraint: rows it alone rejected return if the others accept them
+(define delta (ansatz-retract-constraint! s (cadr ids)))
+(define remaining (list (car constraints) (caddr constraints) (cadddr constraints)))
+(check "retraction restores exactly the rows the others accept"
+       (equal? (ansatz-survivors s) (sorted (scratch family remaining))))
+(check "retraction reports a positive change"
+       (and (pair? (zset-entries delta)) (let all ((es (zset-entries delta))) (or (null? es) (and (> (car (car es)) 0) (all (cdr es)))))))
+(check "constraints listed" (equal? (map cdr (ansatz-constraints s)) '(root-at-1 slope-at-0 half-point)))
+;; widen the family: only the new rows are evaluated
+(define before (cdr (assq 'evaluations (ansatz-work s))))
+(define wider (filter (lambda (r) (= (abs (cadddr r)) 4)) (ansatz-grid (list coeffs coeffs coeffs '(-4 4)))))
+(ansatz-add-candidates! s wider)
+(define after (cdr (assq 'evaluations (ansatz-work s))))
+(check "widening evaluates only new rows" (<= (- after before) (* 3 (length wider))))
+(check "survivors after widening equal scratch"
+       (equal? (ansatz-survivors s) (sorted (scratch (append family wider) remaining))))
+(check "re-adding candidates is a no-op" (zset-empty? (ansatz-add-candidates! s (list (car family)))))
+(check "unknown constraint id refused" (raises? (lambda () (ansatz-retract-constraint! s 999))))
+
+;; ---- survivors as knowledge-base facts for the logic engine
+(define kb (make-kb))
+(define n (ansatz->kb! pl kb 'exponent))
+(define db (make-prolog))
+(prolog-attach-kb! db kb)
+(prolog-add! db '(<- (positive-exponent ?a) (exponent ?a) (> ?a 0)))
+(check "survivors published to a KB and queried by rules"
+       (and (= n 2) (equal? (map (lambda (x) (walk '?a x)) (prolog-query db '(positive-exponent ?a))) '(2))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: reasoning_ansatz_test") (newline)
+(display "RESULT: PASS") (newline)

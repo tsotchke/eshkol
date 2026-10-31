@@ -4459,6 +4459,30 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# core.reasoning (ADR-0051): goal-directed proof search with tabling, stratified
+# Datalog on DBSP circuits, finite-domain constraints, CDCL SAT with DRAT
+# proofs, the triple store, knowledge-graph embeddings, incremental ansatz
+# search, and the cross-engine soundness suite; JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_reasoning_suite reasoning_prolog_test reasoning_datalog_test reasoning_fd_test
+            reasoning_sat_test reasoning_kg_test reasoning_kge_test reasoning_ansatz_test
+            reasoning_soundness_test)
+        add_test(NAME ${_reasoning_suite}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_reasoning_suite}.esk")
+        add_test(NAME ${_reasoning_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_reasoning_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_reasoning_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_reasoning_suite}_jit ${_reasoning_suite}_aot PROPERTIES
+            TIMEOUT 600
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_reasoning_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # AI-discovered-algorithm witness examples: each program is a compile-and-run
 # exact-verdict check reproducing a published machine-discovered construction
 # (AlphaTensor rank-47/rank-23 F2 matrix multiplication, a FunSearch cap-set
