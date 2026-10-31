@@ -270,6 +270,12 @@ def extract_special_forms():
         "let-match": "ESHKOL_MATCH_OP",
         "define-values": "ESHKOL_DEFINE_OP",
         "named-let": "ESHKOL_LET_OP",                 # (let name (bindings) body)
+        # Algebraic effects (ADR-0045): lowered by effect_syntax_core.h before
+        # the keyword grammar runs, on both engines.
+        "define-effect": "ESHKOL_SEQUENCE_OP",        # (begin (define ...) ...)
+        "handle": "ESHKOL_CALL_OP",                   # (%effect-handle ...)
+        "handle-shallow": "ESHKOL_CALL_OP",
+        "declare-effects": "ESHKOL_CALL_OP",          # (%effect-declare ...)
     }
     for k, v in extra.items():
         forms.setdefault(k, v)
@@ -946,12 +952,13 @@ def categorize(name):
              "dynamic-wind", "values", "call-with-values", "let-values",
              "let*-values", "delay", "delay-force", "force", "make-promise",
              "match", "let-match", "when", "not", "with-exception-handler",
-             "raise-continuable"}:
+             "raise-continuable", "handle", "handle-shallow"}:
         return "control_flow"
     # binding forms
     if n in {"define", "lambda", "let", "let*", "letrec", "letrec*", "set!",
              "named-let", "define-values", "define-record-type", "case-lambda",
-             "parameterize", "make-parameter", "define-type"}:
+             "parameterize", "make-parameter", "define-type",
+             "define-effect", "declare-effects"}:
         return "binding_form"
     # module / library
     if n in {"import", "require", "provide", "load", "include", "include-ci",

@@ -2047,6 +2047,11 @@ class EshkolRuntime {
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,  // returns i32 (size_t)
                 eshkol_decrement_recursion_depth: () => {},
+                eshkol_save_recursion_depth: () => {},
+                eshkol_restore_recursion_depth: () => {},
+                // algebraic-effect handler context (16-byte tagged value), kept JS-side
+                eshkol_effect_context_get: (p) => { if (rt._effectContext) new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).set(rt._effectContext); },
+                eshkol_effect_context_set: (p) => { rt._effectContext = new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).slice(); },
                 eshkol_make_exception_with_header: () => 0,
                 eshkol_raise: (exc) => { console.error('Eshkol exception raised'); },
                 // R7RS `write` (write/write-shared/write-simple): same
@@ -2319,6 +2324,11 @@ class EshkolRuntime {
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,
                 eshkol_decrement_recursion_depth: () => {},
+                eshkol_save_recursion_depth: () => {},
+                eshkol_restore_recursion_depth: () => {},
+                // algebraic-effect handler context (16-byte tagged value), kept JS-side
+                eshkol_effect_context_get: (p) => { if (rt._effectContext) new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).set(rt._effectContext); },
+                eshkol_effect_context_set: (p) => { rt._effectContext = new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).slice(); },
                 eshkol_runtime_current_output_fp: () => 0,
                 hash_table_set: () => false,
                 hash_table_get: () => false,

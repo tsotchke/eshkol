@@ -1041,8 +1041,8 @@ single-machine platform surface.
 
 - [ ] Full dependent type enforcement (compile-time errors, not just warnings)
 - [ ] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration)
-- [ ] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level)
-- [ ] Algebraic effects and handlers (structured side-effect management)
+- [x] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level) — inferred effect rows with effect polymorphism, `declare-effects` enforced under `--strict-types` (ADR-0045)
+- [x] Algebraic effects and handlers (structured side-effect management) — `define-effect`, deep and shallow `handle`, multi-shot resumptions, `core.effects` (state, reader, writer, exceptions, choice, generators, async) on native JIT, AOT and the VM (ADR-0045)
 - [ ] Row polymorphism for records (structural subtyping)
 - [ ] Higher-rank types (rank-2 polymorphism for combinators)
 - [ ] Session types for communication protocols

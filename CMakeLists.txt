@@ -9694,6 +9694,26 @@ if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND NOT WIN32)
     )
 endif()
 
+# Algebraic effects and handlers (ADR-0045): the semantics corpus on the
+# native JIT, native AOT and the bytecode VM, and the effect-typing corpus
+# under --strict-types, in one gate (scripts/run_effects_gate.py).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT EMSCRIPTEN AND
+   TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py")
+    add_test(
+        NAME v19_effects_gate
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py"
+                --runner $<TARGET_FILE:eshkol-run>
+                --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+                --work "${CMAKE_CURRENT_BINARY_DIR}/test-work/effects-gate"
+    )
+    set_tests_properties(v19_effects_gate
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: effects gate"
+            FAIL_REGULAR_EXPRESSION "FAIL: effects gate|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
     # Keep the switch interpreter available beside the compiler's threaded
     # dispatch so malformed-bytecode regressions exercise both implementations.

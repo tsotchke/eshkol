@@ -78,6 +78,11 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     /* These helpers walk the cursor list directly. They deliberately do not
      * call map recursively: doing so nests closure frames before the outer
      * cursor advances and can exhaust the VM frame budget. */
+    ";; Algebraic effects (ADR-0045): the handler context. Native keeps it in\n"
+    ";; the runtime (runtime_continuations.cpp); the VM in one global.\n"
+    "(define __eshkol-effect-context (quote ()))\n"
+    "(define (%effect-context) __eshkol-effect-context)\n"
+    "(define (%effect-context-set! v) (set! __eshkol-effect-context v) v)\n"
     "(define (__eshkol-any-null? xs)\n"
     "  (if (null? xs) #f\n"
     "      (if (null? (car xs)) #t (__eshkol-any-null? (cdr xs)))))\n"

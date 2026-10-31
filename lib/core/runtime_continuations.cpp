@@ -28,8 +28,55 @@ extern "C" void __asan_unpoison_memory_region(void const volatile* addr, size_t 
 extern "C" void __asan_handle_no_return(void);
 #endif
 
+/* A stack image spans every live frame between the capture point and the
+ * stack base, including the redzones the address sanitizer places around each
+ * frame's locals. Those bytes belong to the image exactly as the locals do, so
+ * under ASan the image is copied by an uninstrumented word loop; every other
+ * build uses memcpy. Semantics are identical either way. */
+#if defined(ESHKOL_CONT_ASAN)
+#  if defined(__clang__)
+#    define ESHKOL_CONT_NO_ASAN __attribute__((no_sanitize("address")))
+#  else
+#    define ESHKOL_CONT_NO_ASAN __attribute__((no_sanitize_address))
+#  endif
+ESHKOL_CONT_NO_ASAN
+static void copy_stack_image(void* dst, const void* src, size_t len) {
+    volatile unsigned char* d = (volatile unsigned char*)dst;
+    const volatile unsigned char* s = (const volatile unsigned char*)src;
+    size_t i = 0;
+    if ((((uintptr_t)d | (uintptr_t)s) & (sizeof(uintptr_t) - 1)) == 0) {
+        volatile uintptr_t* dw = (volatile uintptr_t*)d;
+        const volatile uintptr_t* sw = (const volatile uintptr_t*)s;
+        const size_t words = len / sizeof(uintptr_t);
+        for (size_t w = 0; w < words; ++w) dw[w] = sw[w];
+        i = words * sizeof(uintptr_t);
+    }
+    for (; i < len; ++i) d[i] = s[i];
+}
+#else
+static inline void copy_stack_image(void* dst, const void* src, size_t len) {
+    memcpy(dst, src, len);
+}
+#endif
+
 // Dynamic extent belongs to the executing thread, like its exception stack.
 thread_local eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
+
+// The algebraic-effect handler context (ADR-0045) is dynamic state of the
+// executing thread too. The runtime holds it, like the dynamic-wind chain and
+// the exception-handler chain, so a handler installed inside `with-region` is
+// referenced rather than copied out through the region store boundary (a
+// copy would separate the handler from the computation it handles). It is a
+// list of handler frames, innermost first; zero-initialised = '().
+thread_local eshkol_tagged_value_t g_effect_context = {};
+
+extern "C" void eshkol_effect_context_get(eshkol_tagged_value_t* out) {
+    if (out) *out = g_effect_context;
+}
+
+extern "C" void eshkol_effect_context_set(const eshkol_tagged_value_t* value) {
+    if (value) g_effect_context = *value;
+}
 
 /* ── Stack-copying re-entrant continuations ──────────────────────────────────
  *
@@ -249,7 +296,7 @@ extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_
     const uint64_t extent = current_host_extent();
     memcpy(block, &extent, sizeof(extent));
     char* copy = block + ESHKOL_IMAGE_HEADER;
-    memcpy(copy, (const void*)lo, len);
+    copy_stack_image(copy, (const void*)lo, len);
     state->stack_lo = (void*)lo;
     state->stack_hi = (void*)base;
     state->saved_stack = copy;
@@ -296,7 +343,7 @@ static void resume_trampoline(eshkol_continuation_state_t* state) {
     __asan_handle_no_return();
 #endif
 
-    memcpy(state->stack_lo, state->saved_stack, (size_t)state->saved_len);
+    copy_stack_image(state->stack_lo, state->saved_stack, (size_t)state->saved_len);
     longjmp(*(jmp_buf*)state->jmp_buf_ptr, 1);
 }
 

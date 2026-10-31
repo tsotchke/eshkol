@@ -653,6 +653,26 @@ int64_t eshkol_check_recursion_depth(void) {
     return __eshkol_recursion_depth;
 }
 
+/**
+ * @brief Save / restore the calling thread's recursion depth around a
+ *        longjmp target.
+ *
+ * The counter is incremented at every guarded entry and decremented on the
+ * matching return. A non-local exit (a `raise` caught by `guard` or
+ * `with-exception-handler`, a continuation invoked from deeper or shallower
+ * code) skips those returns, so codegen stores the depth into a frame slot
+ * before each setjmp and restores it first thing on the path the longjmp
+ * arrives by. The slot lives in the frame that installed the target, so a
+ * re-entered continuation finds the depth it was captured at.
+ */
+void eshkol_save_recursion_depth(void* slot) {
+    if (slot) *static_cast<int64_t*>(slot) = __eshkol_recursion_depth;
+}
+
+void eshkol_restore_recursion_depth(const void* slot) {
+    if (slot) __eshkol_recursion_depth = *static_cast<const int64_t*>(slot);
+}
+
 /** @brief Decrement the calling thread's recursion-depth counter on return from a guarded call (no-op if already 0). */
 void eshkol_decrement_recursion_depth(void) {
     if (__eshkol_recursion_depth > 0) {

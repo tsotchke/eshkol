@@ -2247,6 +2247,11 @@ class EshkolRepl {
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,
                 eshkol_decrement_recursion_depth: () => {},
+                eshkol_save_recursion_depth: () => {},
+                eshkol_restore_recursion_depth: () => {},
+                // algebraic-effect handler context (16-byte tagged value), kept JS-side
+                eshkol_effect_context_get: (p) => { if (this._effectContext) new Uint8Array(this.memory.buffer, p, 16).set(this._effectContext); },
+                eshkol_effect_context_set: (p) => { this._effectContext = new Uint8Array(this.memory.buffer, p, 16).slice(); },
                 eshkol_runtime_current_output_fp: () => 0,
 
                 // String and UTF-8 helpers — enough for browser smoke/import

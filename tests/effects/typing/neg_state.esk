@@ -1,0 +1,6 @@
+;;; Mutation of a global is State.
+;; expect-error: 'touch' is declared (IO) but may perform State
+(define g 0)
+(declare-effects touch (IO))
+(define (touch) (set! g 1) (display g))
+(touch)

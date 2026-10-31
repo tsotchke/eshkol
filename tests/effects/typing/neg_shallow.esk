@@ -1,0 +1,6 @@
+;;; A shallow handler handles one operation; it does not discharge the effect.
+;; expect-error: 'once' is declared Pure but may perform Ping
+(define-effect Ping (ping))
+(declare-effects once Pure)
+(define (once) (handle-shallow (begin (ping) (ping) 1) ((ping) k (k 0))))
+(display (handle (once) (fun (ping) 0)))
