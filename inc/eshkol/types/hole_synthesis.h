@@ -62,9 +62,10 @@ public:
     /**
      * Replace every reported hole by its best candidate and print one
      * diagnostic per hole. Returns the number of holes that had no candidate
-     * (each reported as an error). Clears the reports.
+     * (each reported as an error). @p file and @p source_text locate the
+     * diagnostics (either may be null). Clears the reports.
      */
-    size_t fill();
+    size_t fill(const char* file = nullptr, const char* source_text = nullptr);
 
     /** Candidate list for a type, as program text (for tests and tools). */
     static std::string describe(const Report& report);

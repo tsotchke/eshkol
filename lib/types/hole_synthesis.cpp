@@ -23,6 +23,7 @@
 #include <eshkol/types/hole_synthesis.h>
 #include <eshkol/types/type_relation.h>
 #include <eshkol/logger.h>
+#include <eshkol/frontend/syntax_color.h>
 
 #include <algorithm>
 #include <map>
@@ -287,16 +288,16 @@ std::string HoleSynthesizer::describe(const Report& report) {
     return out;
 }
 
-size_t HoleSynthesizer::fill() {
+size_t HoleSynthesizer::fill(const char* source_file, const char* source_text) {
     size_t unfilled = 0;
     for (Report& r : reports_) {
         const eshkol_ast_t* node = r.node;
-        const char* file = node->source_file_id ? eshkol_source_file_name(node->source_file_id) : nullptr;
+        const char* file = node->source_file_id ? eshkol_source_file_name(node->source_file_id) : source_file;
         const unsigned line = node->line > 0 ? static_cast<unsigned>(node->line) : 0;
         const unsigned col = (node->column > 0 && node->column < 100000) ? static_cast<unsigned>(node->column) : 0;
         const std::string where = r.owner.empty() ? std::string("") : " in '" + r.owner + "'";
         if (r.candidates.empty()) {
-            eshkol_error_at(file, line, col, nullptr,
+            eshkol_error_at(file, line, col, source_text,
                             "synthesis hole ??%s: no well-typed completion of type %s up to size %zu "
                             "(%zu terms enumerated)",
                             where.c_str(), r.expected_name.c_str(), options_.max_size, r.enumerated);
@@ -310,10 +311,12 @@ size_t HoleSynthesizer::fill() {
         filled.source_file_id = node->source_file_id;
         std::string others;
         for (size_t i = 1; i < r.candidates.size(); ++i) others += (i > 1 ? ", " : "") + r.candidates[i];
-        eshkol_warn_at(file, line, col, nullptr,
-                       "synthesis hole ??%s : %s filled with %s%s%s",
-                       where.c_str(), r.expected_name.c_str(), r.candidates.front().c_str(),
-                       others.empty() ? "" : "; other candidates: ", others.c_str());
+        // Candidates are written with internal (renamed) binder names; the
+        // diagnostic shows the names as they are spelled in the source.
+        const std::string shown = eshkol_syntax_source_text(
+            "synthesis hole ??" + where + " : " + r.expected_name + " filled with " +
+            r.candidates.front() + (others.empty() ? "" : "; other candidates: " + others));
+        eshkol_warn_at(file, line, col, source_text, "%s", shown.c_str());
         *r.node = filled;
     }
     reports_.clear();

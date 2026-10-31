@@ -1007,12 +1007,35 @@ TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
 // ===== `??` synthesis holes (ADR-0052) =====
 
 void TypeChecker::expectAt(const eshkol_ast_t* expr, TypeId expected) {
-    // The value of a body sequence is its last expression.
-    while (expr && expr->type == ESHKOL_OP && expr->operation.op == ESHKOL_SEQUENCE_OP &&
-           expr->operation.sequence_op.num_expressions > 0) {
-        expr = &expr->operation.sequence_op.expressions[expr->operation.sequence_op.num_expressions - 1];
+    if (!expr) return;
+    if (isSynthesisHole(expr)) {
+        hole_goals_[expr] = expected;
+        return;
     }
-    if (isSynthesisHole(expr)) hole_goals_[expr] = expected;
+    if (expr->type != ESHKOL_OP) return;
+    // The expected type passes to the subterm whose value is the form's value:
+    // the last expression of a sequence, the body of a let-family form, and
+    // both branches of an if.
+    const auto& op = expr->operation;
+    switch (op.op) {
+        case ESHKOL_SEQUENCE_OP:
+            if (op.sequence_op.num_expressions > 0) {
+                expectAt(&op.sequence_op.expressions[op.sequence_op.num_expressions - 1], expected);
+            }
+            break;
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
+            expectAt(op.let_op.body, expected);
+            break;
+        case ESHKOL_IF_OP:
+            if (op.call_op.num_vars >= 2) expectAt(&op.call_op.variables[1], expected);
+            if (op.call_op.num_vars >= 3) expectAt(&op.call_op.variables[2], expected);
+            break;
+        default:
+            break;
+    }
 }
 
 TypeCheckResult TypeChecker::reportHole(eshkol_ast_t* expr, TypeId expected) {

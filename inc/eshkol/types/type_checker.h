@@ -484,8 +484,8 @@ public:
     void setHoleObserver(HoleObserver* observer) { hole_observer_ = observer; }
 
     /**
-     * Record that @p expr, if it is a hole (or a `begin` whose value is one),
-     * is expected to have type @p expected. This is the checking direction for
+     * Record that @p expr, if it is a hole (or a `begin`, let-family body or
+     * `if` branch whose value is one), is expected to have type @p expected. This is the checking direction for
      * holes in the positions the synthesis rules already know a type for: a
      * function body under a return annotation, an argument of a callee with a
      * known signature, and an `if` test. checkTask() reports a hole with its

@@ -2743,7 +2743,9 @@ public:
                 auto check_with_holes = [&](eshkol_ast_t* form) {
                     auto result = type_checker.synthesize(form);
                     if (!hole_synthesizer.pending()) return result;
-                    unfilled_holes += hole_synthesizer.fill();
+                    unfilled_holes += hole_synthesizer.fill(
+                        g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                        g_source_text.empty() ? nullptr : g_source_text.c_str());
                     type_checker.setHoleObserver(nullptr);
                     result = type_checker.synthesize(form);
                     type_checker.setHoleObserver(&hole_synthesizer);
