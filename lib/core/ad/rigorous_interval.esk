@@ -435,18 +435,18 @@
 ;; are converted outward to binary64 intervals once per order and cached, so
 ;; an inexact argument runs entirely on the binary64 path (no exact->binary64
 ;; conversion per step); an exact argument keeps the exact coefficients and
-;; stays exact. Caches are plain two-slot vectors (order, value).
+;; stays exact. Each cache is one pair (order . value).
 (define (ia-outward-list cs)
   (if (pair? cs)
       (cons (cons (ia-to-double-down (car cs)) (ia-to-double-up (car cs)))
             (ia-outward-list (cdr cs)))
       '()))
 (define (ia-memo-coeffs cache n build)
-  (if (and (vector-ref cache 0) (= (vector-ref cache 0) n))
-      (vector-ref cache 1)
+  (if (and (car cache) (= (car cache) n))
+      (cdr cache)
       (let* ((ex (build n)) (v (cons ex (ia-outward-list ex))))
-        (vector-set! cache 0 n)
-        (vector-set! cache 1 v)
+        (set-car! cache n)
+        (set-cdr! cache v)
         v)))
 (define (ia-horner-cached cpair tv)
   (if (and (exact? (car tv)) (exact? (cdr tv)))
@@ -455,11 +455,11 @@
         (if (pair? cs)
             (loop (cdr cs) (ia+ (car cs) (ia* acc tv)))
             acc))))
-(define ia-exp-cc (vector #f #f))
-(define ia-log-cc (vector #f #f))
-(define ia-sin-cc (vector #f #f))
-(define ia-cos-cc (vector #f #f))
-(define ia-atan-cc (vector #f #f))
+(define ia-exp-cc (cons #f #f))
+(define ia-log-cc (cons #f #f))
+(define ia-sin-cc (cons #f #f))
+(define ia-cos-cc (cons #f #f))
+(define ia-atan-cc (cons #f #f))
 
 ;; ── sqrt: certified bracketing (see header derivation note) ──────────────
 (define ia-sqrt-max-iters 2000)
