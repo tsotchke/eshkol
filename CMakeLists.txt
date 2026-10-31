@@ -3192,7 +3192,6 @@ if(REPL_SRC)
       # PE/COFF: export only the bounded Eshkol runtime namespace via a
       # generated .def (--export-all-symbols overflows the 65535 PE export
       # limit because the exe statically links all of LLVM).
-      eshkol_windows_export_runtime(eshkol-repl)
     else()
       target_link_options(eshkol-repl PRIVATE "-Wl,--export-dynamic")
     endif()
@@ -3256,7 +3255,6 @@ if(REPL_SRC)
       "$<TARGET_FILE:eshkol-static>"
       "$<TARGET_FILE:eshkol-repl-lib>"
       "-Wl,--no-whole-archive")
-    eshkol_windows_export_runtime(eshkol-run)
   else()
     target_link_options(eshkol-run PRIVATE
       "-Wl,--whole-archive"
@@ -5896,7 +5894,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot'"
     )
-    add_test(
+    if(TARGET eshkol-vm-standalone-test)
+      add_test(
         NAME exact_collection_intermediates_vm_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk"
@@ -5906,11 +5905,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb'"
     )
+      set_tests_properties(
+        exact_collection_intermediates_vm_smoke
+        exact_collection_intermediates_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    endif()
     set_tests_properties(
         exact_collection_intermediates_runtime_smoke
         exact_collection_intermediates_aot_smoke
-        exact_collection_intermediates_vm_smoke
-        exact_collection_intermediates_vm_eskb_smoke
         PROPERTIES
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
@@ -5929,7 +5934,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot'"
     )
-    add_test(
+    if(TARGET eshkol-vm-standalone-test)
+      add_test(
         NAME nested_level_through_tensor_vm_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk"
@@ -5939,11 +5945,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb'"
     )
+      set_tests_properties(
+        nested_level_through_tensor_vm_smoke
+        nested_level_through_tensor_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    endif()
     set_tests_properties(
         nested_level_through_tensor_runtime_smoke
         nested_level_through_tensor_aot_smoke
-        nested_level_through_tensor_vm_smoke
-        nested_level_through_tensor_vm_eskb_smoke
         PROPERTIES
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
@@ -8649,6 +8661,49 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ji
     )
     add_test(NAME jit_aarch64_coff_target_config_test
         COMMAND jit_aarch64_coff_target_config_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    add_executable(jit_parallel_init_test tests/toolchain/jit_parallel_init_test.cpp)
+    target_compile_features(jit_parallel_init_test PRIVATE cxx_std_17)
+    target_include_directories(jit_parallel_init_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_parallel_init_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_parallel_init_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_parallel_init_test PRIVATE
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME jit_parallel_init_test COMMAND jit_parallel_init_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND WIN32 AND
+   (CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$" OR
+    CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64" OR
+    MSVC_CXX_ARCHITECTURE_ID STREQUAL "x64" OR
+    CMAKE_VS_PLATFORM_NAME STREQUAL "x64"))
+    add_executable(jit_windows_x64_unwind_test
+        tests/toolchain/jit_windows_x64_unwind_test.cpp
+        lib/repl/jit_windows_x64_memory_manager.cpp)
+    target_compile_features(jit_windows_x64_unwind_test PRIVATE cxx_std_17)
+    target_include_directories(jit_windows_x64_unwind_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_windows_x64_unwind_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_windows_x64_unwind_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_windows_x64_unwind_test PRIVATE
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME jit_windows_x64_unwind_test COMMAND jit_windows_x64_unwind_test)
+    set_tests_properties(jit_windows_x64_unwind_test PROPERTIES TIMEOUT 30)
+    add_executable(windows_x64_continuation_restore_test
+        tests/toolchain/windows_x64_continuation_restore_test.cpp)
+    target_compile_features(windows_x64_continuation_restore_test PRIVATE cxx_std_17)
+    target_include_directories(windows_x64_continuation_restore_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+    add_test(NAME windows_x64_continuation_restore_test
+        COMMAND windows_x64_continuation_restore_test)
+    set_tests_properties(windows_x64_continuation_restore_test PROPERTIES TIMEOUT 30)
 endif()
 
 if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
@@ -12087,18 +12142,6 @@ if(ESHKOL_BUILD_AGENT_FFI)
             endif()
         endif()
 
-        # Build one bounded PE export table after the optional agent archive is
-        # defined. This avoids competing /DEF files and makes both core and
-        # agent-generated calls resolvable in cache-disabled ORC JIT sessions.
-        if(WIN32)
-            if(TARGET eshkol-run)
-                eshkol_windows_export_runtime(eshkol-run)
-            endif()
-            if(TARGET eshkol-repl)
-                eshkol_windows_export_runtime(eshkol-repl)
-            endif()
-        endif()
-
         # The standalone hosted-VM executables resolve optional native
         # capabilities through the same process-wide symbol lookup used by
         # eshkol-run.  Force-load the production agent archive here as well;
@@ -12204,6 +12247,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
         endif()
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")
+    endif()
+endif()
+
+# Export core JIT symbols even when the optional agent FFI is disabled. Register
+# each table once, after the optional archive is known, for both Windows driver
+# families. Previously the MSVC/ClangCL call lived inside the agent-only block.
+if(WIN32)
+    if(TARGET eshkol-run)
+        eshkol_windows_export_runtime(eshkol-run)
+    endif()
+    if(TARGET eshkol-repl)
+        eshkol_windows_export_runtime(eshkol-repl)
     endif()
 endif()
 
@@ -12684,6 +12739,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-s
 endif()
 
 include(cmake/AllocationHardeningTests.cmake)
+include(cmake/NativeJitRegressionTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
     set(_program_entry_vm_args)

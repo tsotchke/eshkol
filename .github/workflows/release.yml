@@ -1114,7 +1114,7 @@ jobs:
             ${{ matrix.build_dir }}\Release\eshkol-run.exe
             ${{ matrix.build_dir }}\Release\eshkol-run.pdb
             ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\bin\eshkol-run.exe
-            ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\lib\stdlib-jit-v4-*.o
+            ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\lib\stdlib-jit-v5-*.o
             ${{ runner.temp }}\eshkol-crash-dumps-${{ matrix.name }}\*.dmp
           if-no-files-found: warn
           retention-days: 7

@@ -2190,6 +2190,13 @@ typedef uintptr_t (*eshkol_stack_base_fn)(void);
  * @param fn Probe to install, or NULL to disable stack capture.
  */
 void eshkol_set_stack_base_hook(eshkol_stack_base_fn fn);
+
+/** Restore a jump buffer after a continuation has replaced the native stack.
+ * The hosted implementation must not unwind the overwritten frames and must
+ * not return. Targets without such a requirement keep the default longjmp.
+ */
+typedef void (*eshkol_continuation_restore_fn)(void* jump_buffer, int value);
+void eshkol_set_continuation_restore_hook(eshkol_continuation_restore_fn fn);
 /**
  * @brief Push a new dynamic-wind frame with the given before/after thunks.
  * @param arena Arena to allocate the stack entry from.

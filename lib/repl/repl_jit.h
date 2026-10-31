@@ -247,6 +247,10 @@ private:
     // Evaluation counter for generating unique function names
     int eval_counter_;
 
+    // Separate from evaluations: module loads can add several IR modules in
+    // one evaluation, and every exported worker initializer must be unique.
+    uint64_t parallel_initializer_counter_ = 0;
+
     // Error-diagnostic tally as of the start of the compilation unit currently
     // being compiled; see CompilationUnit above and the gate in addModule().
     unsigned long diagnostics_at_unit_start_ = 0;

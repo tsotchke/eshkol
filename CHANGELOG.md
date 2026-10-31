@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Restore saved native continuation stacks on Windows x64 without running the
+  CRT unwinder over overwritten frames. The hosted runtime uses the documented
+  Windows context-restoration API after stack copying, preserving ordinary
+  exception and escape-only unwinding. Add repeated returned-frame, captured
+  guard-handler, and parallel-callback continuation regressions. (#869)
+- Register native Windows x64 JIT unwind tables with the operating system and
+  unregister them before unloading each module, so native nonlocal exits can
+  walk generated frames. Keep runtime exports available without optional agent
+  modules and register VM-only tests only when their target exists. (#869)
+- Give each native JIT module a resolvable parallel-worker initializer while
+  preserving Windows AOT internal linkage. Rebuild stdlib JIT object caches
+  with the same initializer contract instead of reusing objects whose local
+  initializer cannot be found by the JIT. (#869)
+
+### Added
+
+- Windows in-process JIT regression probes with exact-output checks, native
+  AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases
+  cover immediate and repeated continuations, guard-handler restoration,
+  parallel callbacks, and forward AD; harness negative controls reject crashes,
+  incorrect output, silent errors, timeouts, and missing AOT evidence. Enable
+  the gate by default on Windows x64 and bind its five CTest events to a
+  separate platform-specific completion oracle. (#869)
+
 ### Documentation
 
 - Correct the Linux download instructions, native REPL command, RK4 accuracy
