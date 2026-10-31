@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add exact-rational affine solution families with particular solutions and
+  complete nullspace bases, including explicit ambient dimensions for empty
+  systems. Add JIT/AOT acceptance and determinant-oracle tests, plus negative
+  controls for the AOT test harness. (#785)
 - Windows in-process JIT regression probes with exact-output checks, native
   AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases
   cover immediate and repeated continuations, guard-handler restoration,
