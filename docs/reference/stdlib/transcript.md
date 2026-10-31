@@ -5,7 +5,6 @@ owner-area: stdlib
 since: v1.4.0-connection
 sources:
   - lib/core/transcript.esk
-  - lib/core/merkle.esk
   - lib/core/json.esk
   - scripts/math_crosscheck/exact_math.py
   - scripts/math_crosscheck/replay_check.py
@@ -90,11 +89,21 @@ A **claim** document is
 
 and a **transcript** document is
 `{"schema":"eshkol.transcript.v1","program":"<name>","claims":[<claim>...]}`.
-The hash reuses `core.merkle`'s `fnv1a-64` directly (not a second hash
-function): a transcript file is tamper-evident the same way `core.merkle`'s
-content-addressable store is. `scripts/math_crosscheck/exact_math.py` carries
-an independent, matching implementation of `fnv1a-64` so an external reader
-can verify the hash without Eshkol at all.
+The hash is FNV-1a 64-bit, the same algorithm `core.merkle`'s
+content-addressable store uses, so a transcript file is tamper-evident the
+same way: a transcript document is a Merkle structure of one. `core.transcript`
+carries its own implementation (`tr-fnv1a-64-hex`) rather than requiring
+`core.merkle` directly: `core.merkle`'s `fnv1a-64`/`hash->hex` reach a native
+`extern` for correct 64-bit wraparound arithmetic, and the bytecode VM's
+extern admission list does not carry that signature, so any program
+transitively requiring `core.merkle` fails VM compilation outright.
+`tr-fnv1a-64-hex` instead carries the 64-bit hash state as two 32-bit halves
+and multiplies by schoolbook long multiplication over 16-bit limbs, so no
+intermediate value exceeds about 2^34 -- checked byte-identical to
+`core.merkle`'s extern-backed result on a range of inputs in
+`tests/stdlib/transcript_test.esk`. `scripts/math_crosscheck/exact_math.py`
+carries an independent, matching implementation of `fnv1a-64` so an external
+reader can verify the hash without Eshkol at all.
 
 ### Why `"data"`/`"coeffs"` are vectors, not lists, internally
 

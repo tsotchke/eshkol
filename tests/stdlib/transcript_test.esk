@@ -93,7 +93,13 @@
             (equal? "7" (json-get round-tripped "d"))))
 
 ;; ===========================================================================
-;; Hash: deterministic, content-sensitive, reuses core.merkle's fnv1a-64.
+;; Hash: deterministic, content-sensitive, the pure-Eshkol FNV-1a 64-bit
+;; (tr-fnv1a-64-hex) core.transcript actually uses. core.merkle's
+;; fnv1a-64/hash->hex (required here only as the reference implementation,
+;; not by core.transcript itself -- see its module comment on why) run the
+;; same algorithm through a native extern; checked byte-identical below on
+;; several inputs, including ones long and large enough to exercise every
+;; carry tr-fnv1a-64-hex's 16-bit-limb multiplication can produce.
 ;; ===========================================================================
 (define claim-a (list (cons "kind" "determinant") (cons "label" "a")
                        (cons "inputs" (list (cons "m" (tv-matrix-rows (list (list 1 2) (list 3 4))))))
@@ -104,12 +110,16 @@
 (define claim-c (list (cons "kind" "determinant") (cons "label" "a")
                        (cons "inputs" (list (cons "m" (tv-matrix-rows (list (list 1 2) (list 3 5))))))
                        (cons "output" (tv-int -1))))
-(check "identical claims hash identically (fnv1a-64 of the canonical JSON text)"
-       (= (fnv1a-64 (json-stringify claim-a)) (fnv1a-64 (json-stringify claim-b))))
+(check "identical claims hash identically (tr-fnv1a-64-hex of the canonical JSON text)"
+       (string=? (tr-fnv1a-64-hex (json-stringify claim-a)) (tr-fnv1a-64-hex (json-stringify claim-b))))
 (check "a different claim (different matrix, different output) hashes differently"
-       (not (= (fnv1a-64 (json-stringify claim-a)) (fnv1a-64 (json-stringify claim-c)))))
-(check "hash->hex of the canonical text is 16 lowercase hex characters"
-       (= 16 (string-length (hash->hex (fnv1a-64 (json-stringify claim-a))))))
+       (not (string=? (tr-fnv1a-64-hex (json-stringify claim-a)) (tr-fnv1a-64-hex (json-stringify claim-c)))))
+(check "tr-fnv1a-64-hex is 16 lowercase hex characters"
+       (= 16 (string-length (tr-fnv1a-64-hex (json-stringify claim-a)))))
+(check "tr-fnv1a-64-hex (pure Eshkol, VM-safe) is byte-identical to core.merkle's fnv1a-64/hash->hex (native extern) on the empty string, short strings, a 1000-character string and a 53-digit decimal"
+       (all? (lambda (s) (string=? (tr-fnv1a-64-hex s) (hash->hex (fnv1a-64 s))))
+             (list "" "a" "abc" (json-stringify claim-a) (json-stringify claim-c)
+                   (make-string 1000 #\x) (number->string (expt 10 50)))))
 
 ;; ===========================================================================
 ;; Active handle: a real write, then read the file back and verify the
