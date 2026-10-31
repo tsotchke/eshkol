@@ -2230,11 +2230,11 @@
             {
               "name": "%effect-clause",
               "line": 42,
-              "definition_line": 135,
+              "definition_line": 138,
               "definition_origin": {
                 "module": "core.control.effects",
                 "path": "lib/core/control/effects.esk",
-                "line": 135,
+                "line": 138,
                 "chain": [
                   "core.control.effects"
                 ]
@@ -2256,11 +2256,11 @@
             {
               "name": "%effect-handle",
               "line": 42,
-              "definition_line": 271,
+              "definition_line": 290,
               "definition_origin": {
                 "module": "core.control.effects",
                 "path": "lib/core/control/effects.esk",
-                "line": 271,
+                "line": 290,
                 "chain": [
                   "core.control.effects"
                 ]
@@ -2269,11 +2269,11 @@
             {
               "name": "%effect-identity",
               "line": 43,
-              "definition_line": 184,
+              "definition_line": 187,
               "definition_origin": {
                 "module": "core.control.effects",
                 "path": "lib/core/control/effects.esk",
-                "line": 184,
+                "line": 187,
                 "chain": [
                   "core.control.effects"
                 ]
@@ -2308,11 +2308,11 @@
             {
               "name": "effect-handled?",
               "line": 46,
-              "definition_line": 143,
+              "definition_line": 146,
               "definition_origin": {
                 "module": "core.control.effects",
                 "path": "lib/core/control/effects.esk",
-                "line": 143,
+                "line": 146,
                 "chain": [
                   "core.control.effects"
                 ]
@@ -2321,11 +2321,11 @@
             {
               "name": "effect-handler-depth",
               "line": 47,
-              "definition_line": 110,
+              "definition_line": 113,
               "definition_origin": {
                 "module": "core.control.effects",
                 "path": "lib/core/control/effects.esk",
-                "line": 110,
+                "line": 113,
                 "chain": [
                   "core.control.effects"
                 ]
@@ -2425,11 +2425,11 @@
             {
               "name": "unhandled-effect-error?",
               "line": 46,
-              "definition_line": 150,
+              "definition_line": 153,
               "definition_origin": {
                 "module": "core.control.effects",
                 "path": "lib/core/control/effects.esk",
-                "line": 150,
+                "line": 153,
                 "chain": [
                   "core.control.effects"
                 ]
@@ -2439,15 +2439,15 @@
           "top_level_definitions": [
             {
               "name": "%effect-call",
-              "line": 170
+              "line": 173
             },
             {
               "name": "%effect-call/k",
-              "line": 177
+              "line": 180
             },
             {
               "name": "%effect-clause",
-              "line": 135
+              "line": 138
             },
             {
               "name": "%effect-declare",
@@ -2455,11 +2455,11 @@
             },
             {
               "name": "%effect-dispatch",
-              "line": 186
+              "line": 189
             },
             {
               "name": "%effect-escape",
-              "line": 207
+              "line": 210
             },
             {
               "name": "%effect-formals-arity",
@@ -2467,23 +2467,23 @@
             },
             {
               "name": "%effect-handle",
-              "line": 271
+              "line": 290
             },
             {
               "name": "%effect-handle-full",
-              "line": 289
+              "line": 308
             },
             {
               "name": "%effect-handle-light",
-              "line": 279
+              "line": 298
             },
             {
               "name": "%effect-handled-1",
-              "line": 145
+              "line": 148
             },
             {
               "name": "%effect-identity",
-              "line": 184
+              "line": 187
             },
             {
               "name": "%effect-make",
@@ -2503,87 +2503,91 @@
             },
             {
               "name": "%effect-perform",
-              "line": 158
-            },
-            {
-              "name": "%effect-run-abort",
-              "line": 212
-            },
-            {
-              "name": "%effect-run-general",
-              "line": 215
-            },
-            {
-              "name": "%effect-run-tail",
-              "line": 195
-            },
-            {
-              "name": "%effect-search",
               "line": 161
             },
             {
-              "name": "%effect-stack",
-              "line": 107
+              "name": "%effect-run-abort",
+              "line": 215
+            },
+            {
+              "name": "%effect-run-general",
+              "line": 231
+            },
+            {
+              "name": "%effect-run-tail",
+              "line": 198
+            },
+            {
+              "name": "%effect-search",
+              "line": 164
             },
             {
               "name": "%effect-transfer",
-              "line": 108
+              "line": 111
             },
             {
               "name": "%find-clause",
-              "line": 138
+              "line": 141
             },
             {
               "name": "%frame-after",
-              "line": 261
+              "line": 280
             },
             {
               "name": "%frame-before",
-              "line": 255
+              "line": 274
             },
             {
               "name": "%frame-clauses",
-              "line": 116
+              "line": 119
             },
             {
               "name": "%frame-complete!",
-              "line": 267
+              "line": 286
             },
             {
               "name": "%frame-delim",
-              "line": 117
-            },
-            {
-              "name": "%frame-shallow?",
-              "line": 118
-            },
-            {
-              "name": "%make-resumption",
-              "line": 229
-            },
-            {
-              "name": "%stack-after",
               "line": 120
             },
             {
-              "name": "%stack-after-1",
+              "name": "%frame-shallow?",
               "line": 121
             },
             {
+              "name": "%frames-restore!",
+              "line": 225
+            },
+            {
+              "name": "%frames-snapshot",
+              "line": 222
+            },
+            {
+              "name": "%make-resumption",
+              "line": 246
+            },
+            {
+              "name": "%stack-after",
+              "line": 123
+            },
+            {
+              "name": "%stack-after-1",
+              "line": 124
+            },
+            {
               "name": "%stack-prefix",
-              "line": 127
+              "line": 130
             },
             {
               "name": "%stack-prefix-1",
-              "line": 129
+              "line": 132
             },
             {
               "name": "effect-handled?",
-              "line": 143
+              "line": 146
             },
             {
               "name": "effect-handler-depth",
-              "line": 110
+              "line": 113
             },
             {
               "name": "effect-name",
@@ -2615,7 +2619,7 @@
             },
             {
               "name": "unhandled-effect-error?",
-              "line": 150
+              "line": 153
             }
           ]
         },
@@ -10205,167 +10209,167 @@
               "line": 25
             },
             {
-              "module": "core.control.effects",
-              "line": 29
-            },
-            {
               "module": "core.list.compound",
-              "line": 32
+              "line": 28
             },
             {
               "module": "core.list.generate",
-              "line": 33
+              "line": 29
             },
             {
               "module": "core.list.transform",
-              "line": 34
+              "line": 30
             },
             {
               "module": "core.list.query",
-              "line": 35
+              "line": 31
             },
             {
               "module": "core.list.sort",
-              "line": 36
+              "line": 32
             },
             {
               "module": "core.list.higher_order",
-              "line": 37
+              "line": 33
             },
             {
               "module": "core.list.search",
-              "line": 38
+              "line": 34
             },
             {
               "module": "core.list.convert",
-              "line": 39
+              "line": 35
+            },
+            {
+              "module": "core.control.effects",
+              "line": 41
             },
             {
               "module": "core.strings",
-              "line": 42
+              "line": 44
             },
             {
               "module": "core.alist",
-              "line": 45
+              "line": 47
             },
             {
               "module": "core.files",
-              "line": 48
+              "line": 50
             },
             {
               "module": "core.capabilities",
-              "line": 51
+              "line": 53
             },
             {
               "module": "core.sexp",
-              "line": 54
+              "line": 56
             },
             {
               "module": "core.json",
-              "line": 57
+              "line": 59
             },
             {
               "module": "core.data.csv",
-              "line": 60
-            },
-            {
-              "module": "core.data.dataframe",
-              "line": 61
-            },
-            {
-              "module": "core.data.base64",
               "line": 62
             },
             {
+              "module": "core.data.dataframe",
+              "line": 63
+            },
+            {
+              "module": "core.data.base64",
+              "line": 64
+            },
+            {
               "module": "core.plot",
-              "line": 65
+              "line": 67
             },
             {
               "module": "core.reflection",
-              "line": 68
+              "line": 70
             },
             {
               "module": "core.url",
-              "line": 71
+              "line": 73
             },
             {
               "module": "core.streams",
-              "line": 74
+              "line": 76
             },
             {
               "module": "core.json_schema",
-              "line": 77
+              "line": 79
             },
             {
               "module": "signal.fft",
-              "line": 115
+              "line": 117
             },
             {
               "module": "signal.filters",
-              "line": 116
+              "line": 118
             },
             {
               "module": "core.manifold",
-              "line": 119
+              "line": 121
             },
             {
               "module": "core.exact_linalg",
-              "line": 123
+              "line": 125
             },
             {
               "module": "core.symbolic",
-              "line": 127
+              "line": 129
             },
             {
               "module": "core.pde.ns-residual",
-              "line": 133
+              "line": 135
             },
             {
               "module": "core.ad.taylor_models",
-              "line": 141
+              "line": 143
             },
             {
               "module": "ml.optimization",
-              "line": 144
+              "line": 146
             }
           ],
           "exports": [],
           "top_level_definitions": [
             {
               "name": "__keyword-arg",
-              "line": 99
+              "line": 101
             },
             {
               "name": "__keyword-args-validate",
-              "line": 90
+              "line": 92
             },
             {
               "name": "__keyword-member?",
-              "line": 83
+              "line": 85
             },
             {
               "name": "current-time-us",
-              "line": 154
+              "line": 156
             },
             {
               "name": "random-normal-tensor",
-              "line": 150
+              "line": 152
             },
             {
               "name": "random-tensor",
-              "line": 147
+              "line": 149
             },
             {
               "name": "time-it",
-              "line": 168
+              "line": 170
             },
             {
               "name": "time-ns",
-              "line": 158
+              "line": 160
             },
             {
               "name": "time-us",
-              "line": 164
+              "line": 166
             }
           ]
         }
@@ -10378,14 +10382,14 @@
     }
   },
   "counts": {
-    "builtins_total": 1057,
-    "builtins_in_vm_table": 793,
-    "builtins_in_llvm_aot_dispatch": 799,
+    "builtins_total": 1059,
+    "builtins_in_vm_table": 795,
+    "builtins_in_llvm_aot_dispatch": 801,
     "builtins_aot_only": 242,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 120,
     "ast_ops": 113,
-    "prelude": 488
+    "prelude": 490
   },
   "builtins_by_category": {
     "ffi_system": 302,
@@ -10395,7 +10399,7 @@
     "geometry": 56,
     "list_pair": 53,
     "io_port": 52,
-    "misc": 43,
+    "misc": 45,
     "string_char": 42,
     "consciousness": 35,
     "vector": 24,
@@ -10541,6 +10545,28 @@
         "native_llvm"
       ],
       "category": "numeric"
+    },
+    {
+      "name": "%effect-context",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "%effect-context-set!",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "%make-lazy-promise",
@@ -23826,11 +23852,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 42,
           "defined_at_top_level": true,
-          "definition_line": 135,
+          "definition_line": 138,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 135,
+            "line": 138,
             "chain": [
               "core.control.effects"
             ]
@@ -23843,7 +23869,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "%effect-clause",
-            "line": 135,
+            "line": 138,
             "chain": [
               "core.control.effects"
             ]
@@ -23855,11 +23881,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 42,
           "defined_at_top_level": true,
-          "definition_line": 135,
+          "definition_line": 138,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 135,
+            "line": 138,
             "chain": [
               "core.control.effects"
             ]
@@ -23872,7 +23898,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "%effect-clause",
-            "line": 135,
+            "line": 138,
             "chain": [
               "core.control.effects"
             ]
@@ -23881,6 +23907,26 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-clause"
+    },
+    {
+      "name": "%effect-context",
+      "category": "misc",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "%effect-context-set!",
+      "category": "misc",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
     },
     {
       "name": "%effect-declare",
@@ -23966,11 +24012,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 42,
           "defined_at_top_level": true,
-          "definition_line": 271,
+          "definition_line": 290,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 271,
+            "line": 290,
             "chain": [
               "core.control.effects"
             ]
@@ -23983,7 +24029,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "%effect-handle",
-            "line": 271,
+            "line": 290,
             "chain": [
               "core.control.effects"
             ]
@@ -23995,11 +24041,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 42,
           "defined_at_top_level": true,
-          "definition_line": 271,
+          "definition_line": 290,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 271,
+            "line": 290,
             "chain": [
               "core.control.effects"
             ]
@@ -24012,7 +24058,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "%effect-handle",
-            "line": 271,
+            "line": 290,
             "chain": [
               "core.control.effects"
             ]
@@ -24036,11 +24082,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 43,
           "defined_at_top_level": true,
-          "definition_line": 184,
+          "definition_line": 187,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 184,
+            "line": 187,
             "chain": [
               "core.control.effects"
             ]
@@ -24053,7 +24099,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "%effect-identity",
-            "line": 184,
+            "line": 187,
             "chain": [
               "core.control.effects"
             ]
@@ -24065,11 +24111,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 43,
           "defined_at_top_level": true,
-          "definition_line": 184,
+          "definition_line": 187,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 184,
+            "line": 187,
             "chain": [
               "core.control.effects"
             ]
@@ -24082,7 +24128,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "%effect-identity",
-            "line": 184,
+            "line": 187,
             "chain": [
               "core.control.effects"
             ]
@@ -24284,11 +24330,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 99,
+          "line": 101,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 99,
+            "line": 101,
             "chain": [
               "stdlib"
             ]
@@ -24300,7 +24346,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-arg",
-            "line": 99,
+            "line": 101,
             "chain": [
               "stdlib"
             ]
@@ -24322,11 +24368,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 90,
+          "line": 92,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 90,
+            "line": 92,
             "chain": [
               "stdlib"
             ]
@@ -24338,7 +24384,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-args-validate",
-            "line": 90,
+            "line": 92,
             "chain": [
               "stdlib"
             ]
@@ -24360,11 +24406,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 83,
+          "line": 85,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 83,
+            "line": 85,
             "chain": [
               "stdlib"
             ]
@@ -24376,7 +24422,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-member?",
-            "line": 83,
+            "line": 85,
             "chain": [
               "stdlib"
             ]
@@ -31050,11 +31096,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 154,
+          "line": 156,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 154,
+            "line": 156,
             "chain": [
               "stdlib"
             ]
@@ -31066,7 +31112,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "current-time-us",
-            "line": 154,
+            "line": 156,
             "chain": [
               "stdlib"
             ]
@@ -31591,11 +31637,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 143,
+          "definition_line": 146,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 143,
+            "line": 146,
             "chain": [
               "core.control.effects"
             ]
@@ -31608,7 +31654,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "effect-handled?",
-            "line": 143,
+            "line": 146,
             "chain": [
               "core.control.effects"
             ]
@@ -31620,11 +31666,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 143,
+          "definition_line": 146,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 143,
+            "line": 146,
             "chain": [
               "core.control.effects"
             ]
@@ -31637,7 +31683,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "effect-handled?",
-            "line": 143,
+            "line": 146,
             "chain": [
               "core.control.effects"
             ]
@@ -31661,11 +31707,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 110,
+          "definition_line": 113,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 110,
+            "line": 113,
             "chain": [
               "core.control.effects"
             ]
@@ -31678,7 +31724,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "effect-handler-depth",
-            "line": 110,
+            "line": 113,
             "chain": [
               "core.control.effects"
             ]
@@ -31690,11 +31736,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 110,
+          "definition_line": 113,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 110,
+            "line": 113,
             "chain": [
               "core.control.effects"
             ]
@@ -31707,7 +31753,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "effect-handler-depth",
-            "line": 110,
+            "line": 113,
             "chain": [
               "core.control.effects"
             ]
@@ -44746,11 +44792,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 150,
+          "line": 152,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 150,
+            "line": 152,
             "chain": [
               "stdlib"
             ]
@@ -44762,7 +44808,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-normal-tensor",
-            "line": 150,
+            "line": 152,
             "chain": [
               "stdlib"
             ]
@@ -44784,11 +44830,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 147,
+          "line": 149,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 147,
+            "line": 149,
             "chain": [
               "stdlib"
             ]
@@ -44800,7 +44846,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-tensor",
-            "line": 147,
+            "line": 149,
             "chain": [
               "stdlib"
             ]
@@ -50894,11 +50940,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 168,
+          "line": 170,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 168,
+            "line": 170,
             "chain": [
               "stdlib"
             ]
@@ -50910,7 +50956,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-it",
-            "line": 168,
+            "line": 170,
             "chain": [
               "stdlib"
             ]
@@ -50932,11 +50978,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 158,
+          "line": 160,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 158,
+            "line": 160,
             "chain": [
               "stdlib"
             ]
@@ -50948,7 +50994,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-ns",
-            "line": 158,
+            "line": 160,
             "chain": [
               "stdlib"
             ]
@@ -50970,11 +51016,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 164,
+          "line": 166,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 164,
+            "line": 166,
             "chain": [
               "stdlib"
             ]
@@ -50986,7 +51032,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-us",
-            "line": 164,
+            "line": 166,
             "chain": [
               "stdlib"
             ]
@@ -54190,11 +54236,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 150,
+          "definition_line": 153,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 150,
+            "line": 153,
             "chain": [
               "core.control.effects"
             ]
@@ -54207,7 +54253,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "unhandled-effect-error?",
-            "line": 150,
+            "line": 153,
             "chain": [
               "core.control.effects"
             ]
@@ -54219,11 +54265,11 @@
           "path": "lib/core/control/effects.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 150,
+          "definition_line": 153,
           "definition_origin": {
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
-            "line": 150,
+            "line": 153,
             "chain": [
               "core.control.effects"
             ]
@@ -54236,7 +54282,7 @@
             "module": "core.control.effects",
             "path": "lib/core/control/effects.esk",
             "name": "unhandled-effect-error?",
-            "line": 150,
+            "line": 153,
             "chain": [
               "core.control.effects"
             ]
