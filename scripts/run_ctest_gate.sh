@@ -110,6 +110,7 @@ runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	-	Runtime-closu
 define_library_same_unit_gate	^define_library_same_unit_	-	R7RS same-unit define-library resolution
 module_load_path_engine_parity_gate	^load_path_engine_parity_test$	-	Relative (load …) resolves identically on every execution engine
 squared_distance_exact_gate	^squared_distance_gradcheck$	-	Squared geodesic distance is exact and differentiable THROUGH the diagonal
+native_cross_entropy_gradient_gate	^(cross_entropy_gradient_|tensor_backward_dual_impl_gradcheck$|qllm_bridge_gradcheck$)	7	Native CE gradients and explicit unsupported-loss refusals on JIT/AOT and both tensor lowerings
 GROUPS
 )
 

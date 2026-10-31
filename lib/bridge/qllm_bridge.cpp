@@ -403,8 +403,8 @@ extern "C" ad_node_t* ad_tensor_cross_entropy(ad_tape_t* tape,
     }
 
     /* Scalar loss: a 1-element tensor so the node has a uniform representation,
-     * with the scalar mirrored into node->value. tensor_cross_entropy_backward
-     * takes its upstream from node->gradient. */
+     * with the scalar mirrored into node->value. Its backward consumes the
+     * one-element tensor cotangent, like the other tensor rules. */
     double* out = alloc_doubles(1);
     if (!out) return nullptr;
     out[0] = loss;

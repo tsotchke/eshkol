@@ -4,6 +4,7 @@
 <h2 id="unreleased">[Unreleased]</h2>
 <h3 id="fixed">Fixed</h3>
 <ul>
+<li><strong>Native cross-entropy preserves reverse derivatives.</strong> Record its tensor tape node, retain logit edges and consume the actual upstream cotangent. Constant probability and class-index labels are supported; differentiable labels and the 13 numeric-only loss builtins refuse unsupported reverse differentiation explicitly. Four native execution/lowering gates check analytical derivatives, every MLP weight slope and a wrong-zero canary. (#871)</li>
 <li>Restore saved native continuation stacks on Windows x64 without running the CRT unwinder over overwritten frames. The hosted runtime uses the documented Windows context-restoration API after stack copying, preserving ordinary exception and escape-only unwinding. Add repeated returned-frame, captured guard-handler, and parallel-callback continuation regressions. (#869)</li>
 <li>Register native Windows x64 JIT unwind tables with the operating system and unregister them before unloading each module, so native nonlocal exits can walk generated frames. Keep runtime exports available without optional agent modules and register VM-only tests only when their target exists. (#869)</li>
 <li>Give each native JIT module a resolvable parallel-worker initializer while preserving Windows AOT internal linkage. Rebuild stdlib JIT object caches with the same initializer contract instead of reusing objects whose local initializer cannot be found by the JIT. (#869)</li>

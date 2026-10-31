@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Native cross-entropy preserves reverse derivatives.** Record its tensor
+  tape node, retain logit edges and consume the actual upstream cotangent.
+  Constant probability and class-index labels are supported; differentiable
+  labels and the 13 numeric-only loss builtins refuse unsupported reverse
+  differentiation explicitly. Four native execution/lowering gates check
+  analytical derivatives, every MLP weight slope and a wrong-zero canary. (#871)
+
 - Restore saved native continuation stacks on Windows x64 without running the
   CRT unwinder over overwritten frames. The hosted runtime uses the documented
   Windows context-restoration API after stack copying, preserving ordinary

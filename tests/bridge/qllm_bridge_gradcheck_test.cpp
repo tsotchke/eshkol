@@ -92,9 +92,8 @@ static ad_node_t* var_node(const double* data, const int64_t* shape, size_t ndim
 /**
  * @brief Backpropagate a scalar loss node through the whole tape.
  *
- * Seeds the loss node's upstream gradient (both the scalar mirror, which
- * tensor_cross_entropy_backward reads, and the 1-element tensor gradient,
- * which its non-null guard requires) and then walks the tape in reverse
+ * Seeds both scalar and one-element tensor representations of the loss
+ * node's upstream gradient and then walks the tape in reverse
  * evaluation order, exactly as the runtime's reverse sweep does.
  */
 static void backward(ad_tape_t* tape, ad_node_t* loss) {
@@ -142,10 +141,10 @@ static double bridge_relacc_value(const BridgeRelAcc* a) {
     return (den > 0.0) ? std::sqrt(a->dn) / den : 0.0;
 }
 
-static unsigned long g_rng = 0x9e3779b97f4a7c15UL;
+static uint64_t g_rng = UINT64_C(0x9e3779b97f4a7c15);
 static double urand(void) { /* deterministic uniform in [-1, 1] */
     g_rng ^= g_rng << 13; g_rng ^= g_rng >> 7; g_rng ^= g_rng << 17;
-    return ((double)(g_rng >> 11) / (double)(1UL << 53)) * 2.0 - 1.0;
+    return ((double)(g_rng >> 11) / (double)(UINT64_C(1) << 53)) * 2.0 - 1.0;
 }
 
 /* --------------------------------------------------------------- fixtures */

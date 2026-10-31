@@ -425,7 +425,7 @@ extern "C" void tensor_cross_entropy_backward(ad_node_t* node) {
         (const uint64_t*)logits_node->shape, logits_node->ndim,
         (const double*)targets_node->tensor_value,
         (const uint64_t*)targets_node->shape, targets_node->ndim,
-        node->gradient, local);
+        ((const double*)node->tensor_gradient)[0], local);
     if (status != ESHKOL_CROSS_ENTROPY_OK) return;
     if (logits_node->tensor_gradient == NULL)
         logits_node->tensor_gradient = alloc_grad(n);
@@ -1566,8 +1566,7 @@ namespace {
  *
  *  `tensor_gradient` is the canonical channel — every rule in this file
  *  accumulates into it — so it is what a downstream op will have written. The
- *  scalar `gradient` mirror is the fallback for the loss-node convention used
- *  by tensor_cross_entropy_backward, which seeds only the scalar. */
+ *  scalar `gradient` mirror is the fallback for scalar-seeded loss nodes. */
 double scalar_upstream(const ad_node_t* node) {
     if (node->tensor_gradient) return ((const double*)node->tensor_gradient)[0];
     return node->gradient;
