@@ -42,6 +42,12 @@
 ;; exact-rational loop growth defect (SW-164), which is closed.
 
 (require stdlib)
+(require core.transcript)
+
+;; Content-addressed transcript of this program's Smith-normal-form claims
+;; (off by default; see docs/reference/stdlib/transcript.md). Recording
+;; never changes anything printed below, including the checks below.
+(define TRANSCRIPT (transcript-open "mathematics_group_cohomology_order_eight"))
 
 (define pass-count 0)
 (define fail-count 0)
@@ -331,6 +337,27 @@
 (show "H_*(BD_4)" HD4)
 (show "H_*(BQ_8)" HQ8)
 
+;; Transcript the degree-1 and degree-2 normalized boundary matrices and
+;; their Smith normal forms for S_3 and the five groups of order eight --
+;; H_1's torsion (the abelianization, checked above) comes directly from
+;; these two SNFs, so an independent recomputation of this transcript
+;; (scripts/math_crosscheck/replay_check.py, or PARI/GP's matsnf via
+;; crosscheck_pari_sympy.py) is a genuine cross-check of the printed H_1
+;; claims. The degree-3
+;; boundary (needed for H_2/H_3) is left out here: for Z/8 its matrix
+;; reaches 343 x 2401 entries, too large for a committed transcript
+;; fixture.
+(for-each
+  (lambda (named-group)
+    (let ((name (car named-group)) (G (cadr named-group)))
+      (transcript-record! TRANSCRIPT "smith_normal_form" (string-append name "_normalized_boundary_1")
+        (list (cons "boundary" (tv-matrix-vec (normalized-boundary G 1))))
+        (tv-int-list (snf! (normalized-boundary G 1))))
+      (transcript-record! TRANSCRIPT "smith_normal_form" (string-append name "_normalized_boundary_2")
+        (list (cons "boundary" (tv-matrix-vec (normalized-boundary G 2))))
+        (tv-int-list (snf! (normalized-boundary G 2))))))
+  (list (list "S3" S3) (list "Z8" Z8) (list "Z4Z2" Z4Z2) (list "Z2Z2Z2" Z2Z2Z2) (list "D4" D4) (list "Q8" Q8)))
+
 (define (no-free-part? table) (all? (lambda (k) (= 0 (betti table k))) (list 1 2 3)))
 (check "every group of order eight has finite H_1, H_2, H_3 (no free part), with H_0 = Z"
        (all? (lambda (T) (and (= 1 (betti T 0)) (no-free-part? T))) (list HZ8 HZ4Z2 HZ2Z2Z2 HD4 HQ8)))
@@ -593,6 +620,8 @@
               (broken (vector 5 10 (cons swapped (cdr (m-tets S3m))))))
          (and (not (equal? 1/8 (state-sum broken D4 trivial-cocycle)))
               (not (equal? 1/8 (state-sum broken Z2Z2Z2 type-III))))))
+
+(transcript-close! TRANSCRIPT)
 
 (display "Group cohomology of the groups of order eight and their twisted doubles") (newline)
 (display "Passed: ") (display pass-count) (newline)

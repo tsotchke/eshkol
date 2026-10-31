@@ -770,6 +770,18 @@ under the same discipline that made `Qubit` linear.
       Lawvere-Tierney bijection, the `locally` modality as the j-translation,
       and the internally local structure sheaf of Spec(Z/n). The presheaf-topos
       example runs on it. Language adoption is staged in ADR-0035 (v1.4.1 to v1.5.0)
+- [x] Content-addressed transcripts of certified quantities: `core.transcript`
+      records a determinant, Smith normal form, rank mod p or polynomial gcd
+      together with the exact inputs that produced it, as one fnv1a-64-hashed
+      JSON claim (reusing `core.merkle`'s hash), off by default and never
+      changing a program's output. `scripts/math_crosscheck/replay_check.py`
+      independently recomputes every known claim kind from a pure-Python
+      implementation (CTest-runnable, no third-party package);
+      `crosscheck_pari_sympy.py`, for a host with PARI/GP and SymPy
+      installed, additionally checks against PARI/GP and SymPy. Wired
+      into `mathematics_group_cohomology_order_eight`,
+      `mathematics_cohomology_rings_cup_products`,
+      `mathematics_fermat_hodge_classes_sweep` and `multimodular_test`
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

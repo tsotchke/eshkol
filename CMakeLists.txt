@@ -4390,6 +4390,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
+# core.transcript: content-addressed transcripts of certified mathematical
+# quantities (determinant, Smith normal form, rank mod p, polynomial gcd),
+# fnv1a-64-hashed (core.merkle) and independently cross-checked by
+# scripts/math_crosscheck/replay_check.py. transcript_replay_check needs only
+# python3 (pure stdlib; no Eshkol build) against the committed fixtures.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME transcript_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/transcript_test.esk")
+    add_test(NAME transcript_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/transcript_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/transcript_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(transcript_jit transcript_aot PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: transcript_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME transcript_replay_check
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/math_crosscheck/replay_check.py"
+                --dir "${CMAKE_CURRENT_SOURCE_DIR}/scripts/math_crosscheck/fixtures")
+        set_tests_properties(transcript_replay_check PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+            FAIL_REGULAR_EXPRESSION "RESULT: FAILURES DETECTED|Traceback")
+    endif()
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #

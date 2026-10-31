@@ -12,6 +12,13 @@
 (require core.multimodular)
 (require core.exact_linalg)
 (require core.polynomial_exact)
+(require core.transcript)
+
+;; Content-addressed transcript of a representative determinant and
+;; polynomial-gcd claim (off by default; see
+;; docs/reference/stdlib/transcript.md). Recording never changes any
+;; check result or printed output below.
+(define TRANSCRIPT (transcript-open "multimodular_test"))
 
 (define passed 0)
 (define failed 0)
@@ -203,6 +210,20 @@
 (check "gcd edge cases: zero, constants, a unit"
        (and (equal? (multimodular-poly-gcd '() '()) '()) (equal? (multimodular-poly-gcd '() '(-2 -4)) '(2 4))
             (equal? (multimodular-poly-gcd '(12) '(18)) '(6)) (equal? (multimodular-poly-gcd '(1 1) '(1)) '(1))))
+
+;; Transcript the 6x6 13-digit determinant and the large-coefficient
+;; polynomial gcd already checked above against exact-det / Euclid over
+;; Q[x]: an independent recomputation (replay_check.py, or PARI/GP via
+;; crosscheck_pari_sympy.py) is a direct cross-check of both bignum-exact
+;; results.
+(transcript-record! TRANSCRIPT "determinant" "A13_6x6_13digit"
+  (list (cons "matrix" (tv-matrix-vec A13)))
+  (tv-int (exact-det A13)))
+(define big-gcd-case (list-ref gcd-cases 14))
+(transcript-record! TRANSCRIPT "gcd" "bignum_poly_gcd_degree4_times_degree3"
+  (list (cons "a" (tv-int-list (car big-gcd-case))) (cons "b" (tv-int-list (cadr big-gcd-case))))
+  (tv-int-list (multimodular-poly-gcd (car big-gcd-case) (cadr big-gcd-case))))
+(transcript-close! TRANSCRIPT)
 
 (newline)
 (display "multimodular_test: ") (display passed) (display " checks passed, ") (display failed) (display " failed") (newline)
