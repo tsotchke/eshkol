@@ -122,7 +122,7 @@ CONDITIONAL; `--strict` counts those as failures).
 
 `tools/certcheck/tamper_suite.py` is the test of the checker: for every
 claim it builds an unsealed edit, a resealed false output and a resealed
-broken witness, and requires each to be rejected.
+tampered witness, and requires each to be rejected.
 
 ## Lean export
 

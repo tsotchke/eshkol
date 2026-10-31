@@ -85,7 +85,7 @@ A certificate claim is the ordered JSON object
   recorded with no decimal rounding.
 - `witness` holds the data in the table above, per kind.
 - `premises` lists every statement the checker takes on trust for the
-  claim. The checker fixes, per kind, which premises are allowed; a claim
+  claim. The checker sets, per kind, which premises are allowed; a claim
   cannot add its own. Every kind has none except `taylor_model_range`,
   whose remainder bound comes from a sampled derivative bound
   (`core.ad.taylor_models`) and is listed as the premise
@@ -159,13 +159,13 @@ Python standard library, so the checker contains no hand-written bignum
 arithmetic, which would be the largest and least reviewed part of a C
 checker.
 
-Malformed input is a rejection, never a crash: duplicate JSON keys, JSON
+Malformed input is always rejected cleanly: duplicate JSON keys, JSON
 floats where decimal strings are required, fields out of order, unknown
 kinds and unknown schemas are all REJECTED.
 
 `tools/certcheck/tamper_suite.py` is the test of the checker. For every
 claim it builds an unsealed edit, a resealed false output and a resealed
-broken witness (ids and hashes recomputed, as a forger would) and requires
+tampered witness (ids and hashes recomputed, as a forger would) and requires
 every one to be rejected.
 
 ### 4. Lean export: `tools/certcheck/lean_export.py`

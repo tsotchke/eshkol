@@ -339,21 +339,21 @@ def main(argv=None):
             jobs.append((f, args.out_dir / f"Cert{stem}.lean"))
     if not jobs:
         ap.error("no input")
-    stale = 0
+    outdated = 0
     for src, dst in jobs:
         doc = json.loads(src.read_text(encoding="utf-8"))
         text, count, skipped = export(doc, src.name)
         if args.check:
             same = dst.exists() and dst.read_text(encoding="utf-8") == text
-            stale += 0 if same else 1
+            outdated += 0 if same else 1
             print(f"{dst}: {'current' if same else 'OUT OF DATE'} ({count} claims exported)")
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_text(text, encoding="utf-8")
         print(f"{dst}: {count} claims exported, {len(skipped)} not exported")
     if args.check:
-        print("RESULT: LEAN EXPORT CURRENT" if stale == 0 else "RESULT: LEAN EXPORT OUT OF DATE")
-    return 1 if stale else 0
+        print("RESULT: LEAN EXPORT CURRENT" if outdated == 0 else "RESULT: LEAN EXPORT OUT OF DATE")
+    return 1 if outdated else 0
 
 
 if __name__ == "__main__":

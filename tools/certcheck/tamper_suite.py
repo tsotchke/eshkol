@@ -9,7 +9,7 @@ rejects false statements.  For each claim of each document it builds
   * a RESEALED false output (the output changed to a false statement and the
     sha256 id and fnv1a hash recomputed), which the checker must reject on
     the mathematics, because a forger can always recompute a hash;
-  * a RESEALED broken witness (one witness entry changed so the witness
+  * a RESEALED tampered witness (one witness entry changed so the witness
     identity no longer holds), likewise rejected on the mathematics.
 
 Usage: tamper_suite.py FILE.json [...] | --dir DIR
@@ -82,13 +82,13 @@ def false_output(c):
     return c
 
 
-# --- broken witnesses --------------------------------------------------------
+# --- tampered witnesses --------------------------------------------------------
 
 def mat_bump(m, i, j, by=1):
     m["data"][i][j] = bump(m["data"][i][j], by)
 
 
-def broken_witness(c):
+def tampered_witness(c):
     k, w, inp = c["kind"], c["witness"], c["inputs"]
     if k == "rank":
         cols = cc.dec(w["cols"])
@@ -184,9 +184,9 @@ def run(docs):
             if unsealed is not None:
                 cases.append(("unsealed edit", unsealed))
                 cases.append(("resealed false output", reseal(false_output(copy.deepcopy(claim)))))
-            broken = broken_witness(copy.deepcopy(claim))
-            if broken is not None:
-                cases.append(("resealed broken witness", reseal(broken)))
+            tampered = tampered_witness(copy.deepcopy(claim))
+            if tampered is not None:
+                cases.append(("resealed tampered witness", reseal(tampered)))
             for what, mutated in cases:
                 total += 1
                 v, d = cc.check_claim(mutated)
