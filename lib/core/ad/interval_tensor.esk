@@ -156,18 +156,52 @@
         ((itensor? y) (it-broadcast f y x #f))
         (else (error "itensor: at least one operand must be an element tensor"))))
 
-(define (itensor+ x y) (itensor-map2 rn+ x y))
-(define (itensor- x y) (itensor-map2 rn- x y))
-(define (itensor* x y) (itensor-map2 rn* x y))            ; Hadamard
-(define (itensor-scale x s) (itensor-map2 rn* x s))
-(define (itensor-neg x) (itensor-map rn-neg x))
-(define (itensor-exp x) (itensor-map rn-exp x))
-(define (itensor-log x) (itensor-map rn-log x))
-(define (itensor-sin x) (itensor-map rn-sin x))
-(define (itensor-cos x) (itensor-map rn-cos x))
-(define (itensor-sqrt x) (itensor-map rn-sqrt x))
-(define (itensor-sqr x) (itensor-map rn-sqr x))
-(define (itensor-atan x) (itensor-map rn-atan x))
+;; The named operations call the generic operators DIRECTLY (selected by an
+;; operation code) rather than through a procedure argument, so a native AD
+;; value entering here keeps an exact tangent at an exact point.
+(define (it-apply2 code a b)
+  (cond ((= code 0) (rn+ a b)) ((= code 1) (rn- a b)) (else (rn* a b))))
+(define (it-apply1 code a)
+  (cond ((= code 0) (rn-neg a)) ((= code 1) (rn-exp a)) ((= code 2) (rn-log a))
+        ((= code 3) (rn-sin a)) ((= code 4) (rn-cos a)) ((= code 5) (rn-sqrt a))
+        ((= code 6) (rn-sqr a)) (else (rn-atan a))))
+
+(define (it-op1 code x)
+  (let* ((d (itensor-data x)) (n (vector-length d)) (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (it-apply1 code (vector-ref d i))) (loop (+ i 1)))
+          (it-make (itensor-shape x) out)))))
+
+(define (it-op2 code x y)
+  (let ((tx (itensor? x)) (ty (itensor? y)))
+    (if (and tx ty (not (it-shape-equal? (itensor-shape x) (itensor-shape y))))
+        (error "itensor: elementwise operands must have the same shape")
+        (if (not (or tx ty))
+            (error "itensor: at least one operand must be an element tensor")
+            (let* ((shape (if tx (itensor-shape x) (itensor-shape y)))
+                   (n (it-product shape)) (out (make-vector n 0)))
+              (let loop ((i 0))
+                (if (< i n)
+                    (begin
+                      (vector-set! out i (it-apply2 code
+                                                    (if tx (vector-ref (itensor-data x) i) x)
+                                                    (if ty (vector-ref (itensor-data y) i) y)))
+                      (loop (+ i 1)))
+                    (it-make shape out))))))))
+
+(define (itensor+ x y) (it-op2 0 x y))
+(define (itensor- x y) (it-op2 1 x y))
+(define (itensor* x y) (it-op2 2 x y))                    ; Hadamard
+(define (itensor-scale x s) (it-op2 2 x s))
+(define (itensor-neg x) (it-op1 0 x))
+(define (itensor-exp x) (it-op1 1 x))
+(define (itensor-log x) (it-op1 2 x))
+(define (itensor-sin x) (it-op1 3 x))
+(define (itensor-cos x) (it-op1 4 x))
+(define (itensor-sqrt x) (it-op1 5 x))
+(define (itensor-sqr x) (it-op1 6 x))
+(define (itensor-atan x) (it-op1 7 x))
 
 ;; sum of all entries (a carrier value)
 (define (itensor-sum x)
