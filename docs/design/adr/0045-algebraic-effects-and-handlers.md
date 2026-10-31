@@ -69,7 +69,13 @@ ordinary call.
 ### 3. Runtime: delimited control from `call/cc`
 
 `core.control.effects` (in the stdlib closure, so the forms work without a
-`require`) keeps the handler context as a stack of frames. Each frame has a
+`require`) keeps the handler context as a stack of frames. The context is
+thread dynamic state, read and written through `%effect-context` and
+`%effect-context-set!`: native holds it in the runtime next to the
+dynamic-wind chain, because a store into ordinary program storage from inside
+`with-region` crosses the region store boundary (ADR-0020) and is copied, which
+would separate a handler from the computation it handles; the VM, whose
+regions are evacuated only at exit, holds it in one prelude global. Each frame has a
 *delimiter*: the continuation that receives the result of the handled
 computation — the `handle` form, or the call site of the resumption currently
 running it. An operation finds the innermost frame with a clause, captures its
@@ -148,10 +154,16 @@ the shared `RowType` of ADR-0046 when that lands.
   (`scripts/run_effects_gate.py`, CTest `v19_effects_gate`) compares exact
   transcripts of the semantics corpus on all three and runs the
   effect-typing corpus under `--strict-types`.
-- Common effects (state, reader, writer, iteration) cost a procedure call.
-  Effects that genuinely resume from elsewhere (pulling generators,
-  nondeterminism, task switching) cost one or two stack captures per
-  operation, retained as continuation images are.
+- Common effects (state, reader, writer, iteration) cost a few procedure
+  calls (0.62 µs per operation against a 0.10 µs loop iteration, AOT x86-64)
+  and allocate nothing. Effects that genuinely resume from elsewhere (pulling
+  generators, nondeterminism, task switching) cost one or two stack captures
+  per operation (hundreds of µs, retained as continuation images are).
+- Non-local exits restore the recursion-depth counter: `guard`,
+  `with-exception-handler` and `call/cc` save it in a frame slot before
+  `setjmp` and restore it on the landing path, so a program that leaves deep
+  code by `raise` or a continuation many times does not reach
+  `ESHKOL_MAX_STACK` without being deep.
 - `handle`, `handle-shallow`, `define-effect` and `declare-effects` become
   keywords (a clause-shape check keeps existing procedures named `handle`
   callable; user macros take precedence).
