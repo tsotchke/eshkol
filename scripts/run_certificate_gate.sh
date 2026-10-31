@@ -72,10 +72,18 @@ status=0
 ctest_log="$WORK/ctest.log"
 (cd "$BUILD_DIR_PATH" && ctest -R "$TESTS" --output-on-failure -j "${JOBS:-2}") > "$ctest_log" 2>&1
 ctest_status=$?
+# Count the expected entries by name: CTest also runs any fixture-setup
+# test they require, which must pass too (ctest exit status) but is not one
+# of the EXPECTED entries.
+passed=0
+for name in $(echo "$TESTS" | tr -d '^$()' | tr '|' ' '); do
+    if grep -qE "^ *[0-9]+/[0-9]+ Test +#[0-9]+: ${name} \.+ +Passed" "$ctest_log"; then
+        passed=$((passed + 1))
+    fi
+done
 ran=$(grep -cE '^ *[0-9]+/[0-9]+ Test +#[0-9]+: ' "$ctest_log" || true)
-passed=$(grep -cE '^ *[0-9]+/[0-9]+ Test +#[0-9]+: .* Passed' "$ctest_log" || true)
-summary="ctest ${passed}/${EXPECTED} passed (ran ${ran}, exit ${ctest_status})"
-if [ "$ctest_status" -ne 0 ] || [ "$ran" -ne "$EXPECTED" ] || [ "$passed" -ne "$EXPECTED" ]; then
+summary="ctest ${passed}/${EXPECTED} expected entries passed (ran ${ran} incl. fixture setup, exit ${ctest_status})"
+if [ "$ctest_status" -ne 0 ] || [ "$passed" -ne "$EXPECTED" ]; then
     status=1
 fi
 
