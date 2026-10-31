@@ -15,7 +15,7 @@ sources:
 ---
 # ADR-0045: Algebraic effects and handlers, with effect rows
 
-**Status:** Accepted (v1.9.0-types; for root review, lands in rung order)
+**Status:** Proposed (v1.9.0-types; for root review, lands in rung order)
 **Relates to:** ADR-0004 (effects are the `ε` axis of the one typed
 judgment), ADR-0026 (one syntax engine shared by both engines), ADR-0003
 (codegen/VM parity), the continuation design in
