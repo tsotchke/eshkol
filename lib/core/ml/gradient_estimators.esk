@@ -27,6 +27,8 @@
 ;;       (tape-gradient t (some-scalar-loss t p) (list lg)))))
 ;;
 
+(require core.ad.tape)
+
 (provide gumbel-softmax gumbel-softmax-det
          straight-through straight-through-round straight-through-onehot
          categorical-pick argmax-onehot softmax
