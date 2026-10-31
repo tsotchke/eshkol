@@ -151,10 +151,17 @@ which the `v14_math_transcripts` completion-oracle criterion in
 
 ### Full project CTest (Linux x64, gcc-13, LLVM 21)
 
-Pending build node (unavailable at the time of writing). `vm_prelude_cache_is_current`,
-`vm_binding_origins_current` and `parity_backlog_build_free_test` are regenerated and
-committed (see `lib/backend/vm_binding_origins.h`, `lib/backend/vm_prelude_cache.h`)
-and will be confirmed by that run.
+```
+ctest -j 4
+```
+
+99% tests passed, 16 tests failed out of 1162 -- exactly the project's
+established base failing-test set (none of them touch core.transcript,
+core.json or core.merkle); `vm_mathematics_group_cohomology_order_eight` and
+`vm_mathematics_cohomology_rings_cup_products` (the two bytecode-VM CTest
+entries on the wired cohomology examples) both pass, along with
+`vm_prelude_cache_is_current`, `vm_binding_origins_current` and
+`parity_backlog_build_free_test`.
 
 ## 7. Independent recomputation of other libraries' certified quantities
 
