@@ -1,0 +1,260 @@
+;;; core.category.effective_kan -- Kan extensions of Set-valued functors
+;;; along functors between effective categories, by the pointwise formulas
+;;; Lan_F G(d) = colim_{(F | d)} G P and Ran_F G(d) = lim_{(d | F)} G Q,
+;;; whenever the comma categories are finite; restriction along a functor;
+;;; and, for simplicial presheaves, truncation, the skeleton and the
+;;; coskeleton along Delta_{<=n} -> Delta.
+;;;
+;;; Usage: (require core.category.effective_kan)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), X.3 (Theorem X.3.1: the pointwise formulas); E. Riehl, "Category
+;;; Theory in Context" (2016), 6.2; P. Goerss, J. Jardine, "Simplicial
+;;; Homotopy Theory" (1999), VII.1 (skeleta and coskeleta as the left and
+;;; right Kan extensions along the truncation); nLab: "Kan extension",
+;;; "pointwise Kan extension", "simplicial skeleton", "coskeleton", "nerve".
+;;;
+;;; Design: ADR-0054; reference: docs/reference/stdlib/category-effective.md.
+;;;
+;;; When it computes. The comma category (F | d) has the objects (c, u) with
+;;; u : F c -> d. It is finite when only finitely many objects c of C map
+;;; into d and every D(F c, d) and C(c, c') involved is finite. The objects
+;;; c are all of C when C has finitely many objects; otherwise F must
+;;; declare them through the property 'fibre (d -> a list containing every c
+;;; with D(F c, d) nonempty; for Ran, 'cofibre: d -> every c with D(d, F c)
+;;; nonempty). Each listed c is checked to be an object; completeness of the
+;;; list is the declaration of the functor. Anything else is refused with
+;;; comma-category-not-finite. C may be infinite: Lan along (N, <=) ->
+;;; (Z, <=) is computed at every integer, while Ran along it is refused.
+;;;
+;;; Values (public):
+;;;   Lan_F G(d)   the list of class representatives (c u x) of the colimit,
+;;;                x in G(c); the representative is the first element of its
+;;;                class in the enumeration order of (F | d).
+;;;   Ran_F G(d)   the list of compatible families, each a list of elements
+;;;                x_(c,u) of G(c) over the objects (c u) of (d | F) in their
+;;;                enumeration order (effective-comma-objects lists them).
+;;;   simplicial presheaf  an effective set functor on (effective-opposite
+;;;                (simplex-category)); a Delta arrow (k m images) acts from
+;;;                X_m to X_k.
+
+(require stdlib)
+(require core.category.effective)
+(require core.category.standard)
+
+(provide effective-comma-objects effective-cocomma-objects effective-lan effective-ran effective-restrict
+         effective-lan-unit effective-ran-unit effective-ran-counit effective-set-limit
+         truncated-simplex-category simplex-inclusion-functor nerve-presheaf simplex-presheaf
+         truncate-presheaf skeleton coskeleton presheaf-unit-bijective?)
+
+(define (ek-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ek-flatmap f xs) (let loop ((l xs) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (append (reverse (f (car l))) acc)))))
+(define (ek-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (ek-all? p (cdr xs))) (else #f)))
+(define (ek-index p xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((p (car l)) i) (else (loop (cdr l) (+ i 1))))))
+(define (ek-finite-hom who E a b)
+  (let ((h (effective-category-hom E a b)))
+    (if (enumerator-finite? h) (enumerator->list h) (category-refuse 'comma-category-not-finite who (effective-category-name E) (list a b)))))
+;; objects of C over d (key 'fibre) or under d (key 'cofibre)
+(define (ek-candidates F d key who)
+  (let ((C (effective-functor-source F)) (declared (effective-functor-property F key)))
+    (cond (declared (let ((cs (declared d)))
+                      (for-each (lambda (c) (if (not (effective-category-object? C c)) (error (string-append (symbol->string who) ": a declared object is not an object of the source") c))) cs)
+                      cs))
+          ((and (effective-category-objects C) (enumerator-finite? (effective-category-objects C))) (effective-category-object-list C))
+          (else (category-refuse 'comma-category-not-finite who (effective-functor-name F) d)))))
+;; (F | d): the list of (c u), u : F c -> d
+(define (effective-comma-objects F d)
+  (let ((D (effective-functor-target F)))
+    (ek-flatmap (lambda (c) (map (lambda (u) (list c u)) (ek-finite-hom 'effective-lan D (effective-functor-object F c) d)))
+                (ek-candidates F d 'fibre 'effective-lan))))
+;; (d | F): the list of (c u), u : d -> F c
+(define (effective-cocomma-objects F d)
+  (let ((D (effective-functor-target F)))
+    (ek-flatmap (lambda (c) (map (lambda (u) (list c u)) (ek-finite-hom 'effective-ran D d (effective-functor-object F c))))
+                (ek-candidates F d 'cofibre 'effective-ran))))
+;; arrows of a comma category as (i j h): h : c_i -> c_j with ok?(h, u_i, u_j)
+(define (ek-comma-arrows F objs ok? who)
+  (let ((C (effective-functor-source F)) (v (list->vector objs)) (n (length objs)))
+    (ek-flatmap (lambda (i) (ek-flatmap (lambda (j) (let ((oi (vector-ref v i)) (oj (vector-ref v j)))
+                                                      (map (lambda (h) (list i j h))
+                                                           (filter (lambda (h) (ok? h (cadr oi) (cadr oj)))
+                                                                   (ek-finite-hom who C (car oi) (car oj))))))
+                                        (ek-range n)))
+                (ek-range n))))
+
+;; ---------------------------------------------------------------------------
+;; Limits of finite diagrams of finite sets given by constraints
+;; ---------------------------------------------------------------------------
+;; sets: a list of element lists; constraints: (i j proc) meaning
+;; proc(x_i) = x_j. Returns every compatible family (a list of elements in
+;; the order of sets), assigning first the objects with the most outgoing
+;; constraints and propagating forced values.
+(define (effective-set-limit sets constraints)
+  (let* ((n (length sets)) (sv (list->vector sets))
+         (into (make-vector n '())) (touch (make-vector n '())))
+    (for-each (lambda (k) (vector-set! into (cadr k) (cons k (vector-ref into (cadr k))))
+                (vector-set! touch (car k) (cons k (vector-ref touch (car k))))
+                (if (not (= (car k) (cadr k))) (vector-set! touch (cadr k) (cons k (vector-ref touch (cadr k))))))
+              constraints)
+    (let ((consistent? (lambda (fam j)          ;; every constraint touching j with both ends assigned
+                         (ek-all? (lambda (k) (let ((xi (vector-ref fam (car k))) (xj (vector-ref fam (cadr k))))
+                                                (or (eq? xi 'ek-unset) (eq? xj 'ek-unset) (equal? ((caddr k) xi) xj))))
+                                  (vector-ref touch j)))))
+      ;; dynamic order: an object whose value is forced by an assigned
+      ;; constraint comes first; otherwise the unassigned object with the
+      ;; most outgoing constraints is searched
+      (let* ((outdeg (make-vector n 0))
+             (forced-value (lambda (fam j)
+                             (let find ((ks (vector-ref into j)))
+                               (cond ((null? ks) 'ek-unset)
+                                     ((not (eq? (vector-ref fam (car (car ks))) 'ek-unset)) ((caddr (car ks)) (vector-ref fam (car (car ks)))))
+                                     (else (find (cdr ks)))))))
+             (pick (lambda (fam)
+                     (let loop ((j 0) (best #f))
+                       (cond ((= j n) (if best (cons best 'ek-unset) #f))
+                             ((not (eq? (vector-ref fam j) 'ek-unset)) (loop (+ j 1) best))
+                             (else (let ((fv (forced-value fam j)))
+                                     (if (not (eq? fv 'ek-unset)) (cons j fv)
+                                         (loop (+ j 1) (if (or (not best) (> (vector-ref outdeg j) (vector-ref outdeg best))) j best))))))))))
+        (for-each (lambda (k) (vector-set! outdeg (car k) (+ 1 (vector-ref outdeg (car k))))) constraints)
+        (let search ((fam (make-vector n 'ek-unset)))
+          (let ((next (pick fam)))
+            (if (not next) (list (vector->list fam))
+                (let* ((j (car next)) (forced (cdr next))
+                       (choices (if (eq? forced 'ek-unset) (vector-ref sv j) (if (member forced (vector-ref sv j)) (list forced) '()))))
+                  (ek-flatmap (lambda (x) (let ((f2 (list->vector (vector->list fam))))
+                                            (vector-set! f2 j x)
+                                            (if (consistent? f2 j) (search f2) '())))
+                              choices)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Left Kan extension
+;; ---------------------------------------------------------------------------
+;; per d: (objs elements rep-of) with elements ((c u x) ...) and rep-of a
+;; vector element-index -> representative
+(define (ek-lan-data F G d)
+  (let* ((D (effective-functor-target F)) (objs (effective-comma-objects F d)) (ov (list->vector objs))
+         (arrows (ek-comma-arrows F objs (lambda (h ui uj) (effective-category-arrow=? D (effective-category-compose D uj (effective-functor-arrow F h)) ui)) 'effective-lan))
+         (elements (ek-flatmap (lambda (o) (map (lambda (x) (list (car o) (cadr o) x)) (effective-set-functor-object G (car o)))) objs))
+         (ev (list->vector elements)) (m (vector-length ev))
+         (start (let loop ((i 0) (s 0) (acc '())) (if (= i (vector-length ov)) (list->vector (reverse acc))
+                                                       (loop (+ i 1) (+ s (length (effective-set-functor-object G (car (vector-ref ov i))))) (cons s acc)))))
+         (parent (list->vector (ek-range m))))
+    (define (root x) (if (= x (vector-ref parent x)) x (root (vector-ref parent x))))
+    (define (index-in i x) (+ (vector-ref start i) (ek-index (lambda (y) (equal? y x)) (effective-set-functor-object G (car (vector-ref ov i))))))
+    (for-each (lambda (a)
+                (let ((i (car a)) (j (cadr a)) (Gh (effective-set-functor-arrow G (caddr a))))
+                  (for-each (lambda (x) (let ((r1 (root (index-in i x))) (r2 (root (index-in j (Gh x)))))
+                                          (if (not (= r1 r2)) (if (< r1 r2) (vector-set! parent r2 r1) (vector-set! parent r1 r2)))))
+                            (effective-set-functor-object G (car (vector-ref ov i))))))
+              arrows)
+    (list ov ev (list->vector (map (lambda (k) (vector-ref ev (root k))) (ek-range m))))))
+(define (ek-lan-class F G data c u x)
+  (let* ((D (effective-functor-target F)) (ev (cadr data))
+         (k (ek-index (lambda (e) (and (equal? (car e) c) (effective-category-arrow=? D (cadr e) u) (equal? (caddr e) x))) (vector->list ev))))
+    (if k (vector-ref (caddr data) k) (error "effective-lan: an element outside the comma category" c u x))))
+(define (effective-lan F G)
+  (let* ((D (effective-functor-target F))
+         (data (let ((t (make-hash-table)))
+                 (lambda (d) (let ((h (hash-table-ref/default t d #f))) (or h (let ((v (ek-lan-data F G d))) (hash-table-set! t d v) v)))))))
+    (make-effective-set-functor
+     D
+     (lambda (d) (let ((dd (data d)) (out '()))
+                   (for-each (lambda (r) (if (not (member r out)) (set! out (cons r out)))) (vector->list (caddr dd)))
+                   (reverse out)))
+     (lambda (v) (lambda (e) (ek-lan-class F G (data (effective-category-target D v)) (car e) (effective-category-compose D v (cadr e)) (caddr e)))))))
+;; eta_c : G(c) -> Lan_F G(F c), x |-> class of (c, 1_{F c}, x)
+(define (effective-lan-unit F G L c x)
+  (let ((D (effective-functor-target F)) (Fc (effective-functor-object F c)))
+    ((effective-set-functor-arrow L (effective-category-identity D Fc)) (list c (effective-category-identity D Fc) x))))
+
+;; ---------------------------------------------------------------------------
+;; Right Kan extension
+;; ---------------------------------------------------------------------------
+(define (ek-ran-data F G d)
+  (let* ((D (effective-functor-target F)) (objs (effective-cocomma-objects F d))
+         (arrows (ek-comma-arrows F objs (lambda (h ui uj) (effective-category-arrow=? D (effective-category-compose D (effective-functor-arrow F h) ui) uj)) 'effective-ran))
+         (fams (effective-set-limit (map (lambda (o) (effective-set-functor-object G (car o))) objs)
+                                    (map (lambda (a) (list (car a) (cadr a) (effective-set-functor-arrow G (caddr a)))) arrows))))
+    (list objs fams)))
+(define (effective-ran F G)
+  (let* ((D (effective-functor-target F))
+         (data (let ((t (make-hash-table)))
+                 (lambda (d) (let ((h (hash-table-ref/default t d #f))) (or h (let ((v (ek-ran-data F G d))) (hash-table-set! t d v) v)))))))
+    (make-effective-set-functor
+     D
+     (lambda (d) (cadr (data d)))
+     ;; v : d -> d' sends (x_(c,u)) to (x_(c, u' o v)) over (c u') in (d' | F)
+     (lambda (v) (let* ((d (effective-category-source D v)) (objs (car (data d))) (objs2 (car (data (effective-category-target D v)))))
+                   (lambda (fam) (map (lambda (o2) (let ((k (ek-index (lambda (o) (and (equal? (car o) (car o2))
+                                                                                       (effective-category-arrow=? D (cadr o) (effective-category-compose D (cadr o2) v))))
+                                                                     objs)))
+                                                     (list-ref fam k)))
+                                      objs2)))))))
+;; the unit H => Ran_F (H o F) at d: h |-> (H(u) h) over (c u) in (d | F)
+(define (effective-ran-unit F H d h)
+  (map (lambda (o) ((effective-set-functor-arrow H (cadr o)) h)) (effective-cocomma-objects F d)))
+;; the counit (Ran_F G)(F c) -> G(c): a family |-> its entry at (c, 1_{F c})
+(define (effective-ran-counit F G c fam)
+  (let* ((D (effective-functor-target F)) (Fc (effective-functor-object F c))
+         (k (ek-index (lambda (o) (and (equal? (car o) c) (effective-category-arrow=? D (cadr o) (effective-category-identity D Fc))))
+                      (effective-cocomma-objects F Fc))))
+    (list-ref fam k)))
+;; F^* H = H o F
+(define (effective-restrict F H)
+  (make-effective-set-functor (effective-functor-source F)
+                              (lambda (c) (effective-set-functor-object H (effective-functor-object F c)))
+                              (lambda (h) (effective-set-functor-arrow H (effective-functor-arrow F h)))))
+
+;; ---------------------------------------------------------------------------
+;; Simplicial presheaves
+;; ---------------------------------------------------------------------------
+;; Delta_{<=n}, declaring its faces and degeneracies as generators
+(define (truncated-simplex-category n)
+  (effective-category-with-properties
+   (effective-full-subcategory (simplex-category) (ek-range (+ n 1)) (list 'Delta<= n))
+   (list (cons 'generators (append (ek-flatmap (lambda (k) (map (lambda (i) (delta-face k i)) (ek-range (+ k 1)))) (ek-range-from 1 (+ n 1)))
+                                   (ek-flatmap (lambda (k) (map (lambda (j) (delta-degeneracy k j)) (ek-range (+ k 1)))) (ek-range n)))))))
+;; i : Delta_{<=n} -> Delta, and its opposite (along which presheaves are
+;; truncated and extended)
+(define (simplex-inclusion-functor n)
+  (make-effective-functor (truncated-simplex-category n) (simplex-category) (lambda (x) x) (lambda (f) f) (list 'inclusion 'Delta<= n)))
+;; the nerve of a finite effective category as a presheaf on Delta: X_m the
+;; strings (x0 f1 ... fm), identities allowed; theta : [k] -> [m] acts by
+;; restriction along theta (composites of consecutive arrows, identities on
+;; repeated vertices)
+(define (nerve-presheaf E)
+  (let ((objs (effective-category-object-list E)))
+    (make-effective-set-functor
+     (effective-opposite (simplex-category))
+     (lambda (m) (let loop ((k 0) (acc (map (lambda (x) (list x)) objs)))
+                   (if (= k m) (map reverse acc)
+                       (loop (+ k 1) (ek-flatmap (lambda (s) (let ((t (if (null? (cdr s)) (car s) (effective-category-target E (car s)))))
+                                                               (ek-flatmap (lambda (y) (map (lambda (f) (cons f s)) (effective-category-hom-list E t y))) objs)))
+                                                 acc)))))
+     (lambda (theta)
+       (lambda (s)
+         (let* ((xs (let loop ((l (cdr s)) (acc (list (car s)))) (if (null? l) (reverse acc) (loop (cdr l) (cons (effective-category-target E (car l)) acc)))))
+                (fs (list->vector (cdr s))) (im (caddr theta))
+                (between (lambda (a b) (if (= a b) (effective-category-identity E (list-ref xs a))
+                                           (effective-category-compose-list E (reverse (map (lambda (i) (vector-ref fs i)) (ek-range-from a b))))))))
+           (cons (list-ref xs (car im))
+                 (let loop ((l im) (acc '())) (if (null? (cdr l)) (reverse acc) (loop (cdr l) (cons (between (car l) (cadr l)) acc)))))))))))
+(define (ek-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
+;; the standard simplex Delta[n] = Delta(-, [n]) as a presheaf
+(define (simplex-presheaf n)
+  (make-effective-set-functor (effective-opposite (simplex-category))
+                              (lambda (m) (map caddr (effective-category-hom-list (simplex-category) m n)))
+                              (lambda (theta) (lambda (im) (map (lambda (i) (list-ref im i)) (caddr theta))))))
+(define (truncate-presheaf X n) (effective-restrict (effective-functor-opposite (simplex-inclusion-functor n)) X))
+;; sk_n = Lan along i^op and cosk_n = Ran along i^op, of an n-truncated presheaf
+(define (skeleton Y n) (effective-lan (effective-functor-opposite (simplex-inclusion-functor n)) Y))
+(define (coskeleton Y n) (effective-ran (effective-functor-opposite (simplex-inclusion-functor n)) Y))
+;; is the unit X_m -> (cosk_n tr_n X)_m a bijection?  (#t exactly when X is
+;; n-coskeletal in degree m)
+(define (presheaf-unit-bijective? X n m)
+  (let* ((F (effective-functor-opposite (simplex-inclusion-functor n))) (objs (effective-cocomma-objects F m))
+         (images (map (lambda (x) (map (lambda (o) ((effective-set-functor-arrow X (cadr o)) x)) objs)) (effective-set-functor-object X m)))
+         (target (effective-set-functor-object (coskeleton (truncate-presheaf X n) n) m)))
+    (and (= (length images) (length target))
+         (let loop ((l images) (seen '())) (cond ((null? l) #t) ((member (car l) seen) #f) ((not (member (car l) target)) #f) (else (loop (cdr l) (cons (car l) seen))))))))

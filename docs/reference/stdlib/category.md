@@ -30,6 +30,7 @@ sources:
 that needs one layer compiles faster by requiring only it). Not part of
 `(require stdlib)`.
 **Design record:** [ADR-0036](../../design/adr/0036-core-category-finite-categories.md).
+**Infinite categories:** [category-effective.md](category-effective.md) (ADR-0054).
 
 `core.category` computes with finite categories as data: functors and natural
 transformations checked by their laws, functor categories, comma and slice
