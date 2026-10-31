@@ -56,6 +56,7 @@
 #include <eshkol/backend/parallel_codegen.h>
 #include <eshkol/backend/tensorcore_codegen.h>
 #include <eshkol/types/type_checker.h>
+#include <eshkol/types/hole_synthesis.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
 #include <eshkol/logger.h>
@@ -2731,6 +2732,26 @@ public:
                     cfg->strict_types, cfg->unsafe_mode);
                 seedTypeCheckerWithReplFunctions(type_checker, type_env);
 
+                // `??` synthesis holes (ADR-0052): the checker reports each
+                // hole with its expected type while its scope is live; after a
+                // top-level form is checked, its holes are replaced by their
+                // best well-typed completions and the form is checked again,
+                // so code generation only ever sees the completed program.
+                eshkol::hott::HoleSynthesizer hole_synthesizer;
+                type_checker.setHoleObserver(&hole_synthesizer);
+                size_t unfilled_holes = 0;
+                auto check_with_holes = [&](eshkol_ast_t* form) {
+                    auto result = type_checker.synthesize(form);
+                    if (!hole_synthesizer.pending()) return result;
+                    unfilled_holes += hole_synthesizer.fill(
+                        g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                        g_source_text.empty() ? nullptr : g_source_text.c_str());
+                    type_checker.setHoleObserver(nullptr);
+                    result = type_checker.synthesize(form);
+                    type_checker.setHoleObserver(&hole_synthesizer);
+                    return result;
+                };
+
                 // Type check all top-level forms (definitions AND expressions)
                 // Note: const_cast is safe here because we're intentionally annotating
                 // the AST with inferred types during type checking phase
@@ -2742,7 +2763,9 @@ public:
                         }
                         // Then process regular definitions
                         else if (asts_to_use[i].operation.op == ESHKOL_DEFINE_OP) {
-                            auto result = type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                            hole_synthesizer.beginDefinition(asts_to_use[i].operation.define_op.name
+                                ? asts_to_use[i].operation.define_op.name : "");
+                            auto result = check_with_holes(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                             if (!result.success) {
                                 // Type error - report via unified enforcement point
                                 std::string msg = std::string("in '") +
@@ -2757,12 +2780,20 @@ public:
                         // Type check all other top-level expressions (function calls, etc.)
                         // This catches type mismatches at call sites, dimension errors, etc.
                         else {
-                            type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                            hole_synthesizer.beginDefinition("");
+                            check_with_holes(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                         }
                     } else {
                         // Non-op top-level forms (literals, variables, etc.)
-                        type_checker.synthesize(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
+                        hole_synthesizer.beginDefinition("");
+                        check_with_holes(const_cast<eshkol_ast_t*>(&asts_to_use[i]));
                     }
+                }
+                type_checker.setHoleObserver(nullptr);
+                if (unfilled_holes > 0) {
+                    eshkol_error("Refusing to generate code: %zu synthesis hole(s) have no "
+                                 "well-typed completion", unfilled_holes);
+                    return std::make_pair(nullptr, nullptr);
                 }
 
                 // A linearity violation is fatal in EVERY mode but --unsafe.

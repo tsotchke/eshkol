@@ -1,0 +1,142 @@
+;; ml.gnn and ml.autograd: every recorded backward rule agrees with central
+;; differences, message passing matches its definition, attention rows are
+;; distributions, and GCN / GraphSAGE / GAT node classifiers learn the two
+;; factions of Zachary's karate club from four labelled members.
+(require stdlib)
+(require ml.autograd)
+(require ml.gnn)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; Gradient checks: reverse-mode gradient of a scalar loss against central
+;; differences, entry by entry, for every parameter matrix.
+;; ---------------------------------------------------------------------------
+(define (loss-only params build) (car (ag-loss-and-gradients params build)))
+(define (max-grad-error params build)
+  (let* ((lg (ag-loss-and-gradients params build)) (grads (cdr lg)) (h 1.0e-6))
+    (let ploop ((ps params) (gs grads) (worst 0.0))
+      (if (null? ps) worst
+          (let* ((d (ag-data (car ps))) (n (vector-length d)))
+            (ploop (cdr ps) (cdr gs)
+                   (let iloop ((i 0) (worst worst))
+                     (if (>= i n) worst
+                         (let* ((x (vector-ref d i))
+                                (fp (begin (vector-set! d i (+ x h)) (loss-only params build)))
+                                (fm (begin (vector-set! d i (- x h)) (loss-only params build)))
+                                (fd (/ (- fp fm) (* 2.0 h)))
+                                (an (vector-ref (car gs) i)))
+                           (vector-set! d i x)
+                           (iloop (+ i 1) (max worst (/ (abs (- fd an)) (max 1.0 (abs fd))))))))))))))
+
+(define g5 (make-graph 5 '((0 . 1) (1 . 2) (2 . 3) (3 . 4) (4 . 0) (0 . 2))))
+(define X5 (ag-random 5 3 1.0 3))
+(define Y5 (ag-from-rows '((1 0) (0 1) (1 0) (1 1) (0 0))))
+(define lab5 '(0 1 #f 1 0))
+
+(check "matmul/bias/tanh/sigmoid-bce gradient"
+  (< (max-grad-error (list (ag-random 3 2 0.7 5) (ag-random 1 2 0.3 6))
+       (lambda (t ps) (ag-sigmoid-bce t (ag-tanh t (ag-add-bias t (ag-matmul t (ag-const t X5) (car ps)) (cadr ps))) Y5)))
+     1.0e-6))
+(check "concat/hadamard/sub/dot-rows/mean-rows/l2 gradient"
+  (< (max-grad-error (list (ag-random 5 2 0.7 7) (ag-random 5 2 0.7 8))
+       (lambda (t ps)
+         (let* ((A (car ps)) (B (cadr ps)) (C (ag-concat-cols t (ag-hadamard t A B) (ag-sub t A B))))
+           (ag-scalar-add t (ag-sum t (ag-dot-rows t A (ag-sigmoid t B)))
+                          (ag-scalar-add t (ag-sum t (ag-mean-rows t C)) (ag-l2 t A))))))
+     1.0e-6))
+(for-each
+  (lambda (kind)
+    (check (string-append "aggregate " (symbol->string kind) " gradient")
+      (< (max-grad-error (list (ag-random 5 3 1.0 11) (ag-random 3 2 0.5 12))
+           (lambda (t ps) (ag-softmax-xent t (ag-matmul t (gnn-aggregate t g5 (car ps) kind) (cadr ps)) lab5)))
+         1.0e-6)))
+  '(sum mean max))
+(check "GCN layer gradient"
+  (< (max-grad-error (list (ag-random 3 4 0.6 13) (ag-random 1 4 0.1 14) (ag-random 4 2 0.6 15))
+       (lambda (t ps)
+         (let ((h (gnn-gcn-layer t (gnn-gcn-entries g5) 5 (ag-const t X5) (car ps) (cadr ps) 'tanh)))
+           (ag-softmax-xent t (ag-matmul t h (caddr ps)) lab5))))
+     1.0e-6))
+(check "GraphSAGE layer gradient"
+  (< (max-grad-error (list (ag-random 3 4 0.6 16) (ag-random 3 4 0.6 17) (ag-random 1 4 0.1 18))
+       (lambda (t ps)
+         (ag-sum t (ag-tanh t (gnn-sage-layer t g5 (ag-const t X5) (car ps) (cadr ps) (caddr ps) 'mean 'none)))))
+     1.0e-6))
+(check "GAT layer gradient (W, a_dst, a_src)"
+  (< (max-grad-error (list (ag-random 3 4 0.8 19) (ag-random 4 1 0.8 20) (ag-random 4 1 0.8 21))
+       (lambda (t ps)
+         (ag-softmax-xent t (gnn-gat-layer t g5 (ag-const t X5) (car ps) (cadr ps) (caddr ps) 'tanh) '(0 3 1 #f 2))))
+     1.0e-6))
+(check "GAT layer gradient flows into the node features"
+  (< (max-grad-error (list (ag-copy X5))
+       (lambda (t ps)
+         (ag-sum t (ag-tanh t (gnn-gat-layer t g5 (car ps) (ag-const t (ag-random 3 2 0.8 22))
+                                             (ag-const t (ag-random 2 1 0.8 23)) (ag-const t (ag-random 2 1 0.8 24)) 'none)))))
+     1.0e-6))
+
+;; ---------------------------------------------------------------------------
+;; Message passing and attention semantics
+;; ---------------------------------------------------------------------------
+(define deg-round
+  (gnn-propagate g5 (make-vector 5 1) (lambda (src dst) src) (lambda (ms) (fold-left + 0 ms)) (lambda (h agg) agg)))
+(check "one round of sum message passing counts neighbours"
+  (equal? (vector->list deg-round) (map (lambda (i) (graph-degree g5 i)) '(0 1 2 3 4))))
+(define label-round
+  (gnn-propagate g5 (vector 0 10 20 30 40) (lambda (src dst) src)
+                 (lambda (ms) (fold-left max -1 ms)) (lambda (h agg) (max h agg))))
+(check "max message passing" (equal? (vector->list label-round) '(40 20 30 40 40)))
+(define att (gnn-gat-attention g5 X5 (ag-random 3 2 0.5 30) (ag-random 2 1 0.5 31) (ag-random 2 1 0.5 32)))
+(check "attention rows are distributions over the closed neighbourhood"
+  (let loop ((i 0) (ok #t))
+    (if (= i 5) ok
+        (let ((row (vector-ref att i)))
+          (loop (+ i 1)
+                (and ok (< (abs (- 1.0 (fold-left + 0.0 (map cdr row)))) 1.0e-12)
+                     (equal? (map car row) (sort (cons i (graph-neighbors g5 i)) <))
+                     (let positive ((r row)) (or (null? r) (and (> (cdar r) 0.0) (positive (cdr r)))))))))))
+(define mean-agg
+  (with-tape "t" (lambda () (let ((t (current-tape))) (ag-value (gnn-aggregate t g5 (ag-const t X5) 'mean))))))
+(check "mean aggregation equals the neighbour average"
+  (< (abs (- (ag-ref mean-agg 0 1) (/ (+ (ag-ref X5 1 1) (ag-ref X5 2 1) (ag-ref X5 4 1)) 3.0))) 1.0e-12))
+
+;; ---------------------------------------------------------------------------
+;; Learning: Zachary's karate club (W. W. Zachary, J. Anthropological
+;; Research 33 (1977)), labels = the faction each member joined.
+;; ---------------------------------------------------------------------------
+(define karate-edges
+  '((0 . 1) (0 . 2) (0 . 3) (0 . 4) (0 . 5) (0 . 6) (0 . 7) (0 . 8) (0 . 10) (0 . 11) (0 . 12) (0 . 13)
+    (0 . 17) (0 . 19) (0 . 21) (0 . 31) (1 . 2) (1 . 3) (1 . 7) (1 . 13) (1 . 17) (1 . 19) (1 . 21) (1 . 30)
+    (2 . 3) (2 . 7) (2 . 8) (2 . 9) (2 . 13) (2 . 27) (2 . 28) (2 . 32) (3 . 7) (3 . 12) (3 . 13) (4 . 6)
+    (4 . 10) (5 . 6) (5 . 10) (5 . 16) (6 . 16) (8 . 30) (8 . 32) (8 . 33) (9 . 33) (13 . 33) (14 . 32)
+    (14 . 33) (15 . 32) (15 . 33) (18 . 32) (18 . 33) (19 . 33) (20 . 32) (20 . 33) (22 . 32) (22 . 33)
+    (23 . 25) (23 . 27) (23 . 29) (23 . 32) (23 . 33) (24 . 25) (24 . 27) (24 . 31) (25 . 31) (26 . 29)
+    (26 . 33) (27 . 33) (28 . 31) (28 . 33) (29 . 32) (29 . 33) (30 . 32) (30 . 33) (31 . 32) (31 . 33) (32 . 33)))
+(define karate-truth '(0 0 0 0 0 0 0 0 0 1 0 0 0 0 1 1 0 0 1 0 1 0 1 1 1 1 1 1 1 1 1 1 1 1))
+(define karate (make-graph 34 karate-edges))
+(check "karate graph has 34 nodes and 78 edges"
+  (and (= (graph-size karate) 34)
+       (= 156 (let loop ((i 0) (s 0)) (if (= i 34) s (loop (+ i 1) (+ s (graph-degree karate i))))))))
+(define train-ids '(0 1 32 33))
+(define karate-labels
+  (let loop ((i 33) (ys (reverse karate-truth)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cdr ys) (cons (if (memv i train-ids) (car ys) #f) acc)))))
+(define test-mask (map (lambda (l) (not l)) karate-labels))
+(define Xk (gnn-one-hot-features 34))
+
+(for-each
+  (lambda (kind)
+    (let* ((m (gnn-make-model kind karate 34 8 2 101))
+           (losses (gnn-fit! m Xk karate-labels 60 0.05 5.0e-4))
+           (acc (gnn-accuracy (gnn-predict m Xk) karate-truth test-mask)))
+      (display "  ") (display kind) (display ": loss ") (display (car losses)) (display " -> ")
+      (display (list-ref losses 59)) (display ", held-out accuracy ") (display acc) (newline)
+      (check (string-append (symbol->string kind) " loss decreases by 10x") (< (list-ref losses 59) (* 0.1 (car losses))))
+      (check (string-append (symbol->string kind) " held-out accuracy >= 0.8") (>= acc 0.8))))
+  '(gcn sage gat))
+
+(display "gnn_test: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
+(if (= failures 0) (begin (display "PASS: gnn_test") (newline)) (begin (display "RESULT: FAIL") (newline)))

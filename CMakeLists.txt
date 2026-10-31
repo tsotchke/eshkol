@@ -4324,6 +4324,71 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# v1.7.0 synthesis (ADR-0052): example-based synthesis (core.synthesis), graph
+# neural networks with exact reverse-mode gradients (ml.autograd, ml.gnn), and
+# compiler completion of `??` synthesis holes, each under JIT and AOT.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_syn_suite stdlib/synthesis_test ml/gnn_test types/synthesis_holes_test)
+        get_filename_component(_syn_name "${_syn_suite}" NAME)
+        add_test(NAME ${_syn_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_syn_suite}.esk")
+        add_test(NAME ${_syn_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_syn_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_syn_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_RUN_TIMEOUT=600"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_syn_name}_jit ${_syn_name}_aot PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_syn_name}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+    # The compiler names each hole with its expected type, completion and the
+    # other candidates.
+    add_test(NAME synthesis_hole_diagnostics
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_holes_test.esk")
+    set_tests_properties(synthesis_hole_diagnostics PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? in 'add2' : [A-Za-z0-9]+ filled with \\(\\+ x y\\); other candidates: ")
+    # Soundness: every completion is well typed, so the completed program
+    # passes the checker with type errors fatal.
+    add_test(NAME synthesis_holes_strict_types
+        COMMAND $<TARGET_FILE:eshkol-run> --strict-types -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_holes_test.esk")
+    set_tests_properties(synthesis_holes_strict_types PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: synthesis_holes_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|Type error|type errors detected|fatal signal")
+    # A hole with no well-typed completion stops compilation (JIT and AOT).
+    add_test(NAME synthesis_hole_refusal_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk")
+    set_tests_properties(synthesis_hole_refusal_jit PROPERTIES
+        TIMEOUT 600
+        ENVIRONMENT "ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? in 'f': no well-typed completion of type"
+        FAIL_REGULAR_EXPRESSION "fatal signal")
+    # The bytecode compiler has no type checker; it names an unbound hole.
+    add_test(NAME synthesis_hole_vm_named
+        COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm --emit-eskb
+                "${CMAKE_CURRENT_BINARY_DIR}/synthesis_hole_unfillable.eskb"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk")
+    set_tests_properties(synthesis_hole_vm_named PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "synthesis hole \\?\\? is completed by the native compiler"
+        FAIL_REGULAR_EXPRESSION "fatal signal")
+    add_test(NAME synthesis_hole_refusal_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/types/synthesis_hole_unfillable.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/synthesis_hole_unfillable${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_synthesis_hole_refusal.cmake")
+    set_tests_properties(synthesis_hole_refusal_aot PROPERTIES TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: synthesis_hole_refusal")
+endif()
+
 # Mathematics examples with exact verdicts: the incompressible porous media
 # local velocity expansion, and classifying spaces / Dijkgraaf-Witten state sums.
 #

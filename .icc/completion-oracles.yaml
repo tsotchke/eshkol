@@ -4172,3 +4172,23 @@ oracles:
         severity: high
         label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
         action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums
+
+  # ─────────────────────────────────────────────────────────────────
+  # v1.7.0-synthesis (ADR-0052): example-based synthesis (core.synthesis),
+  # graph neural networks with exact reverse-mode gradients (ml.gnn on
+  # ml.autograd) and compiler completion of `??` synthesis holes.
+  # scripts/run_synthesis_gate.sh runs the CTest entries that own the
+  # behaviour (JIT and AOT) and writes one event; PASS only when every entry
+  # ran and passed.
+  # ─────────────────────────────────────────────────────────────────
+  - name: v1.7-synthesis
+    aliases: [synthesis, v17-synthesis, program-synthesis]
+    requires:
+      - id: v17_synthesis
+        runtime_event:
+          event_kinds: [v1_7_synthesis]
+          event_names: ["v17_synthesis"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'v1.7.0-synthesis (ADR-0052): 42/42 example-synthesis benchmark tasks verified on held-out examples, GCN/GraphSAGE/GAT backward rules agree with central differences and the karate-club classifiers learn, ?? holes are completed from their expected type and a hole with no completion stops compilation; synthesis_test, gnn_test and synthesis_holes_test in JIT and AOT plus the hole diagnostic and refusal entries all pass'
+        action: ./scripts/run_synthesis_gate.sh

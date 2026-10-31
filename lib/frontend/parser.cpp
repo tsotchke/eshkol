@@ -1874,8 +1874,8 @@ static ParserTask<eshkol_ast_t> parse_interpolated_string_token(const Token& tok
  *  - TOKEN_CHAR: decodes the token's UTF-8 byte sequence into a single
  *    Unicode codepoint for eshkol_ast_make_char().
  *  - TOKEN_SYMBOL: logic-variable syntax (`?x`, `?name`, ...) becomes an
- *    ESHKOL_LOGIC_VAR_OP node; all other symbols become a plain
- *    ESHKOL_VAR reference.
+ *    ESHKOL_LOGIC_VAR_OP node; all other symbols, including the synthesis
+ *    hole `??`, become a plain ESHKOL_VAR reference.
  *  - Any other token type: returns an ESHKOL_INVALID node.
  *
  * Malformed numeric literals report a parse error via PARSE_ERROR_AT and
@@ -2038,8 +2038,12 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
         }
 
         case TOKEN_SYMBOL:
-            // Check for logic variable syntax: ?x, ?name, etc.
-            if (!token.value.empty() && token.value[0] == '?' && token.value.length() > 1) {
+            // Check for logic variable syntax: ?x, ?name, etc. `??` is not a
+            // logic variable: it is the synthesis hole identifier (ADR-0052),
+            // an ordinary variable reference that the type checker completes
+            // when it is unbound.
+            if (!token.value.empty() && token.value[0] == '?' && token.value.length() > 1 &&
+                token.value != "??") {
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_LOGIC_VAR_OP;
                 // A logic variable is named data, never a lexical binding.
