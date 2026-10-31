@@ -7732,24 +7732,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: event_loop_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
-    # Algebraic effects and handlers (ADR-0045): the semantics corpus on the
-    # native JIT, native AOT and the bytecode VM, and the effect-typing corpus
-    # under --strict-types, in one gate (scripts/run_effects_gate.py).
-    if(NOT EMSCRIPTEN AND TARGET eshkol-vm-standalone-test AND
-       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py")
-        add_test(
-            NAME v19_effects_gate
-            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py"
-                    --runner $<TARGET_FILE:eshkol-run>
-                    --vm $<TARGET_FILE:eshkol-vm-standalone-test>
-                    --work "${CMAKE_CURRENT_BINARY_DIR}/test-work/effects-gate"
-        )
-        set_tests_properties(v19_effects_gate
-            PROPERTIES
-                TIMEOUT 900
-                PASS_REGULAR_EXPRESSION "PASS: effects gate"
-                FAIL_REGULAR_EXPRESSION "FAIL: effects gate|fatal signal")
-    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh")
         add_test(
             NAME v1_3_jit_cache_runtime_smoke
@@ -9710,6 +9692,26 @@ if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+endif()
+
+# Algebraic effects and handlers (ADR-0045): the semantics corpus on the
+# native JIT, native AOT and the bytecode VM, and the effect-typing corpus
+# under --strict-types, in one gate (scripts/run_effects_gate.py).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT EMSCRIPTEN AND
+   TARGET eshkol-vm-standalone-test AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py")
+    add_test(
+        NAME v19_effects_gate
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_effects_gate.py"
+                --runner $<TARGET_FILE:eshkol-run>
+                --vm $<TARGET_FILE:eshkol-vm-standalone-test>
+                --work "${CMAKE_CURRENT_BINARY_DIR}/test-work/effects-gate"
+    )
+    set_tests_properties(v19_effects_gate
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: effects gate"
+            FAIL_REGULAR_EXPRESSION "FAIL: effects gate|fatal signal")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
