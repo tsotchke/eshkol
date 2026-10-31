@@ -13,7 +13,7 @@
 ;;; value. Coverage and planned claims: docs/reports/NLAB_CONFORMANCE.md.
 (require stdlib)
 (require core.ring)
-(require core.category)
+(require core.category.finite)
 (require core.category.effective)
 (require core.category.presented)
 (require core.category.standard)

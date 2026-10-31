@@ -4423,7 +4423,7 @@ endif()
 # docs/reports/NLAB_CONFORMANCE.md and scripts/run_nlab_conformance.sh
 # counts the claims.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    foreach(_nlab_suite nlab_topos nlab_space nlab_ring nlab_category nlab_simplicial nlab_category_effective)
+    foreach(_nlab_suite nlab_topos nlab_space nlab_ring nlab_category nlab_simplicial)
         add_test(NAME ${_nlab_suite}_jit
             COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/nlab/${_nlab_suite}_test.esk")
         add_test(NAME ${_nlab_suite}_aot COMMAND ${CMAKE_COMMAND}
@@ -4446,11 +4446,8 @@ endif()
 # Yoneda, Kan extensions, adjunctions, monads, derived limits, and descent and
 # sheafification as category theory. category_s62_test is the S6.2 acceptance
 # suite (descent as a Kan extension, sheafification as a reflector).
-# category_effective_test covers effective and finitely presented categories
-# (ADR-0054): Knuth-Bendix completion, Delta, FinOrd, FinSet, Mat_R, Kan
-# extensions with finite comma categories, skeleta and coskeleta.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    foreach(_category_suite category_test category_s62_test category_effective_test)
+    foreach(_category_suite category_test category_s62_test)
         add_test(NAME ${_category_suite}_jit
             COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_category_suite}.esk")
         add_test(NAME ${_category_suite}_aot COMMAND ${CMAKE_COMMAND}
@@ -4464,6 +4461,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 1800
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
             PASS_REGULAR_EXPRESSION "PASS: ${_category_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# Effective and finitely presented categories (ADR-0054): Knuth-Bendix
+# completion, Delta, FinOrd, FinSet, Mat_R, Kan extensions with finite comma
+# categories, skeleta and coskeleta; and the nLab claims about infinite
+# categories (listed in tests/nlab/claims.tsv and checked by
+# scripts/run_nlab_conformance.sh). The AOT compile of the four modules and
+# core.ring takes about ten minutes on the build node, so these entries get
+# the compile allowance of the simplicial suites.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_ce_entry "category_effective|stdlib|category_effective_test" "nlab_category_effective|nlab|nlab_category_effective_test")
+        string(REPLACE "|" ";" _ce_parts "${_ce_entry}")
+        list(GET _ce_parts 0 _ce_name)
+        list(GET _ce_parts 1 _ce_dir)
+        list(GET _ce_parts 2 _ce_file)
+        add_test(NAME ${_ce_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_ce_dir}/${_ce_file}.esk")
+        add_test(NAME ${_ce_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/${_ce_dir}/${_ce_file}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_ce_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=900"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_ce_name}_jit ${_ce_name}_aot PROPERTIES
+            TIMEOUT 2400
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_ce_file}"
             FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
     endforeach()
 endif()
