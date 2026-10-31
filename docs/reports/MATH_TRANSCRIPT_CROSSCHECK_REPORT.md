@@ -66,7 +66,34 @@ many. This covers every rank-0 coboundary-image claim and every empty-SNF
 boundary claim in the fixtures — the same cases §2 covers on the Eshkol
 side, now from the PARI/GP side.
 
-## 5. Final verified results
+## 5. `core.transcript` computes its content hash in pure Eshkol
+
+`core.transcript`'s claim hash is FNV-1a 64-bit, the same algorithm
+`core.merkle`'s content-addressable store uses. The two wired cohomology
+examples also each have a dedicated bytecode-VM CTest entry
+(`vm_mathematics_group_cohomology_order_eight`,
+`vm_mathematics_cohomology_rings_cup_products`), and `core.merkle`'s
+`fnv1a-64`/`hash->hex` reach a native `extern` for correct 64-bit wraparound
+arithmetic — a documented need, since Eshkol's generic bignum modulo does
+not yet have uint64-overflow semantics above 2^53. That `extern`'s signature
+is outside the VM's predetermined admission list, so any program that transitively
+requires `core.merkle` fails VM compilation outright, not merely skips
+recording in it; both wired cohomology examples hit exactly this as soon as
+they required `core.transcript`.
+
+`core.transcript` now carries its own implementation, `tr-fnv1a-64-hex`,
+that never forms an intermediate value above about 2^34: the 64-bit hash
+state is two 32-bit halves, and every multiply is a schoolbook long
+multiplication over 16-bit limbs, so it stays well inside the documented-safe
+range without touching the VM's admission rules or `core.merkle` itself.
+`tests/stdlib/transcript_test.esk` checks it byte-identical to
+`core.merkle`'s extern-backed `(hash->hex (fnv1a-64 str))` on the empty
+string, several short strings, a 1000-character string and a 53-digit
+decimal — large enough inputs to exercise every carry the limb
+multiplication can produce. `core.transcript` no longer requires
+`core.merkle` at all.
+
+## 6. Final verified results
 
 `scripts/math_crosscheck/fixtures/*.json` are the four transcripts generated
 from the build above, each with an `ESHKOL_TRANSCRIPT`-unset/-set diff
@@ -129,7 +156,7 @@ Pending build node (unavailable at the time of writing). `vm_prelude_cache_is_cu
 committed (see `lib/backend/vm_binding_origins.h`, `lib/backend/vm_prelude_cache.h`)
 and will be confirmed by that run.
 
-## 6. Independent recomputation of other libraries' certified quantities
+## 7. Independent recomputation of other libraries' certified quantities
 
 Using the same method (PARI/GP, SymPy, and plain exact enumeration in Python) on
 results already decided by other libraries in this wave, worked from each

@@ -12,8 +12,9 @@
 ;; own copy of the inputs and compare against the recorded output.  Each
 ;; claim also carries a content hash over its own canonical encoding, so a
 ;; transcript file is tamper-evident the same way core.merkle's
-;; content-addressable store is: the hash function is literally the same
-;; one (fnv1a-64), reused here rather than defining a second hash.
+;; content-addressable store is: the hash is the same algorithm, FNV-1a
+;; 64-bit (see "FNV-1a 64-bit, pure Eshkol" below for why this module
+;; carries its own implementation rather than requiring core.merkle).
 ;;
 ;; Recording is OFF by default and never changes a program's printed
 ;; output: (transcript-open name) with no ESHKOL_TRANSCRIPT environment
@@ -63,7 +64,6 @@
 ;; the reference page is docs/reference/stdlib/transcript.md.
 
 (require stdlib)
-(require core.merkle)
 (require core.json)
 
 (provide
@@ -73,7 +73,9 @@
   tv-int tv-rat tv-bool tv-string tv-opaque
   tv-list tv-int-list tv-rat-list
   tv-vector tv-matrix-rows tv-matrix-vec tv-matrix
-  tv-poly)
+  tv-poly
+  ;; FNV-1a 64-bit, pure Eshkol (VM-safe; see the module comment)
+  tr-fnv1a-64-hex)
 
 ;; ---------------------------------------------------------------------
 ;; Canonical value encoders — each returns an ordered alist ("t" first)
@@ -141,6 +143,65 @@
         (cons "coeffs" (list->vector (map tv-rat coeffs)))))
 
 ;; ---------------------------------------------------------------------
+;; FNV-1a 64-bit, pure Eshkol
+;; ---------------------------------------------------------------------
+;; core.merkle's fnv1a-64/hash->hex reach a native `extern` (lib/core/merkle.c)
+;; because plain 64-bit arithmetic needs uint64-overflow (wraparound)
+;; semantics that Eshkol's generic bignum modulo does not yet have above
+;; 2^53 (see core.merkle's own module comment). A program that
+;; transitively requires core.merkle cannot compile on the bytecode VM:
+;; the VM's extern admission list is a predetermined set of agent.sqlite/
+;; agent.crypto signatures, and core.merkle's are not on it, so VM
+;; compilation is refused outright -- not merely a skipped call.
+;;
+;; This reimplementation never forms a value above about 2^34, well
+;; inside the documented-correct range, by carrying the 64-bit hash
+;; state as two 32-bit halves and doing every multiply as a schoolbook
+;; long multiplication over 16-bit limbs. tr-fnv1a-64-hex is checked
+;; byte-identical to (hash->hex (fnv1a-64 str)) on a range of inputs,
+;; including a 1000-character string and a 53-digit decimal, in
+;; tests/stdlib/transcript_test.esk. Treats str as ASCII (one char,
+;; one byte): every canonical-value label, number string and JSON
+;; delimiter this module ever hashes is ASCII, so this never diverges
+;; from core.merkle's UTF-8 byte view for an actual transcript.
+
+(define (tr-mul32 a b)
+  "Exact 64-bit product of a, b in [0, 2^32), returned as (hi . lo),
+   each in [0, 2^32); every intermediate stays under about 2^34."
+  (let* ((a0 (modulo a 65536)) (a1 (quotient a 65536))
+         (b0 (modulo b 65536)) (b1 (quotient b 65536))
+         (t0 (* a0 b0))
+         (c0 (quotient t0 65536)) (r0 (modulo t0 65536))
+         (t1 (+ (* a1 b0) (* a0 b1) c0))
+         (c1 (quotient t1 65536)) (r1 (modulo t1 65536))
+         (t2 (+ (* a1 b1) c1))
+         (c2 (quotient t2 65536)) (r2 (modulo t2 65536)))
+    (cons (+ r2 (* c2 65536)) (+ r0 (* r1 65536)))))
+
+(define (tr-hex32 x)
+  "x in [0, 2^32) -> 8 lowercase hex characters, most significant first."
+  (let loop ((n 8) (x x) (acc '()))
+    (if (= n 0) (list->string acc)
+        (loop (- n 1) (quotient x 16) (cons (string-ref "0123456789abcdef" (modulo x 16)) acc)))))
+
+(define (tr-fnv1a-64-hex str)
+  "16-hex-char lowercase FNV-1a 64-bit digest of str (ASCII byte view).
+   State (hi . lo) starts at the standard offset basis
+   0xcbf29ce484222325 = (3421674724 . 2216829733); each step XORs the
+   next byte into the low byte of lo, then multiplies the 64-bit state
+   by the FNV prime 0x100000001b3 = 256*2^32 + 435 mod 2^64, computed as
+   ((hi*435 + lo*256 + carry-from-lo*435) mod 2^32, low-32-of-(lo*435))."
+  (let loop ((i 0) (hi 3421674724) (lo 2216829733))
+    (if (= i (string-length str))
+        (string-append (tr-hex32 hi) (tr-hex32 lo))
+        (let* ((byte (char->integer (string-ref str i)))
+               (lo-low-byte (modulo lo 256))
+               (lo2 (+ (- lo lo-low-byte) (bitwise-xor lo-low-byte byte)))
+               (low (tr-mul32 lo2 435))
+               (new-hi (modulo (+ (* hi 435) (* lo2 256) (car low)) 4294967296)))
+          (loop (+ i 1) new-hi (cdr low))))))
+
+;; ---------------------------------------------------------------------
 ;; Handle
 ;; ---------------------------------------------------------------------
 ;; A handle is (vector 'eshkol-transcript active? program-name path box)
@@ -170,7 +231,7 @@
    prints anything, so it never changes a program's visible output."
   (if (transcript-active? h)
       (let* ((claim (transcript-claim-alist kind label inputs output))
-             (digest (hash->hex (fnv1a-64 (json-stringify claim))))
+             (digest (tr-fnv1a-64-hex (json-stringify claim)))
              (full (append claim (list (cons "hash" digest))))
              (box (vector-ref h 4)))
         (vector-set! box 0 (cons full (vector-ref box 0)))
