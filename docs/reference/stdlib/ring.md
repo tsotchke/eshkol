@@ -410,7 +410,11 @@ binary64 bit patterns, so native JIT and AOT agree bit for bit.
   `(lambda (a) (r-neg R a))` and `(lambda (a) (r-zero? R a))`.
 
 `exact-prime?` decides primality exactly below 3317044064679887385961981 (and
-for larger n proven composite by a witness).
+for larger n proven composite by a witness). `(exact-expt-mod a e m)` is
+`a^e mod m` by repeated squaring, and `(exact-gcdext a b)` returns
+`(list g s t)` with `s a + t b = g = gcd(a, b) >= 0` (extended Euclid).
+`core.certificate` builds Pratt primality certificates and Bezout gcd
+certificates from them ([certificate.md](certificate.md)).
 
 ## Tests
 

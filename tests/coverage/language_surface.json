@@ -2971,11 +2971,11 @@
             {
               "name": "exact-affine-solve",
               "line": 47,
-              "definition_line": 430,
+              "definition_line": 487,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 430,
+                "line": 487,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -2984,11 +2984,11 @@
             {
               "name": "exact-det",
               "line": 47,
-              "definition_line": 214,
+              "definition_line": 215,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 214,
+                "line": 215,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -2997,11 +2997,11 @@
             {
               "name": "exact-inverse",
               "line": 47,
-              "definition_line": 374,
+              "definition_line": 431,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 374,
+                "line": 431,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -3010,11 +3010,11 @@
             {
               "name": "exact-matrix-mul",
               "line": 46,
-              "definition_line": 146,
+              "definition_line": 147,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 146,
+                "line": 147,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -3023,11 +3023,11 @@
             {
               "name": "exact-matrix-ref",
               "line": 46,
-              "definition_line": 57,
+              "definition_line": 58,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 57,
+                "line": 58,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -3036,11 +3036,11 @@
             {
               "name": "exact-matrix-transpose",
               "line": 46,
-              "definition_line": 165,
+              "definition_line": 166,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 165,
+                "line": 166,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -3049,11 +3049,11 @@
             {
               "name": "exact-matrix?",
               "line": 46,
-              "definition_line": 75,
+              "definition_line": 76,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 75,
+                "line": 76,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -3061,33 +3061,20 @@
             },
             {
               "name": "exact-nullspace",
-              "line": 47,
-              "definition_line": 296,
+              "line": 48,
+              "definition_line": 353,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 296,
+                "line": 353,
                 "chain": [
                   "core.exact_linalg"
                 ]
               }
             },
             {
-              "name": "exact-rank",
-              "line": 47,
-              "definition_line": 268,
-              "definition_origin": {
-                "module": "core.exact_linalg",
-                "path": "lib/core/exact_linalg.esk",
-                "line": 268,
-                "chain": [
-                  "core.exact_linalg"
-                ]
-              }
-            },
-            {
-              "name": "exact-solve",
-              "line": 47,
+              "name": "exact-pivot-columns",
+              "line": 48,
               "definition_line": 325,
               "definition_origin": {
                 "module": "core.exact_linalg",
@@ -3099,13 +3086,52 @@
               }
             },
             {
-              "name": "torus-average",
-              "line": 48,
-              "definition_line": 401,
+              "name": "exact-plu",
+              "line": 47,
+              "definition_line": 232,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 401,
+                "line": 232,
+                "chain": [
+                  "core.exact_linalg"
+                ]
+              }
+            },
+            {
+              "name": "exact-rank",
+              "line": 47,
+              "definition_line": 319,
+              "definition_origin": {
+                "module": "core.exact_linalg",
+                "path": "lib/core/exact_linalg.esk",
+                "line": 319,
+                "chain": [
+                  "core.exact_linalg"
+                ]
+              }
+            },
+            {
+              "name": "exact-solve",
+              "line": 47,
+              "definition_line": 382,
+              "definition_origin": {
+                "module": "core.exact_linalg",
+                "path": "lib/core/exact_linalg.esk",
+                "line": 382,
+                "chain": [
+                  "core.exact_linalg"
+                ]
+              }
+            },
+            {
+              "name": "torus-average",
+              "line": 49,
+              "definition_line": 458,
+              "definition_origin": {
+                "module": "core.exact_linalg",
+                "path": "lib/core/exact_linalg.esk",
+                "line": 458,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -3113,12 +3139,12 @@
             },
             {
               "name": "torus-average-2d",
-              "line": 48,
-              "definition_line": 416,
+              "line": 49,
+              "definition_line": 473,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 416,
+                "line": 473,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -3128,187 +3154,195 @@
           "top_level_definitions": [
             {
               "name": "el-affine-exact-row?",
-              "line": 426
+              "line": 483
             },
             {
               "name": "el-append-row",
-              "line": 302
+              "line": 359
             },
             {
               "name": "el-augment-column",
-              "line": 308
+              "line": 365
             },
             {
               "name": "el-augment-identity",
-              "line": 353
+              "line": 410
             },
             {
               "name": "el-bareiss",
-              "line": 194
+              "line": 195
             },
             {
               "name": "el-bareiss-eliminate!",
-              "line": 188
+              "line": 189
             },
             {
               "name": "el-bareiss-eliminate-row!",
-              "line": 176
+              "line": 177
             },
             {
               "name": "el-cols",
-              "line": 55
+              "line": 56
             },
             {
               "name": "el-concat-row",
-              "line": 345
+              "line": 402
             },
             {
               "name": "el-copy-matrix",
-              "line": 111
+              "line": 112
             },
             {
               "name": "el-copy-row",
-              "line": 106
+              "line": 107
             },
             {
               "name": "el-dot-ik",
-              "line": 131
+              "line": 132
             },
             {
               "name": "el-eliminate-col!",
-              "line": 240
+              "line": 291
             },
             {
               "name": "el-eliminate-row!",
-              "line": 229
+              "line": 280
             },
             {
               "name": "el-exact-num?",
-              "line": 68
+              "line": 69
             },
             {
               "name": "el-extract-right-half",
-              "line": 366
+              "line": 423
             },
             {
               "name": "el-extract-right-row",
-              "line": 361
+              "line": 418
             },
             {
               "name": "el-extract-solution",
-              "line": 316
+              "line": 373
             },
             {
               "name": "el-fill-pivot-components!",
-              "line": 272
+              "line": 329
             },
             {
               "name": "el-find-pivot",
-              "line": 123
+              "line": 124
             },
             {
               "name": "el-identity",
-              "line": 340
+              "line": 397
             },
             {
               "name": "el-identity-row",
-              "line": 337
+              "line": 394
             },
             {
               "name": "el-mul-row",
-              "line": 137
+              "line": 138
             },
             {
               "name": "el-normalize-row!",
-              "line": 224
+              "line": 275
             },
             {
               "name": "el-nullspace-basis",
-              "line": 285
+              "line": 342
             },
             {
               "name": "el-nullspace-vector",
-              "line": 279
+              "line": 336
             },
             {
               "name": "el-row-all?",
-              "line": 61
+              "line": 62
             },
             {
               "name": "el-rows",
-              "line": 54
+              "line": 55
             },
             {
               "name": "el-rref",
-              "line": 251
+              "line": 302
             },
             {
               "name": "el-sum-f",
-              "line": 386
+              "line": 443
             },
             {
               "name": "el-sum-f2",
-              "line": 406
+              "line": 463
             },
             {
               "name": "el-swap-rows!",
-              "line": 116
+              "line": 117
             },
             {
               "name": "el-transpose-col",
-              "line": 159
+              "line": 160
             },
             {
               "name": "el-well-formed?",
-              "line": 92
+              "line": 93
             },
             {
               "name": "exact-affine-solve",
-              "line": 430
+              "line": 487
             },
             {
               "name": "exact-det",
-              "line": 214
+              "line": 215
             },
             {
               "name": "exact-inverse",
-              "line": 374
+              "line": 431
             },
             {
               "name": "exact-matrix-mul",
-              "line": 146
+              "line": 147
             },
             {
               "name": "exact-matrix-ref",
-              "line": 57
+              "line": 58
             },
             {
               "name": "exact-matrix-transpose",
-              "line": 165
+              "line": 166
             },
             {
               "name": "exact-matrix?",
-              "line": 75
+              "line": 76
             },
             {
               "name": "exact-nullspace",
-              "line": 296
+              "line": 353
             },
             {
-              "name": "exact-rank",
-              "line": 268
-            },
-            {
-              "name": "exact-solve",
+              "name": "exact-pivot-columns",
               "line": 325
             },
             {
+              "name": "exact-plu",
+              "line": 232
+            },
+            {
+              "name": "exact-rank",
+              "line": 319
+            },
+            {
+              "name": "exact-solve",
+              "line": 382
+            },
+            {
               "name": "torus-average",
-              "line": 401
+              "line": 458
             },
             {
               "name": "torus-average-2d",
-              "line": 416
+              "line": 473
             }
           ]
         },
@@ -3687,22 +3721,22 @@
           "requires": [
             {
               "module": "core.list.transform",
-              "line": 28
+              "line": 35
             },
             {
               "module": "core.list.search",
-              "line": 29
+              "line": 36
             }
           ],
           "exports": [
             {
               "name": "alist->hash-table",
-              "line": 25,
-              "definition_line": 567,
+              "line": 32,
+              "definition_line": 585,
               "definition_origin": {
                 "module": "core.json",
                 "path": "lib/core/json.esk",
-                "line": 567,
+                "line": 585,
                 "chain": [
                   "core.json"
                 ]
@@ -3710,12 +3744,12 @@
             },
             {
               "name": "alist->json",
-              "line": 26,
-              "definition_line": 584,
+              "line": 33,
+              "definition_line": 602,
               "definition_origin": {
                 "module": "core.json",
                 "path": "lib/core/json.esk",
-                "line": 584,
+                "line": 602,
                 "chain": [
                   "core.json"
                 ]
@@ -3723,7 +3757,189 @@
             },
             {
               "name": "alist-write-json",
-              "line": 26,
+              "line": 33,
+              "definition_line": 635,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 635,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "hash-table->alist",
+              "line": 32,
+              "definition_line": 572,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 572,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-array-ref",
+              "line": 31,
+              "definition_line": 410,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 410,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-get",
+              "line": 31,
+              "definition_line": 404,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 404,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-get-in",
+              "line": 31,
+              "definition_line": 671,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 671,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-parse",
+              "line": 29,
+              "definition_line": 275,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 275,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-parse-result?",
+              "line": 29,
+              "definition_line": 294,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 294,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-read",
+              "line": 31,
+              "definition_line": 657,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 657,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-read-file",
+              "line": 33,
+              "definition_line": 640,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 640,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-result-error",
+              "line": 30,
+              "definition_line": 310,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 310,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-result-ok?",
+              "line": 30,
+              "definition_line": 300,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 300,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-result-value",
+              "line": 30,
+              "definition_line": 304,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 304,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-stringify",
+              "line": 31,
+              "definition_line": 562,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 562,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-try-parse",
+              "line": 29,
+              "definition_line": 367,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 367,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-write",
+              "line": 31,
               "definition_line": 617,
               "definition_origin": {
                 "module": "core.json",
@@ -3735,195 +3951,13 @@
               }
             },
             {
-              "name": "hash-table->alist",
-              "line": 25,
-              "definition_line": 554,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 554,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-array-ref",
-              "line": 24,
-              "definition_line": 403,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 403,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-get",
-              "line": 24,
-              "definition_line": 397,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 397,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-get-in",
-              "line": 24,
-              "definition_line": 653,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 653,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-parse",
-              "line": 22,
-              "definition_line": 268,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 268,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-parse-result?",
-              "line": 22,
-              "definition_line": 287,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 287,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-read",
-              "line": 24,
-              "definition_line": 639,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 639,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-read-file",
-              "line": 26,
-              "definition_line": 622,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 622,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-result-error",
-              "line": 23,
-              "definition_line": 303,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 303,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-result-ok?",
-              "line": 23,
-              "definition_line": 293,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 293,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-result-value",
-              "line": 23,
-              "definition_line": 297,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 297,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-stringify",
-              "line": 24,
-              "definition_line": 544,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 544,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-try-parse",
-              "line": 22,
-              "definition_line": 360,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 360,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-write",
-              "line": 24,
-              "definition_line": 599,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 599,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
               "name": "json-write-file",
-              "line": 26,
-              "definition_line": 589,
+              "line": 33,
+              "definition_line": 607,
               "definition_origin": {
                 "module": "core.json",
                 "path": "lib/core/json.esk",
-                "line": 589,
+                "line": 607,
                 "chain": [
                   "core.json"
                 ]
@@ -3933,179 +3967,179 @@
           "top_level_definitions": [
             {
               "name": "alist->hash-table",
-              "line": 567
+              "line": 585
             },
             {
               "name": "alist->hash-table-loop",
-              "line": 571
-            },
-            {
-              "name": "alist->json",
-              "line": 584
-            },
-            {
-              "name": "alist-key?",
-              "line": 469
-            },
-            {
-              "name": "alist-write-json",
-              "line": 617
-            },
-            {
-              "name": "hash-table->alist",
-              "line": 554
-            },
-            {
-              "name": "hash-table->alist-loop",
-              "line": 558
-            },
-            {
-              "name": "json-array-ref",
-              "line": 403
-            },
-            {
-              "name": "json-digit?",
-              "line": 40
-            },
-            {
-              "name": "json-escape-str",
-              "line": 414
-            },
-            {
-              "name": "json-get",
-              "line": 397
-            },
-            {
-              "name": "json-get-in",
-              "line": 653
-            },
-            {
-              "name": "json-get-in-list-ref",
-              "line": 674
-            },
-            {
-              "name": "json-get-in-loop",
-              "line": 656
-            },
-            {
-              "name": "json-parse",
-              "line": 268
-            },
-            {
-              "name": "json-parse-arr",
-              "line": 126
-            },
-            {
-              "name": "json-parse-document",
-              "line": 248
-            },
-            {
-              "name": "json-parse-num",
-              "line": 97
-            },
-            {
-              "name": "json-parse-obj",
-              "line": 151
-            },
-            {
-              "name": "json-parse-obj-loop",
-              "line": 156
-            },
-            {
-              "name": "json-parse-result?",
-              "line": 287
-            },
-            {
-              "name": "json-parse-str",
-              "line": 57
-            },
-            {
-              "name": "json-parse-value-impl",
-              "line": 191
-            },
-            {
-              "name": "json-read",
-              "line": 639
-            },
-            {
-              "name": "json-read-file",
-              "line": 622
-            },
-            {
-              "name": "json-read-file-loop",
-              "line": 626
-            },
-            {
-              "name": "json-read-port-loop",
-              "line": 629
-            },
-            {
-              "name": "json-result-error",
-              "line": 303
-            },
-            {
-              "name": "json-result-ok?",
-              "line": 293
-            },
-            {
-              "name": "json-result-value",
-              "line": 297
-            },
-            {
-              "name": "json-skip-trailing-ws",
-              "line": 312
-            },
-            {
-              "name": "json-skip-ws",
-              "line": 44
-            },
-            {
-              "name": "json-stringify",
-              "line": 544
-            },
-            {
-              "name": "json-stringify-alist",
-              "line": 480
-            },
-            {
-              "name": "json-stringify-arr",
-              "line": 435
-            },
-            {
-              "name": "json-stringify-obj",
-              "line": 447
-            },
-            {
-              "name": "json-stringify-val",
-              "line": 411
-            },
-            {
-              "name": "json-stringify-val-impl",
-              "line": 497
-            },
-            {
-              "name": "json-structural-error",
-              "line": 334
-            },
-            {
-              "name": "json-try-parse",
-              "line": 360
-            },
-            {
-              "name": "json-whitespace?",
-              "line": 36
-            },
-            {
-              "name": "json-write",
-              "line": 599
-            },
-            {
-              "name": "json-write-file",
               "line": 589
             },
             {
+              "name": "alist->json",
+              "line": 602
+            },
+            {
+              "name": "alist-key?",
+              "line": 476
+            },
+            {
+              "name": "alist-write-json",
+              "line": 635
+            },
+            {
+              "name": "hash-table->alist",
+              "line": 572
+            },
+            {
+              "name": "hash-table->alist-loop",
+              "line": 576
+            },
+            {
+              "name": "json-array-ref",
+              "line": 410
+            },
+            {
+              "name": "json-digit?",
+              "line": 47
+            },
+            {
+              "name": "json-escape-str",
+              "line": 421
+            },
+            {
+              "name": "json-get",
+              "line": 404
+            },
+            {
+              "name": "json-get-in",
+              "line": 671
+            },
+            {
+              "name": "json-get-in-list-ref",
+              "line": 692
+            },
+            {
+              "name": "json-get-in-loop",
+              "line": 674
+            },
+            {
+              "name": "json-parse",
+              "line": 275
+            },
+            {
+              "name": "json-parse-arr",
+              "line": 133
+            },
+            {
+              "name": "json-parse-document",
+              "line": 255
+            },
+            {
+              "name": "json-parse-num",
+              "line": 104
+            },
+            {
+              "name": "json-parse-obj",
+              "line": 158
+            },
+            {
+              "name": "json-parse-obj-loop",
+              "line": 163
+            },
+            {
+              "name": "json-parse-result?",
+              "line": 294
+            },
+            {
+              "name": "json-parse-str",
+              "line": 64
+            },
+            {
+              "name": "json-parse-value-impl",
+              "line": 198
+            },
+            {
+              "name": "json-read",
+              "line": 657
+            },
+            {
+              "name": "json-read-file",
+              "line": 640
+            },
+            {
+              "name": "json-read-file-loop",
+              "line": 644
+            },
+            {
+              "name": "json-read-port-loop",
+              "line": 647
+            },
+            {
+              "name": "json-result-error",
+              "line": 310
+            },
+            {
+              "name": "json-result-ok?",
+              "line": 300
+            },
+            {
+              "name": "json-result-value",
+              "line": 304
+            },
+            {
+              "name": "json-skip-trailing-ws",
+              "line": 319
+            },
+            {
+              "name": "json-skip-ws",
+              "line": 51
+            },
+            {
+              "name": "json-stringify",
+              "line": 562
+            },
+            {
+              "name": "json-stringify-alist",
+              "line": 487
+            },
+            {
+              "name": "json-stringify-arr",
+              "line": 442
+            },
+            {
+              "name": "json-stringify-obj",
+              "line": 454
+            },
+            {
+              "name": "json-stringify-val",
+              "line": 418
+            },
+            {
+              "name": "json-stringify-val-impl",
+              "line": 504
+            },
+            {
+              "name": "json-structural-error",
+              "line": 341
+            },
+            {
+              "name": "json-try-parse",
+              "line": 367
+            },
+            {
+              "name": "json-whitespace?",
+              "line": 43
+            },
+            {
+              "name": "json-write",
+              "line": 617
+            },
+            {
+              "name": "json-write-file",
+              "line": 607
+            },
+            {
               "name": "proper-alist?",
-              "line": 470
+              "line": 477
             }
           ]
         },
@@ -9977,9 +10011,9 @@
     "builtins_in_llvm_aot_dispatch": 799,
     "builtins_aot_only": 242,
     "quantum_agent_ffi_builtins": 22,
-    "special_forms": 116,
+    "special_forms": 117,
     "ast_ops": 113,
-    "prelude": 472
+    "prelude": 474
   },
   "builtins_by_category": {
     "ffi_system": 302,
@@ -10007,8 +10041,8 @@
     "module": 8,
     "macro_syntax": 8,
     "memory_region": 6,
-    "ffi_system": 2,
-    "misc": 1
+    "misc": 2,
+    "ffi_system": 2
   },
   "ast_ops": [
     "ESHKOL_INVALID_OP",
@@ -22850,6 +22884,11 @@
       "category": "binding_form"
     },
     {
+      "name": "certify",
+      "op": "ESHKOL_CALL_OP",
+      "category": "misc"
+    },
+    {
       "name": "cond",
       "op": "ESHKOL_COND_OP",
       "category": "control_flow"
@@ -23692,13 +23731,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 567,
+          "definition_line": 585,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23711,7 +23750,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->hash-table",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23721,13 +23760,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 567,
+          "definition_line": 585,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23740,7 +23779,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->hash-table",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23762,13 +23801,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 584,
+          "definition_line": 602,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -23781,7 +23820,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->json",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -23791,13 +23830,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 584,
+          "definition_line": 602,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -23810,7 +23849,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->json",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -24042,13 +24081,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 617,
+          "definition_line": 635,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -24061,7 +24100,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist-write-json",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -24071,13 +24110,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 617,
+          "definition_line": 635,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -24090,7 +24129,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist-write-json",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -30966,11 +31005,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 430,
+          "definition_line": 487,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 430,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -30983,7 +31022,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-affine-solve",
-            "line": 430,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -30995,11 +31034,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 430,
+          "definition_line": 487,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 430,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31012,7 +31051,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-affine-solve",
-            "line": 430,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31036,11 +31075,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 214,
+          "definition_line": 215,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 214,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31053,7 +31092,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-det",
-            "line": 214,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31065,11 +31104,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 214,
+          "definition_line": 215,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 214,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31082,7 +31121,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-det",
-            "line": 214,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31176,11 +31215,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 374,
+          "definition_line": 431,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 374,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31193,7 +31232,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-inverse",
-            "line": 374,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31205,11 +31244,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 374,
+          "definition_line": 431,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 374,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31222,7 +31261,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-inverse",
-            "line": 374,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31246,11 +31285,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 146,
+          "definition_line": 147,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 146,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31263,7 +31302,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-mul",
-            "line": 146,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31275,11 +31314,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 146,
+          "definition_line": 147,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 146,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31292,7 +31331,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-mul",
-            "line": 146,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31316,11 +31355,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 57,
+          "definition_line": 58,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 57,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31333,7 +31372,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-ref",
-            "line": 57,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31345,11 +31384,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 57,
+          "definition_line": 58,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 57,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31362,7 +31401,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-ref",
-            "line": 57,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31386,11 +31425,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 165,
+          "definition_line": 166,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 165,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31403,7 +31442,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-transpose",
-            "line": 165,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31415,11 +31454,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 165,
+          "definition_line": 166,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 165,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31432,7 +31471,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-transpose",
-            "line": 165,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31456,11 +31495,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 75,
+          "definition_line": 76,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 75,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31473,7 +31512,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix?",
-            "line": 75,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31485,11 +31524,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 75,
+          "definition_line": 76,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 75,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31502,7 +31541,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix?",
-            "line": 75,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31524,13 +31563,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 47,
+          "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 296,
+          "definition_line": 353,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 296,
+            "line": 353,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31543,7 +31582,147 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-nullspace",
-            "line": 296,
+            "line": 353,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.exact_linalg",
+          "path": "lib/core/exact_linalg.esk",
+          "line": 48,
+          "defined_at_top_level": true,
+          "definition_line": 353,
+          "definition_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "line": 353,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "exact-nullspace",
+          "binding_category": "procedure",
+          "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-nullspace",
+          "resolved_binding_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "name": "exact-nullspace",
+            "line": 353,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-nullspace"
+    },
+    {
+      "name": "exact-pivot-columns",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.exact_linalg",
+          "path": "lib/core/exact_linalg.esk",
+          "line": 48,
+          "defined_at_top_level": true,
+          "definition_line": 325,
+          "definition_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "line": 325,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "exact-pivot-columns",
+          "binding_category": "procedure",
+          "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-pivot-columns",
+          "resolved_binding_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "name": "exact-pivot-columns",
+            "line": 325,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.exact_linalg",
+          "path": "lib/core/exact_linalg.esk",
+          "line": 48,
+          "defined_at_top_level": true,
+          "definition_line": 325,
+          "definition_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "line": 325,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "exact-pivot-columns",
+          "binding_category": "procedure",
+          "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-pivot-columns",
+          "resolved_binding_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "name": "exact-pivot-columns",
+            "line": 325,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-pivot-columns"
+    },
+    {
+      "name": "exact-plu",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.exact_linalg",
+          "path": "lib/core/exact_linalg.esk",
+          "line": 47,
+          "defined_at_top_level": true,
+          "definition_line": 232,
+          "definition_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "line": 232,
+            "chain": [
+              "core.exact_linalg"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "exact-plu",
+          "binding_category": "procedure",
+          "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-plu",
+          "resolved_binding_origin": {
+            "module": "core.exact_linalg",
+            "path": "lib/core/exact_linalg.esk",
+            "name": "exact-plu",
+            "line": 232,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31555,24 +31734,24 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 296,
+          "definition_line": 232,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 296,
+            "line": 232,
             "chain": [
               "core.exact_linalg"
             ]
           },
           "visibility": "stdlib_root_required_export",
-          "public_name": "exact-nullspace",
+          "public_name": "exact-plu",
           "binding_category": "procedure",
-          "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-nullspace",
+          "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-plu",
           "resolved_binding_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "name": "exact-nullspace",
-            "line": 296,
+            "name": "exact-plu",
+            "line": 232,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31580,7 +31759,7 @@
         }
       ],
       "binding_category": "procedure",
-      "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-nullspace"
+      "binding_identity": "core.exact_linalg:lib/core/exact_linalg.esk#exact-plu"
     },
     {
       "name": "exact-rank",
@@ -31596,11 +31775,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 268,
+          "definition_line": 319,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 268,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31613,7 +31792,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-rank",
-            "line": 268,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31625,11 +31804,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 268,
+          "definition_line": 319,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 268,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31642,7 +31821,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-rank",
-            "line": 268,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31666,11 +31845,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 325,
+          "definition_line": 382,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 325,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31683,7 +31862,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-solve",
-            "line": 325,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31695,11 +31874,11 @@
           "path": "lib/core/exact_linalg.esk",
           "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 325,
+          "definition_line": 382,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 325,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -31712,7 +31891,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-solve",
-            "line": 325,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -33302,13 +33481,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 554,
+          "definition_line": 572,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -33321,7 +33500,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "hash-table->alist",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -33331,13 +33510,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 554,
+          "definition_line": 572,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -33350,7 +33529,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "hash-table->alist",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -35829,13 +36008,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 403,
+          "definition_line": 410,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35848,7 +36027,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-array-ref",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35858,13 +36037,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 403,
+          "definition_line": 410,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35877,7 +36056,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-array-ref",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35899,13 +36078,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 397,
+          "definition_line": 404,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35918,7 +36097,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35928,13 +36107,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 397,
+          "definition_line": 404,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35947,7 +36126,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35969,13 +36148,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 653,
+          "definition_line": 671,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -35988,7 +36167,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get-in",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -35998,13 +36177,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 653,
+          "definition_line": 671,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -36017,7 +36196,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get-in",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -36039,13 +36218,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 268,
+          "definition_line": 275,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36058,7 +36237,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36068,13 +36247,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 268,
+          "definition_line": 275,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36087,7 +36266,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36109,13 +36288,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 287,
+          "definition_line": 294,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36128,7 +36307,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse-result?",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36138,13 +36317,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 287,
+          "definition_line": 294,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36157,7 +36336,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse-result?",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36179,13 +36358,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 639,
+          "definition_line": 657,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36198,7 +36377,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36208,13 +36387,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 639,
+          "definition_line": 657,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36227,7 +36406,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36249,13 +36428,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 622,
+          "definition_line": 640,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36268,7 +36447,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read-file",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36278,13 +36457,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 622,
+          "definition_line": 640,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36297,7 +36476,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read-file",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36319,13 +36498,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 303,
+          "definition_line": 310,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36338,7 +36517,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-error",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36348,13 +36527,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 303,
+          "definition_line": 310,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36367,7 +36546,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-error",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36389,13 +36568,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 293,
+          "definition_line": 300,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36408,7 +36587,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-ok?",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36418,13 +36597,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 293,
+          "definition_line": 300,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36437,7 +36616,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-ok?",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36459,13 +36638,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 297,
+          "definition_line": 304,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36478,7 +36657,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-value",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36488,13 +36667,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 297,
+          "definition_line": 304,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36507,7 +36686,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-value",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36669,13 +36848,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 544,
+          "definition_line": 562,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36688,7 +36867,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-stringify",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36698,13 +36877,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 544,
+          "definition_line": 562,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36717,7 +36896,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-stringify",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36739,13 +36918,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 360,
+          "definition_line": 367,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36758,7 +36937,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-try-parse",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36768,13 +36947,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 360,
+          "definition_line": 367,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36787,7 +36966,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-try-parse",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36809,13 +36988,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 599,
+          "definition_line": 617,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36828,7 +37007,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36838,13 +37017,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 599,
+          "definition_line": 617,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36857,7 +37036,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36879,13 +37058,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 589,
+          "definition_line": 607,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -36898,7 +37077,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write-file",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -36908,13 +37087,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 589,
+          "definition_line": 607,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -36927,7 +37106,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write-file",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -52432,13 +52611,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 48,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 401,
+          "definition_line": 458,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 401,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -52451,7 +52630,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average",
-            "line": 401,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -52461,13 +52640,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 48,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 401,
+          "definition_line": 458,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 401,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -52480,7 +52659,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average",
-            "line": 401,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -52502,13 +52681,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 48,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 416,
+          "definition_line": 473,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 416,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]
@@ -52521,7 +52700,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average-2d",
-            "line": 416,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]
@@ -52531,13 +52710,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 48,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 416,
+          "definition_line": 473,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 416,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]
@@ -52550,7 +52729,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average-2d",
-            "line": 416,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]

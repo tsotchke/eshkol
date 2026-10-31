@@ -4231,3 +4231,20 @@ oracles:
         severity: high
         label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
         action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums
+
+  # -----------------------------------------------------------------
+  # Certified computation (ADR-0047, v1.7.0-synthesis W2): certificates
+  # for certified steps, an independent checker outside the compiler,
+  # a tamper suite and a Lean 4 export of the decidable facts.
+  # -----------------------------------------------------------------
+  - name: certified-computation
+    aliases: [certificates, v1.7-certificates, adr-0047]
+    requires:
+      - id: v17_certificates
+        runtime_event:
+          event_kinds: [v1_7_synthesis]
+          event_names: ["v17_certificates"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'core.certificate (ADR-0047): fourteen certificate kinds (rank, determinant with P A = L U, Smith form with unimodular transforms and their inverses, unique linear solution, solve enclosure, PSD factor or negative direction, integer and Q[x] gcd with Bezout data, polynomial identity, primality with Pratt trees and Miller-Rabin or factor witnesses, polynomial range, Taylor-model range with its remainder premise, cocycle, cohomology class) emitted as eshkol.certificate.v1 claims extending core.transcript; tools/certcheck/eshkol_certcheck.py (Python standard library only) accepts every emitted claim, tamper_suite.py shows every resealed false claim rejected, lean_export.py writes Lean 4 theorems proved by decide; the (certify (f ...)) form on native and VM; certificate_jit/aot, certificate_roundtrip_jit/aot, certificate_check_fixtures, certificate_tamper_fixtures, certificate_lean_export_current and the owning library suites all pass'
+        action: ./scripts/run_certificate_gate.sh

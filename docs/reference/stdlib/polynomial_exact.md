@@ -18,6 +18,10 @@ data; zero is `(vector 0)`. Floating inputs and demoted arithmetic refuse.
 `exact-poly-divmod`, `exact-poly-inverse-mod` and `exact-poly-eval` provide
 checked arithmetic. Division returns `(quotient . remainder)`; inversion
 requires a nonconstant modulus and a unit. Inputs remain unchanged.
+`(exact-poly-gcdext a b)` returns `(list g s t)` with `s a + t b = g` and `g`
+the monic gcd in Q[x] (the zero polynomial when both inputs are zero);
+`exact-poly-inverse-mod` is the Bezout coefficient `s` reduced modulo the
+modulus when `g` is 1.
 
 `(exact-poly-real-root-count p lower upper)` counts distinct roots using Sturm
 variations, with ordered rational nonroot endpoints. `(exact-poly-isolate p

@@ -65,7 +65,7 @@
   ring-map-compose ring-base-change zmod-reduction jet-primal
   ring-poly-evaluation group-ring-character
   ;; algorithms over a carrier
-  ring-det ring-solve ring-law-violations exact-prime?
+  ring-det ring-solve ring-law-violations exact-prime? exact-expt-mod exact-gcdext
   ;; interoperation with core.symbolic coefficient fields
   coefficient-field->ring ring->coefficient-field)
 
@@ -636,6 +636,24 @@
                             (error "exact-prime?: primality is not decided above 3317044064679887385961981" n)))
                        ((rc-mr-composite? (car bs) n d s) #f)
                        (else (check (cdr bs))))))))))
+
+;; (exact-expt-mod a e m): a^e mod m by repeated squaring, e >= 0, m >= 1.
+(define (exact-expt-mod a e m)
+  (if (not (and (rc-exact-integer? a) (rc-exact-integer? e) (rc-exact-integer? m)
+                (>= e 0) (>= m 1)))
+      (error "exact-expt-mod: expected exact integers a, e >= 0, m >= 1" a e m))
+  (rc-expt-mod a e m))
+
+;; (exact-gcdext a b) -> (list g s t) with s*a + t*b = g = gcd(a, b) >= 0,
+;; by the extended Euclidean algorithm (Knuth, TAOCP vol. 2, 4.5.2).
+(define (exact-gcdext a b)
+  (if (not (and (rc-exact-integer? a) (rc-exact-integer? b)))
+      (error "exact-gcdext: expected exact integers" a b))
+  (let loop ((r0 a) (r1 b) (s0 1) (s1 0) (t0 0) (t1 1))
+    (if (= r1 0)
+        (if (< r0 0) (list (- r0) (- s0) (- t0)) (list r0 s0 t0))
+        (let ((q (quotient r0 r1)))
+          (loop r1 (- r0 (* q r1)) s1 (- s0 (* q s1)) t1 (- t0 (* q t1)))))))
 
 ;; ===========================================================================
 ;; Z/m

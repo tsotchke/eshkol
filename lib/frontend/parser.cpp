@@ -5657,6 +5657,51 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             co_return ast;
         }
 
+        // ADR-0047: (certify (f arg ...)) -> (certify-call "f" f (list arg ...)).
+        // The operator must be a name: core.certificate looks up the
+        // certifying producer registered under that name, and certify-call
+        // returns the value of (f arg ...) whether or not a sink is active.
+        if (first_symbol == "certify") {
+            Token open = tokenizer.nextToken();
+            if (open.type != TOKEN_LPAREN) {
+                PARSE_ERROR_AT(open, "certify expects one call (f arg ...)");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            Token op_name = tokenizer.nextToken();
+            if (op_name.type != TOKEN_SYMBOL || op_name.verbatim) {
+                PARSE_ERROR_AT(op_name, "certify expects a call whose operator is a name");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            std::vector<eshkol_ast_t> call_args;
+            while (tokenizer.peekToken().type != TOKEN_RPAREN) {
+                if (tokenizer.peekToken().type == TOKEN_EOF) {
+                    PARSE_ERROR_AT(op_name, "unterminated call in certify");
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
+                }
+                eshkol_ast_t arg = (co_await parse_expression(tokenizer));
+                if (arg.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
+                }
+                call_args.push_back(arg);
+            }
+            tokenizer.nextToken();  // ) of the call
+            Token close = tokenizer.nextToken();
+            if (close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(close, "certify takes exactly one call");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            std::vector<eshkol_ast_t> certify_args;
+            certify_args.push_back(make_parser_string_ast(op_name.value, op_name.line, op_name.column));
+            certify_args.push_back(make_parser_var_ast(op_name.value.c_str(), op_name.line, op_name.column));
+            certify_args.push_back(make_parser_call_ast("list", call_args, token.line, token.column));
+            co_return make_parser_call_ast("certify-call", certify_args, token.line, token.column);
+        }
+
         // Special handling for define - we need to check if next token is LPAREN for function definitions
         if (ast.operation.op == ESHKOL_DEFINE_OP) {
             token = tokenizer.nextToken();

@@ -59,6 +59,7 @@ Every encoded value is a JSON object tagged by `"t"`:
 |---|---|
 | `(tv-int z)` | `{"t":"z","v":"<decimal string>"}` |
 | `(tv-rat q)` | `{"t":"q","n":"<num string>","d":"<den string>"}` (integers encode as `tv-int`) |
+| `(tv-float x)` | `{"t":"dyadic","m":"<int string>","e":"<int string>"}`: a finite double recorded exactly as m * 2^e |
 | `(tv-bool b)` | `{"t":"bool","v":true\|false}` |
 | `(tv-string s)` | `{"t":"str","v":"<string>"}` |
 | `(tv-opaque label repr)` | `{"t":"opaque","label":"<label>","repr":"<string>"}` |
@@ -117,6 +118,22 @@ degree-1 normalized boundary of every group of order eight in
 `mathematics_group_cohomology_order_eight.esk` is the zero map, so its Smith
 normal form has **no** nonzero invariant factor, and that empty-output claim
 is exactly the case this guards.
+
+### Claims with more fields; other sinks
+
+A claim may carry fields after `"output"`. `core.certificate` adds
+`"witness"`, `"premises"` and a sha256 `"id"` and writes documents with the
+schema `eshkol.certificate.v1` ([certificate.md](certificate.md),
+ADR-0047). The hash rule covers every field except `"hash"`, in the order
+written, which for a four-field claim is the rule above.
+`(transcript-seal-claim alist)` appends the hash to an ordered field list,
+`(transcript-record-claim! h alist)` records one, and
+`(transcript-open-as program env-var schema)` /
+`(transcript-open-path program path schema)` bind a handle to another
+environment variable, an explicit path, or another schema.
+`transcript-close!` leaves the handle usable: a later record and close
+rewrites the document with every claim so far. `replay_check.py` reads both
+schemas.
 
 ## Writing and replaying a claim
 

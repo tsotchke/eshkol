@@ -6191,6 +6191,38 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* ADR-0047: (certify (f arg ...)) → (certify-call "f" f (list arg ...)),
+     * the same rewrite the native parser performs. The synthetic nodes
+     * borrow f and the arguments from the source tree. */
+    if (is_sym(head, "certify")) {
+        Node* call = node->n_children == 2 ? node->children[1] : NULL;
+        if (!call || call->type != N_LIST || call->is_vector || call->n_children < 1 ||
+            call->children[0]->type != N_SYMBOL || call->children[0]->is_verbatim) {
+            vm_compile_error("certify expects one call (f arg ...) whose operator is a name", NULL);
+            return;
+        }
+        VmCaseBuilder b = {0};
+        Node* outer = vm_case_new_node(&b, N_LIST);
+        Node* lst = vm_case_new_node(&b, N_LIST);
+        Node* name = make_string_node(call->children[0]->symbol);
+        if (!outer || !lst || !name) {
+            free_node(name);
+            vm_case_free_builder(&b);
+            vm_compile_error("unable to allocate the certify expansion", NULL);
+            return;
+        }
+        add_child(outer, vm_case_symbol(&b, "certify-call"));
+        add_child(outer, name);
+        add_child(outer, call->children[0]);
+        add_child(lst, vm_case_symbol(&b, "list"));
+        for (int i = 1; i < call->n_children; ++i) add_child(lst, call->children[i]);
+        add_child(outer, lst);
+        compile_expr(c, outer, tail);
+        free_node(name);
+        vm_case_free_builder(&b);
+        return;
+    }
+
     /* (force promise) → force a promise (evaluate thunk if not yet forced) */
     if (is_sym(head, "force") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0); /* push promise */
