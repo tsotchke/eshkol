@@ -22,7 +22,7 @@
 (check "all four 2-clauses over two variables are unsat" (eq? (sat-status r0) 'unsat))
 (check "its DRAT proof checks" (drat-check xor2 (sat-proof r0)))
 (check "the proof ends with the empty clause" (equal? (car (reverse (sat-proof r0))) '(add)))
-(check "a wrong proof is rejected" (not (drat-check '((1 2) (-1 2)) '((add -2) (add)))))
+(check "a proof with an invalid step is rejected" (not (drat-check '((1 2) (-1 2)) '((add -2) (add)))))
 (check "a proof without the empty clause is rejected" (not (drat-check xor2 '((add 2)))))
 (define r1 (sat-solve '((1 2 3) (-1 -2) (-2 -3) (-1 -3) (2))))
 (check "small sat instance" (and (eq? (sat-status r1) 'sat) (equal? (sat-model r1) '(-1 2 -3))))
