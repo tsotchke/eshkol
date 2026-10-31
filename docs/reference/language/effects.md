@@ -94,8 +94,19 @@ cheapest strategy with the same meaning:
 
 A `handle` whose clauses all run in place captures no continuation at all;
 `with-store`, `with-reader`, `run-writer`, `for-each-yield`, `generator->list`
-and `generator-fold` are of this kind. Measured on AOT (x86-64 and arm64), an
-operation handled in place costs about 0.2 µs and allocates nothing.
+and `generator-fold` are of this kind. An operation handled in place allocates
+nothing.
+
+Measured with `tests/effects/bench/handler_overhead.esk`, AOT on x86-64 Linux:
+
+| Measurement | Cost |
+|---|---|
+| direct loop iteration with a global `set!` (baseline) | 0.10 µs |
+| operation handled in place (`Store` `get`/`put`) | 0.62 µs |
+| installing a light handler and performing one operation | 10 µs |
+| installing an unwinding handler and aborting (`catch-throw`) | 179 µs |
+| one value from a pulling generator (two captures) | 347 µs |
+| all solutions of a 12×12 `Choice` search | 117 ms |
 
 Captured continuations use the language's re-entrant `call/cc`, so the rules of
 [continuations.md](continuations.md) apply to them: a capture copies the live
