@@ -131,6 +131,14 @@
           (begin (vector-set! out i (f (vector-ref d i))) (loop (+ i 1)))
           (it-make (itensor-shape x) out)))))
 
+(define (it-broadcast f x scalar tensor-first?)
+  (let* ((d (itensor-data x)) (n (vector-length d)) (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (if tensor-first? (f (vector-ref d i) scalar) (f scalar (vector-ref d i))))
+                 (loop (+ i 1)))
+          (it-make (itensor-shape x) out)))))
+
 ;; binary elementwise; a non-tensor operand is broadcast as a scalar
 (define (itensor-map2 f x y)
   (cond ((and (itensor? x) (itensor? y))
@@ -142,8 +150,10 @@
                  (if (< i n)
                      (begin (vector-set! out i (f (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))
                      (it-make (itensor-shape x) out))))))
-        ((itensor? x) (itensor-map (lambda (e) (f e y)) x))
-        ((itensor? y) (itensor-map (lambda (e) (f x e)) y))
+        ;; scalar broadcast by a direct loop: the scalar (possibly a native
+        ;; AD value) is passed as an argument, never captured in a closure
+        ((itensor? x) (it-broadcast f x y #t))
+        ((itensor? y) (it-broadcast f y x #f))
         (else (error "itensor: at least one operand must be an element tensor"))))
 
 (define (itensor+ x y) (itensor-map2 rn+ x y))
