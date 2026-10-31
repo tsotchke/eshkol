@@ -795,6 +795,15 @@ under the same discipline that made `Qubit` linear.
       The finite-categories, sheafification and homotopy-colimit examples run
       on it, and the S6.2 suite reproduces the numbers of the sheaf and
       descent examples categorically
+- [x] Effective homology as a library (ADR-0038): `core.effective` gives
+      reductions and the basic perturbation lemma with every identity and
+      the nilpotency hypothesis checked on the cells a computation uses,
+      reductions from discrete vector fields (Eilenberg-Zilber, twisted
+      Eilenberg-Zilber, K(Z,1), W-bar G onto the bar construction), K(Z,n)
+      and K(Z/m,n) with effective homology, the Whitehead tower computing
+      pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2 and
+      pi_6(S^3) = Z/12, and hypercovers of finite spaces restoring descent
+      where the Cech nerve does not (stage S6.3)
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

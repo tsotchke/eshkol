@@ -4344,6 +4344,45 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.effective (ADR-0038): reductions and the perturbation lemma, discrete
+# vector fields, Eilenberg-Zilber, twisted products, classifying spaces and
+# K(pi, n) with effective homology (effective_test); homotopy groups of
+# spheres through the Whitehead tower (effective_homotopy_test); hypercovers
+# and descent for 2-types and 3-types, stage S6.3 (effective_hypercover_test).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_eff_suite effective_test effective_homotopy_test effective_hypercover_test)
+        string(REPLACE "_test" "" _eff_name ${_eff_suite})
+        add_test(NAME ${_eff_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_eff_suite}.esk")
+        add_test(NAME ${_eff_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_eff_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_eff_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=1500"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_eff_name}_jit ${_eff_name}_aot PROPERTIES
+            TIMEOUT 3000
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_eff_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
+# pi_6(S^3) = Z/12 through the Whitehead tower: about 150 s and 32 GB after
+# compilation on Linux x64, so JIT only and serialized with other heavy suites.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME effective_pi6_s3_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/effective_pi6_s3_test.esk")
+    set_tests_properties(effective_pi6_s3_jit PROPERTIES
+        TIMEOUT 3000
+        RESOURCE_LOCK effective_heavy_memory
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: effective_pi6_s3_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+endif()
+
 # core.simplicial and core.homological (ADR-0037): simplicial sets, nerves,
 # Kan complexes, mapping spaces; complexes over ring carriers, homology with
 # torsion, cones, Ext/Tor, spectral sequences, cup and cup-i products,

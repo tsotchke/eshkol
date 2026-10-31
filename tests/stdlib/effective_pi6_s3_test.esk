@@ -1,0 +1,11 @@
+;; core.effective: pi_6(S^3) = Z/12 through the Whitehead tower of S^3
+;; (Toda), the stage X_6 = X_5 x_tau K(Z/2, 4) with X_5 = X_4 x_tau K(Z/2, 3)
+;; and X_4 = S^3 x_tau K(Z, 2). About 150 s and 32 GB on Linux x64 after
+;; compilation: every memoized cell of the tower is kept.
+(require stdlib)
+(require core.effective)
+(define g (homotopy-groups (sphere-space 3) 6))
+(display "pi_2..pi_6(S^3): ") (display (map homotopy-group-report g)) (newline)
+(if (equal? (list-ref g 4) (list 6 0 (list 12)))
+    (begin (display "PASS: effective_pi6_s3_test") (newline))
+    (begin (display "FAIL: effective_pi6_s3_test") (newline)))

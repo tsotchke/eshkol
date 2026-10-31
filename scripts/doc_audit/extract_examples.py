@@ -91,7 +91,8 @@ GATED_SCOPES = {
     "reference": ["docs/reference/stdlib/sheaf.md", "docs/reference/stdlib/integer_linalg.md",
                   "docs/reference/stdlib/topos.md", "docs/reference/stdlib/ring.md",
                   "docs/reference/stdlib/multimodular.md", "docs/reference/stdlib/simplicial.md",
-                  "docs/reference/stdlib/homological.md", "docs/reference/stdlib/category.md"],
+                  "docs/reference/stdlib/homological.md", "docs/reference/stdlib/category.md",
+                  "docs/reference/stdlib/effective.md"],
 }
 
 SKIP_REASONS = (

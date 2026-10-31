@@ -1,0 +1,34 @@
+;; core.effective: homotopy groups of spheres through the Whitehead tower.
+;; Acceptance targets stated before the computation (Toda's tables):
+;;   pi_n(S^n) = Z (n = 2, 3, 4); pi_3(S^2) = Z; pi_4(S^2) = Z/2;
+;;   pi_5(S^2) = Z/2; pi_4(S^3) = Z/2; pi_5(S^3) = Z/2
+;; (pi_6(S^3) = Z/12 has its own suite, effective_pi6_s3_test).
+;; Cross-checks: Hurewicz at every stage (the stage X_k is (k-1)-connected,
+;; checked by whitehead-step), the Hopf fibration total space has the
+;; homology of S^3, and pi_k(S^2) = pi_k(S^3) for k >= 3 (the Hopf fibration),
+;; seen as equal answers from two different towers.
+(require stdlib)
+(require core.effective)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (Z k) (list k 1 '()))
+(define (Zm k m) (list k 0 (list m)))
+
+(check "pi_n(S^n) = Z for n = 2, 3, 4 (the first stage, Hurewicz)"
+       (all? (lambda (n) (equal? (car (whitehead-step (sphere-space n) n)) (Z n))) (list 2 3 4)))
+(define s2 (homotopy-groups (sphere-space 2) 5))
+(define s3 (homotopy-groups (sphere-space 3) 5))
+(display "pi_2..pi_5(S^2): ") (display (map homotopy-group-report s2)) (newline)
+(display "pi_2..pi_5(S^3): ") (display (map homotopy-group-report s3)) (newline)
+(check "pi_2(S^2) = Z, pi_3(S^2) = Z, pi_4(S^2) = Z/2, pi_5(S^2) = Z/2"
+       (equal? s2 (list (Z 2) (Z 3) (Zm 4 2) (Zm 5 2))))
+(check "pi_2(S^3) = 0, pi_3(S^3) = Z, pi_4(S^3) = Z/2, pi_5(S^3) = Z/2"
+       (equal? s3 (list (list 2 0 '()) (Z 3) (Zm 4 2) (Zm 5 2))))
+(check "the Hopf fibration: pi_k(S^2) = pi_k(S^3) for k = 3, 4, 5, from two different towers"
+       (equal? (cdr s2) (cdr s3)))
+(display "core.effective homotopy: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
+(if (= failures 0) (begin (display "PASS: effective_homotopy_test") (newline)) (begin (display "FAIL: effective_homotopy_test") (newline)))
