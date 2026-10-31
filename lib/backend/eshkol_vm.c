@@ -807,6 +807,7 @@ static const BuiltinDef BUILTINS[] = {
      * native-codegen lowering and the rationale for nextafter over
      * fesetround). */
     {"fl-next-up", 2228, 1}, {"fl-next-down", 2229, 1},
+    {"stop-gradient", 2252, 1},
     {"make-lru-cache", 1989, 1}, {"lru-get", 1990, 2},
     {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
     {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},

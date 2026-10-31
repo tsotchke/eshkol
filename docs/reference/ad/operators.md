@@ -26,6 +26,7 @@ tensor-backward internals see
 | `divergence` | ℝⁿ → ℝⁿ | `(divergence f point)` | scalar `∇·F` |
 | `curl` | ℝ³ → ℝ³ | `(curl f point)` | vector `∇×F` |
 | `diff` | AST → AST | `(diff f 'x)` | symbolic derivative (compile time) |
+| `stop-gradient` | any | `(stop-gradient x)` | `x`'s value, a constant to every enclosing pass |
 
 `f` is a one-argument function (an inline `lambda`, a named `define`, or a
 variable bound to a lambda). `vref` is the tensor/vector element accessor and
@@ -331,6 +332,30 @@ field is taken to have `F₃ = 0` and no `z` dependence, so
 (curl (lambda (v) (vector (- 0.0 (vref v 1)) (vref v 0))) (vector 1.0 1.0))
 ;; => #(0 0 2)
 ```
+
+---
+
+## `stop-gradient` — a value every enclosing pass treats as a constant
+
+`(stop-gradient x)` returns the value of `x` with every derivative carrier
+removed: the primal of a forward jet (`derivative`), of a Taylor tower or
+nested level (`derivative-n`, `taylor`) and of a reverse-mode node
+(`gradient`, `jacobian`). It reads the primal exactly as the comparisons do,
+so an exact point stays exact. A value that is not a carrier (a plain number,
+a symbol, a list) is returned unchanged. Native backend, bytecode VM and
+browser lane agree.
+
+```scheme
+(derivative (lambda (x) (* x (stop-gradient x))) 3.0)          ;; => 3
+(derivative (lambda (x) (* x (stop-gradient x))) 1/3)          ;; => 1/3
+(derivative-n (lambda (x) (* x x (stop-gradient x))) 2.0 2)    ;; => 4
+(gradient (lambda (v) (* (vref v 0) (stop-gradient (vref v 0)))) #(3.0))  ;; => #(3)
+```
+
+The straight-through identity `s + (stop-gradient (- h s))` has the value `h`
+and the derivative of `s`; the estimators in
+[`core.ml.gradient_estimators`](../stdlib/ml_gradient_estimators.md) are built
+on it. Design: [ADR-0049](../../design/adr/0049-neuro-symbolic-bridge.md).
 
 ---
 

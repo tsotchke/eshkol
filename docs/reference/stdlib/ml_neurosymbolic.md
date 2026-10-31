@@ -18,6 +18,9 @@ Return the embedding dimension.
 ### `(embed! tbl sym)`
 Return `sym`'s (mutable) embedding vector, **creating** it (deterministically seeded) on first access. The returned vector is the live table entry — mutating it mutates the table (this is how training updates embeddings in place).
 
+### `(emb-known? tbl sym)`
+`#t` when `sym` already has an embedding, `#f` otherwise. Unlike `embed!` it never creates one, so a caller can test before a first use changes the table.
+
 ### `(vdot a b)`
 Dot product of two equal-length numeric vectors. (Exported helper.)
 

@@ -1,0 +1,188 @@
+;; stop-gradient and the native-AD gradient estimators of
+;; core.ml.gradient_estimators: exact semantics of the straight-through
+;; identity, exact gradients of the Gumbel-Softmax relaxation, and the
+;; documented statistical properties checked on known distributions:
+;;   * Gumbel-max sampling is exact (frequencies match softmax),
+;;   * the score-function estimator is unbiased,
+;;   * the relaxed estimator's bias falls and its variance rises as tau -> 0,
+;;   * the straight-through Bernoulli sampler is exact in the forward pass.
+
+(require core.ml.gradient_estimators)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display name) (newline))))
+(define (close? a b tol) (< (abs (- a b)) tol))
+(define (vmaxabs-diff a b)
+  (let loop ((i 0) (m 0.0))
+    (if (< i (vector-length a)) (loop (+ i 1) (max m (abs (- (vector-ref a i) (vector-ref b i))))) m)))
+(define (vsum v) (let loop ((i 0) (s 0.0)) (if (< i (vector-length v)) (loop (+ i 1) (+ s (vector-ref v i))) s)))
+(define (vdot a b) (let loop ((i 0) (s 0.0)) (if (< i (vector-length a)) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s)))
+
+;; ── stop-gradient ──
+(check "stop-gradient: value unchanged" (= (stop-gradient 2.5) 2.5))
+(check "stop-gradient: non-numbers pass through" (eq? (stop-gradient 'a) 'a))
+(check "forward mode: d/dx x*sg(x) = sg(x)" (close? (derivative (lambda (x) (* x (stop-gradient x))) 3.0) 3.0 1e-15))
+(check "reverse mode: grad of x*sg(x)" (close? (vector-ref (gradient (lambda (v) (* (vector-ref v 0) (stop-gradient (vector-ref v 0)))) (vector 3.0)) 0) 3.0 1e-15))
+(check "Taylor tower: d2/dx2 x^2 sg(x) = 2 sg(x)" (close? (derivative-n (lambda (x) (* x x (stop-gradient x))) 2.0 2) 4.0 1e-12))
+(check "exact point stays exact" (equal? (derivative (lambda (x) (* x (stop-gradient x))) 1/3) 1/3))
+(check "nested passes: inner constant to the outer pass"
+       (close? (derivative (lambda (y) (derivative (lambda (x) (* x (stop-gradient (* x y)))) 2.0)) 1.5) 0.0 1e-15))
+
+;; ── straight-through identity ──
+(check "st-value: value is the hard value" (= (st-value 0.3 1.0) 1.0))
+(check "st-value: derivative is the soft one" (close? (derivative (lambda (x) (st-value (* x x) 7.0)) 1.5) 3.0 1e-15))
+(check "st-round: forward rounds" (= (st-round 2.7) 3.0))
+(check "st-round: identity derivative" (close? (derivative (lambda (x) (* 5.0 (st-round x))) 2.7) 5.0 1e-15))
+
+(define logits (vector 1.0 0.0 -1.0 0.5))
+(define w (vector 0.3 -1.0 2.0 0.7))
+(define (softmax-plain v) (softmax v))
+(define y-st (st-softmax logits))
+(check "st-softmax: forward is the argmax one-hot" (equal? (vector-ref y-st 0) 1.0))
+(check "st-softmax: forward sums to 1" (= (vsum y-st) 1.0))
+(define g-st (gradient (lambda (l) (vdot (st-softmax l) w)) logits))
+(define g-soft (gradient (lambda (l) (vdot (gumbel-softmax-relaxed l (vector 0.0 0.0 0.0 0.0) 1.0) w)) logits))
+(check "st-softmax: backward is the softmax's" (< (vmaxabs-diff g-st g-soft) 1e-15))
+
+;; ── Gumbel-Softmax relaxation: exact gradients ──
+(define noise (vector 0.13 -0.42 0.88 0.05))
+(define tau 0.5)
+(define y (gumbel-softmax-relaxed logits noise tau))
+(check "relaxed sample sums to 1" (close? (vsum y) 1.0 1e-15))
+(define (relaxed-loss l) (vdot (gumbel-softmax-relaxed l noise tau) w))
+(define g-rel (gradient relaxed-loss logits))
+;; closed form: (1/tau) y * (w - <y, w>)
+(define g-closed (let ((yw (vdot y w)) (r (make-vector 4 0.0)))
+                   (let loop ((i 0)) (if (< i 4) (begin (vector-set! r i (* (/ 1.0 tau) (vector-ref y i) (- (vector-ref w i) yw))) (loop (+ i 1))) r))))
+(check "relaxed gradient: closed form (1e-14)" (< (vmaxabs-diff g-rel g-closed) 1e-14))
+(define g-fwd (let ((r (make-vector 4 0.0)))
+                (let loop ((i 0))
+                  (if (< i 4)
+                      (begin (vector-set! r i (derivative (lambda (s) (let ((l (vector (vector-ref logits 0) (vector-ref logits 1) (vector-ref logits 2) (vector-ref logits 3))))
+                                                                         (vector-set! l i (+ (vector-ref logits i) s)) (relaxed-loss l))) 0.0))
+                             (loop (+ i 1)))
+                      r))))
+(check "relaxed gradient: reverse == forward (1e-14)" (< (vmaxabs-diff g-rel g-fwd) 1e-14))
+(define y-hard (gumbel-softmax-st logits noise tau))
+(check "ST Gumbel: forward is the Gumbel-max one-hot"
+       (= (vector-ref y-hard (gumbel-max-sample logits noise)) 1.0))
+(check "ST Gumbel: backward equals the relaxed gradient"
+       (< (vmaxabs-diff (gradient (lambda (l) (vdot (gumbel-softmax-st l noise tau) w)) logits) g-rel) 1e-15))
+(check "categorical-log-prob: reverse gradient = e_k - softmax"
+       (< (vmaxabs-diff (gradient (lambda (l) (categorical-log-prob l 2)) logits)
+                        (let ((p (softmax-plain logits)) (r (make-vector 4 0.0)))
+                          (let loop ((i 0)) (if (< i 4) (begin (vector-set! r i (- (if (= i 2) 1.0 0.0) (vector-ref p i))) (loop (+ i 1))) r))))
+          1e-15))
+
+;; ── known distributions ──
+(set-random-seed! 20261030)
+(define p (softmax-plain logits))
+(define N 20000)
+
+;; Gumbel-max is an exact sampler of Categorical(softmax(logits))
+(define counts (make-vector 4 0))
+(let loop ((t 0))
+  (if (< t N)
+      (let ((k (gumbel-max-sample logits (sample-gumbel-noise 4))))
+        (vector-set! counts k (+ 1 (vector-ref counts k)))
+        (loop (+ t 1)))))
+(check "Gumbel-max frequencies match softmax within 4.5 sigma"
+       (let loop ((i 0) (ok #t))
+         (if (< i 4)
+             (let* ((pk (vector-ref p i)) (sd (sqrt (/ (* pk (- 1.0 pk)) N))))
+               (loop (+ i 1) (and ok (< (abs (- (/ (vector-ref counts i) N) pk)) (* 4.5 sd)))))
+             ok)))
+
+;; the score-function estimator is unbiased for d/dlogits E[f(k)]
+(define f (vector 1.0 3.0 -2.0 0.5))
+(define exact-g (categorical-expectation-gradient logits f))
+(define sf-sum (make-vector 4 0.0))
+(define sf-sq (make-vector 4 0.0))
+(let loop ((t 0))
+  (if (< t N)
+      (let* ((k (gumbel-max-sample logits (sample-gumbel-noise 4)))
+             (g (score-function-gradient logits k (vector-ref f k))))
+        (let acc ((i 0))
+          (if (< i 4)
+              (begin (vector-set! sf-sum i (+ (vector-ref sf-sum i) (vector-ref g i)))
+                     (vector-set! sf-sq i (+ (vector-ref sf-sq i) (* (vector-ref g i) (vector-ref g i))))
+                     (acc (+ i 1)))))
+        (loop (+ t 1)))))
+(check "score-function estimator: mean within 4.5 standard errors of the exact gradient"
+       (let loop ((i 0) (ok #t))
+         (if (< i 4)
+             (let* ((m (/ (vector-ref sf-sum i) N))
+                    (var (- (/ (vector-ref sf-sq i) N) (* m m)))
+                    (se (sqrt (/ var N))))
+               (loop (+ i 1) (and ok (< (abs (- m (vector-ref exact-g i))) (* 4.5 se)))))
+             ok)))
+
+;; relaxed estimator: bias against the discrete gradient falls with tau, the
+;; variance rises (same noise draws for both temperatures)
+(define M 4000)
+(define (relaxed-stats taus)
+  (let ((sums (map (lambda (t) (make-vector 4 0.0)) taus))
+        (sqs (map (lambda (t) (make-vector 4 0.0)) taus)))
+    (let loop ((t 0))
+      (if (< t M)
+          (let ((nz (sample-gumbel-noise 4)))
+            (let each ((ts taus) (ss sums) (qs sqs))
+              (if (pair? ts)
+                  (let ((g (gradient (lambda (l) (vdot (gumbel-softmax-relaxed l nz (car ts)) f)) logits)))
+                    (let acc ((i 0))
+                      (if (< i 4)
+                          (begin (vector-set! (car ss) i (+ (vector-ref (car ss) i) (vector-ref g i)))
+                                 (vector-set! (car qs) i (+ (vector-ref (car qs) i) (* (vector-ref g i) (vector-ref g i))))
+                                 (acc (+ i 1)))))
+                    (each (cdr ts) (cdr ss) (cdr qs)))))
+            (loop (+ t 1)))))
+    (map (lambda (s q)
+           (let loop ((i 0) (bias2 0.0) (var 0.0))
+             (if (< i 4)
+                 (let ((m (/ (vector-ref s i) M)))
+                   (loop (+ i 1) (+ bias2 (* (- m (vector-ref exact-g i)) (- m (vector-ref exact-g i))))
+                         (+ var (- (/ (vector-ref q i) M) (* m m)))))
+                 (list (sqrt bias2) var))))
+         sums sqs)))
+(define stats (relaxed-stats (list 2.0 0.25)))
+(display "relaxed estimator (tau 2.0, 0.25): ") (display stats) (newline)
+(check "relaxed estimator: bias falls as tau falls" (< (car (cadr stats)) (car (car stats))))
+(check "relaxed estimator: variance rises as tau falls" (> (cadr (cadr stats)) (cadr (car stats))))
+
+;; straight-through Bernoulli: exact forward sampler, sigmoid derivative
+(define a 0.4)
+(define ones (let loop ((t 0) (c 0)) (if (< t N) (loop (+ t 1) (+ c (if (= (st-bernoulli a (random)) 1.0) 1 0))) c)))
+(define pa (/ 1.0 (+ 1.0 (exp (- a)))))
+(check "ST Bernoulli: frequency of ones matches sigmoid(a) within 4.5 sigma"
+       (< (abs (- (/ ones N) pa)) (* 4.5 (sqrt (/ (* pa (- 1.0 pa)) N)))))
+(check "ST Bernoulli: derivative is sigmoid'(a)" (close? (derivative (lambda (x) (st-bernoulli x 0.5)) a) (* pa (- 1.0 pa)) 1e-15))
+
+;; ── learning through a discrete choice ──
+;; Train logits with the straight-through Gumbel estimator so the sampled
+;; one-hot matches class 2; afterwards Gumbel-max sampling picks class 2 at
+;; least 95% of the time.
+(define target (vector 0.0 0.0 1.0 0.0))
+(define theta (vector 0.0 0.0 0.0 0.0))
+(let train ((t 0))
+  (if (< t 300)
+      (let* ((nz (sample-gumbel-noise 4))
+             (g (gradient (lambda (l) (let ((yy (gumbel-softmax-st l nz 0.5)))
+                                        (let loop ((i 0) (s 0.0))
+                                          (if (< i 4) (loop (+ i 1) (+ s (* (- (vector-ref yy i) (vector-ref target i)) (- (vector-ref yy i) (vector-ref target i))))) s))))
+                          theta)))
+        (let upd ((i 0)) (if (< i 4) (begin (vector-set! theta i (- (vector-ref theta i) (* 0.5 (vector-ref g i)))) (upd (+ i 1)))))
+        (train (+ t 1)))))
+(define hits (let loop ((t 0) (c 0)) (if (< t 200) (loop (+ t 1) (+ c (if (= (gumbel-max-sample theta (sample-gumbel-noise 4)) 2) 1 0))) c)))
+(display "learned logits ") (display theta) (display " hits ") (display hits) (newline)
+(check "learning through the discrete choice: class 2 sampled >= 95%" (>= hits 190))
+
+(check "no finite differences anywhere" (= (ad-finite-difference-evals) 0))
+
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0) (begin (display "ALL TESTS PASSED") (newline)))

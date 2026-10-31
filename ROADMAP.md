@@ -899,13 +899,23 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 **Flagship:** `core.dbsp` GA (W1) + native-product PGO in the release
 workflow (ADR-0007 Phase 1).
 
-- [ ] Symbol embeddings (learnable vector representations of KB symbols)
-- [ ] Soft unification (differentiable similarity — gradients flow through matching)
-- [ ] LSTM and GRU cells (standard recurrent neural architectures)
-- [ ] Differentiable logic programs (gradients flow through rule application)
-- [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
-- [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through)
-- [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors
+- [ ] Symbol embeddings (learnable vector representations of KB symbols) —
+      delivered by Noesis (term embeddings); upstreaming per ADR-0049
+- [ ] Soft unification (differentiable similarity — gradients flow through matching) —
+      delivered by Noesis (soft unification with gradients); upstreaming per ADR-0049
+- [x] LSTM and GRU cells (standard recurrent neural architectures) —
+      `core.ml.recurrent`, BPTT by the built-in reverse mode (ADR-0049)
+- [ ] Differentiable logic programs (gradients flow through rule application) —
+      delivered by Noesis (differentiable belief propagation); upstreaming per ADR-0049
+- [ ] Attention over knowledge base (neural query mechanism over symbolic facts) —
+      delivered by Noesis (attention unification); upstreaming per ADR-0049
+- [x] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through) —
+      `stop-gradient` builtin; Gumbel-Softmax, straight-through, score-function
+      estimators with their bias/variance properties tested (ADR-0049)
+- [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors —
+      HNSW (`core.ml.hnsw`), BPE (`core.ml.bpe`) and CSR sparse matrices
+      (`core.ml.sparse`) delivered; int/complex tensor storage planned for
+      v1.5.0 (ADR-0049)
 - [ ] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
       angular means, evaluation at a phase map with full chain-rule
       propagation, support-disjointness bookkeeping, and the inverse of a

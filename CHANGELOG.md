@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Recurrent cells, stop-gradient and gradient estimators (v1.5.0, ADR-0049).**
+  `core.ml.recurrent` provides LSTM and GRU cells over a flat parameter vector,
+  trained by reverse-mode backpropagation through time with no hand-written
+  backward pass. The new builtin `stop-gradient` returns a number's primal on
+  the native backend, the VM and the browser lane, and
+  `core.ml.gradient_estimators` adds straight-through, Gumbel-Softmax,
+  straight-through Gumbel, Bernoulli and score-function estimators that
+  compose with `gradient`. Reverse mode through a named-let loop that keeps AD
+  nodes only inside a list now records each iteration's own node.
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix
   calculus (#794), coupled polynomial root towers (#795), preflighted packed
