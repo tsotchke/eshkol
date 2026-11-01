@@ -21,7 +21,10 @@ table further down this page. The directed-rounding primitives `fl-next-up` and
 `fl-next-down` that layer rests on are **runtime builtins** on both engines, so
 they need no `require`; see
 [certified-enclosures.md §1](certified-enclosures.md#1-directed-rounding-primitives-runtime)
-and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt).
+and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt). Since v1.5.0 directed rounding is the default of
+`core.ad.interval`; interval Taylor jets, certified sup/inf over parameter
+boxes, torus fields with exact Haar means and interval / Taylor-model element
+tensors are documented in [rigorous_numerics.md](rigorous_numerics.md).
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
@@ -387,6 +390,7 @@ are documented, with signatures, on the pages listed.
 | `core.ad.checkpoint` | `(require core.ad.checkpoint)` | [AUTOMATIC_DIFFERENTIATION.md §8](../../guide/AUTOMATIC_DIFFERENTIATION.md#8-reverse-mode--checkpointing) |
 | `core.ad.taylor_numerics` | `(require core.ad.taylor_numerics)` | [AUTOMATIC_DIFFERENTIATION.md §10](../../guide/AUTOMATIC_DIFFERENTIATION.md#10-tower-numerics--odes-roots-inversion) |
 | `core.ad.interval`, `core.ad.rigorous_interval`, `core.ad.taylor_models`, `core.ad.rigorous_taylor_models` | `(require core.ad.taylor_models)` | [certified-enclosures.md](certified-enclosures.md) |
+| `core.ad.interval_jet`, `core.ad.compact_bounds`, `core.torus`, `core.ad.interval_tensor` | in the stdlib closure (no require) | [rigorous_numerics.md](rigorous_numerics.md) |
 | `agent.*` | `(require agent.<name>)` | [../agent/INDEX.md](../agent/INDEX.md) |
 
 The modules under `lib/test/modules/` are module-system test fixtures, not user API.

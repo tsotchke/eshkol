@@ -64,6 +64,7 @@
 ;; ─────────────────────────────────────────────────────────────────────────
 
 (require core.ad.interval)
+(require core.ad.rigorous_interval)
 ;; ESH certified-enclosures: the rigorous (proof-backed, never-sampled)
 ;; counterpart lives in core.ad.rigorous_taylor_models, under DIFFERENT
 ;; names (tm+/tm*/tm-compose/tm-integrate/tm-deriv/tm-bound/tm-enclose/
@@ -151,13 +152,24 @@
 
 ;; ── Constructor ────────────────────────────────────────────────────────────
 ;;  (taylor-model f x0 domain-radius k) -> TM
+;; The remainder magnitude M * r^(k+1) / (k+1)! is evaluated EXACTLY on the
+;; dyadic values of M and r and rounded upward once (directed rounding,
+;; ADR-0050); the relative-epsilon pad this constructor used before v1.5.0
+;; is retired. M itself is still the sampled estimate described above; for
+;; a remainder proven over the whole box use taylor-model-certified
+;; (core.ad.interval_jet), which encloses f^(k+1) on the box with interval
+;; Taylor jets.
+(define (tm-exactify x) (if (exact? x) x (inexact->exact x)))
+
 (define (taylor-model f x0 r k)
   (let* ((coeffs (taylor (lambda (t) (f t)) x0 k))     ; c_0..c_k from the tower
          (M      (tm-bound-derivative f x0 r (+ k 1)))
-         (B      (* M (/ (tm-ipow r (+ k 1)) (tm-factorial (+ k 1)))))
-         ;; widen B itself by the interval rounding model so R is outward-sound
-         (Bpad   (+ B (tm-max2 (* iv-rel-pad (tm-abs B)) iv-abs-pad)))
-         (R      (interval-of (- Bpad) Bpad)))
+         (rx     (tm-exactify (tm-abs r)))
+         (Bexact (* (tm-exactify M)
+                    (/ (let loop ((e (+ k 1)) (acc 1)) (if (<= e 0) acc (loop (- e 1) (* acc rx))))
+                       (let loop ((i (+ k 1)) (acc 1)) (if (<= i 1) acc (loop (- i 1) (* acc i)))))))
+         (B      (ia-to-double-up Bexact))
+         (R      (interval-of (- B) B)))
     (vector 'taylor-model k coeffs x0 r R)))
 
 ;; ── Accessors ──────────────────────────────────────────────────────────────
