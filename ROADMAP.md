@@ -761,6 +761,15 @@ under the same discipline that made `Qubit` linear.
       construction, and Cech and derived cohomology with torsion and cocycle
       generators, over `core.integer_linalg` (Smith normal form). The
       finite-site and finite-space sheaf examples run on it
+- [x] Kripke-Joyal semantics as a library (ADR-0035): `core.topos` gives the
+      topos of a finite site its internal language (higher-order: Omega,
+      products, exponentials, power objects, comprehension) and decides
+      formulas by Kripke-Joyal forcing and, independently, by the
+      Omega-valued interpretation, with the forcing theorem checked on an
+      enumerated corpus over five sites, the Kripke and Beth reductions, the
+      Lawvere-Tierney bijection, the `locally` modality as the j-translation,
+      and the internally local structure sheaf of Spec(Z/n). The presheaf-topos
+      example runs on it. Language adoption is staged in ADR-0035 (v1.4.1 to v1.5.0)
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
