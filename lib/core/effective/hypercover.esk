@@ -232,6 +232,29 @@
         (ext (if (= n 0) 1 (fold-left * 1 (map (lambda (d) (gcd d m)) (caddr (list-ref H (- n 1))))))))
     (* hom ext)))
 (define (hc-dot u v) (let loop ((i 0) (s 0)) (if (= i (vector-length u)) s (loop (+ i 1) (+ s (* (vector-ref u i) (vector-ref v i)))))))
+;; a basis of the n-cycles of an effective complex, as combinations: every
+;; cell with zero boundary is a cycle by itself, and the kernel is computed
+;; only on the cells whose boundary is not zero
+(define (hc-cycle-basis E n)
+  (let* ((cells (effective-complex-basis E n))
+         (zero (filter (lambda (c) (lc-zero? (effective-complex-d-cell E n c))) cells))
+         (rest (filter (lambda (c) (not (lc-zero? (effective-complex-d-cell E n c)))) cells))
+         (rows (effective-complex-rank E (- n 1)))
+         (M (let ((A (make-vector rows 0)) (t (effective-complex-index E (- n 1))))
+              (let loop ((i 0)) (if (< i rows) (begin (vector-set! A i (make-vector (length rest) 0)) (loop (+ i 1)))))
+              (let loop ((l rest) (j 0))
+                (if (pair? l)
+                    (begin (for-each (lambda (p) (let ((i (hash-table-ref/default t (car p) #f)))
+                                                   (vector-set! (vector-ref A i) j (+ (vector-ref (vector-ref A i) j) (cdr p)))))
+                                     (effective-complex-d-cell E n (car l)))
+                           (loop (cdr l) (+ j 1)))))
+              A))
+         (rv (list->vector rest)))
+    (append (map (lambda (c) (lc-term c 1)) zero)
+            (if (null? rest) '()
+                (map (lambda (z) (let loop ((j 0) (acc '())) (if (= j (vector-length z)) (reverse acc)
+                                                                (loop (+ j 1) (if (= 0 (vector-ref z j)) acc (cons (cons (vector-ref rv j) (vector-ref z j)) acc))))))
+                     (integer-kernel M (length rest)))))))
 ;; For an effective space S whose integral homology through degree 3 has no
 ;; 2-torsion (so every class of H^2(S; Z/2) has an integral lift and
 ;; H^4(S; Z/4) is detected on integral 4-cycles): the homotopy cardinalities
@@ -257,8 +280,7 @@
            (xt (lambda (eps) (let ((w (make-vector n2 0)))
                                (for-each (lambda (e v) (if (= e 1) (let fill ((i 0)) (if (< i n2) (begin (vector-set! w i (+ (vector-ref w i) (vector-ref v i))) (fill (+ i 1))))))) eps lifts)
                                w)))
-           (cycles (integer-kernel (effective-complex-matrix E 4) (effective-complex-rank E 4)))
-           (big-cycles (map (lambda (z) (reduction-g r 4 (effective-complex-combination E 4 z))) cycles))
+           (big-cycles (map (lambda (z) (reduction-g r 4 z)) (hc-cycle-basis E 4)))
            (value2 (lambda (w s) (if (simplex-degenerate? s) 0 (hc-dot w (effective-complex-vector E 2 (reduction-f-cell r 2 (simplex-base s)))))))
            (square-on (lambda (w c) (fold-left + 0 (map (lambda (p) (let ((s (simplex (car p) 4)))
                                                                        (* (cdr p) (value2 w (simplicial-set-front-face X s 2)) (value2 w (simplicial-set-back-face X s 2)))))
