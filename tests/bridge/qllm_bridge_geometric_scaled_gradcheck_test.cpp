@@ -96,6 +96,11 @@ static std::vector<Dual> scale_reference(const std::vector<Dual>& a,
     return out;
 }
 
+/* The references are written for the ADR-0018 chart (alpha = 1) with Mobius
+ * parameter c = -K/4: the ball of curvature K has radius 1/sqrt(c) =
+ * 2/sqrt(-K), lambda = 1/(1 - c|x|^2), and d = asinh(...)/sqrt(c). */
+static const long double kAlpha = 1.0L;
+
 static Dual distance_dual(const std::vector<Dual>& x,
                           const std::vector<Dual>& y, long double c) {
     if (needs_unit_ball_reference(x, y, c)) {
@@ -112,7 +117,7 @@ static Dual distance_dual(const std::vector<Dual>& x,
     const Dual ny = sub(one, mulc(dotd(y, y), c));
     const Dual den = sqrtd(mul(nx, ny));
     const Dual z = mulc(divd(dn, den), sqrtl(c));
-    return mulc(asinhd(z), 2.0L / sqrtl(c));
+    return mulc(asinhd(z), kAlpha / sqrtl(c));
 }
 
 static std::vector<Dual> exp_dual(const std::vector<Dual>& x,
@@ -129,13 +134,13 @@ static std::vector<Dual> exp_dual(const std::vector<Dual>& x,
     }
     const Dual one = {1.0L, 0.0L};
     const Dual nb = sub(one, mulc(dotd(x, x), c));
-    const Dual lambda = divd({2.0L, 0.0L}, nb);
+    const Dual lambda = divd({kAlpha, 0.0L}, nb);
     const Dual vn = normd(v);
-    const Dual z = mulc(mul(lambda, vn), sqrtl(c) / 2.0L);
+    const Dual z = mulc(mul(lambda, vn), sqrtl(c) / kAlpha);
     Dual tau;
     if (z.value == 0.0L) tau = {1.0L, 0.0L};
     else tau = divd(tanhd(z), z);
-    const Dual f = mulc(mul(lambda, tau), 0.5L);
+    const Dual f = mulc(mul(lambda, tau), 1.0L / kAlpha);
     std::vector<Dual> s(x.size());
     for (size_t i = 0; i < x.size(); ++i) s[i] = mul(f, v[i]);
     const Dual xs = dotd(x, s);
@@ -175,7 +180,7 @@ static std::vector<Dual> log_dual(const std::vector<Dual>& x,
         u[i] = sub(mul(nb, y[i]), mul(na, x[i]));
     const Dual un = normd(u);
     const Dual distance = distance_dual(x, y, c);
-    const Dual lambda = divd({2.0L, 0.0L}, nb);
+    const Dual lambda = divd({kAlpha, 0.0L}, nb);
     const Dual coefficient = divd(divd(distance, lambda), un);
     for (size_t i = 0; i < x.size(); ++i) out[i] = mul(coefficient, u[i]);
     return out;
@@ -207,32 +212,29 @@ static double relative_error(long double got, long double want) {
 }
 
 #if defined(ESHKOL_HAS_BINARY128)
-static __float128 reference_origin_d1(__float128 c, __float128 delta) {
-    const __float128 delta2 = delta * delta;
-    __float128 c_power = 1.0Q;
-    __float128 delta_power = delta2;
+static __float128 reference_origin_d1(__float128 B, __float128 delta) {
+    /* d(K) = delta sum_n t^n/(2n+1), t = B delta^2, B = -K/4, so
+     * dd/dK = -(1/4) delta^3 sum_{n>=1} n t^(n-1)/(2n+1). */
+    const __float128 t = B * delta * delta;
+    __float128 power = 1.0Q;
     __float128 sum = 0.0Q;
-    for (int n = 1; n <= 24; ++n) {
-        sum += (__float128)n * c_power * delta_power /
-               (__float128)(2 * n + 1);
-        c_power *= c;
-        delta_power *= delta2;
+    for (int n = 1; n <= 48; ++n) {
+        sum += (__float128)n * power / (__float128)(2 * n + 1);
+        power *= t;
     }
-    return -2.0Q * delta * sum;
+    return -0.25Q * delta * delta * delta * sum;
 }
 
-static __float128 reference_origin_d2(__float128 c, __float128 delta) {
-    const __float128 delta2 = delta * delta;
-    __float128 c_power = 1.0Q;
-    __float128 delta_power = delta2 * delta2;
+static __float128 reference_origin_d2(__float128 B, __float128 delta) {
+    /* d2d/dK2 = (1/16) delta^5 sum_{n>=2} n(n-1) t^(n-2)/(2n+1). */
+    const __float128 t = B * delta * delta;
+    __float128 power = 1.0Q;
     __float128 sum = 0.0Q;
-    for (int n = 2; n <= 24; ++n) {
-        sum += (__float128)n * (n - 1) * c_power * delta_power /
-               (__float128)(2 * n + 1);
-        c_power *= c;
-        delta_power *= delta2;
+    for (int n = 2; n <= 48; ++n) {
+        sum += (__float128)n * (__float128)(n - 1) * power / (__float128)(2 * n + 1);
+        power *= t;
     }
-    return 2.0Q * delta * sum;
+    return 0.0625Q * delta * delta * delta * delta * delta * sum;
 }
 
 static double reference_relative(double got, __float128 want) {
@@ -240,32 +242,29 @@ static double reference_relative(double got, __float128 want) {
     return (double)(error / fabsq(want));
 }
 #else
-static long double reference_origin_d1(long double c, long double delta) {
-    const long double delta2 = delta * delta;
-    long double c_power = 1.0L;
-    long double delta_power = delta2;
+static long double reference_origin_d1(long double B, long double delta) {
+    /* d(K) = delta sum_n t^n/(2n+1), t = B delta^2, B = -K/4, so
+     * dd/dK = -(1/4) delta^3 sum_{n>=1} n t^(n-1)/(2n+1). */
+    const long double t = B * delta * delta;
+    long double power = 1.0L;
     long double sum = 0.0L;
-    for (int n = 1; n <= 24; ++n) {
-        sum += (long double)n * c_power * delta_power /
-               (long double)(2 * n + 1);
-        c_power *= c;
-        delta_power *= delta2;
+    for (int n = 1; n <= 48; ++n) {
+        sum += (long double)n * power / (long double)(2 * n + 1);
+        power *= t;
     }
-    return -2.0L * delta * sum;
+    return -0.25L * delta * delta * delta * sum;
 }
 
-static long double reference_origin_d2(long double c, long double delta) {
-    const long double delta2 = delta * delta;
-    long double c_power = 1.0L;
-    long double delta_power = delta2 * delta2;
+static long double reference_origin_d2(long double B, long double delta) {
+    /* d2d/dK2 = (1/16) delta^5 sum_{n>=2} n(n-1) t^(n-2)/(2n+1). */
+    const long double t = B * delta * delta;
+    long double power = 1.0L;
     long double sum = 0.0L;
-    for (int n = 2; n <= 24; ++n) {
-        sum += (long double)n * (long double)(n - 1) * c_power * delta_power /
-               (long double)(2 * n + 1);
-        c_power *= c;
-        delta_power *= delta2;
+    for (int n = 2; n <= 48; ++n) {
+        sum += (long double)n * (long double)(n - 1) * power / (long double)(2 * n + 1);
+        power *= t;
     }
-    return 2.0L * delta * sum;
+    return 0.0625L * delta * delta * delta * delta * delta * sum;
 }
 
 static double reference_relative(double got, long double want) {
@@ -276,7 +275,7 @@ static double reference_relative(double got, long double want) {
 static bool check_case(const std::vector<double>& x, const std::vector<double>& y,
                        const std::vector<double>& v, double curvature) {
     const size_t n = x.size();
-    const long double c = -(long double)curvature;
+    const long double c = -(long double)curvature / 4.0L;   /* chart parameter */
     std::vector<double> upstream(n);
     for (size_t i = 0; i < n; ++i) upstream[i] = ((int)(i % 5) - 2) * 0.37;
     bool ok = true;
@@ -566,7 +565,9 @@ static bool check_attention_score_overflow() {
 static bool check_true_min_spherical_attention() {
     const int64_t shape[3] = {1, 2, 2};
     const double K = DBL_TRUE_MIN;
-    const double R = 1.0 / std::sqrt(K);
+    /* fixed chart inputs: at K = DBL_TRUE_MIN the chart is Euclidean to f64
+     * resolution here and the squared distances are representable */
+    const double R = 0.5;
     const double h = R / std::sqrt(2.0);
     ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* q = tensor3({R, 0.0, 0.0, R}, shape);
@@ -601,9 +602,9 @@ static bool check_ball_parameter_extremes() {
     const double curvatures[] = {DBL_MAX, DBL_MAX / 2.0, DBL_MAX / 4.0};
     for (double c : curvatures) {
         if (!std::isfinite(eshkol_rm_ball_param(c)) ||
-            eshkol_rm_ball_param(c) != c ||
+            eshkol_rm_ball_param(c) != 0.25 * c ||
             !std::isfinite(eshkol_rm_ball_param(-c)) ||
-            eshkol_rm_ball_param(-c) != -c)
+            eshkol_rm_ball_param(-c) != -0.25 * c)
             return false;
     }
     return true;
@@ -673,18 +674,23 @@ static bool check_boundary_dimension_sweep() {
 
 static bool check_curvature_hessian_extreme() {
     const double curvature = -std::ldexp(1.0, 404);
-    const double radius = 1.0 / std::sqrt(-curvature);
+    const double radius = 2.0 / std::sqrt(-curvature);   /* the chart's ball */
     const double x[1] = {0.0};
-    const double y[1] = {0.25 * radius};
+    const double y[1] = {0.125 * radius};
     double distance = 0.0, gradient = 0.0, hessian = 0.0;
     const char* why = eshkol_rm_distance_dK(
         x, y, curvature, 1, &distance, &gradient, &hessian);
-    const double expected_gradient = -4.2376387815863510661e-185;
-    const double expected_hessian = 8.1751304839522634993e-308;
-    const double gradient_rel = std::fabs(gradient - expected_gradient) /
-                                std::fabs(expected_gradient);
-    const double hessian_rel = std::fabs(hessian - expected_hessian) /
-                               std::fabs(expected_hessian);
+#if defined(ESHKOL_HAS_BINARY128)
+    const __float128 B = ldexpq(1.0Q, 402);
+    const __float128 delta = (__float128)y[0];
+#else
+    const long double B = std::ldexp(1.0L, 402);
+    const long double delta = (long double)y[0];
+#endif
+    const double gradient_rel = reference_relative(
+        gradient, reference_origin_d1(B, delta));
+    const double hessian_rel = reference_relative(
+        hessian, reference_origin_d2(B, delta));
     std::printf("curvature_extreme K=-2^404 why=%s d1=%.17g d2=%.17g "
                 "relative=(%.3e,%.3e)\n", why ? why : "PASS", gradient,
                 hessian, gradient_rel, hessian_rel);
@@ -704,7 +710,7 @@ static bool check_curvature_small_q_binary128() {
     const char* why = eshkol_rm_distance_dK(
         x, y, curvature, 1, &distance, &gradient, &hessian);
 #if defined(ESHKOL_HAS_BINARY128)
-    const __float128 c = ldexpq(1.0Q, -1074);
+    const __float128 c = ldexpq(1.0Q, -1076);   /* B = -K/4 */
     const __float128 delta = 0.25Q;
     const __float128 reference_gradient = reference_origin_d1(c, delta);
     const __float128 reference_hessian = reference_origin_d2(c, delta);
@@ -713,7 +719,7 @@ static bool check_curvature_small_q_binary128() {
     const double witness_hessian_rel = reference_relative(
         hessian, reference_hessian);
 #else
-    const long double c = std::ldexp(1.0L, -1074);
+    const long double c = std::ldexp(1.0L, -1076);   /* B = -K/4 */
     const long double delta = 0.25L;
     const long double reference_gradient = reference_origin_d1(c, delta);
     const long double reference_hessian = reference_origin_d2(c, delta);
@@ -743,7 +749,8 @@ static bool check_curvature_small_q_binary128() {
         return false;
 
     const double q_switch = std::ldexp(1.0, -8);
-    const double switch_y = std::sqrt(q_switch / (1.0 + q_switch));
+    /* w = B y^2/(1 - B y^2) with B = 1/4 at K = -1 */
+    const double switch_y = 2.0 * std::sqrt(q_switch / (1.0 + q_switch));
     const double y_series[1] = {std::nextafter(switch_y, 0.0)};
     const double y_closed[1] = {std::nextafter(switch_y, 1.0)};
     double series_d = 0.0, series_d1 = 0.0, series_d2 = 0.0;
@@ -771,9 +778,9 @@ static bool check_curvature_small_q_binary128() {
         const char* case_why = eshkol_rm_distance_dK(
             x, y, K, 1, &d, &d1, &d2);
 #if defined(ESHKOL_HAS_BINARY128)
-        const __float128 case_c = ldexpq(1.0Q, exponent);
+        const __float128 case_c = ldexpq(1.0Q, exponent - 2);
 #else
-        const long double case_c = std::ldexp(1.0L, exponent);
+        const long double case_c = std::ldexp(1.0L, exponent - 2);
 #endif
         const double gradient_rel = reference_relative(
             d1, reference_origin_d1(case_c, delta));

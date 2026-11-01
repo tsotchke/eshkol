@@ -13,6 +13,7 @@
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
+#include "eshkol/core/curvature_runtime.h"
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
@@ -1434,6 +1435,30 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_capability_runtime_clear);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
+    // core.curvature: the ADR-0018 signed-curvature chart (lib/core/curvature_runtime.c)
+    ADD_SYMBOL(eshkol_curvature_last_error);
+    ADD_SYMBOL(eshkol_curvature_convention_id);
+    ADD_SYMBOL(eshkol_curvature_alpha);
+    ADD_SYMBOL(eshkol_curvature_check_header);
+    ADD_SYMBOL(eshkol_curvature_distance);
+    ADD_SYMBOL(eshkol_curvature_sq_distance);
+    ADD_SYMBOL(eshkol_curvature_conformal_factor);
+    ADD_SYMBOL(eshkol_curvature_distance_jet);
+    ADD_SYMBOL(eshkol_curvature_sq_distance_jet);
+    ADD_SYMBOL(eshkol_curvature_sq_distance_grad);
+    ADD_SYMBOL(eshkol_curvature_exp_map);
+    ADD_SYMBOL(eshkol_curvature_log_map);
+    ADD_SYMBOL(eshkol_curvature_transport);
+    ADD_SYMBOL(eshkol_curvature_mobius_add);
+    ADD_SYMBOL(eshkol_curvature_mobius_scalar);
+    ADD_SYMBOL(eshkol_curvature_project);
+    ADD_SYMBOL(eshkol_curvature_riemannian_grad);
+    ADD_SYMBOL(eshkol_curvature_attention);
+    ADD_SYMBOL(eshkol_curvature_sphere_to_chart);
+    ADD_SYMBOL(eshkol_curvature_chart_to_sphere);
+    ADD_SYMBOL(eshkol_curvature_migrate_point);
+    ADD_SYMBOL(eshkol_curvature_migrate_tangent);
+    ADD_SYMBOL(eshkol_curvature_migrate_temperature);
     ADD_SYMBOL(eshkol_capability_runtime_is_active);
     ADD_SYMBOL(eshkol_capability_runtime_allows);
     ADD_SYMBOL(eshkol_capability_runtime_allows_file_mode);

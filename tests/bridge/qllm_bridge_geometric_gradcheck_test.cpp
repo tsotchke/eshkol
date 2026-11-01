@@ -117,6 +117,14 @@ static bool child_refuses(void (*fn)(void)) {
     return !(WIFEXITED(st) && WEXITSTATUS(st) == 0);
 }
 
+/* The fixtures and references in this file are written for the Mobius
+ * parameter c of the ball (radius 1/sqrt(c)). In the ADR-0018 chart
+ * (alpha = 1) that ball is the chart of sectional curvature K = -4c, its
+ * conformal factor is lambda = 1/(1 - c|x|^2) and its distances are
+ * asinh-form distances with prefactor 1/sqrt(c). The coordinate exp/log maps
+ * depend on c only, so their committed oracle Jacobians apply unchanged. */
+static double chart_K(double c) { return -4.0 * c; }
+
 /* =============================================== hyperbolic distance ===== */
 
 /* |grad_x d| == lambda_x and |grad_y d| == lambda_y at every interior pair. */
@@ -133,7 +141,7 @@ static void check_distance_conformal_identity(void) {
         ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
         ad_node_t* xn = var_node(cs.x, sh, 1);
         ad_node_t* yn = var_node(cs.y, sh, 1);
-        ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+        ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, chart_K(c));
         if (!o) { report("distance.conformal_identity", false, "forward refused"); return; }
         ((double*)o->tensor_gradient)[0] = 1.0;
         sweep(t);
@@ -144,7 +152,7 @@ static void check_distance_conformal_identity(void) {
             nx += gx[i]*gx[i]; ny += gy[i]*gy[i];
             xx += cs.x[i]*cs.x[i]; yy += cs.y[i]*cs.y[i];
         }
-        double lx = 2.0/(1.0 - c*xx), ly = 2.0/(1.0 - c*yy);
+        double lx = 1.0/(1.0 - c*xx), ly = 1.0/(1.0 - c*yy);
         worst = std::fmax(worst, std::fabs(std::sqrt(nx) - lx)/lx);
         worst = std::fmax(worst, std::fabs(std::sqrt(ny) - ly)/ly);
     }
@@ -158,7 +166,7 @@ static void check_distance_fd(void) {
     double X[3] = { 0.30,-0.10, 0.20 }, Y[3] = {-0.20, 0.25, 0.10 };
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, sh, 1); ad_node_t* yn = var_node(Y, sh, 1);
-    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, chart_K(c));
     ((double*)o->tensor_gradient)[0] = 1.0; sweep(t);
     double gx[3], gy[3];
     std::memcpy(gx, xn->tensor_gradient, sizeof gx);
@@ -166,7 +174,7 @@ static void check_distance_fd(void) {
 
     auto fwd = [&](const double* a, const double* b) {
         ad_node_t* an = var_node(a, sh, 1); ad_node_t* bn = var_node(b, sh, 1);
-        ad_node_t* r = ad_hyperbolic_distance(nullptr, an, bn, -c);
+        ad_node_t* r = ad_hyperbolic_distance(nullptr, an, bn, chart_K(c));
         return ((const double*)r->tensor_value)[0];
     };
     RelAcc acc;
@@ -189,7 +197,7 @@ static void distance_coincident_child(void) {
     double X[3] = { 0.2,-0.1, 0.3 };
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* a = var_node(X, sh, 1), *b = var_node(X, sh, 1);
-    ad_node_t* o = ad_hyperbolic_distance(t, a, b, -1.0);
+    ad_node_t* o = ad_hyperbolic_distance(t, a, b, chart_K(1.0));
     if (o && o->tensor_gradient) ((double*)o->tensor_gradient)[0] = 1.0;
     sweep(t);
 }
@@ -207,7 +215,7 @@ static void log_jacobian_wrt_y(const double* X, const double* Y, int n,
     for (int k = 0; k < n; ++k) {
         ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
         ad_node_t* xn = var_node(X, sh, 1); ad_node_t* yn = var_node(Y, sh, 1);
-        ad_node_t* o = ad_poincare_log_map(t, xn, yn, -c);
+        ad_node_t* o = ad_poincare_log_map(t, xn, yn, chart_K(c));
         double* g = (double*)o->tensor_gradient;
         for (int j = 0; j < n; ++j) g[j] = (j == k) ? 1.0 : 0.0;
         sweep(t);
@@ -221,7 +229,7 @@ static void exp_jacobian_wrt_v(const double* X, const double* V, int n,
     for (int k = 0; k < n; ++k) {
         ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
         ad_node_t* xn = var_node(X, sh, 1); ad_node_t* vn = var_node(V, sh, 1);
-        ad_node_t* o = ad_poincare_exp_map(t, xn, vn, -c);
+        ad_node_t* o = ad_poincare_exp_map(t, xn, vn, chart_K(c));
         double* g = (double*)o->tensor_gradient;
         for (int j = 0; j < n; ++j) g[j] = (j == k) ? 1.0 : 0.0;
         sweep(t);
@@ -277,7 +285,7 @@ static void check_exp_log_inverse_jacobians(void) {
     const double c = 1.0;
 
     ad_node_t* xn = var_node(X, sh, 1); ad_node_t* vn = var_node(V, sh, 1);
-    ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, -c);
+    ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, chart_K(c));
     if (!e) { report("exp_log.inverse_jacobians", false, "exp forward refused"); return; }
     double Yv[3]; std::memcpy(Yv, e->tensor_value, sizeof Yv);
 
@@ -305,7 +313,7 @@ static void check_exp_log_fd(void) {
     /* exp: both operands. */
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, sh, 1), *vn = var_node(V, sh, 1);
-    ad_node_t* o = ad_poincare_exp_map(t, xn, vn, -c);
+    ad_node_t* o = ad_poincare_exp_map(t, xn, vn, chart_K(c));
     double cot[3] = { 1.0, -0.5, 0.25 };
     std::memcpy(o->tensor_gradient, cot, sizeof cot); sweep(t);
     double gx[3], gv[3];
@@ -313,7 +321,7 @@ static void check_exp_log_fd(void) {
     std::memcpy(gv, vn->tensor_gradient, sizeof gv);
     auto expLoss = [&](const double* a, const double* b) {
         ad_node_t* an = var_node(a, sh, 1), *bn = var_node(b, sh, 1);
-        ad_node_t* r = ad_poincare_exp_map(nullptr, an, bn, -c);
+        ad_node_t* r = ad_poincare_exp_map(nullptr, an, bn, chart_K(c));
         const double* ov = (const double*)r->tensor_value;
         double s = 0.0; for (int i = 0; i < 3; ++i) s += cot[i]*ov[i]; return s;
     };
@@ -332,14 +340,14 @@ static void check_exp_log_fd(void) {
     /* log: both operands. */
     ad_tape_t* t2 = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn2 = var_node(X, sh, 1), *yn2 = var_node(Y, sh, 1);
-    ad_node_t* o2 = ad_poincare_log_map(t2, xn2, yn2, -c);
+    ad_node_t* o2 = ad_poincare_log_map(t2, xn2, yn2, chart_K(c));
     std::memcpy(o2->tensor_gradient, cot, sizeof cot); sweep(t2);
     double lx[3], ly[3];
     std::memcpy(lx, xn2->tensor_gradient, sizeof lx);
     std::memcpy(ly, yn2->tensor_gradient, sizeof ly);
     auto logLoss = [&](const double* a, const double* b) {
         ad_node_t* an = var_node(a, sh, 1), *bn = var_node(b, sh, 1);
-        ad_node_t* r = ad_poincare_log_map(nullptr, an, bn, -c);
+        ad_node_t* r = ad_poincare_log_map(nullptr, an, bn, chart_K(c));
         const double* ov = (const double*)r->tensor_value;
         double s = 0.0; for (int i = 0; i < 3; ++i) s += cot[i]*ov[i]; return s;
     };
@@ -367,14 +375,14 @@ static void check_exp_basepoint_near_boundary(void) {
     auto forward = [&](double base, double tangent) {
         double xb[1] = { base }, vb[1] = { tangent };
         ad_node_t* xn = var_node(xb, sh, 1), *vn = var_node(vb, sh, 1);
-        ad_node_t* out = ad_poincare_exp_map(nullptr, xn, vn, -c);
+        ad_node_t* out = ad_poincare_exp_map(nullptr, xn, vn, chart_K(c));
         return out ? ((const double*)out->tensor_value)[0] : NAN;
     };
     auto backward_base = [&](double tangent) {
         double xb[1] = { x }, vb[1] = { tangent };
         ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
         ad_node_t* xn = var_node(xb, sh, 1), *vn = var_node(vb, sh, 1);
-        ad_node_t* out = ad_poincare_exp_map(t, xn, vn, -c);
+        ad_node_t* out = ad_poincare_exp_map(t, xn, vn, chart_K(c));
         if (!out) return (double)NAN;
         ((double*)out->tensor_gradient)[0] = 1.0;
         sweep(t);
@@ -403,7 +411,7 @@ static void check_distance_close_distinct_pair(void) {
     const double X[1] = { 0.0 }, Y[1] = { 1e-9 };
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
-    ad_node_t* out = ad_hyperbolic_distance(t, xn, yn, -1.0);
+    ad_node_t* out = ad_hyperbolic_distance(t, xn, yn, chart_K(1.0));
     if (!out) {
         report("distance.close_distinct_stable_backward", false,
                "forward refused for x=0, y=1e-9");
@@ -414,11 +422,12 @@ static void check_distance_close_distinct_pair(void) {
     const double distance = ((const double*)out->tensor_value)[0];
     const double gx = ((const double*)xn->tensor_gradient)[0];
     const double gy = ((const double*)yn->tensor_gradient)[0];
-    const bool ok = std::fabs(distance - 2e-9) < 1e-15 &&
-                    std::fabs(gx + 2.0) < 1e-12 &&
-                    std::fabs(gy - 2.0) < 1e-12;
+    /* lambda_0 = alpha = 1: d = 1e-9 and |grad| = 1 at the origin */
+    const bool ok = std::fabs(distance - 1e-9) < 1e-15 &&
+                    std::fabs(gx + 1.0) < 1e-12 &&
+                    std::fabs(gy - 1.0) < 1e-12;
     report("distance.close_distinct_stable_backward", ok,
-           "d %.17g, grad_x %.17g (want -2), grad_y %.17g (want +2)",
+           "d %.17g, grad_x %.17g (want -1), grad_y %.17g (want +1)",
            distance, gx, gy);
 }
 
@@ -595,7 +604,7 @@ static void check_geodesic_causal_fd(void) {
     const int64_t sh[3] = { GB, GS, GD };
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* qn = var_node(gQ, sh, 3), *kn = var_node(gK, sh, 3), *vn = var_node(gV, sh, 3);
-    ad_node_t* o = ad_geodesic_attention(t, qn, kn, vn, 2, -1.0, true);
+    ad_node_t* o = ad_geodesic_attention(t, qn, kn, vn, 2, chart_K(1.0), true);
     if (!o) { report("geodesic.causal_finite_difference", false, "forward refused"); return; }
     std::memcpy(o->tensor_gradient, gCot, sizeof gCot);
     sweep(t);
@@ -604,7 +613,7 @@ static void check_geodesic_causal_fd(void) {
     std::memcpy(dv, vn->tensor_gradient, sizeof dv);
     auto loss = [&](const double* q, const double* v) {
         ad_node_t* a = var_node(q, sh, 3), *b = var_node(gK, sh, 3), *cc = var_node(v, sh, 3);
-        ad_node_t* r = ad_geodesic_attention(nullptr, a, b, cc, 2, -1.0, true);
+        ad_node_t* r = ad_geodesic_attention(nullptr, a, b, cc, 2, chart_K(1.0), true);
         const double* ov = (const double*)r->tensor_value;
         double s = 0.0; for (int i = 0; i < GB*GS*GD; ++i) s += gCot[i]*ov[i]; return s;
     };
@@ -624,20 +633,39 @@ static void check_geodesic_causal_fd(void) {
            "aggregate L2 rel err %.3e with causal masking", r);
 }
 
-static void geodesic_coincident_child(void) {
+/* Squared-distance scoring is smooth at q == k: self-attention (Q and K the
+ * same node, every diagonal pair coincident) has a finite gradient that
+ * matches central differences of the forward. */
+static void check_geodesic_self_attention_differentiable(void) {
     const int64_t sh[3] = { GB, GS, GD };
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* qn = var_node(gQ, sh, 3);
     ad_node_t* vn = var_node(gV, sh, 3);
-    /* Q and K the same node: every diagonal (i, i) pair coincides exactly. */
-    ad_node_t* o = ad_geodesic_attention(t, qn, qn, vn, 2, -1.0, false);
-    if (o && o->tensor_gradient) std::memcpy(o->tensor_gradient, gCot, sizeof gCot);
+    ad_node_t* o = ad_geodesic_attention(t, qn, qn, vn, 2, chart_K(1.0), false);
+    if (!o) {
+        report("geodesic.self_attention_differentiable_at_q_equals_k", false,
+               "forward refused Q == K");
+        return;
+    }
+    std::memcpy(o->tensor_gradient, gCot, sizeof gCot);
     sweep(t);
-}
-static void check_geodesic_refuses_coincident(void) {
-    report("geodesic.refuses_query_equals_key",
-           child_refuses(geodesic_coincident_child),
-           "distance scoring is non-differentiable when a query row equals a key row");
+    double dq[GB*GS*GD];
+    std::memcpy(dq, qn->tensor_gradient, sizeof dq);
+    auto loss = [&](const double* q) {
+        ad_node_t* a = var_node(q, sh, 3), *cc = var_node(gV, sh, 3);
+        ad_node_t* r = ad_geodesic_attention(nullptr, a, a, cc, 2, chart_K(1.0), false);
+        const double* ov = (const double*)r->tensor_value;
+        double acc = 0.0; for (int i = 0; i < GB*GS*GD; ++i) acc += gCot[i]*ov[i]; return acc;
+    };
+    RelAcc acc;
+    for (int i = 0; i < GB*GS*GD; ++i) {
+        double p[GB*GS*GD], m[GB*GS*GD];
+        std::memcpy(p,gQ,sizeof p); std::memcpy(m,gQ,sizeof m); p[i]+=STEP; m[i]-=STEP;
+        acc_add(&acc, (loss(p)-loss(m))/(2*STEP), dq[i]);
+    }
+    double r = acc_val(&acc);
+    report("geodesic.self_attention_differentiable_at_q_equals_k", r < TOLERANCE,
+           "Q == K: aggregate L2 rel err %.3e against central differences", r);
 }
 
 /* ============================ structural: the loud default (SW-65 root) === */
@@ -730,7 +758,7 @@ static void check_distance_near_boundary_identity(void) {
 
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
-    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, chart_K(c));
     if (!o) {
         report("boundary.distance_near_boundary_identity", false,
                "forward refused at |x| = 1 - 1e-6, which is INSIDE the ball");
@@ -741,7 +769,7 @@ static void check_distance_near_boundary_identity(void) {
     const double* gx = (const double*)xn->tensor_gradient;
     double nx = 0.0, xx = 0.0;
     for (int i = 0; i < 3; ++i) { nx += gx[i]*gx[i]; xx += X[i]*X[i]; }
-    double lx = 2.0/(1.0 - c*xx);
+    double lx = 1.0/(1.0 - c*xx);
     double rel = std::fabs(std::sqrt(nx) - lx)/lx;
     report("boundary.distance_near_boundary_identity", rel < 1e-9,
            "|x| = 1-1e-6, lambda_x = %.6e, rel dev of |grad_x| = %.3e", lx, rel);
@@ -766,14 +794,14 @@ static void check_distance_near_boundary_fd(void) {
 
     ad_tape_t* t = arena_allocate_tape(get_global_arena(), 8);
     ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
-    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, -c);
+    ad_node_t* o = ad_hyperbolic_distance(t, xn, yn, chart_K(c));
     if (!o) { report("boundary.distance_near_boundary_fd", false, "forward refused"); return; }
     ((double*)o->tensor_gradient)[0] = 1.0; sweep(t);
     double gx[3]; std::memcpy(gx, xn->tensor_gradient, sizeof gx);
 
     auto fwd = [&](const double* a) {
         ad_node_t* an = var_node(a, sh, 1), *bn = var_node(Y, sh, 1);
-        ad_node_t* r = ad_hyperbolic_distance(nullptr, an, bn, -c);
+        ad_node_t* r = ad_hyperbolic_distance(nullptr, an, bn, chart_K(c));
         return r ? ((const double*)r->tensor_value)[0] : NAN;
     };
     RelAcc acc;
@@ -799,7 +827,7 @@ static void check_log_map_near_boundary(void) {
     at_radius(1.0 - 1e-6, X);
 
     ad_node_t* xn = var_node(X, sh, 1), *vn = var_node(V, sh, 1);
-    ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, -c);
+    ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, chart_K(c));
     if (!e) {
         report("boundary.exp_log_inverse_near_boundary", false,
                "exp forward refused at |x| = 1 - 1e-6, which is INSIDE the ball");
@@ -840,7 +868,7 @@ static void check_log_map_artanh_near_one(void) {
     at_radius(1.0 - 1e-6, X);
 
     ad_node_t* xn = var_node(X, sh, 1), *on = var_node(O, sh, 1);
-    ad_node_t* l = ad_poincare_log_map(nullptr, xn, on, -c);
+    ad_node_t* l = ad_poincare_log_map(nullptr, xn, on, chart_K(c));
     if (!l) {
         report("boundary.log_map_artanh_near_one", false,
                "refused at t = sqrt(c)|u| = 1 - 1e-6, which is INSIDE the domain");
@@ -850,10 +878,10 @@ static void check_log_map_artanh_near_one(void) {
     double lm = std::sqrt(L[0]*L[0] + L[1]*L[1] + L[2]*L[2]);
 
     ad_node_t* x2 = var_node(X, sh, 1), *o2 = var_node(O, sh, 1);
-    ad_node_t* d = ad_hyperbolic_distance(nullptr, x2, o2, -c);
+    ad_node_t* d = ad_hyperbolic_distance(nullptr, x2, o2, chart_K(c));
     if (!d) { report("boundary.log_map_artanh_near_one", false, "distance refused"); return; }
     double dv = ((const double*)d->tensor_value)[0];
-    double lambda = 2.0/(1.0 - c*(X[0]*X[0] + X[1]*X[1] + X[2]*X[2]));
+    double lambda = 1.0/(1.0 - c*(X[0]*X[0] + X[1]*X[1] + X[2]*X[2]));
     double rel = std::fabs(lambda * lm - dv)/dv;
     report("boundary.log_map_artanh_near_one", rel < 1e-9,
            "t = 1-1e-6: lambda_x*|log_x(0)| = %.12f, d(x,0) = %.12f, "
@@ -875,7 +903,7 @@ static void check_log_map_stable_near_antipodal(void) {
     at_radius(r, X);
     at_radius(-r, Y);
     ad_node_t* xn = var_node(X, sh, 1), *yn = var_node(Y, sh, 1);
-    ad_node_t* o = ad_poincare_log_map(nullptr, xn, yn, -1.0);
+    ad_node_t* o = ad_poincare_log_map(nullptr, xn, yn, chart_K(1.0));
     bool finite = o != nullptr;
     double lm = finite ? 0.0 : NAN;
     if (finite) {
@@ -912,22 +940,22 @@ static void check_ops_refuse_on_and_outside_boundary(void) {
 
         char nm[128];
         std::snprintf(nm, sizeof nm, "boundary.distance_refuses_%s", rc.label);
-        ad_node_t* d = ad_hyperbolic_distance(nullptr, xn, yn, -c);
+        ad_node_t* d = ad_hyperbolic_distance(nullptr, xn, yn, chart_K(c));
         report(nm, d == nullptr, "|x| = %.1f, got %s", rc.r, d ? "a value" : "NULL");
 
         std::snprintf(nm, sizeof nm, "boundary.exp_map_refuses_%s", rc.label);
-        ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, -c);
+        ad_node_t* e = ad_poincare_exp_map(nullptr, xn, vn, chart_K(c));
         report(nm, e == nullptr, "|x| = %.1f, got %s", rc.r, e ? "a value" : "NULL");
 
         std::snprintf(nm, sizeof nm, "boundary.log_map_refuses_%s", rc.label);
-        ad_node_t* l = ad_poincare_log_map(nullptr, xn, yn, -c);
+        ad_node_t* l = ad_poincare_log_map(nullptr, xn, yn, chart_K(c));
         report(nm, l == nullptr, "|x| = %.1f, got %s", rc.r, l ? "a value" : "NULL");
 
         /* Second argument off-manifold too, not just the first. */
         std::snprintf(nm, sizeof nm, "boundary.log_map_refuses_y_%s", rc.label);
         ad_node_t* yb = var_node(X, sh, 1);
         ad_node_t* xi = var_node(Yin, sh, 1);
-        ad_node_t* l2 = ad_poincare_log_map(nullptr, xi, yb, -c);
+        ad_node_t* l2 = ad_poincare_log_map(nullptr, xi, yb, chart_K(c));
         report(nm, l2 == nullptr, "|y| = %.1f, got %s", rc.r, l2 ? "a value" : "NULL");
     }
 }
@@ -943,13 +971,13 @@ static void check_ops_refuse_nan_coordinate(void) {
     double Y[3]  = { -0.20, 0.25, 0.10 };
     ad_node_t* xn = var_node(Xn, sh, 1), *yn = var_node(Y, sh, 1);
     report("boundary.distance_refuses_nan",
-           ad_hyperbolic_distance(nullptr, xn, yn, -1.0) == nullptr,
+           ad_hyperbolic_distance(nullptr, xn, yn, chart_K(1.0)) == nullptr,
            "NaN coordinate in x takes the refusal branch");
     report("boundary.log_map_refuses_nan",
-           ad_poincare_log_map(nullptr, xn, yn, -1.0) == nullptr,
+           ad_poincare_log_map(nullptr, xn, yn, chart_K(1.0)) == nullptr,
            "NaN coordinate in x takes the refusal branch");
     report("boundary.exp_map_refuses_nan",
-           ad_poincare_exp_map(nullptr, xn, yn, -1.0) == nullptr,
+           ad_poincare_exp_map(nullptr, xn, yn, chart_K(1.0)) == nullptr,
            "NaN coordinate in x takes the refusal branch");
 }
 
@@ -966,7 +994,7 @@ static void check_geodesic_refuses_off_manifold_slice(void) {
     /* Sanity: the all-interior version must still compute. */
     {
         ad_node_t* q = var_node(Q, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
-        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, chart_K(1.0), false);
         report("boundary.geodesic_interior_still_computes", o != nullptr,
                "all Q/K head-slices strictly inside the ball");
     }
@@ -978,7 +1006,7 @@ static void check_geodesic_refuses_off_manifold_slice(void) {
     Kbad[k_bad] = 0.9; Kbad[k_bad + 1] = 0.9;   /* |slice| = 1.2728 > 1 */
     {
         ad_node_t* q = var_node(Q, sh, 3), *k = var_node(Kbad, sh, 3), *v = var_node(V, sh, 3);
-        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, chart_K(1.0), false);
         report("boundary.geodesic_refuses_off_manifold_key", o == nullptr,
                "K slice at position 1, head 1 has |k| = 1.2728; got %s",
                o ? "an attention output with that key silently dropped" : "NULL");
@@ -990,7 +1018,7 @@ static void check_geodesic_refuses_off_manifold_slice(void) {
     Qbad[q_bad] = 1.0; Qbad[q_bad + 1] = 0.0;
     {
         ad_node_t* q = var_node(Qbad, sh, 3), *k = var_node(K, sh, 3), *v = var_node(V, sh, 3);
-        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, -1.0, false);
+        ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, heads, chart_K(1.0), false);
         report("boundary.geodesic_refuses_on_boundary_query", o == nullptr,
                "Q slice at position 0, head 1 has |q| = 1 exactly; got %s",
                o ? "an attention output" : "NULL");
@@ -1049,9 +1077,10 @@ static void check_curvature_zero_was_hyperbolic(void) {
     bool refused_flat = (ad_hyperbolic_distance(nullptr, a, b, 0.0) == nullptr);
 
     ad_node_t* a2 = var_node(O, sh, 1), *b2 = var_node(P, sh, 1);
-    ad_node_t* h = ad_hyperbolic_distance(nullptr, a2, b2, -1.0);
+    ad_node_t* h = ad_hyperbolic_distance(nullptr, a2, b2, chart_K(1.0));
     double hv = h ? ((const double*)h->tensor_value)[0] : NAN;
-    double want = 2.0 * std::atanh(0.5);     /* 1.0986122886681098 */
+    /* the ball of Mobius parameter 1 (K = -4): d(0, r) = artanh(r) */
+    double want = std::atanh(0.5);           /* 0.5493061443340548 */
     report("curvature.K0_no_longer_answers_from_the_hyperbolic_ball",
            refused_flat && h && std::fabs(hv - want) < 1e-12,
            "K=0 refused=%s; K=-1 still gives d(0,0.5) = %.15f (want %.15f)",
@@ -1070,7 +1099,7 @@ static void check_geodesic_all_keys_off_manifold_refuses(void) {
     double Q[8], Kb[8], V[8];
     for (int i = 0; i < 8; ++i) { Q[i] = 0.10; Kb[i] = 1.0; V[i] = 0.03 * i; }
     ad_node_t* q = var_node(Q, sh, 3), *k = var_node(Kb, sh, 3), *v = var_node(V, sh, 3);
-    ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, 2, -1.0, false);
+    ad_node_t* o = ad_geodesic_attention(nullptr, q, k, v, 2, chart_K(1.0), false);
     bool ok = (o == nullptr);
     if (!ok) {
         const double* O = (const double*)o->tensor_value;
@@ -1095,7 +1124,7 @@ static void check_geodesic_attention_shape_refusal(void) {
     ad_node_t* q = var_node(q_data, q_shape, 3);
     ad_node_t* k = var_node(k_data, k_shape, 3);
     ad_node_t* v = var_node(v_data, v_shape, 3);
-    const bool refused = ad_geodesic_attention(nullptr, q, k, v, 1, -1.0, false) == nullptr;
+    const bool refused = ad_geodesic_attention(nullptr, q, k, v, 1, chart_K(1.0), false) == nullptr;
     report("geodesic.shape_mismatch_refuses_before_row_indexing", refused,
            "Q=[1,2,2], K=[1,1,2], V=[1,2,2] %s", refused ? "refused" : "accepted");
 }
@@ -1112,20 +1141,29 @@ static void check_geodesic_attention_finite_domain(void) {
     const bool inf_curvature_refused =
         ad_geodesic_attention(nullptr, iq, ik, iv, 1, INFINITY, false) == nullptr;
 
+    /* A squared distance of DBL_MAX^2 is not representable: the logit is an
+     * explicit refusal, not a clamp. A representable one (1e150^2) scores. */
     const int64_t one_row[3] = { 1, 1, 1 };
+    const double big[1] = { 1e150 };
+    ad_node_t* hq = var_node(zero, one_row, 3);
+    ad_node_t* hk = var_node(huge + 1, one_row, 3);
+    ad_node_t* hv = var_node(one, one_row, 3);
+    const bool unrepresentable_refused =
+        ad_geodesic_attention(nullptr, hq, hk, hv, 1, 0.0, false) == nullptr;
     ad_node_t* fq = var_node(zero, one_row, 3);
-    ad_node_t* fk = var_node(huge + 1, one_row, 3);
+    ad_node_t* fk = var_node(big, one_row, 3);
     ad_node_t* fv = var_node(one, one_row, 3);
     ad_node_t* finite_distance =
         ad_geodesic_attention(nullptr, fq, fk, fv, 1, 0.0, false);
     const double finite_output = finite_distance
         ? ((const double*)finite_distance->tensor_value)[0] : NAN;
-    const bool overflow_case_is_finite = finite_distance &&
+    const bool large_case_is_finite = finite_distance &&
         std::isfinite(finite_output) && std::fabs(finite_output - 1.0) < 1e-15;
     report("geodesic.finite_domain_rejects_inf_and_scales_euclidean_norm",
-           inf_curvature_refused && overflow_case_is_finite,
-           "K=+inf refused=%s; K=0, k=DBL_MAX output=%.17g",
-           inf_curvature_refused ? "yes" : "NO", finite_output);
+           inf_curvature_refused && unrepresentable_refused && large_case_is_finite,
+           "K=+inf refused=%s; K=0, k=DBL_MAX refused=%s; k=1e150 output=%.17g",
+           inf_curvature_refused ? "yes" : "NO",
+           unrepresentable_refused ? "yes" : "NO", finite_output);
 }
 
 int main(void) {
@@ -1143,7 +1181,7 @@ int main(void) {
     check_geodesic_causal_fd();              /* 1 */
     check_geodesic_spherical_fd();           /* 1 */
     check_vm_bridge_agreement();             /* 1 */
-    check_geodesic_refuses_coincident();     /* 1 */
+    check_geodesic_self_attention_differentiable(); /* 1 */
     check_loud_default();                    /* 1 */
     check_leaf_still_silent();               /* 1 */
     /* SW-76 boundary behaviour: inside computes exactly, on/outside refuses. */
