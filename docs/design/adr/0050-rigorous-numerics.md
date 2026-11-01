@@ -17,7 +17,7 @@ sources:
 ---
 # ADR-0050: Rigorous numerics — directed rounding by default, compact-set bounds, torus averaging, interval and Taylor-model element tensors
 
-**Status:** Accepted (for root review; lands in rung order)
+**Status:** Proposed (for root review; lands in rung order)
 **Date:** 2026-10-30
 **Rungs:** v1.5.0-intelligence (directed-rounding default, compact-set bounds, torus
 averaging); v1.6.0-reasoning (interval and Taylor-model tensor element types)
