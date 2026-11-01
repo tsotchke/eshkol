@@ -1,3 +1,15 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/curvature.esk
+  - inc/eshkol/backend/riemannian_core.h
+  - tests/geometry/signed_curvature_test.esk
+  - tests/vm/signed_curvature_surface.esk
+---
+
 # `core.curvature` — signed-curvature stereographic geometry
 
 ```scheme
