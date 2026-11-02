@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve signed-curvature geometry across VM and AD engines, including
+  flat-curvature continuity and manifold primitive output contracts. (#912)
+
 - **Native cross-entropy preserves reverse derivatives.** Record its tensor
   tape node, retain logit edges and consume the actual upstream cotangent.
   Constant probability and class-index labels are supported; differentiable
