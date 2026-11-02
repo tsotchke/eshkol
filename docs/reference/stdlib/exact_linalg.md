@@ -140,3 +140,24 @@ both be positive exact integers.
 ;; f(i,j) = i+j over a 2x3 grid: 9/6 = 3/2, exact.
 (display (torus-average-2d (lambda (i j) (+ i j)) 2 3)) (newline) ; 3/2
 ```
+
+## Exact affine solution families
+
+`(exact-affine-solve A b [columns])` returns `(particular . nullspace-basis)`.
+Every solution is the particular vector plus an arbitrary rational linear
+combination of the basis vectors. Rectangular and singular consistent systems
+are admitted; inconsistent systems raise. `columns` fixes the ambient width
+when `A` is an empty outer vector (default zero), and must agree with nonempty
+rows. All inputs must be exact rational generic vectors. Inputs are preserved
+and returned vectors own their storage. Arithmetic that loses exactness raises
+before a result is returned. The existing `exact-solve` contract is unchanged.
+
+```scheme
+(require core.exact_linalg)
+(exact-affine-solve (vector (vector 2 1)) (vector 1))
+; particular #(1/2 0), nullspace basis (#(-1/2 1)); build with vector procedures.
+```
+
+Run `ctest --test-dir build --output-on-failure -R exact_affine`. The arithmetic
+suite independently checks all 729 ternary two-dimensional systems against
+determinants and augmented minors, plus rectangular/empty shapes and ownership.

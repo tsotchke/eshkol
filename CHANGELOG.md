@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve signed-curvature geometry across VM and AD engines, including
+  flat-curvature continuity and manifold primitive output contracts. (#912)
+
 - **Native cross-entropy preserves reverse derivatives.** Record its tensor
   tape node, retain logit edges and consume the actual upstream cotangent.
   Constant probability and class-index labels are supported; differentiable
@@ -32,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add exact-rational affine solution families with particular solutions and
+  complete nullspace bases, including explicit ambient dimensions for empty
+  systems. Add JIT/AOT acceptance and determinant-oracle tests, plus negative
+  controls for the AOT test harness. (#785)
 - **One chart for every sign of the curvature (ADR-0018).** Every
   constant-curvature op evaluates the kappa-stereographic chart in the
   canonical-flat gauge `alpha = 1`: the ball of radius `2/sqrt(-K)`, Euclidean

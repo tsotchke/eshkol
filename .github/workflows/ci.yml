@@ -2201,7 +2201,7 @@ jobs:
           # parallelism at all — see the ASan block in CMakeLists.txt.)
           cmake --build "${{ matrix.build_dir }}" --parallel ${BUILD_JOBS}
 
-      - name: Required CE, qLLM bridge and tensor gradient CTests
+      - name: Required gradient, affine and VM cache CTests
         if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'linux-x64-xla')
         timeout-minutes: 35
         shell: bash
@@ -2210,13 +2210,13 @@ jobs:
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
-          manifest="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}-pr871-ctest-manifest.json"
+          manifest="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}-pr785-merge-ctest-manifest.json"
           mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
           cmake --build "$BUILD_DIR" --target \
-            qllm_bridge_gradcheck_test tensor_backward_dual_impl_gradcheck_test --parallel 2 \
+            qllm_bridge_gradcheck_test tensor_backward_dual_impl_gradcheck_test eshkol-vm-prelude-cache-gen --parallel 2 \
             2>&1 | tee -a "$log"
           ctest --test-dir "$BUILD_DIR" --show-only=json-v1 \
-            -R '^(cross_entropy_gradient_harness_selftest|cross_entropy_gradient_(jit|aot)_dense[01]|qllm_bridge_gradcheck|tensor_backward_dual_impl_gradcheck)$' \
+            -R '^(cross_entropy_gradient_harness_selftest|cross_entropy_gradient_(jit|aot)_dense[01]|qllm_bridge_gradcheck|tensor_backward_dual_impl_gradcheck|exact_affine_(jit|aot)|vm_prelude_cache_is_current)$' \
             > "$manifest" 2>> "$log"
           python3 - "$manifest" <<'PY' 2>&1 | tee -a "$log"
           import json, sys
@@ -2228,16 +2228,19 @@ jobs:
               "cross_entropy_gradient_aot_dense1",
               "qllm_bridge_gradcheck",
               "tensor_backward_dual_impl_gradcheck",
+              "exact_affine_jit",
+              "exact_affine_aot",
+              "vm_prelude_cache_is_current",
           }
           data = json.load(open(sys.argv[1], encoding="utf-8"))
           actual = {t["name"] for t in data["tests"]}
           if len(data["tests"]) != len(expected) or actual != expected:
-              raise SystemExit(f"PR871 CTest inventory mismatch: expected exactly {len(expected)} unique tests, got {len(data['tests'])}: {sorted(actual)}")
-          print(f"PASS: exact PR871 CTest inventory ({len(expected)} tests)")
+              raise SystemExit(f"PR785 merge cache10 CTest inventory mismatch: expected exactly {len(expected)} unique tests, got {len(data['tests'])}: {sorted(actual)}")
+          print(f"PASS: exact PR785 merge cache10 CTest inventory ({len(expected)} tests)")
           PY
           ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error \
             --timeout 900 \
-            -R '^(cross_entropy_gradient_harness_selftest|cross_entropy_gradient_(jit|aot)_dense[01]|qllm_bridge_gradcheck|tensor_backward_dual_impl_gradcheck)$' \
+            -R '^(cross_entropy_gradient_harness_selftest|cross_entropy_gradient_(jit|aot)_dense[01]|qllm_bridge_gradcheck|tensor_backward_dual_impl_gradcheck|exact_affine_(jit|aot)|vm_prelude_cache_is_current)$' \
             2>&1 | tee -a "$log"
 
       - name: Required signed-curvature, bridge and VM cache qualification
