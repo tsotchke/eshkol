@@ -329,7 +329,7 @@ for f in "${corpus_files[@]}"; do
             "vm-src timed out/infra after retry (rc=$vrc) — no parity verdict obtained"
     elif [ $vrc -ne 0 ] || ! vm_stderr_clean "$d/vmsrc.err"; then
         report FAIL "$nodeid::native-vs-vm-src" "corpus_${base}_vmsrc" \
-            "vm-src errored (rc=$vrc, stderr: $(head -c 160 "$d/vmsrc.err"))"
+            "vm-src errored (rc=$vrc, stderr: $(head -c 1600 "$d/vmsrc.err"))"
     elif ! cmp -s "$d/native.out" "$d/vmsrc.out"; then
         report FAIL "$nodeid::native-vs-vm-src" "corpus_${base}_vmsrc" \
             "output diverges: native=<$(head -c 120 "$d/native.out")> vm=<$(head -c 120 "$d/vmsrc.out")>"
@@ -368,7 +368,7 @@ for f in "${corpus_files[@]}"; do
                 "vm-eskb timed out/infra after retry (rc=$brc) — no parity verdict obtained"
         elif [ $brc -ne 0 ] || ! vm_stderr_clean "$d/vmeskb.err"; then
             report FAIL "$nodeid::native-vs-vm-eskb" "corpus_${base}_vmeskb" \
-                "vm-eskb errored (rc=$brc, stderr: $(head -c 160 "$d/vmeskb.err"))"
+                "vm-eskb errored (rc=$brc, stderr: $(head -c 1600 "$d/vmeskb.err"))"
         elif ! cmp -s "$d/native.out" "$d/vmeskb.out"; then
             report FAIL "$nodeid::native-vs-vm-eskb" "corpus_${base}_vmeskb" \
                 "output diverges: native=<$(head -c 120 "$d/native.out")> vm-eskb=<$(head -c 120 "$d/vmeskb.out")>"

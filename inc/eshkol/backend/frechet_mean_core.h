@@ -37,6 +37,7 @@
 #define ESHKOL_BACKEND_FRECHET_MEAN_CORE_H
 
 #include <math.h>
+#include "eshkol/backend/riemannian_core.h"
 
 /*******************************************************************************
  * Weighted Fréchet (Karcher) mean on the Poincaré ball
@@ -69,10 +70,14 @@
  * this f64 iteration, which converges to ~1e-16 relative residual on ordinary
  * inputs and leaves the gate satisfiable.
  *
- * Curvature convention: the argument is the sectional curvature K <= 0, matching
- * every in-tree call site (make-hyperbolic-manifold 2 -1.0, poincare-distance
- * ... -1.0). The ball has radius 1/sqrt(-K); K = 0 is the Euclidean case, where
- * the weighted average IS the Fréchet mean and is used exactly.
+ * Curvature convention: the argument is the signed sectional curvature K <= 0
+ * in the ADR-0018 chart (riemannian_core.h): the ball has radius 2/sqrt(-K) and
+ * Mobius parameter c = eshkol_rm_ball_param(-K) = -K/4; K = 0 is the Euclidean
+ * case, where the weighted average IS the Fréchet mean and is used exactly.
+ * The coordinate exp/log maps below depend on the Mobius parameter only (a
+ * constant rescale of the metric leaves the connection unchanged); the
+ * residual is measured with the chart's lambda, so one unit is one unit of
+ * geodesic distance.
  ******************************************************************************/
 
 /* Iteration budget and relative residual bar. The bar matches the default
@@ -178,7 +183,7 @@ static const char* eshkol_frechet_mean_compute(const double* pts, const double* 
     if (n_points <= 0 || dim <= 0) return "needs at least one point of positive dimension";
     if (!(K <= 0.0) || !(K == K))
         return "curvature must be <= 0 (frechet-mean is the hyperbolic/Euclidean "
-               "Riemannian center of mass; the ball has radius 1/sqrt(-K))";
+               "Riemannian center of mass; the ball has radius 2/sqrt(-K))";
 
     double wsum = 0.0;
     for (int i = 0; i < n_points; i++) {
@@ -204,13 +209,13 @@ static const char* eshkol_frechet_mean_compute(const double* pts, const double* 
     }
 
     /* ---- Hyperbolic case ---------------------------------------------- */
-    const double c = -K;
+    const double c = eshkol_rm_ball_param(-K);
     const double radius = 1.0 / sqrt(c);
     for (int i = 0; i < n_points; i++) {
         const double* xi = pts + (int64_t)i * dim;
         if (!(sqrt(eshkol_frechet_dot(xi, xi, dim)) < radius))
-            return "every point must lie strictly inside the Poincare ball of "
-                   "radius 1/sqrt(-K)";
+            return "every point must lie strictly inside the ball of "
+                   "radius 2/sqrt(-K)";
     }
 
     double* step    = scratch;
@@ -285,7 +290,7 @@ static const char* eshkol_frechet_mean_compute(const double* pts, const double* 
          * boundary. The backward rule in lib/bridge/tensor_backward.cpp uses the
          * identical scale — the forward's gate is what makes the backward's gate
          * satisfiable, so they must not drift apart. */
-        double lambda = 2.0 / (1.0 - c * mu_sq);
+        double lambda = ESHKOL_RM_ALPHA / (1.0 - c * mu_sq);
         resid_rel = (lambda * resid) / (wsum * (1.0 + lambda * max_log));
         *resid_out = resid_rel;
 

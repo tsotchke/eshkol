@@ -9,7 +9,7 @@ import unittest
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("cmake"), "POSIX fake-executable fixture")
 class StdlibAotRunnerTest(unittest.TestCase):
-    def invoke(self, output, compile_status=0, compile_output=""):
+    def invoke(self, output, compile_status=0, compile_output="", expected_verdict="PASS"):
         with tempfile.TemporaryDirectory(prefix="aot controls with spaces ") as temporary:
             root = Path(temporary)
             compiler = root / "fake compiler"
@@ -24,7 +24,8 @@ class StdlibAotRunnerTest(unittest.TestCase):
             runner = Path(__file__).resolve().parents[2] / "scripts/run_stdlib_aot.cmake"
             return subprocess.run(
                 ["cmake", f"-DESHKOL_RUN={compiler}", f"-DESHKOL_SOURCE={root / 'input.esk'}",
-                 f"-DESHKOL_BINARY={root / 'output program'}", f"-DESHKOL_LINK_DIR={root}", "-P", str(runner)],
+                 f"-DESHKOL_BINARY={root / 'output program'}", f"-DESHKOL_LINK_DIR={root}",
+                 f"-DESHKOL_EXPECTED_VERDICT={expected_verdict}", "-P", str(runner)],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=20,
             )
 
@@ -43,6 +44,18 @@ class StdlibAotRunnerTest(unittest.TestCase):
 
     def test_failed_compiler_diagnostic_overrides_zero_exit(self):
         self.assertNotEqual(self.invoke("RESULT: PASS", compile_output="LLVM module verification failed").returncode, 0)
+
+    def test_all_pass_requires_explicit_contract(self):
+        result = self.invoke("PASS: fixture\nRESULT: ALL PASS", expected_verdict="ALL PASS")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotEqual(self.invoke("RESULT: ALL PASS").returncode, 0)
+
+    def test_contract_mismatch_and_failure_are_rejected(self):
+        self.assertNotEqual(self.invoke("RESULT: PASS", expected_verdict="ALL PASS").returncode, 0)
+        self.assertNotEqual(self.invoke("FAIL: fixture\nRESULT: ALL PASS", expected_verdict="ALL PASS").returncode, 0)
+
+    def test_unknown_contract_is_rejected(self):
+        self.assertNotEqual(self.invoke("RESULT: PASS", expected_verdict=".*").returncode, 0)
 
 
 if __name__ == "__main__":

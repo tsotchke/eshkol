@@ -422,7 +422,7 @@ static void check_frechet_refuses_outside_ball(void) {
      * backward would refuse later, after the caller has used the value. */
     double pts[NPTS * FDIM];
     std::memcpy(pts, kPts, sizeof pts);
-    pts[0] = 1.0; pts[1] = 0.0; pts[2] = 0.0;    /* exactly on the unit sphere */
+    pts[0] = 2.0; pts[1] = 0.0; pts[2] = 0.0;    /* exactly on the K = -1 ball boundary (radius 2) */
     int64_t pshape[2] = { NPTS, FDIM };
     int64_t wshape[1] = { NPTS };
     ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 4);

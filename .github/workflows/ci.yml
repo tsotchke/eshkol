@@ -2243,6 +2243,59 @@ jobs:
             -R '^(cross_entropy_gradient_harness_selftest|cross_entropy_gradient_(jit|aot)_dense[01]|qllm_bridge_gradcheck|tensor_backward_dual_impl_gradcheck|exact_affine_(jit|aot)|vm_prelude_cache_is_current)$' \
             2>&1 | tee -a "$log"
 
+      - name: Required signed-curvature, bridge and VM cache qualification
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'linux-x64-xla')
+        timeout-minutes: 35
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          ESHKOL_JIT_CACHE: '0'
+          ESHKOL_VM_NO_DISASM: '1'
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}-signed-curvature.log"
+          manifest="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}-signed-curvature-inventory.json"
+          mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
+          cmake --build "$BUILD_DIR" --parallel 2 --target \
+            eshkol-run eshkol-vm-standalone-test eshkol-vm-prelude-cache-gen \
+            signed_curvature_reference_grid_test squared_distance_gradcheck_test \
+            qllm_bridge_geometric_gradcheck_test qllm_bridge_geometric_scaled_gradcheck_test \
+            qllm_bridge_producer_gradcheck_test riemannian_core_adversarial_regression_test \
+            frechet_mean_backward_gradcheck_test 2>&1 | tee -a "$log"
+          tests='^(signed_curvature_reference_grid|squared_distance_gradcheck|qllm_bridge_geometric_gradcheck|qllm_bridge_geometric_scaled_gradcheck|qllm_bridge_producer_gradcheck|riemannian_core_adversarial_regression|frechet_mean_backward_gradcheck|signed_curvature_jit|signed_curvature_aot|vm_prelude_cache_is_current)$'
+          ctest --test-dir "$BUILD_DIR" --show-only=json-v1 -R "$tests" > "$manifest"
+          python3 - "$manifest" <<'PY' 2>&1 | tee -a "$log"
+          import json, sys
+          expected = {
+              "signed_curvature_reference_grid", "squared_distance_gradcheck",
+              "qllm_bridge_geometric_gradcheck", "qllm_bridge_geometric_scaled_gradcheck",
+              "qllm_bridge_producer_gradcheck", "riemannian_core_adversarial_regression",
+              "frechet_mean_backward_gradcheck", "signed_curvature_jit",
+              "signed_curvature_aot", "vm_prelude_cache_is_current",
+          }
+          actual = [t["name"] for t in json.load(open(sys.argv[1], encoding="utf-8"))["tests"]]
+          if len(actual) != len(expected) or set(actual) != expected:
+              raise SystemExit(f"Signed-curvature inventory mismatch: {actual}")
+          print(f"PASS: exact signed-curvature CTest inventory ({len(expected)} tests)")
+          PY
+          ctest --test-dir "$BUILD_DIR" -V --no-tests=error --timeout 900 -R "$tests" \
+            2>&1 | tee -a "$log"
+          grep -q 'GRID binary128 ' "$log"
+          . scripts/lib/harness_outcome.sh
+          work="$RUNNER_TEMP/eshkol-signed-curvature-vm-${{ matrix.name }}"
+          mkdir -p "$work"
+          python3 tests/toolchain/test_curvature_vm_output.py
+          for fixture in signed_curvature_surface geometric_riemannian_surface_regression \
+            geometric_adversarial_surface_regression frechet_mean_surface_regression \
+            riemannian_adam_state_regression; do
+            eshkol_outcome_guarded 180 "$BUILD_DIR/eshkol-run" --profile hosted-vm \
+              --emit-eskb "$work/$fixture.eskb" "tests/vm/$fixture.esk" \
+              2>&1 | tee -a "$log"
+            eshkol_outcome_guarded 180 "$BUILD_DIR/eshkol-vm-standalone-test" \
+              "$work/$fixture.eskb" 2>&1 | tee "$work/$fixture.stdout" | tee -a "$log"
+            python3 scripts/check_curvature_vm_output.py "$fixture" "$work/$fixture.stdout"
+          done
+
       - name: Public compiler APIs link and execute
         if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite')
         run: ctest --test-dir "${{ matrix.build_dir }}" --output-on-failure -R '^compiler_public_api_linkage$'

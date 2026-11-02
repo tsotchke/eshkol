@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete nullspace bases, including explicit ambient dimensions for empty
   systems. Add JIT/AOT acceptance and determinant-oracle tests, plus negative
   controls for the AOT test harness. (#785)
+- **One chart for every sign of the curvature (ADR-0018).** Every
+  constant-curvature op evaluates the kappa-stereographic chart in the
+  canonical-flat gauge `alpha = 1`: the ball of radius `2/sqrt(-K)`, Euclidean
+  space at `K = 0`, and the sphere of radius `1/sqrt(K)` minus its pole, with
+  one set of formulas that is real-analytic through `K = 0`. Curvature jets
+  (value, `d/dK`, `d2/dK2`) are defined at zero, adaptive curvature steps may
+  change sign, geodesic attention scores are `-d^2/(2t)` with no curvature
+  scale, and serialized geometry carries a convention id. The new
+  `core.curvature` module exposes the shared core to JIT and AOT programs, and
+  an independent binary128 reference checks it at every finite binade of `K`
+  of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
+  (`migrate-legacy-ball-point`); distances are unchanged by the migration. (#854)
+
 - Windows in-process JIT regression probes with exact-output checks, native
   AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases
   cover immediate and repeated continuations, guard-handler restoration,
