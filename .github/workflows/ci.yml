@@ -2281,6 +2281,7 @@ jobs:
           . scripts/lib/harness_outcome.sh
           work="$RUNNER_TEMP/eshkol-signed-curvature-vm-${{ matrix.name }}"
           mkdir -p "$work"
+          python3 tests/toolchain/test_curvature_vm_output.py
           for fixture in signed_curvature_surface geometric_riemannian_surface_regression \
             geometric_adversarial_surface_regression frechet_mean_surface_regression \
             riemannian_adam_state_regression; do
@@ -2289,10 +2290,7 @@ jobs:
               2>&1 | tee -a "$log"
             eshkol_outcome_guarded 180 "$BUILD_DIR/eshkol-vm-standalone-test" \
               "$work/$fixture.eskb" 2>&1 | tee "$work/$fixture.stdout" | tee -a "$log"
-            grep -q '^PASS: ' "$work/$fixture.stdout"
-            if grep -qE '^FAIL|^ERROR:|unhandled native call|fatal signal' "$work/$fixture.stdout"; then
-              exit 1
-            fi
+            python3 scripts/check_curvature_vm_output.py "$fixture" "$work/$fixture.stdout"
           done
 
       - name: Public compiler APIs link and execute
