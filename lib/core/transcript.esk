@@ -196,7 +196,7 @@
                  (lo2 (+ (- lo lo-low-byte) (bitwise-xor lo-low-byte byte)))
                  (low (tr-mul32 lo2 435))
                  (new-hi (modulo (+ (* hi 435) (* lo2 256) (car low)) 4294967296)))
-            (loop (+ i 1) new-hi (cdr low))))))
+            (loop (+ i 1) new-hi (cdr low)))))))
 
 ;; ---------------------------------------------------------------------
 ;; Handle
