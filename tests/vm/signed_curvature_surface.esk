@@ -29,6 +29,24 @@
 (define pairs (pair6 x y))
 (define m (make-hyperbolic-manifold-handle 3 -1.0))
 
+;; The public module's records and the VM's lower-level handles share the
+;; curvature accessor. Returning NIL for a record breaks gyro transport.
+(require core.manifold)
+(report (and (number? (manifold-curvature (make-euclidean-manifold 3)))
+             (= (manifold-curvature (make-euclidean-manifold 3)) 0.0)) "module Euclidean curvature")
+(report (= (manifold-curvature (make-hyperbolic-manifold 3)) -1.0) "module hyperbolic curvature")
+(report (= (manifold-curvature (make-spherical-manifold 3)) 1.0) "module spherical curvature")
+(report (= (manifold-curvature (make-euclidean-manifold-handle 3)) 0.0) "opaque Euclidean curvature")
+(report (= (manifold-curvature (make-hyperbolic-manifold-handle 3 -4.0)) -4.0) "opaque hyperbolic curvature is retained")
+(report (= (manifold-curvature (make-spherical-manifold-handle 3)) 1.0) "opaque spherical curvature")
+(define curvature-accessor manifold-curvature)
+(report (= (curvature-accessor (make-hyperbolic-manifold 3)) -1.0) "first-class module curvature accessor")
+(report (= (get-curvature (make-hyperbolic-manifold 3)) -1.0) "get-curvature accepts the module record")
+(report (= (riemann-curvature (make-spherical-manifold 3)) 1.0) "riemann-curvature accepts the module record")
+(report (null? (manifold-curvature (vector 'hyperbolic))) "short manifold record is rejected")
+(report (null? (manifold-curvature (vector "hyperbolic" 3))) "string manifold tag is rejected")
+(report (null? (manifold-curvature (vector 'unknown 3))) "unknown manifold tag is rejected")
+
 ;; K, d, dd/dK, d2d/dK2 from the binary128 reference
 (define golden
   (list (list 0.0 0.6595452979136459 -0.00989317946870469 0.000243825652322451)

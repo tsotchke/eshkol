@@ -6,7 +6,7 @@ import re
 
 # Counts include the success summary in fixtures that emit one.
 CONTRACTS = {
-    "signed_curvature_surface": (25, "prefix"),
+    "signed_curvature_surface": (37, "prefix"),
     "geometric_riemannian_surface_regression": (166, "prefix"),
     "geometric_adversarial_surface_regression": (11, "prefix"),
     "frechet_mean_surface_regression": (14, "suffix"),
