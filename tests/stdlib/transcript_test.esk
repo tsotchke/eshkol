@@ -116,6 +116,21 @@
        (not (string=? (tr-fnv1a-64-hex (json-stringify claim-a)) (tr-fnv1a-64-hex (json-stringify claim-c)))))
 (check "tr-fnv1a-64-hex is 16 lowercase hex characters"
        (= 16 (string-length (tr-fnv1a-64-hex (json-stringify claim-a)))))
+(check "tr-fnv1a-64-hex preserves the fixed ASCII FNV-1a vector"
+       (string=? "af63dc4c8601ec8c" (tr-fnv1a-64-hex "a")))
+(check "tr-fnv1a-64-hex hashes U+00E9 as its two UTF-8 bytes"
+       (string=? "0ac21707b7181e01" (tr-fnv1a-64-hex "é")))
+(check "tr-fnv1a-64-hex hashes U+1F600 as its four UTF-8 bytes"
+       (string=? "feff073875020288" (tr-fnv1a-64-hex "😀")))
+(check "Unicode determinant canonical claim matches the Python replay fixture hash"
+       (string=? "93217cf53dc7c9e7"
+         (tr-fnv1a-64-hex
+           (json-stringify
+             (list (cons "kind" "determinant") (cons "label" "café 😀")
+                   (cons "inputs"
+                     (list (cons "matrix" (tv-matrix-rows (list (list 1 2) (list 3 4))))
+                           (cons "note" (tv-string "café 😀"))))
+                   (cons "output" (tv-int -2)))))))
 (check "tr-fnv1a-64-hex (pure Eshkol, VM-safe) is byte-identical to core.merkle's fnv1a-64/hash->hex (native extern) on the empty string, short strings, a 1000-character string and a 53-digit decimal"
        (all? (lambda (s) (string=? (tr-fnv1a-64-hex s) (hash->hex (fnv1a-64 s))))
              (list "" "a" "abc" (json-stringify claim-a) (json-stringify claim-c)
@@ -137,6 +152,12 @@
 (transcript-record! h "smith_normal_form" "tiny"
   (list (cons "boundary" (tv-matrix-rows (list (list 2 4) (list 6 8)))))
   (tv-int-list (list 2 4)))
+;; This remains a mathematically replayable determinant claim while exercising
+;; Unicode in both the label and a canonical string-valued input.
+(transcript-record! h "determinant" "café 😀"
+  (list (cons "matrix" (tv-matrix-rows (list (list 1 2) (list 3 4))))
+        (cons "note" (tv-string "café 😀")))
+  (tv-int -2))
 (check "transcript-close! on an active handle reports success" (transcript-close! h))
 
 (define doc (json-read-file out-path))
@@ -144,7 +165,7 @@
        (and (equal? "eshkol.transcript.v1" (json-get doc "schema"))
             (equal? "transcript_test" (json-get doc "program"))))
 (define claims (json-get doc "claims"))
-(check "both recorded claims are present, oldest first" (= 2 (length claims)))
+(check "all three recorded claims are present, oldest first" (= 3 (length claims)))
 (check "the first claim is the determinant claim, with its stated output"
        (let ((c0 (car claims)))
          (and (equal? "determinant" (json-get c0 "kind")) (equal? "2x2" (json-get c0 "label"))
@@ -159,8 +180,14 @@
 ;; re-derive it; see scripts/math_crosscheck/replay_check.py.
 (check "every claim carries a well-formed 16-hex-character hash"
        (all? (lambda (c) (let ((h (json-get c "hash"))) (and (string? h) (= 16 (string-length h))))) claims))
-(check "the two claims (different kind/label/content) hash differently"
-       (not (equal? (json-get (car claims) "hash") (json-get (cadr claims) "hash"))))
+(check "the claims (different kind/label/content) hash differently"
+       (and (not (equal? (json-get (car claims) "hash") (json-get (cadr claims) "hash")))
+            (not (equal? (json-get (cadr claims) "hash") (json-get (caddr claims) "hash")))))
+(check "the Unicode claim survives transcript JSON write/read"
+       (let ((c (caddr claims)))
+         (and (equal? "café 😀" (json-get c "label"))
+              (equal? "café 😀" (json-get (json-get (json-get c "inputs") "note") "v"))
+              (equal? "-2" (json-get (json-get c "output") "v")))))
 (unsetenv "ESHKOL_TRANSCRIPT")
 
 (newline)

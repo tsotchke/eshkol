@@ -81,7 +81,7 @@ def recompute_hash(claim: Dict[str, Any]) -> str:
         "inputs": claim["inputs"],
         "output": claim["output"],
     }
-    text = json.dumps(without_hash, separators=(",", ":"))
+    text = json.dumps(without_hash, separators=(",", ":"), ensure_ascii=False)
     return em.hash_hex16(em.fnv1a_64(text))
 
 

@@ -157,13 +157,9 @@
 ;; This reimplementation never forms a value above about 2^34, well
 ;; inside the documented-correct range, by carrying the 64-bit hash
 ;; state as two 32-bit halves and doing every multiply as a schoolbook
-;; long multiplication over 16-bit limbs. tr-fnv1a-64-hex is checked
-;; byte-identical to (hash->hex (fnv1a-64 str)) on a range of inputs,
-;; including a 1000-character string and a 53-digit decimal, in
-;; tests/stdlib/transcript_test.esk. Treats str as ASCII (one char,
-;; one byte): every canonical-value label, number string and JSON
-;; delimiter this module ever hashes is ASCII, so this never diverges
-;; from core.merkle's UTF-8 byte view for an actual transcript.
+;; long multiplication over 16-bit limbs. string->utf8 supplies the
+;; same UTF-8 byte sequence used by the native and VM backends and by
+;; core.merkle's FNV implementation.
 
 (define (tr-mul32 a b)
   "Exact 64-bit product of a, b in [0, 2^32), returned as (hi . lo),
@@ -185,21 +181,22 @@
         (loop (- n 1) (quotient x 16) (cons (string-ref "0123456789abcdef" (modulo x 16)) acc)))))
 
 (define (tr-fnv1a-64-hex str)
-  "16-hex-char lowercase FNV-1a 64-bit digest of str (ASCII byte view).
+  "16-hex-char lowercase FNV-1a 64-bit digest of str's UTF-8 bytes.
    State (hi . lo) starts at the standard offset basis
    0xcbf29ce484222325 = (3421674724 . 2216829733); each step XORs the
    next byte into the low byte of lo, then multiplies the 64-bit state
    by the FNV prime 0x100000001b3 = 256*2^32 + 435 mod 2^64, computed as
    ((hi*435 + lo*256 + carry-from-lo*435) mod 2^32, low-32-of-(lo*435))."
-  (let loop ((i 0) (hi 3421674724) (lo 2216829733))
-    (if (= i (string-length str))
-        (string-append (tr-hex32 hi) (tr-hex32 lo))
-        (let* ((byte (char->integer (string-ref str i)))
-               (lo-low-byte (modulo lo 256))
-               (lo2 (+ (- lo lo-low-byte) (bitwise-xor lo-low-byte byte)))
-               (low (tr-mul32 lo2 435))
-               (new-hi (modulo (+ (* hi 435) (* lo2 256) (car low)) 4294967296)))
-          (loop (+ i 1) new-hi (cdr low))))))
+  (let ((bytes (string->utf8 str)))
+    (let loop ((i 0) (hi 3421674724) (lo 2216829733))
+      (if (= i (bytevector-length bytes))
+          (string-append (tr-hex32 hi) (tr-hex32 lo))
+          (let* ((byte (bytevector-u8-ref bytes i))
+                 (lo-low-byte (modulo lo 256))
+                 (lo2 (+ (- lo lo-low-byte) (bitwise-xor lo-low-byte byte)))
+                 (low (tr-mul32 lo2 435))
+                 (new-hi (modulo (+ (* hi 435) (* lo2 256) (car low)) 4294967296)))
+            (loop (+ i 1) new-hi (cdr low))))))
 
 ;; ---------------------------------------------------------------------
 ;; Handle
