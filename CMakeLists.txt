@@ -2495,6 +2495,8 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/bridge/space_form_ad.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
+  # Native face of the ADR-0018 signed-curvature chart (core.curvature).
+  lib/core/curvature_runtime.c
   lib/core/dnc_api.c
   lib/core/image_io.c
   lib/core/inference.cpp
@@ -11143,6 +11145,41 @@ if(ESHKOL_BUILD_TESTS AND
         PASS_REGULAR_EXPRESSION "Results: 8 passed, 0 failed")
 endif()
 
+# ADR-0018 reference-grid gate: the f64 signed-curvature chart against an
+# independent binary128 reference at every finite binade of K, both signs.
+# Header-only. With binary128 (GCC/Clang + libquadmath) it runs the full grid
+# and re-derives the committed golden subset bit for bit; elsewhere it checks
+# the core against that golden subset.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/signed_curvature_reference_grid_test.cpp")
+    add_executable(signed_curvature_reference_grid_test
+        tests/bridge/signed_curvature_reference_grid_test.cpp)
+    target_compile_features(signed_curvature_reference_grid_test PRIVATE cxx_std_20)
+    target_include_directories(signed_curvature_reference_grid_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge)
+    # The toolchain's own libquadmath (GCC ships it beside its runtime, outside
+    # the default library search path): probe by linking, not by find_library.
+    include(CheckCXXSourceCompiles)
+    set(_eshkol_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+    set(CMAKE_REQUIRED_LIBRARIES quadmath)
+    check_cxx_source_compiles(
+        "#include <quadmath.h>\nint main() { __float128 x = 2; return (int)sqrtq(x); }"
+        ESHKOL_HAVE_LIBQUADMATH)
+    set(CMAKE_REQUIRED_LIBRARIES "${_eshkol_saved_required_libraries}")
+    if(ESHKOL_HAVE_LIBQUADMATH)
+        target_link_libraries(signed_curvature_reference_grid_test PRIVATE quadmath)
+    else()
+        target_compile_definitions(signed_curvature_reference_grid_test PRIVATE
+            ESHKOL_DISABLE_BINARY128=1)
+    endif()
+    add_test(NAME signed_curvature_reference_grid
+             COMMAND signed_curvature_reference_grid_test)
+    set_tests_properties(signed_curvature_reference_grid PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "Results: [0-9]+ passed, 0 failed"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_geometry_surface_regression_test.cpp")
     add_executable(qllm_bridge_geometry_surface_regression_test
@@ -11182,7 +11219,7 @@ if(ESHKOL_BUILD_TESTS AND
     add_test(NAME squared_distance_gradcheck
              COMMAND squared_distance_gradcheck_test)
     set_tests_properties(squared_distance_gradcheck PROPERTIES
-        PASS_REGULAR_EXPRESSION "Results: 49 passed, 0 failed")
+        PASS_REGULAR_EXPRESSION "Results: 50 passed, 0 failed")
 endif()
 
 # ===== SDNC runtime tool: execute programs through the weight matrices =# `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
@@ -12811,4 +12848,22 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v2_engine_parity.py
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
     set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
+endif()
+
+# Source-tree native acceptance for the signed-curvature module.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    # core.curvature (ADR-0018) on both native modes, through the shared core.
+    add_test(NAME signed_curvature_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME signed_curvature_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk"
+        "-DESHKOL_EXPECTED_VERDICT=ALL PASS"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/signed_curvature_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(signed_curvature_jit signed_curvature_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "PASS: signed_curvature_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
 endif()
