@@ -1,7 +1,7 @@
 {
   "scope": "test-only minimal subprocess archive; not the production full agent dependency closure",
   "sources": {
-    "lib/agent/c/agent_subprocess.c": "f0c75793393036e7daafe600d3ba9e93cfacc6d0b2efa4033fb7949a4861cf22",
+    "lib/agent/c/agent_subprocess.c": "4ad670ec8983f184f0a5de9e4e6f9cad0f9fe9bd224fa048e18db08ea0c5d644",
     "lib/agent/c/agent_subprocess_stream_binding.c": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
     "inc/eshkol/core/subprocess_stream.h": "5d122f008cd56ba619f3d6f120a0c16269e731082cdba910bbe7ade11de4611b",
     "lib/agent/subprocess.esk": "f31051e751d6323fd1d61016f74e776b2fc9f823fe3005d2d0764bebbf1ee5bb",
@@ -78,7 +78,6 @@
   "public_runner": {
     "command": [
       "python3",
-      "-u",
       "scripts/test_subprocess_stream_public.py",
       "--runner",
       "../build/eshkol-run",
@@ -89,7 +88,7 @@
       "--support-library",
       "../checks/libstream_test_support.so",
       "--evidence-dir",
-      "../checks/public-final"
+      "../checks/public-darwin-followup-final"
     ],
     "exit_code": 0,
     "public_checks_per_backend": 23,
@@ -123,13 +122,14 @@
     "review": "https://github.com/tsotchke/eshkol/pull/914#issuecomment-6638709373",
     "scope": "Darwin extensions enabled before test headers and for native runner C translation units",
     "source_hashes": {
+      "lib/agent/c/agent_subprocess.c": "4ad670ec8983f184f0a5de9e4e6f9cad0f9fe9bd224fa048e18db08ea0c5d644",
       "tests/agent/subprocess_stream_test.c": "40cd4f1f56444fc203c7c3f6b19b409ed134d0f4696985ed9170beace6cff2f6",
-      "tests/agent/run_subprocess_stream_test.sh": "8a455f83a019512b16d44b284a339cbf25c0b6da28d51d54f9aa26bcdd6e38e2",
+      "tests/agent/run_subprocess_stream_test.sh": "e975ab038a17018252d4f9145e9cf54e2a656a409ee1b961ddbf259770f8c8dc",
       ".github/workflows/subprocess-stream.yml": "134b5646d5d74b8a93ea9971eed7207bbb83966b6352529fc52cd511c7b8502e"
     },
     "local_native_validation": "10 scenarios plus missing-checker and clock-failure controls pass normally and under ASan/UBSan on Linux",
     "workflow_validation": "actionlint 1.7.12 passes",
-    "macos_runtime": "Not run locally; consult Subprocess streams native hosted workflow",
+    "macos_runtime": "Hosted macos-14-arm64: 10 native kqueue scenarios and absent-checker control passed",
     "full_packaged_agent_build": "Not validated",
     "runner_compatibility": "Guard empty sanitizer arrays for Bash 3.2 nounset",
     "ci_acceptance": "Require native 10-scenario and missing-checker success markers; Linux also requires clock-failure control marker",
@@ -137,6 +137,22 @@
       "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/41888418078",
       "macos_compile_control": "passed",
       "macos_runtime": "not executed because Bash 3.2 stopped on an empty array; successful job status alone is not a runtime pass"
+    },
+    "optional_linkage": "Darwin weak_import; missing-checker executable permits only _eshkol_capability_runtime_allows to remain undefined",
+    "hosted_validation": {
+      "tested_revision": "23d83b7c4f6b3d26d4aa49cc46829c7d863deaf4",
+      "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/41889338389",
+      "jobs": {
+        "macOS kqueue": "success with verified suite and control success markers",
+        "Linux epoll": "success",
+        "Linux ASan and UBSan": "success"
+      },
+      "macos_bytes_each_stream": 17825829,
+      "macos_max_skew_bytes": 4096,
+      "macos_poll_requested_ms": 100,
+      "macos_poll_observed_ms": 102,
+      "macos_jit_aot": "not run",
+      "full_packaged_agent_build": "not validated"
     }
   }
 }

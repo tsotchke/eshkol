@@ -31,6 +31,7 @@ Linux epoll; Clang 22.1.8 compiling against LLVM 21.1.8; object ABI v1.
 |---|---|
 | Native lifecycle/stream suite | 10 scenarios pass |
 | Native ASan + UBSan | Same scenarios pass; no sanitizer findings |
+| Hosted macOS arm64 native follow-up | 10 kqueue scenarios and absent-checker control pass; exact review compile command passes |
 | Native capability checker absent | Acquisition denied |
 | Injected monotonic clock failure | Closed owner remains discoverable; later drain/reap/consume succeeds |
 | Public Scheme API | 23 checks in each of JIT and AOT |
@@ -95,11 +96,20 @@ in addition to the command's exit status.
 
 The optional native capability checker uses Darwin `weak_import` linkage on
 Apple platforms, preserving denied acquisition when the checker is absent.
+The missing-checker executable permits only that deliberately absent symbol at
+link time; unrelated undefined symbols remain errors.
 
 The focused `Subprocess streams native` workflow runs Linux epoll, Linux
 ASan/UBSan, and macOS kqueue checks, including the reviewer's exact macOS compile
 command. It targets the assigned integration branch as well as master. Hosted
 results are recorded by that workflow; the Linux evidence above does not imply
 a macOS runtime pass or full packaged-agent validation.
+
+[Hosted validation at `23d83b7c`](https://github.com/Gabriel-Kahen/eshkol/actions/runs/41889338389)
+passes all three jobs: macOS arm64 kqueue, Linux epoll, and Linux ASan/UBSan.
+The macOS log confirms 17,825,829 bytes per output stream and a 102 ms observed
+poll for a 100 ms request. Linux JIT/AOT public checks were rerun after the
+Darwin linkage adjustment and retain the results above. macOS JIT/AOT and the
+complete packaged-agent build remain unvalidated.
 
 Public API details are in [the subprocess reference](../reference/agent/subprocess.md).
