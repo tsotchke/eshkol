@@ -46,6 +46,13 @@
 ;; as an explicit, deliberate memory scope, not as a defect workaround.
 
 (require stdlib)
+(require core.transcript)
+
+;; Content-addressed transcript of the rank-mod-p computations behind
+;; every dim H^n claim below (off by default; see
+;; docs/reference/stdlib/transcript.md). Recording never changes
+;; anything printed below, including the checks.
+(define TRANSCRIPT (transcript-open "mathematics_cohomology_rings_cup_products"))
 
 (define pass-count 0)
 (define fail-count 0)
@@ -399,6 +406,35 @@
 (check "negative control -- the zero cochain and the coboundary of a 2-cochain are Q/Z coboundaries"
        (and (qz-coboundary? (make-vector (nz-count Z2Z2Z2 3) 0))
             (qz-coboundary? (coboundary Z2Z2Z2 (cup2 Z2Z2Z2 X1 X2) 2 2))))
+
+;; Transcript the coboundary-image matrices (mod p) whose ranks determine
+;; every dim H^n value shown above, plus the degree-3 image on (Z/2)^3
+;; (49 x 343) whose rank decides whether the ten cubic monomials are
+;; independent -- the crux of Part 4. An independent recomputation of
+;; rank mod p (scripts/math_crosscheck/replay_check.py, or PARI/GP's
+;; rank over GF(p) via crosscheck_pari_sympy.py) is a direct cross-check
+;; of these claims.
+(for-each
+  (lambda (spec)
+    (let* ((label (car spec)) (G (cadr spec)) (n (caddr spec)) (p (list-ref spec 3))
+           (image (coboundary-image G n p)))   ;; a list of VECTORS: rank-mod-p needs that shape
+      (transcript-record! TRANSCRIPT "rank_mod_p" label
+        (list (cons "matrix" (tv-matrix-rows (map vector->list image))) (cons "p" (tv-int p)))
+        (tv-int (rank-mod-p image p)))))
+  (list (list "Z2_coboundary_image_n2" Z2 2 2)
+        (list "Z2_coboundary_image_n3" Z2 3 2)
+        (list "Z2_coboundary_image_n4" Z2 4 2)
+        (list "Z4_coboundary_image_n2" Z4 2 2)
+        (list "Z3_coboundary_image_n1" Z3 1 3)
+        (list "Z3_coboundary_image_n2" Z3 2 3)
+        (list "Z3_coboundary_image_n3" Z3 3 3)
+        (list "Z3_coboundary_image_n4" Z3 4 3)
+        (list "Z2Z2_coboundary_image_n1" Z2Z2 1 2)
+        (list "Z2Z2_coboundary_image_n2" Z2Z2 2 2)
+        (list "Z2Z2_coboundary_image_n3" Z2Z2 3 2)
+        (list "Z2Z2Z2_coboundary_image_n3" Z2Z2Z2 3 2)))
+
+(transcript-close! TRANSCRIPT)
 
 (display "Cohomology rings by cup products, the Bockstein, and the twists of (Z/2)^3") (newline)
 (display "Passed: ") (display pass-count) (newline)
