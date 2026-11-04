@@ -53,7 +53,12 @@ int main(void) {
 }
 C
 "$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} -c "$WORK/missing-checker.c" -o "$WORK/missing-checker.o"
-"$CXX" -pthread ${sanitize[@]+"${sanitize[@]}"} "$WORK/missing-checker.o" \
+missing_checker_ldflags=(-pthread)
+if [ "$(uname -s)" = Darwin ]; then
+    # Permit only the deliberately absent weak import in this negative control.
+    missing_checker_ldflags+=(-Wl,-U,_eshkol_capability_runtime_allows)
+fi
+"$CXX" "${missing_checker_ldflags[@]}" ${sanitize[@]+"${sanitize[@]}"} "$WORK/missing-checker.o" \
     "${runtime_objects[@]}" "$WORK/runtime_handle.o" -o "$WORK/missing-checker"
 "$WORK/missing-checker"
 
