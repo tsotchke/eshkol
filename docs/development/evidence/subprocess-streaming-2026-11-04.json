@@ -1,0 +1,121 @@
+{
+  "scope": "test-only minimal subprocess archive; not the production full agent dependency closure",
+  "sources": {
+    "lib/agent/c/agent_subprocess.c": "f0c75793393036e7daafe600d3ba9e93cfacc6d0b2efa4033fb7949a4861cf22",
+    "lib/agent/c/agent_subprocess_stream_binding.c": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+    "inc/eshkol/core/subprocess_stream.h": "5d122f008cd56ba619f3d6f120a0c16269e731082cdba910bbe7ade11de4611b",
+    "lib/agent/subprocess.esk": "f31051e751d6323fd1d61016f74e776b2fc9f823fe3005d2d0764bebbf1ee5bb",
+    "scripts/test_subprocess_stream_public.py": "7773ef4deb089faf3cf4ef5b69b34e59c7899f01e101f655c8052718080c4250",
+    "tests/agent/subprocess_stream_public.esk": "2fcded06a7aad873e13dfc870a926e891e7259d0e94687c7eccd1f9ee57ac2cc",
+    "tests/agent/subprocess_stream_large.esk": "ffaf7674dfce4a52588841e27634d78df153bdc947d4195a31650c7939fb6c7f",
+    "tests/agent/subprocess_stream_reentry.esk": "e54d7ae89900b8d421bd18053a5d222a14de48a3897a1da013b161862ba38deb",
+    "tests/agent/subprocess_stream_vm_unsupported.esk": "74feacbf6643297c062c801eb9a97be69e3fefeb180e2b0e4c8fea67f7d4624c",
+    "tests/agent/subprocess_stream_vm_bridge.esk": "7fd3c929ef610f14ddcc47b73f4d2762fc40d0f06899316298deba39b201c767"
+  },
+  "artifacts": {
+    "build/libeshkol-agent-ffi.a": "b69507f16db027c1fb655ca3e354bd0a45d9209731195cf4f751eefc06b2324e",
+    "checks/libstream_test_support.so": "f9022ba7105f6164bbb69bfdfb0e64726d6786fd3f09758e8dc07dfeb7aa33db"
+  },
+  "external_runtime": "real current Eshkol capability, event-loop, and common handle registry implementations",
+  "commands": [
+    [
+      "cmake",
+      "--build",
+      "../build",
+      "--target",
+      "eshkol-run",
+      "stdlib",
+      "eshkol-vm-standalone-test",
+      "eshkol-subprocess-stream-test",
+      "handle_lifecycle_test",
+      "handle_c_api_test",
+      "-j3"
+    ],
+    [
+      "clang",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-fPIC",
+      "-shared",
+      "-pthread",
+      "-Iinc",
+      "lib/agent/c/agent_subprocess.c",
+      "lib/agent/c/agent_subprocess_stream_binding.c",
+      "-o",
+      "../checks/libstream_test_support.so"
+    ],
+    [
+      "clang",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-pthread",
+      "-Iinc",
+      "-c",
+      "lib/agent/c/agent_subprocess.c",
+      "-o",
+      "../checks/minimal-agent-subprocess.o"
+    ],
+    [
+      "clang",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-pthread",
+      "-Iinc",
+      "-c",
+      "lib/agent/c/agent_subprocess_stream_binding.c",
+      "-o",
+      "../checks/minimal-agent-stream-binding.o"
+    ],
+    [
+      "ar",
+      "rcs",
+      "../build/libeshkol-agent-ffi.a",
+      "../checks/minimal-agent-subprocess.o",
+      "../checks/minimal-agent-stream-binding.o"
+    ]
+  ],
+  "source_hashes_unchanged_after_public_run": true,
+  "public_runner": {
+    "command": [
+      "python3",
+      "-u",
+      "scripts/test_subprocess_stream_public.py",
+      "--runner",
+      "../build/eshkol-run",
+      "--build-dir",
+      "../build",
+      "--child",
+      "../build/eshkol-subprocess-stream-test",
+      "--support-library",
+      "../checks/libstream_test_support.so",
+      "--evidence-dir",
+      "../checks/public-final"
+    ],
+    "exit_code": 0,
+    "public_checks_per_backend": 23,
+    "backends": [
+      "actual JIT with cache disabled",
+      "actual AOT -O0"
+    ],
+    "large_bytes_each_stream": 17825829,
+    "large_child_exit_code": 19,
+    "reentry_expected_rejection": "closed session re-entry",
+    "vm": "isolated imported stream extern rejected before bytecode emission"
+  },
+  "platform": "Linux epoll; Clang 22.1.8; LLVM 21.1.8; object ABI v1",
+  "working_directory": "source repository root; ../build is a separate agent-FFI-off test build",
+  "native_validation": {
+    "commands": [
+      "tests/agent/run_subprocess_stream_test.sh",
+      "CC=clang CXX=clang++ ESHKOL_STREAM_SANITIZE=1 tests/agent/run_subprocess_stream_test.sh"
+    ],
+    "scenarios": 10,
+    "bytes_each_stream": 17825829,
+    "max_stream_skew_bytes": 4096,
+    "poll_requested_ms": 100,
+    "poll_observed_ms": 100,
+    "missing_capability_checker": "denies acquisition",
+    "clock_failure": "closed owner remains discoverable and cleanup resumes after recovery",
+    "sanitizers": "ASan and UBSan passed without findings"
+  }
+}

@@ -75,6 +75,14 @@ uint64_t eshkol_event_lookup_user_data(const eshkol_event_loop_t* loop, int fd) 
     return idx < 0 ? 0u : loop->regs[idx].user_data;
 }
 
+int eshkol_event_loop_registration_matches(const eshkol_event_loop_t* loop,
+    int fd, int events, uint64_t user_data) {
+    if (!loop || fd < 0) return 0;
+    const int idx = reg_find(loop, fd);
+    return idx >= 0 && loop->regs[idx].events == events &&
+           loop->regs[idx].user_data == user_data;
+}
+
 int eshkol_event_emit(eshkol_event_loop_t* loop, int* n_out, int fd, int events) {
     if (!loop || !n_out) return 0;
 
@@ -148,10 +156,10 @@ int eshkol_event_loop_poll(eshkol_event_loop_t* loop, int timeout_ms,
     *out_events = loop->out;
     *n_events = 0;
 
-    /* Nothing registered: honour the timeout contract without a syscall. A
-     * kqueue with no filters and an infinite timeout would block forever with
-     * no possible waker, which is a hang, not a wait. */
-    if (loop->n_regs == 0) return ESHKOL_EVENT_LOOP_OK;
+    /* An empty finite wait still honors its deadline (process reaping can
+     * require a later status check after every pipe has closed). An empty
+     * unbounded wait has no possible waker and returns immediately. */
+    if (loop->n_regs == 0 && timeout_ms < 0) return ESHKOL_EVENT_LOOP_OK;
 
     int n = 0;
     const int rc = eshkol_event_backend_poll(loop, timeout_ms, &n);
@@ -165,6 +173,7 @@ int eshkol_event_loop_poll(eshkol_event_loop_t* loop, int timeout_ms,
 
 int eshkol_event_loop_close(eshkol_event_loop_t* loop) {
     if (!loop) return ESHKOL_EVENT_LOOP_EINVAL;
+    if (loop->retain_count) return ESHKOL_EVENT_LOOP_EBUSY;
     eshkol_event_backend_close(loop);
     free(loop->regs);
     free(loop->out);
@@ -248,9 +257,27 @@ int eshkol_event_loop_close_handle(int64_t handle) {
     eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(handle);
     if (!loop) return ESHKOL_EVENT_LOOP_EINVAL;
 
+    const int rc = eshkol_event_loop_close(loop);
+    if (rc != ESHKOL_EVENT_LOOP_OK) return rc;
     const int64_t slot = handle & ESHKOL_EVENT_LOOP_SLOT_MASK;
     g_loop_slots[slot].loop = NULL;
     /* generation is deliberately left at its current value and bumped on the
      * next allocation, so this handle can never validate again. */
-    return eshkol_event_loop_close(loop);
+    return ESHKOL_EVENT_LOOP_OK;
+}
+
+int eshkol_event_loop_retain_handle(int64_t handle) {
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(handle);
+    if (!loop) return ESHKOL_EVENT_LOOP_EINVAL;
+    if (loop->retain_count == UINT32_MAX) return ESHKOL_EVENT_LOOP_EFULL;
+    ++loop->retain_count;
+    return ESHKOL_EVENT_LOOP_OK;
+}
+
+int eshkol_event_loop_release_handle(int64_t handle) {
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(handle);
+    if (!loop) return ESHKOL_EVENT_LOOP_EINVAL;
+    if (!loop->retain_count) return ESHKOL_EVENT_LOOP_EINVAL;
+    --loop->retain_count;
+    return ESHKOL_EVENT_LOOP_OK;
 }
