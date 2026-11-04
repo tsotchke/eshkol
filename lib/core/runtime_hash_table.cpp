@@ -7,6 +7,7 @@
  */
 
 #include "arena_memory.h"
+#include "runtime_string_bytes.h"
 #include "../../inc/eshkol/logger.h"
 #include "../../inc/eshkol/core/bignum.h"
 
@@ -22,15 +23,15 @@ static const uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
 static const uint64_t FNV_PRIME = 1099511628211ULL;
 
 /**
- * @brief FNV-1a hash of a NUL-terminated C string.
+ * @brief FNV-1a hash of the complete byte range of a string.
  *
- * @param str String to hash; must be non-null.
+ * @param str String bytes, including any embedded NULs.
  * @return    64-bit FNV-1a hash of the string's bytes.
  */
-static uint64_t fnv1a_hash_string(const char* str) {
+static uint64_t fnv1a_hash_string(std::string_view str) {
     uint64_t hash = FNV_OFFSET_BASIS;
-    while (*str) {
-        hash ^= (uint8_t)*str++;
+    for (unsigned char byte : str) {
+        hash ^= byte;
         hash *= FNV_PRIME;
     }
     return hash;
@@ -94,7 +95,7 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
 
         case ESHKOL_VALUE_STRING_PTR:
             if (value->data.ptr_val) {
-                hash ^= fnv1a_hash_string((const char*)value->data.ptr_val);
+                hash ^= fnv1a_hash_string(eshkol_tagged_string_bytes(value));
             }
             break;
 
@@ -106,7 +107,7 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
             if (value->data.ptr_val) {
                 uint8_t subtype = ESHKOL_GET_SUBTYPE((void*)value->data.ptr_val);
                 if (subtype == HEAP_SUBTYPE_STRING) {
-                    hash ^= fnv1a_hash_string((const char*)value->data.ptr_val);
+                    hash ^= fnv1a_hash_string(eshkol_tagged_string_bytes(value));
                 } else if (subtype == HEAP_SUBTYPE_BIGNUM) {
                     eshkol_bignum_t* bn = (eshkol_bignum_t*)value->data.ptr_val;
                     hash ^= (uint64_t)bn->sign;
@@ -186,8 +187,7 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
         case ESHKOL_VALUE_STRING_PTR:
             if (a->data.ptr_val == b->data.ptr_val) return true;
             if (!a->data.ptr_val || !b->data.ptr_val) return false;
-            return std::strcmp((const char*)a->data.ptr_val,
-                               (const char*)b->data.ptr_val) == 0;
+            return eshkol_tagged_string_bytes(a) == eshkol_tagged_string_bytes(b);
 
         case ESHKOL_VALUE_SYMBOL:
             return a->data.ptr_val == b->data.ptr_val;
@@ -205,8 +205,7 @@ bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t
             if (subtype_a != subtype_b) return false;
 
             if (subtype_a == HEAP_SUBTYPE_STRING) {
-                return std::strcmp((const char*)a->data.ptr_val,
-                                   (const char*)b->data.ptr_val) == 0;
+                return eshkol_tagged_string_bytes(a) == eshkol_tagged_string_bytes(b);
             }
 
             if (subtype_a == HEAP_SUBTYPE_BIGNUM) {

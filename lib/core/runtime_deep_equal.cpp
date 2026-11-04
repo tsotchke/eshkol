@@ -7,6 +7,7 @@
  */
 
 #include "arena_memory.h"
+#include "runtime_string_bytes.h"
 #include "../../inc/eshkol/core/bignum.h"
 #include "../../inc/eshkol/core/rational.h"
 
@@ -95,9 +96,9 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
     bool is_str1 = is_string(type1, val1);
     bool is_str2 = is_string(type2, val2);
     if (is_str1 && is_str2) {
-        if (val1->data.ptr_val == val2->data.ptr_val) return true;
-        if (!val1->data.ptr_val || !val2->data.ptr_val) return false;
-        return strcmp((const char*)val1->data.ptr_val, (const char*)val2->data.ptr_val) == 0;
+        if (!val1->data.ptr_val || !val2->data.ptr_val)
+            return val1->data.ptr_val == val2->data.ptr_val;
+        return eshkol_tagged_string_bytes(val1) == eshkol_tagged_string_bytes(val2);
     }
 
     bool is_sym1 = is_symbol(type1, val1);
