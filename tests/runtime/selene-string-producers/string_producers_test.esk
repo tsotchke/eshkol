@@ -1,0 +1,42 @@
+;; Regression checks for shell-quote and glob-expand logical string lengths.
+(require stdlib)
+(define checks 0)
+(define failures 0)
+(define (check label ok)
+  (set! checks (+ checks 1))
+  (if (not ok)
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define quoted (shell-quote "a'b"))
+(check "shell quote emitted bytes"
+       (string=? quoted (string-append "'a'" (make-string 1 (integer->char 92)) "''b'")))
+(check "shell quote exact byte length" (= (string-byte-length quoted) 8))
+
+(define root (make-temp-dir "eshkol-string-producers" (temp-directory)))
+(define path-a (path-join root "a"))
+(define path-b (path-join root "b"))
+(write-file path-a "")
+(write-file path-b "")
+(define expanded (glob-expand (path-join root "*")))
+(check "glob paths and separator exact length"
+       (= (string-byte-length expanded)
+          (+ (string-byte-length path-a) (string-byte-length path-b) 1)))
+(check "glob has no trailing newline"
+       (not (string=? (substring expanded (- (string-length expanded) 1)
+                                  (string-length expanded)) "\n")))
+
+(setenv "ESHKOL_STRING_PRODUCER_VALUE" "producer-value")
+(define env-value (getenv "ESHKOL_STRING_PRODUCER_VALUE"))
+(check "getenv creates a string" (string? env-value))
+(check "getenv copied contents" (string=? env-value "producer-value"))
+(check "getenv exact byte length" (= (string-byte-length env-value) 14))
+(setenv "ESHKOL_STRING_PRODUCER_EMPTY" "")
+(check "getenv empty string" (= (string-byte-length (getenv "ESHKOL_STRING_PRODUCER_EMPTY")) 0))
+(unsetenv "ESHKOL_STRING_PRODUCER_MISSING")
+(check "getenv unset value" (eq? (getenv "ESHKOL_STRING_PRODUCER_MISSING") #f))
+;; Retain disposable fixture files with the qualification evidence.
+
+(display "string_producers: ") (display checks) (display " checks, ")
+(display failures) (display " failures") (newline)
+(if (> failures 0) (exit 1))

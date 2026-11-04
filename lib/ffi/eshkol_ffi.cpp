@@ -398,7 +398,7 @@ extern "C" eshkol_ffi_value_t eshkol_ffi_string(eshkol_ffi_context_t* ctx,
     if (!arena) return eshkol_ffi_null();
 
     size_t len = strlen(str);
-    char* copy = (char*)arena_allocate(arena, len + 1);
+    char* copy = arena_allocate_string_with_header(arena, len);
     if (!copy) return eshkol_ffi_null();
     memcpy(copy, str, len + 1);
 

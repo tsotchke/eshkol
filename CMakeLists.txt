@@ -7578,6 +7578,9 @@ endif()
 
 if(ESHKOL_BUILD_TESTS)
     add_subdirectory(tests/runtime/selene-byte-exact)
+    if(TARGET eshkol-agent-ffi)
+        add_subdirectory(tests/runtime/selene-string-producers)
+    endif()
 endif()
 
 # Embedding-lookup backward (ESH-0230): exact indexed scatter-add against both a

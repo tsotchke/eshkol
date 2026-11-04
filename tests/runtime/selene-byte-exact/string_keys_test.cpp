@@ -91,6 +91,24 @@ int main() {
     check(hash_table_set(arena, table, &raw_other, &two), "second raw legacy key remains hashable");
     check(hash_table_count(table) == 2, "legacy key count");
 
+    // Map keys deliberately retain their representation tag even where
+    // deepEqual compares raw C-string bytes with canonical string bytes.
+    auto* mixed = arena_hash_table_create_with_header(arena);
+    check(hash_table_set(arena, mixed, &plain, &one), "mixed map inserts raw key");
+    eshkol_tagged_value_t mixed_result{};
+    check(!hash_table_get(mixed, &same, &mixed_result), "heap key does not alias raw map key");
+    check(hash_table_set(arena, mixed, &same, &two), "mixed map inserts heap key separately");
+    check(hash_table_count(mixed) == 2, "mixed representations retain two map entries");
+    auto heap_copy = string(arena, "plain");
+    auto raw_copy = legacy("plain");
+    check(eshkol_deep_equal(&raw_copy, &heap_copy), "mixed representation deepEqual is byte-based");
+    check(hash_table_get(mixed, &raw_copy, &mixed_result) && mixed_result.data.int_val == 1,
+          "raw lookup preserves raw map value");
+    check(hash_table_get(mixed, &heap_copy, &mixed_result) && mixed_result.data.int_val == 2,
+          "heap lookup preserves canonical map value");
+    check(hash_table_remove(mixed, &raw_copy), "raw removal selects raw entry only");
+    check(hash_table_has_key(mixed, &heap_copy), "heap entry survives raw removal");
+
     auto* growing = arena_hash_table_create_with_header(arena);
     std::vector<std::string> keys;
     for (int i = 0; i < 260; ++i) {

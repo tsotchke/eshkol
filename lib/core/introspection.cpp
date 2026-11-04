@@ -512,13 +512,13 @@ eshkol_closure_t* eshkol_get_closure(eshkol_tagged_value_t value) {
 /**
  * @brief Convert a symbol to its string name.
  *
- * If @p arena is NULL, returns a string value that shares the symbol's
- * underlying character data directly rather than copying it. Otherwise
- * copies the name into a freshly arena-allocated, properly-headered string.
+ * Copies the name into a canonical header-tagged string. A NULL @p arena
+ * selects the default runtime arena; the result follows that arena's lifetime
+ * and never aliases or changes the interned symbol's header.
  *
  * @param symbol Symbol value to convert.
- * @param arena Arena for string allocation (see above), or NULL to alias the symbol's data.
- * @return String representation, or a null value if @p symbol is not a symbol.
+ * @param arena Arena for allocation, or NULL for the default runtime arena.
+ * @return A copied string, or null for invalid input/unavailable arena/allocation failure.
  */
 eshkol_tagged_value_t eshkol_symbol_to_string(eshkol_tagged_value_t symbol, void* arena) {
     if (!is_symbol(symbol)) {
@@ -530,16 +530,8 @@ eshkol_tagged_value_t eshkol_symbol_to_string(eshkol_tagged_value_t symbol, void
         return make_null();
     }
 
-    if (!arena) {
-        // Return the symbol's string directly as a string value
-        // Note: This shares the string data with the symbol
-        eshkol_tagged_value_t result;
-        result.type = ESHKOL_VALUE_HEAP_PTR;  // Strings are heap objects
-        result.flags = 0;
-        result.reserved = 0;
-        result.data.ptr_val = symbol.data.ptr_val;
-        return result;
-    }
+    if (!arena) arena = get_global_arena();
+    if (!arena) return make_null();
 
     // Copy the string to the arena with proper header
     arena_t* a = static_cast<arena_t*>(arena);

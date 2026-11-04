@@ -10,7 +10,7 @@ target_link_libraries(runtime_string_byte_keys_test PRIVATE eshkol-static
 add_test(NAME runtime_string_byte_keys_test COMMAND runtime_string_byte_keys_test)
 set_tests_properties(runtime_string_byte_keys_test PROPERTIES
     TIMEOUT 60
-    PASS_REGULAR_EXPRESSION "string_keys: 616 checks, 0 failures"
+    PASS_REGULAR_EXPRESSION "string_keys: 625 checks, 0 failures"
     FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
 
 if(TARGET eshkol-run)

@@ -210,8 +210,9 @@ void* eshkol_gensym_ptr(void* arena);
  * @brief Convert a symbol to its string name.
  *
  * @param symbol Symbol value
- * @param arena Arena for string allocation (if needed)
- * @return String representation, or NULL_VALUE if not a symbol
+ * @param arena Arena for the independent canonical string copy; NULL selects
+ *              the default runtime arena. The result has that arena's lifetime.
+ * @return String representation, or NULL_VALUE for invalid input or allocation failure
  */
 eshkol_tagged_value_t eshkol_symbol_to_string(eshkol_tagged_value_t symbol, void* arena);
 

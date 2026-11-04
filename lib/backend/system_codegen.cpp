@@ -152,37 +152,32 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     // Copy into arena_allocate_string_with_header(arena, len) so the
     // returned pointer carries HEAP_SUBTYPE_STRING and string? returns #t.
     ctx_.builder().SetInsertPoint(valid_block);
-    llvm::Function* getenv_strlen_func = function_table_["strlen"];
-    // strcpy isn't always pre-declared in function_table_ (only readFile et al
-    // currently force it), so declare on-demand. Declaration is module-scoped
-    // and idempotent — getOrInsertFunction reuses an existing decl.
-    auto* strcpy_ty = llvm::FunctionType::get(
+    // The runtime factory owns the header/length contract and handles failed
+    // allocation. Do not turn libc's borrowed, headerless pointer into HEAP,
+    // including when a custom function table has no strlen registration.
+    auto* copy_ty = llvm::FunctionType::get(
         ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
-    llvm::FunctionCallee strcpy_callee =
-        ctx_.module().getOrInsertFunction("strcpy", strcpy_ty);
-    llvm::Value* string_val;
-    if (getenv_strlen_func) {
-        llvm::Value* env_len = ctx_.builder().CreateCall(getenv_strlen_func, {result});
-        llvm::Value* arena_ptr = ctx_.currentArena();
-        llvm::Value* env_buf = ctx_.builder().CreateCall(
-            mem_.getArenaAllocateStringWithHeader(), {arena_ptr, env_len});
-        ctx_.builder().CreateCall(strcpy_callee, {env_buf, result});
-        string_val = tagged_.packPtr(env_buf, ESHKOL_VALUE_HEAP_PTR);
-    } else {
-        // strlen unavailable — fall back to raw pack so string-length / etc.
-        // still work via byte walk; only string? will continue to lie.
-        string_val = tagged_.packPtr(result, ESHKOL_VALUE_HEAP_PTR);
-    }
+    llvm::FunctionCallee copy_callee =
+        ctx_.module().getOrInsertFunction("eshkol_runtime_copy_string", copy_ty);
+    llvm::Value* env_buf = ctx_.builder().CreateCall(copy_callee, {ctx_.currentArena(), result});
+    llvm::BasicBlock* copy_failed = llvm::BasicBlock::Create(ctx_.context(), "getenv_copy_failed", current_func);
+    llvm::BasicBlock* copy_ready = llvm::BasicBlock::Create(ctx_.context(), "getenv_copy_ready", current_func);
+    ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpEQ(env_buf,
+        llvm::ConstantPointerNull::get(ctx_.ptrType())), copy_failed, copy_ready);
+    ctx_.builder().SetInsertPoint(copy_failed);
+    llvm::Value* copy_false_val = tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
+    ctx_.builder().CreateBr(merge_block);
+    llvm::BasicBlock* copy_failed_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().SetInsertPoint(copy_ready);
+    llvm::Value* string_val = tagged_.packPtr(env_buf, ESHKOL_VALUE_HEAP_PTR);
     llvm::BasicBlock* valid_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(merge_block);
 
-    // Merge. valid_exit is captured AFTER the strlen+alloc+strcpy block
-    // because those calls created intermediate basic blocks (each
-    // arena helper / strlen call may insert blocks for OOM checks etc.),
-    // shifting the builder away from the original valid_block.
+    // Capture the successful copy's actual exit block for PHI predecessors.
     ctx_.builder().SetInsertPoint(merge_block);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3);
     phi->addIncoming(false_val, null_block);
+    phi->addIncoming(copy_false_val, copy_failed_exit);
     phi->addIncoming(string_val, valid_exit);
 
     ctx_.builder().CreateBr(final_merge_block);

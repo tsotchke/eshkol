@@ -1406,6 +1406,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(clock_gettime);
 #endif
     ADD_SYMBOL(eshkol_getenv);
+    ADD_SYMBOL(eshkol_runtime_copy_string);
     ADD_SYMBOL(eshkol_setenv);
     ADD_SYMBOL(eshkol_unsetenv);
     ADD_SYMBOL(eshkol_usleep);

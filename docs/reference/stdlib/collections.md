@@ -53,7 +53,15 @@ Edge cases: `pq-pop!`/`pq-peek` on an empty queue → `Unhandled exception: pq-p
 
 ## Hash set
 
-A set of `equal?`-keyed elements (backed by `make-hash-table`). Add is idempotent.
+A set uses the key relation of `make-hash-table`. Add is idempotent within that
+relation. Keys retain their representation tag: canonical heap strings compare by
+complete logical bytes, including embedded NULs; legacy `STRING_PTR` keys compare
+as NUL-terminated C strings. Raw and canonical keys remain separate entries even
+when `equal?` reports equal bytes. Legacy raw strings remain supported.
+
+This preserves existing map behavior; arbitrary `equal?` values need not be
+interchangeable as keys. Native/FFI callers should use a consistent representation
+for each key family and avoid mutating strings stored as keys.
 
 ### `(make-set)` — empty set.
 ### `(set-add! s x)` — insert `x`.

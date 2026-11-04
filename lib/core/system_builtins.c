@@ -1451,7 +1451,12 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
     /* Single-quote wrapping with internal ' escaped as '\'' */
     size_t len = strlen(s);
     if (len > SIZE_MAX / 4 - 2) return sys_make_null();
-    size_t out_len = 2 + len * 4; /* worst case */
+    size_t out_len = 2;
+    for (size_t i = 0; i < len; i++) {
+        size_t add = s[i] == '\'' ? 4 : 1;
+        if (out_len > SIZE_MAX - add) return sys_make_null();
+        out_len += add;
+    }
     void* arena = get_global_arena();
     if (!arena) return sys_make_null();
     char* buf = arena_allocate_string_with_header(arena, out_len);
@@ -1974,10 +1979,19 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_glob_expand_v(eshkol_sysbuiltin_
         globfree(&g);
         return sys_make_null();
     }
+    if (g.gl_pathc == 0) {
+        globfree(&g);
+        return sys_make_null();
+    }
     /* Build newline-separated string of results */
-    size_t total_len = 0;
+    size_t total_len = g.gl_pathc - 1;
     for (size_t i = 0; i < g.gl_pathc; i++) {
-        total_len += strlen(g.gl_pathv[i]) + 1;
+        size_t path_len = strlen(g.gl_pathv[i]);
+        if (total_len > SIZE_MAX - path_len) {
+            globfree(&g);
+            return sys_make_null();
+        }
+        total_len += path_len;
     }
     if (total_len == 0) { globfree(&g); return sys_make_null(); }
     void* arena = get_global_arena();
@@ -1988,10 +2002,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_glob_expand_v(eshkol_sysbuiltin_
         size_t len = strlen(g.gl_pathv[i]);
         memcpy(p, g.gl_pathv[i], len);
         p += len;
-        *p++ = '\n';
+        if (i + 1 < g.gl_pathc) *p++ = '\n';
     }
-    if (p > buf) p[-1] = '\0';
-    else *p = '\0';
+    *p = '\0';
     globfree(&g);
     eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     v.type = SYS_TYPE_HEAP_PTR;
@@ -2102,26 +2115,28 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
     int64_t max_bytes = (int64_t)max_val.data;
     if (fd < 0 || max_bytes <= 0) return sys_make_null();
 #ifndef _WIN32
+    if ((uint64_t)max_bytes > (uint64_t)SIZE_MAX || max_bytes > SSIZE_MAX)
+        return sys_make_null();
+    if (!get_global_arena()) return sys_make_null();
     /* Set non-blocking */
     int flags = fcntl((int)fd, F_GETFL);
-    fcntl((int)fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags < 0 || fcntl((int)fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return sys_make_null();
 
-    void* arena = get_global_arena();
-    if (!arena) return sys_make_null();
-    char* buf = arena_allocate_string_with_header(arena, (size_t)max_bytes);
-    if (!buf) return sys_make_null();
+    char* buf = (char*)malloc((size_t)max_bytes);
+    if (!buf) {
+        (void)fcntl((int)fd, F_SETFL, flags);
+        return sys_make_null();
+    }
 
     ssize_t n = read((int)fd, buf, (size_t)max_bytes);
 
     /* Restore blocking */
     fcntl((int)fd, F_SETFL, flags);
 
-    if (n <= 0) return sys_make_null(); /* EAGAIN or EOF */
-    buf[n] = '\0';
-
-    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
-    v.type = SYS_TYPE_HEAP_PTR;
-    v.data = (uint64_t)buf;
+    if (n <= 0) { free(buf); return sys_make_null(); } /* EAGAIN or EOF */
+    eshkol_sysbuiltin_value_t v = sys_make_string_len(buf, (size_t)n);
+    free(buf);
     return v;
 #else
     (void)fd; (void)max_bytes;
@@ -2193,23 +2208,23 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_socket_recv_v(eshkol_sysbuiltin_
     if (fd < 0 || max_bytes <= 0) return sys_make_bool(0);
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     if (max_bytes > 65536) max_bytes = 65536;
-    void* arena = get_global_arena();
-    if (!arena) return sys_make_bool(0);
-    char* buf = arena_allocate_string_with_header(arena, (size_t)max_bytes);
+    if (!get_global_arena()) return sys_make_bool(0);
+    char* buf = (char*)malloc((size_t)max_bytes);
     if (!buf) return sys_make_bool(0);
 
     int old_flags = fcntl((int)fd, F_GETFL, 0);
-    if (old_flags < 0 || fcntl((int)fd, F_SETFL, old_flags | O_NONBLOCK) != 0)
+    if (old_flags < 0 || fcntl((int)fd, F_SETFL, old_flags | O_NONBLOCK) != 0) {
+        free(buf);
         return sys_make_bool(0);
+    }
 
     ssize_t n = recv((int)fd, buf, (size_t)max_bytes, 0);
     (void)fcntl((int)fd, F_SETFL, old_flags);
-    if (n <= 0) return sys_make_bool(0);
+    if (n <= 0) { free(buf); return sys_make_bool(0); }
 
-    buf[n] = '\0';
-    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
-    v.type = SYS_TYPE_HEAP_PTR;
-    v.data = (uint64_t)buf;
+    eshkol_sysbuiltin_value_t v = sys_make_string_len(buf, (size_t)n);
+    free(buf);
+    if (v.type != SYS_TYPE_HEAP_PTR) return sys_make_bool(0);
     return v;
 #endif
     return sys_make_bool(0);
