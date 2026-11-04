@@ -2648,7 +2648,11 @@ void qllm_process_destroy(eshkol_subprocess_t* proc) {
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 #include <limits.h>
 
+#ifdef __APPLE__
+extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak_import));
+#else
 extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak));
+#endif
 
 typedef struct process_stream_record {
     eshkol_handle_id_t id;

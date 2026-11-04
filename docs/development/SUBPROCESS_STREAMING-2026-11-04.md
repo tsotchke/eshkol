@@ -93,6 +93,9 @@ Empty sanitizer-flag arrays use guarded expansion for macOS Bash 3.2. The hosted
 workflow requires the native-suite and capability-control success markers,
 in addition to the command's exit status.
 
+The optional native capability checker uses Darwin `weak_import` linkage on
+Apple platforms, preserving denied acquisition when the checker is absent.
+
 The focused `Subprocess streams native` workflow runs Linux epoll, Linux
 ASan/UBSan, and macOS kqueue checks, including the reviewer's exact macOS compile
 command. It targets the assigned integration branch as well as master. Hosted
