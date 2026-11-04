@@ -61,4 +61,11 @@ jobs:
           CC: clang
           CXX: clang++
           ESHKOL_STREAM_SANITIZE: ${{ matrix.sanitize }}
-        run: tests/agent/run_subprocess_stream_test.sh
+        run: |
+          log="$RUNNER_TEMP/subprocess-stream-native.log"
+          tests/agent/run_subprocess_stream_test.sh | tee "$log"
+          grep -Eq '^PASS: subprocess_stream_contract \(10 scenarios, [0-9]+ checks\)$' "$log"
+          grep -Fx 'PASS: missing native capability checker denies acquisition' "$log"
+          if [ "$(uname -s)" = Linux ]; then
+            grep -Fx 'PASS: monotonic failure retains discoverable owner and cancellation intent' "$log"
+          fi

@@ -89,6 +89,10 @@ headers. The standalone runner also enables Darwin extensions for all of its C
 translation units because its `_XOPEN_SOURCE=700` profile otherwise hides native
 resource-limit fields as well.
 
+Empty sanitizer-flag arrays use guarded expansion for macOS Bash 3.2. The hosted
+workflow requires the native-suite and capability-control success markers,
+in addition to the command's exit status.
+
 The focused `Subprocess streams native` workflow runs Linux epoll, Linux
 ASan/UBSan, and macOS kqueue checks, including the reviewer's exact macOS compile
 command. It targets the assigned integration branch as well as master. Hosted

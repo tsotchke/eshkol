@@ -124,12 +124,19 @@
     "scope": "Darwin extensions enabled before test headers and for native runner C translation units",
     "source_hashes": {
       "tests/agent/subprocess_stream_test.c": "40cd4f1f56444fc203c7c3f6b19b409ed134d0f4696985ed9170beace6cff2f6",
-      "tests/agent/run_subprocess_stream_test.sh": "1e0ed0ea8565acfc44ea91aeb3557221c02c0d1ef851270e788c7f223f12e748",
-      ".github/workflows/subprocess-stream.yml": "93454d235f0d658fe38b9c6d8c3839baca60570499db9cafb354fa576abfea51"
+      "tests/agent/run_subprocess_stream_test.sh": "8a455f83a019512b16d44b284a339cbf25c0b6da28d51d54f9aa26bcdd6e38e2",
+      ".github/workflows/subprocess-stream.yml": "134b5646d5d74b8a93ea9971eed7207bbb83966b6352529fc52cd511c7b8502e"
     },
     "local_native_validation": "10 scenarios plus missing-checker and clock-failure controls pass normally and under ASan/UBSan on Linux",
     "workflow_validation": "actionlint 1.7.12 passes",
     "macos_runtime": "Not run locally; consult Subprocess streams native hosted workflow",
-    "full_packaged_agent_build": "Not validated"
+    "full_packaged_agent_build": "Not validated",
+    "runner_compatibility": "Guard empty sanitizer arrays for Bash 3.2 nounset",
+    "ci_acceptance": "Require native 10-scenario and missing-checker success markers; Linux also requires clock-failure control marker",
+    "initial_hosted_run": {
+      "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/41888418078",
+      "macos_compile_control": "passed",
+      "macos_runtime": "not executed because Bash 3.2 stopped on an empty array; successful job status alone is not a runtime pass"
+    }
   }
 }

@@ -12,6 +12,7 @@ esac
 CC="${CC:-cc}"
 CXX="${CXX:-c++}"
 sanitize=()
+# Guard expansions below also support empty arrays under Bash 3.2 nounset.
 if [ "${ESHKOL_STREAM_SANITIZE:-0}" = 1 ]; then
     sanitize=(-fsanitize=address,undefined -fno-omit-frame-pointer)
 fi
@@ -23,12 +24,12 @@ runtime_objects=()
 for file in tests/agent/subprocess_stream_test.c lib/agent/c/agent_subprocess.c \
             lib/core/event_loop.c "lib/core/event_loop_${backend}.c"; do
     object="$WORK/$(basename "$file").o"
-    "$CC" "${flags[@]}" "${sanitize[@]}" -c "$ROOT/$file" -o "$object"
+    "$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} -c "$ROOT/$file" -o "$object"
     case "$file" in lib/*) runtime_objects+=("$object") ;; esac
 done
-"$CXX" -std=c++17 -O2 -g -Wall -Wextra -pthread "${sanitize[@]}" -I"$ROOT/inc" \
+"$CXX" -std=c++17 -O2 -g -Wall -Wextra -pthread ${sanitize[@]+"${sanitize[@]}"} -I"$ROOT/inc" \
     -c "$ROOT/lib/core/runtime_handle.cpp" -o "$WORK/runtime_handle.o"
-"$CXX" -pthread "${sanitize[@]}" "$WORK"/*.o -o "$WORK/subprocess-stream-test"
+"$CXX" -pthread ${sanitize[@]+"${sanitize[@]}"} "$WORK"/*.o -o "$WORK/subprocess-stream-test"
 python3 - "$WORK/subprocess-stream-test" <<'PY'
 import subprocess
 import sys
@@ -51,16 +52,16 @@ int main(void) {
     return 0;
 }
 C
-"$CC" "${flags[@]}" "${sanitize[@]}" -c "$WORK/missing-checker.c" -o "$WORK/missing-checker.o"
-"$CXX" -pthread "${sanitize[@]}" "$WORK/missing-checker.o" \
+"$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} -c "$WORK/missing-checker.c" -o "$WORK/missing-checker.o"
+"$CXX" -pthread ${sanitize[@]+"${sanitize[@]}"} "$WORK/missing-checker.o" \
     "${runtime_objects[@]}" "$WORK/runtime_handle.o" -o "$WORK/missing-checker"
 "$WORK/missing-checker"
 
 # GNU/ELF wrapping injects a clock failure without a production test hook.
 if [ "$(uname -s)" = Linux ]; then
-    "$CC" "${flags[@]}" "${sanitize[@]}" \
+    "$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} \
         -c "$ROOT/tests/agent/subprocess_stream_clock_test.c" -o "$WORK/clock-test.o"
-    "$CXX" -pthread "${sanitize[@]}" -Wl,--wrap=clock_gettime \
+    "$CXX" -pthread ${sanitize[@]+"${sanitize[@]}"} -Wl,--wrap=clock_gettime \
         "$WORK/clock-test.o" "${runtime_objects[@]}" "$WORK/runtime_handle.o" \
         -o "$WORK/clock-test"
     python3 - "$WORK/clock-test" <<'PY'
