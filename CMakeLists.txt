@@ -7576,6 +7576,10 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_deep_equal_test COMMAND runtime_deep_equal_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS)
+    add_subdirectory(tests/runtime/selene-byte-exact)
+endif()
+
 # Embedding-lookup backward (ESH-0230): exact indexed scatter-add against both a
 # closed form and central finite differences, including the duplicate-index
 # accumulation the pre-ESH-0230 stub got wrong, and the gradient-buffer lifetime

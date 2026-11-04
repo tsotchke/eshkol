@@ -1,0 +1,16 @@
+foreach(required ESHKOL_RUN SOURCE OUT LIBDIR)
+    if(NOT DEFINED ${required})
+        message(FATAL_ERROR "Missing ${required}")
+    endif()
+endforeach()
+execute_process(COMMAND "${ESHKOL_RUN}" -O3 -o "${OUT}" "${SOURCE}" "-L${LIBDIR}"
+    RESULT_VARIABLE build_result)
+if(NOT "${build_result}" STREQUAL "0")
+    message(FATAL_ERROR "AOT compilation failed: ${build_result}")
+endif()
+execute_process(COMMAND "${OUT}" TIMEOUT 60
+    RESULT_VARIABLE runtime_result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+message("${output}")
+if(NOT "${runtime_result}" STREQUAL "0")
+    message(FATAL_ERROR "AOT runtime failed: ${runtime_result}\n${errors}")
+endif()
