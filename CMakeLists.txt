@@ -7578,9 +7578,6 @@ endif()
 
 if(ESHKOL_BUILD_TESTS)
     add_subdirectory(tests/runtime/selene-byte-exact)
-    if(TARGET eshkol-agent-ffi)
-        add_subdirectory(tests/runtime/selene-string-producers)
-    endif()
 endif()
 
 # Embedding-lookup backward (ESH-0230): exact indexed scatter-add against both a
@@ -12739,4 +12736,10 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_ENABLE_EXPERIMENTAL_ESKM_V2 AND UNIX AND ESHKOL
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_eskm_v2_engine_parity.py
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test> --self-test)
     set_tests_properties(eskm_v2_engine_parity_test PROPERTIES TIMEOUT 180)
+endif()
+
+# The public FFI target is created late in this file. Register its regression
+# suite only after target creation, so enabled suites cannot be silently skipped.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-agent-ffi)
+    add_subdirectory(tests/runtime/selene-string-producers)
 endif()
