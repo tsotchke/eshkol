@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+/* ru_maxrss is a Darwin extension hidden by the strict POSIX profile. */
+#define _DARWIN_C_SOURCE 1
+#endif
 #include <eshkol/core/event_loop.h>
 #include <eshkol/core/subprocess_stream.h>
 

@@ -81,4 +81,18 @@ adapter remain outside this first slice. Streaming loops currently admit managed
 subprocess watches only. The runtime is confined to one owner thread and its
 explicit shutdown is terminal. LLVM 22 compatibility was not changed.
 
+## Darwin feature-profile follow-up — 2026-11-04
+
+Review identified that `_POSIX_C_SOURCE=200809L` hides Darwin's `ru_maxrss`
+field in the new native test. The test now enables `_DARWIN_C_SOURCE` before
+headers. The standalone runner also enables Darwin extensions for all of its C
+translation units because its `_XOPEN_SOURCE=700` profile otherwise hides native
+resource-limit fields as well.
+
+The focused `Subprocess streams native` workflow runs Linux epoll, Linux
+ASan/UBSan, and macOS kqueue checks, including the reviewer's exact macOS compile
+command. It targets the assigned integration branch as well as master. Hosted
+results are recorded by that workflow; the Linux evidence above does not imply
+a macOS runtime pass or full packaged-agent validation.
+
 Public API details are in [the subprocess reference](../reference/agent/subprocess.md).

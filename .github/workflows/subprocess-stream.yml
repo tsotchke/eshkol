@@ -1,0 +1,64 @@
+name: Subprocess streams native
+
+on:
+  pull_request:
+    branches: [master, codex/v14-integration-wave9-20261021]
+    paths:
+      - '.github/workflows/subprocess-stream.yml'
+      - 'tests/agent/*subprocess_stream*'
+      - 'lib/agent/c/agent_subprocess.c'
+      - 'lib/core/event_loop*'
+      - 'lib/core/runtime_handle.cpp'
+      - 'inc/eshkol/core/**'
+  push:
+    branches: [codex/subprocess-streaming-20261104]
+    paths:
+      - '.github/workflows/subprocess-stream.yml'
+      - 'tests/agent/*subprocess_stream*'
+      - 'lib/agent/c/agent_subprocess.c'
+      - 'lib/core/event_loop*'
+      - 'lib/core/runtime_handle.cpp'
+      - 'inc/eshkol/core/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux epoll
+            os: ubuntu-latest
+            sanitize: '0'
+          - name: Linux ASan and UBSan
+            os: ubuntu-latest
+            sanitize: '1'
+          - name: macOS kqueue
+            os: macos-14
+            sanitize: '0'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compile the macOS test with the CMake feature flags
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          clang -std=c11 -D_GNU_SOURCE -Iinc -pthread \
+            -c tests/agent/subprocess_stream_test.c \
+            -o "$RUNNER_TEMP/subprocess-stream-macos.o"
+      - name: Run native stream contract
+        shell: bash
+        env:
+          CC: clang
+          CXX: clang++
+          ESHKOL_STREAM_SANITIZE: ${{ matrix.sanitize }}
+        run: tests/agent/run_subprocess_stream_test.sh

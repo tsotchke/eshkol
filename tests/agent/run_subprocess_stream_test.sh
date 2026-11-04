@@ -16,6 +16,9 @@ if [ "${ESHKOL_STREAM_SANITIZE:-0}" = 1 ]; then
     sanitize=(-fsanitize=address,undefined -fno-omit-frame-pointer)
 fi
 flags=(-std=c11 -D_GNU_SOURCE -D_XOPEN_SOURCE=700 -O2 -g -Wall -Wextra -I"$ROOT/inc" -pthread)
+if [ "$(uname -s)" = Darwin ]; then
+    flags+=(-D_DARWIN_C_SOURCE=1)
+fi
 runtime_objects=()
 for file in tests/agent/subprocess_stream_test.c lib/agent/c/agent_subprocess.c \
             lib/core/event_loop.c "lib/core/event_loop_${backend}.c"; do

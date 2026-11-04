@@ -117,5 +117,19 @@
     "missing_capability_checker": "denies acquisition",
     "clock_failure": "closed owner remains discoverable and cleanup resumes after recovery",
     "sanitizers": "ASan and UBSan passed without findings"
+  },
+  "darwin_profile_follow_up": {
+    "date": "2026-11-04",
+    "review": "https://github.com/tsotchke/eshkol/pull/914#issuecomment-6638709373",
+    "scope": "Darwin extensions enabled before test headers and for native runner C translation units",
+    "source_hashes": {
+      "tests/agent/subprocess_stream_test.c": "40cd4f1f56444fc203c7c3f6b19b409ed134d0f4696985ed9170beace6cff2f6",
+      "tests/agent/run_subprocess_stream_test.sh": "1e0ed0ea8565acfc44ea91aeb3557221c02c0d1ef851270e788c7f223f12e748",
+      ".github/workflows/subprocess-stream.yml": "93454d235f0d658fe38b9c6d8c3839baca60570499db9cafb354fa576abfea51"
+    },
+    "local_native_validation": "10 scenarios plus missing-checker and clock-failure controls pass normally and under ASan/UBSan on Linux",
+    "workflow_validation": "actionlint 1.7.12 passes",
+    "macos_runtime": "Not run locally; consult Subprocess streams native hosted workflow",
+    "full_packaged_agent_build": "Not validated"
   }
 }
