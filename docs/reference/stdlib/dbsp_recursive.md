@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/recursive.esk
+  - tests/stdlib/dbsp_recursive_test.esk
+---
+
 # `core.dbsp.recursive`
 
 `(require core.dbsp.recursive)` adds nested logical clocks over the existing

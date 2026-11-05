@@ -1,3 +1,13 @@
+---
+kind: guide
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - tests/v1_4_resource_ownership/test_compiled.py
+  - tests/v1_4_resource_ownership/test_runtime.py
+---
+
 # Native strict resource ownership (experimental)
 
 `eshkol-run --strict-resources` adds an opt-in static check for owned network

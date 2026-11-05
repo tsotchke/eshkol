@@ -6,7 +6,6 @@ since: v1.4.0-connection
 sources:
   - lib/core/certified_native_solve.esk
   - tests/stdlib/certified_native_solve_test.esk
-  - tests/stdlib/certified_native_solve_vm_test.esk
 ---
 
 # Certified solutions from the native solver
