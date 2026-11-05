@@ -747,7 +747,7 @@ under the same discipline that made `Qubit` linear.
       analytic through `K = 0` with curvature jets, squared-distance geodesic
       attention, versioned coordinate migration (`x_v2 = 2 x_v1`), and the
       binary128 reference-grid gates across every `K` binade
-- [ ] Stochastic Binary Lambda Calculus, first slice (ADR-0017): `core.sblc`
+- [x] Stochastic Binary Lambda Calculus, first slice (ADR-0017): `core.sblc`
       with the four-form `sblc-v1` prefix code, fair choice, seeded sampling,
       exact rational distribution semantics under a step bound, the exact
       `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
@@ -932,7 +932,7 @@ workflow (ADR-0007 Phase 1).
 v1.5.0 cannot publish before v1.4.5. Its former Dec 5, 2026 target is subject
 to joint rebaseline with the former Q1 2027 v1.4.5 window; the v1.5.0 date
 slides if v1.4.5 device gates are incomplete. ADR-0017 assigns the first
-SBLC slice to v1.4.0; this release line does not claim its gate is implemented.
+SBLC slice to v1.4.0; `scripts/run_sblc_gate.sh` is its gate.
 
 Note: the arbitrary-order AD substrate this section used to stage here
 (P5/P7/P9/P10) shipped complete in v1.3.0-evolve, ahead of this plan — see

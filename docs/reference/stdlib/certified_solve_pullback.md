@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.4.0-connection
+sources:
+  - lib/core/certified_solve_pullback.esk
+  - tests/stdlib/certified_solve_pullback_test.esk
+---
+
 # Certified native linear-solve pullbacks
 
 `(require core.certified_solve_pullback)` exports two operations:

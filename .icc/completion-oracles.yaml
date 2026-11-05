@@ -2483,6 +2483,54 @@ oracles:
         label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: native collectives over the v1.4.0 socket layer — NOT YET IMPLEMENTED (zero allreduce/sharding/GSPMD/replica hits in lib/backend/xla/ or lib/backend/gpu/; the only "distributed" module in the repo is pure-value Lamport/vector-clock/CRDT math, explicitly independent of sockets/async I/O)'
         action: run_v14_connection_gate
 
+      # ─────────────────────────────────────────────────────────
+      # Stochastic Binary Lambda Calculus, first slice (ADR-0017;
+      # ROADMAP v1.4.0). Producer: scripts/run_sblc_gate.sh runs
+      # tests/stdlib/sblc_test.esk on JIT and AOT and writes
+      # scripts/icc_traces/sblc.jsonl; an oracle event is PASS only when
+      # its "SBLC-GATE <oracle> PASS" line appears on BOTH engines, and the
+      # parity event only when the two engines' stdout is byte-identical.
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_codec_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC codec oracle: for every code length up to 12, brute-force strict decoding of every bit string equals structural enumeration and the exact count recurrence; decode(encode(M)) = M consumes every bit; no trailing-bit aliases; closedness is depth-aware; classic core.blc encodings unchanged (JIT and AOT)'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_mass_conservation"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC exact mass conservation: prior mass plus incomplete-prefix mass is exactly 1 for every L up to 14 (Kraft equality of the complete sblc-v1 code), root constructor prefixes carry exactly 1/2, 1/4, 1/8, 1/8, the grammar fixed point selects the least root 1, and normal + timeout mass is exactly 1 for every exact distribution checked (JIT and AOT)'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_coin_trace_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC coin-trace oracle: every exact rational distribution under a step bound equals the sum over exhaustively replayed coin traces of 2^-|trace| per outcome and for the timeout; every run reconciles steps = beta + coins within the bound (JIT and AOT)'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_jit_aot_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC fixed-seed JIT/AOT parity: the complete suite output, including bit-list and BLC8 conditioning receipts and a seeded sample trace, is byte-identical on JIT and AOT'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_first_slice"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'ADR-0017 first slice complete: codec, mass, coin-trace, semantics (lazy choice, half mass, merging, step-bound edges, no-consistent-program), sampler statistics under predeclared bounds, conditioning receipts and JIT/AOT parity all PASS in one gate run'
+        action: ./scripts/run_sblc_gate.sh
+
       - runtime_event:
           event_kinds: [v1_4_connection]
           event_names: ["v14_connection_sweep_clean"]

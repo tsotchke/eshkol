@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/tensor_circuit_reverse.esk
+  - tests/stdlib/tensor_circuit_reverse_test.esk
+---
+
 # Maintained named-axis tensor pullbacks
 
 `(require core.ad.tensor_circuit_reverse)` pairs the existing maintained

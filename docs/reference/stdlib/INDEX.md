@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 104** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1104** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 105** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 1169** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -66,6 +66,7 @@ and [the numeric tower](../language/numeric-tower.md#exact-roots-and-exact-expt)
 | [`core.data.csv`](../../../lib/core/data/csv.esk) | yes | [data_csv.md](data_csv.md) | `csv-parse` `csv-parse-file` `csv-stringify` `csv-write-file` `csv-parse-line` `csv-parse-lines` `csv-split-fields` `csv-stringify-row` |
 | [`core.data.dataframe`](../../../lib/core/data/dataframe.esk) | yes | [data_dataframe.md](data_dataframe.md) | `csv-parse-typed` `csv-header` `csv-rows` `csv-column` `csv-column-idx` `csv-select` `csv-filter` `csv-map-column` `csv-row-count` `csv-col-count` `csv-describe` |
 | [`core.data.radix`](../../../lib/core/data/radix.esk) | no | [data_radix.md](data_radix.md) | `radix-empty` `radix-ref` `radix-set` `radix-delete` `radix-fold` |
+| [`core.sblc`](../../../lib/core/sblc.esk) | no | [sblc.md](sblc.md) | `sblc-format-version` `sblc-rng-policy` `sblc-choice` `sblc-choice?` `sblc-choice-left` `sblc-choice-right` `sblc-term?` `sblc-closed?` `sblc-closed-at?` `sblc-length` `sblc-weight` `sblc-encode` `sblc-decode` `sblc-try-decode` `sblc-prefix-status` `sblc-program-id` `sblc->string` `sblc-shift` `sblc-subst` `sblc-step` `sblc-normal?` `sblc-run` `sblc-run-coins` `sblc-sample` `sblc-sample-prng` `sblc-coins-from-bits` `sblc-coins-from-prng` `sblc-run-status` `sblc-run-term` `sblc-run-beta` `sblc-run-coins-used` `sblc-run-steps` `sblc-run-trace` `sblc-distribution` `sblc-dist-outcomes` `sblc-dist-timeout` `sblc-dist-normal-mass` `sblc-dist-mass-of` `sblc-count` `sblc-count-closed` `sblc-enumerate` `sblc-enumerate-closed` `sblc-prior-mass` `sblc-closed-prior-mass` `sblc-sample-program` `sblc-sample-closed-program` `sblc-bits-example` `sblc-bytes-example` `sblc-likelihood` `sblc-condition` `sblc-receipt-status` `sblc-receipt-evidence` `sblc-receipt-programs` `sblc-receipt-shortest` `sblc-receipt-mdl` `sblc-receipt-witness-runs` `sblc-entry-bits` `sblc-entry-length` `sblc-entry-prior` `sblc-entry-likelihoods` `sblc-entry-likelihood` `sblc-entry-timeouts` `sblc-entry-weight` `sblc-entry-posterior` `sblc-receipt->string` |
 | [`core.dbsp`](../../../lib/core/dbsp.esk) | no | [dbsp.md](dbsp.md) | `zset-row-key` `zset-empty` `zset?` `zset-singleton` `zset-from-weighted` `zset-weight` `zset-add` `zset-negate` `zset-sub` `zset-scale` `zset-consolidate` `zset-empty?` `zset-positive?` `zset=?` `zset-entries` `zset-rows` `zset-size` `zset-map` `zset-filter` `zset-project` `zset-union` `zset-join` `zset-distinct` `zset-count` `zset-sum` `stream-zero` `stream-delay` `dbsp-delay` `stream-D` `stream-I` `stream-add` `stream-negate` `stream-lift` `dbsp-compose` `dbsp-incrementalize` `incremental-map` `incremental-filter` `incremental-project` `incremental-union` `incremental-join` `incremental-distinct` |
 | [`core.dbsp.ad`](../../../lib/core/dbsp/ad.esk) | no | [dbsp_ad.md](dbsp_ad.md) | `dbsp-vector-group` `dbsp-ad-lift` |
 | [`core.dbsp.circuit`](../../../lib/core/dbsp/circuit.esk) | no | [dbsp_circuit.md](dbsp_circuit.md) | `make-dbsp-group` `make-dbsp-circuit` `dbsp-circuit-step` `dbsp-circuit-output` `dbsp-circuit-input` `dbsp-circuit-work` `dbsp-circuit-checkpoint-state` |
@@ -378,7 +379,7 @@ are documented, with signatures, on the pages listed.
 | `random.random` | `(require random.random)` | [QUANTUM_RNG.md](../../breakdown/QUANTUM_RNG.md) |
 | `tensor.utils` | `(require tensor.utils)` | [API_REFERENCE.md, Tensor Utilities](../../API_REFERENCE.md#tensor-utilities) |
 | `tensorcore` | `(require tensorcore)` | [shipped_exports.md](shipped_exports.md#tensorcore) |
-| `core.blc` | `(require core.blc)` | [blc.md](blc.md) (reference); [BINARY_LAMBDA_CALCULUS.md](../../guide/BINARY_LAMBDA_CALCULUS.md) (guide) |
+| `core.blc` | `(require core.blc)` | [blc.md](blc.md) (reference); [BINARY_LAMBDA_CALCULUS.md](../../guide/BINARY_LAMBDA_CALCULUS.md) (guide); its stochastic extension is [`core.sblc`](sblc.md) |
 | `core.ad.guw` | `(require core.ad.guw)` | [AUTOMATIC_DIFFERENTIATION.md §4](../../guide/AUTOMATIC_DIFFERENTIATION.md#4-multivariate-mixed-partials-guw) |
 | `core.ad.tensor_tower` | `(require core.ad.tensor_tower)` | [AUTOMATIC_DIFFERENTIATION.md §5](../../guide/AUTOMATIC_DIFFERENTIATION.md#5-tensor-ad--towers-of-tensors) |
 | `core.ad.sparse_guw` | `(require core.ad.sparse_guw)` | [AUTOMATIC_DIFFERENTIATION.md §7](../../guide/AUTOMATIC_DIFFERENTIATION.md#7-sparse-high-order--sparse-hessians) |
