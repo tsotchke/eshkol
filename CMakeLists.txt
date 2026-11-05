@@ -7580,6 +7580,10 @@ if(ESHKOL_BUILD_TESTS)
     add_subdirectory(tests/runtime/selene-byte-exact)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND UNIX AND TARGET eshkol-run)
+    add_subdirectory(tests/runtime/selene-file-io)
+endif()
+
 # Embedding-lookup backward (ESH-0230): exact indexed scatter-add against both a
 # closed form and central finite differences, including the duplicate-index
 # accumulation the pre-ESH-0230 stub got wrong, and the gradient-buffer lifetime

@@ -77,6 +77,38 @@ llvm::Value* SystemCodegen::extractStringPtr(llvm::Value* tagged_val) {
     return ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 }
 
+// Match the runtime's tagged-string byte contract: canonical HEAP_PTR strings
+// carry a counted header; legacy STRING_PTR values are raw C strings. Never
+// call the header-probing helper on the latter (even speculatively via select).
+static llvm::Value* fileContentByteLength(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                                          llvm::Value* value, llvm::Value* bytes,
+                                          llvm::Function* strlen_func) {
+    llvm::Function* function = ctx.builder().GetInsertBlock()->getParent();
+    auto* heap_block = llvm::BasicBlock::Create(ctx.context(), "filecontent_heap", function);
+    auto* raw_block = llvm::BasicBlock::Create(ctx.context(), "filecontent_raw", function);
+    auto* merge_block = llvm::BasicBlock::Create(ctx.context(), "filecontent_length", function);
+    auto* type = tagged.getType(value);
+    auto* is_heap = ctx.builder().CreateICmpEQ(type,
+        llvm::ConstantInt::get(type->getType(), ESHKOL_VALUE_HEAP_PTR));
+    ctx.builder().CreateCondBr(is_heap, heap_block, raw_block);
+
+    ctx.builder().SetInsertPoint(heap_block);
+    auto byte_length = ctx.module().getOrInsertFunction("eshkol_string_byte_length",
+        llvm::FunctionType::get(ctx.int64Type(), {ctx.ptrType()}, false));
+    auto* heap_length = ctx.builder().CreateCall(byte_length, {bytes});
+    ctx.builder().CreateBr(merge_block);
+
+    ctx.builder().SetInsertPoint(raw_block);
+    auto* raw_length = ctx.builder().CreateCall(strlen_func, {bytes});
+    ctx.builder().CreateBr(merge_block);
+
+    ctx.builder().SetInsertPoint(merge_block);
+    auto* length = ctx.builder().CreatePHI(ctx.int64Type(), 2);
+    length->addIncoming(heap_length, heap_block);
+    length->addIncoming(raw_length, raw_block);
+    return length;
+}
+
 // =========================================================================
 // ENVIRONMENT OPERATIONS
 // =========================================================================
@@ -1218,19 +1250,25 @@ llvm::Value* SystemCodegen::writeFile(const eshkol_operations_t* op) {
 
     // Write case
     ctx_.builder().SetInsertPoint(write_block);
-    llvm::Value* content_len = ctx_.builder().CreateCall(strlen_func, {content_ptr});
-    ctx_.builder().CreateCall(fwrite_func, {
+    llvm::Value* content_len = fileContentByteLength(ctx_, tagged_, content_arg, content_ptr, strlen_func);
+    llvm::Value* written = ctx_.builder().CreateCall(fwrite_func, {
         content_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 1), content_len, file
     });
-    ctx_.builder().CreateCall(fclose_func, {file});
-    llvm::Value* true_val = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
+    // Close exactly once, including after a short write. Buffered writes can
+    // succeed here and fail only when fclose flushes the stream.
+    llvm::Value* close_status = ctx_.builder().CreateCall(fclose_func, {file});
+    llvm::Value* complete = ctx_.builder().CreateICmpEQ(written, content_len);
+    llvm::Value* closed = ctx_.builder().CreateICmpEQ(close_status,
+        llvm::ConstantInt::get(close_status->getType(), 0));
+    llvm::Value* success_val = tagged_.packBool(ctx_.builder().CreateAnd(complete, closed));
+    llvm::BasicBlock* completed_block = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(merge_block);
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_block);
     llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2);
     phi->addIncoming(false_val, error_block);
-    phi->addIncoming(true_val, write_block);
+    phi->addIncoming(success_val, completed_block);
 
     return phi;
 }
@@ -1285,19 +1323,23 @@ llvm::Value* SystemCodegen::appendFile(const eshkol_operations_t* op) {
 
     // Write case
     ctx_.builder().SetInsertPoint(write_block);
-    llvm::Value* content_len = ctx_.builder().CreateCall(strlen_func, {content_ptr});
-    ctx_.builder().CreateCall(fwrite_func, {
+    llvm::Value* content_len = fileContentByteLength(ctx_, tagged_, content_arg, content_ptr, strlen_func);
+    llvm::Value* written = ctx_.builder().CreateCall(fwrite_func, {
         content_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 1), content_len, file
     });
-    ctx_.builder().CreateCall(fclose_func, {file});
-    llvm::Value* true_val = tagged_.packBool(llvm::ConstantInt::getTrue(ctx_.context()));
+    llvm::Value* close_status = ctx_.builder().CreateCall(fclose_func, {file});
+    llvm::Value* complete = ctx_.builder().CreateICmpEQ(written, content_len);
+    llvm::Value* closed = ctx_.builder().CreateICmpEQ(close_status,
+        llvm::ConstantInt::get(close_status->getType(), 0));
+    llvm::Value* success_val = tagged_.packBool(ctx_.builder().CreateAnd(complete, closed));
+    llvm::BasicBlock* completed_block = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(merge_block);
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_block);
     llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2);
     phi->addIncoming(false_val, error_block);
-    phi->addIncoming(true_val, write_block);
+    phi->addIncoming(success_val, completed_block);
 
     return phi;
 }
