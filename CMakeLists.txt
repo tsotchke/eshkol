@@ -11715,6 +11715,19 @@ if(ESHKOL_BUILD_AGENT_FFI)
         if(NOT TARGET yogacore)
             message(FATAL_ERROR "Pinned Yoga did not define yogacore")
         endif()
+        # Yoga's project defaults append a Release-only -O2 to yogacore after
+        # its target is created. Remove that exact upstream option so Eshkol's
+        # configured optimization level remains authoritative (for example,
+        # Release -O3). Keep every other Yoga option, including the RTTI
+        # override below, unchanged.
+        if(NOT MSVC)
+            get_target_property(_eshkol_yogacore_options yogacore COMPILE_OPTIONS)
+            if(_eshkol_yogacore_options)
+                list(REMOVE_ITEM _eshkol_yogacore_options "$<$<CONFIG:RELEASE>:-O2>")
+                set_property(TARGET yogacore PROPERTY COMPILE_OPTIONS
+                    "${_eshkol_yogacore_options}")
+            endif()
+        endif()
         # Yoga disables C++ RTTI upstream. That is not ABI-safe when its static
         # archive is force-loaded into Eshkol's exception-using C++ host on
         # Mach-O: libc++ inline throwing helpers in Yoga then emit private
