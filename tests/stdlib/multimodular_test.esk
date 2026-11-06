@@ -1,0 +1,211 @@
+;;; multimodular_test.esk -- core.multimodular against the exact paths.
+;;;
+;;; Every multimodular answer is compared with an independent exact
+;;; computation: determinants with core.exact_linalg's bignum Bareiss
+;;; `exact-det`, solutions with `exact-solve` (and by substitution), gcds in
+;;; Z[x] with Euclid's algorithm over Q[x] and with exact division in
+;;; core.polynomial_exact. Unlucky fibres are forced (a determinant, a
+;;; leading coefficient and a gcd degree that vanish or jump at the first
+;;; prime) and must be skipped without counting toward the bound.
+
+(require core.ring)
+(require core.multimodular)
+(require core.exact_linalg)
+(require core.polynomial_exact)
+
+(define passed 0)
+(define failed 0)
+(define (check label ok)
+  (if ok
+      (set! passed (+ passed 1))
+      (begin (set! failed (+ failed 1)) (display "FAIL: ") (display label) (newline))))
+(define (all? p xs) (or (null? xs) (and (p (car xs)) (all? p (cdr xs)))))
+
+(define seed 20261024)
+(define (next!)
+  (set! seed (modulo (+ (* seed 6364136223846793005) 1442695040888963407) 18446744073709551616))
+  (quotient seed 65536))
+(define (rand-int lo hi) (+ lo (modulo (next!) (+ 1 (- hi lo)))))
+(define (rand-matrix n lo hi)
+  (list->vector (map (lambda (i) (list->vector (map (lambda (j) (rand-int lo hi)) (iota n)))) (iota n))))
+(define p0 (multimodular-prime 0))
+
+;; ===========================================================================
+;; Primes, CRT, the symmetric lift and rational reconstruction
+;; ===========================================================================
+
+(check "word primes: 2^31 - 1 first, then descending, all below 2^31"
+       (and (= p0 2147483647) (= (multimodular-prime 1) 2147483629)
+            (all? (lambda (i) (and (< (multimodular-prime i) 2147483648) (exact-prime? (multimodular-prime i))
+                                   (> (multimodular-prime i) (multimodular-prime (+ i 1)))))
+                  (iota 40))))
+(check "chinese-remainder and symmetric-residue invert reduction"
+       (let* ((ps (multimodular-primes (expt 10 50))) (x (- 0 (expt 7 55))) (M (fold-left * 1 ps)))
+         (and (= (symmetric-residue (chinese-remainder (map (lambda (p) (modulo x p)) ps) ps) M) x)
+              (= (symmetric-residue 5 10) 5) (= (symmetric-residue 6 10) -4))))
+(check "rational-reconstruct recovers n/d from n * d^-1 mod M when M > 2 N D"
+       (let* ((M (* p0 (multimodular-prime 1))) (F (make-zmod M)))
+         (all? (lambda (q) (= (rational-reconstruct (ring-admit F q) M 100000 100000) q))
+               (list 0 1 -1 22/7 -355/113 99991/65537 -1/99999))))
+
+;; ===========================================================================
+;; Generic fibre evaluation
+;; ===========================================================================
+
+(define (f R x)
+  (r+ R (r- R (r+ R (r- R (r* R (r-int R 3) (r-expt R x 5)) (r* R (r-int R 2) (r-expt R x 3))) (r-expt R x 2))
+              (r* R (r-int R 7) x))
+      (r-int R 4)))
+(define big (- (expt 10 21) 12345))
+(check "multimodular-integer: f(10^21 - 12345) over Spec Z equals the integer value"
+       (= (multimodular-integer (lambda (F) (f F big)) (* 13 (expt (abs big) 5)))
+          (f integers big)))
+(define harmonic (let loop ((k 1) (s 0)) (if (> k 30) s (loop (+ k 1) (+ s (/ 1 k))))))
+(check "multimodular-rational: the 30th harmonic number from its residues"
+       (let ((D (let loop ((k 1) (l 1)) (if (> k 30) l (loop (+ k 1) (lcm l k))))))
+         (= (multimodular-rational (lambda (F) (r-sum F (map (lambda (k) (r-inv F (+ k 1))) (iota 30)))) (* 4 D) D)
+            harmonic)))
+(define report (multimodular-integer-report (lambda (F) (r* F (r-inv F (r-int F 2147483647)) 2147483647)) 1))
+(check "an unlucky fibre (a required unit is zero mod p) is skipped and not counted"
+       (and (= (cdr (assq 'value report)) 1) (equal? (cdr (assq 'unlucky report)) (list 2147483647))
+            (equal? (cdr (assq 'primes report)) (list 2147483629))))
+(check "bound 0: one fibre still runs and the result keeps the callback's shape"
+       (and (equal? (multimodular-integer (lambda (F) (vector (r-int F 0) (r-int F 0))) 0) (vector 0 0))
+            (= (multimodular-integer (lambda (F) (r0 F)) 0) 0)
+            (equal? (multimodular-rational (lambda (F) (list (r0 F))) 0 1) (list 0))
+            (= (length (cdr (assq 'primes (multimodular-integer-report (lambda (F) 0) 0)))) 1)))
+(check "a 1x1 zero matrix has determinant 0; a zero row gives 0"
+       (and (= (multimodular-det (vector (vector 0))) 0) (= (multimodular-det '((0 0) (3 4))) 0)
+            (= (exact-det (vector (vector 0 0) (vector 3 4))) 0)))
+(check "an invertible system with a zero right-hand side has the zero solution"
+       (and (equal? (multimodular-solve (vector (vector 2 1) (vector 1 3)) (vector 0 0)) (vector 0 0))
+            (equal? (multimodular-solve '((7)) '(0)) (vector 0))))
+(check "a vector result is glued componentwise"
+       (equal? (multimodular-integer (lambda (F) (vector (r-int F -5) (r-int F (expt 10 30)))) (expt 10 30))
+               (vector -5 (expt 10 30))))
+
+;; ===========================================================================
+;; Determinants against the bignum Bareiss path
+;; ===========================================================================
+
+(define det-cases
+  (append
+   (map (lambda (n) (rand-matrix n -9 9)) (list 1 2 3 4 5 6 7 8 9 10))
+   (map (lambda (n) (rand-matrix n (- (expt 10 13)) (expt 10 13))) (list 2 4 6 8))
+   (list (vector (vector 1 2 3) (vector 4 5 6) (vector 7 8 9))               ; singular
+         (vector (vector 0 0 1) (vector 0 1 0) (vector 1 0 0))               ; a row swap
+         (vector (vector 2147483647 0) (vector 0 1)))))                      ; det = the first prime
+(check "multimodular-det = exact-det on 17 matrices (1x1 to 10x10, 13-digit entries, singular)"
+       (all? (lambda (A) (= (multimodular-det A) (exact-det A))) det-cases))
+(check "the Hadamard bound dominates every determinant"
+       (all? (lambda (A) (<= (abs (exact-det A)) (hadamard-bound A))) det-cases))
+(check "multimodular-det over Q: rows with denominators"
+       (let ((A (vector (vector 1/2 1/3 1/5) (vector -2/7 1 3/4) (vector 5 -1/9 2))))
+         (= (multimodular-det A) (exact-det A))))
+(define A13 (list-ref det-cases 12))
+(define H13 (hadamard-bound A13))
+(define primes13 (multimodular-primes (* 2 H13)))
+(display "   6x6 with 13-digit entries: Hadamard bound of ") (display (string-length (number->string H13)))
+(display " digits, ") (display (length primes13)) (display " primes below 2^31") (newline)
+(check "the prime count is fixed by the bound: product of the primes > 2H, without the last <= 2H"
+       (let ((M (fold-left * 1 primes13)))
+         (and (> M (* 2 H13)) (<= (quotient M (list-ref primes13 (- (length primes13) 1))) (* 2 H13)))))
+(check "det mod p is the reduction of the determinant in every fibre"
+       (let ((d (exact-det A13)))
+         (all? (lambda (p) (= (ring-det (make-zmod p) A13) (modulo d p))) primes13)))
+
+;; ===========================================================================
+;; Solve over Q against exact-solve
+;; ===========================================================================
+
+(define (residual-zero? A x b)
+  (let ((n (vector-length A)))
+    (all? (lambda (i)
+            (= (let loop ((j 0) (s 0)) (if (= j n) s (loop (+ j 1) (+ s (* (vector-ref (vector-ref A i) j) (vector-ref x j))))))
+               (vector-ref b i)))
+          (iota n))))
+(define solve-cases
+  (map (lambda (n) (cons (rand-matrix n (- (expt 10 9)) (expt 10 9))
+                         (list->vector (map (lambda (i) (rand-int -1000 1000)) (iota n)))))
+       (list 1 2 3 5 7 9)))
+(check "multimodular-solve = exact-solve and A x = b exactly, sizes 1 to 9"
+       (all? (lambda (c) (let ((x (multimodular-solve (car c) (cdr c))))
+                           (and (equal? x (exact-solve (car c) (cdr c))) (residual-zero? (car c) x (cdr c)))))
+             solve-cases))
+(check "multimodular-solve skips a fibre where det A vanishes (det = 2^31 - 1)"
+       (let* ((A (vector (vector 2147483647 1) (vector 0 1))) (b (vector 1 2)))
+         (equal? (multimodular-solve A b) (exact-solve A b))))
+(check "multimodular-solve over Q: rational entries and right-hand side"
+       (let ((A (vector (vector 1/2 1/3) (vector -2/7 5))) (b (vector 1/11 -3)))
+         (equal? (multimodular-solve A b) (exact-solve A b))))
+(check "multimodular-solve refuses a singular matrix"
+       (guard (e ((error-object? e) #t))
+         (multimodular-solve (vector (vector 1 2) (vector 2 4)) (vector 1 1)) #f))
+(define A6 (vector-ref (list->vector det-cases) 12))
+(define b6 (vector-map (lambda (i) (- (* 1000003 (+ i 1)) 77)) (list->vector (iota 6))))
+(check "the 6x6 13-digit system: x_1 equals (exact-solve A b)_1"
+       (= (vector-ref (multimodular-solve A6 b6) 0) (vector-ref (exact-solve A6 b6) 0)))
+
+;; ===========================================================================
+;; Polynomial gcd over Z against Euclid over Q[x] and exact division
+;; ===========================================================================
+
+(define Qx (make-polys rationals))
+(define (pmul a b) (ring-poly-coefficients (r* Qx (ring-poly Qx a) (ring-poly Qx b))))
+;; The exact path: Euclid in Q[x] (monic), scaled to a primitive integer
+;; polynomial with positive leading coefficient, times the content gcd.
+(define (content cs) (fold-left gcd 0 cs))
+(define (euclid-gcd a b)
+  (let* ((g (ring-poly-coefficients (r-gcd Qx (ring-poly Qx a) (ring-poly Qx b))))
+         (l (fold-left (lambda (l c) (lcm l (denominator c))) 1 g))
+         (gi (map (lambda (c) (* l c)) g))
+         (pp (map (lambda (c) (/ c (content gi))) gi)))
+    (map (lambda (c) (* c (gcd (content a) (content b)))) pp)))
+(define (divides? g f) (exact-poly-zero? (cdr (exact-poly-divmod f g))))
+(define (rand-poly deg lo hi)
+  (let loop ((cs (map (lambda (i) (rand-int lo hi)) (iota deg))))
+    (let ((lead (rand-int 1 hi))) (append cs (list lead)))))
+(define gcd-cases
+  (append
+   (map (lambda (k)
+          (let ((g (rand-poly (+ 1 (modulo k 4)) -50 50))
+                (u (rand-poly (+ 1 (modulo k 3)) -1000 1000))
+                (v (rand-poly (+ 2 (modulo k 2)) -1000 1000)))
+            (list (pmul g u) (pmul g v))))
+        (iota 10))
+   (list
+    (list '(-1 0 1) '(1 2 1))                                              ; x^2 - 1, (x + 1)^2
+    (list '(6 12) '(4 8))                                                  ; contents 6 and 4
+    (list '(2 4 2) '(0 0 3 3))                                             ; coprime contents
+    (list '(1 1 1) '(1 0 1))                                               ; coprime
+    (list (pmul '(123456789012 -98765 0 77 31) '(5 0 -3 1 19))
+          (pmul '(123456789012 -98765 0 77 31) '(-7 11 0 2)))
+    ;; cofactors x + 1 and x + 1 + p agree mod p = 2^31 - 1: that fibre has
+    ;; a gcd of higher degree and must be discarded
+    (list (pmul '(3 -2 1) '(1 1)) (pmul '(3 -2 1) (list (+ 1 2147483647) 1)))
+    ;; leading coefficients divisible by p = 2^31 - 1: that fibre is skipped
+    (list (pmul '(5 1) (list 1 2147483647)) (pmul '(5 1) (list 3 (* 2 2147483647)))))))
+(check "multimodular-poly-gcd = Euclid over Q[x] on 17 pairs (including two forced unlucky primes)"
+       (all? (lambda (c) (equal? (multimodular-poly-gcd (car c) (cadr c)) (euclid-gcd (car c) (cadr c))))
+             gcd-cases))
+(check "the gcd divides both inputs exactly and the cofactors are coprime"
+       (all? (lambda (c)
+               (let* ((g (multimodular-poly-gcd (car c) (cadr c)))
+                      (ca (car (exact-poly-divmod (car c) g))) (cb (car (exact-poly-divmod (cadr c) g))))
+                 (and (divides? g (car c)) (divides? g (cadr c))
+                      (= (length (multimodular-poly-gcd (vector->list ca) (vector->list cb))) 1))))
+             gcd-cases))
+(check "the Mignotte bound dominates the gcd's coefficients"
+       (all? (lambda (c)
+               (let ((g (multimodular-poly-gcd (car c) (cadr c))))
+                 (<= (fold-left (lambda (m x) (max m (abs x))) 0 g) (mignotte-gcd-bound (car c) (cadr c)))))
+             gcd-cases))
+(check "gcd edge cases: zero, constants, a unit"
+       (and (equal? (multimodular-poly-gcd '() '()) '()) (equal? (multimodular-poly-gcd '() '(-2 -4)) '(2 4))
+            (equal? (multimodular-poly-gcd '(12) '(18)) '(6)) (equal? (multimodular-poly-gcd '(1 1) '(1)) '(1))))
+
+(newline)
+(display "multimodular_test: ") (display passed) (display " checks passed, ") (display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: multimodular_test") (newline) (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

@@ -2491,6 +2491,94 @@ oracles:
         label: 'Running-total sweep: every v1.4-connection probe above is green. Expected FAIL until the release actually ships — this criterion is a progress counter, not a release gate (see scripts/run_v14_connection_gate.sh''s summary line for the live pass/fail count)'
         action: run_v14_connection_gate
 
+      # core.sheaf (ADR-0033): sheaf theory on finite sites as one library.
+      # Producer: scripts/run_sheaf_gate.sh runs the six CTest entries that
+      # own the behaviour (the suite and the two examples written on the
+      # library, JIT and AOT) and every documentation example on the
+      # reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_sheaf
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_sheaf"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.sheaf (ADR-0033): finite sites and Grothendieck topologies checked against the three axioms, presheaves of sets and of Z-modules / Q-vector spaces, gluing with named obstructions, the plus construction, and Cech and derived cohomology with torsion and cocycle generators; sheaf_jit/sheaf_aot, the two library-based sheaf examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_sheaf_gate.sh
+
+      # core.topos (ADR-0035): the internal language of the topos of a finite
+      # site with Kripke-Joyal forcing. Producer: scripts/run_topos_gate.sh
+      # runs the fourteen CTest entries that own the behaviour (six suites and
+      # the presheaf-topos example written on the library, JIT and AOT) and every
+      # documentation example on the reference page; PASS only when all of
+      # them ran and passed.
+      - id: v14_core_topos
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_topos"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.topos (ADR-0035): the Mitchell-Benabou language of Sh(C, J) for finite sites, Kripke-Joyal forcing cross-checked against the Omega-valued interpretation on an enumerated corpus over five sites, the Kripke and Beth reductions, the j-translation, soundness of intuitionistic higher-order logic with classical-law counter-witnesses, and the internally local structure sheaf of Spec(Z/n); the topos suites, the library-based presheaf-topos example in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_topos_gate.sh
+
+      # core.ring and core.multimodular (ADR-0034, library rung).
+      # Producer: scripts/run_ring_gate.sh runs the eight CTest entries that
+      # own the behaviour (the ring-law gate, the IEEE-tier specification
+      # check, the multimodular cross-checks and the functor-of-points
+      # example, each in JIT and AOT) and every documentation example on the
+      # two reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_ring
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_ring"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
+        action: ./scripts/run_ring_gate.sh
+
+      # core.simplicial and core.homological (ADR-0037). Producer:
+      # scripts/run_simplicial_gate.sh runs the eighteen CTest entries that own
+      # the behaviour (the two suites and the seven examples written on the
+      # libraries, each in JIT and AOT) and every documentation example on the
+      # two reference pages; PASS only when all of them ran and passed.
+      - id: v14_simplicial_homological
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_simplicial_homological"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.simplicial and core.homological (ADR-0037): simplicial sets in Eilenberg-Zilber normal form, products, joins, nerves of categories, posets, groups and crossed modules, McCord models, Kan and quasi-category conditions over every compatible horn, Kan homotopy groups and mapping spaces; complexes over Z, Q and F_p with torsion, cones and long exact sequences, Ext/Tor over Z, spectral sequences page by page with exact convergence, cup and cup-i products, Steenrod squares with the Adem relations, group cohomology with twisted coefficients; simplicial_jit/aot, homological_jit/aot, the seven library-based algebraic-topology examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_simplicial_gate.sh
+
+      # core.effective (ADR-0038). Producer: scripts/run_effective_gate.sh runs
+      # the six CTest entries that own the behaviour (effective_test,
+      # effective_homotopy_test, effective_hypercover_test, each in JIT and
+      # AOT), the two long-run checks (pi_6(S^3), 33 GB; the 3-type on the
+      # product hypercover, 29 GB) and every documentation example on the reference page; PASS only
+      # when all of them ran and passed.
+      - id: v14_effective_homology
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_effective_homology"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.effective (ADR-0038): reductions with exact identity checks, the basic perturbation lemma with its filtration checked on every cell, reductions from discrete vector fields, Eilenberg-Zilber by its vector field and by AW/EML/SHI, twisted products, W-bar G onto the bar construction, K(Z,n) and K(Z/m,n) with effective homology, the Whitehead tower (pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2, pi_6(S^3) = Z/12), hypercovers restoring descent on the pseudo-2-sphere (4 and 2 where the Cech nerve gives 2 and 1) and a 3-type with the Pontryagin square as second k-invariant computed on both sides of a cover; effective_jit/aot, effective_homotopy_jit/aot, effective_hypercover_jit/aot, the long-run checks effective_pi6_s3 and effective_hypercover_3type, and the reference-page examples all pass'
+        action: ./scripts/run_effective_gate.sh
+      # core.category (ADR-0036): finite category theory on core.sheaf.site's
+      # representation, and the S6.2 acceptance (descent as a Kan extension,
+      # sheafification as a reflector). Producer: scripts/run_category_gate.sh
+      # runs the ten CTest entries that own the behaviour (category_test,
+      # category_s62_test and the three examples written on the library, JIT
+      # and AOT) and every documentation example on the reference page; PASS
+      # only when all of them ran and passed.
+      - id: v14_core_category
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_category"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.category (ADR-0036): functors, natural transformations, functor and comma categories, limits, colimits, ends, coends, Yoneda, Grothendieck constructions, Kan extensions by both formulas with Lan -| F^* -| Ran, adjunctions with triangle identities, monads, nerves and derived limits; S6.2: a -| i with both triangle identities, the sheafification monad, Cech and cohomological descent, and the numbers of the sheaf and descent examples reproduced categorically; the suites, the three library-based examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_category_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.

@@ -752,6 +752,58 @@ under the same discipline that made `Qubit` linear.
       exact rational distribution semantics under a step bound, the exact
       `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
       (codec oracle, exact mass conservation, coin-trace oracle, JIT/AOT parity)
+- [x] Sheaf theory as a library (ADR-0033): `core.sheaf` provides finite
+      sites with Grothendieck topologies given by covering sieves and checked
+      against the three axioms, finite spaces, presheaves of sets and of
+      Z-modules / Q-vector spaces, the sheaf condition as gluing that returns
+      the global section or the overlaps where it fails (also for data split
+      over shards, devices or time windows), sheafification by the plus
+      construction, and Cech and derived cohomology with torsion and cocycle
+      generators, over `core.integer_linalg` (Smith normal form). The
+      finite-site and finite-space sheaf examples run on it
+- [x] Kripke-Joyal semantics as a library (ADR-0035): `core.topos` gives the
+      topos of a finite site its internal language (higher-order: Omega,
+      products, exponentials, power objects, comprehension) and decides
+      formulas by Kripke-Joyal forcing and, independently, by the
+      Omega-valued interpretation, with the forcing theorem checked on an
+      enumerated corpus over five sites, the Kripke and Beth reductions, the
+      Lawvere-Tierney bijection, the `locally` modality as the j-translation,
+      and the internally local structure sheaf of Spec(Z/n). The presheaf-topos
+      example runs on it. Language adoption is staged in ADR-0035 (v1.4.1 to v1.5.0)
+- [x] Simplicial and homological algebra as libraries (ADR-0037):
+      `core.simplicial` gives simplicial sets in Eilenberg-Zilber normal
+      form with products, joins, cones and suspensions, nerves of finite
+      categories, posets, groups (BG) and crossed modules, McCord finite
+      models, the Kan and quasi-category conditions over every compatible
+      horn, Kan's homotopy groups and mapping spaces `Map(X, Y)`;
+      `core.homological` gives complexes over `core.ring` carriers (Z with
+      torsion through `core.integer_linalg`, Q, F_p), cones and long exact
+      sequences, Ext and Tor over Z, spectral sequences of filtered and double
+      complexes checked page by page and in the limit, cup and cup-i products,
+      Steenrod squares and group cohomology with twisted coefficients. Eight
+      algebraic-topology examples run on them
+- [x] Finite category theory as a library (ADR-0036): `core.category` gives
+      functors and natural transformations checked by their laws, functor,
+      comma and slice categories, limits, colimits, ends and coends, the
+      Yoneda lemma, categories of elements and Grothendieck constructions,
+      Kan extensions by the pointwise and the (co)end formulas with
+      Lan -| F^* -| Ran, adjunctions with both triangle identities and
+      adjoints found through comma categories, monads, nerves, derived
+      limits, and descent and sheafification as category theory (a -| i, the
+      sheafification monad, Cech descent, cohomological descent through
+      Grothendieck constructions), all on core.sheaf's finite categories.
+      The finite-categories, sheafification and homotopy-colimit examples run
+      on it, and the S6.2 suite reproduces the numbers of the sheaf and
+      descent examples categorically
+- [x] Effective homology as a library (ADR-0038): `core.effective` gives
+      reductions and the basic perturbation lemma with every identity and
+      the nilpotency hypothesis checked on the cells a computation uses,
+      reductions from discrete vector fields (Eilenberg-Zilber, twisted
+      Eilenberg-Zilber, K(Z,1), W-bar G onto the bar construction), K(Z,n)
+      and K(Z/m,n) with effective homology, the Whitehead tower computing
+      pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2 and
+      pi_6(S^3) = Z/12, and hypercovers of finite spaces restoring descent
+      where the Cech nerve does not (stage S6.3)
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
@@ -796,6 +848,16 @@ under the same discipline that made `Qubit` linear.
       tensors are f64-backed, so an exact system over tensor storage must still
       be written out on Scheme vectors. Both items are used step by step in
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+- [ ] Ring carriers, the functor-of-points evaluation model (ADR-0034,
+      Proposed): one ring-carrier protocol, registered once per engine, for
+      the numeric tower, the forward-mode and Taylor AD carriers, modular,
+      symbolic and Z-set arithmetic, with multimodular computation over
+      Spec Z (fibres F_p, CRT, rational reconstruction under a proven bound).
+      In v1.4.0-connection: the record and the evidence program
+      `examples/mathematics_functor_of_points.esk` (29 checks, CTest
+      `rings_functor_of_points` JIT and AOT, no compiler change). Planned for v1.4.1 (library `core.ring`,
+      `core.multimodular`) through v1.5.0 (carriers in the type system), one
+      stage per rung as the record lists
 - [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy
       oracle pilot on the exact-AD surface
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
@@ -835,6 +897,20 @@ under the same discipline that made `Qubit` linear.
       at the v1.3.5 cut)
 - [ ] PGO: canonical training workload + one-shot `llvm-profdata` merge
 - [ ] Codebase: decompose `bignum.cpp`; shell-hardening epic wave 1
+- [x] Ring carriers as a library (ADR-0034, library rung): `core.ring` gives
+      versioned carrier descriptors with stable family ids for Z, Q, the IEEE
+      binary64 tier, the native tower, Z/m, K[e]/e^n, K[x], Z[G] over
+      `core.dbsp` Z-sets and (through `core.algebraic_domain`) Q(alpha) and its
+      exact AD lifts; generic operations, the coercion lattice with explicit
+      admission and named refusals, ring maps and elimination over a carrier.
+      `core.multimodular` computes exact determinants, solves over Q and gcds
+      in Z[x] in fibres F_p below 2^31 with CRT and rational reconstruction
+      under Hadamard and Mignotte bounds. Gates: the ring-law gate, the IEEE
+      specification check with a pinned bit-pattern digest, and the
+      multimodular cross-checks, each in JIT and AOT; the functor-of-points
+      example runs on the libraries
+- [ ] `core.symbolic` coefficient fields and `core.dbsp` weights taking a
+      `core.ring` carrier (ADR-0034, library rung)
 
 ---
 
