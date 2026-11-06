@@ -4370,19 +4370,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endforeach()
 endif()
 
-# pi_6(S^3) = Z/12 through the Whitehead tower: about 150 s and 32 GB after
-# compilation on Linux x64, so JIT only and serialized with other heavy suites.
-if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    add_test(NAME effective_pi6_s3_jit
-        COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/effective_pi6_s3_test.esk")
-    set_tests_properties(effective_pi6_s3_jit PROPERTIES
-        TIMEOUT 3000
-        RESOURCE_LOCK effective_heavy_memory
-        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
-        PASS_REGULAR_EXPRESSION "PASS: effective_pi6_s3_test"
-        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
-endif()
-
 # core.simplicial and core.homological (ADR-0037): simplicial sets, nerves,
 # Kan complexes, mapping spaces; complexes over ring carriers, homology with
 # torsion, cones, Ext/Tor, spectral sequences, cup and cup-i products,

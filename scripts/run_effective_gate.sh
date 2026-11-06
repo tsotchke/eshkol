@@ -8,15 +8,20 @@
 #        effective_homotopy_jit / effective_homotopy_aot
 #        (tests/stdlib/effective_homotopy_test.esk),
 #        effective_hypercover_jit / effective_hypercover_aot
-#        (tests/stdlib/effective_hypercover_test.esk),
-#        and effective_pi6_s3_jit (tests/stdlib/effective_pi6_s3_test.esk);
-#   2. every fenced example on docs/reference/stdlib/effective.md through the documentation example
+#        (tests/stdlib/effective_hypercover_test.esk);
+#   2. the two long-run checks, on the JIT, outside the default CTest suite
+#      because of their memory: tests/stdlib/effective_pi6_s3_test.esk
+#      (pi_6(S^3) = Z/12, about 3 minutes and 33 GB on Linux x64) and
+#      tests/stdlib/effective_hypercover_3type_test.esk (the 3-type on the
+#      product hypercover, about 3 minutes and 29 GB);
+#   3. every fenced example on docs/reference/stdlib/effective.md through the documentation example
 #      harness, on the JIT and as AOT binaries, comparing each `;; =>`
 #      annotation with what the build printed.
 #
 # It writes one event to $TRACE_DIR/v14_effective_homology.jsonl:
 #   {"kind": "v1_4_connection", "name": "v14_effective_homology", "value": PASS|FAIL}
-# PASS only when all seven CTest entries ran and passed and every
+# PASS only when all six CTest entries and both long-run checks ran and
+# passed and every
 # documentation example matched. Absence of a test is a FAIL, never a skip.
 #
 #   BUILD_DIR  (env, default "build")   the CMake build directory
@@ -50,8 +55,8 @@ WORK="$BUILD_DIR_PATH/test-work/effective-gate"
 mkdir -p "$WORK"
 export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 
-TESTS='^((effective|effective_homotopy|effective_hypercover)_(jit|aot)|effective_pi6_s3_jit)$'
-EXPECTED=7
+TESTS='^(effective|effective_homotopy|effective_hypercover)_(jit|aot)$'
+EXPECTED=6
 
 emit_event() { # PASS|FAIL snippet
     python3 - "$TRACE_FILE" "$1" "$2" <<'PY'
@@ -77,6 +82,18 @@ summary="ctest ${passed}/${EXPECTED} passed (ran ${ran}, exit ${ctest_status})"
 if [ "$ctest_status" -ne 0 ] || [ "$ran" -ne "$EXPECTED" ] || [ "$passed" -ne "$EXPECTED" ]; then
     status=1
 fi
+
+for long in effective_pi6_s3_test effective_hypercover_3type_test; do
+    long_log="$WORK/$long.log"
+    ESHKOL_JIT_CACHE=0 "$BUILD_DIR_PATH/eshkol-run" -r "$REPO_ROOT/tests/stdlib/$long.esk" > "$long_log" 2>&1
+    long_status=$?
+    if [ "$long_status" -eq 0 ] && grep -q "^PASS: $long" "$long_log" && ! grep -qE "^FAIL:|Unhandled exception" "$long_log"; then
+        summary="$summary; $long PASS"
+    else
+        summary="$summary; $long FAIL (exit $long_status)"
+        status=1
+    fi
+done
 
 PAGES="docs/reference/stdlib/effective.md"
 doc_log="$WORK/doc-examples.log"

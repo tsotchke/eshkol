@@ -2550,9 +2550,10 @@ oracles:
         action: ./scripts/run_simplicial_gate.sh
 
       # core.effective (ADR-0038). Producer: scripts/run_effective_gate.sh runs
-      # the seven CTest entries that own the behaviour (effective_test,
+      # the six CTest entries that own the behaviour (effective_test,
       # effective_homotopy_test, effective_hypercover_test, each in JIT and
-      # AOT, and effective_pi6_s3_jit) and every documentation example on the reference page; PASS only
+      # AOT), the two long-run checks (pi_6(S^3), 33 GB; the 3-type on the
+      # product hypercover, 29 GB) and every documentation example on the reference page; PASS only
       # when all of them ran and passed.
       - id: v14_effective_homology
         runtime_event:
@@ -2560,7 +2561,7 @@ oracles:
           event_names: ["v14_effective_homology"]
           event_values: ["PASS"]
         severity: medium
-        label: 'core.effective (ADR-0038): reductions with exact identity checks, the basic perturbation lemma with its filtration checked on every cell, reductions from discrete vector fields, Eilenberg-Zilber by its vector field and by AW/EML/SHI, twisted products, W-bar G onto the bar construction, K(Z,n) and K(Z/m,n) with effective homology, the Whitehead tower (pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2, pi_6(S^3) = Z/12), hypercovers restoring descent on the pseudo-2-sphere (4 and 2 where the Cech nerve gives 2 and 1) and a 3-type with the Pontryagin square as second k-invariant computed on both sides of a cover; effective_jit/aot, effective_homotopy_jit/aot, effective_hypercover_jit/aot, effective_pi6_s3_jit and the reference-page examples all pass'
+        label: 'core.effective (ADR-0038): reductions with exact identity checks, the basic perturbation lemma with its filtration checked on every cell, reductions from discrete vector fields, Eilenberg-Zilber by its vector field and by AW/EML/SHI, twisted products, W-bar G onto the bar construction, K(Z,n) and K(Z/m,n) with effective homology, the Whitehead tower (pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2, pi_6(S^3) = Z/12), hypercovers restoring descent on the pseudo-2-sphere (4 and 2 where the Cech nerve gives 2 and 1) and a 3-type with the Pontryagin square as second k-invariant computed on both sides of a cover; effective_jit/aot, effective_homotopy_jit/aot, effective_hypercover_jit/aot, the long-run checks effective_pi6_s3 and effective_hypercover_3type, and the reference-page examples all pass'
         action: ./scripts/run_effective_gate.sh
       # core.category (ADR-0036): finite category theory on core.sheaf.site's
       # representation, and the S6.2 acceptance (descent as a Kan extension,

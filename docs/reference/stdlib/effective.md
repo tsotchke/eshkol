@@ -14,6 +14,7 @@ sources:
   - tests/stdlib/effective_homotopy_test.esk
   - tests/stdlib/effective_hypercover_test.esk
   - tests/stdlib/effective_pi6_s3_test.esk
+  - tests/stdlib/effective_hypercover_3type_test.esk
 ---
 
 # `core.effective` — effective homology, homotopy groups and hypercovers

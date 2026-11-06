@@ -14,6 +14,7 @@ sources:
   - tests/stdlib/effective_homotopy_test.esk
   - tests/stdlib/effective_hypercover_test.esk
   - tests/stdlib/effective_pi6_s3_test.esk
+  - tests/stdlib/effective_hypercover_3type_test.esk
 ---
 # ADR-0038: `core.effective` — effective homology, homotopy groups and hypercover descent
 
@@ -150,6 +151,14 @@ rather than written a second time.
   the hypercover conditions, and gives `Map(-, BG)` = 1/2, 4, 2 for BZ/2,
   K(Z/2,2) and the split 2-type, as the space does, where the Cech nerve
   gives 1/2, 2, 1; the state sum on the hypercover gives 4 for K(Z/2,2).
+- S6.3, the 3-type step: on the 4-dimensional finite model S2p x S2p of
+  S^2 x S^2 covered by its four maximal opens, the 3-type
+  `K(Z/4,3) x_k K(Z/2,2)` with k the Pontryagin square (a generator of
+  `H^4(K(Z/2,2); Z/4) = Z/4`) has |Map| = 3/32 (1/8 for k = 0) on the space
+  and on the product of the level-4 hypercovers (105 s and 29 GB peak on
+  Linux x64), while the Cech nerve of the cover, contractible, gives 1/2
+  for both k: Cech descent fails, the hypercover restores it, and the second
+  k-invariant changes the answer.
 - Memory is the bound: memo tables keep every cell a computation touched.
   Releasing tables between tower stages is planned for v1.4.1.
 - The libraries are ordinary modules outside the `stdlib` closure; the VM
@@ -175,7 +184,10 @@ rather than written a second time.
   `effective_homotopy_aot`).
 - `tests/stdlib/effective_hypercover_test.esk` (CTest
   `effective_hypercover_jit`, `effective_hypercover_aot`).
-- `tests/stdlib/effective_pi6_s3_test.esk` (CTest `effective_pi6_s3_jit`).
+- Long-run checks, run by the gate on the JIT and kept out of the default
+  CTest suite for their memory: `tests/stdlib/effective_pi6_s3_test.esk`
+  (pi_6(S^3) = Z/12) and `tests/stdlib/effective_hypercover_3type_test.esk`
+  (the 3-type on the product hypercover).
 - `scripts/run_effective_gate.sh` emits the criterion `v14_effective_homology`.
 
 ## References

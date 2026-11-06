@@ -10,8 +10,9 @@
 ;;      its four maximal opens, the 3-type K(Z/4,3) x_k K(Z/2,2) with k the
 ;;      Pontryagin square (a generator of H^4(K(Z/2,2); Z/4) = Z/4) has
 ;;      |Map| = 3/32 (and 1/8 for k = 0: P(a + b) = 2ab is not zero) on the
-;;      space and on the product hypercover, while the Cech nerve (a
-;;      contractible simplicial set) gives 1/2 for both.
+;;      space, while the Cech nerve (a contractible simplicial set) gives 1/2
+;;      for both. The same values on the product hypercover are the long-run
+;;      check effective_hypercover_3type_test (about 3 minutes and 29 GB).
 (require stdlib)
 (require core.sheaf.site)
 (require core.simplicial)
@@ -67,12 +68,5 @@
        (equal? vX (list (list 1/2 8 4) (list 1/8 3/32) (list 1 1))))
 (check "the Cech nerve of the four maximal opens (all intersections connected, a contractible simplicial set with (4 12 36 108 324) pieces) gives 1/2, 2, 1 and 1/2 for both k: Cech descent fails at level 2 and the k-invariant is invisible to it"
        (and (equal? (hypercover-level-counts CX 4) (list 4 12 36 108 324)) (equal? vCX (list (list 1/2 2 1) (list 1/2 1/2) (list 1 1)))))
-(define H4 (finite-space-hypercover S2p cover2 4))
-(define HH (product-space "H x H" (hypercover-space H4 4) (hypercover-space H4 4)))
-(define vHH (postnikov-cardinalities HH))
-(show "the product hypercover H x H" vHH)
-(check "S6.3, the 3-type step: the product of the hypercovers (a hypercover of S2p x S2p refining its maximal-open cover) gives the values of the space, 3/32 for the Pontryagin square and 1/8 for k = 0, where the Cech nerve gives 1/2"
-       (equal? vHH vX))
-
 (display "core.effective hypercover: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
 (if (= failures 0) (begin (display "PASS: effective_hypercover_test") (newline)) (begin (display "FAIL: effective_hypercover_test") (newline)))
