@@ -141,7 +141,7 @@ rather than written a second time.
 
 ## Consequences
 
-- Homotopy groups on Linux x64 (old-donkey, one core, the release build of
+- Homotopy groups on Linux x64 (one core, the release build of
   the shared base): pi_3(S^2) = Z, pi_4(S^2) = Z/2 (0.36 s), pi_5(S^2) = Z/2
   (5.8 s), pi_4(S^3) = Z/2 (0.09 s), pi_5(S^3) = Z/2 (2.0 s), pi_6(S^3) = Z/12
   (146 s, 32.5 GB peak resident memory: every memoized cell is kept), after
