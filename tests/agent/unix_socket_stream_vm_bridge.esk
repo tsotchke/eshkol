@@ -1,0 +1,3 @@
+;; Isolate the Unix-socket ABI from unsupported legacy agent externs under the VM.
+(extern i64 unix-socket-listen-raw i64 ptr :real eshkol_unix_socket_listen)
+(provide unix-socket-listen-raw)

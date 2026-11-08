@@ -24,6 +24,7 @@ mechanism and link native C runtimes (`qllm_*`, `eshkol_*`). Load one with
 | `agent.sqlite` | [sqlite](sqlite.md) | Embedded SQLite: connections, prepared statements, `with-db`/`with-statement` |
 | platform filesystem ABI | [platform](platform.md) | Precision-safe file metadata and stable file identity |
 | `agent.subprocess` | [subprocess](subprocess.md) | Process spawning (shell + injection-safe argv), ownership/cleanup contract (#94) |
+| `agent.unix_socket` | [unix-sockets](unix-sockets.md) | Unix-domain stream sockets on the event loop — blueprint; every operation reports "Planned for v1.4.0" until the socket core lands |
 | `agent.crypto` | [crypto](crypto.md) | SHA-256, HMAC, random bytes/hex, UUIDv4, base64url |
 | `agent.eagle` | [eagle](eagle.md) | Native linear-head training (`qllm_ffi_linear_*`, PR #104) |
 | `core.memory`, `core.memory_store` | [memory faculty](memory-faculty.md) | Content-addressed, CRDT-merged event log |

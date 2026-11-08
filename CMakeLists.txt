@@ -8037,6 +8037,53 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
         TIMEOUT 60 LABELS "resource;subprocess;stream")
 endif()
 
+# Unix-domain stream socket scaffold (paired build: this lane writes tests,
+# stubs, and docs; Gabe Kahen owns the socket core). Every native fixture
+# links the scaffold stub (lib/core/unix_socket_stream_stub.c), which
+# performs no socket I/O and reports ESHKOL_UNIX_SOCKET_PLANNED for every
+# call. The acceptance cases are registered under CTest label
+# "ipc-unix-pending" and DISABLED so they never affect the default suite; a
+# separate, always-on contract test confirms they exist and that the stub
+# reports the planned result.
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    find_package(Threads REQUIRED)
+    add_executable(eshkol-unix-socket-stream-test
+        tests/agent/unix_socket_stream_test.c
+        lib/core/unix_socket_stream_stub.c)
+    target_compile_features(eshkol-unix-socket-stream-test PRIVATE c_std_11)
+    target_compile_definitions(eshkol-unix-socket-stream-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-unix-socket-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-unix-socket-stream-test PRIVATE Threads::Threads)
+
+    set(ESHKOL_IPC_UNIX_PENDING_CASES
+        connect_accept partial_slow_peer peer_close_epipe deadline_accept
+        deadline_connect cancellation nul_and_large_payload descriptor_leak
+        capability_denial path_lifecycle)
+    list(LENGTH ESHKOL_IPC_UNIX_PENDING_CASES ESHKOL_IPC_UNIX_PENDING_N)
+    # One native C fixture plus a JIT and an AOT .esk case per acceptance
+    # case, plus one VM-unsupported .esk case.
+    math(EXPR ESHKOL_IPC_UNIX_PENDING_TOTAL "${ESHKOL_IPC_UNIX_PENDING_N} * 3 + 1")
+
+    foreach(case_name ${ESHKOL_IPC_UNIX_PENDING_CASES})
+        add_test(NAME ipc-unix-pending-${case_name}
+            COMMAND eshkol-unix-socket-stream-test ${case_name}
+                ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch)
+        set_tests_properties(ipc-unix-pending-${case_name} PROPERTIES
+            LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 60)
+    endforeach()
+
+    add_executable(eshkol-unix-socket-stub-contract-test
+        tests/agent/unix_socket_stream_stub_contract_test.c
+        lib/core/unix_socket_stream_stub.c)
+    target_compile_features(eshkol-unix-socket-stub-contract-test PRIVATE c_std_11)
+    target_include_directories(eshkol-unix-socket-stub-contract-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME agent-unix-socket-stub-contract
+        COMMAND eshkol-unix-socket-stub-contract-test
+            "${CMAKE_CTEST_COMMAND}" "${CMAKE_BINARY_DIR}" "${ESHKOL_IPC_UNIX_PENDING_TOTAL}")
+    set_tests_properties(agent-unix-socket-stub-contract PROPERTIES
+        TIMEOUT 60 LABELS "resource;socket;stub-contract")
+endif()
+
 if(ESHKOL_BUILD_TESTS)
     find_package(Threads REQUIRED)
     add_executable(handle_lifecycle_test
@@ -12396,6 +12443,8 @@ if(ESHKOL_BUILD_AGENT_FFI)
             ${AGENT_FFI_DIR}/agent_subprocess.c
             ${AGENT_FFI_DIR}/agent_subprocess_stream_binding.c
             ${AGENT_FFI_DIR}/agent_sse.c
+            ${AGENT_FFI_DIR}/agent_unix_socket_binding.c
+            ${CMAKE_SOURCE_DIR}/lib/core/unix_socket_stream_stub.c
         )
 
         # HTTP server / WebSocket / local-socket primitives.  The C source
@@ -13149,6 +13198,30 @@ if(ESHKOL_BUILD_AGENT_FFI)
                     --build-dir ${CMAKE_BINARY_DIR})
             set_tests_properties(agent-subprocess-stream-public PROPERTIES
                 TIMEOUT 300 LABELS "resource;subprocess;jit;aot")
+        endif()
+
+        # Unix-socket scaffold: JIT and AOT .esk acceptance cases, plus the
+        # explicit VM-unsupported case. All DISABLED under ipc-unix-pending
+        # until Gabe Kahen's core implementation lands; see the native
+        # fixture block above for the always-on stub-contract check.
+        if(UNIX AND TARGET eshkol-run AND DEFINED ESHKOL_IPC_UNIX_PENDING_CASES)
+            foreach(case_name ${ESHKOL_IPC_UNIX_PENDING_CASES})
+                foreach(mode jit aot)
+                    add_test(NAME ipc-unix-pending-${case_name}-${mode}
+                        COMMAND bash ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.sh
+                            $<TARGET_FILE:eshkol-run> ${mode} ${case_name}
+                            ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch/${case_name}-${mode}
+                            ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_pending.esk)
+                    set_tests_properties(ipc-unix-pending-${case_name}-${mode} PROPERTIES
+                        LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 60)
+                endforeach()
+            endforeach()
+            add_test(NAME ipc-unix-pending-vm-unsupported
+                COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm --emit-eskb
+                    ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch/vm-unsupported.eskb
+                    ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_vm_unsupported.esk)
+            set_tests_properties(ipc-unix-pending-vm-unsupported PROPERTIES
+                LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 30)
         endif()
 
         if(UNIX)
