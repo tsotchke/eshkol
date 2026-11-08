@@ -945,6 +945,13 @@ under the same discipline that made `Qubit` linear.
       the coverage page by page and 9 further claims with what each one needs
       (the Zariski site and localization carrier for v1.4.1, schemes glued from
       affine charts for v1.4.2)
+- [x] Machine-checked theorems behind the nLab conformance claims: Agda
+      (`--safe`) proofs of Lan/Ran along C -> * and by the coend/end formulas,
+      sieves, the Heyting algebra Omega and Kripke-Joyal forcing, and the
+      simplicial identities of the nerve; Rocq proofs of what Smith normal form
+      determines, with the six suite matrices and H_*(RP^2; Z) certified
+      (`scripts/run_formal_agda_gate.sh`,
+      [docs/reference/math/formal-crosschecks.md](docs/reference/math/formal-crosschecks.md))
 - [x] Groebner bases on ring carriers (ADR-0040): `core.ring` gains
       K[x1..xn] under lex, grlex, grevlex, block, elimination and weight
       orders; `core.groebner` gives division, Buchberger with the
