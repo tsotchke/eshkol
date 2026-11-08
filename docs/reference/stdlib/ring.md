@@ -60,6 +60,7 @@ fibres F_p.
 | `(make-zmod m)` | Z/m, m >= 1 | integers in `[0, m)` | a field exactly when m is prime (decided by deterministic Miller-Rabin below 3317044064679887385961981; above it a modulus not proven composite is refused) |
 | `(make-jets K n [e])` | K[e]/e^n | `n` coefficients in K | n = 2: dual numbers (forward-mode AD); n = k+1: k-jets; a unit when the constant term is a unit of K |
 | `(make-polys K [x])` | K[x] | coefficient lists, lowest degree first | a unit when the constant term is a unit and every other coefficient is nilpotent; euclidean when K is a field |
+| `(make-polys K (x1 ... xn) [order])` | K[x1..xn] | sparse terms in decreasing monomial order | the order (default `grevlex`) is part of the carrier; a unit when the constant term is a unit and every other coefficient is nilpotent; see [Polynomials in several variables](#polynomials-in-several-variables); Groebner bases in [`core.groebner`](groebner.md) |
 | `(zset-group-ring op identity inverse [name] [options])` | Z[G], G abelian | [`core.dbsp`](dbsp.md) Z-sets | the Z-set sum is the ring sum; the product is the DBSP join on the trivial key emitting `(op g h)`; the unit group is decided exactly for a finite G (`'elements`) or a torsion-free G (`'torsion-free #t`), see [Jets, polynomials and group rings](#jets-polynomials-and-group-rings) |
 | `(algebraic-domain owner)` | Q(alpha) and its exact Taylor / hyper-dual lifts | algebraic elements and AD values | from [`core.algebraic_domain`](algebraic_linalg.md); see [Interoperation](#interoperation) |
 
@@ -271,6 +272,64 @@ With neither declaration any other unit question is refused with
 (display (r-unit? C5 u)) ;; => #t
 (newline)
 (display (zset-entries (r-inv C5 u))) ;; => ((-1 0) (1 2) (1 3))
+```
+
+## Polynomials in several variables
+
+`(make-polys K (list x1 ... xn) [order])` is K[x1..xn] with x1 > x2 > ... > xn.
+An element keeps its terms with nonzero coefficients in strictly decreasing
+monomial order, so the leading term is the first. The monomial order is a
+parameter of the carrier:
+
+| Order | Comparison of exponent vectors a, b |
+|---|---|
+| `lex` | the first differing exponent decides |
+| `grlex` | total degree, ties by `lex` |
+| `grevlex` (default) | total degree, ties by the last differing exponent, the smaller winning |
+| `(block (k1 o1) (k2 o2) ...)` | the first k1 exponents under o1, ties by the next k2 under o2, ... |
+| `(elimination k)` | `(block (k grevlex) (n-k grevlex))`: its Groebner bases eliminate x1..xk |
+| `(weight (w1 ... wn) [o])` | the weight w . a (exact integers >= 0), ties by o (default `grevlex`) |
+| `(homogenized o)` | total degree of all n exponents, ties by o on the first n - 1 |
+
+The same variables under two orders are two carriers, and each enters the
+other by re-sorting. A polynomial over K in some of the variables (a
+K[x1..xm] with its variables among them, under any order, or a univariate
+K[x] with x among them) enters K[x1..xn] by placing its exponents, so
+`ring-join` of Q[x] and Q[x,y] is Q[x,y].
+
+| Procedure | Meaning |
+|---|---|
+| `(ring-poly P terms)` | over K[x1..xn], the polynomial with the terms `(c e1 ... en)` (equal monomials are added) |
+| `(ring-poly-variable P x)` `(ring-poly-variables P)` | the variable named x; all variables, in order |
+| `(ring-poly-variable-names P)` `(ring-poly-monomial-order P)` | the variable names; the canonical order (`lex` for a univariate K[x]) |
+| `(ring-poly-terms p)` | the terms `(c e1 ... en)`, leading term first (univariate too) |
+| `(ring-poly-leading p)` `(ring-poly-leading-monomial p)` `(ring-poly-degree p)` | leading coefficient, leading exponents, total degree (-1 for zero) |
+| `(monomial-compare P a b)` | -1, 0 or 1 for two exponent lists under P's order |
+| `(ring-poly-eval p (c1 ... cn))` `(ring-poly-evaluation P S (a1 ... an))` | evaluation at a point of K^n; the ring map K[x1..xn] -> S, xi -> ai |
+
+Over a coefficient domain with exact quotients (Z, Q, F_p, ...) K[x1..xn]
+declares `integral-domain` and `exact-quotient` (the division algorithm by
+the divisor alone, refused when it does not divide), so `ring-det` over it
+uses fraction-free elimination.
+
+```scheme
+(require core.ring)
+(define P (make-polys rationals '(x y z) 'lex))
+(define x (ring-poly-variable P 'x))
+(define y (ring-poly-variable P 'y))
+(define z (ring-poly-variable P 'z))
+(define f (r+ P (r* P 4 (r* P x (r* P y y))) (r+ P (r* P -5 (r-expt P z 3)) (r* P 7/2 (r* P (r* P x x) z)))))
+(display (ring-poly-terms f)) ;; => ((7/2 2 0 1) (4 1 2 0) (-5 0 0 3))
+(newline)
+;; the same polynomial under grevlex: x y^2 now leads
+(display (ring-poly-terms (ring-admit (make-polys rationals '(x y z)) f))) ;; => ((4 1 2 0) (7/2 2 0 1) (-5 0 0 3))
+(newline)
+(display (ring-poly-eval f '(1 2 3))) ;; => -217/2
+(newline)
+;; Frobenius in characteristic 7
+(define P7 (make-polys (make-zmod 7) '(a b)))
+(define s (r+ P7 (ring-poly-variable P7 'a) (ring-poly-variable P7 'b)))
+(display (ring-poly-terms (r-expt P7 s 7))) ;; => ((1 7 0) (1 0 7))
 ```
 
 ## Ring maps

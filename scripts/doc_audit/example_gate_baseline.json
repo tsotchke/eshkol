@@ -18,6 +18,14 @@
         "skip": 0
       }
     },
+    "reference-groebner": {
+      "marked": {},
+      "marked_total": {
+        "known-defect": 0,
+        "run-only": 0,
+        "skip": 0
+      }
+    },
     "tutorials": {
       "marked": {
         "docs/tutorials/04_CONSCIOUSNESS_ENGINE.md": {
