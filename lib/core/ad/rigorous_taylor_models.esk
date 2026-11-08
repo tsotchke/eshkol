@@ -22,7 +22,7 @@
 ;;  Every remainder interval produced here is derived from a closed-form
 ;;  (n+1)-th derivative bound proven over the RIGOROUS interval extensions
 ;;  of core.ad.rigorous_interval (ia+, ia*, ia-exp, ia-sin, ...), exactly as
-;;  required: tm+/tm-integrate/tm-deriv combine EXISTING rigorous remainders
+;;  required: tm+/tm-integrate combine EXISTING rigorous remainders
 ;;  algebraically (never re-derive one by evaluating f on a grid); tm*
 ;;  is the standard Makino-Berz product rule; tm-exp/tm-sin/tm-cos build a
 ;;  genuine order-n composed model (Maclaurin coefficients centered at
@@ -52,17 +52,15 @@
 ;;  are literally `tm-compose` of a from-scratch, center-0 local model with
 ;;  the operand.
 ;;
-;;  ── tm-deriv: Cauchy's estimate, not term-by-term remainder reuse ──────
-;;  Differentiating a remainder bound is NOT sound by naively differentiating
-;;  the polynomial and leaving the interval untouched — the error term
-;;  f-P is bounded in magnitude, not in slope. We use the standard rigorous
-;;  fix: if |f(z)-P(z)| <= R holds for every COMPLEX z with |z-center|<=r
-;;  (true for our remainders: entire for exp/sin/cos, and for log/sqrt the
-;;  domain guard lo>0 already keeps the disk of radius r about the center
-;;  away from the branch point at 0), then by Cauchy's integral estimate
-;;  |f'(z)-P'(z)| <= R/(r-r') for |z-center|<=r' < r. We fix r'=r/2, giving
-;;  the closed-form bound R_deriv = 2R/r on a domain that HALVES — an
-;;  accepted, standard cost of rigorous differentiation via this technique.
+;;  ── tm-deriv: exact on polynomial models only (v1.5.0, ADR-0050) ────────
+;;  A remainder interval bounds |f - P| on the REAL domain; it bounds
+;;  neither the slope of f - P nor its size on a complex disk, so no
+;;  derivative remainder follows from the model alone. tm-deriv
+;;  differentiates a model with remainder exactly [0,0] exactly, on the same
+;;  domain, and refuses every other model with an error naming
+;;  core.ad.interval_jet, whose interval Taylor jets enclose f^(n) over the
+;;  domain directly. Polynomial coefficients are held exactly (ADR-0050), so
+;;  term-by-term differentiation introduces no rounding.
 ;;
 ;;  ── tm-integrate ───────────────────────────────────────────────────────
 ;;  Elementary and exact: integrating c_n t^n term-by-term gives c_n/(n+1)
@@ -134,19 +132,25 @@
   (ia-horner-local (rtm-reverse coeffs) tdom))
 
 ;; ── Constructors ───────────────────────────────────────────────────────
+;; Polynomial coefficients are held EXACTLY (a binary64 input is converted
+;; to its exact dyadic value), so tm+/tm*/tm-compose/tm-integrate combine
+;; them with exact arithmetic and every rounding lives in a remainder
+;; interval computed by core.ad.rigorous_interval (ADR-0050).
+(define (rtm-exact x) (if (exact? x) x (inexact->exact x)))
+
 (define (tm-const c x0 r k)
   (let loop ((i k) (acc '()))
     (if (< i 0)
         (vector 'rigorous-taylor-model k acc x0 r (interval-of 0 0))
-        (loop (- i 1) (cons (if (= i 0) c 0) acc)))))
+        (loop (- i 1) (cons (if (= i 0) (rtm-exact c) 0) acc)))))
 
 (define (tm-var x0 r k)
   (if (<= k 0)
-      (vector 'rigorous-taylor-model k (list x0) x0 r (interval-of (- r) r))
+      (vector 'rigorous-taylor-model k (list (rtm-exact x0)) x0 r (interval-of (- r) r))
       (let loop ((i k) (acc '()))
         (if (< i 0)
             (vector 'rigorous-taylor-model k acc x0 r (interval-of 0 0))
-            (loop (- i 1) (cons (cond ((= i 0) x0) ((= i 1) 1) (else 0)) acc))))))
+            (loop (- i 1) (cons (cond ((= i 0) (rtm-exact x0)) ((= i 1) 1) (else 0)) acc))))))
 
 ;; A degenerate TM whose polynomial is identically 0 and whose remainder IS
 ;; the given interval outright (a valid, if coarse, Taylor model of any
@@ -216,14 +220,15 @@
 ;; every coefficient and s are exact, and needs no separate soundness
 ;; argument beyond ia-scale's).
 (define (rtm-scale-coeffs cs s) (if (null? cs) '() (cons (* s (car cs)) (rtm-scale-coeffs (cdr cs) s))))
-(define (tm-scale-const tm s)
-  (vector 'rigorous-taylor-model (rtm-order tm) (rtm-scale-coeffs (rtm-coeffs tm) s)
-          (rtm-center tm) (rtm-radius tm) (ia-scale (rtm-remainder tm) s)))
+(define (tm-scale-const tm s0)
+  (let ((s (rtm-exact s0)))
+    (vector 'rigorous-taylor-model (rtm-order tm) (rtm-scale-coeffs (rtm-coeffs tm) s)
+            (rtm-center tm) (rtm-radius tm) (ia-scale (rtm-remainder tm) s))))
 
 ;; ── tm-compose: general substitution (see header) ─────────────────────────
 (define (rtm-shift-const tm delta)
   (let ((cs (rtm-coeffs tm)))
-    (vector 'rigorous-taylor-model (rtm-order tm) (cons (- (car cs) delta) (cdr cs))
+    (vector 'rigorous-taylor-model (rtm-order tm) (cons (- (car cs) (rtm-exact delta)) (cdr cs))
             (rtm-center tm) (rtm-radius tm) (rtm-remainder tm))))
 
 (define (tm-compose outer inner)
@@ -251,22 +256,27 @@
         (vector 'rigorous-taylor-model (+ k 1) (cons 0 (rtm-integrate-coeffs (rtm-coeffs tm) 1))
                 (rtm-center tm) r (ia* (rtm-remainder tm) (interval-of (- r) r))))))
 
-;; ── tm-deriv: Cauchy estimate, domain halves (see header) ───────────────
+;; ── tm-deriv: exact on the polynomial part (ADR-0050) ───────────────────
+;; A remainder interval bounds the VALUES of f - P on the real domain, not
+;; its slope, and a real-domain bound is not a bound on a complex disk, so
+;; no estimate of (f - P)' can be derived from the model alone. tm-deriv
+;; therefore differentiates a model whose remainder is exactly [0,0] (a
+;; polynomial, e.g. the output of tm-integrate on a polynomial) exactly on
+;; the same domain, and refuses any other model. Derivative enclosures of a
+;; function come from interval Taylor jets (core.ad.interval_jet:
+;; interval-derivative-n), which evaluate f^(n) over the box itself.
 (define (rtm-deriv-coeffs cs i) (if (null? cs) '() (cons (* i (car cs)) (rtm-deriv-coeffs (cdr cs) (+ i 1)))))
-(define (rtm-remainder-mag iv) (rtm-max2 (rtm-abs (exact->inexact (car iv))) (rtm-abs (exact->inexact (cdr iv)))))
+(define (rtm-zero-remainder? iv) (and (= (car iv) 0) (= (cdr iv) 0)))
 
 (define (tm-deriv tm)
   (if (not (tm-rigorous? tm))
       (error "tm-deriv: requires a rigorous Taylor model")
-      (let* ((k (rtm-order tm)) (cs (rtm-coeffs tm)) (r (rtm-radius tm)) (c (rtm-center tm)))
-        (if (<= r 0)
-            (error "tm-deriv: requires a positive domain radius")
-            (let* ((newk (if (<= k 0) 0 (- k 1)))
-                   (newcoeffs (if (<= k 0) (list 0) (rtm-deriv-coeffs (cdr cs) 1)))
-                   (rmag (rtm-remainder-mag (rtm-remainder tm)))
-                   (r2 (/ r 2.0))
-                   (dmag (fl-next-up (/ (* 2.0 rmag) r))))
-              (vector 'rigorous-taylor-model newk newcoeffs c r2 (interval-of (- dmag) dmag)))))))
+      (if (not (rtm-zero-remainder? (rtm-remainder tm)))
+          (error "tm-deriv: the model has a nonzero remainder, which bounds values and not slopes; use interval-derivative-n from core.ad.interval_jet for a derivative enclosure")
+          (let* ((k (rtm-order tm)) (cs (rtm-coeffs tm)))
+            (vector 'rigorous-taylor-model (if (<= k 0) 0 (- k 1))
+                    (if (<= k 0) (list 0) (rtm-deriv-coeffs (cdr cs) 1))
+                    (rtm-center tm) (rtm-radius tm) (interval-of 0 0))))))
 
 ;; ── tm-enclose: the general entry point ──────────────────────────────────
 ;; `f` must be a one-argument Scheme procedure written ENTIRELY in terms of
@@ -315,7 +325,7 @@
   (let* ((coeffs (tm-exp0-coeffs order))
          (m (/ 4 3))
          (bmag-exact (* m (/ (rtm-ipow-exact 1/4 (+ order 1)) (rtm-fact (+ order 1)))))
-         (bmag (fl-next-up (exact->inexact bmag-exact))))
+         (bmag (ia-exact-up bmag-exact)))
     (vector 'rigorous-taylor-model order coeffs 0 rad-reduced (interval-of (- bmag) bmag))))
 
 (define (tm-exp0 rad order)
@@ -359,7 +369,7 @@
                           (else (/ -1 (rtm-fact i))))
                     acc)))))
 (define (tm-trig0-remainder-mag rad order)
-  (fl-next-up (/ (rtm-ipow-double rad (+ order 1)) (exact->inexact (rtm-fact (+ order 1))))))
+  (ia-exact-up (/ (rtm-ipow-exact (rtm-exact rad) (+ order 1)) (rtm-fact (+ order 1)))))
 
 (define (tm-sin0 rad order)
   (let ((bmag (tm-trig0-remainder-mag rad order)))
