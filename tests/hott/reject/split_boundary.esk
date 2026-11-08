@@ -1,0 +1,3 @@
+;; expect-error: does not agree with the clauses of its boundary
+(hott (import circle)
+  (define bad : (-> S1 Int) (split (base (pos 0)) ((loop i) (pos 1)))))

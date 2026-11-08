@@ -1,0 +1,25 @@
+;;; The fundamental group of the circle (ADR-0043 flagship).
+;;; The loop space of S1 is equivalent to the integers (encode-decode);
+;;; winding numbers are computed by the kernel, by transport in the universal
+;;; cover, whose fibre over base is Int and whose loop is ua sucEquiv.
+(hott
+  (import circle)
+  ;; computed values, checked definitionally at compile time
+  (example (Path Int (winding (trans 0 S1 base base base loop loop)) (pos 2))
+           (refl 0 Int (pos 2)))
+  (example (Path Int (winding (sym 0 S1 base base loop)) (negsuc 0))
+           (refl 0 Int (negsuc 0)))
+  (example (Path Int (winding (intLoop (negsuc 3))) (negsuc 3))
+           (refl 0 Int (negsuc 3))))
+
+(define (show x) (display x) (newline))
+(show (hott-eval (winding (trans 0 S1 base base base loop loop))))
+(show (hott-eval (winding (trans 0 S1 base base base
+                                 (trans 0 S1 base base base loop loop)
+                                 (sym 0 S1 base base loop)))))
+(show (hott-eval (winding (intLoop (negsuc 3)))))
+(show (hott-eval (winding (intLoop (pos 5)))))
+;; transport along the univalence path OmegaS1 = Int is the winding number
+(show (hott-eval (transport 0 OmegaS1 Int OmegaS1=Int (trans 0 S1 base base base loop loop))))
+;; and back: the integer 3 becomes a loop that winds three times
+(show (hott-eval (winding (transport 0 Int OmegaS1 (sym 1 U OmegaS1 Int OmegaS1=Int) (pos 3)))))

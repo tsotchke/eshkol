@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/types/hott_types.h>
+#include <eshkol/types/hott_cubical.h>
 #include <eshkol/types/type_relation.h>
 #include <eshkol/eshkol.h>
 #include <algorithm>
@@ -1197,6 +1198,11 @@ TypeId TypeEnvironment::makeDependentFunctionType(const std::vector<PiType::Para
     function_type_cache_[type_id] = pi;
     dependent_function_keys_[key] = type_id;
     return TypeId{type_id, Universe::U0, 0};
+}
+
+cubical::Kernel& TypeEnvironment::cubicalKernel() const {
+    if (!cubical_) cubical_ = std::make_shared<cubical::Kernel>();
+    return *cubical_;
 }
 
 } // namespace eshkol::hott

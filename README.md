@@ -62,7 +62,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
 - **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`). The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 72-opcode core bytecode VM
 - **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
-- **Mathematical rigor** - HoTT type foundations provide the language's dependent-type surface; no proof obligation is currently discharged by the compiler (no SMT solving, no Lean/proof-assistant export, `TypeEnvironment::areEquivalent` is identity-only) — "provable, not just tested" is the ADR-0000 Stage 14b / v2.0 target, not the present state. Corrected 2026-08-25, conformity audit item f4
+- **Mathematical rigor** - HoTT type foundations: a cubical type theory in the compiler checks proofs about identity types, univalence and higher inductive types at compile time and computes with them (ADR-0043, [HoTT guide](docs/guide/HOTT.md)); the gradual checker of ordinary code reaches "provable, not just tested" at the ADR-0000 Stage 14b / v2.0 target
 
 ---
 
@@ -554,6 +554,13 @@ Dependent types enable **compile-time verification** of array bounds, matrix dim
 (define (safe-matmul (A : Matrix<Float64, m, k>) 
                     (B : Matrix<Float64, k, n>)) : Matrix<Float64, m, n>
   (matmul A B))  ; k dimensions must match - verified statically
+```
+
+Identity types, univalence and higher inductive types are checked and computed by the compiler's cubical kernel (ADR-0043). The fundamental group of the circle, by encode-decode, with the winding number computed at compile time:
+
+```scheme
+(hott (import circle))
+(display (hott-eval (winding (trans 0 S1 base base base loop loop))))  ; => (pos 2)
 ```
 
 ---

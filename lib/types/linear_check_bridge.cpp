@@ -109,6 +109,7 @@ int checkSource(const char* source, const char* source_name, Verdict verdict) {
     }
     for (auto& a : flat) {
         if (a.type == ESHKOL_OP && a.operation.op == ESHKOL_DEFINE_TYPE_OP) continue;
+        if (a.type == ESHKOL_OP && a.operation.op == ESHKOL_HOTT_OP) continue;
         checker.synthesize(&a);
     }
 

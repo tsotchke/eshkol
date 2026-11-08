@@ -6177,6 +6177,8 @@ int main(int argc, char **argv)
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
     // Refinement types (ADR-0044) take the same route to the VM.
     eshkol_vm_install_refinement_check(eshkol_refinement_check_source);
+    // The same cubical kernel for HoTT forms on the VM route (ADR-0043).
+    eshkol_vm_install_hott_form(eshkol_hott_form_source);
 
     // Baseline for the artifact-emission gate below. Sampled before anything
     // can report a diagnostic, so the gate covers every compilation stage —

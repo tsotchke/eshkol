@@ -28,6 +28,7 @@ it is called out explicitly.
 | 6 | Tail-call guarantees | [tail-calls.md](tail-calls.md) |
 | 7 | `raise`, `guard`, `error`, `with-exception-handler` | [error-handling.md](error-handling.md) |
 | 8 | `call/cc`, `dynamic-wind` | [continuations.md](continuations.md) |
+| — | HoTT: identity types, univalence, higher inductive types (`hott`, `hott-eval`) | [hott.md](hott.md) |
 | 9 | `match` | [pattern-matching.md](pattern-matching.md) |
 | 10 | `values`, `call-with-values`, `let-values` | [multiple-values.md](multiple-values.md) |
 | 11 | Function parameters: variadic, keyword args, `apply` | [functions-and-parameters.md](functions-and-parameters.md) |
