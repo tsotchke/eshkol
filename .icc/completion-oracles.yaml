@@ -4369,3 +4369,23 @@ oracles:
         severity: high
         label: 'Quantum registers (ADR-0048): qreg<n>/qidx<n> dimensions unified at every call and fatal on mismatch, out-of-range and repeated qubits, clones, unconsumed registers, discards and region escapes refused on the native and bytecode engines; quantum regions at run time; the circuit optimiser and SABRE router sound on random circuits exactly over Q(zeta_m); QAOA exact on the state vector with AD gradients and p=1 closed forms; the same QAOA on Moonlab with the Moonlab adjoint gradient equal to Eshkol AD; reference-page examples in JIT and AOT'
         action: ./scripts/run_quantum_types_gate.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # v1.7.0-synthesis (ADR-0052): example-based synthesis (core.synthesis),
+  # graph neural networks with exact reverse-mode gradients (ml.gnn on
+  # ml.autograd) and compiler completion of `??` synthesis holes.
+  # scripts/run_synthesis_gate.sh runs the CTest entries that own the
+  # behaviour (JIT and AOT) and writes one event; PASS only when every entry
+  # ran and passed.
+  # ─────────────────────────────────────────────────────────────────
+  - name: v1.7-synthesis
+    aliases: [synthesis, v17-synthesis, program-synthesis]
+    requires:
+      - id: v17_synthesis
+        runtime_event:
+          event_kinds: [v1_7_synthesis]
+          event_names: ["v17_synthesis"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'v1.7.0-synthesis (ADR-0052): 42/42 example-synthesis benchmark tasks verified on held-out examples, GCN/GraphSAGE/GAT backward rules agree with central differences and the karate-club classifiers learn, ?? holes are completed from their expected type and a hole with no completion stops compilation; synthesis_test, gnn_test and synthesis_holes_test in JIT and AOT plus the hole diagnostic and refusal entries all pass'
+        action: ./scripts/run_synthesis_gate.sh
