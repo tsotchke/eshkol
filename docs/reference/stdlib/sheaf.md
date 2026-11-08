@@ -246,7 +246,7 @@ normal form; over `Q` it is the same statement for spans.
 | `module-presheaf-sheaf-violations` / `module-presheaf-sheaf?` | over every covering sieve |
 | `(module-presheaf-plus site F)` / `module-sheafify` | `F^+` (with its bases) and `F^{++}` |
 | `(module-presheaf-unit site F Fplus c)` | the matrix of `F(c) -> F^+(c)` |
-| `ring-kernel` `ring-rank` `ring-solve` `ring-same-span?` `ring-cochain-cohomology` | linear algebra over the coefficient ring |
+| `sheaf-module-kernel` `sheaf-module-rank` `sheaf-module-solve` `sheaf-module-same-span?` `sheaf-module-cochain-cohomology` | linear algebra over the coefficient ring |
 
 ```scheme
 (require stdlib)
