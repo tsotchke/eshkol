@@ -862,7 +862,32 @@ bool Context::checkLinearConstraints() const {
  * issues silently ignored.
  */
 TypeChecker::TypeChecker(TypeEnvironment& env, bool strict_types, bool unsafe_mode)
-    : strict_types_(strict_types), unsafe_mode_(unsafe_mode), env_(env) {}
+    : strict_types_(strict_types), unsafe_mode_(unsafe_mode), env_(env) {
+    // The core.quantum primitives carry dependent signatures (qalloc's result
+    // is qreg<n> for its argument n). They are bound like any definition, so a
+    // program's own definition of the same name shadows them.
+    quantum_.bindPrimitives(env_, [this](const std::string& name, TypeId type) {
+        ctx_.bind(name, type);
+    });
+}
+
+quantum::ViolationReporter TypeChecker::quantumReporter() {
+    return [this](const std::string& msg, const eshkol_ast_t* node) {
+        reportLinearViolation(msg, node);
+    };
+}
+
+/**
+ * @brief A linear value (a qubit, a quantum register) produced in a sequence
+ * position whose value is dropped: the no-discard half of linearity for
+ * values that never received a name.
+ */
+void TypeChecker::reportDiscardedLinear(TypeId type, const eshkol_ast_t* node) {
+    if (!(type.flags & TYPE_FLAG_LINEAR) && !isLinearType(type)) return;
+    reportLinearViolation("a linear value of type " + env_.getTypeName(type) +
+                              " is computed and discarded (linear values are used exactly once)",
+                          node);
+}
 
 /**
  * @brief Store a successful result's inferred type into @p expr->inferred_hott_type, then return the result unchanged.
@@ -1376,7 +1401,8 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
                 co_return TypeCheckResult::ok(BuiltinTypes::Null);
             }
             for (uint64_t i = 0; i + 1 < seq.num_expressions; ++i) {
-                (co_await synthesizeTask(&seq.expressions[i]));
+                auto step = (co_await synthesizeTask(&seq.expressions[i]));
+                if (step.success) reportDiscardedLinear(step.inferred_type, &seq.expressions[i]);
             }
             co_return (co_await synthesizeTask(&seq.expressions[seq.num_expressions - 1]));
         }
@@ -2869,6 +2895,9 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
             if (call.num_vars == 0) {
                 co_return TypeCheckResult::ok(BuiltinTypes::Null);
             }
+            for (size_t i = 0; i + 1 < call.num_vars; ++i) {
+                if (arg_types[i].success) reportDiscardedLinear(arg_types[i].inferred_type, &call.variables[i]);
+            }
             co_return arg_types[call.num_vars - 1];
         }
         if (func_name == "read" || func_name == "read-line" || func_name == "read-string") {
@@ -2920,9 +2949,22 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
         (co_await synthesizeTask(const_cast<eshkol_ast_t*>(func_expr)));
     }
 
+    // A quantum signature (ADR-0048): registers unify their dimensions, the
+    // result is instantiated, and every finding is fatal.
+    std::vector<TypeId> quantum_expected;
+    std::optional<TypeId> quantum_result;
+    if (const quantum::Signature* qsig = quantum_.signatureOf(func_type)) {
+        std::vector<TypeId> actual;
+        for (const auto& a : arg_types) actual.push_back(a.success ? a.inferred_type : BuiltinTypes::Value);
+        auto outcome = quantum_.checkApplication(env_, *qsig, call.variables, call.num_vars,
+                                                 actual, expr, quantumReporter());
+        quantum_expected = std::move(outcome.expected);
+        quantum_result = outcome.result;
+    }
+
     // If we have a proper function type, return its return type
     if (env_.isFunctionType(func_type)) {
-        TypeId return_type = env_.getFunctionReturnType(func_type);
+        TypeId return_type = quantum_result ? *quantum_result : env_.getFunctionReturnType(func_type);
 
         // Check argument count and types if we have function type info
         const PiType* pi = env_.getFunctionType(func_type);
@@ -2943,7 +2985,8 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeApplicationTask(eshkol_
             size_t check_count = std::min(pi->params.size(), static_cast<size_t>(call.num_vars));
             for (size_t i = 0; i < check_count; ++i) {
                 if (arg_types[i].success && pi->params[i].type.id != 0) {
-                    TypeId expected = pi->params[i].type;
+                    TypeId expected = i < quantum_expected.size() ? quantum_expected[i]
+                                                                  : pi->params[i].type;
                     TypeId actual = arg_types[i].inferred_type;
                     // Skip check if either is Value (unknown/top type) or same type
                     if (expected != BuiltinTypes::Value && actual != BuiltinTypes::Value &&
@@ -3095,12 +3138,45 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
         // contract and the body is checked once against it.
         const bool infer_result = !def.return_type;
         TypeId recursion_result = infer_result ? BuiltinTypes::Never : declared_return;
+
+        // A signature that mentions a quantum type is registered with its
+        // dependency structure (ADR-0048) and bound under that identity, so
+        // calls instantiate its register dimensions.
+        std::optional<TypeId> quantum_type;
+        {
+            quantum::Signature sig;
+            sig.name = def.name;
+            sig.variadic = def.is_variadic;
+            const auto resolve = [this](const hott_type_expr_t* t) { return resolveType(t); };
+            const auto is_alias = [this](const std::string& n) { return ctx_.lookupTypeAlias(n).has_value(); };
+            for (size_t i = 0; i < def.num_params; i++) {
+                if (def.parameters && def.parameters[i].type == ESHKOL_VAR && def.parameters[i].variable.id) {
+                    sig.params.push_back({def.parameters[i].variable.id,
+                                          quantum::specFromAnnotation(env_, def.param_types ? def.param_types[i] : nullptr,
+                                                                      resolve, is_alias)});
+                }
+            }
+            sig.result = quantum::specFromAnnotation(env_, def.return_type, resolve, is_alias);
+            bool mentions_quantum = false;
+            for (const auto& p : sig.params) {
+                if (p.second.kind == quantum::SpecType::Kind::Indexed ||
+                    (p.second.kind == quantum::SpecType::Kind::Plain &&
+                     (p.second.plain == BuiltinTypes::QRegion || p.second.plain == BuiltinTypes::QRegionBody)))
+                    mentions_quantum = true;
+            }
+            if (sig.result.kind == quantum::SpecType::Kind::Indexed) mentions_quantum = true;
+            if (mentions_quantum && !def.is_variadic) {
+                sig.quantum = true;
+                quantum_type = quantum_.registerSignature(env_, sig);
+            }
+        }
         const size_t define_scope = ctx_.scopeCount() - 1;
         std::vector<TypeId> narrowed_param_types;
         std::vector<std::string> linear_params;
         for (size_t pass = 0;; ++pass) {
-            TypeId func_type = env_.makeFunctionType(param_types, recursion_result,
-                                                      def.is_variadic);
+            TypeId func_type = quantum_type ? *quantum_type
+                                            : env_.makeFunctionType(param_types, recursion_result,
+                                                                    def.is_variadic);
             ctx_.bind(def.name, func_type);
             const SpeculationMark mark = markSpeculation();
             if (infer_result) {
@@ -3172,6 +3248,11 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
             // a Value argument satisfies any parameter; a concrete body must be
             // a subtype.
             if (value_type.success &&
+                quantum::checkDeclaredResult(env_, annotated_return, value_type.inferred_type,
+                                             "the result of '" + std::string(def.name) + "'", expr,
+                                             quantumReporter())) {
+                // reported (fatal) as a register dimension mismatch
+            } else if (value_type.success &&
                 !TypeRelation(env_).isConsistentSubtype(value_type.inferred_type, annotated_return)) {
                 co_return errorAt(expr,
                     "Function '" + std::string(def.name) + "' body type " +
@@ -3182,8 +3263,9 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
         }
 
         // Create function type with narrowed param types and inferred return type
-        TypeId final_func_type = env_.makeFunctionType(narrowed_param_types, return_type,
-                                                        def.is_variadic);
+        TypeId final_func_type = quantum_type ? *quantum_type
+                                              : env_.makeFunctionType(narrowed_param_types, return_type,
+                                                                      def.is_variadic);
         value_type = TypeCheckResult::ok(final_func_type);
 
         // Re-bind function name with the full inferred type (overrides pre-binding)
@@ -3925,6 +4007,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeSequenceTask(eshkol_ast
     TypeId last = empty_type;
     for (uint64_t i = 0; i < count; ++i) {
         auto result = (co_await synthesizeTask(&exprs[i]));
+        if (result.success && i + 1 < count) reportDiscardedLinear(result.inferred_type, &exprs[i]);
         last = result.success ? result.inferred_type : BuiltinTypes::Value;
     }
     co_return TypeCheckResult::ok(last);
@@ -4637,6 +4720,12 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
         // Type variable - check for alias
         case HOTT_TYPE_VAR: {
             if (type_expr->var_name) {
+                // qreg<e> / qidx<e> (ADR-0048): the spelled index is parsed here
+                std::string spelling_error;
+                if (auto indexed = quantum::parseIndexedSpelling(type_expr->var_name, &spelling_error)) {
+                    if (!spelling_error.empty()) reportTypeIssue(spelling_error);
+                    return quantum::indexedType(env_, indexed->first, indexed->second);
+                }
                 auto alias = ctx_.lookupTypeAlias(type_expr->var_name);
                 if (alias) {
                     return resolveType(*alias);

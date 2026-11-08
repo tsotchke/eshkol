@@ -4033,12 +4033,14 @@ static bool adAstUsesTensorOps(
         )) {
         case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
-            // Moonlab's VQE primitive consumes the reverse-mode AD-node tensor
-            // produced for vector inputs. Mark it as tensor-flowing so
+            // Moonlab's VQE primitive (and core.quantum.moonlab's circuit
+            // expectation, the same primitive on a program handle) consumes
+            // the reverse-mode AD-node tensor produced for vector inputs. Mark it as tensor-flowing so
             // (gradient (lambda (p) (vqe-energy ham p)) (vector ...)) takes
             // the reverse path rather than the forward dual-vector path.
             if (f && f->type == ESHKOL_VAR && f->variable.id &&
                 (std::strcmp(f->variable.id, "vqe-energy") == 0 ||
+                 std::strcmp(f->variable.id, "moonlab-expectation") == 0 ||
                  std::strcmp(f->variable.id, "vqe-energy-primitive") == 0)) return true;
             if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id) &&
                 !(kernels_only && adIsTensorRepresentationMove(f->variable.id))) return true;

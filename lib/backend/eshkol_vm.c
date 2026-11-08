@@ -1373,13 +1373,32 @@ static void emit_builtin_preamble(FuncChunk* c) {
  * Matches the annotation syntax — a `:` followed by one of the linear builtin
  * type names as a whole word — rather than the bare name, so a variable or
  * string that merely happens to contain "Stream" does not arm the check. The
- * linear builtins are Handle, Stream and Qubit (hott_types.h,
- * TYPE_FLAG_LINEAR); keep this list in step with them.
+ * linear builtins are Handle, Stream, Qubit and the quantum register family
+ * qreg (hott_types.h, TYPE_FLAG_LINEAR); keep this list in step with them.
+ * The quantum register and region forms arm it too: their linear values are
+ * typed by signature, with no annotation in the program.
  */
+static int vm_word_char(char c) {
+    return isalnum((unsigned char)c) || c == '-' || c == '_' || c == '?' || c == '!' ||
+           c == '>' || c == '<' || c == '*' || c == '/' || c == '%';
+}
+
 static int vm_source_carries_linear_annotation(const char* source) {
-    static const char* const kLinearTypeNames[] = { "Qubit", "Handle", "Stream" };
+    /* Quantum registers (ADR-0048) are linear too: qreg annotations, and the
+     * forms that create registers without any annotation (qalloc's result is
+     * qreg<n> by its signature) or open a quantum region. */
+    static const char* const kLinearTypeNames[] = { "Qubit", "Handle", "Stream", "qreg", "qregion" };
+    static const char* const kQuantumForms[] = {
+        "qalloc", "define-quantum-region", "with-quantum-region", "call-with-quantum-region"
+    };
     if (!source) return 0;
     for (const char* p = source; *p; ++p) {
+        if (p == source || !vm_word_char(p[-1])) {
+            for (size_t i = 0; i < sizeof(kQuantumForms) / sizeof(kQuantumForms[0]); ++i) {
+                size_t len = strlen(kQuantumForms[i]);
+                if (strncmp(p, kQuantumForms[i], len) == 0 && !vm_word_char(p[len])) return 1;
+            }
+        }
         if (*p != ':') continue;
         const char* q = p + 1;
         while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;

@@ -228,6 +228,15 @@ void TypeEnvironment::initializeBuiltinTypes() {
     registerBuiltinType(Qubit.id, "Qubit", Universe::U0, TYPE_FLAG_LINEAR,
                         RuntimeRep::Int64);
 
+    // Quantum registers, qubit addresses and regions (ADR-0048). Instances
+    // qreg<e> / qidx<e> are interned on demand by internIndexedType().
+    registerBuiltinType(QReg.id, "qreg", Universe::U0, TYPE_FLAG_LINEAR,
+                        RuntimeRep::Pointer);
+    registerBuiltinType(QIdx.id, "qidx", Universe::U0, 0, RuntimeRep::Int64, Int64);
+    registerBuiltinType(QRegion.id, "qregion", Universe::U0, 0, RuntimeRep::Pointer);
+    registerBuiltinType(QRegionBody.id, "qregion-body", Universe::U1, 0,
+                        RuntimeRep::Pointer);
+
     // ===== Proposition types (U2, Proof - erased at runtime) =====
     registerBuiltinType(Eq.id, "Eq", Universe::U2, TYPE_FLAG_PROOF,
                         RuntimeRep::Erased);
@@ -338,6 +347,10 @@ const std::vector<BuiltinTypeSpelling>& builtinTypeSpellings() {
         {"buffer",      HOTT_TYPE_VAR,     Buffer},
         {"stream",      HOTT_TYPE_VAR,     Stream},
         {"qubit",       HOTT_TYPE_VAR,     Qubit},
+        {"qreg",        HOTT_TYPE_VAR,     QReg},
+        {"qidx",        HOTT_TYPE_VAR,     QIdx},
+        {"qregion",     HOTT_TYPE_VAR,     QRegion},
+        {"qregion-body", HOTT_TYPE_VAR,    QRegionBody},
     };
     return table;
 }
@@ -896,6 +909,9 @@ TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types,
     // Check if we already have this exact function type cached
     for (const auto& entry : function_type_cache_) {
         const PiType& pi = entry.second;
+        // A dependent signature (makeDependentFunctionType) is identified by
+        // its key, never by its erased parameter types.
+        if (pi.is_dependent) continue;
         if (pi.return_type == return_type && pi.params.size() == param_types.size() &&
             pi.is_variadic == is_variadic) {
             bool match = true;
@@ -1124,7 +1140,63 @@ TypeId TypeEnvironment::codegenReprOf(TypeId id) const {
     if (isSumType(id)) {
         return BuiltinTypes::Pair;
     }
+    // Quantum registers and regions are checker-only refinements of tagged
+    // runtime values (records of core.quantum); a qubit address is an integer.
+    if (auto inst = indexedInstanceOf(id)) id = inst->first;
+    if (id == BuiltinTypes::QIdx) return BuiltinTypes::Int64;
+    if (id == BuiltinTypes::QReg || id == BuiltinTypes::QRegion ||
+        id == BuiltinTypes::QRegionBody) {
+        return BuiltinTypes::Value;
+    }
     return id;
+}
+
+TypeId TypeEnvironment::internIndexedType(TypeId family, const std::string& index_spelling) {
+    const TypeNode* base = getTypeNode(family);
+    const std::string name = (base ? base->name : std::string("?")) + "<" + index_spelling + ">";
+    auto found = name_to_id_.find(name);
+    if (found != name_to_id_.end()) return found->second;
+    if (next_indexed_type_id_ >= next_sum_type_id_ || next_indexed_type_id_ >= 60000) {
+        return family;  // id space exhausted: the family itself (index unknown)
+    }
+    const uint8_t flags = base ? base->id.flags : 0;
+    TypeId id{next_indexed_type_id_++, base ? base->id.level : Universe::U0, flags};
+    TypeNode node;
+    node.id = id;
+    node.name = name;
+    node.supertype = family;
+    node.runtime_rep = base ? base->runtime_rep : RuntimeRep::Pointer;
+    node.is_type_family = false;
+    node.origin = TypeNode::Origin::Builtin;
+    types_[id.id] = std::move(node);
+    name_to_id_[name] = id;
+    addSubtype(family, id);
+    indexed_instances_[id.id] = {family, index_spelling};
+    return id;
+}
+
+std::optional<std::pair<TypeId, std::string>> TypeEnvironment::indexedInstanceOf(TypeId id) const {
+    auto it = indexed_instances_.find(id.id);
+    if (it == indexed_instances_.end()) return std::nullopt;
+    return it->second;
+}
+
+TypeId TypeEnvironment::makeDependentFunctionType(const std::vector<PiType::Parameter>& params,
+                                                  TypeId return_type, bool is_variadic,
+                                                  const std::string& key) {
+    auto found = dependent_function_keys_.find(key);
+    if (found != dependent_function_keys_.end()) {
+        return TypeId{found->second, Universe::U0, 0};
+    }
+    PiType pi;
+    pi.params = params;
+    pi.return_type = return_type;
+    pi.is_dependent = true;
+    pi.is_variadic = is_variadic;
+    uint16_t type_id = next_function_type_id_++;
+    function_type_cache_[type_id] = pi;
+    dependent_function_keys_[key] = type_id;
+    return TypeId{type_id, Universe::U0, 0};
 }
 
 } // namespace eshkol::hott

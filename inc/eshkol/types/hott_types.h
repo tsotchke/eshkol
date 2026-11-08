@@ -271,6 +271,14 @@ namespace BuiltinTypes {
     // using a qubit more than once (a clone) just like Handle/Stream.
     inline constexpr TypeId Qubit{113, Universe::U0, TYPE_FLAG_LINEAR};
 
+    // Quantum registers and regions (ADR-0048, quantum_types.h). `qreg` is
+    // the register family of any dimension, linear like Qubit; `qreg<e>` and
+    // `qidx<e>` instances are interned per index by internIndexedType().
+    inline constexpr TypeId QReg{130, Universe::U0, TYPE_FLAG_LINEAR};
+    inline constexpr TypeId QIdx{131, Universe::U0, 0};
+    inline constexpr TypeId QRegion{132, Universe::U0, 0};
+    inline constexpr TypeId QRegionBody{133, Universe::U1, 0};
+
     // Proposition types (U2, Proof - erased at runtime)
     inline constexpr TypeId Eq{200, Universe::U2, TYPE_FLAG_PROOF};
     inline constexpr TypeId LessThan{201, Universe::U2, TYPE_FLAG_PROOF};
@@ -482,6 +490,13 @@ private:
     // perturbing any existing allocation (which would risk shifting the
     // TypeIds packed into AST nodes and thus codegen).
     mutable uint16_t next_sum_type_id_ = 60000;  // Sum types in range 60000+
+
+    // Indexed family instances (qreg<e>, qidx<e>): ids 58000-59999, below
+    // the sum range and above every other allocator.
+    uint16_t next_indexed_type_id_ = 58000;
+    std::map<uint16_t, std::pair<TypeId, std::string>> indexed_instances_;
+    // Dependent function types by signature key.
+    std::map<std::string, uint16_t> dependent_function_keys_;
 
 public:
     /**
@@ -770,6 +785,29 @@ public:
      * precision to the checker never perturbs generated code.
      */
     TypeId codegenReprOf(TypeId id) const;
+
+    // ========== Indexed families (ADR-0048) ==========
+
+    /**
+     * Intern the instance `family<index>` of an indexed family such as
+     * `qreg<3>` or `qidx<n+1>`: a nominal subtype of @p family carrying its
+     * flags (so a register instance is linear), named by its canonical
+     * spelling. Equal spellings give the same TypeId.
+     */
+    TypeId internIndexedType(TypeId family, const std::string& index_spelling);
+
+    /** The family and index spelling of an interned instance, or nullopt. */
+    std::optional<std::pair<TypeId, std::string>> indexedInstanceOf(TypeId id) const;
+
+    /**
+     * A function type that also records its parameter names (a dependent
+     * signature: an index in a parameter or result type may name a
+     * parameter). Identified by @p key, so two signatures that erase to the
+     * same parameter types but differ in their dependency stay distinct.
+     */
+    TypeId makeDependentFunctionType(const std::vector<PiType::Parameter>& params,
+                                     TypeId return_type, bool is_variadic,
+                                     const std::string& key);
 
 private:
     /**

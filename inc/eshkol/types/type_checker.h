@@ -14,6 +14,7 @@
 
 #include "eshkol/types/hott_types.h"
 #include "eshkol/types/dependent.h"
+#include "eshkol/types/quantum_types.h"
 #include "eshkol/eshkol.h"
 #include <eshkol/util/continuation_task.h>
 #include <vector>
@@ -686,6 +687,13 @@ private:
     BorrowChecker borrow_;
     UnsafeContext unsafe_;
     std::vector<TypeCheckResult> errors_;
+    // Quantum signatures (ADR-0048): core.quantum primitives and every
+    // definition whose annotations mention qreg/qidx/qregion.
+    quantum::Registry quantum_;
+    /** Fatal reporter handed to the quantum checks. */
+    quantum::ViolationReporter quantumReporter();
+    /** A linear value computed and dropped in a sequence is a discard. */
+    void reportDiscardedLinear(TypeId type, const eshkol_ast_t* node);
 
     // Named-let parameter widening (see synthesizeLetTask()). A named let's
     // loop parameters are typed by the join of every value the loop carries in
