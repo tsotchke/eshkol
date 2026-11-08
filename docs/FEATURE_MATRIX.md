@@ -788,8 +788,9 @@ gated on the locked interop-first sequence.
 > independently added making the same point.
 
 Advanced type-theory items (refinement types, effect types, higher-rank
-types, row polymorphism) did not ship in the v1.3 line; they remain staged
-at v1.9.0-types. PGO remains a build-time scaffold (workload selection is
+types, row polymorphism) did not ship in the v1.3 line; they are staged at
+v1.9.0-types, where refinement types are implemented with a built-in decision
+procedure (ADR-0044). PGO remains a build-time scaffold (workload selection is
 the open gap); whole-program optimization and polyhedral loop optimization
 are not yet scheduled to a specific release.
 
@@ -829,7 +830,8 @@ are not yet scheduled to a specific release.
 
 ### v1.9.0 (per ADR-0004/ADR-0007, ADR-0000 Stage 12)
 
-- **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: Refinement types, effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
+- **Refinement types (ADR-0044)**: `(Refine T phi)` with verification conditions from contracts, branches, arithmetic and index bounds, decided by a built-in procedure (Omega test, exact simplex, congruence closure, DPLL(T)) with an optional z3 backend; counterexamples in diagnostics; native and VM engines. See [refinement types](reference/language/refinement-types.md).
+- **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
 - **Whole-Program Optimization + polyhedral loop optimization (BUILD ITEM, moved from v1.3-evolve, ADR-0007)**: no closed-world root analysis, no LTO/ThinLTO exists yet
 
 ### v2.0-starlight (target: Q4 2028)

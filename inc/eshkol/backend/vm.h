@@ -111,6 +111,17 @@ void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn);
  * analysed at all. Only available where the front end is linked. */
 int eshkol_linear_check_source(const char* source, const char* source_name);
 
+/* Refinement types (ADR-0044) reach the VM by the same route and for the same
+ * reasons: the VM calls the installed checker before compiling any source that
+ * writes `(Refine ...`, and refuses the program when it reports errors (or when
+ * nothing is installed: an unverified refinement is not a proved one). */
+typedef int (*EshkolSourceCheckFn)(const char* source, const char* source_name);
+void eshkol_vm_install_refinement_check(EshkolSourceCheckFn fn);
+
+/* The implementation, in lib/types/linear_check_bridge.cpp: the number of
+ * refinement errors, or -1 when the source could not be analysed. */
+int eshkol_refinement_check_source(const char* source, const char* source_name);
+
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
  * failure, profile-limit violation, or NULL/zero-size input. */

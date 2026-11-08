@@ -815,7 +815,33 @@ static int compile_depth = 0;
  *         bumps/checks compile_depth (erroring past 1000 nested
  *         expressions) around the actual compilation call. */
 static void vm_compile_error(const char* message, const char* detail);
+
+/* A let-family binding may carry a type annotation, `(name : type init)`, as
+ * the native reader accepts. Types (refinements included, ADR-0044) are checked
+ * by the front-end bridge before this compiler runs, so here the annotation is
+ * dropped once, in place, and every let form below sees `(name init)`. */
+static void vm_strip_binding_annotations(Node* node) {
+    if (!node || node->type != N_LIST || node->n_children < 3) return;
+    Node* head = node->children[0];
+    if (!head || head->type != N_SYMBOL) return;
+    if (!eshkol_syntax_base_is(head->symbol, "let") && !eshkol_syntax_base_is(head->symbol, "let*") &&
+        !eshkol_syntax_base_is(head->symbol, "letrec") && !eshkol_syntax_base_is(head->symbol, "letrec*"))
+        return;
+    Node* bindings = node->children[1];
+    if (bindings && bindings->type == N_SYMBOL && node->n_children >= 4) bindings = node->children[2];
+    if (!bindings || bindings->type != N_LIST || bindings->is_vector) return;
+    for (int i = 0; i < bindings->n_children; ++i) {
+        Node* b = bindings->children[i];
+        if (!b || b->type != N_LIST || b->n_children != 4) continue;
+        Node* colon = b->children[1];
+        if (!colon || colon->type != N_SYMBOL || !eshkol_syntax_base_is(colon->symbol, ":")) continue;
+        b->children[1] = b->children[3];
+        b->n_children = 2;
+    }
+}
+
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
+    vm_strip_binding_annotations(node);
     compile_depth++;
     if (compile_depth > 1000) {
         /* Fail closed: the subexpression emits no code, so the compilation
@@ -6816,8 +6842,18 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* -- define-type (type alias: compile-time only, no runtime effect) -- */
-    if (is_sym(head, "define-type")) { return; }
+    /* -- define-type (type alias: compile-time only, no runtime effect). Like
+     * every form it leaves one value, so the enclosing sequence's pop stays
+     * balanced. -- */
+    if (is_sym(head, "define-type")) { chunk_emit(c, OP_NIL, 0); return; }
+
+    /* -- (the type expr): an ascription, checked before compilation (the
+     * gradual checker, and refinements through the front-end bridge,
+     * ADR-0044); at run time it is exactly expr, as on the native engine. -- */
+    if (is_sym(head, "the") && node->n_children == 3) {
+        compile_expr(c, node->children[2], tail);
+        return;
+    }
 
 
     if (is_sym(head, "vref") && node->n_children == 3) {

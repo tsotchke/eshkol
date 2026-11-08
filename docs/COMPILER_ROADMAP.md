@@ -744,7 +744,7 @@ Proto3 coverage.
 Types-as-proofs.
 
 - Dependent types (full enforcement on existing HoTT scaffolding)
-- Refinement types with SMT solver (Z3 or miniZ3)
+- Refinement types with a built-in decision procedure and an optional z3 backend (ADR-0044)
 - Effect types (Pure / IO / State / Exception)
 - Algebraic effects
 - Row polymorphism

@@ -21,7 +21,10 @@
  * before. One source of truth, and a divergence between the engines becomes
  * impossible by construction rather than by discipline.
  *
- * This bridge deliberately reports ONLY the linear verdict. Gradual typing's
+ * The refinement verdict (ADR-0044) takes the same route through the same
+ * helper: eshkol_refinement_check_source().
+ *
+ * Each entry point deliberately reports ONLY its own verdict. Gradual typing's
  * other findings belong to the engine that is generating code and are none of
  * the VM's business; a type warning here would be noise the VM cannot act on.
  */
@@ -30,24 +33,20 @@
 #include "eshkol/core/config.h"
 #include "eshkol/types/hott_types.h"
 #include "eshkol/types/type_checker.h"
+#include "eshkol/types/refinement.h"
 #include "eshkol/frontend/macro_expander.h"
 
 #include <sstream>
 #include <string>
 #include <vector>
 
-extern "C" {
+namespace {
 
-/**
- * @brief Run the linear (no-cloning) check over @p source.
- *
- * @param source      Eshkol source text.
- * @param source_name Diagnostic name for the source (may be NULL).
- * @return The number of linearity violations found (0 when clean), or -1 when
- *         the source could not be analysed at all — a parse failure, which the
- *         caller must treat as "unknown", never as "clean".
- */
-int eshkol_linear_check_source(const char* source, const char* source_name) {
+// Parse, macro-expand and type check @p source exactly as the native engine
+// does, then hand the checker and the flattened program to @p verdict.
+// Returns -1 when the source could not be analysed at all.
+template <typename Verdict>
+int checkSource(const char* source, const char* source_name, Verdict verdict) {
     if (!source) return -1;
 
     eshkol_reset_parse_errors();
@@ -113,7 +112,44 @@ int eshkol_linear_check_source(const char* source, const char* source_name) {
         checker.synthesize(&a);
     }
 
-    return static_cast<int>(checker.linearityViolations());
+    return verdict(checker, flat);
+}
+
+}  // namespace
+
+extern "C" {
+
+/**
+ * @brief Run the linear (no-cloning) check over @p source.
+ *
+ * @param source      Eshkol source text.
+ * @param source_name Diagnostic name for the source (may be NULL).
+ * @return The number of linearity violations found (0 when clean), or -1 when
+ *         the source could not be analysed at all — a parse failure, which the
+ *         caller must treat as "unknown", never as "clean".
+ */
+int eshkol_linear_check_source(const char* source, const char* source_name) {
+    return checkSource(source, source_name,
+                       [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>&) {
+                           return static_cast<int>(checker.linearityViolations());
+                       });
+}
+
+/* Refinement types (ADR-0044) reach the VM the same way: the same checker
+ * pass the native engine runs after type checking, over the same program.
+ * Returns the number of refinement errors (violated, or not proved inside an
+ * annotated function), or -1 when the source could not be analysed. */
+int eshkol_refinement_check_source(const char* source, const char* source_name) {
+    return checkSource(source, source_name,
+                       [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>& flat) {
+                           const eshkol_config_t* cfg = eshkol_config_get();
+                           const bool unsafe = cfg ? cfg->unsafe_mode != 0 : false;
+                           auto options =
+                               eshkol::hott::RefinementOptions::fromEnvironment(false, unsafe);
+                           auto report = eshkol::hott::checkProgramRefinements(
+                               checker, flat.data(), flat.size(), options);
+                           return static_cast<int>(report.errors);
+                       });
 }
 
 }  // extern "C"

@@ -1,0 +1,4 @@
+;; expect: cannot tell which variable
+(define-type Between (Refine Integer (< a b)))
+(define (g (k : Between)) k)
+(display (g 1))

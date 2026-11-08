@@ -1,0 +1,4 @@
+;; expect: refinement violated: argument 2 (d) of 'safe-div'
+(define (safe-div (n : Integer) (d : (Refine Integer (not (= d 0))))) : Integer
+  (quotient n d))
+(display (safe-div 1 0))
