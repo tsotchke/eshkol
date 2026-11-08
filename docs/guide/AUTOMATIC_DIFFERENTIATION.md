@@ -860,6 +860,7 @@ tensor coefficient layouts, and the Taylor-model remainder arithmetic — see
 | `curl` | ℝ³→ℝ³ | `(curl F pt)` | ∇×F |
 | `laplacian` | ℝⁿ→ℝ | `(laplacian f pt)` | ∇²f |
 | `directional-derivative` | ℝⁿ→ℝ | `(directional-derivative f pt dir)` | ∇f·dir |
+| `stop-gradient` | any | `(stop-gradient x)` | `x`'s value as a constant to every enclosing pass (ADR-0049) |
 
 Points are vectors (`#(…)` or `(vector …)`). Exact seeds (integer/rational)
 yield exact `derivative-n`/`taylor` results for polynomial/rational functions,

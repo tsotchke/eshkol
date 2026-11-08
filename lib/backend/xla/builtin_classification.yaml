@@ -17,10 +17,10 @@ version: 1
 source_registry: tests/coverage/language_surface.json
 generator: scripts/gen_builtin_classification.py
 labels: [device, host, host-with-device-inner]
-builtin_count: 1057
+builtin_count: 1058
 counts_by_label:
   device: 233
-  host: 816
+  host: 817
   host-with-device-inner: 8
 builtins:
   "%":
@@ -2498,6 +2498,9 @@ builtins:
   "step-decay-lr":
     label: host
     rationale: "Host training-loop scheduling logic over scalar host state, not a tensor computation."
+  "stop-gradient":
+    label: host
+    rationale: "Reads the primal out of a host AD carrier (forward jet, Taylor tower or level, reverse-mode tape node); the device analogue is a graph-level stop_gradient, not a StableHLO element op."
   "string":
     label: host
     rationale: "Operates on strings or characters, excluded from the Eshkol-S value domain by name. See docs/design/ESHKOL_S_FRAGMENT.md condition 1."

@@ -195,6 +195,7 @@
   "eshkol_set_raised_value",
   "eshkol_shape_error",
   "eshkol_shapes_equal",
+  "eshkol_stop_gradient_tagged",
   "eshkol_string_byte_length",
   "eshkol_string_from_codepoints",
   "eshkol_string_to_number_tagged",

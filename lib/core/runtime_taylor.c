@@ -1839,6 +1839,34 @@ static eshkol_tagged_value_t tagged_primal(const eshkol_tagged_value_t* v) {
     }
 }
 
+/* `stop-gradient` (ADR-0049): the value of a number with every derivative
+ * carrier removed, so every enclosing AD pass -- forward jet, Taylor tower,
+ * nested level, reverse-mode node -- sees a constant. It is the primal the
+ * comparisons and branch builtins already decide on (tagged_primal), except
+ * that a reverse-mode node's exact payload is kept exact. A value that is not
+ * a carrier is returned unchanged. A tensor-valued reverse node has no scalar
+ * primal and is refused. */
+void eshkol_stop_gradient_tagged(const eshkol_tagged_value_t* in, eshkol_tagged_value_t* out) {
+    if (!in || !out) return;
+    eshkol_tagged_value_t cur = *in;
+    for (;;) {
+        if (num_is_ad_node(&cur)) {
+            const ad_node_t* n = (const ad_node_t*)(uintptr_t)cur.data.ptr_val;
+            if (n->tensor_value) {
+                eshkol_raise(eshkol_make_exception(ESHKOL_EXCEPTION_TYPE_ERROR,
+                    "stop-gradient: expects a number; got a tensor-valued AD node"));
+                *out = eshkol_make_double(n->value);
+                return;
+            }
+            if (n->exact_value) { cur = *n->exact_value; continue; }
+            *out = eshkol_make_double(n->value);
+            return;
+        }
+        *out = tagged_primal(&cur);
+        return;
+    }
+}
+
 /* -1 / 0 / +1: the sign of a number's primal, decided exactly when it is exact. */
 static int tagged_primal_sign(const eshkol_tagged_value_t* v) {
     eshkol_tagged_value_t p = tagged_primal(v);
