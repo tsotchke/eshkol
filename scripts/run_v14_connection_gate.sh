@@ -338,7 +338,7 @@ probe_diagnostic_corpus_clean() {
 # Portable tail transfer (v1.4.1-STAGE, S4): run the real producer
 # (scripts/run_recursion_depth.sh) and grade this criterion on exactly the
 # cells it emits for the mutual_tail_{cond,forms,arity} kinds — spelling-
-# independence (ESH-0102b) and arity-independence (ESH-0102c) of the tail-
+# independence (cond/when/or/case) and arity-independence of the tail-
 # transfer dispatcher — across every lane that producer runs them in: JIT
 # (-r), AOT via LLVM `musttail`, and the portable non-AArch64 `aot-xfer`
 # lane (ESHKOL_TAIL_TRANSFER_ONLY=1), which is the dispatcher this criterion
@@ -705,7 +705,7 @@ probe_external_ci_evidence v14_assurance_a8_tsan_lane \
     'requires the applicable A8 policy evidence and a source-bound TSan CI receipt'
 probe_package_manifest_complete
 probe_diagnostic_corpus_clean
-# A12's leak-detection lane (ci.yml's ASan matrix, ASAN_OPTIONS=detect_leaks=1
+# A12's LeakSanitizer lane (ci.yml's ASan matrix, ASAN_OPTIONS=detect_leaks=1
 # with .icc/lsan-suppressions.txt naming every known-acceptable retention) and
 # VM region-evacuation poison path (lib/backend/vm_region_evac.c's
 # ESHKOL_ARENA_POISON delegation) are real and already running; this fast
@@ -714,7 +714,7 @@ probe_diagnostic_corpus_clean
 # lane's state, the same way A8's TSan lane is handled.
 probe_external_ci_evidence v14_assurance_a12_lsan_lane \
     '.github/workflows/ci.yml' \
-    'requires a source-bound ASan/LSan-lane CI receipt for the leak-detection and region-evacuation poison path'
+    'requires a source-bound ASan/LSan-lane CI receipt for the LeakSanitizer and region-evacuation poison path'
 probe_external_ci_evidence v14_assurance_a13_hosted_gpu_lane \
     '.github/workflows/gpu-execution-gate.yml' \
     'requires a source-bound A13 hosted-GPU CI receipt; runner availability is not inferred here'
