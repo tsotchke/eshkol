@@ -1,3 +1,33 @@
+# Eshkol v1.4.0-connection — Release Notes (draft)
+
+**Status:** DRAFT. This section covers the mathematics libraries landing in v1.4.0-connection;
+the rest of the release is tracked separately and will be filled in before publication.
+
+## Mathematics
+
+Eshkol now computes mathematics the way a mathematician states it — a site, a sheaf, a topos,
+a ring — and decides every claim exactly, by enumeration and exact linear algebra, never by
+sampling.
+
+The mechanism is a chain of finite structures: `core.sheaf` gives sites, sieves and Grothendieck
+topologies on finite categories, with sheaf cohomology computed by Cech descent. `core.topos`
+builds the internal language of a presheaf topos on top of a site and decides it by
+Kripke–Joyal forcing, cross-checked instance by instance against the subobject classifier.
+`core.ring` makes a ring a value — the functor-of-points model — so one program evaluated over
+different carriers (integers, rationals, IEEE binary64, modular arithmetic, Taylor jets,
+polynomial rings, group rings) is the same proof run at different points. `core.category` adds
+finite category theory on the same finite-category value: functor categories, adjunctions found
+through comma categories, and Kan extensions. `core.simplicial` and `core.homological` complete
+the chain with simplicial sets, chain complexes, and homology with torsion.
+
+Measured against [nLab](https://ncatlab.org/nlab/show/HomePage): 141 claims drawn from 51 pages,
+turned into finite statements and decided by these libraries, with the independent read-out in
+the [nLab conformance report](docs/reports/NLAB_CONFORMANCE.md). A reader's guide to all of it is
+in [docs/guide/MATHEMATICS.md](docs/guide/MATHEMATICS.md).
+
+Three further libraries join this line as it continues: Lawvere theories, Gröbner bases, and
+monoidal categories with the ZX calculus. Planned for v1.4.x.
+
 # Eshkol v1.3.6-evolve — Release Notes
 
 **Status:** PREPARED FOR PUBLICATION.
