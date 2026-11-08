@@ -1,0 +1,29 @@
+// Row-major f64 matmul C[M,N] = A[M,K] * B[K,N] for the Vulkan compute backend.
+// One invocation per output element; the k-sum runs in index order without
+// contraction (`precise`), so the result equals the sequential, non-fused
+// reference sum s = ((0 + a0*b0) + a1*b1) + ... bit for bit.
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InA { double a[]; };
+layout(std430, set = 0, binding = 1) readonly buffer InB { double b[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer Out { double c[]; };
+
+layout(push_constant) uniform Params {
+    uint M;
+    uint K;
+    uint N;
+    uint pad;
+} p;
+
+void main() {
+    uint j = gl_GlobalInvocationID.x;
+    uint i = gl_GlobalInvocationID.y;
+    if (i >= p.M || j >= p.N) return;
+    precise double s = 0.0LF;
+    for (uint k = 0u; k < p.K; ++k) {
+        precise double prod = a[i * p.K + k] * b[k * p.N + j];
+        s = s + prod;
+    }
+    c[i * p.N + j] = s;
+}

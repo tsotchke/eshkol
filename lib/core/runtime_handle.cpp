@@ -39,7 +39,10 @@ bool decode_id(eshkol_handle_id_t id, uint32_t *slot, uint32_t *generation) {
 bool valid_kind(eshkol_handle_kind_t kind) {
     return kind == ESHKOL_HANDLE_KIND_FILE ||
            kind == ESHKOL_HANDLE_KIND_SOCKET ||
-           kind == ESHKOL_HANDLE_KIND_EVENT_LOOP;
+           kind == ESHKOL_HANDLE_KIND_EVENT_LOOP ||
+           kind == ESHKOL_HANDLE_KIND_WINDOW ||
+           kind == ESHKOL_HANDLE_KIND_AUDIO_DEVICE ||
+           kind == ESHKOL_HANDLE_KIND_MIDI_PORT;
 }
 } // namespace
 
