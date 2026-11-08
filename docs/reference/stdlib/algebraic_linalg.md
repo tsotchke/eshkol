@@ -5,6 +5,7 @@ owner-area: stdlib
 since: v1.4.0-connection
 sources:
   - lib/core/algebraic_domain.esk
+  - lib/core/ring.esk
   - lib/core/algebraic_linalg.esk
   - tests/stdlib/algebraic_linalg_test.esk
 ---
@@ -19,6 +20,9 @@ Taylor/hyperdual context from `core.ad.algebraic`. Operation keys are `copy`,
 `zero` and `one` return owned values. Operations enforce the declared domain;
 only its enclosing chain can be embedded. Domain descriptors and owners are
 immutable by contract. Coordinate observers and constructors copy storage.
+A domain is a [`core.ring`](ring.md) carrier of the `algebraic` family, so the
+generic ring operations `r+ r* r-inv r= ...` and the ring-law check apply to it
+as well.
 
 `core.algebraic_linalg` exports:
 

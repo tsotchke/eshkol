@@ -2491,6 +2491,65 @@ oracles:
         label: 'Running-total sweep: every v1.4-connection probe above is green. Expected FAIL until the release actually ships — this criterion is a progress counter, not a release gate (see scripts/run_v14_connection_gate.sh''s summary line for the live pass/fail count)'
         action: run_v14_connection_gate
 
+      # core.sheaf (ADR-0033): sheaf theory on finite sites as one library.
+      # Producer: scripts/run_sheaf_gate.sh runs the six CTest entries that
+      # own the behaviour (the suite and the two examples written on the
+      # library, JIT and AOT) and every documentation example on the
+      # reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_sheaf
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_sheaf"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.sheaf (ADR-0033): finite sites and Grothendieck topologies checked against the three axioms, presheaves of sets and of Z-modules / Q-vector spaces, gluing with named obstructions, the plus construction, and Cech and derived cohomology with torsion and cocycle generators; sheaf_jit/sheaf_aot, the two library-based sheaf examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_sheaf_gate.sh
+
+      # core.topos (ADR-0035): the internal language of the topos of a finite
+      # site with Kripke-Joyal forcing. Producer: scripts/run_topos_gate.sh
+      # runs the fourteen CTest entries that own the behaviour (six suites and
+      # the presheaf-topos example written on the library, JIT and AOT) and every
+      # documentation example on the reference page; PASS only when all of
+      # them ran and passed.
+      - id: v14_core_topos
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_topos"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.topos (ADR-0035): the Mitchell-Benabou language of Sh(C, J) for finite sites, Kripke-Joyal forcing cross-checked against the Omega-valued interpretation on an enumerated corpus over five sites, the Kripke and Beth reductions, the j-translation, soundness of intuitionistic higher-order logic with classical-law counter-witnesses, and the internally local structure sheaf of Spec(Z/n); the topos suites, the library-based presheaf-topos example in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_topos_gate.sh
+
+      # core.ring and core.multimodular (ADR-0034, library rung).
+      # Producer: scripts/run_ring_gate.sh runs the eight CTest entries that
+      # own the behaviour (the ring-law gate, the IEEE-tier specification
+      # check, the multimodular cross-checks and the functor-of-points
+      # example, each in JIT and AOT) and every documentation example on the
+      # two reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_ring
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_ring"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
+        action: ./scripts/run_ring_gate.sh
+
+      # core.transcript: content-addressed transcripts of certified
+      # mathematical quantities, independently cross-checked. Producer:
+      # scripts/run_transcript_gate.sh runs the eleven CTest entries that own
+      # the behaviour (the unit suite, the four wired examples/tests in JIT
+      # and AOT, and the pure-Python replay check against the committed
+      # fixtures); PASS only when all of them ran and passed.
+      - id: v14_math_transcripts
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_math_transcripts"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.transcript: a canonical, bignum-safe value encoding and an fnv1a-64-hashed (core.merkle) JSON claim format for a determinant, Smith normal form, rank mod p or polynomial gcd together with its exact inputs, off by default and never changing a program''s output; scripts/math_crosscheck/replay_check.py independently recomputes every known claim kind from pure-Python-stdlib (a tamper check on the hash plus a correctness check on the mathematics), and crosscheck_pari_sympy.py (for a host with PARI/GP and SymPy installed) additionally checks against PARI/GP and SymPy; wired into mathematics_group_cohomology_order_eight, mathematics_cohomology_rings_cup_products, mathematics_fermat_hodge_classes_sweep and multimodular_test; transcript_jit/aot, the four wired programs'' own CTest entries, and transcript_replay_check over the committed fixtures all pass'
+        action: ./scripts/run_transcript_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.

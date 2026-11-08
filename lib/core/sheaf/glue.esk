@@ -1,0 +1,106 @@
+;;; core.sheaf.glue -- gluing local data along a cover: the sheaf condition as
+;;; an operation that returns either the global result or an explicit
+;;; obstruction.
+;;;
+;;; Usage: (require core.sheaf.glue)   or   (require core.sheaf)
+;;;
+;;; A cover here is any finite family of pieces (shards, devices, time
+;;; windows, opens of a space) with a notion of overlap and of restricting a
+;;; local result to an overlap. Local results that agree on every pairwise
+;;; overlap form a matching family; for a sheaf such a family glues to a
+;;; unique global result (Mac Lane-Moerdijk II.1, the equalizer diagram
+;;; F(U) -> prod F(U_i) => prod F(U_i cap U_j)). The procedures below decide
+;;; that condition and, when it fails, name the overlaps where it fails.
+;;;
+;;; Gluing results (shared by every gluing operation in core.sheaf):
+;;;   #(gluing glued value)          the unique global result
+;;;   #(gluing obstructed (obs ...)) the reasons gluing is impossible, each
+;;;       a list headed by a symbol:
+;;;         (disagree i j overlap value-i value-j)  local results differ on an overlap
+;;;         (incomplete i missing)                  a local result omits part of its piece
+;;;         (incompatible f g)                      a family on a sieve fails F(g) x_f = x_{f o g}
+;;;         (no-amalgamation)                       compatible, but no global section exists
+;;;         (not-unique n)                          compatible, with n > 1 global sections
+
+(require stdlib)
+
+(provide gluing-success gluing-failure gluing-result? glued? glued-value gluing-obstructions
+         make-cover cover? cover-pieces cover-overlap cover-restrict cover-same?
+         cover-disagreements glue-cover
+         keyed-cover glue-keyed-sections)
+
+(define (gluing-success value) (vector 'gluing 'glued value))
+(define (gluing-failure obstructions) (vector 'gluing 'obstructed obstructions))
+(define (gluing-result? r) (and (vector? r) (= 3 (vector-length r)) (eq? (vector-ref r 0) 'gluing)))
+(define (glued? r) (eq? (vector-ref r 1) 'glued))
+(define (glued-value r) (if (glued? r) (vector-ref r 2) (error "glued-value: gluing was obstructed" (vector-ref r 2))))
+(define (gluing-obstructions r) (if (glued? r) '() (vector-ref r 2)))
+
+;; pieces: list of keys; overlap: (i j) -> overlap descriptor, or #f when the
+;; pieces do not meet; restrict: (i overlap value) -> value on the overlap;
+;; same?: equality of restricted values.
+(define (make-cover pieces overlap restrict same?) (vector 'cover pieces overlap restrict same?))
+(define (cover? c) (and (vector? c) (= 5 (vector-length c)) (eq? (vector-ref c 0) 'cover)))
+(define (cover-pieces c) (vector-ref c 1))
+(define (cover-overlap c i j) ((vector-ref c 2) i j))
+(define (cover-restrict c i ov v) ((vector-ref c 3) i ov v))
+(define (cover-same? c a b) ((vector-ref c 4) a b))
+
+(define (gl-local locals i)
+  (let ((e (assoc i locals)))
+    (if (not e) (error "glue: no local result for piece" i))
+    (cdr e)))
+;; every pair i < j (in piece order) whose restrictions disagree
+(define (cover-disagreements cover locals)
+  (let loop ((ps (cover-pieces cover)) (out '()))
+    (if (null? ps) (reverse out)
+        (loop (cdr ps)
+              (let inner ((qs (cdr ps)) (out out))
+                (if (null? qs) out
+                    (let* ((i (car ps)) (j (car qs)) (ov (cover-overlap cover i j)))
+                      (if (not ov) (inner (cdr qs) out)
+                          (let ((vi (cover-restrict cover i ov (gl-local locals i)))
+                                (vj (cover-restrict cover j ov (gl-local locals j))))
+                            (inner (cdr qs)
+                                   (if (cover-same? cover vi vj) out
+                                       (cons (list 'disagree i j ov vi vj) out))))))))))))
+;; locals: alist piece -> local result; assemble: locals -> global result,
+;; called only when the family matches.
+(define (glue-cover cover locals assemble)
+  (let ((bad (cover-disagreements cover locals)))
+    (if (null? bad) (gluing-success (assemble locals)) (gluing-failure bad))))
+
+;; The sheaf of partial functions on a finite key set, covered by pieces that
+;; each own a list of keys (key ranges of shards, timestamps of windows, rows
+;; of devices). domains: alist piece -> list of keys. A local result is an
+;; alist key -> value over exactly its piece's keys.
+(define (gl-intersect A B) (filter (lambda (x) (member x B)) A))
+(define (keyed-cover domains)
+  (make-cover (map car domains)
+              (lambda (i j)
+                (let ((ov (gl-intersect (cdr (assoc i domains)) (cdr (assoc j domains)))))
+                  (if (null? ov) #f ov)))
+              (lambda (i ov v) (map (lambda (k) (let ((e (assoc k v))) (if e (cdr e) (list 'missing k)))) ov))
+              equal?))
+;; Glue keyed local results; the global result lists each key once, in
+;; order of first appearance across the pieces.
+(define (glue-keyed-sections domains locals)
+  (let ((incomplete
+         (filter (lambda (o) o)
+                 (map (lambda (d)
+                        (let* ((v (gl-local locals (car d)))
+                               (missing (filter (lambda (k) (not (assoc k v))) (cdr d))))
+                          (if (null? missing) #f (list 'incomplete (car d) missing))))
+                      domains))))
+    (if (not (null? incomplete))
+        (gluing-failure incomplete)
+        (glue-cover (keyed-cover domains) locals
+                    (lambda (locals)
+                      (let loop ((ds domains) (acc '()))
+                        (if (null? ds) (reverse acc)
+                            (let ((v (gl-local locals (car (car ds)))))
+                              (loop (cdr ds)
+                                    (let add ((ks (cdr (car ds))) (acc acc))
+                                      (cond ((null? ks) acc)
+                                            ((assoc (car ks) acc) (add (cdr ks) acc))
+                                            (else (add (cdr ks) (cons (cons (car ks) (cdr (assoc (car ks) v))) acc))))))))))))))
