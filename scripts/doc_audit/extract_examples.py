@@ -93,7 +93,7 @@ GATED_SCOPES = {
                   "docs/reference/stdlib/multimodular.md", "docs/reference/stdlib/category.md",
                   "docs/reference/stdlib/monoidal.md", "docs/reference/stdlib/zx.md",
                   "docs/reference/stdlib/quantum.md", "docs/reference/stdlib/simplicial.md",
-                  "docs/reference/stdlib/homological.md"],
+                  "docs/reference/stdlib/homological.md", "docs/reference/stdlib/theory.md"],
     "reference-groebner": ["docs/reference/stdlib/groebner.md"],
 }
 
