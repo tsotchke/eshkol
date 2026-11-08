@@ -42,6 +42,7 @@ it is called out explicitly.
 | 19 | Explicit compiler differentiation graph: scalar admission and numeric lowering | [differentiation.md](differentiation.md) |
 | 20 | Refinement types `(Refine T phi)`: what is proved, diagnostics, solvers | [refinement-types.md](refinement-types.md) |
 | 21 | Synthesis holes `??`: type-directed completion by the compiler | [synthesis-holes.md](synthesis-holes.md) |
+| 22 | Algebraic effects: `define-effect`, `handle`, `handle-shallow`, effect rows, `declare-effects`, `core.effects` | [effects.md](effects.md) |
 
 ## Known-issue conventions
 

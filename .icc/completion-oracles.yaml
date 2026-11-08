@@ -4389,3 +4389,22 @@ oracles:
         severity: high
         label: 'v1.7.0-synthesis (ADR-0052): 42/42 example-synthesis benchmark tasks verified on held-out examples, GCN/GraphSAGE/GAT backward rules agree with central differences and the karate-club classifiers learn, ?? holes are completed from their expected type and a hole with no completion stops compilation; synthesis_test, gnn_test and synthesis_holes_test in JIT and AOT plus the hole diagnostic and refusal entries all pass'
         action: ./scripts/run_synthesis_gate.sh
+
+  - name: v1.9-types
+    aliases: [v1.9, types-1.9]
+    requires:
+      - runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_algebraic_effects"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Algebraic effects and handlers (ADR-0045): handler laws, resumption counts, unwinding order, the core.effects library, regions and AD give identical transcripts on native JIT, native AOT and the bytecode VM'
+        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces
+
+      - runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_effect_types"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Effect rows (ADR-0045): inferred latent rows match the typing corpus and every violated declare-effects is rejected under --strict-types'
+        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces

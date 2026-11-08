@@ -15,6 +15,7 @@
         "core.ad.taylor_models",
         "core.alist",
         "core.capabilities",
+        "core.control.effects",
         "core.control.trampoline",
         "core.data.base64",
         "core.data.csv",
@@ -2218,6 +2219,411 @@
           ]
         },
         {
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "required_by": [
+            "stdlib"
+          ],
+          "stdlib_visibility": "stdlib_root_required_module",
+          "requires": [],
+          "exports": [
+            {
+              "name": "%effect-clause",
+              "line": 42,
+              "definition_line": 138,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 138,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-declare",
+              "line": 43,
+              "definition_line": 100,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 100,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-handle",
+              "line": 42,
+              "definition_line": 290,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 290,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-identity",
+              "line": 43,
+              "definition_line": 187,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 187,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-make",
+              "line": 42,
+              "definition_line": 52,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 52,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "%effect-operation",
+              "line": 42,
+              "definition_line": 74,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 74,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-handled?",
+              "line": 46,
+              "definition_line": 146,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 146,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-handler-depth",
+              "line": 47,
+              "definition_line": 113,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 113,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-name",
+              "line": 44,
+              "definition_line": 57,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 57,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-arity",
+              "line": 46,
+              "definition_line": 96,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 96,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-effect",
+              "line": 45,
+              "definition_line": 95,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 95,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-name",
+              "line": 45,
+              "definition_line": 94,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 94,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation-names",
+              "line": 44,
+              "definition_line": 59,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 59,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect-operation?",
+              "line": 45,
+              "definition_line": 92,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 92,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "effect?",
+              "line": 44,
+              "definition_line": 54,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 54,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            },
+            {
+              "name": "unhandled-effect-error?",
+              "line": 46,
+              "definition_line": 153,
+              "definition_origin": {
+                "module": "core.control.effects",
+                "path": "lib/core/control/effects.esk",
+                "line": 153,
+                "chain": [
+                  "core.control.effects"
+                ]
+              }
+            }
+          ],
+          "top_level_definitions": [
+            {
+              "name": "%effect-call",
+              "line": 173
+            },
+            {
+              "name": "%effect-call/k",
+              "line": 180
+            },
+            {
+              "name": "%effect-clause",
+              "line": 138
+            },
+            {
+              "name": "%effect-declare",
+              "line": 100
+            },
+            {
+              "name": "%effect-dispatch",
+              "line": 189
+            },
+            {
+              "name": "%effect-escape",
+              "line": 210
+            },
+            {
+              "name": "%effect-formals-arity",
+              "line": 67
+            },
+            {
+              "name": "%effect-handle",
+              "line": 290
+            },
+            {
+              "name": "%effect-handle-full",
+              "line": 308
+            },
+            {
+              "name": "%effect-handle-light",
+              "line": 298
+            },
+            {
+              "name": "%effect-handled-1",
+              "line": 148
+            },
+            {
+              "name": "%effect-identity",
+              "line": 187
+            },
+            {
+              "name": "%effect-make",
+              "line": 52
+            },
+            {
+              "name": "%effect-op-desc",
+              "line": 86
+            },
+            {
+              "name": "%effect-op-registry",
+              "line": 65
+            },
+            {
+              "name": "%effect-operation",
+              "line": 74
+            },
+            {
+              "name": "%effect-perform",
+              "line": 161
+            },
+            {
+              "name": "%effect-run-abort",
+              "line": 215
+            },
+            {
+              "name": "%effect-run-general",
+              "line": 231
+            },
+            {
+              "name": "%effect-run-tail",
+              "line": 198
+            },
+            {
+              "name": "%effect-search",
+              "line": 164
+            },
+            {
+              "name": "%effect-transfer",
+              "line": 111
+            },
+            {
+              "name": "%find-clause",
+              "line": 141
+            },
+            {
+              "name": "%frame-after",
+              "line": 280
+            },
+            {
+              "name": "%frame-before",
+              "line": 274
+            },
+            {
+              "name": "%frame-clauses",
+              "line": 119
+            },
+            {
+              "name": "%frame-complete!",
+              "line": 286
+            },
+            {
+              "name": "%frame-delim",
+              "line": 120
+            },
+            {
+              "name": "%frame-shallow?",
+              "line": 121
+            },
+            {
+              "name": "%frames-restore!",
+              "line": 225
+            },
+            {
+              "name": "%frames-snapshot",
+              "line": 222
+            },
+            {
+              "name": "%make-resumption",
+              "line": 246
+            },
+            {
+              "name": "%stack-after",
+              "line": 123
+            },
+            {
+              "name": "%stack-after-1",
+              "line": 124
+            },
+            {
+              "name": "%stack-prefix",
+              "line": 130
+            },
+            {
+              "name": "%stack-prefix-1",
+              "line": 132
+            },
+            {
+              "name": "effect-handled?",
+              "line": 146
+            },
+            {
+              "name": "effect-handler-depth",
+              "line": 113
+            },
+            {
+              "name": "effect-name",
+              "line": 57
+            },
+            {
+              "name": "effect-operation-arity",
+              "line": 96
+            },
+            {
+              "name": "effect-operation-effect",
+              "line": 95
+            },
+            {
+              "name": "effect-operation-name",
+              "line": 94
+            },
+            {
+              "name": "effect-operation-names",
+              "line": 59
+            },
+            {
+              "name": "effect-operation?",
+              "line": 92
+            },
+            {
+              "name": "effect?",
+              "line": 54
+            },
+            {
+              "name": "unhandled-effect-error?",
+              "line": 153
+            }
+          ]
+        },
+        {
           "module": "core.control.trampoline",
           "path": "lib/core/control/trampoline.esk",
           "required_by": [
@@ -3687,22 +4093,22 @@
           "requires": [
             {
               "module": "core.list.transform",
-              "line": 28
+              "line": 35
             },
             {
               "module": "core.list.search",
-              "line": 29
+              "line": 36
             }
           ],
           "exports": [
             {
               "name": "alist->hash-table",
-              "line": 25,
-              "definition_line": 567,
+              "line": 32,
+              "definition_line": 585,
               "definition_origin": {
                 "module": "core.json",
                 "path": "lib/core/json.esk",
-                "line": 567,
+                "line": 585,
                 "chain": [
                   "core.json"
                 ]
@@ -3710,12 +4116,12 @@
             },
             {
               "name": "alist->json",
-              "line": 26,
-              "definition_line": 584,
+              "line": 33,
+              "definition_line": 602,
               "definition_origin": {
                 "module": "core.json",
                 "path": "lib/core/json.esk",
-                "line": 584,
+                "line": 602,
                 "chain": [
                   "core.json"
                 ]
@@ -3723,7 +4129,189 @@
             },
             {
               "name": "alist-write-json",
-              "line": 26,
+              "line": 33,
+              "definition_line": 635,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 635,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "hash-table->alist",
+              "line": 32,
+              "definition_line": 572,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 572,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-array-ref",
+              "line": 31,
+              "definition_line": 410,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 410,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-get",
+              "line": 31,
+              "definition_line": 404,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 404,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-get-in",
+              "line": 31,
+              "definition_line": 671,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 671,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-parse",
+              "line": 29,
+              "definition_line": 275,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 275,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-parse-result?",
+              "line": 29,
+              "definition_line": 294,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 294,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-read",
+              "line": 31,
+              "definition_line": 657,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 657,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-read-file",
+              "line": 33,
+              "definition_line": 640,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 640,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-result-error",
+              "line": 30,
+              "definition_line": 310,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 310,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-result-ok?",
+              "line": 30,
+              "definition_line": 300,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 300,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-result-value",
+              "line": 30,
+              "definition_line": 304,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 304,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-stringify",
+              "line": 31,
+              "definition_line": 562,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 562,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-try-parse",
+              "line": 29,
+              "definition_line": 367,
+              "definition_origin": {
+                "module": "core.json",
+                "path": "lib/core/json.esk",
+                "line": 367,
+                "chain": [
+                  "core.json"
+                ]
+              }
+            },
+            {
+              "name": "json-write",
+              "line": 31,
               "definition_line": 617,
               "definition_origin": {
                 "module": "core.json",
@@ -3735,195 +4323,13 @@
               }
             },
             {
-              "name": "hash-table->alist",
-              "line": 25,
-              "definition_line": 554,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 554,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-array-ref",
-              "line": 24,
-              "definition_line": 403,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 403,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-get",
-              "line": 24,
-              "definition_line": 397,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 397,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-get-in",
-              "line": 24,
-              "definition_line": 653,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 653,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-parse",
-              "line": 22,
-              "definition_line": 268,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 268,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-parse-result?",
-              "line": 22,
-              "definition_line": 287,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 287,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-read",
-              "line": 24,
-              "definition_line": 639,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 639,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-read-file",
-              "line": 26,
-              "definition_line": 622,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 622,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-result-error",
-              "line": 23,
-              "definition_line": 303,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 303,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-result-ok?",
-              "line": 23,
-              "definition_line": 293,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 293,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-result-value",
-              "line": 23,
-              "definition_line": 297,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 297,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-stringify",
-              "line": 24,
-              "definition_line": 544,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 544,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-try-parse",
-              "line": 22,
-              "definition_line": 360,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 360,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
-              "name": "json-write",
-              "line": 24,
-              "definition_line": 599,
-              "definition_origin": {
-                "module": "core.json",
-                "path": "lib/core/json.esk",
-                "line": 599,
-                "chain": [
-                  "core.json"
-                ]
-              }
-            },
-            {
               "name": "json-write-file",
-              "line": 26,
-              "definition_line": 589,
+              "line": 33,
+              "definition_line": 607,
               "definition_origin": {
                 "module": "core.json",
                 "path": "lib/core/json.esk",
-                "line": 589,
+                "line": 607,
                 "chain": [
                   "core.json"
                 ]
@@ -3933,179 +4339,179 @@
           "top_level_definitions": [
             {
               "name": "alist->hash-table",
-              "line": 567
+              "line": 585
             },
             {
               "name": "alist->hash-table-loop",
-              "line": 571
-            },
-            {
-              "name": "alist->json",
-              "line": 584
-            },
-            {
-              "name": "alist-key?",
-              "line": 469
-            },
-            {
-              "name": "alist-write-json",
-              "line": 617
-            },
-            {
-              "name": "hash-table->alist",
-              "line": 554
-            },
-            {
-              "name": "hash-table->alist-loop",
-              "line": 558
-            },
-            {
-              "name": "json-array-ref",
-              "line": 403
-            },
-            {
-              "name": "json-digit?",
-              "line": 40
-            },
-            {
-              "name": "json-escape-str",
-              "line": 414
-            },
-            {
-              "name": "json-get",
-              "line": 397
-            },
-            {
-              "name": "json-get-in",
-              "line": 653
-            },
-            {
-              "name": "json-get-in-list-ref",
-              "line": 674
-            },
-            {
-              "name": "json-get-in-loop",
-              "line": 656
-            },
-            {
-              "name": "json-parse",
-              "line": 268
-            },
-            {
-              "name": "json-parse-arr",
-              "line": 126
-            },
-            {
-              "name": "json-parse-document",
-              "line": 248
-            },
-            {
-              "name": "json-parse-num",
-              "line": 97
-            },
-            {
-              "name": "json-parse-obj",
-              "line": 151
-            },
-            {
-              "name": "json-parse-obj-loop",
-              "line": 156
-            },
-            {
-              "name": "json-parse-result?",
-              "line": 287
-            },
-            {
-              "name": "json-parse-str",
-              "line": 57
-            },
-            {
-              "name": "json-parse-value-impl",
-              "line": 191
-            },
-            {
-              "name": "json-read",
-              "line": 639
-            },
-            {
-              "name": "json-read-file",
-              "line": 622
-            },
-            {
-              "name": "json-read-file-loop",
-              "line": 626
-            },
-            {
-              "name": "json-read-port-loop",
-              "line": 629
-            },
-            {
-              "name": "json-result-error",
-              "line": 303
-            },
-            {
-              "name": "json-result-ok?",
-              "line": 293
-            },
-            {
-              "name": "json-result-value",
-              "line": 297
-            },
-            {
-              "name": "json-skip-trailing-ws",
-              "line": 312
-            },
-            {
-              "name": "json-skip-ws",
-              "line": 44
-            },
-            {
-              "name": "json-stringify",
-              "line": 544
-            },
-            {
-              "name": "json-stringify-alist",
-              "line": 480
-            },
-            {
-              "name": "json-stringify-arr",
-              "line": 435
-            },
-            {
-              "name": "json-stringify-obj",
-              "line": 447
-            },
-            {
-              "name": "json-stringify-val",
-              "line": 411
-            },
-            {
-              "name": "json-stringify-val-impl",
-              "line": 497
-            },
-            {
-              "name": "json-structural-error",
-              "line": 334
-            },
-            {
-              "name": "json-try-parse",
-              "line": 360
-            },
-            {
-              "name": "json-whitespace?",
-              "line": 36
-            },
-            {
-              "name": "json-write",
-              "line": 599
-            },
-            {
-              "name": "json-write-file",
               "line": 589
             },
             {
+              "name": "alist->json",
+              "line": 602
+            },
+            {
+              "name": "alist-key?",
+              "line": 476
+            },
+            {
+              "name": "alist-write-json",
+              "line": 635
+            },
+            {
+              "name": "hash-table->alist",
+              "line": 572
+            },
+            {
+              "name": "hash-table->alist-loop",
+              "line": 576
+            },
+            {
+              "name": "json-array-ref",
+              "line": 410
+            },
+            {
+              "name": "json-digit?",
+              "line": 47
+            },
+            {
+              "name": "json-escape-str",
+              "line": 421
+            },
+            {
+              "name": "json-get",
+              "line": 404
+            },
+            {
+              "name": "json-get-in",
+              "line": 671
+            },
+            {
+              "name": "json-get-in-list-ref",
+              "line": 692
+            },
+            {
+              "name": "json-get-in-loop",
+              "line": 674
+            },
+            {
+              "name": "json-parse",
+              "line": 275
+            },
+            {
+              "name": "json-parse-arr",
+              "line": 133
+            },
+            {
+              "name": "json-parse-document",
+              "line": 255
+            },
+            {
+              "name": "json-parse-num",
+              "line": 104
+            },
+            {
+              "name": "json-parse-obj",
+              "line": 158
+            },
+            {
+              "name": "json-parse-obj-loop",
+              "line": 163
+            },
+            {
+              "name": "json-parse-result?",
+              "line": 294
+            },
+            {
+              "name": "json-parse-str",
+              "line": 64
+            },
+            {
+              "name": "json-parse-value-impl",
+              "line": 198
+            },
+            {
+              "name": "json-read",
+              "line": 657
+            },
+            {
+              "name": "json-read-file",
+              "line": 640
+            },
+            {
+              "name": "json-read-file-loop",
+              "line": 644
+            },
+            {
+              "name": "json-read-port-loop",
+              "line": 647
+            },
+            {
+              "name": "json-result-error",
+              "line": 310
+            },
+            {
+              "name": "json-result-ok?",
+              "line": 300
+            },
+            {
+              "name": "json-result-value",
+              "line": 304
+            },
+            {
+              "name": "json-skip-trailing-ws",
+              "line": 319
+            },
+            {
+              "name": "json-skip-ws",
+              "line": 51
+            },
+            {
+              "name": "json-stringify",
+              "line": 562
+            },
+            {
+              "name": "json-stringify-alist",
+              "line": 487
+            },
+            {
+              "name": "json-stringify-arr",
+              "line": 442
+            },
+            {
+              "name": "json-stringify-obj",
+              "line": 454
+            },
+            {
+              "name": "json-stringify-val",
+              "line": 418
+            },
+            {
+              "name": "json-stringify-val-impl",
+              "line": 504
+            },
+            {
+              "name": "json-structural-error",
+              "line": 341
+            },
+            {
+              "name": "json-try-parse",
+              "line": 367
+            },
+            {
+              "name": "json-whitespace?",
+              "line": 43
+            },
+            {
+              "name": "json-write",
+              "line": 617
+            },
+            {
+              "name": "json-write-file",
+              "line": 607
+            },
+            {
               "name": "proper-alist?",
-              "line": 470
+              "line": 477
             }
           ]
         },
@@ -9835,131 +10241,135 @@
               "line": 35
             },
             {
-              "module": "core.strings",
-              "line": 38
-            },
-            {
-              "module": "core.alist",
+              "module": "core.control.effects",
               "line": 41
             },
             {
-              "module": "core.files",
+              "module": "core.strings",
               "line": 44
             },
             {
-              "module": "core.capabilities",
+              "module": "core.alist",
               "line": 47
             },
             {
-              "module": "core.sexp",
+              "module": "core.files",
               "line": 50
             },
             {
-              "module": "core.json",
+              "module": "core.capabilities",
               "line": 53
             },
             {
-              "module": "core.data.csv",
+              "module": "core.sexp",
               "line": 56
             },
             {
+              "module": "core.json",
+              "line": 59
+            },
+            {
+              "module": "core.data.csv",
+              "line": 62
+            },
+            {
               "module": "core.data.dataframe",
-              "line": 57
+              "line": 63
             },
             {
               "module": "core.data.base64",
-              "line": 58
-            },
-            {
-              "module": "core.plot",
-              "line": 61
-            },
-            {
-              "module": "core.reflection",
               "line": 64
             },
             {
-              "module": "core.url",
+              "module": "core.plot",
               "line": 67
             },
             {
-              "module": "core.streams",
+              "module": "core.reflection",
               "line": 70
             },
             {
-              "module": "core.json_schema",
+              "module": "core.url",
               "line": 73
             },
             {
+              "module": "core.streams",
+              "line": 76
+            },
+            {
+              "module": "core.json_schema",
+              "line": 79
+            },
+            {
               "module": "signal.fft",
-              "line": 111
+              "line": 117
             },
             {
               "module": "signal.filters",
-              "line": 112
+              "line": 118
             },
             {
               "module": "core.manifold",
-              "line": 115
+              "line": 121
             },
             {
               "module": "core.exact_linalg",
-              "line": 119
+              "line": 125
             },
             {
               "module": "core.symbolic",
-              "line": 123
-            },
-            {
-              "module": "core.pde.ns-residual",
               "line": 129
             },
             {
+              "module": "core.pde.ns-residual",
+              "line": 135
+            },
+            {
               "module": "core.ad.taylor_models",
-              "line": 137
+              "line": 143
             },
             {
               "module": "ml.optimization",
-              "line": 140
+              "line": 146
             }
           ],
           "exports": [],
           "top_level_definitions": [
             {
               "name": "__keyword-arg",
-              "line": 95
+              "line": 101
             },
             {
               "name": "__keyword-args-validate",
-              "line": 86
+              "line": 92
             },
             {
               "name": "__keyword-member?",
-              "line": 79
+              "line": 85
             },
             {
               "name": "current-time-us",
-              "line": 150
+              "line": 156
             },
             {
               "name": "random-normal-tensor",
-              "line": 146
+              "line": 152
             },
             {
               "name": "random-tensor",
-              "line": 143
+              "line": 149
             },
             {
               "name": "time-it",
-              "line": 164
+              "line": 170
             },
             {
               "name": "time-ns",
-              "line": 154
+              "line": 160
             },
             {
               "name": "time-us",
-              "line": 160
+              "line": 166
             }
           ]
         }
@@ -9972,14 +10382,14 @@
     }
   },
   "counts": {
-    "builtins_total": 1058,
-    "builtins_in_vm_table": 794,
-    "builtins_in_llvm_aot_dispatch": 800,
+    "builtins_total": 1060,
+    "builtins_in_vm_table": 796,
+    "builtins_in_llvm_aot_dispatch": 802,
     "builtins_aot_only": 242,
     "quantum_agent_ffi_builtins": 22,
-    "special_forms": 118,
+    "special_forms": 122,
     "ast_ops": 114,
-    "prelude": 472
+    "prelude": 490
   },
   "builtins_by_category": {
     "ffi_system": 302,
@@ -9989,7 +10399,7 @@
     "geometry": 56,
     "list_pair": 53,
     "io_port": 52,
-    "misc": 43,
+    "misc": 45,
     "string_char": 42,
     "consciousness": 35,
     "vector": 24,
@@ -10001,9 +10411,9 @@
   },
   "special_forms_by_category": {
     "tensor_ad": 29,
-    "control_flow": 24,
+    "control_flow": 26,
     "consciousness": 24,
-    "binding_form": 14,
+    "binding_form": 16,
     "module": 8,
     "macro_syntax": 8,
     "memory_region": 6,
@@ -10136,6 +10546,28 @@
         "native_llvm"
       ],
       "category": "numeric"
+    },
+    {
+      "name": "%effect-context",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "%effect-context-set!",
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "%make-lazy-promise",
@@ -22879,8 +23311,18 @@
       "category": "tensor_ad"
     },
     {
+      "name": "declare-effects",
+      "op": "ESHKOL_CALL_OP",
+      "category": "binding_form"
+    },
+    {
       "name": "define",
       "op": "ESHKOL_DEFINE_OP",
+      "category": "binding_form"
+    },
+    {
+      "name": "define-effect",
+      "op": "ESHKOL_SEQUENCE_OP",
       "category": "binding_form"
     },
     {
@@ -23056,6 +23498,16 @@
     {
       "name": "guard",
       "op": "ESHKOL_GUARD_OP",
+      "category": "control_flow"
+    },
+    {
+      "name": "handle",
+      "op": "ESHKOL_CALL_OP",
+      "category": "control_flow"
+    },
+    {
+      "name": "handle-shallow",
+      "op": "ESHKOL_CALL_OP",
       "category": "control_flow"
     },
     {
@@ -23411,6 +23863,446 @@
   ],
   "prelude": [
     {
+      "name": "%effect-clause",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 138,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 138,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-clause",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-clause",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-clause",
+            "line": 138,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 138,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 138,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-clause",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-clause",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-clause",
+            "line": 138,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-clause"
+    },
+    {
+      "name": "%effect-context",
+      "category": "misc",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "%effect-context-set!",
+      "category": "misc",
+      "also_builtin": true,
+      "sources": [
+        "vm_bootstrap"
+      ],
+      "provenance": [],
+      "binding_category": "unknown"
+    },
+    {
+      "name": "%effect-declare",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 100,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-declare",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-declare",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-declare",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 100,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-declare",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-declare",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-declare",
+            "line": 100,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-declare"
+    },
+    {
+      "name": "%effect-handle",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 290,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 290,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-handle",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-handle",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-handle",
+            "line": 290,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 290,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 290,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-handle",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-handle",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-handle",
+            "line": 290,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-handle"
+    },
+    {
+      "name": "%effect-identity",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 187,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 187,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-identity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-identity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-identity",
+            "line": 187,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 43,
+          "defined_at_top_level": true,
+          "definition_line": 187,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 187,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-identity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-identity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-identity",
+            "line": 187,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-identity"
+    },
+    {
+      "name": "%effect-make",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 52,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-make",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-make",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-make",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 52,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-make",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-make",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-make",
+            "line": 52,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-make"
+    },
+    {
+      "name": "%effect-operation",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 74,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-operation",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-operation",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-operation",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 42,
+          "defined_at_top_level": true,
+          "definition_line": 74,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "%effect-operation",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-operation",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "%effect-operation",
+            "line": 74,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#%effect-operation"
+    },
+    {
       "name": "*",
       "category": "numeric",
       "also_builtin": true,
@@ -23462,11 +24354,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 95,
+          "line": 101,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 95,
+            "line": 101,
             "chain": [
               "stdlib"
             ]
@@ -23478,7 +24370,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-arg",
-            "line": 95,
+            "line": 101,
             "chain": [
               "stdlib"
             ]
@@ -23500,11 +24392,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 86,
+          "line": 92,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 86,
+            "line": 92,
             "chain": [
               "stdlib"
             ]
@@ -23516,7 +24408,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-args-validate",
-            "line": 86,
+            "line": 92,
             "chain": [
               "stdlib"
             ]
@@ -23538,11 +24430,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 79,
+          "line": 85,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 79,
+            "line": 85,
             "chain": [
               "stdlib"
             ]
@@ -23554,7 +24446,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "__keyword-member?",
-            "line": 79,
+            "line": 85,
             "chain": [
               "stdlib"
             ]
@@ -23716,13 +24608,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 567,
+          "definition_line": 585,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23735,7 +24627,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->hash-table",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23745,13 +24637,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 567,
+          "definition_line": 585,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23764,7 +24656,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->hash-table",
-            "line": 567,
+            "line": 585,
             "chain": [
               "core.json"
             ]
@@ -23786,13 +24678,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 584,
+          "definition_line": 602,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -23805,7 +24697,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->json",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -23815,13 +24707,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 584,
+          "definition_line": 602,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -23834,7 +24726,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist->json",
-            "line": 584,
+            "line": 602,
             "chain": [
               "core.json"
             ]
@@ -24066,13 +24958,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 617,
+          "definition_line": 635,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -24085,7 +24977,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist-write-json",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -24095,13 +24987,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 617,
+          "definition_line": 635,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -24114,7 +25006,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "alist-write-json",
-            "line": 617,
+            "line": 635,
             "chain": [
               "core.json"
             ]
@@ -30228,11 +31120,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 150,
+          "line": 156,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 150,
+            "line": 156,
             "chain": [
               "stdlib"
             ]
@@ -30244,7 +31136,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "current-time-us",
-            "line": 150,
+            "line": 156,
             "chain": [
               "stdlib"
             ]
@@ -30754,6 +31646,636 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.list.transform:lib/core/list/transform.esk#drop-right"
+    },
+    {
+      "name": "effect-handled?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 146,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 146,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handled?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handled?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handled?",
+            "line": 146,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 146,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 146,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handled?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handled?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handled?",
+            "line": 146,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handled?"
+    },
+    {
+      "name": "effect-handler-depth",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 47,
+          "defined_at_top_level": true,
+          "definition_line": 113,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 113,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handler-depth",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handler-depth",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handler-depth",
+            "line": 113,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 47,
+          "defined_at_top_level": true,
+          "definition_line": 113,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 113,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-handler-depth",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handler-depth",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-handler-depth",
+            "line": 113,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-handler-depth"
+    },
+    {
+      "name": "effect-name",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 57,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-name",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 57,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-name",
+            "line": 57,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-name"
+    },
+    {
+      "name": "effect-operation-arity",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 96,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-arity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-arity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-arity",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 96,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-arity",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-arity",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-arity",
+            "line": 96,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-arity"
+    },
+    {
+      "name": "effect-operation-effect",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 95,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-effect",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-effect",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-effect",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 95,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-effect",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-effect",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-effect",
+            "line": 95,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-effect"
+    },
+    {
+      "name": "effect-operation-name",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 94,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-name",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 94,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-name",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-name",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-name",
+            "line": 94,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-name"
+    },
+    {
+      "name": "effect-operation-names",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 59,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-names",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-names",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-names",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 59,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation-names",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-names",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation-names",
+            "line": 59,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation-names"
+    },
+    {
+      "name": "effect-operation?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 92,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation?",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 45,
+          "defined_at_top_level": true,
+          "definition_line": 92,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect-operation?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect-operation?",
+            "line": 92,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect-operation?"
+    },
+    {
+      "name": "effect?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 54,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect?",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 44,
+          "defined_at_top_level": true,
+          "definition_line": 54,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "effect?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "effect?",
+            "line": 54,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#effect?"
     },
     {
       "name": "eighth",
@@ -33326,13 +34848,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 554,
+          "definition_line": 572,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -33345,7 +34867,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "hash-table->alist",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -33355,13 +34877,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 25,
+          "line": 32,
           "defined_at_top_level": true,
-          "definition_line": 554,
+          "definition_line": 572,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -33374,7 +34896,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "hash-table->alist",
-            "line": 554,
+            "line": 572,
             "chain": [
               "core.json"
             ]
@@ -35853,13 +37375,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 403,
+          "definition_line": 410,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35872,7 +37394,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-array-ref",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35882,13 +37404,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 403,
+          "definition_line": 410,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35901,7 +37423,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-array-ref",
-            "line": 403,
+            "line": 410,
             "chain": [
               "core.json"
             ]
@@ -35923,13 +37445,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 397,
+          "definition_line": 404,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35942,7 +37464,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35952,13 +37474,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 397,
+          "definition_line": 404,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35971,7 +37493,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get",
-            "line": 397,
+            "line": 404,
             "chain": [
               "core.json"
             ]
@@ -35993,13 +37515,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 653,
+          "definition_line": 671,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -36012,7 +37534,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get-in",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -36022,13 +37544,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 653,
+          "definition_line": 671,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -36041,7 +37563,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-get-in",
-            "line": 653,
+            "line": 671,
             "chain": [
               "core.json"
             ]
@@ -36063,13 +37585,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 268,
+          "definition_line": 275,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36082,7 +37604,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36092,13 +37614,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 268,
+          "definition_line": 275,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36111,7 +37633,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse",
-            "line": 268,
+            "line": 275,
             "chain": [
               "core.json"
             ]
@@ -36133,13 +37655,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 287,
+          "definition_line": 294,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36152,7 +37674,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse-result?",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36162,13 +37684,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 287,
+          "definition_line": 294,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36181,7 +37703,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-parse-result?",
-            "line": 287,
+            "line": 294,
             "chain": [
               "core.json"
             ]
@@ -36203,13 +37725,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 639,
+          "definition_line": 657,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36222,7 +37744,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36232,13 +37754,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 639,
+          "definition_line": 657,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36251,7 +37773,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read",
-            "line": 639,
+            "line": 657,
             "chain": [
               "core.json"
             ]
@@ -36273,13 +37795,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 622,
+          "definition_line": 640,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36292,7 +37814,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read-file",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36302,13 +37824,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 622,
+          "definition_line": 640,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36321,7 +37843,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-read-file",
-            "line": 622,
+            "line": 640,
             "chain": [
               "core.json"
             ]
@@ -36343,13 +37865,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 303,
+          "definition_line": 310,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36362,7 +37884,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-error",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36372,13 +37894,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 303,
+          "definition_line": 310,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36391,7 +37913,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-error",
-            "line": 303,
+            "line": 310,
             "chain": [
               "core.json"
             ]
@@ -36413,13 +37935,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 293,
+          "definition_line": 300,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36432,7 +37954,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-ok?",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36442,13 +37964,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 293,
+          "definition_line": 300,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36461,7 +37983,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-ok?",
-            "line": 293,
+            "line": 300,
             "chain": [
               "core.json"
             ]
@@ -36483,13 +38005,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 297,
+          "definition_line": 304,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36502,7 +38024,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-value",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36512,13 +38034,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 23,
+          "line": 30,
           "defined_at_top_level": true,
-          "definition_line": 297,
+          "definition_line": 304,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36531,7 +38053,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-result-value",
-            "line": 297,
+            "line": 304,
             "chain": [
               "core.json"
             ]
@@ -36693,13 +38215,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 544,
+          "definition_line": 562,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36712,7 +38234,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-stringify",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36722,13 +38244,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 544,
+          "definition_line": 562,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36741,7 +38263,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-stringify",
-            "line": 544,
+            "line": 562,
             "chain": [
               "core.json"
             ]
@@ -36763,13 +38285,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 360,
+          "definition_line": 367,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36782,7 +38304,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-try-parse",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36792,13 +38314,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 22,
+          "line": 29,
           "defined_at_top_level": true,
-          "definition_line": 360,
+          "definition_line": 367,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36811,7 +38333,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-try-parse",
-            "line": 360,
+            "line": 367,
             "chain": [
               "core.json"
             ]
@@ -36833,13 +38355,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 599,
+          "definition_line": 617,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36852,7 +38374,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36862,13 +38384,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 24,
+          "line": 31,
           "defined_at_top_level": true,
-          "definition_line": 599,
+          "definition_line": 617,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36881,7 +38403,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write",
-            "line": 599,
+            "line": 617,
             "chain": [
               "core.json"
             ]
@@ -36903,13 +38425,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 589,
+          "definition_line": 607,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -36922,7 +38444,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write-file",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -36932,13 +38454,13 @@
           "kind": "module_export",
           "module": "core.json",
           "path": "lib/core/json.esk",
-          "line": 26,
+          "line": 33,
           "defined_at_top_level": true,
-          "definition_line": 589,
+          "definition_line": 607,
           "definition_origin": {
             "module": "core.json",
             "path": "lib/core/json.esk",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -36951,7 +38473,7 @@
             "module": "core.json",
             "path": "lib/core/json.esk",
             "name": "json-write-file",
-            "line": 589,
+            "line": 607,
             "chain": [
               "core.json"
             ]
@@ -43294,11 +44816,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 146,
+          "line": 152,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 146,
+            "line": 152,
             "chain": [
               "stdlib"
             ]
@@ -43310,7 +44832,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-normal-tensor",
-            "line": 146,
+            "line": 152,
             "chain": [
               "stdlib"
             ]
@@ -43332,11 +44854,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 143,
+          "line": 149,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 143,
+            "line": 149,
             "chain": [
               "stdlib"
             ]
@@ -43348,7 +44870,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "random-tensor",
-            "line": 143,
+            "line": 149,
             "chain": [
               "stdlib"
             ]
@@ -49442,11 +50964,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 164,
+          "line": 170,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 164,
+            "line": 170,
             "chain": [
               "stdlib"
             ]
@@ -49458,7 +50980,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-it",
-            "line": 164,
+            "line": 170,
             "chain": [
               "stdlib"
             ]
@@ -49480,11 +51002,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 154,
+          "line": 160,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 154,
+            "line": 160,
             "chain": [
               "stdlib"
             ]
@@ -49496,7 +51018,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-ns",
-            "line": 154,
+            "line": 160,
             "chain": [
               "stdlib"
             ]
@@ -49518,11 +51040,11 @@
           "kind": "stdlib_root_definition",
           "module": "stdlib",
           "path": "lib/stdlib.esk",
-          "line": 160,
+          "line": 166,
           "definition_origin": {
             "module": "stdlib",
             "path": "lib/stdlib.esk",
-            "line": 160,
+            "line": 166,
             "chain": [
               "stdlib"
             ]
@@ -49534,7 +51056,7 @@
             "module": "stdlib",
             "path": "lib/stdlib.esk",
             "name": "time-us",
-            "line": 160,
+            "line": 166,
             "chain": [
               "stdlib"
             ]
@@ -52723,6 +54245,76 @@
       ],
       "binding_category": "procedure",
       "binding_identity": "core.functional.curry:lib/core/functional/curry.esk#uncurry2"
+    },
+    {
+      "name": "unhandled-effect-error?",
+      "category": "predicate",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 153,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 153,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "unhandled-effect-error?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#unhandled-effect-error?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "unhandled-effect-error?",
+            "line": 153,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "core.control.effects",
+          "path": "lib/core/control/effects.esk",
+          "line": 46,
+          "defined_at_top_level": true,
+          "definition_line": 153,
+          "definition_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "line": 153,
+            "chain": [
+              "core.control.effects"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "unhandled-effect-error?",
+          "binding_category": "procedure",
+          "binding_identity": "core.control.effects:lib/core/control/effects.esk#unhandled-effect-error?",
+          "resolved_binding_origin": {
+            "module": "core.control.effects",
+            "path": "lib/core/control/effects.esk",
+            "name": "unhandled-effect-error?",
+            "line": 153,
+            "chain": [
+              "core.control.effects"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "core.control.effects:lib/core/control/effects.esk#unhandled-effect-error?"
     },
     {
       "name": "unzip",
