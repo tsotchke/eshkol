@@ -1,0 +1,245 @@
+;;; core.reasoning.kge -- knowledge-graph embeddings trained with exact AD.
+;;;
+;;; Usage: (require core.reasoning.kge)
+;;;
+;;;   (define m (make-kge 'rotate 8))
+;;;   (kge-train! m triples 100 0.05)       ;; => per-epoch mean losses
+;;;   (kge-evaluate m triples triples)      ;; => ((mrr . x) (hits1 . y) ...)
+;;;
+;;; Models (h, r, t are the head, relation and tail embeddings):
+;;;   transe    score -|h + r - t|^2                     (Bordes et al. 2013)
+;;;   distmult  score sum_i h_i r_i t_i                   (Yang et al. 2015)
+;;;   complex   score Re(sum_i h_i r_i conj(t_i))         (Trouillon et al. 2016)
+;;;   rotate    score -|h o e^{i theta} - t|^2            (Sun et al. 2019)
+;;; ComplEx and RotatE entities are complex vectors stored as [re | im];
+;;; RotatE relations are phase vectors theta.
+;;;
+;;; Entity and relation vectors live in core.ml.neurosymbolic embedding
+;;; tables (make-embedding-table / embed!), the same tables soft unification
+;;; and KB attention read, so a symbol has one learned vector across the
+;;; neuro-symbolic layer. Training is stochastic gradient descent over
+;;; positive triples, each paired with a corrupted negative (head or tail
+;;; replaced by an entity that does not make a known triple); the loss is the
+;;; margin ranking loss for the distance models (TransE, RotatE) and the
+;;; logistic loss for the bilinear ones (DistMult, ComplEx). Gradients are
+;;; computed by Eshkol's reverse-mode `gradient` on the loss of the packed
+;;; parameters -- derivatives, not finite differences.
+;;;
+;;; Reference: docs/reference/stdlib/reasoning.md; design: ADR-0051.
+;;; Sources: A. Bordes et al., "Translating embeddings for modeling
+;;; multi-relational data" (NIPS 2013); B. Yang et al., "Embedding entities
+;;; and relations for learning and inference in knowledge bases" (ICLR
+;;; 2015); T. Trouillon et al., "Complex embeddings for simple link
+;;; prediction" (ICML 2016); Z. Sun et al., "RotatE: knowledge graph
+;;; embedding by relational rotation in complex space" (ICLR 2019).
+
+(require stdlib)
+(require core.ml.neurosymbolic)
+
+(provide make-kge kge? kge-model kge-tables kge-entity-vector kge-relation-vector
+         kge-score kge-loss-gradient kge-loss kge-train! kge-rank kge-evaluate kge-entities)
+
+;; kge: #(kge model dim entity-table relation-table entities seed initialized)
+(define (kge? m) (and (vector? m) (= (vector-length m) 8) (eq? (vector-ref m 0) 'kge)))
+(define (kge-check m) (if (not (kge? m)) (error "kge: expected a model made by make-kge")))
+(define (kge-model m) (vector-ref m 1))
+(define (kge-tables m) (cons (vector-ref m 3) (vector-ref m 4)))
+(define (kge-entities m) (reverse (vector-ref m 5)))
+
+(define (kge-entity-dim model dim) (if (memq model '(complex rotate)) (* 2 dim) dim))
+(define (kge-relation-dim model dim) (if (eq? model 'complex) (* 2 dim) dim))
+
+(define (make-kge model dim . opt)
+  (if (not (memq model '(transe distmult complex rotate)))
+      (error "make-kge: model is transe, distmult, complex or rotate" model))
+  (if (not (and (integer? dim) (exact? dim) (> dim 0))) (error "make-kge: dimension is a positive integer"))
+  (vector 'kge model dim
+          (make-embedding-table (kge-entity-dim model dim))
+          (make-embedding-table (kge-relation-dim model dim))
+          '() (if (null? opt) 20261030 (car opt)) (make-hash-table)))
+
+(define (kge-scale! v s)
+  (let loop ((i 0)) (if (< i (vector-length v)) (begin (vector-set! v i (* s (vector-ref v i))) (loop (+ i 1))))) v)
+(define (kge-norm v) (sqrt (let loop ((i 0) (s 0.0)) (if (= i (vector-length v)) s (loop (+ i 1) (+ s (* (vector-ref v i) (vector-ref v i))))))))
+
+;; The table's own vector. A symbol seen for the first time is scaled from
+;; the table's deterministic initialization to norm 1/2.
+(define (kge-vector m table sym entity?)
+  (if (not (symbol? sym)) (error "kge: entities and relations are symbols" sym))
+  (let* ((key (cons (if entity? 'entity 'relation) sym))
+         (fresh (not (hash-ref (vector-ref m 7) key #f))))
+    (hash-set! (vector-ref m 7) key #t)
+    (let ((v (embed! table sym)))
+      (if fresh
+          (begin
+            (if (and (eq? (vector-ref m 1) 'rotate) (not entity?))
+                (kge-scale! v 3.141592653589793)        ; phases in [-pi, pi)
+                (kge-scale! v (/ 0.5 (max 1e-12 (kge-norm v)))))
+            (if entity? (vector-set! m 5 (cons sym (vector-ref m 5))))))
+      v)))
+(define (kge-entity-vector m e) (kge-check m) (kge-vector m (vector-ref m 3) e #t))
+(define (kge-relation-vector m r) (kge-check m) (kge-vector m (vector-ref m 4) r #f))
+
+;; ---------------------------------------------------------------------------
+;; Scores over a packed vector: [h (ed) | r (rd) | t (ed)] at offset OFF.
+;; The training context (model, dimension, margin, L2 weight) is read from
+;; kge-ctx so the losses are plain functions of one vector for `gradient`.
+;; ---------------------------------------------------------------------------
+(define kge-ctx (vector 'transe 1 1.0 0.0))
+(define (kge-sq x) (* x x))
+(define (kge-packed-score v off)
+  (let* ((model (vector-ref kge-ctx 0)) (d (vector-ref kge-ctx 1))
+         (ed (kge-entity-dim model d)) (rd (kge-relation-dim model d))
+         (h off) (r (+ off ed)) (t (+ off ed rd)))
+    (cond
+      ((eq? model 'transe)
+       (let loop ((i 0) (s 0.0))
+         (if (= i d) (- s)
+             (loop (+ i 1) (+ s (kge-sq (- (+ (vector-ref v (+ h i)) (vector-ref v (+ r i))) (vector-ref v (+ t i)))))))))
+      ((eq? model 'distmult)
+       (let loop ((i 0) (s 0.0))
+         (if (= i d) s (loop (+ i 1) (+ s (* (vector-ref v (+ h i)) (vector-ref v (+ r i)) (vector-ref v (+ t i))))))))
+      ((eq? model 'complex)
+       ;; Re(h r conj(t)) = hr rr tr + hi rr ti + hr ri ti - hi ri tr
+       (let loop ((i 0) (s 0.0))
+         (if (= i d) s
+             (let ((hr (vector-ref v (+ h i))) (hi (vector-ref v (+ h d i)))
+                   (rr (vector-ref v (+ r i))) (ri (vector-ref v (+ r d i)))
+                   (tr (vector-ref v (+ t i))) (ti (vector-ref v (+ t d i))))
+               (loop (+ i 1) (+ s (* hr rr tr) (* hi rr ti) (* hr ri ti) (- (* hi ri tr))))))))
+      (else ; rotate
+       (let loop ((i 0) (s 0.0))
+         (if (= i d) (- s)
+             (let* ((hr (vector-ref v (+ h i))) (hi (vector-ref v (+ h d i)))
+                    (c (cos (vector-ref v (+ r i)))) (sn (sin (vector-ref v (+ r i))))
+                    (tr (vector-ref v (+ t i))) (ti (vector-ref v (+ t d i))))
+               (loop (+ i 1) (+ s (kge-sq (- (- (* hr c) (* hi sn)) tr))
+                                (kge-sq (- (+ (* hr sn) (* hi c)) ti)))))))))))
+
+(define (kge-softplus x) (if (> x 30.0) x (log (+ 1.0 (exp x)))))
+(define (kge-l2 v from to)
+  (let loop ((i from) (s 0.0)) (if (= i to) s (loop (+ i 1) (+ s (kge-sq (vector-ref v i)))))))
+
+;; Loss of one positive and one negative triple, packed as
+;; [h r t | h' r t'] (the negative repeats the relation block).
+(define (kge-pair-loss v)
+  (let* ((model (vector-ref kge-ctx 0)) (d (vector-ref kge-ctx 1))
+         (width (+ (* 2 (kge-entity-dim model d)) (kge-relation-dim model d)))
+         (pos (kge-packed-score v 0)) (neg (kge-packed-score v width))
+         (reg (* (vector-ref kge-ctx 3) (kge-l2 v 0 (* 2 width)))))
+    (if (memq model '(transe rotate))
+        (+ (max 0.0 (+ (vector-ref kge-ctx 2) (- neg pos))) reg)
+        (+ (kge-softplus (- pos)) (kge-softplus neg) reg))))
+
+(define (kge-apply-gradient f v) (gradient f v))
+
+(define (kge-set-context! m margin l2)
+  (vector-set! kge-ctx 0 (vector-ref m 1)) (vector-set! kge-ctx 1 (vector-ref m 2))
+  (vector-set! kge-ctx 2 margin) (vector-set! kge-ctx 3 l2))
+
+(define (kge-pack . vs)
+  (let* ((n (fold-left + 0 (map vector-length vs))) (out (make-vector n 0.0)))
+    (let loop ((vs vs) (k 0))
+      (if (null? vs) out
+          (let ((v (car vs)))
+            (let copy ((i 0)) (if (< i (vector-length v)) (begin (vector-set! out (+ k i) (vector-ref v i)) (copy (+ i 1)))))
+            (loop (cdr vs) (+ k (vector-length v))))))))
+
+(define (kge-score m h r t)
+  (kge-check m)
+  (kge-set-context! m 1.0 0.0)
+  (kge-packed-score (kge-pack (kge-entity-vector m h) (kge-relation-vector m r) (kge-entity-vector m t)) 0))
+
+(define (kge-pair-vector m pos neg)
+  (kge-pack (kge-entity-vector m (car pos)) (kge-relation-vector m (cadr pos)) (kge-entity-vector m (caddr pos))
+            (kge-entity-vector m (car neg)) (kge-relation-vector m (cadr neg)) (kge-entity-vector m (caddr neg))))
+
+;; Loss and its exact gradient for one (positive, negative) pair.
+(define (kge-loss m pos neg margin)
+  (kge-check m) (kge-set-context! m margin 0.0) (kge-pair-loss (kge-pair-vector m pos neg)))
+(define (kge-loss-gradient m pos neg margin)
+  (kge-check m) (kge-set-context! m margin 0.0)
+  (kge-apply-gradient kge-pair-loss (kge-pair-vector m pos neg)))
+
+;; ---------------------------------------------------------------------------
+;; Training
+;; ---------------------------------------------------------------------------
+(define (kge-next! m bound)
+  (let ((s (modulo (+ (* (vector-ref m 6) 1103515245) 12345) 2147483648)))
+    (vector-set! m 6 s)
+    (modulo (quotient s 65536) bound)))
+
+(define (kge-corrupt m triple known ents)
+  (let ((n (length ents)))
+    (let try ((k 0))
+      (let* ((e (list-ref ents (kge-next! m n)))
+             (neg (if (= (kge-next! m 2) 0) (list e (cadr triple) (caddr triple)) (list (car triple) (cadr triple) e))))
+        (if (and (< k 50) (hash-ref known neg #f)) (try (+ k 1)) neg)))))
+
+;; SGD step on the table vectors of the six packed blocks.
+(define (kge-update! m pos neg grad lr)
+  (let* ((model (vector-ref m 1)) (d (vector-ref m 2))
+         (ed (kge-entity-dim model d)) (rd (kge-relation-dim model d))
+         (blocks (list (cons (kge-entity-vector m (car pos)) 0)
+                       (cons (kge-relation-vector m (cadr pos)) ed)
+                       (cons (kge-entity-vector m (caddr pos)) (+ ed rd))
+                       (cons (kge-entity-vector m (car neg)) (+ (* 2 ed) rd))
+                       (cons (kge-relation-vector m (cadr neg)) (+ (* 3 ed) rd))
+                       (cons (kge-entity-vector m (caddr neg)) (+ (* 3 ed) (* 2 rd))))))
+    (for-each (lambda (b)
+                (let ((v (car b)) (off (cdr b)))
+                  (let loop ((i 0))
+                    (if (< i (vector-length v))
+                        (begin (vector-set! v i (- (vector-ref v i) (* lr (vector-ref grad (+ off i))))) (loop (+ i 1)))))))
+              blocks)
+    ;; TransE keeps entity vectors on the unit sphere
+    (if (eq? model 'transe)
+        (for-each (lambda (e) (let* ((v (kge-entity-vector m e)) (n (kge-norm v))) (if (> n 1.0) (kge-scale! v (/ 1.0 n)))))
+                  (list (car pos) (caddr pos) (car neg) (caddr neg))))))
+
+;; Train for EPOCHS passes; returns the list of mean losses per epoch.
+;; Options alist: (margin . 1.0) (l2 . 0.0)
+(define (kge-train! m triples epochs lr . opt)
+  (kge-check m)
+  (let* ((opts (if (null? opt) '() (car opt)))
+         (margin (let ((e (assq 'margin opts))) (if e (cdr e) 1.0)))
+         (l2 (let ((e (assq 'l2 opts))) (if e (cdr e) 0.0)))
+         (known (make-hash-table)))
+    (for-each (lambda (t) (hash-set! known t #t) (kge-entity-vector m (car t)) (kge-entity-vector m (caddr t))
+                          (kge-relation-vector m (cadr t)))
+              triples)
+    (let ((ents (kge-entities m)))
+      (let epoch ((k 0) (out '()))
+        (if (= k epochs) (reverse out)
+            (let loop ((ts triples) (total 0.0))
+              (if (null? ts)
+                  (epoch (+ k 1) (cons (/ total (length triples)) out))
+                  (let* ((pos (car ts)) (neg (kge-corrupt m pos known ents)))
+                    (kge-set-context! m margin l2)
+                    (let* ((v (kge-pair-vector m pos neg)) (loss (kge-pair-loss v))
+                           (grad (kge-apply-gradient kge-pair-loss v)))
+                      (kge-update! m pos neg grad lr)
+                      (loop (cdr ts) (+ total loss)))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Link prediction
+;; ---------------------------------------------------------------------------
+;; Filtered rank of the true tail among all entities: tails that make a
+;; known triple (other than the one ranked) are skipped.
+(define (kge-rank m h r t known)
+  (kge-check m)
+  (let ((target (kge-score m h r t)) (kh (make-hash-table)))
+    (for-each (lambda (k) (hash-set! kh k #t)) known)
+    (let loop ((es (kge-entities m)) (rank 1))
+      (if (null? es) rank
+          (let ((e (car es)))
+            (if (or (eq? e t) (hash-ref kh (list h r e) #f)) (loop (cdr es) rank)
+                (loop (cdr es) (if (> (kge-score m h r e) target) (+ rank 1) rank))))))))
+
+;; Mean reciprocal rank and hits@1/3/10 of tail prediction over TEST.
+(define (kge-evaluate m test known)
+  (let* ((ranks (map (lambda (t) (kge-rank m (car t) (cadr t) (caddr t) known)) test))
+         (n (length ranks))
+         (hits (lambda (k) (/ (length (filter (lambda (x) (<= x k)) ranks)) n))))
+    (list (cons 'mrr (/ (fold-left + 0.0 (map (lambda (x) (/ 1.0 x)) ranks)) n))
+          (cons 'hits1 (hits 1)) (cons 'hits3 (hits 3)) (cons 'hits10 (hits 10)))))

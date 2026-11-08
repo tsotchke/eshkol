@@ -10,8 +10,9 @@ persistent standing-circuit executor.
 (dbsp-recursive-work snapshot)
 ```
 
-Body inputs are `base` and `recur`. The ordinary builder admits positive
-map/filter/project/union/join/distinct nodes and pure immutable-row callbacks.
+Body inputs are `base` and `recur`. The ordinary builder admits
+map/filter/project/union/difference/join/distinct nodes; a body must be monotone
+in `recur` (use `difference` only on relations derived from `base`) and pure immutable-row callbacks.
 Starting at empty selects the least fixed point when monotone approximants
 converge. The round budget defaults to 256, maximum 1024. Nonconvergent bag
 recurrences and insufficient budgets refuse without publishing a successor.
@@ -30,8 +31,11 @@ Observers copy outer containers; row payloads retain the immutable-row contract.
 Approximation consolidation/nonnegativity checks and final output differencing
 can scan the corresponding approximant/output. Costs depend on recursive depth,
 affected results, key skew and retained columns. This is not a constant-work or
-flat-RSS claim. There is no arbitrary negation, nonmonotone recursive aggregate,
-Datalog parser, planner or durable recursive checkpoint.
+flat-RSS claim. Stratified negation and a Datalog front end are provided by
+[`core.reasoning.datalog`](reasoning.md), which compiles each stratum to one
+recursive circuit and negates only relations of lower strata through the
+`difference` operator. Nonmonotone recursive aggregates, a planner and a
+durable recursive checkpoint are Planned for v1.6.1.
 
 Tests compare every signed prefix, including cycles, alternate paths, weights
 and deletions, with independent Floyd-Warshall closure. They also check delta
