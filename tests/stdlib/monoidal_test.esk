@@ -1,0 +1,251 @@
+;; core.monoidal: monoidal categories, FinVect and string diagrams, with
+;; independent cross-checks (group cohomology from core.category.linear,
+;; brute-force counts, core.category's functor laws, two evaluations of every
+;; diagram, and random rewrites by the axioms).
+(require stdlib)
+(require core.category.linear)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+(require core.monoidal.network)
+(require core.monoidal.structure)
+(require core.monoidal.vect)
+(require core.monoidal.diagram)
+
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (all? pred (cdr xs))) (else #f)))
+(define (count-if pred xs) (length (filter pred xs)))
+(define (range n) (iota n))
+(define (take-n xs k) (if (= k 0) '() (cons (car xs) (take-n (cdr xs) (- k 1)))))
+(define (tuples k xs) (if (= k 0) (list '()) (let ((rest (tuples (- k 1) xs))) (apply append (map (lambda (x) (map (lambda (t) (cons x t)) rest)) xs)))))
+(define seed 20261029)
+(define (rand n) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) n))
+
+(define Q (rational-scalars))
+(define K (cyclotomic-scalars 8))
+(define (random-map S dom cod)
+  (linear-map S dom cod (lambda (r c) (if (eq? (scalars-name S) 'Q) (- (rand 5) 2)
+                                          (scalars-add S (scalars-embed S (- (rand 3) 1)) (scalars-mul S (scalars-embed S (- (rand 3) 1)) (scalars-root S (rand 8))))))))
+
+;; ---------------------------------------------------------------------------
+;; FinVect
+;; ---------------------------------------------------------------------------
+(define objs (list '() '(2) '(3)))
+(define (finvect-sample S) (list (random-map S '(2) '(2)) (random-map S '(2) '(3)) (random-map S '(3) '(2)) (random-map S '() '(2)) (random-map S '(2 2) '(3)) (linear-map-identity S '(3))))
+(for-each
+ (lambda (S)
+   (let* ((ars (finvect-sample S)) (F (finvect-monoidal-category S objs ars)))
+     (check (list "FinVect is a symmetric monoidal category" (scalars-name S)) (null? (symmetric-monoidal-violations F)))
+     (check (list "FinVect is dagger compact, snake equations" (scalars-name S)) (null? (dagger-compact-violations F finvect-dagger (finvect-cup S) (finvect-cap S))))
+     (check (list "FinVect is strict" (scalars-name S)) (monoidal-strict? F))))
+ (list Q K))
+(check "composition is associative and Kronecker products interchange on random maps over Q(zeta_8)"
+       (let loop ((i 0))
+         (or (= i 6)
+             (let ((f (random-map K '(2) '(3))) (g (random-map K '(3) '(2))) (h (random-map K '(2) '(2))) (k (random-map K '(2) '(2 2))))
+               (and (linear-map-equal? (linear-map-compose h (linear-map-compose g f)) (linear-map-compose (linear-map-compose h g) f))
+                    (linear-map-equal? (linear-map-tensor (linear-map-compose g f) (linear-map-compose k h))
+                                       (linear-map-compose (linear-map-tensor g k) (linear-map-tensor f h)))
+                    (loop (+ i 1)))))))
+(check "the swap is natural and an involution; permutations compose"
+       (let ((f (random-map Q '(2) '(3))) (g (random-map Q '(3 2) '(2))))
+         (and (linear-map-equal? (linear-map-compose (linear-map-swap Q '(3) '(2)) (linear-map-tensor f g))
+                                 (linear-map-compose (linear-map-tensor g f) (linear-map-swap Q '(2) '(3 2))))
+              (linear-map-equal? (linear-map-compose (linear-map-swap Q '(3 2) '(2)) (linear-map-swap Q '(2) '(3 2))) (linear-map-identity Q '(2 3 2)))
+              (linear-map-equal? (linear-map-compose (linear-map-permutation Q '(2 2 3) '(1 2 0)) (linear-map-permutation Q '(2 3 2) '(2 0 1)))
+                                 (linear-map-identity Q '(2 3 2))))))
+(check "exact inverses: over Q(zeta_8) the Hadamard is its own inverse; over Z an integral inverse or none"
+       (let ((H (linear-map-scale (linear-map K '(2) '(2) (lambda (r c) (if (and (= r 1) (= c 1)) (scalars-embed K -1) (scalars-one K)))) (scalars-inverse-sqrt2 K)))
+             (Z (integer-scalars)))
+         (and (linear-map-equal? (linear-map-inverse H) H)
+              (linear-map-equal? (linear-map-inverse (make-linear-map Z '(2) '(2) (vector (vector 2 1) (vector 1 1)))) (make-linear-map Z '(2) '(2) (vector (vector 1 -1) (vector -1 2))))
+              (not (linear-map-inverse (make-linear-map Z '(2) '(2) (vector (vector 2 0) (vector 0 1)))))
+              (not (linear-map-inverse (make-linear-map Q '(2) '(2) (vector (vector 1 2) (vector 2 4))))))))
+(check "the trace is the closed loop: cap o (f (x) id) o cup"
+       (let ((f (random-map K '(3) '(3))))
+         (scalars-equal? K (linear-map-trace f)
+                         (linear-map-scalar-value (linear-map-compose (linear-map-cap K '(3)) (linear-map-compose (linear-map-tensor f (linear-map-identity K '(3))) (linear-map-cup K '(3))))))))
+
+;; bracketed FinVect: every bracketing of up to four factors, Mac Lane's coherence
+;; objects: the unit, a qubit and the two bracketings of qubit (x) unit; the
+;; pentagon at (2 2 2 2) runs through all five bracketings of four factors
+(define bobjs (append (list '() 2) (bracketed-objects-of-size (list 2 '()))(list (bracketed-tensor '() 2))))
+(define bars (list (make-bracketed-arrow 2 2 (random-map Q '(2) '(2))) (make-bracketed-arrow 2 3 (random-map Q '(2) '(3))) (make-bracketed-arrow '() 2 (random-map Q '() '(2)))))
+(define B (bracketed-finvect-monoidal-category Q bobjs bars))
+(check "bracketings: Catalan numbers 1, 2, 5 of 1, 3 and 4 factors" (equal? (map (lambda (k) (length (bracketed-objects-of-size (make-list k 2)))) (list 1 3 4)) (list 1 2 5)))
+(check "bracketed FinVect: pentagon, triangle, hexagons and symmetry hold and it is not strict"
+       (and (null? (symmetric-monoidal-violations B)) (not (monoidal-strict? B))))
+(check "bracketed FinVect is compact closed: snake equations with typed cups and caps"
+       (null? (compact-closed-violations B (lambda (x) (make-bracketed-arrow '() (bracketed-tensor x x) (linear-map-cup Q (bracketed-object-flatten x))))
+                                         (lambda (x) (make-bracketed-arrow (bracketed-tensor x x) '() (linear-map-cap Q (bracketed-object-flatten x)))))))
+(define strictF (finvect-monoidal-category Q (map bracketed-object-flatten bobjs) (map bracketed-arrow-map bars)))
+(check "forgetting the brackets is a strong symmetric monoidal functor onto strict FinVect"
+       (null? (braided-monoidal-functor-violations (flatten-monoidal-functor Q B strictF))))
+(check "base change Q -> Q(zeta_8) is a symmetric monoidal functor"
+       (let* ((ars (list (random-map Q '(2) '(2)) (random-map Q '(2) '(3))))
+              (M (finvect-monoidal-category Q (list '() '(2) '(3)) ars))
+              (N (finvect-monoidal-category K (list '() '(2) '(3)) '())))
+         (null? (braided-monoidal-functor-violations (base-change-monoidal-functor M N K (lambda (q) (scalars-embed K q)))))))
+
+;; ---------------------------------------------------------------------------
+;; Monoidal structures on finite categories
+;; ---------------------------------------------------------------------------
+(define (zmod n) (lambda (a b) (modulo (+ a b) n)))
+;; S3 as permutations of (0 1 2), composition table by index
+(define s3 (list (vector 0 1 2) (vector 1 0 2) (vector 0 2 1) (vector 2 1 0) (vector 1 2 0) (vector 2 0 1)))
+(define (s3-mul a b) (let ((p (list-ref s3 a)) (q (list-ref s3 b)))
+                       (let loop ((i 0) (l s3)) (if (equal? (car l) (vector (vector-ref p (vector-ref q 0)) (vector-ref p (vector-ref q 1)) (vector-ref p (vector-ref q 2)))) i (loop (+ i 1) (cdr l))))))
+(check "discrete monoidal categories of Z/3 (symmetric) and S3 (no braiding): strict and lawful"
+       (let ((Z3 (monoid-monoidal-category 3 (zmod 3) 0)) (S3 (monoid-monoidal-category 6 s3-mul 0)))
+         (and (null? (symmetric-monoidal-violations Z3)) (monoidal-strict? Z3)
+              (null? (monoidal-category-violations S3)) (not (monoidal-braiding S3)))))
+(check "a meet-semilattice with top is cartesian monoidal: the subsets of {0,1}, a chain"
+       (let ((Bool2 (poset-category 4 (lambda (x y) (= x (bitwise-and x y))))) (C3 (poset-category 3 (lambda (x y) (<= x y)))))
+         (and (null? (symmetric-monoidal-violations (meet-monoidal-category Bool2)))
+              (null? (symmetric-monoidal-violations (meet-monoidal-category C3))))))
+(check "the tensor is a core.category functor: monoidal-tensor-violations agrees with functor-laws?"
+       (let* ((C (discrete-category 2)) (n 2)
+              (good (functor-from-procedures (category-product C C) C (lambda (p) (modulo (+ (quotient p n) (remainder p n)) 2)) (lambda (a) (modulo (+ (quotient a n) (remainder a n)) 2))))
+              (bad (make-functor (category-product C C) C (vector 0 1 1 0) (vector 0 0 1 0))))
+         (and (functor-laws? good) (null? (monoidal-tensor-violations (finite-monoidal-category C good 0 (lambda (x y z) (modulo (+ x y z) 2)) (lambda (x) x) (lambda (x) x))))
+              (not (functor-laws? bad)) (pair? (monoidal-tensor-violations (finite-monoidal-category C bad 0 (lambda (x y z) (modulo (+ x y z) 2)) (lambda (x) x) (lambda (x) x)))))))
+
+;; 3-cocycles: Z/2 acting trivially on Z/2. Every function omega : G^3 -> Z/2
+(define G2 (range 2))
+(define all-omegas (map (lambda (vals) (let ((v (list->vector vals))) (lambda (x y z) (vector-ref v (+ (* 4 x) (* 2 y) z))))) (tuples 8 (range 2))))
+(define pentagon-ok (filter (lambda (w) (null? (pentagon-violations (cocycle-monoidal-category 2 (zmod 2) 0 2 w)))) all-omegas))
+;; one category per cocycle, shared by the functor checks below
+(define cocycle-categories (map (lambda (w) (cons w (cocycle-monoidal-category 2 (zmod 2) 0 2 w))) pentagon-ok))
+(define (cocycle-category w) (cdr (assq w cocycle-categories)))
+;; |Z^3| from the group cohomology of core.category.linear: H^k(Z/2; F_2) by
+;; derived limits over B(Z/2) and universal coefficients, then
+;; |Z^k| = |B^k| 2^{h_k} and |B^{k+1}| = |C^k| / |Z^k| with |C^k| = 2^{2^k}
+(define h-mod2 (module-cohomology-mod-p-dimensions (module-presheaf-derived-limits (constant-module-presheaf (cyclic-group-category 2) 'Z 1) 4) 2))
+(define z3-count (let loop ((k 0) (b 1)) (let ((z (* b (expt 2 (list-ref h-mod2 k))))) (if (= k 3) z (loop (+ k 1) (/ (expt 2 (expt 2 k)) z))))))
+(check "pentagon: exactly the 3-cocycles, 8 of 256, as many as H^k(Z/2; F_2) = (1 1 1 1) predicts"
+       (and (equal? (take-n h-mod2 4) (list 1 1 1 1)) (= z3-count 8) (= (length pentagon-ok) 8)))
+(check "every 3-cocycle gives a monoidal category (unitors from omega: triangle, naturality, invertibility)"
+       (all? (lambda (w) (null? (monoidal-category-violations (cocycle-category w)))) pentagon-ok))
+(check "the pentagon names its witness: omega = [g = h = 1, k = 0] fails at (1 1 0 0)"
+       (equal? (car (pentagon-violations (cocycle-monoidal-category 2 (zmod 2) 0 2 (lambda (x y z) (if (and (= x 1) (= y 1) (= z 0)) 1 0)))))
+               (list 'pentagon 1 1 0 0)))
+(check "Z/3 with values in Z/3: omega_k(a,b,c) = k a (b + c - [b + c mod 3]) / 3 is a cocycle for k = 0, 1, 2; the non-trivial ones are not strict"
+       (all? (lambda (k) (let ((M (cocycle-monoidal-category 3 (zmod 3) 0 3 (lambda (a b c) (* k a (quotient (+ b c) 3))))))
+                           (and (null? (monoidal-category-violations M)) (eq? (monoidal-strict? M) (= k 0)))))
+             (list 0 1 2)))
+;; monoidal functors (id, nu, 0) from (Z/2, omega) to (Z/2, omega'):
+;; associativity holds exactly when omega' = omega - delta nu
+(define all-nus (map (lambda (vals) (let ((v (list->vector vals))) (lambda (x y) (vector-ref v (+ (* 2 x) y))))) (tuples 4 (range 2))))
+(define (cocycle-functor w w2 nu)
+  (let ((M (cocycle-category w)) (N (cocycle-category w2)))
+    (make-monoidal-functor M N (lambda (x) x) (lambda (f) f) (lambda (x y) (cocycle-arrow 2 (modulo (+ x y) 2) (nu x y))) 0)))
+(define (delta2 nu x y z) (modulo (+ (nu y z) (- (nu (modulo (+ x y) 2) z)) (nu x (modulo (+ y z) 2)) (- (nu x y))) 2))
+(define triples (tuples 3 G2))
+(define functor-cases (apply append (map (lambda (w) (apply append (map (lambda (w2) (map (lambda (nu) (list w w2 nu)) all-nus)) pentagon-ok))) pentagon-ok)))
+(define assoc-ok (filter (lambda (c) (null? (monoidal-functor-associativity-violations (apply cocycle-functor c)))) functor-cases))
+(check "monoidal functor associativity: 128 of 1024 (omega, omega', nu), each exactly omega' = omega - delta nu"
+       (and (= 1024 (length functor-cases)) (= 128 (length assoc-ok))
+            (= 128 (count-if (lambda (c) (all? (lambda (t) (= (modulo (apply (cadr c) t) 2) (modulo (- (apply (car c) t) (apply delta2 (caddr c) t)) 2))) triples)) functor-cases))))
+(check "monoidal functors: the full coherence (with both unit squares) agrees with the closed form for the unitors"
+       (let ((full (count-if (lambda (c) (null? (monoidal-functor-violations (apply cocycle-functor c)))) assoc-ok))
+             (closed (count-if (lambda (c) (let ((w (car c)) (w2 (cadr c)) (nu (caddr c)))
+                                             (all? (lambda (x) (and (= (modulo (nu 0 x) 2) (modulo (- (w 0 0 x) (w2 0 0 x)) 2))
+                                                                    (= (modulo (nu x 0) 2) (modulo (- (w2 x 0 0) (w x 0 0)) 2))))
+                                                   G2)))
+                               assoc-ok)))
+         (and (= full closed) (> full 0))))
+;; braidings: normalized abelian 3-cocycles on Z/2 with values in Z/4 and Z/2
+(define (braided-count m)
+  (let ((pairs (tuples 2 (range m))))
+    (map (lambda (p) (let* ((a (car p)) (b (cadr p))
+                            (M (cocycle-monoidal-category 2 (zmod 2) 0 m (lambda (x y z) (* a x y z)) (lambda (x y) (* b x y)))))
+                       (list (null? (braided-monoidal-violations M)) (and (null? (braided-monoidal-violations M)) (null? (symmetry-violations M))))))
+         pairs)))
+;; quadratic forms q : Z/2 -> Z/4: q(0) = 0 and q(2 x) = 4 q(x), so q(1) is free
+(define quad-forms-z4 (count-if (lambda (q1) (= 0 (modulo (* 4 q1) 4))) (range 4)))
+(check "hexagons: 4 of 16 normalized pairs on (Z/2, Z/4) are braided (= |Quad(Z/2, Z/4)|), 2 symmetric; on (Z/2, Z/2) 2 and 2"
+       (let ((r4 (braided-count 4)) (r2 (braided-count 2)))
+         (and (= quad-forms-z4 (count-if car r4)) (= 2 (count-if cadr r4)) (= 2 (count-if car r2)) (= 2 (count-if cadr r2)))))
+(check "the semion: omega(1,1,1) = 2, c(1,1) = 1 in Z/4 is braided and not symmetric; with omega = 0 the hexagon fails"
+       (let ((semion (cocycle-monoidal-category 2 (zmod 2) 0 4 (lambda (x y z) (* 2 x y z)) (lambda (x y) (* x y))))
+             (trivial-omega (cocycle-monoidal-category 2 (zmod 2) 0 4 (lambda (x y z) 0) (lambda (x y) (* x y)))))
+         (and (null? (braided-monoidal-violations semion)) (equal? (symmetry-violations semion) (list (list 'symmetry 1 1)))
+              (pair? (hexagon-violations trivial-omega)))))
+(check "identity monoidal functors are braided monoidal"
+       (all? (lambda (M) (null? (braided-monoidal-functor-violations (identity-monoidal-functor M))))
+             (list (cocycle-monoidal-category 2 (zmod 2) 0 4 (lambda (x y z) (* 2 x y z)) (lambda (x y) (* x y))) (monoid-monoidal-category 3 (zmod 3) 0))))
+
+;; ---------------------------------------------------------------------------
+;; String diagrams
+;; ---------------------------------------------------------------------------
+(define dims (list (cons 'A 2) (cons 'B 3)))
+(define boxes (list (cons 'f (random-map Q '(2) '(3))) (cons 'g (random-map Q '(3) '(2))) (cons 'h (random-map Q '(2 2) '(3)))
+                    (cons 'k (random-map Q '(3) '(2 2))) (cons 's (random-map Q '() '(3))) (cons 'e (random-map Q '(2) '()))))
+(define f (diagram-box 'f '(A) '(B))) (define g (diagram-box 'g '(B) '(A))) (define h (diagram-box 'h '(A A) '(B)))
+(define k (diagram-box 'k '(B) '(A A))) (define s (diagram-box 's '() '(B))) (define e (diagram-box 'e '(A) '()))
+(define (id . ts) (diagram-identity ts))
+(define (agree? d) (linear-map-equal? (diagram-evaluate d Q dims boxes) (diagram-evaluate-network d Q dims boxes)))
+(define (both-equal? d1 d2) (and (diagram-equal-by-normal-form? d1 d2) (diagram-equal-by-evaluation? d1 d2 Q dims boxes)))
+(check "interchange, swap naturality, snakes, swap involution: equal by normal form and by evaluation"
+       (and (both-equal? (diagram-then (diagram-tensor f g) (diagram-tensor g f)) (diagram-tensor (diagram-then f g) (diagram-then g f)))
+            (both-equal? (diagram-then (diagram-tensor f h) (diagram-swap '(B) '(B))) (diagram-then (diagram-swap '(A) '(A A)) (diagram-tensor h f)))
+            (both-equal? (diagram-then (diagram-tensor (id 'A) (diagram-cup '(A))) (diagram-tensor (diagram-cap '(A)) (id 'A))) (id 'A))
+            (both-equal? (diagram-then (diagram-tensor (diagram-cup '(B)) (id 'B)) (diagram-tensor (id 'B) (diagram-cap '(B)))) (id 'B))
+            (both-equal? (diagram-then (diagram-swap '(A) '(B)) (diagram-swap '(B) '(A))) (id 'A 'B))))
+(check "sliding a box around a cup: cup_A ; (f (x) id) and cup_B ; (id (x) f^T) where f^T is f bent by a cup and a cap"
+       (let* ((fT (diagram-then (diagram-tensor (diagram-cup '(A)) (id 'B)) (diagram-tensor (id 'A) f (id 'B)) (diagram-tensor (id 'A) (diagram-cap '(B))))))
+         (both-equal? (diagram-then (diagram-cup '(A)) (diagram-tensor f (id 'A))) (diagram-then (diagram-cup '(B)) (diagram-tensor (id 'B) fT)))))
+(check "closed diagrams: a loop is the dimension, a trace is the trace, components commute"
+       (let* ((loop (diagram-then (diagram-cup '(B)) (diagram-cap '(B))))
+              (tr (diagram-then (diagram-cup '(A)) (diagram-tensor (diagram-then f g) (id 'A)) (diagram-cap '(A)))))
+         (and (= 3 (linear-map-scalar-value (diagram-evaluate loop Q dims boxes)))
+              (= (linear-map-trace (linear-map-compose (cdr (assq 'g boxes)) (cdr (assq 'f boxes)))) (linear-map-scalar-value (diagram-evaluate tr Q dims boxes)))
+              (both-equal? (diagram-tensor tr loop (diagram-then s g e)) (diagram-tensor (diagram-then s g e) loop tr))
+              (equal? (list-ref (diagram-normal-form loop) 4) (list 'B)))))
+(check "different diagrams have different normal forms: f;g /= id, h o swap /= h (as graphs), components are counted"
+       (and (not (diagram-equal-by-normal-form? (diagram-then f g) (id 'A)))
+            (not (diagram-equal-by-normal-form? (diagram-then (diagram-swap '(A) '(A)) h) h))
+            (not (diagram-equal-by-normal-form? (diagram-tensor (diagram-then s g e) (diagram-then s g e)) (diagram-then s g e)))))
+(check "the dagger of a diagram evaluates to the dagger of its evaluation"
+       (let* ((d (diagram-then (diagram-tensor f (id 'A)) (diagram-swap '(B) '(A)) (diagram-tensor (id 'A) g) (diagram-tensor (diagram-cup '(A)) (id 'A 'A))))
+              (dboxes (append boxes (map (lambda (p) (cons (list 'dagger (car p)) (linear-map-dagger (cdr p)))) boxes))))
+         (linear-map-equal? (diagram-evaluate (diagram-dagger d) Q dims dboxes) (linear-map-dagger (diagram-evaluate d Q dims dboxes)))))
+
+;; random diagrams and random rewrites by the axioms
+(define (random-diagram depth)
+  (if (= depth 0)
+      (list-ref (list f g h k s e (id 'A) (id 'B) (diagram-swap '(A) '(B)) (diagram-cup '(A)) (diagram-cap '(B))) (rand 11))
+      (let ((d1 (random-diagram (- depth 1))))
+        (case (rand 3)
+          ((0) (diagram-tensor d1 (random-diagram (- depth 1))))
+          (else ;; compose with something whose domain fits d1's codomain
+           (let ((cod (diagram-codomain d1)))
+             (if (null? cod) (diagram-tensor d1 (random-diagram (- depth 1)))
+                 (let* ((t (car cod)) (rest (cdr cod))
+                        (step (case t ((A) (list-ref (list f (diagram-cup '(A)) e (id 'A)) (rand 4)))
+                                      (else (list-ref (list g k (id 'B)) (rand 3))))))
+                   (diagram-then d1 (diagram-tensor (if (equal? (diagram-domain step) (list t)) step (diagram-tensor step (diagram-identity (list t)))) (diagram-identity rest)))))))))))
+(define (axiom-rewrite d)
+  (let ((dom (diagram-domain d)) (cod (diagram-codomain d)))
+    (case (rand 4)
+      ((0) (diagram-then (diagram-identity dom) d (diagram-identity cod)))
+      ((1) (if (null? cod) d
+               (let ((t (car cod)) (rest (cdr cod)))
+                 (diagram-then d (diagram-tensor (diagram-then (diagram-tensor (id t) (diagram-cup (list t))) (diagram-tensor (diagram-cap (list t)) (id t))) (diagram-identity rest))))))
+      ((2) (if (or (null? cod) (null? (cdr cod))) d
+               (let ((a (list (car cod))) (b (cdr cod)))
+                 (diagram-then d (diagram-swap a b) (diagram-swap b a)))))
+      (else (diagram-tensor (diagram-identity '()) d (diagram-identity '()))))))
+(define random-ds (map (lambda (i) (random-diagram (+ 1 (rand 3)))) (range 24)))
+(check "24 random diagrams: compositional and tensor-network evaluations agree"
+       (all? agree? random-ds))
+(check "24 random diagrams under random axiom rewrites (identities, snakes, double swaps, unit tensors): same normal form, same value"
+       (all? (lambda (d) (let ((d2 (axiom-rewrite (axiom-rewrite d))))
+                           (and (diagram-equal-by-normal-form? d d2) (diagram-equal-by-evaluation? d d2 Q dims boxes))))
+             random-ds))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: monoidal_test") (newline) (display "RESULT: PASS") (newline)

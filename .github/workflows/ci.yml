@@ -1494,6 +1494,9 @@ jobs:
               vqe_ad_adversarial.esk)
                 grep -q 'vqe_ad_adversarial: PASS' <<<"$output"
                 ;;
+              zx_moonlab_crosscheck_test.esk)
+                grep -q 'zx_moonlab_crosscheck_test: PASS' <<<"$output"
+                ;;
               *)
                 echo "Unhandled quantum test: $test" >&2
                 exit 1
