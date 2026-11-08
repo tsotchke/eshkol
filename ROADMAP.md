@@ -829,6 +829,17 @@ under the same discipline that made `Qubit` linear.
       as a category with finite products. `core.ring` carriers are models of
       the theory of commutative rings, and `core.topos`'s truth values are
       Heyting algebras. Theories in the type system are Planned for v1.5.0
+- [ ] Infinite categories (ADR-0054): `core.category.effective` gives
+      effectively given categories (objects and hom-sets produced on demand,
+      finite categories as a special case), functors, transformations and
+      adjunctions with exact checks on generators; `core.category.presented`
+      decides finitely presented categories, monoids and groups by
+      Knuth-Bendix completion under a budget ('undecided' rather than a
+      guess); `core.category.standard` gives (N, <=), (Z, <=), (Q, <=),
+      (N, +), Delta, FinOrd, FinSet and Mat_R with their computable
+      (co)limits and named refusals; `core.category.effective_kan` gives Kan
+      extensions with finite comma categories, skeleta and coskeleta.
+      Newman's lemma and rewriting soundness are checked in Rocq
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
