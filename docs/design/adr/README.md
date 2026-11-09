@@ -54,6 +54,7 @@ documentation hub lists the same records in
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
 | [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
+| [0055](0055-nested-differentiation-in-every-mode.md) | Nested differentiation in every mode | Proposed | 2026-11-08 | `esh_taylor_t::epoch`, `eshkol_ad_nested_seed` in `lib/core/runtime_taylor.c`; `emitForwardColumnGradient`, `emitPassLiveAt` in `lib/backend/autodiff_codegen.cpp`; `eshkol_ad_linear_record` in `lib/core/runtime_autodiff.cpp`; gate `tests/ad/nested_depth_matrix_test.esk` |
 
 ## Numbering
 

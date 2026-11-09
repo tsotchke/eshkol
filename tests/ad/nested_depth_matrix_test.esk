@@ -120,7 +120,7 @@
 
 ;; ===========================================================================
 ;; 4. PERTURBATION CONFUSION
-;;    A carrier that confused two levels answers the wrong number in each row.
+;;    A carrier that confused two levels would answer a different number in each row.
 ;; ===========================================================================
 ;; Siskind-Pearlmutter: d/dx [x * d/dy (x + y)] = d/dx [x] = 1
 (check "confusion depth2" ((d (lambda (x) (* x ((d (lambda (y) (+ x y))) 1.0)))) 1.0) 1.0)

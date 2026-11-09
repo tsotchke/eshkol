@@ -5040,7 +5040,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     Value* rvt_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 2));
                     Value* rvt_n = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(rvt_tt, rvt_ptr, 3));
 
-                    // ── ESH-0096 / ADR-0055: which composition is this? ──
+                    // ── ADR-0055: which composition is this? ──────────
                     // A tensor element slot holds either an f64 bit pattern or
                     // an `ad_node_t*`, and the ranges overlap, so the residency
                     // probe (never a raw dereference) decides whether some
@@ -5338,7 +5338,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
                     ctx_.builder().CreateBr(grad_rt_done);
 
-                    // ── ESH-0096 / ADR-0055: forward-over-reverse ────────────
+                    // ── ADR-0055: forward-over-reverse ─────────────────────
                     //
                     // Some of the point's components are the ENCLOSING reverse
                     // pass's tape nodes: its variables, or values it computed
@@ -5356,7 +5356,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     //
                     // so f's returned jet has e1 coefficient (field 1) g_i and
                     // e1·ep coefficient (field 5) H[i][k]; ep is an independent
-                    // jet dimension (ESH-0117). eshkol_ad_linear_record writes
+                    // jet dimension. eshkol_ad_linear_record writes
                     // the linearisation onto the OUTER tape, with one edge per
                     // tape-node component, and the enclosing backward pass
                     // carries each edge on through whatever computed that

@@ -120,7 +120,11 @@ to the same pass ([ADR-0027](../../design/adr/0027-recursive-taylor-level-carrie
 | Passes of any order at any depth, through the evaluation point or a captured variable | Exact |
 | Exact evaluation points | Exact results, by the numeric tower's contagion |
 | Complex evaluation points (holomorphic derivatives) | Exact, nested with `derivative-n` and `taylor` too |
-| `gradient`, `hessian` and `jacobian` inside a live pass, and any depth of `derivative` | Exact (each is a level of the enclosing passes; a nested `jacobian` is a tensor of tagged numbers) |
+| `gradient`, `hessian` and `jacobian` inside a live pass, and any depth of `derivative` | Exact (each is forward columns, a level of the enclosing passes; a nested `jacobian` or vector `gradient` is a tensor of tagged numbers) |
+| Reverse over reverse over reverse, to any depth | Exact |
+| An outermost `gradient`/`jacobian` over an inner pass that captures a value it computed | Exact (taken as forward columns, [ADR-0055](../../design/adr/0055-nested-differentiation-in-every-mode.md)) |
+| A curried `gradient` under a reverse pass, at a point computed from that pass's variables | Exact (linearised against each tape-node component) |
+| More than 65536 passes in one process | Exact (perturbation tags are 64-bit and never reused) |
 
 Verified on this build:
 
@@ -158,7 +162,11 @@ through the point, exact seeds, and the perturbation-confusion controls) and
 (the captured-variable matrix) and
 [`tests/ad/nested_operator_levels_test.esk`](../../../tests/ad/nested_operator_levels_test.esk)
 (`gradient`, `hessian`, `jacobian` and deep `derivative` inside live passes),
-on the JIT and AOT lanes.
+on the JIT and AOT lanes, and
+[`tests/ad/nested_depth_matrix_test.esk`](../../../tests/ad/nested_depth_matrix_test.esk)
+(depth 4 in every mode, mixed forward and reverse, exact Taylor coefficients,
+perturbation-confusion controls to depth 4, and more than 65536 passes) on the
+JIT, AOT and the VM.
 
 ---
 
