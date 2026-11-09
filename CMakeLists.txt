@@ -12444,7 +12444,12 @@ if(ESHKOL_BUILD_AGENT_FFI)
             ${AGENT_FFI_DIR}/agent_subprocess_stream_binding.c
             ${AGENT_FFI_DIR}/agent_sse.c
             ${AGENT_FFI_DIR}/agent_unix_socket_binding.c
-            ${CMAKE_SOURCE_DIR}/lib/core/unix_socket_stream_stub.c
+            # lib/core/unix_socket_stream_stub.c is NOT listed here: it is a
+            # lib/core/*.c* file, so the top-level file(GLOB_RECURSE LIB_SRC
+            # "lib/*.c*") already compiles it into eshkol-static (only
+            # lib/agent/.* is excluded from that glob). Listing it again
+            # here would double-define every eshkol_unix_stream_socket_*
+            # symbol once both libraries are linked together.
         )
 
         # HTTP server / WebSocket / local-socket primitives.  The C source
