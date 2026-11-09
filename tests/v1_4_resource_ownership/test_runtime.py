@@ -203,8 +203,11 @@ def main():
     selected = args.case if args.case is not None else CASES
     if not selected:
         parser.error("at least one --case is required")
+    # Handle cases run in a fresh working directory, so paths must be absolute.
+    runner = args.runner.resolve()
+    lib_dir = args.lib_dir.resolve()
     for case in selected:
-        run_case(case, args.runner, args.lib_dir)
+        run_case(case, runner, lib_dir)
 
 
 if __name__ == "__main__":
