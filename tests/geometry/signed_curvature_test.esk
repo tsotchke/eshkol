@@ -1,0 +1,171 @@
+;;; signed_curvature_test.esk — core.curvature on the native engines (JIT and AOT)
+;;;
+;;; The ADR-0018 chart: one kappa-stereographic chart for every sign of K in
+;;; the alpha = 1 gauge. Reference values are the binary128 grid of
+;;; tests/bridge/signed_curvature_reference_grid_test.cpp (golden subset,
+;;; configuration "fixed"); everything else is checked against an identity
+;;; written here independently of the shared core.
+
+(require core.curvature)
+
+(define passed 0)
+(define failed 0)
+(define (ok! name) (set! passed (+ passed 1)))
+(define (bad! name detail)
+  (set! failed (+ failed 1))
+  (display "FAIL: ") (display name) (display " ") (display detail) (newline))
+(define (check name c) (if c (ok! name) (bad! name "")))
+(define (rel-close? a b tol)
+  (or (= a b) (<= (abs (- a b)) (* tol (max (abs a) (abs b))))))
+(define (check-close name got want tol)
+  (if (rel-close? got want tol) (ok! name)
+      (bad! name (string-append "got " (number->string got)
+                                " want " (number->string want)))))
+(define (refuses? thunk)
+  (guard (e (#t #t)) (thunk) #f))
+
+(define (dot a b)
+  (let loop ((i 0) (s 0.0))
+    (if (= i (car (tensor-shape a))) s
+        (loop (+ i 1) (+ s (* (tensor-ref a i) (tensor-ref b i)))))))
+(define (sub a b)
+  (let* ((n (car (tensor-shape a))) (r (make-tensor (list n) 0.0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (tensor-set! r i (- (tensor-ref a i) (tensor-ref b i))) (loop (+ i 1)))))
+    r))
+(define (norm a) (sqrt (dot a a)))
+
+(define x #(0.3 -0.2 0.1))
+(define y #(-0.25 0.15 0.2))
+(define v #(0.7 0.2 -0.3))
+(define tol 1e-14)
+
+;; ── binary128 reference values (d, dd/dK, d2d/dK2, d(d^2)/dx) ──
+(define golden
+  (list (list 0.0 0.6595452979136459 -0.00989317946870469 0.000243825652322451
+              1.1 -0.7 -0.2)
+        (list 1.0 0.6497697847842886 -0.009661995865024349 0.00021892693222168538
+              1.0434175436290272 -0.6620706705906056 -0.222391579879003)
+        (list -1.0 0.6695648407377899 -0.010150463695776539 0.0002711760892963261
+              1.1603326978005792 -0.740429740154086 -0.17635409318690853)
+        (list 4.0 0.6216690142220734 -0.009102962572170208 0.00015663388402661904
+              0.8918444964944862 -0.5604340038394354 -0.2829113961689458)
+        (list -4.0 0.7013757185512163 -0.01110686730219895 0.00037155602340704095
+              1.3696137515458569 -0.8805470349623736 -0.09645167264407443)))
+
+(let loop ((rows golden))
+  (if (pair? rows)
+      (let* ((r (car rows)) (K (list-ref r 0))
+             (jet (chart-distance-jet x y K))
+             (g (chart-sq-distance-gradient x y K)))
+        (check-close "distance vs binary128" (chart-distance x y K) (list-ref r 1) tol)
+        (check-close "jet value" (car jet) (list-ref r 1) tol)
+        (check-close "dd/dK vs binary128" (cadr jet) (list-ref r 2) tol)
+        (check-close "d2d/dK2 vs binary128" (caddr jet) (list-ref r 3) 1e-13)
+        (check-close "grad d^2 [0]" (tensor-ref g 0) (list-ref r 4) tol)
+        (check-close "grad d^2 [1]" (tensor-ref g 1) (list-ref r 5) tol)
+        (check-close "grad d^2 [2]" (tensor-ref g 2) (list-ref r 6) tol)
+        (loop (cdr rows)))))
+
+;; ── K = 0 is canonical Euclidean (alpha = 1) and the jets are analytic there ──
+(check-close "K = 0 distance is |x - y|" (chart-distance x y 0.0) (norm (sub x y)) 1e-15)
+(check "conformal factor at K = 0 is 1" (= (chart-conformal-factor x 0.0) 1.0))
+(let ((j0 (chart-distance-jet x y 0.0))
+      (jp (chart-distance-jet x y 1e-300))
+      (jm (chart-distance-jet x y -1e-300)))
+  (check "left and right jets agree at K = 0" (and (equal? j0 jp) (equal? j0 jm))))
+;; d'(0) = -(1/4) |x-y| ((|x|^2 + |y|^2)/2 - |x-y|^2/6), the series coefficient
+(let* ((e (norm (sub x y)))
+       (want (* -0.25 e (- (/ (+ (dot x x) (dot y y)) 2.0) (/ (* e e) 6.0)))))
+  (check-close "dd/dK at 0 equals the series coefficient" (cadr (chart-distance-jet x y 0.0)) want 1e-15))
+
+;; ── squared distance: smooth at coincidence, raw distance refused there ──
+(let ((g (chart-sq-distance-gradient x x -1.0)))
+  (check "d^2 gradient is exactly zero at x = y"
+         (and (= (tensor-ref g 0) 0.0) (= (tensor-ref g 1) 0.0) (= (tensor-ref g 2) 0.0))))
+(check "d^2 at x = y is zero" (= (chart-sq-distance x x 1.0) 0.0))
+
+;; ── maps ──
+(define (vec-close? a b t)
+  (let loop ((i 0))
+    (or (= i (car (tensor-shape a)))
+        (and (<= (abs (- (tensor-ref a i) (tensor-ref b i))) t) (loop (+ i 1))))))
+(let loop ((ks '(-4.0 -1.0 0.0 1.0 4.0 30.0)))
+  (if (pair? ks)
+      (let* ((K (car ks))
+             (l (chart-log-map x y K))
+             (e (chart-exp-map x l K))
+             (t (chart-transport x y v K)))
+        (check "exp_x(log_x y) = y" (vec-close? e y 1e-14))
+        (check-close "transport is an isometry"
+                     (* (chart-conformal-factor y K) (norm t))
+                     (* (chart-conformal-factor x K) (norm v)) 1e-14)
+        (check-close "|log_x y| lambda_x = d(x, y)"
+                     (* (chart-conformal-factor x K) (norm l)) (chart-distance x y K) 1e-14)
+        (check "2 (x) x = x (+) x"
+               (vec-close? (chart-mobius-scalar 2.0 x K) (chart-mobius-add x x K) 1e-14))
+        (loop (cdr ks)))))
+
+;; ── the positive chart is the sphere: chart distance = embedded arc length ──
+(let* ((K 4.0) (R 0.5)
+       (p (chart->sphere x K)) (q (chart->sphere y K))
+       (c (dot p q)) (s (sqrt (- (* (dot p p) (dot q q)) (* c c))))
+       (arc (* R (atan s c))))
+  (check-close "chart point lies on the sphere" (norm p) R 1e-15)
+  (check-close "chart distance equals the arc length" (chart-distance x y K) arc 1e-14)
+  (check "sphere->chart inverts chart->sphere" (vec-close? (sphere->chart p K) x 1e-15)))
+
+;; ── squared-distance attention ──
+(let* ((q #(0.3 -0.2 0.1))
+       (keys (tensor (list (list 0.3 -0.2 0.1) (list -0.25 0.15 0.2) (list 0.5 0.4 -0.1))))
+       (vals (tensor (list (list 1.0 0.0) (list 0.0 1.0) (list 2.0 2.0))))
+       (t (chart-default-temperature 3))
+       (w0 (chart-attention-weights q keys vals 0.0))
+       (l0 (- (/ 0.0 (* 2.0 t))))
+       (l1 (- (/ (+ (* 0.55 0.55) (* 0.35 0.35) (* 0.1 0.1)) (* 2.0 t))))
+       (l2 (- (/ (+ (* 0.2 0.2) (* 0.6 0.6) (* 0.2 0.2)) (* 2.0 t))))
+       (z (+ (exp l0) (exp l1) (exp l2))))
+  (check-close "flat reduction weight 0" (tensor-ref w0 0) (/ (exp l0) z) 1e-15)
+  (check-close "flat reduction weight 1" (tensor-ref w0 1) (/ (exp l1) z) 1e-15)
+  (check-close "flat reduction weight 2" (tensor-ref w0 2) (/ (exp l2) z) 1e-15)
+  (let loop ((ks '(-1.0 -1e-300 1e-300 1.0)))
+    (if (pair? ks)
+        (let* ((w (chart-attention-weights q keys vals (car ks)))
+               (o (chart-attention q keys vals (car ks))))
+          (check-close "weights sum to one" (+ (tensor-ref w 0) (tensor-ref w 1) (tensor-ref w 2)) 1.0 1e-15)
+          (check-close "output is the weighted value sum" (tensor-ref o 0)
+                       (+ (tensor-ref w 0) (* 2.0 (tensor-ref w 2))) 1e-15)
+          (loop (cdr ks)))))
+  (check "weights continuous through K = 0"
+         (equal? (chart-attention-weights q keys vals 1e-300) w0)))
+
+;; ── convention and migration ──
+(check "current geometry header accepted"
+       (= (geometry-header-check (make-geometry-header -1.0)) -1.0))
+(check "legacy geometry header refused"
+       (refuses? (lambda () (geometry-header-check (list 'geometry-header 1 2.0 -1.0)))))
+(check "unversioned geometry record refused"
+       (refuses? (lambda () (geometry-header-check (list 'geometry-header 0 1.0 -1.0)))))
+(let* ((x1 #(0.4 -0.3 0.1)) (y1 #(-0.5 0.2 0.6))
+       (x2 (migrate-legacy-ball-point x1 -1.0))
+       (y2 (migrate-legacy-ball-point y1 -1.0))
+       (e (dot (sub x1 y1) (sub x1 y1)))
+       (legacy (let ((z (+ 1.0 (/ (* 2.0 e) (* (- 1.0 (dot x1 x1)) (- 1.0 (dot y1 y1)))))))
+                 (log (+ z (sqrt (- (* z z) 1.0)))))))
+  (check "legacy point migration doubles coordinates" (= (tensor-ref x2 0) 0.8))
+  (check-close "legacy migration preserves distance" (chart-distance x2 y2 -1.0) legacy 1e-13))
+(check-close "legacy temperature migration" (migrate-legacy-temperature 0.5 2.0) 4.0 0.0)
+
+;; ── explicit domain errors ──
+(check "point outside the ball refused"
+       (refuses? (lambda () (chart-distance #(4.5 0.0 0.0) y -1.0))))
+(check "non-finite curvature refused"
+       (refuses? (lambda () (chart-distance x y (/ 1.0 0.0)))))
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: ALL PASS") (newline)
+           (display "PASS: signed_curvature_test") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

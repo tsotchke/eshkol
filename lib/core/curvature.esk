@@ -1,0 +1,234 @@
+;;; core/curvature.esk — the signed-curvature stereographic chart (ADR-0018)
+;;;
+;;; (require core.curvature)
+;;;
+;;; One chart for every sign of the sectional curvature K, in the
+;;; canonical-flat gauge alpha = 1:
+;;;
+;;;     g_K(x) = I / (1 + K |x|^2 / 4)^2
+;;;
+;;;   K < 0   the ball of radius 2/sqrt(-K)
+;;;   K = 0   Euclidean R^n (distance |x - y|, unscaled gradients)
+;;;   K > 0   the sphere of radius 1/sqrt(K) minus its pole
+;;;
+;;; The family is real-analytic in K through K = 0 at fixed chart points, and
+;;; the curvature jets (value, d/dK, d^2/dK^2) are exact closed forms with a
+;;; series branch near zero. Every function here calls the ONE f64
+;;; implementation in inc/eshkol/backend/riemannian_core.h — the same core the
+;;; bytecode VM's geometry ops and the AD bridge run — through
+;;; lib/core/curvature_runtime.c.
+;;;
+;;; Points and vectors are f64 tensors: #(0.3 -0.2), (make-tensor (list n) 0.0).
+;;; A refused input (a point outside the ball, an antipodal pair of the
+;;; positive chart, a geodesic reaching the pole, a mismatched geometry header)
+;;; raises a catchable error naming the reason.
+
+(provide chart-convention-id chart-alpha
+         make-geometry-header geometry-header-check
+         chart-distance chart-sq-distance chart-conformal-factor
+         chart-distance-jet chart-sq-distance-jet chart-sq-distance-gradient
+         chart-exp-map chart-log-map chart-transport
+         chart-mobius-add chart-mobius-scalar chart-project chart-riemannian-grad
+         chart-default-temperature chart-attention chart-attention-weights
+         sphere->chart chart->sphere
+         migrate-legacy-ball-point migrate-legacy-ball-tangent
+         migrate-legacy-temperature)
+
+(extern ptr chart-last-error-raw :real eshkol_curvature_last_error)
+(extern i64 chart-convention-id-raw :real eshkol_curvature_convention_id)
+(extern double chart-alpha-raw :real eshkol_curvature_alpha)
+(extern i32 chart-check-header-raw i64 double double :real eshkol_curvature_check_header)
+(extern i32 chart-distance-raw ptr ptr double ptr :real eshkol_curvature_distance)
+(extern i32 chart-sq-distance-raw ptr ptr double ptr :real eshkol_curvature_sq_distance)
+(extern i32 chart-conformal-factor-raw ptr double ptr :real eshkol_curvature_conformal_factor)
+(extern i32 chart-distance-jet-raw ptr ptr double ptr :real eshkol_curvature_distance_jet)
+(extern i32 chart-sq-distance-jet-raw ptr ptr double ptr :real eshkol_curvature_sq_distance_jet)
+(extern i32 chart-sq-distance-grad-raw ptr ptr double ptr :real eshkol_curvature_sq_distance_grad)
+(extern i32 chart-exp-map-raw ptr ptr double ptr :real eshkol_curvature_exp_map)
+(extern i32 chart-log-map-raw ptr ptr double ptr :real eshkol_curvature_log_map)
+(extern i32 chart-transport-raw ptr ptr ptr double ptr :real eshkol_curvature_transport)
+(extern i32 chart-mobius-add-raw ptr ptr double ptr :real eshkol_curvature_mobius_add)
+(extern i32 chart-mobius-scalar-raw double ptr double ptr :real eshkol_curvature_mobius_scalar)
+(extern i32 chart-project-raw ptr double ptr :real eshkol_curvature_project)
+(extern i32 chart-riemannian-grad-raw ptr ptr double ptr :real eshkol_curvature_riemannian_grad)
+(extern i32 chart-attention-raw ptr ptr ptr double double ptr ptr :real eshkol_curvature_attention)
+(extern i32 chart-sphere-to-chart-raw ptr double ptr :real eshkol_curvature_sphere_to_chart)
+(extern i32 chart-chart-to-sphere-raw ptr double ptr :real eshkol_curvature_chart_to_sphere)
+(extern i32 chart-migrate-point-raw ptr double ptr :real eshkol_curvature_migrate_point)
+(extern i32 chart-migrate-tangent-raw ptr double ptr :real eshkol_curvature_migrate_tangent)
+(extern i32 chart-migrate-temperature-raw double double ptr :real eshkol_curvature_migrate_temperature)
+
+;; ── marshalling ─────────────────────────────────────────────────────────
+
+(define (chart-check! who status)
+  (if (= status 0)
+      #t
+      (error (string-append who ": " (ptr->string (chart-last-error-raw))))))
+
+(define (chart-real who K)
+  (if (real? K)
+      (exact->inexact K)
+      (error (string-append who ": the curvature must be a real number"))))
+
+(define (chart-size t)
+  (if (tensor? t)
+      (car (tensor-shape t))
+      (error "core.curvature: points and vectors are f64 tensors")))
+
+(define (chart-zeros n) (make-tensor (list n) 0.0))
+
+;; CALL receives the output tensor and returns the raw status.
+(define (chart-scalar who call)
+  (let ((out (chart-zeros 1)))
+    (chart-check! who (call out))
+    (tensor-ref out 0)))
+
+(define (chart-vector who n call)
+  (let ((out (chart-zeros n)))
+    (chart-check! who (call out))
+    out))
+
+;; ── convention ──────────────────────────────────────────────────────────
+
+(define (chart-convention-id) (chart-convention-id-raw))
+(define (chart-alpha) (chart-alpha-raw))
+
+;; A serialized geometry record carries (geometry-header convention-id alpha K).
+(define (make-geometry-header K)
+  (list 'geometry-header (chart-convention-id) (chart-alpha)
+        (chart-real "make-geometry-header" K)))
+
+;; Accept only the current convention; a legacy or unversioned record is
+;; refused (migrate it with the functions below), never reinterpreted.
+(define (geometry-header-check header)
+  (if (and (pair? header) (eq? (car header) 'geometry-header)
+           (= (length header) 4))
+      (chart-check! "geometry-header-check"
+                    (chart-check-header-raw (list-ref header 1)
+                                            (exact->inexact (list-ref header 2))
+                                            (exact->inexact (list-ref header 3))))
+      (error "geometry-header-check: the record carries no geometry header"))
+  (list-ref header 3))
+
+;; ── distances and curvature jets ────────────────────────────────────────
+
+(define (chart-distance x y K)
+  (chart-scalar "chart-distance"
+                (lambda (out) (chart-distance-raw x y (chart-real "chart-distance" K) out))))
+
+(define (chart-sq-distance x y K)
+  (chart-scalar "chart-sq-distance"
+                (lambda (out) (chart-sq-distance-raw x y (chart-real "chart-sq-distance" K) out))))
+
+(define (chart-conformal-factor x K)
+  (chart-scalar "chart-conformal-factor"
+                (lambda (out) (chart-conformal-factor-raw x (chart-real "chart-conformal-factor" K) out))))
+
+;; (list d dd/dK d2d/dK2) at fixed chart points.
+(define (chart-distance-jet x y K)
+  (let ((out (chart-vector "chart-distance-jet" 3
+                (lambda (out) (chart-distance-jet-raw x y (chart-real "chart-distance-jet" K) out)))))
+    (list (tensor-ref out 0) (tensor-ref out 1) (tensor-ref out 2))))
+
+(define (chart-sq-distance-jet x y K)
+  (let ((out (chart-vector "chart-sq-distance-jet" 3
+                (lambda (out) (chart-sq-distance-jet-raw x y (chart-real "chart-sq-distance-jet" K) out)))))
+    (list (tensor-ref out 0) (tensor-ref out 1) (tensor-ref out 2))))
+
+;; d(d^2)/dx = -2 lambda_x^2 log_x(y); exactly zero when x = y.
+(define (chart-sq-distance-gradient x y K)
+  (chart-vector "chart-sq-distance-gradient" (chart-size x)
+                (lambda (out) (chart-sq-distance-grad-raw x y (chart-real "chart-sq-distance-gradient" K) out))))
+
+;; ── maps and gyrovector operations ──────────────────────────────────────
+
+(define (chart-exp-map x v K)
+  (chart-vector "chart-exp-map" (chart-size x)
+                (lambda (out) (chart-exp-map-raw x v (chart-real "chart-exp-map" K) out))))
+
+(define (chart-log-map x y K)
+  (chart-vector "chart-log-map" (chart-size x)
+                (lambda (out) (chart-log-map-raw x y (chart-real "chart-log-map" K) out))))
+
+(define (chart-transport x y v K)
+  (chart-vector "chart-transport" (chart-size x)
+                (lambda (out) (chart-transport-raw x y v (chart-real "chart-transport" K) out))))
+
+(define (chart-mobius-add x y K)
+  (chart-vector "chart-mobius-add" (chart-size x)
+                (lambda (out) (chart-mobius-add-raw x y (chart-real "chart-mobius-add" K) out))))
+
+(define (chart-mobius-scalar r x K)
+  (chart-vector "chart-mobius-scalar" (chart-size x)
+                (lambda (out) (chart-mobius-scalar-raw (chart-real "chart-mobius-scalar" r) x (chart-real "chart-mobius-scalar" K) out))))
+
+(define (chart-project x K)
+  (chart-vector "chart-project" (chart-size x)
+                (lambda (out) (chart-project-raw x (chart-real "chart-project" K) out))))
+
+(define (chart-riemannian-grad g x K)
+  (chart-vector "chart-riemannian-grad" (chart-size x)
+                (lambda (out) (chart-riemannian-grad-raw g x (chart-real "chart-riemannian-grad" K) out))))
+
+;; ── squared-distance geodesic attention ─────────────────────────────────
+;;
+;; Logits -d^2(q_i, k_j) / (2 t), t in squared-distance units; no
+;; curvature-dependent scale. Q is [nq, d] (or one row [d]), KEYS [nk, d],
+;; V [nk, dv].
+
+(define (chart-default-temperature dim) (sqrt (exact->inexact dim)))
+
+(define (chart-attention-shape who t)
+  (let ((s (tensor-shape t)))
+    (cond ((= (length s) 1) (list 1 (car s)))
+          ((= (length s) 2) s)
+          (else (error (string-append who ": expected a rank-1 or rank-2 tensor"))))))
+
+(define (chart-attention-run who q keys v K t)
+  (let* ((qs (chart-attention-shape who q))
+         (ks (chart-attention-shape who keys))
+         (vs (chart-attention-shape who v))
+         (nq (car qs)) (nk (car ks)) (dv (cadr vs))
+         (out (make-tensor (list nq dv) 0.0))
+         (weights (make-tensor (list nq nk) 0.0)))
+    (chart-check! who (chart-attention-raw q keys v (chart-real who K)
+                                           (chart-real who t) out weights))
+    (cons out weights)))
+
+(define (chart-attention q keys v K . maybe-t)
+  (let ((t (if (null? maybe-t)
+               (chart-default-temperature (cadr (chart-attention-shape "chart-attention" q)))
+               (car maybe-t))))
+    (car (chart-attention-run "chart-attention" q keys v K t))))
+
+(define (chart-attention-weights q keys v K . maybe-t)
+  (let ((t (if (null? maybe-t)
+               (chart-default-temperature
+                (cadr (chart-attention-shape "chart-attention-weights" q)))
+               (car maybe-t))))
+    (cdr (chart-attention-run "chart-attention-weights" q keys v K t))))
+
+;; ── the embedded sphere and legacy migration ────────────────────────────
+
+;; p in R^{n+1} on the sphere of radius 1/sqrt(K) -> chart point in R^n.
+(define (sphere->chart p K)
+  (chart-vector "sphere->chart" (- (chart-size p) 1)
+                (lambda (out) (chart-sphere-to-chart-raw p (chart-real "sphere->chart" K) out))))
+
+(define (chart->sphere x K)
+  (chart-vector "chart->sphere" (+ (chart-size x) 1)
+                (lambda (out) (chart-chart-to-sphere-raw x (chart-real "chart->sphere" K) out))))
+
+;; LEGACY_BALL_V1 (alpha = 2, radius 1/sqrt(-K)) -> current: x_v2 = 2 x_v1.
+(define (migrate-legacy-ball-point x K)
+  (chart-vector "migrate-legacy-ball-point" (chart-size x)
+                (lambda (out) (chart-migrate-point-raw x (chart-real "migrate-legacy-ball-point" K) out))))
+
+(define (migrate-legacy-ball-tangent v K)
+  (chart-vector "migrate-legacy-ball-tangent" (chart-size v)
+                (lambda (out) (chart-migrate-tangent-raw v (chart-real "migrate-legacy-ball-tangent" K) out))))
+
+;; legacy linear score -s d -> temperature t = d_ref / s (slopes agree at d_ref).
+(define (migrate-legacy-temperature scale reference-distance)
+  (chart-scalar "migrate-legacy-temperature"
+                (lambda (out) (chart-migrate-temperature-raw (chart-real "migrate-legacy-temperature" scale) (chart-real "migrate-legacy-temperature" reference-distance) out))))

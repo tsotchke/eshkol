@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2620/5698 public symbols documented (46.0%), 3078 undocumented.
+**Coverage:** 2649/5751 public symbols documented (46.1%), 3102 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -45,7 +45,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1317/3063 symbols documented.
+1341/3091 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -80,7 +80,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/mutation_observation.h`](backend/mutation_observation.md) | 8 | 0 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 62 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
-| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 87 | 26 |
+| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 115 | 50 |
 | [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 75 | 57 |
 | [`backend/system_codegen.h`](backend/system_codegen.md) | 280 | 266 |
@@ -120,16 +120,16 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `bridge/`
 
-34/34 symbols documented.
+35/35 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`bridge/qllm_bridge.h`](bridge/qllm_bridge.md) | 25 | 25 |
+| [`bridge/qllm_bridge.h`](bridge/qllm_bridge.md) | 26 | 26 |
 | [`bridge/space_form.h`](bridge/space_form.md) | 9 | 9 |
 
 ### `core/`
 
-324/637 symbols documented.
+328/661 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -138,6 +138,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/bignum.h`](core/bignum.md) | 45 | 27 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 62 | 19 |
+| [`core/curvature_runtime.h`](core/curvature_runtime.md) | 24 | 4 |
 | [`core/dtoa_shortest.h`](core/dtoa_shortest.md) | 1 | 1 |
 | [`core/eval_bridge.h`](core/eval_bridge.md) | 9 | 4 |
 | [`core/event_loop.h`](core/event_loop.md) | 25 | 23 |
