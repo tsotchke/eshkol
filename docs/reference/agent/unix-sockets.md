@@ -19,7 +19,7 @@ C symbols: `eshkol_unix_stream_socket_*`.
 
 | Operation | Contract |
 |---|---|
-| `unix-stream-socket-listen path` | Bind and listen on a filesystem path on the existing event loop. Owns the path: close unlinks it. Refuses a pre-existing, non-stale path rather than unlinking and reusing it. |
+| `unix-stream-socket-listen path` | Bind and listen on a filesystem path on the existing event loop. Owns the path: close unlinks it. Refuses a pre-existing path that nothing is listening on, rather than unlinking and reusing it. |
 | `unix-stream-socket-accept listener deadline-ms` | Accept one connection within one bounded, monotonic deadline. Zero makes one nonblocking pass and never sleeps. |
 | `unix-stream-socket-connect path deadline-ms` | Connect within one monotonic deadline shared across retries. |
 | `unix-stream-socket-read! id buffer start count` | Byte-counted nonblocking read into a caller bytevector. Returns a result vector distinguishing data, EOF, would-block, and an operation-labelled error. NUL bytes and payloads over 16 MiB survive unmodified; reads may be partial. |
@@ -41,7 +41,7 @@ Following the same pattern as the `PROCESS` session in
   close — the same rules as the `PROCESS` kind, and the shape the v1.4.0
   compile-time linear handles will consume.
 - A listener owns the filesystem path it bound; its close unlinks that path.
-  A stale path left on disk with nothing listening must be refused by a new
+  A path left on disk with nothing listening on it must be refused by a new
   `unix-stream-socket-listen`, never silently unlinked and reused.
 - Close with an active borrow returns busy, the same as every other leased
   resource; release the borrow before closing.
@@ -68,7 +68,7 @@ suite until the core implementation lands):
 6. NUL and >16 MiB payloads
 7. a descriptor-count check over 1,000 open/close cycles
 8. `network` capability denial
-9. socket-path lifecycle (unlink on close, refusal on an existing stale path)
+9. socket-path lifecycle (unlink on close, refusal on an existing unlistened path)
 10. VM: an explicit unsupported result
 
 A small check in the default suite (`agent-unix-stream-socket-stub-contract`)

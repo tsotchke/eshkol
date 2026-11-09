@@ -31,7 +31,7 @@ enum {
     ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT = -6,
     ESHKOL_UNIX_STREAM_SOCKET_EDENIED = -7,
     ESHKOL_UNIX_STREAM_SOCKET_ECANCELED = -8,
-    /* A listen path that already exists and is not confirmed stale. */
+    /* A listen path that already exists and is not confirmed to have nothing listening on it. */
     ESHKOL_UNIX_STREAM_SOCKET_EEXIST = -9,
     /* Returned by every entry point below until the core implementation
      * replaces this scaffold. Distinct from every other negative result so
@@ -41,7 +41,7 @@ enum {
 
 /* Bind and listen on a filesystem path on the given event loop. A listener
  * owns the path: close unlinks it. A pre-existing path that nothing is
- * listening on (stale) must be refused, not silently unlinked and reused. */
+ * listening on it must be refused, not silently unlinked and reused. */
 int64_t eshkol_unix_stream_socket_listen(int64_t loop, const char *path);
 /* Accept one connection within one bounded, monotonic deadline. Zero makes
  * one nonblocking pass; it never sleeps. */

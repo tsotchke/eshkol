@@ -96,7 +96,7 @@
     (unix-stream-socket-close! accepted) (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
     (display "PASS: unix-socket NUL and >16 MiB payloads") (newline)))
 
-(define (run-descriptor-leak)
+(define (run-descriptor-count-check)
   (let ((p (socket-path "descriptor-count")))
     (let loop ((i 0))
       (when (< i 1000)
@@ -126,7 +126,7 @@
          (listener (unix-stream-socket-listen p)))
     (unix-stream-socket-close! listener)
     (unless (raises? (lambda () (unix-stream-socket-listen p)))
-      (error "run-path-lifecycle: expected refusal on an existing stale path"))
+      (error "run-path-lifecycle: expected refusal on an existing unlistened path"))
     (display "PASS: unix-socket socket-path lifecycle") (newline)))
 
 (cond
@@ -137,7 +137,7 @@
   ((equal? scenario "deadline_connect") (run-deadline-connect))
   ((equal? scenario "cancellation") (run-cancellation))
   ((equal? scenario "nul_and_large_payload") (run-nul-and-large-payload))
-  ((equal? scenario "descriptor_leak") (run-descriptor-leak))
+  ((equal? scenario "descriptor_count_check") (run-descriptor-count-check))
   ((equal? scenario "capability_denial") (run-capability-denial))
   ((equal? scenario "path_lifecycle") (run-path-lifecycle))
   (else (error "unix_socket_stream_pending.esk: unknown scenario" scenario)))

@@ -42,7 +42,7 @@
         (else (inexact->exact n))))
 
 (define (unix-stream-socket-listen path)
-  "Bind and listen on a filesystem path. Refuses a pre-existing, non-stale path."
+  "Bind and listen on a filesystem path. Refuses a pre-existing path that nothing is listening on."
   (capability-require! 'network path)
   (unless (and (string? path) (> (string-length path) 0))
     (error "unix-stream-socket-listen: expected a non-empty path"))

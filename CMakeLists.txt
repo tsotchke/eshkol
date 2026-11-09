@@ -8059,7 +8059,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
 
     set(ESHKOL_IPC_UNIX_PENDING_CASES
         connect_accept partial_slow_peer peer_close_epipe deadline_accept
-        deadline_connect cancellation nul_and_large_payload descriptor_leak
+        deadline_connect cancellation nul_and_large_payload descriptor_count_check
         capability_denial path_lifecycle)
     list(LENGTH ESHKOL_IPC_UNIX_PENDING_CASES ESHKOL_IPC_UNIX_PENDING_N)
     # One native C fixture plus a JIT and an AOT .esk case per acceptance

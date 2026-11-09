@@ -27,7 +27,7 @@
  * which is currently a scaffold (lib/core/unix_socket_stream_stub.c) that
  * reports ESHKOL_UNIX_STREAM_SOCKET_PLANNED for everything. Each scenario is
  * therefore expected to fail its first real-behavior CHECK -- that clean,
- * reported failure (not a hang or a crash) is the acceptance signal that the
+ * reported failure (not a hang or a fault) is the acceptance signal that the
  * stub is wired to the real contract. The suite stays out of the default run
  * (CTest label ipc-unix-pending, DISABLED) until the core implementation
  * lands and these checks start to pass for real.
@@ -198,7 +198,7 @@ static void scenario_nul_and_large_payload(const char *scratch_dir) {
     eshkol_unix_stream_socket_close(listener);
 }
 
-static void scenario_descriptor_leak(const char *scratch_dir) {
+static void scenario_descriptor_count_check(const char *scratch_dir) {
     make_path(scratch_dir, "descriptor-count");
     for (int i = 0; i < 1000; ++i) {
         unlink(g_path);
@@ -223,7 +223,7 @@ static void scenario_path_lifecycle(const char *scratch_dir) {
     CHECK(eshkol_unix_stream_socket_close(listener) == 0);
     CHECK(stat(g_path, &st) != 0); /* unlinked on close */
 
-    /* A stale path left on disk with nothing listening must be refused,
+    /* A path left on disk with nothing listening must be refused,
      * never silently unlinked and reused. */
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     CHECK(fd >= 0);
@@ -232,7 +232,7 @@ static void scenario_path_lifecycle(const char *scratch_dir) {
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, g_path, sizeof(addr.sun_path) - 1);
     CHECK(bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
-    close(fd); /* leaves a stale path: bound once, never listened on */
+    close(fd); /* leaves a path on disk, bound once, never listened on */
     int64_t second = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(second == ESHKOL_UNIX_STREAM_SOCKET_EEXIST);
     unlink(g_path);
@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
     else if (strcmp(scenario, "deadline_connect") == 0) scenario_deadline_connect(scratch_dir);
     else if (strcmp(scenario, "cancellation") == 0) scenario_cancellation(scratch_dir);
     else if (strcmp(scenario, "nul_and_large_payload") == 0) scenario_nul_and_large_payload(scratch_dir);
-    else if (strcmp(scenario, "descriptor_leak") == 0) scenario_descriptor_leak(scratch_dir);
+    else if (strcmp(scenario, "descriptor_count_check") == 0) scenario_descriptor_count_check(scratch_dir);
     else if (strcmp(scenario, "path_lifecycle") == 0) scenario_path_lifecycle(scratch_dir);
     else if (strcmp(scenario, "capability_denial") == 0) scenario_capability_denial(scratch_dir);
     else { fprintf(stderr, "unknown scenario: %s\n", scenario); return 2; }
