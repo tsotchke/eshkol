@@ -2767,6 +2767,21 @@ oracles:
         label: 'HoTT (ADR-0043): a cubical kernel with path types, J, transport, funext, computing univalence, the circle, suspensions and truncations; winding numbers of the circle computed by encode-decode and cross-checked in Cubical Agda; programs, rejections and documentation examples pass on the kernel, JIT, AOT and the VM'
         action: ./scripts/run_hott_gate.sh build
 
+      # core.manifold.atlas (ADR-0018 amendment, charts as gluing data):
+      # atlases on core.sheaf. Producer: scripts/run_manifold_atlas_gate.sh
+      # runs manifold_atlas_{jit,aot} and signed_curvature_{jit,aot} and every
+      # documentation example of the reference scope (manifold.md with the
+      # core.sheaf pages); PASS only
+      # when all of them ran and passed.
+      - id: v14_manifold_atlas
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_manifold_atlas"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Manifolds glued from charts (ADR-0018 amendment): core.manifold.atlas checks the cocycle condition and the chain rule of transition Jacobians exactly on exact atlases and to a stated tolerance on float ones, with core.sheaf obstructions as witnesses; the stereographic sphere atlas and the ball/half-space atlas contain the ADR-0018 chart and agree with core.manifold and core.curvature, with the K = 0 contract preserved; w1 and Cech and derived cohomology of the nerve with constant and orientation coefficients on triangulated surfaces; manifold_atlas_jit/aot, signed_curvature_jit/aot and the manifold.md examples all pass'
+        action: ./scripts/run_manifold_atlas_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
