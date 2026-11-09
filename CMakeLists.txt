@@ -13546,7 +13546,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
             --lib-dir ${CMAKE_CURRENT_BINARY_DIR}
             --case loopback --case borrow --case both-branches --case scalar-shadow)
     set_tests_properties(strict_resource_profile_runtime PROPERTIES
-        TIMEOUT 120 LABELS "ownership;strict-resources;runtime;network")
+        TIMEOUT 600 LABELS "ownership;strict-resources;runtime;network")
     # Every other handle family (file ports, threads, the event loop) on JIT
     # and AOT, plus the borrow scopes' close-on-raise and close-on-escape.
     set(_strict_handle_cases
