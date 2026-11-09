@@ -461,7 +461,7 @@ llvm::Value* TensorCodegen::tensorCast(const eshkol_operations_t* op) {
     if (!t) return nullptr;
     llvm::Value* arena_ptr = ctx_.currentArena();
     if (code == (int64_t)TENSOR_DTYPE_EXACT) {
-        // ADR-0055: the explicit conversion into the exact element type. The
+        // ADR-0058: the explicit conversion into the exact element type. The
         // operand may be a tensor, a list, a vector or a nest of them (the
         // shape rules of `(tensor X)`); exact elements are kept whole and a
         // finite double becomes the exact rational it denotes.
@@ -516,7 +516,7 @@ llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
     eshkol_operations_t eff = *op;
     eff.call_op.num_vars = positional;
     if (dtype_code == (int64_t)TENSOR_DTYPE_EXACT) {
-        // ADR-0055: (make-tensor shape fill :dtype 'exact). The fill is
+        // ADR-0058: (make-tensor shape fill :dtype 'exact). The fill is
         // evaluated once and stored whole in every slot of an exact tensor; an
         // inexact fill is refused rather than rounded into exactness.
         if (positional != 2) {

@@ -2147,7 +2147,7 @@ oracles:
   - name: v1.4-connection
     aliases: [v1.4, v1.4-release, release-1.4, connection]
     requires:
-      # ADR-0055 exact tensor element type (v1.4.0 item: exact linear algebra
+      # ADR-0058 exact tensor element type (v1.4.0 item: exact linear algebra
       # over tensor storage, cross-checked against core.exact_linalg).
       - test_evidence: true
         severity: high

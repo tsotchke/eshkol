@@ -282,7 +282,7 @@ static void* tensor_operand_checked_core(const eshkol_tagged_value_t* val,
  * for. An operator listed for neither reads f64 slots only and refuses both. */
 enum : int32_t {
     TENSOR_ACCEPT_DUAL  = 1,   /* forward-mode jet tensors (ADR-0020 amendment 2) */
-    TENSOR_ACCEPT_EXACT = 2,   /* exact element tensors (ADR-0055) */
+    TENSOR_ACCEPT_EXACT = 2,   /* exact element tensors (ADR-0058) */
 };
 
 /* Refuse a tagged numeric tensor the operator has no rule for, by name. */

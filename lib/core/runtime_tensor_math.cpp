@@ -324,7 +324,7 @@ extern "C" void eshkol_jet_tensor_sum(arena_t* arena, const eshkol_tensor_t* ten
                                 "tensor-sum");
         } else {
             // Two plain numbers: the language's own `+`, which keeps an exact
-            // sum exact (an exact tensor, ADR-0055) and follows contagion.
+            // sum exact (an exact tensor, ADR-0058) and follows contagion.
             eshkol_tagged_value_t next{};
             eshkol_taylor_binary_tagged(arena, &acc, &e, /*add=*/0, &next);
             acc = next;
@@ -377,7 +377,7 @@ extern "C" int32_t eshkol_tensor_real_to_double(const eshkol_tagged_value_t* val
                                                  double* out);
 extern "C" double eshkol_tensor_reduce_precision_value(double value, int64_t dtype);
 
-/* The representation of a tagged-kernel result (ADR-0055), decided from the
+/* The representation of a tagged-kernel result (ADR-0058), decided from the
  * operand dtypes by R7RS contagion, never by inspecting the values:
  *   - a jet operand makes a jet tensor (the derivative is carried);
  *   - two exact operands make an exact tensor (every slot an exact rational,

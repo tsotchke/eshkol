@@ -141,7 +141,7 @@ llvm::Value* TensorCodegen::isDualTensor(llvm::Value* tensor_struct_ptr) {
         llvm::ConstantInt::get(ctx_.int64Type(), TENSOR_DTYPE_DUAL));
 }
 
-// Tagged numeric slots (a jet tensor or an exact tensor, ADR-0055): the
+// Tagged numeric slots (a jet tensor or an exact tensor, ADR-0058): the
 // tensors the generic-scalar kernels take. See header.
 llvm::Value* TensorCodegen::isTaggedNumericTensor(llvm::Value* tensor_struct_ptr) {
     return ctx_.emitTensorIsTaggedNumeric(tensor_struct_ptr);

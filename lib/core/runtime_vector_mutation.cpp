@@ -183,7 +183,7 @@ bool is_forward_jet(const eshkol_tagged_value_t& value) {
 }
 
 // An exact real of the scalar tower: a fixnum, a bignum or a rational. These
-// are the only values an exact tensor slot holds (ADR-0055).
+// are the only values an exact tensor slot holds (ADR-0058).
 bool is_exact_real(const eshkol_tagged_value_t& value) {
     return eshkol_ad_point_is_exact_number(&value) != 0;
 }
@@ -587,7 +587,7 @@ extern "C" int32_t eshkol_tensor_leaf_is_storable(const eshkol_tagged_value_t* v
 }
 
 // (make-tensor shape fill :dtype 'exact): re-point a freshly built tensor at
-// tagged slots and store the exact fill whole in every one (ADR-0055). The
+// tagged slots and store the exact fill whole in every one (ADR-0058). The
 // descriptor keeps its address. An inexact fill is refused, not rounded.
 extern "C" void eshkol_tensor_make_exact_filled(void* tensor_object,
                                                 const eshkol_tagged_value_t* fill) {

@@ -311,7 +311,7 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
         // dual rule: jetTensorArithmetic (tensorArithmeticInternal)
         "tensor-add", "tensor-sub", "tensor-mul", "tensor-div",
     };
-    // The operators with an exact rule (ADR-0055): they read an exact
+    // The operators with an exact rule (ADR-0058): they read an exact
     // tensor's tagged slots through the generic exact ring, or only its shape.
     // Every other operator refuses an exact tensor by name, so its slots are
     // never read as doubles and it is never rounded implicitly. Add an

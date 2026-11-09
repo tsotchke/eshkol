@@ -5,7 +5,7 @@
 ;;; vector, so entries stay on the scalar exact tower (int64 / bignum /
 ;;; rational). Every public function also accepts a rank-2 TENSOR (and a
 ;;; rank-1 tensor for a right-hand side): an exact tensor, built with
-;;; `(tensor-cast X 'exact)` (ADR-0055), is read entry by entry and stays
+;;; `(tensor-cast X 'exact)` (ADR-0058), is read entry by entry and stays
 ;;; exact; a tensor operand gets a tensor answer, exact when every entry of
 ;;; the answer is exact. See docs/breakdown/EXACT_ARITHMETIC.md for the tower
 ;;; and its contagion rules, docs/reference/stdlib/exact_linalg.md for the
@@ -116,7 +116,7 @@
       (and (eq? (tensor-dtype m) 'exact) (= (length (tensor-shape m)) 2))
       (el-rows-exact-matrix? m)))
 
-;; ---- tensor operands (ADR-0055) --------------------------------------
+;; ---- tensor operands (ADR-0058) --------------------------------------
 ;; A rank-2 tensor is read into the rows representation entry by entry with
 ;; tensor-ref, so an exact tensor's entries stay exact and an f64 tensor's
 ;; are the doubles it holds (contagion then makes the answer inexact).

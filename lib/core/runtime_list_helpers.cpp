@@ -282,7 +282,7 @@ static void coll_raise(const char* message) {
 static void coll_store_leaf(eshkol_tensor_t* t, uint64_t pos,
                             const eshkol_tagged_value_t* e) {
     // An exact tensor under construction is the explicit conversion
-    // `(tensor-cast X 'exact)` asked for (ADR-0055): an exact leaf is kept as
+    // `(tensor-cast X 'exact)` asked for (ADR-0058): an exact leaf is kept as
     // it is and a finite double becomes the exact rational it denotes, as
     // `exact` gives it. Anything else has no exact value and raises.
     if (t->dtype == ESHKOL_TENSOR_DTYPE_EXACT) {
@@ -305,7 +305,7 @@ static void coll_store_leaf(eshkol_tensor_t* t, uint64_t pos,
 }
 
 /* Allocate a rank-`ndim` tensor of `total` slots for the walker: f64 slots, or
- * tagged slots when `exact` (ADR-0055). Dimensions are left for the caller. */
+ * tagged slots when `exact` (ADR-0058). Dimensions are left for the caller. */
 static eshkol_tensor_t* coll_allocate(arena_t* arena, uint64_t ndim, uint64_t total,
                                       bool exact) {
     if (!exact) return arena_allocate_tensor_full(arena, ndim, total);
@@ -530,7 +530,7 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
 
 /* (tensor-cast X 'exact) for a list, a vector, a nest of them, a scalar or a
  * tensor: the same walker and shape rules as `(tensor X)`, building an exact
- * tensor (ADR-0055). Exact leaves are kept whole; a finite double becomes the
+ * tensor (ADR-0058). Exact leaves are kept whole; a finite double becomes the
  * exact rational it denotes. */
 void* eshkol_exact_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
     return tensor_from_collection_impl(arena, input, true);

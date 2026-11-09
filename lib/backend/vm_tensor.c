@@ -140,7 +140,7 @@ static int vm_tensor_dtype_from_name(const char* name) {
 /** @brief True for the exact element type's name (`exact`, with the same
  *         optional prefixes vm_tensor_dtype_from_name accepts). The VM's
  *         tensors are double-backed, so it refuses this dtype explicitly
- *         rather than mapping it to f64 (ADR-0055). */
+ *         rather than mapping it to f64 (ADR-0058). */
 static int vm_tensor_dtype_name_is_exact(const char* name) {
     if (!name) return 0;
     while (*name == '\'' || *name == ':' || *name == '#') name++;

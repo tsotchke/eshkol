@@ -226,7 +226,7 @@ void* eshkol_tensor_apply_dtype(void* tensor_ptr, int64_t dtype) {
 // element through the target precision. Returns the new tensor data pointer
 // (HEAP_PTR payload), or null on failure. Used by (tensor-cast t 'f16).
 //
-// ADR-0055: `'exact` is the explicit conversion into the exact element type
+// ADR-0058: `'exact` is the explicit conversion into the exact element type
 // (each finite double becomes the exact rational it denotes, as `exact` gives
 // it); an exact source cast to a precision dtype is the explicit conversion
 // out of it (each slot projected as `inexact` gives it, then reduced). A jet

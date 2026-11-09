@@ -168,7 +168,7 @@ Tensors carry a dtype tag. The default is `f64`. `tensor-cast` converts between
 (tensor-dtype (tensor-cast t 'f64))     ;; => f64
 ```
 
-**Exact elements.** `(tensor-cast X 'exact)` builds an exact tensor (ADR-0055):
+**Exact elements.** `(tensor-cast X 'exact)` builds an exact tensor (ADR-0058):
 each element is an exact rational of the scalar tower, kept whole, and `X` may
 be a tensor, a list, a vector or a rectangular nest of them. A finite double
 converts as `exact` converts it. `(make-tensor shape fill :dtype 'exact)` fills

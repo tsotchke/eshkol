@@ -20,7 +20,7 @@ sources:
   - lib/core/exact_linalg.esk
   - tests/stdlib/exact_tensor_test.esk
 ---
-# ADR-0055: The exact tensor element type
+# ADR-0058: The exact tensor element type
 
 **Status:** Proposed
 **Scope:** The tensor descriptor's `dtype` field, the tensor slot store, the

@@ -13831,7 +13831,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "PASS: exact_psd_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
-    # ADR-0055: the exact tensor element type (construction, exact kernels,
+    # ADR-0058: the exact tensor element type (construction, exact kernels,
     # contagion, refusals, lib/math.esk exact seeds, NS mechanization steps),
     # cross-checked against core.exact_linalg under JIT and AOT.
     add_test(NAME exact_tensor_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_tensor_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")

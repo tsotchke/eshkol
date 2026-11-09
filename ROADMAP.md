@@ -787,7 +787,7 @@ under the same discipline that made `Qubit` linear.
       oracle. Remaining: `GF(p)`, the coefficient norm on series values, and
       polynomial-valued duals
 - [x] Exact linear algebra: an exact tensor element type - SHIPPED in
-      v1.4.0-connection (ADR-0055). Tensors of dtype `exact` carry exact
+      v1.4.0-connection (ADR-0058). Tensors of dtype `exact` carry exact
       rationals of the scalar tower in tensor storage (`(tensor-cast X 'exact)`,
       `(make-tensor shape fill :dtype 'exact)`); element access, elementwise
       arithmetic, `matmul`, `transpose`, `tensor-sum`, `tensor-det`,

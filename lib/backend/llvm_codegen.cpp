@@ -36437,7 +36437,7 @@ private:
                 builder->CreateStructGEP(tensor_type, ptr_a, 4));
             Value* b_dtype = builder->CreateLoad(int64_type,
                 builder->CreateStructGEP(tensor_type, ptr_b, 4));
-            // ADR-0055: an exact tensor takes the same tagged kernel, which
+            // ADR-0058: an exact tensor takes the same tagged kernel, which
             // multiplies and sums through the generic exact ring.
             Value* a_is_dual = ctx_->emitDtypeIsTaggedNumeric(a_dtype);
             Value* b_is_dual = ctx_->emitDtypeIsTaggedNumeric(b_dtype);

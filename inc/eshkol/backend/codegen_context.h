@@ -219,7 +219,7 @@ public:
      * eshkol_tensor_dtype_is_tagged_numeric (lib/core/arena_memory.h), so every
      * site that chooses a slot width or a kernel agrees with the runtime.
      *  - HasTaggedSlots: `elements` holds 16-byte tagged values (a jet tensor,
-     *    a boxed carrier or an exact tensor, ADR-0020 / ADR-0055).
+     *    a boxed carrier or an exact tensor, ADR-0020 / ADR-0058).
      *  - IsTaggedNumeric: a numeric tensor whose slots are tagged, so it takes
      *    the generic-scalar kernels (a jet tensor or an exact tensor).
      */

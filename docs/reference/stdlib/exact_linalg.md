@@ -7,7 +7,7 @@ Linear algebra over the exact tower — int64, bignum, exact rational — on
 Scheme vectors of row vectors **and on exact tensors**. An n x m matrix is
 `(vector row0 row1 ... row(n-1))` where each `rowI` is a length-m vector, or
 a rank-2 tensor; a right-hand side is a vector or a rank-1 tensor. An exact
-tensor (`(tensor-cast X 'exact)`, ADR-0055) carries exact rationals in tensor
+tensor (`(tensor-cast X 'exact)`, ADR-0058) carries exact rationals in tensor
 storage; the native kernels `tensor-det`, `tensor-inverse`, `tensor-solve`,
 `linear-solve`, `matmul` and `transpose` compute over it exactly, and this
 module accepts it too, so the same system can be solved by two independent
@@ -48,7 +48,7 @@ matrix never produces an intermediate fraction.
 ## Exact tensors
 
 An exact tensor stores each element as an exact rational of the scalar tower
-in tensor storage (dtype `exact`, ADR-0055). It is a tensor (`tensor?` is
+in tensor storage (dtype `exact`, ADR-0058). It is a tensor (`tensor?` is
 `#t`, `(tensor-dtype t)` is `exact`), built only by an explicit conversion:
 
 | Construction | Result |

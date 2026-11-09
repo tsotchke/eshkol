@@ -973,7 +973,7 @@ typedef enum eshkol_slot_store_status {
     ESHKOL_SLOT_STORE_BOUNDS = 2,
     ESHKOL_SLOT_STORE_CONTAINER = 3,  // operand is neither a vector nor a tensor
     ESHKOL_SLOT_STORE_VALUE = 4,      // value has no representation in the slot
-    ESHKOL_SLOT_STORE_INEXACT = 5     // an inexact number offered to an exact tensor (ADR-0055)
+    ESHKOL_SLOT_STORE_INEXACT = 5     // an inexact number offered to an exact tensor (ADR-0058)
 } eshkol_slot_store_status_t;
 // Store one value at a linear index of a vector or tensor operand.
 int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* sequence,
@@ -1099,7 +1099,7 @@ typedef enum eshkol_tensor_dtype {
     // longer a numeric tensor: `tensor?` answers #f for it and every tensor
     // kernel refuses it through the operand check.
     ESHKOL_TENSOR_DTYPE_BOXED = 65,
-    // ADR-0055: the exact element type. `elements` holds 16-byte tagged values,
+    // ADR-0058: the exact element type. `elements` holds 16-byte tagged values,
     // each an exact rational of the scalar tower (fixnum, bignum or rational),
     // laid out exactly like the two tagged dtypes above. Unlike a boxed
     // carrier it IS a numeric tensor (`tensor?` answers #t): the kernels with

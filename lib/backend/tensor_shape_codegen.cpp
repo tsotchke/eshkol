@@ -1245,7 +1245,7 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
         ctx_.builder().SetInsertPoint(trans_dims_ok);
     }
 
-    // ADR-0055: an exact tensor's 16-byte tagged slots are moved whole by the
+    // ADR-0058: an exact tensor's 16-byte tagged slots are moved whole by the
     // runtime, so every entry keeps its exact value; the f64 loop below reads
     // 8-byte slots only.
     {

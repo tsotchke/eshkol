@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  *
- * The exact tensor element type: kernels over tagged exact slots (ADR-0055).
+ * The exact tensor element type: kernels over tagged exact slots (ADR-0058).
  *
  * An exact tensor (dtype ESHKOL_TENSOR_DTYPE_EXACT) stores each element as a
  * 16-byte tagged exact rational of the scalar tower -- a fixnum, a bignum or a

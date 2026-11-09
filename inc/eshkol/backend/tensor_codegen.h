@@ -59,7 +59,7 @@ public:
     static constexpr uint64_t TENSOR_DTYPE_DUAL = 64;
 
     /**
-     * ADR-0055 exact-element dtype. Mirrors ESHKOL_TENSOR_DTYPE_EXACT in
+     * ADR-0058 exact-element dtype. Mirrors ESHKOL_TENSOR_DTYPE_EXACT in
      * lib/core/arena_memory.h (asserted equal in llvm_codegen.cpp). A tensor
      * with this dtype stores 16-byte tagged exact rationals in `elements`.
      */
@@ -439,7 +439,7 @@ public:
     /** Determinant via LU decomposition */
     /**
      * Exact dispatch for tensor-det / tensor-inverse / tensor-solve /
-     * linear-solve (ADR-0055). begin...() emits a runtime test: when an
+     * linear-solve (ADR-0058). begin...() emits a runtime test: when an
      * operand is an exact tensor, the call is answered by
      * eshkol_exact_linalg_tagged (fraction-free elimination over the exact
      * ring, or the f64 kernel on the projections when contagion makes the
@@ -1460,7 +1460,7 @@ private:
 
     /**
      * True when the tensor is a numeric tensor with 16-byte tagged slots: a
-     * jet tensor (dtype DUAL) or an exact tensor (dtype EXACT, ADR-0055).
+     * jet tensor (dtype DUAL) or an exact tensor (dtype EXACT, ADR-0058).
      * These take the generic-scalar runtime kernels (elementwise arithmetic,
      * matmul, sum, element access), which apply the language's own scalar
      * operators slot by slot, so an exact tensor stays exact and a jet tensor

@@ -1,4 +1,4 @@
-;;; The exact tensor element type (ADR-0055).
+;;; The exact tensor element type (ADR-0058).
 ;;;
 ;;; An exact tensor stores exact rationals of the scalar tower in tensor
 ;;; storage. Construction, element access, elementwise arithmetic, matmul,
