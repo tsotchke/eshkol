@@ -1724,6 +1724,7 @@ public:
         uint64_t function_scope_id = 0;                // scope the function closes over
         uint64_t frame_id = 0;                         // CONTINUATION / LOOP frame
         bool lent = false;                             // lent by a borrow scope that closes it
+        bool is_exit = false;                          // TERMINAL_CONTROL that ends the process
         std::string unknown_reason;
 
         VariableInfo() = default;
@@ -2504,6 +2505,7 @@ private:
         const sr::Contract* contract = nullptr;
         const eshkol_ast_t* function_node = nullptr;
         bool proven = false;
+        bool is_exit = false;
         ResourceKind future_kind = ResourceKind::NONE;
         std::string unknown_reason;
     };
@@ -2592,6 +2594,7 @@ private:
             return out;
         }
         unresolvedCallable(source, &out.effect, &out.contract);
+        out.is_exit = source == "exit";
         if (out.effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) {
             out.unknown_reason = "builtin '" + source + "' has no strict resource effect summary";
             out.proven = false;
@@ -2689,6 +2692,7 @@ private:
                 info.function_node = it->second.function_node;
                 info.function_scope_id = currentScope().id;
                 info.is_proven_callable = it->second.proven;
+                info.is_exit = it->second.is_exit;
                 info.unknown_reason = it->second.unknown_reason;
                 if (it->second.future_kind != ResourceKind::NONE) {
                     info.resource_kind = it->second.future_kind;
@@ -2885,6 +2889,7 @@ private:
         target.function_node = nullptr;
         target.function_scope_id = 0;
         target.is_proven_callable = false;
+        target.is_exit = false;
         target.unknown_reason.clear();
         if (value && value->type == ESHKOL_VAR) {
             const std::string source_name = getVarName(value);
@@ -2896,6 +2901,7 @@ private:
                 target.function_scope_id = source->function_scope_id;
                 target.frame_id = source->frame_id;
                 target.is_proven_callable = source->is_proven_callable;
+                target.is_exit = source->is_exit;
                 target.unknown_reason = source->unknown_reason;
                 if (source->callable_effect != CallableEffect::NONE || source->is_proven_callable)
                     alias_value_nodes_.insert(value);
@@ -2906,6 +2912,7 @@ private:
             }
             if (!source) {
                 unresolvedCallable(source_name, &target.callable_effect, &target.contract);
+                target.is_exit = source_name == "exit";
                 if (target.callable_effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) {
                     target.unknown_reason = "builtin '" + source_name +
                         "' has no strict resource effect summary";
@@ -4392,6 +4399,7 @@ private:
             case CallableEffect::TERMINAL_CONTROL: {
                 WorkItem after = WorkItem::marker(WorkItem::Kind::TERMINAL_AFTER, node, 0);
                 after.name = function_name;
+                after.flag = callee.binding ? callee.binding->is_exit : function_name == "exit";
                 work.push_back(after);
                 break;
             }
@@ -4910,14 +4918,14 @@ private:
                     applyPendingUserCall(item);
                     continue;
                 case WorkItem::Kind::TERMINAL_AFTER:
-                    if (item.name == "exit") {
+                    if (item.flag) {
                         if (!dead_)
                             for (const auto& scope : scope_stack_)
                                 for (const auto& entry : scope.variables)
                                     if (entry.second.resource_kind != ResourceKind::NONE &&
                                         isLiveResourceState(entry.second.resource_state))
-                                        reportResourceError("terminal control transfer 'exit' occurs while resource '" +
-                                            entry.first + "' may still be live");
+                                        reportResourceError("terminal control transfer '" + item.name +
+                                            "' occurs while resource '" + entry.first + "' may still be live");
                         dead_ = true;
                     } else {
                         explicitRaise("'" + item.name + "'");
