@@ -25,9 +25,9 @@
 (define body-count 0)
 (define selected
   (case (begin (set! key-count (+ key-count 1)) 'target)
-    ((wrong) (set! body-count 100) 'wrong)
+    ((wrong) (set! body-count 100) 'miss)
     ((target alias) (set! body-count (+ body-count 1)) 'selected)
-    (else (set! body-count 1000) 'wrong)))
+    (else (set! body-count 1000) 'miss)))
 (check 'key-once (= 1 key-count))
 (check 'body-once (= 1 body-count))
 (check 'last-body-value (eq? 'selected selected))
