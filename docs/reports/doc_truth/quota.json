@@ -4,7 +4,7 @@
  "phase": 1,
  "claim_source": {
   "tool": "icc doc-typed-claims",
-  "icc_revision": "unknown",
+  "icc_revision": "4c9ef7835ba1",
   "icc_schema_version": "1.0",
   "path_prefix": "docs/"
  },

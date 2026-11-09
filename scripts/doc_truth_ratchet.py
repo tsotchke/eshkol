@@ -97,14 +97,29 @@ def find_icc(explicit: str | None, source: Path) -> Path | None:
 
 
 def icc_version(icc: Path) -> str:
-    root = icc.resolve().parent.parent
+    """Git revision of the ICC checkout that provides @p icc (searching up;
+    a launcher script that execs "$ICC_HOME/bin/icc" is followed)."""
+    roots = [icc.resolve().parent, *icc.resolve().parents]
     try:
-        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short=12", "HEAD"],
-                             text=True, capture_output=True, timeout=30, check=False)
-        if out.returncode == 0 and out.stdout.strip():
-            return out.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+        import re
+        text = icc.read_text(encoding="utf-8", errors="replace")[:4096]
+        m = re.search(r'ICC_HOME="\$\{ICC_HOME:-([^}"]+)\}"', text)
+        home = os.environ.get("ICC_HOME") or (m.group(1) if m else None)
+        if home:
+            roots.insert(0, Path(home))
+    except OSError:
         pass
+    for root in roots:
+        if not (root / ".git").exists():
+            continue
+        try:
+            out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short=12", "HEAD"],
+                                 text=True, capture_output=True, timeout=30, check=False)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        break
     return "unknown"
 
 
