@@ -800,9 +800,12 @@ under the same discipline that made `Qubit` linear.
       oracle pilot on the exact-AD surface
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
       accuracy and throughput, pinned hardware)
-- [ ] Codebase: native image I/O dependency removal; decompose
+- [x] Codebase: native image I/O dependency removal; decompose
       `runtime_regions.cpp`; doc-truth ratchet phase 1 (rank + quota, not
-      yet release-blocking)
+      yet release-blocking). Image I/O uses built-in PNG/JPEG/BMP codecs
+      on every platform (WebP Planned for v1.4.1); the region runtime is
+      four translation units; `doc_truth_ratchet_phase1` ranks `docs/`
+      claims against `docs/reports/doc_truth/quota.json`
 - [ ] W6 interface spike: compile and execute one StableHLO module through
       the PJRT CPU plugin, with a recorded trace. This does not claim device
       execution or TPU readiness. XLA multi-device single-host is also in the
