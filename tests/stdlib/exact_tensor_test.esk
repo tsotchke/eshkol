@@ -1,0 +1,342 @@
+;;; The exact tensor element type (ADR-0055).
+;;;
+;;; An exact tensor stores exact rationals of the scalar tower in tensor
+;;; storage. Construction, element access, elementwise arithmetic, matmul,
+;;; transpose, sum, det, inverse and solve stay exact when every input is
+;;; exact; an exact operand meeting an inexact one follows R7RS contagion to
+;;; an inexact result; every f64-only kernel refuses an exact tensor by name.
+;;; Every exact answer here is cross-checked against core.exact_linalg on the
+;;; same system (an independent implementation over Scheme vectors) and, where
+;;; one exists, against a closed form.
+(require stdlib)
+(require math)
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+(define (refused? thunk)
+  (guard (exn (#t #t)) (thunk) #f))
+
+;; ---- helpers ------------------------------------------------------------
+
+(define (product l) (if (null? l) 1 (* (car l) (product (cdr l)))))
+
+;; The entries of a tensor in row-major order, as a list.
+(define (entries t)
+  (let* ((n (product (tensor-shape t))) (flat (reshape t (list n))))
+    (let loop ((i (- n 1)) (acc '()))
+      (if (< i 0) acc (loop (- i 1) (cons (tensor-ref flat i) acc))))))
+
+(define (all-exact? t)
+  (let loop ((l (entries t)))
+    (cond ((null? l) #t) ((exact? (car l)) (loop (cdr l))) (else #f))))
+
+(define (all-inexact? t)
+  (let loop ((l (entries t)))
+    (cond ((null? l) #t) ((inexact? (car l)) (loop (cdr l))) (else #f))))
+
+(define (list=? a b)
+  (cond ((and (null? a) (null? b)) #t)
+        ((or (null? a) (null? b)) #f)
+        ((= (car a) (car b)) (list=? (cdr a) (cdr b)))
+        (else #f)))
+
+;; Row-major entries of a rows matrix (vector of row vectors) or a vector.
+(define (rows-entries m)
+  (let loop ((i (- (vector-length m) 1)) (acc '()))
+    (if (< i 0)
+        acc
+        (let ((row (vector-ref m i)))
+          (if (vector? row)
+              (loop (- i 1) (append (vector->list row) acc))
+              (loop (- i 1) (cons row acc)))))))
+
+(define (same-entries? t m) (list=? (entries t) (rows-entries m)))
+
+;; Rows representation of a list of row lists.
+(define (rows . ls)
+  (list->vector (map list->vector ls)))
+
+(define (exact-tensor . ls) (tensor-cast ls 'exact))
+
+(define (identity-entries n)
+  (let loop ((k (- (* n n) 1)) (acc '()))
+    (if (< k 0) acc
+        (loop (- k 1) (cons (if (= (quotient k n) (remainder k n)) 1 0) acc)))))
+
+;; ---- construction and representation ------------------------------------
+
+(define E (exact-tensor (list 1 2) (list 3 4)))
+(check "exact_tensor_test: tensor-cast builds an exact tensor" (eq? (tensor-dtype E) 'exact))
+(check "an exact tensor is a tensor" (tensor? E))
+(check "exact tensor shape" (equal? (tensor-shape E) '(2 2)))
+(check "exact tensor entry is exact" (and (exact? (tensor-ref E 1 0)) (= (tensor-ref E 1 0) 3)))
+
+(define R (tensor-cast (list 1/3 2/7 -5/11) 'exact))
+(check "rational entries are kept whole" (and (= (tensor-ref R 0) 1/3) (= (tensor-ref R 2) -5/11)))
+(check "rational entries stay exact" (all-exact? R))
+(check "(tensor 1/3) is the f64 tensor (unchanged rule)" (inexact? (tensor-ref (tensor 1/3) 0)))
+
+(define from-f64 (tensor-cast (tensor 0.5 0.25 -3.0) 'exact))
+(check "tensor-cast of an f64 tensor gives the exact binary values"
+       (list=? (entries from-f64) '(1/2 1/4 -3)))
+(check "tensor-cast of an f64 tensor is exact" (all-exact? from-f64))
+
+(define back (tensor-cast E 'f64))
+(check "tensor-cast to f64 is the explicit inexact conversion"
+       (and (eq? (tensor-dtype back) 'f64) (all-inexact? back) (list=? (entries back) '(1.0 2.0 3.0 4.0))))
+
+(define filled (make-tensor '(2 3) 1/2 :dtype 'exact))
+(check "make-tensor :dtype 'exact fills with the exact value"
+       (and (eq? (tensor-dtype filled) 'exact) (list=? (entries filled) '(1/2 1/2 1/2 1/2 1/2 1/2))))
+(check "make-tensor :dtype 'exact refuses an inexact fill"
+       (refused? (lambda () (make-tensor '(2) 0.5 :dtype 'exact))))
+(check "tensor-cast refuses an infinite element"
+       (refused? (lambda () (tensor-cast (list 1 (/ 1.0 0.0)) 'exact))))
+(check "nested vectors build an exact matrix"
+       (same-entries? (tensor-cast (vector (vector 1/2 1) (vector 2 3)) 'exact) (rows '(1/2 1) '(2 3))))
+
+;; ---- element access and stores ------------------------------------------
+
+(define S (exact-tensor (list 0 0) (list 0 0)))
+(tensor-set! S 0 1 5/3)
+(check "tensor-set! stores an exact rational whole" (and (= (tensor-ref S 0 1) 5/3) (exact? (tensor-ref S 0 1))))
+(check "tensor-set! refuses an inexact value" (refused? (lambda () (tensor-set! S 1 1 0.5))))
+(check "a refused store leaves the slot unchanged" (= (tensor-ref S 1 1) 0))
+(define big (expt 10 40))
+(tensor-set! S 1 0 big)
+(check "tensor-set! stores a bignum whole" (= (tensor-ref S 1 0) big))
+
+;; ---- elementwise arithmetic, sum, matmul, transpose -----------------------
+
+(define A (exact-tensor (list 1/2 1/3) (list 1/4 1/5)))
+(define B (exact-tensor (list 1 2) (list 3 4)))
+(check "tensor-add is exact" (and (all-exact? (tensor-add A B))
+                                  (list=? (entries (tensor-add A B)) '(3/2 7/3 13/4 21/5))))
+(check "tensor-sub is exact" (list=? (entries (tensor-sub A B)) '(-1/2 -5/3 -11/4 -19/5)))
+(check "tensor-mul is exact" (list=? (entries (tensor-mul A B)) '(1/2 2/3 3/4 4/5)))
+(check "tensor-div is exact" (list=? (entries (tensor-div A B)) '(1/2 1/6 1/12 1/20)))
+(check "tensor-div by an exact zero entry raises"
+       (refused? (lambda () (tensor-div A (exact-tensor (list 1 0) (list 1 1))))))
+(check "elementwise arithmetic broadcasts an exact scalar tensor"
+       (list=? (entries (tensor-mul A (tensor-cast (list 6) 'exact))) '(3 2 3/2 6/5)))
+(check "generic + on exact tensors is exact" (all-exact? (+ A B)))
+(check "tensor-sum is exact" (let ((s (tensor-sum A))) (and (exact? s) (= s 77/60))))
+
+(define AB (matmul A B))
+(check "matmul is exact" (and (eq? (tensor-dtype AB) 'exact) (all-exact? AB)))
+(check "matmul agrees with exact-matrix-mul"
+       (same-entries? AB (exact-matrix-mul (rows '(1/2 1/3) '(1/4 1/5)) (rows '(1 2) '(3 4)))))
+(define Av (matmul A (tensor-cast (list 6 12) 'exact)))
+(check "matmul of a matrix and a vector is an exact vector"
+       (and (equal? (tensor-shape Av) '(2)) (list=? (entries Av) '(7 39/10))))
+(check "transpose is exact" (list=? (entries (transpose A)) '(1/2 1/4 1/3 1/5)))
+(check "transpose agrees with exact-matrix-transpose"
+       (same-entries? (transpose A) (exact-matrix-transpose (rows '(1/2 1/3) '(1/4 1/5)))))
+
+;; ---- determinant, inverse, solve: cross-checked with core.exact_linalg ----
+
+(define M3-rows (rows '(1 2 3) '(2 5 4) '(1 0 5)))
+(define M3 (tensor-cast M3-rows 'exact))
+(check "tensor-det of an exact matrix is exact" (let ((d (tensor-det M3))) (and (exact? d) (= d -2))))
+(check "tensor-det agrees with exact-det" (= (tensor-det M3) (exact-det M3-rows)))
+(check "exact-det accepts an exact tensor" (= (exact-det M3) (tensor-det M3)))
+
+(define M3-inv (tensor-inverse M3))
+(check "tensor-inverse is exact" (and (eq? (tensor-dtype M3-inv) 'exact) (all-exact? M3-inv)))
+(check "tensor-inverse agrees with exact-inverse" (same-entries? M3-inv (exact-inverse M3-rows)))
+(check "A * A^-1 is exactly the identity" (list=? (entries (matmul M3 M3-inv)) (identity-entries 3)))
+(check "exact-inverse of an exact tensor is an exact tensor"
+       (let ((t (exact-inverse M3))) (and (tensor? t) (eq? (tensor-dtype t) 'exact)
+                                          (list=? (entries t) (entries M3-inv)))))
+
+(define b3 (tensor-cast (list 1 2 3) 'exact))
+(define x3 (tensor-solve M3 b3))
+(check "tensor-solve is exact" (and (eq? (tensor-dtype x3) 'exact) (all-exact? x3)))
+(check "tensor-solve agrees with exact-solve" (same-entries? x3 (exact-solve M3-rows (vector 1 2 3))))
+(check "A x = b holds exactly" (list=? (entries (matmul M3 x3)) '(1 2 3)))
+(check "linear-solve takes the exact path" (list=? (entries (linear-solve M3 b3)) (entries x3)))
+(define X2 (tensor-solve M3 (tensor-cast (list (list 1 0) (list 0 1) (list 0 0)) 'exact)))
+(check "tensor-solve with several right-hand sides"
+       (and (equal? (tensor-shape X2) '(3 2))
+            (list=? (entries X2)
+                    (let ((inv (entries M3-inv)))
+                      (list (list-ref inv 0) (list-ref inv 1) (list-ref inv 3)
+                            (list-ref inv 4) (list-ref inv 6) (list-ref inv 7))))))
+
+;; ---- rank and nullspace over an exact tensor ------------------------------
+
+(define Sg (exact-tensor (list 1 2 3) (list 2 4 6) (list 1 1 1)))
+(check "exact-rank of an exact tensor" (= (exact-rank Sg) 2))
+(define ker (exact-nullspace Sg))
+(check "exact-nullspace of an exact tensor is a list of exact tensors"
+       (and (= (length ker) 1) (eq? (tensor-dtype (car ker)) 'exact)))
+(check "the nullspace vector is annihilated exactly"
+       (list=? (entries (matmul Sg (car ker))) '(0 0 0)))
+
+;; ---- large entries: bignums and bignum rationals ---------------------------
+
+;; det(H_8) = 1/365356847125734485878112256000000 (OEIS A005249).
+(define (hilbert-rows n)
+  (let ((m (make-vector n #f)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((row (make-vector n 0)))
+            (let fill ((j 0))
+              (if (< j n) (begin (vector-set! row j (/ 1 (+ i j 1))) (fill (+ j 1))) #t))
+            (vector-set! m i row)
+            (loop (+ i 1)))
+          m))))
+(define H8 (tensor-cast (hilbert-rows 8) 'exact))
+(define dH8 (tensor-det H8))
+(check "det of the 8x8 Hilbert matrix is exact"
+       (and (exact? dH8) (= dH8 (/ 1 365356847125734485878112256000000))))
+(check "Hilbert det agrees with exact-det" (= dH8 (exact-det (hilbert-rows 8))))
+(define H8-inv (tensor-inverse H8))
+(check "the inverse Hilbert matrix has integer entries"
+       (let loop ((l (entries H8-inv))) (cond ((null? l) #t) ((integer? (car l)) (loop (cdr l))) (else #f))))
+(check "the entries of the inverse Hilbert matrix sum to n^2" (= (tensor-sum H8-inv) 64))
+(check "H * H^-1 is exactly the identity" (list=? (entries (matmul H8 H8-inv)) (identity-entries 8)))
+
+(define a30 (expt 10 30))
+(define T3-rows (rows (list a30 1 0) (list 1 a30 1) (list 0 1 a30)))
+(define T3 (tensor-cast T3-rows 'exact))
+(check "det with bignum entries is exact: a(a^2 - 2)"
+       (= (tensor-det T3) (* a30 (- (* a30 a30) 2))))
+(define xT (tensor-solve T3 (tensor-cast (list 1 1 1) 'exact)))
+(check "bignum solve agrees with exact-solve" (same-entries? xT (exact-solve T3-rows (vector 1 1 1))))
+(check "bignum solve satisfies the system exactly" (list=? (entries (matmul T3 xT)) '(1 1 1)))
+
+;; ---- singular systems are reported exactly --------------------------------
+
+(define Z (exact-tensor (list 1 2) (list 2 4)))
+(check "det of a singular exact matrix is exact 0" (let ((d (tensor-det Z))) (and (exact? d) (= d 0))))
+(check "tensor-solve refuses a singular exact matrix"
+       (refused? (lambda () (tensor-solve Z (tensor-cast (list 1 2) 'exact)))))
+(check "tensor-inverse refuses a singular exact matrix" (refused? (lambda () (tensor-inverse Z))))
+;; A matrix within 1e-40 of singular is decided exactly, not by a tolerance.
+(define eps40 (/ 1 (expt 10 40)))
+(define N (exact-tensor (list 1 1) (list 1 (+ 1 eps40))))
+(check "a nearly singular exact matrix has its exact nonzero det" (= (tensor-det N) eps40))
+(check "and solves exactly" (list=? (entries (tensor-solve N (tensor-cast (list 2 (+ 2 eps40)) 'exact))) '(1 1)))
+
+;; ---- contagion --------------------------------------------------------------
+
+(define F (tensor-cast B 'f64))
+(define EF (tensor-add A F))
+(check "exact + inexact is an inexact tensor" (and (eq? (tensor-dtype EF) 'f64) (all-inexact? EF)))
+(check "exact + inexact has the contagion values" (= (tensor-ref EF 0 0) 1.5))
+(check "matmul of exact and inexact is inexact" (eq? (tensor-dtype (matmul A F)) 'f64))
+(check "tensor-det of an f64 matrix stays inexact" (inexact? (tensor-det F)))
+(define xF (tensor-solve M3 (tensor 1.0 2.0 3.0)))
+(check "an inexact right-hand side makes the solve inexact" (and (eq? (tensor-dtype xF) 'f64) (all-inexact? xF)))
+(check "the inexact solve agrees with the exact one"
+       (let loop ((a (entries xF)) (b (entries x3)))
+         (cond ((null? a) #t)
+               ((< (abs (- (car a) (car b))) 1e-12) (loop (cdr a) (cdr b)))
+               (else #f))))
+
+;; ---- f64-only kernels refuse an exact tensor by name -----------------------
+
+(check "tensor-exp refuses an exact tensor" (refused? (lambda () (tensor-exp A))))
+(check "tensor-cholesky refuses an exact tensor" (refused? (lambda () (tensor-cholesky M3))))
+
+;; ---- lib/math.esk det / inv / solve stay exact on exact data ----------------
+
+(define flat4 (vector 4 3 6 3))
+(check "math det of exact data is exact" (let ((d (det flat4 2))) (and (exact? d) (= d -6))))
+(check "math det of an exact tensor is exact" (= (det (tensor-cast (list 4 3 6 3) 'exact) 2) -6))
+(check "math inv of exact data is exact"
+       (let ((m (inv flat4 2))) (and (exact? (vector-ref m 0)) (= (vector-ref m 0) -1/2) (= (vector-ref m 1) 1/2)
+                                     (= (vector-ref m 2) 1) (= (vector-ref m 3) -2/3))))
+(check "math solve of exact data is exact"
+       (let ((x (solve flat4 (vector 10 12) 2))) (and (exact? (vector-ref x 0)) (= (vector-ref x 0) 1) (= (vector-ref x 1) 2))))
+(check "math det of a singular exact matrix is exact 0" (let ((d (det (vector 1 2 2 4) 2))) (and (exact? d) (= d 0))))
+(check "math det of inexact data stays inexact" (inexact? (det (vector 4.0 3 6 3) 2)))
+
+;; ---- Navier-Stokes residual mechanization steps -----------------------------
+;; (docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+
+;; Step 7: the scale exponents of the inner core as an exactly solved system.
+;; With q ~ tau: X = r^2/(2q) dimensionless gives 2 e_r = 1; z = q^D eta gives
+;; e_z - e_r = -h; u_theta ~ l_z / tau gives e_u - e_z = -1. The solution is
+;; l_r ~ tau^{1/2}, l_z ~ tau^{1/2-h}, |u_theta| ~ tau^{-1/2-h}.
+(define K7 (exact-tensor (list 2 0 0) (list -1 1 0) (list 0 -1 1)))
+(define (step7-ok? h)
+  (let ((e (tensor-solve K7 (tensor-cast (list 1 (- h) -1) 'exact))))
+    (and (all-exact? e)
+         (list=? (entries e) (list 1/2 (- 1/2 h) (- -1/2 h)))
+         (= (- (tensor-ref e 1) (tensor-ref e 0)) (- h)))))
+(check "NS step 7: similarity exponents solved exactly for h = 1/10, 1/6, 1/4"
+       (and (step7-ok? 1/10) (step7-ok? 1/6) (step7-ok? 1/4)))
+
+;; Steps 68 / 22 / 25: with geometric bump copies the moment blocks are
+;; Vandermonde in the distinct numbers t_p = e^{dp}; for e^d = 2 and lambda =
+;; 1/2 the angular powers 2, -2-2lambda, -2lambda give t = 4, 1/8, 1/2 and the
+;; axial powers 1, 1-2lambda give t = 2, 1. Each block is invertible: its exact
+;; determinant is the Vandermonde product, nonzero for distinct t.
+(define (vandermonde ts)
+  (let ((n (length ts)))
+    (tensor-cast (map (lambda (t) (let loop ((j (- n 1)) (acc '()))
+                                    (if (< j 0) acc (loop (- j 1) (cons (expt t j) acc)))))
+                      ts)
+                 'exact)))
+(define (vandermonde-product ts)
+  (let outer ((l ts) (acc 1))
+    (if (null? l) acc
+        (outer (cdr l) (let inner ((m (cdr l)) (a acc))
+                         (if (null? m) a (inner (cdr m) (* a (- (car m) (car l))))))))))
+(define V-theta (vandermonde (list 4 1/8 1/2)))
+(define V-z (vandermonde (list 2 1)))
+(check "NS step 68: angular block determinant is the exact Vandermonde product"
+       (= (tensor-det V-theta) (vandermonde-product (list 4 1/8 1/2))))
+(check "NS step 68: axial block determinant is the exact Vandermonde product"
+       (= (tensor-det V-z) (vandermonde-product (list 2 1))))
+(check "NS step 22: both moment blocks are certified invertible (exact det /= 0)"
+       (and (not (= (tensor-det V-theta) 0)) (not (= (tensor-det V-z) 0))))
+(define moments (tensor-cast (list 1 0 -1) 'exact))
+(define u-theta (tensor-solve V-theta moments))
+(check "NS step 68: the angular amplitudes solve the moment conditions exactly"
+       (list=? (entries (matmul V-theta u-theta)) '(1 0 -1)))
+(check "NS step 68: agrees with exact-solve on the same system"
+       (same-entries? u-theta (exact-solve (rows '(1 4 16) '(1 1/8 1/64) '(1 1/2 1/4)) (vector 1 0 -1))))
+
+;; Step 24 / 34: the quadratic moment system B c + Q(c,c) = d by the
+;; contraction c -> B^{-1}(d - Q(c,c)), every iterate exact. Q(c,c) = (c.c/64) e1.
+(define Binv (tensor-inverse V-theta))
+(define d24 (tensor-cast (list 1/8 0 0) 'exact))
+(define (Q c) (tensor-cast (list (/ (tensor-sum (tensor-mul c c)) 64) 0 0) 'exact))
+(define (step c) (matmul Binv (tensor-sub d24 (Q c))))
+(define c0 (tensor-cast (list 0 0 0) 'exact))
+(define c1 (step c0))
+(define c2 (step c1))
+(define c3 (step c2))
+(define (norm1 t) (let loop ((l (entries t)) (s 0)) (if (null? l) s (loop (cdr l) (+ s (abs (car l)))))))
+(check "NS step 24: the contraction iterates stay exact" (and (all-exact? c1) (all-exact? c2) (all-exact? c3)))
+(check "NS step 24: successive differences contract exactly"
+       (and (< (norm1 (tensor-sub c3 c2)) (norm1 (tensor-sub c2 c1)))
+            (< (norm1 (tensor-sub c2 c1)) (norm1 (tensor-sub c1 c0)))))
+(check "NS step 34: the residual of the quadratic system shrinks"
+       (let ((res (lambda (c) (norm1 (tensor-sub (tensor-add (matmul V-theta c) (Q c)) d24)))))
+         (< (res c3) (res c2))))
+
+;; Step 59: the 2x2 system y = H^{-1} T for the squared pulse amplitudes, with
+;; y > 0 and |det H| bounded below, all decided exactly.
+(define H59 (exact-tensor (list 3/2 1/2) (list 1/2 5/2)))
+(define T59 (tensor-cast (list 1 2) 'exact))
+(define y59 (tensor-solve H59 T59))
+(check "NS step 59: the squared amplitudes are exact and positive"
+       (and (all-exact? y59) (> (tensor-ref y59 0) 0) (> (tensor-ref y59 1) 0)))
+(check "NS step 59: |det H| is the exact 7/2" (= (abs (tensor-det H59)) 7/2))
+(check "NS step 59: agrees with exact-solve"
+       (same-entries? y59 (exact-solve (rows '(3/2 1/2) '(1/2 5/2)) (vector 1 2))))
+
+;; ---- summary ----------------------------------------------------------------
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
