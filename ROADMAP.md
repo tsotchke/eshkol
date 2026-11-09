@@ -861,6 +861,14 @@ under the same discipline that made `Qubit` linear.
       pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2 and
       pi_6(S^3) = Z/12, and hypercovers of finite spaces restoring descent
       where the Cech nerve does not (stage S6.3)
+- [x] Differentiable optimization: blackbox solvers, perturbed optimizers,
+      Fenchel-Young losses, implicit differentiation (ADR-0031):
+      `core.ml.diffopt` puts each rule on the reverse-mode tape as one
+      pullback — blackbox ranking and shortest-path solvers, Gumbel/Normal
+      perturbed argmax and top-k with a seeded Monte Carlo Jacobian,
+      perturbed/softmax/sparsemax Fenchel-Young losses, and implicit
+      root/fixed-point/argmin layers whose adjoint system is solved exactly on
+      exact data — gated on JIT and AOT by `tests/ml/diffopt_test.esk`
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

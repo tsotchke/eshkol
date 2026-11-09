@@ -145,7 +145,7 @@ make-dataloader	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml fa
 make-directory	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 make-dnc-memory	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.dnc has no VM fids
 make-parameter	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
-make-prng	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
+make-prng	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
 make-promise	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 make-rational	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 matrix-to-string	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	tensor linalg/manipulation fid missing in VM
@@ -192,9 +192,9 @@ padding-mask	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml facul
 peek-char	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 peek-u8	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	port/file IO surface missing in VM
 positional-encoding	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	ml faculty has no VM fid coverage
-prng-random	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
-prng-random-integer	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
-prng?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
+prng-random	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+prng-random-integer	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+prng?	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
 procedure-arity	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	no VM name binding
 randint	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding
 randn	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	PRNG surface has no VM binding

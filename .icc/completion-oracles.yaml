@@ -2186,6 +2186,18 @@ oracles:
         label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
         action: run_icc_smoke
 
+      # ADR-0031 differentiable optimization (core.ml.diffopt). The producer
+      # runs tests/ml/diffopt_test.esk on JIT and AOT; every check compares a
+      # pullback with an exact closed form, exact rationals or a central
+      # difference of an independent closed form.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["diffopt_pullbacks_exact"]
+          event_values: ["PASS"]
+        severity: high
+        label: Differentiable optimization - blackbox solver, perturbed optimizer, Fenchel-Young, implicit-differentiation and sparsemax pullbacks match exact closed forms (JIT and AOT)
+        action: run_icc_smoke
+
       # ─────────────────────────────────────────────────────────
       # Networking (#145/#146/#148/#150/#161)
       # ─────────────────────────────────────────────────────────

@@ -1,0 +1,441 @@
+;; core.ml.diffopt — differentiating through optimization and discrete solvers.
+;;
+;; Every check compares against an exact closed form, an exact rational value,
+;; or a central finite difference of an independently computed closed form:
+;;   1. blackbox solver pullbacks: exact hand-computed rational VJPs for the
+;;      ranking and grid shortest-path solvers; learning loops that reach the
+;;      target ranking and the target path.
+;;   2. perturbed optimizers: seeded determinism; Gumbel-perturbed argmax ->
+;;      softmax(theta/eps) and its Jacobian; Normal-perturbed argmax in two
+;;      dimensions -> Phi(d/(eps sqrt 2)) and its derivative; the perturbed
+;;      maximum -> eps logsumexp(theta/eps) + eps*gamma; Fenchel-Young gradient
+;;      identity; top-k invariants and a top-k learning loop.
+;;   3. implicit differentiation: exact ridge least-squares sensitivity (rational,
+;;      equal to the closed form), the compiled-AD default on the same problem,
+;;      a vector parameter, an exact linear fixed point and a nonlinear one.
+;;   4. sparsemax (exact) and softmax Jacobians, tape layers and their
+;;      Fenchel-Young losses.
+;;   5. no pullback evaluates a finite difference (ad-finite-difference-evals = 0).
+
+(require core.ad.tape)
+(require core.ml.gradient_estimators)
+(require core.exact_linalg)
+(require core.ml.diffopt)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check-bool name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1)) (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1)) (display "FAIL: ") (display name) (newline))))
+(define (check-close name got expect tol)
+  (let ((ok (<= (abs (- got expect)) tol)))
+    (if (not ok)
+        (begin (display "  got ") (display got) (display " expect ") (display expect) (newline)))
+    (check-bool name ok)))
+(define (vmax-abs-diff a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (m 0.0))
+      (if (< i n) (loop (+ i 1) (max m (abs (- (vector-ref a i) (vector-ref b i))))) m))))
+(define (check-vclose name got expect tol)
+  (let ((d (vmax-abs-diff got expect)))
+    (if (> d tol)
+        (begin (display "  got ") (display got) (display " expect ") (display expect) (newline)))
+    (check-bool name (<= d tol))))
+(define (check-exact name got expect)
+  (if (not (equal? got expect))
+      (begin (display "  got ") (display got) (display " expect ") (display expect) (newline)))
+  (check-bool name (equal? got expect)))
+(define (all-exact? v)
+  (let loop ((i 0)) (or (= i (vector-length v)) (and (exact? (vector-ref v i)) (loop (+ i 1))))))
+
+;; vector helpers
+(define (vtab n f)
+  (let ((r (make-vector n 0)))
+    (let loop ((i 0)) (if (< i n) (begin (vector-set! r i (f i)) (loop (+ i 1))) r))))
+(define (v- a b) (vtab (vector-length a) (lambda (i) (- (vector-ref a i) (vector-ref b i)))))
+(define (v+ a b) (vtab (vector-length a) (lambda (i) (+ (vector-ref a i) (vector-ref b i)))))
+(define (vscale s a) (vtab (vector-length a) (lambda (i) (* s (vector-ref a i)))))
+(define (vdot a b)
+  (let loop ((i 0) (s 0)) (if (< i (vector-length a)) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s)))
+(define (vsum v) (let loop ((i 0) (s 0)) (if (< i (vector-length v)) (loop (+ i 1) (+ s (vector-ref v i))) s)))
+(define (unit n k) (vtab n (lambda (i) (if (= i k) 1.0 0.0))))
+(define (mat-vec m v) (vtab (vector-length m) (lambda (i) (vdot (vector-ref m i) v))))
+(define (half-sq-loss t y-node target)
+  (let ((d (v- (node-value y-node) target)))
+    (record-op! t (list y-node) (* 0.5 (vdot d d)) (lambda (g) (list (vscale g d))))))
+(define (linear-loss t y-node c)
+  (record-op! t (list y-node) (vdot (node-value y-node) c) (lambda (g) (list (vscale g c)))))
+;; central difference of a vector function along coordinate k
+(define (fd-column f x k h)
+  (let ((xp (v+ x (vscale h (unit (vector-length x) k))))
+        (xm (v- x (vscale h (unit (vector-length x) k)))))
+    (vscale (/ 1.0 (* 2.0 h)) (v- (f xp) (f xm)))))
+
+(display "=== core.ml.diffopt ===") (newline)
+
+;; ═══ 1. Blackbox solver differentiation ═══
+
+;; Exact pullback of the ranking solver, computed by hand:
+;; w = (9/10 1/10 1/2 3/10) ranks to y = (1/4 1 1/2 3/4); with target
+;; (3/4 1/4 1 1/2) the loss gradient is g = y - target = (-1/2 3/4 -1/2 1/4);
+;; w + 2g = (-1/10 8/5 -1/2 4/5) ranks to (3/4 1/4 1 1/2); so the blackbox
+;; gradient is ((3/4 1/4 1 1/2) - y)/2 = (1/4 -3/8 1/4 -1/8).
+(define rank-w (vector 9/10 1/10 1/2 3/10))
+(define rank-target (vector 3/4 1/4 1 1/2))
+(define rank-y (rank-solver rank-w))
+(check-exact "rank-solver exact normalized ranks" rank-y (vector 1/4 1 1/2 3/4))
+(check-exact "blackbox-vjp ranking: exact hand-computed pullback"
+  (blackbox-vjp rank-solver rank-w rank-y (v- rank-y rank-target) 2)
+  (vector 1/4 -3/8 1/4 -1/8))
+(define rank-tape-grad
+  (with-tape "bb-rank"
+    (lambda ()
+      (let* ((t (current-tape)) (wn (tape-input t rank-w))
+             (y (blackbox-solve t wn rank-solver 2))
+             (L (half-sq-loss t y rank-target)))
+        (car (tape-gradient t L (list wn)))))))
+(check-vclose "blackbox-solve on the tape: same pullback" rank-tape-grad (vector 0.25 -0.375 0.25 -0.125) 1e-15)
+
+;; Learning loop (the Vlastelica et al. ranking experiment in miniature).
+(define (rank-train w k)
+  (let* ((r (with-tape "bb-train"
+              (lambda ()
+                (let* ((t (current-tape)) (wn (tape-input t w))
+                       (y (blackbox-solve t wn rank-solver 2.0))
+                       (L (half-sq-loss t y rank-target)))
+                  (list (node-value L) (car (tape-gradient t L (list wn))))))))
+         (L (car r)))
+    (if (or (= L 0) (= k 50))
+        (list k L w)
+        (rank-train (v- w (vscale 0.5 (cadr r))) (+ k 1)))))
+(define rank-run (rank-train (vector 0.9 0.1 0.5 0.3) 0))
+(display "  ranking reached target after ") (display (car rank-run)) (display " steps") (newline)
+(check-bool "blackbox ranking: training reaches the target ranks"
+  (and (= (cadr rank-run) 0) (equal? (rank-solver (caddr rank-run)) rank-target)))
+
+;; Grid shortest path, 2x2: w = (1 1 5 1): right-then-down costs 3, down-then-
+;; right costs 7, so y = (1 1 0 1). With g = (0 5 0 0) and lambda = 1 the
+;; perturbed costs (1 6 5 1) make down-then-right (7 < 8) optimal:
+;; y' = (1 0 1 1) and the pullback is y' - y = (0 -1 1 0).
+(define path2 (grid-path-solver 2 2))
+(check-exact "grid-path-solver 2x2 picks the cheaper path" (path2 (vector 1 1 5 1)) (vector 1 1 0 1))
+(check-exact "blackbox-vjp shortest path: exact hand-computed pullback"
+  (blackbox-vjp path2 (vector 1 1 5 1) (vector 1 1 0 1) (vector 0 5 0 0) 1)
+  (vector 0 -1 1 0))
+(check-exact "blackbox-vjp shortest path: zero when the perturbation keeps the path"
+  (blackbox-vjp path2 (vector 1 1 5 1) (vector 1 1 0 1) (vector 0 1 0 0) 1)
+  (vector 0 0 0 0))
+
+;; Learn 4x4 vertex costs whose shortest path is a target path (Hamming loss).
+(define path4 (grid-path-solver 4 4))
+(define path-target (path4 (vector 1 9 9 9
+                                   1 9 9 9
+                                   1 1 1 9
+                                   9 9 1 1)))
+(check-exact "grid-path-solver 4x4 target path"
+  path-target (vector 1 0 0 0 1 0 0 0 1 1 1 0 0 0 1 1))
+(define (path-train w k)
+  (let* ((r (with-tape "bb-path"
+              (lambda ()
+                (let* ((t (current-tape)) (wn (tape-input t w))
+                       (y (blackbox-solve t wn path4 2.0))
+                       (L (half-sq-loss t y path-target)))
+                  (list (node-value L) (car (tape-gradient t L (list wn)))))))))
+    (if (or (= (car r) 0) (= k 100))
+        (list k (car r) w)
+        (path-train (v- w (vscale 0.5 (cadr r))) (+ k 1)))))
+;; Start from costs whose shortest path runs along the top row and down the
+;; right column, the opposite corner from the target.
+(define path-run (path-train (vector 1.0 1.0 1.0 1.0
+                                     3.0 3.0 3.0 1.0
+                                     3.0 3.0 3.0 1.0
+                                     3.0 3.0 3.0 1.0) 0))
+(display "  shortest path reached target after ") (display (car path-run)) (display " steps") (newline)
+(check-bool "blackbox shortest path: training reaches the target path"
+  (and (= (cadr path-run) 0) (equal? (vtab 16 (lambda (i) (exact->inexact (vector-ref (path4 (caddr path-run)) i))))
+                                     (vtab 16 (lambda (i) (exact->inexact (vector-ref path-target i)))))))
+
+;; ═══ 2. Perturbed optimizers and Fenchel-Young losses ═══
+
+(define pa (perturbation-noise 'gumbel 4 3 11))
+(define pb (perturbation-noise 'gumbel 4 3 11))
+(check-bool "perturbation-noise: same seed gives identical draws"
+  (equal? (perturbation-samples pa) (perturbation-samples pb)))
+(check-bool "perturbation-noise: different seeds differ"
+  (not (equal? (perturbation-samples pa) (perturbation-samples (perturbation-noise 'gumbel 4 3 12)))))
+
+(define M 20000)
+(define theta3 (vector 1.0 0.5 -0.3))
+(define gumbel3 (perturbation-noise 'gumbel M 3 2026))
+
+(define (perturbed-argmax-check eps)
+  (let* ((est (perturbed-estimate argmax-onehot theta3 eps gumbel3))
+         (p (softmax (vscale (/ 1.0 eps) theta3)))
+         (g (vector 0.3 -1.0 0.7))
+         (mc-vjp (perturbed-vjp gumbel3 eps (vector-ref est 1) g))
+         (exact-vjp (vscale (/ 1.0 eps) (softmax-vjp p g)))
+         (lse (* eps (log (vsum (vtab 3 (lambda (i) (exp (/ (vector-ref theta3 i) eps))))))))
+         (euler-gamma 0.5772156649015329))
+    (check-vclose (string-append "Gumbel perturbed argmax = softmax(theta/eps), eps=" (number->string eps))
+                  (vector-ref est 0) p 0.015)
+    (check-vclose (string-append "Gumbel Monte Carlo Jacobian = softmax Jacobian / eps, eps=" (number->string eps))
+                  mc-vjp exact-vjp (/ 0.06 eps))
+    (check-close (string-append "perturbed max = eps logsumexp(theta/eps) + eps gamma, eps=" (number->string eps))
+                 (vector-ref est 2) (+ lse (* eps euler-gamma)) (* 0.03 eps))))
+(perturbed-argmax-check 1.0)
+(perturbed-argmax-check 0.5)
+
+;; perturbed-argmax on the tape: its pullback is the Monte Carlo VJP.
+(define tape-vjp
+  (with-tape "pert"
+    (lambda ()
+      (let* ((t (current-tape)) (th (tape-input t theta3))
+             (y (perturbed-argmax t th 1.0 gumbel3))
+             (L (linear-loss t y (vector 0.3 -1.0 0.7))))
+        (car (tape-gradient t L (list th)))))))
+(check-vclose "perturbed-argmax tape pullback = perturbed-vjp"
+  tape-vjp
+  (perturbed-vjp gumbel3 1.0 (vector-ref (perturbed-estimate argmax-onehot theta3 1.0 gumbel3) 1)
+                 (vector 0.3 -1.0 0.7))
+  1e-12)
+
+;; Perturbed maximum on the tape: grad F_eps = y_eps.
+(define pmax-grad
+  (with-tape "pmax"
+    (lambda ()
+      (let* ((t (current-tape)) (th (tape-input t theta3))
+             (F (perturbed-max t th argmax-onehot 1.0 gumbel3)))
+        (car (tape-gradient t F (list th)))))))
+(check-vclose "perturbed-max gradient = perturbed argmax"
+  pmax-grad (vector-ref (perturbed-estimate argmax-onehot theta3 1.0 gumbel3) 0) 1e-12)
+
+;; Normal noise in two dimensions: P(argmax = 1) = Phi((t1 - t0)/(eps sqrt 2)),
+;; d/dt1 = phi((t1 - t0)/(eps sqrt 2)) / (eps sqrt 2), d/dt0 the negative.
+(define (std-normal-cdf x)       ; Simpson rule on the density, |error| < 1e-10
+  (let* ((n 2000) (a 0.0) (b x) (h (/ (- b a) n))
+         (phi (lambda (s) (* 0.3989422804014327 (exp (* -0.5 s s))))))
+    (+ 0.5 (* (/ h 3.0)
+              (let loop ((i 0) (s 0.0))
+                (if (> i n) s
+                    (loop (+ i 1)
+                          (+ s (* (cond ((or (= i 0) (= i n)) 1.0) ((odd? i) 4.0) (else 2.0))
+                                  (phi (+ a (* i h))))))))))))
+(define normal2 (perturbation-noise 'normal M 2 99))
+(define theta2 (vector 0.2 0.6))
+(define eps2 0.8)
+(define est2 (perturbed-estimate argmax-onehot theta2 eps2 normal2))
+(define d2 (/ (- 0.6 0.2) (* eps2 (sqrt 2.0))))
+(check-close "Normal perturbed argmax (n=2) = Phi(d/(eps sqrt 2))"
+  (vector-ref (vector-ref est2 0) 1) (std-normal-cdf d2) 0.012)
+(define dens2 (/ (* 0.3989422804014327 (exp (* -0.5 d2 d2))) (* eps2 (sqrt 2.0))))
+(check-vclose "Normal Monte Carlo Jacobian (n=2) = closed form"
+  (perturbed-vjp normal2 eps2 (vector-ref est2 1) (vector 0.0 1.0))
+  (vector (- dens2) dens2) 0.02)
+
+;; Fenchel-Young: gradient is exactly y_eps - y for the same draws.
+(define fy-target (vector 0.0 1.0 0.0))
+(define fy-grad
+  (with-tape "fy"
+    (lambda ()
+      (let* ((t (current-tape)) (th (tape-input t theta3))
+             (L (perturbed-fenchel-young t th fy-target argmax-onehot 1.0 gumbel3)))
+        (car (tape-gradient t L (list th)))))))
+(check-vclose "perturbed Fenchel-Young gradient = y_eps - y"
+  fy-grad (v- (vector-ref (perturbed-estimate argmax-onehot theta3 1.0 gumbel3) 0) fy-target) 1e-12)
+
+;; Top-k.
+(define gumbel5 (perturbation-noise 'gumbel 2000 5 5))
+(define theta5 (vector 0.3 1.2 -0.4 0.9 0.1))
+(check-exact "top-k-indicator picks the k largest" ((top-k-indicator 2) theta5) (vector 0.0 1.0 0.0 1.0 0.0))
+(check-close "perturbed top-k mass equals k"
+  (vsum (vector-ref (perturbed-estimate (top-k-indicator 2) theta5 0.5 gumbel5) 0)) 2.0 1e-9)
+(check-vclose "perturbed top-1 equals perturbed argmax on the same draws"
+  (vector-ref (perturbed-estimate (top-k-indicator 1) theta5 0.5 gumbel5) 0)
+  (vector-ref (perturbed-estimate argmax-onehot theta5 0.5 gumbel5) 0) 0.0)
+(define topk-target (vector 1.0 0.0 1.0 0.0 0.0))
+(define (topk-train th k)
+  (let ((g (with-tape "topk"
+             (lambda ()
+               (let* ((t (current-tape)) (tn (tape-input t th))
+                      (L (perturbed-fenchel-young t tn topk-target (top-k-indicator 2) 0.5 gumbel5)))
+                 (car (tape-gradient t L (list tn))))))))
+    (if (or (equal? ((top-k-indicator 2) th) topk-target) (= k 200))
+        (list k th)
+        (topk-train (v- th (vscale 0.5 g)) (+ k 1)))))
+(define topk-run (topk-train theta5 0))
+(display "  top-k Fenchel-Young reached target after ") (display (car topk-run)) (display " steps") (newline)
+(check-exact "perturbed top-k Fenchel-Young training reaches the target set"
+  ((top-k-indicator 2) (cadr topk-run)) topk-target)
+
+;; ═══ 3. Implicit differentiation ═══
+
+;; Ridge least squares: w*(lambda) = argmin 1/2|Xw - y|^2 + lambda/2 |w|^2,
+;; F(w, lambda) = X^T(Xw - y) + lambda w, dF/dw = X^T X + lambda I, dF/dlambda = w.
+;; Closed form: dw*/dlambda = -(X^T X + lambda I)^{-1} w*.
+(define X (vector (vector 1 2) (vector 3 -1) (vector 0 1/2)))
+(define Y (vector 1 2/3 -1))
+(define lam 1/3)
+(define XtX (exact-matrix-mul (exact-matrix-transpose X) X))
+(define (ridge-matrix l) (vtab 2 (lambda (i) (vtab 2 (lambda (k) (+ (vector-ref (vector-ref XtX i) k) (if (= i k) l 0)))))))
+(define (ridge-solution l) (exact-solve (ridge-matrix l) (mat-vec (exact-matrix-transpose X) Y)))
+(define w-star (ridge-solution lam))
+(define cot (vector 2 -3/7))
+(define closed-form-sensitivity      ; g^T dw*/dlambda
+  (- (vdot cot (exact-solve (ridge-matrix lam) w-star))))
+(define exact-ridge
+  (implicit-root-vjp (ridge-matrix lam) (vtab 2 (lambda (i) (vector (vector-ref w-star i)))) cot))
+(check-exact "implicit ridge pullback is exact and equals the closed form"
+  exact-ridge (vector closed-form-sensitivity))
+(check-bool "implicit ridge pullback stays rational" (all-exact? exact-ridge))
+
+;; Same problem on the tape with the compiled-AD default (hessian + jacobian
+;; of gradient) in f64, against the closed form and a central difference.
+(define Xf (vtab 3 (lambda (i) (vtab 2 (lambda (k) (exact->inexact (vector-ref (vector-ref X i) k)))))))
+(define Yf (vtab 3 (lambda (i) (exact->inexact (vector-ref Y i)))))
+(define (ridge-objective w l)
+  (let* ((r (v- (mat-vec Xf w) Yf)))
+    (+ (* 0.5 (vdot r r)) (* 0.5 l (vdot w w)))))
+(define lam-f (exact->inexact lam))
+(define w-star-f (vtab 2 (lambda (i) (exact->inexact (vector-ref w-star i)))))
+(define cot-f (vtab 2 (lambda (i) (exact->inexact (vector-ref cot i)))))
+(define argmin-grad
+  (with-tape "ridge"
+    (lambda ()
+      (let* ((t (current-tape)) (ln (tape-input t lam-f))
+             (w (implicit-argmin t ridge-objective w-star-f ln))
+             (L (linear-loss t w cot-f)))
+        (car (tape-gradient t L (list ln)))))))
+(check-close "implicit-argmin (compiled AD) ridge sensitivity = closed form"
+  argmin-grad (exact->inexact closed-form-sensitivity) 1e-12)
+(define h-fd 1e-5)
+(define fd-sensitivity
+  (/ (- (vdot cot-f (vtab 2 (lambda (i) (exact->inexact (vector-ref (ridge-solution (+ lam (inexact->exact h-fd))) i)))))
+        (vdot cot-f (vtab 2 (lambda (i) (exact->inexact (vector-ref (ridge-solution (- lam (inexact->exact h-fd))) i))))))
+     (* 2.0 h-fd)))
+(check-close "implicit-argmin ridge sensitivity = central difference" argmin-grad fd-sensitivity 1e-8)
+
+;; Vector parameter: theta = targets y; d<c, w*>/dy = X (X^T X + lambda I)^{-1} c.
+(define (ridge-residual w yv)
+  (let ((r (vtab 3 (lambda (i) (- (vdot (vector-ref Xf i) w) (vector-ref yv i))))))
+    (v+ (mat-vec (exact-matrix-transpose Xf) r) (vscale lam-f w))))
+(define y-grad
+  (with-tape "ridge-y"
+    (lambda ()
+      (let* ((t (current-tape)) (yn (tape-input t Yf))
+             (w (implicit-root t ridge-residual w-star-f yn))
+             (L (linear-loss t w cot-f)))
+        (car (tape-gradient t L (list yn)))))))
+(define y-grad-closed
+  (vtab 3 (lambda (i) (exact->inexact
+    (vdot (vector-ref X i) (exact-solve (ridge-matrix lam) cot))))))
+(check-vclose "implicit-root vector parameter = closed form" y-grad y-grad-closed 1e-12)
+
+;; Exact linear fixed point x = A x + theta: dx*/dtheta = (I - A)^{-1},
+;; pullback (I - A)^{-T} g, exact with exact partial Jacobians.
+(define A (vector (vector 1/2 1/4) (vector -1/3 1/5)))
+(define (I-minus m) (vtab 2 (lambda (i) (vtab 2 (lambda (k) (- (if (= i k) 1 0) (vector-ref (vector-ref m i) k)))))))
+(define theta-fp (vector 1 2))
+(define x-fp (exact-solve (I-minus A) theta-fp))
+(define fp-cot (vector 3 -1/2))
+(define fp-exact
+  (implicit-root-vjp (vtab 2 (lambda (i) (vtab 2 (lambda (k) (- (vector-ref (vector-ref A i) k) (if (= i k) 1 0))))))
+                     (vector (vector 1 0) (vector 0 1)) fp-cot))
+(check-exact "linear fixed point pullback is exact: (I - A)^{-T} g"
+  fp-exact (exact-solve (exact-matrix-transpose (I-minus A)) fp-cot))
+(define fp-tape
+  (with-tape "fp"
+    (lambda ()
+      (let* ((t (current-tape)) (tn (tape-input t (vector 1.0 2.0)))
+             (x (implicit-fixed-point t (lambda (x th) (v+ (mat-vec A x) th)) x-fp tn
+                  (lambda (x th) A) (lambda (x th) (vector (vector 1 0) (vector 0 1)))))
+             (L (linear-loss t x (vector 3.0 -0.5))))
+        (car (tape-gradient t L (list tn)))))))
+(check-vclose "implicit-fixed-point on the tape = exact pullback"
+  fp-tape (vtab 2 (lambda (i) (exact->inexact (vector-ref fp-exact i)))) 1e-14)
+
+;; Nonlinear fixed point x_i = cos(x_i)/2 + theta_i, solved by iteration;
+;; dx_i/dtheta_i = 1/(1 + sin(x_i)/2). Default (compiled) Jacobians.
+(define (T-cos x th) (vtab 2 (lambda (i) (+ (* 0.5 (cos (vector-ref x i))) (vector-ref th i)))))
+(define (iterate-fp th)
+  (let loop ((x (vector 0.0 0.0)) (k 0))
+    (if (= k 200) x (loop (T-cos x th) (+ k 1)))))
+(define th-cos (vector 0.3 -0.2))
+(define x-cos (iterate-fp th-cos))
+(define cos-grad
+  (with-tape "fp-cos"
+    (lambda ()
+      (let* ((t (current-tape)) (tn (tape-input t th-cos))
+             (x (implicit-fixed-point t T-cos x-cos tn))
+             (L (linear-loss t x (vector 1.0 2.0))))
+        (car (tape-gradient t L (list tn)))))))
+(check-vclose "implicit-fixed-point (compiled AD) = 1/(1 + sin(x)/2)"
+  cos-grad
+  (vtab 2 (lambda (i) (/ (if (= i 0) 1.0 2.0) (+ 1.0 (* 0.5 (sin (vector-ref x-cos i))))))) 1e-12)
+(check-vclose "implicit-fixed-point = central difference of the iterated solver"
+  cos-grad
+  (vtab 2 (lambda (k) (vdot (vector 1.0 2.0) (fd-column iterate-fp th-cos k 1e-6)))) 1e-8)
+
+;; ═══ 4. Smooth relaxations ═══
+
+(check-exact "sparsemax exact: (1/2 1/3 -1) -> (7/12 5/12 0)" (sparsemax (vector 1/2 1/3 -1)) (vector 7/12 5/12 0))
+(check-exact "sparsemax exact: one dominant entry is a vertex" (sparsemax (vector 3/2 1/5 1/10)) (vector 1 0 0))
+(check-exact "sparsemax exact: lies on the simplex" (vsum (sparsemax (vector 2/7 -1/9 3/5 1/2))) 1)
+(check-exact "sparsemax-jacobian exact" (sparsemax-jacobian (vector 1/2 1/3 -1))
+  (vector (vector 1/2 -1/2 0) (vector -1/2 1/2 0) (vector 0 0 0)))
+(define z4 (vector 0.4 0.1 -0.6 0.35))
+(define (jac-fd f z)                     ; column k = d f / d z_k
+  (let ((cols (vtab (vector-length z) (lambda (k) (fd-column f z k 1e-6)))))
+    (vtab (vector-length z) (lambda (i) (vtab (vector-length z) (lambda (k) (vector-ref (vector-ref cols k) i)))))))
+(define (mat-max-diff a b)
+  (let loop ((i 0) (m 0.0)) (if (< i (vector-length a)) (loop (+ i 1) (max m (vmax-abs-diff (vector-ref a i) (vector-ref b i)))) m)))
+(check-bool "sparsemax-jacobian = central difference"
+  (< (mat-max-diff (sparsemax-jacobian z4) (jac-fd sparsemax z4)) 1e-8))
+(check-bool "softmax-jacobian = central difference"
+  (< (mat-max-diff (softmax-jacobian z4) (jac-fd softmax z4)) 1e-8))
+(define c4 (vector 1.0 -2.0 0.5 3.0))
+(define (layer-grad layer)
+  (with-tape "layer"
+    (lambda ()
+      (let* ((t (current-tape)) (zn (tape-input t z4))
+             (p (layer t zn)) (L (linear-loss t p c4)))
+        (car (tape-gradient t L (list zn)))))))
+(define (transpose-times m v) (mat-vec (exact-matrix-transpose m) v))
+(check-vclose "tape-sparsemax pullback = J^T g" (layer-grad tape-sparsemax) (transpose-times (sparsemax-jacobian z4) c4) 1e-15)
+(check-vclose "tape-softmax pullback = J^T g" (layer-grad tape-softmax) (transpose-times (softmax-jacobian z4) c4) 1e-15)
+
+;; Fenchel-Young losses with closed forms.
+(define fy-theta (vector 1/2 1/3 -1))
+(define fy-y (vector 0 1 0))
+(define (fy-value loss theta y)
+  (with-tape "fyv" (lambda () (let* ((t (current-tape)) (tn (tape-input t theta))) (node-value (loss t tn y))))))
+(define (fy-grad-of loss theta y)
+  (with-tape "fyg" (lambda () (let* ((t (current-tape)) (tn (tape-input t theta)) (L (loss t tn y)))
+                                (car (tape-gradient t L (list tn)))))))
+;; sparsemax loss: p = (7/12 5/12 0); <theta,p> - |p|^2/2 + |y|^2/2 - <theta,y> = 49/144.
+(check-exact "Fenchel-Young sparsemax loss is exact" (fy-value fenchel-young-sparsemax fy-theta fy-y) 49/144)
+(check-exact "Fenchel-Young sparsemax loss vanishes at y = sparsemax(theta)"
+  (fy-value fenchel-young-sparsemax fy-theta (vector 7/12 5/12 0)) 0)
+(check-vclose "Fenchel-Young sparsemax gradient = sparsemax(theta) - y"
+  (fy-grad-of fenchel-young-sparsemax fy-theta fy-y) (vector 0.5833333333333334 -0.5833333333333334 0.0) 1e-15)
+(define theta-f (vector 0.5 0.25 -1.0))
+(check-close "Fenchel-Young softmax loss on a one-hot target = cross-entropy"
+  (fy-value fenchel-young-softmax theta-f fy-y) (- (log (vector-ref (softmax theta-f) 1))) 1e-14)
+(check-vclose "Fenchel-Young softmax gradient = softmax(theta) - y"
+  (fy-grad-of fenchel-young-softmax theta-f fy-y) (v- (softmax theta-f) fy-y) 1e-15)
+(check-close "Fenchel-Young softmax loss vanishes at y = softmax(theta)"
+  (fy-value fenchel-young-softmax theta-f (softmax theta-f)) 0.0 1e-14)
+
+;; No pullback in this module is a finite difference: the AD instrumentation
+;; counter that every finite-difference evaluation reports to stays at zero.
+;; (The central differences above are this test's own reference values and
+;; never go through the tape.)
+(check-bool "no finite-difference evaluation on any pullback" (= (ad-finite-difference-evals) 0))
+
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(display "=== ")
+(display (if (= fail-count 0) "ALL TESTS PASSED" "TESTS FAILED"))
+(display " ===")
+(newline)

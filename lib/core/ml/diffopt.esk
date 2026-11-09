@@ -1,0 +1,496 @@
+;;
+;; core.ml.diffopt — differentiating through optimization and discrete solvers
+;;
+;; Four families of pullbacks for layers whose output is the solution of an
+;; optimization problem rather than a composition of arithmetic. Each family is
+;; one pure vector-Jacobian-product function plus one recorder that puts it on
+;; the stateful reverse-mode tape (core.ad.tape, record-op!), so these layers
+;; compose with every other tape op in one reverse pass. See ADR-0031.
+;;
+;;   1. Blackbox combinatorial solvers (Vlastelica et al., ICLR 2020).
+;;      Forward y = solver(w) with solver(w) = argmin_{y in Y} <w, y>.
+;;      Backward: w' = w + lambda*g, dL/dw = -(y - solver(w')) / lambda,
+;;      the gradient of the piecewise-linear interpolation of the loss.
+;;
+;;   2. Perturbed optimizers and Fenchel-Young losses (Berthet et al.,
+;;      NeurIPS 2020). y_eps(theta) = E[argmax_{y in C} <y, theta + eps Z>],
+;;      J y_eps(theta) = (1/eps) E[y*(theta + eps Z) grad-nu(Z)^T],
+;;      with nu = -log density of Z (Gumbel: 1 - exp(-z); Normal: z).
+;;      The Fenchel-Young loss F_eps(theta) - <theta, y> has gradient
+;;      y_eps(theta) - y. Monte Carlo with a fixed noise sample: the forward and
+;;      the backward use the SAME draws (common random numbers).
+;;
+;;   3. Implicit differentiation (implicit function theorem). For a root x* of
+;;      F(x, theta) = 0 with d_x F invertible, the pullback of g is
+;;      -(d_theta F)^T u with (d_x F)^T u = g. The adjoint system is solved
+;;      exactly (core.exact_linalg exact-solve) when every entry is exact, and
+;;      by the f64 `linear-solve` otherwise. Fixed points (x = T(x, theta)) and
+;;      argmin layers (grad_x f(x, theta) = 0) are instances of the same root
+;;      rule, never separate engines.
+;;
+;;   4. Smooth relaxations with closed-form Jacobians: softmax (the entropic
+;;      projection onto the simplex) and sparsemax (the Euclidean projection,
+;;      Martins & Astudillo 2016), plus their Fenchel-Young losses. sparsemax
+;;      and its loss are exact on exact rational input.
+;;
+;; Vectors are Scheme vectors; matrices are vectors of row vectors (the
+;; core.exact_linalg convention). Arithmetic is generic, so exact input stays
+;; exact through every pure function here; the numeric tape seeds and
+;; accumulates in f64.
+;;
+
+(require core.ad.tape)
+(require core.ml.gradient_estimators)
+(require core.exact_linalg)
+
+(provide
+  ;; 1. blackbox combinatorial solvers
+  blackbox-solve blackbox-vjp rank-solver grid-path-solver
+  ;; 2. perturbed optimizers and Fenchel-Young losses
+  make-perturbation perturbation-noise perturbation-kind perturbation-samples
+  perturbed-solve perturbed-estimate perturbed-vjp perturbed-max
+  perturbed-argmax perturbed-top-k top-k-indicator
+  perturbed-fenchel-young fenchel-young-softmax fenchel-young-sparsemax
+  ;; 3. implicit differentiation
+  implicit-root implicit-root-vjp implicit-fixed-point implicit-argmin
+  diffopt-linear-solve diffopt-jacobian
+  ;; 4. smooth relaxations
+  sparsemax sparsemax-jacobian sparsemax-vjp softmax-jacobian
+  tape-softmax tape-sparsemax)
+
+;; ── Vector helpers (self-contained: no map/for-each, as in core.ad.tape) ──
+(define (dv-vec x)
+  (if (vector? x)
+      x
+      (let loop ((l x) (acc '()) (n 0))
+        (if (pair? l)
+            (loop (cdr l) (cons (car l) acc) (+ n 1))
+            (let ((r (make-vector n 0)))
+              (let fill ((l2 acc) (i (- n 1)))
+                (if (pair? l2)
+                    (begin (vector-set! r i (car l2)) (fill (cdr l2) (- i 1)))
+                    r)))))))
+(define (dv-tabulate n f)
+  (let ((r (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! r i (f i)) (loop (+ i 1))) r))))
+(define (dv-map2 f a b)
+  (dv-tabulate (vector-length a) (lambda (i) (f (vector-ref a i) (vector-ref b i)))))
+(define (dv-add a b) (dv-map2 + a b))
+(define (dv-sub a b) (dv-map2 - a b))
+(define (dv-scale s a) (dv-tabulate (vector-length a) (lambda (i) (* s (vector-ref a i)))))
+(define (dv-dot a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (s 0))
+      (if (< i n) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s))))
+(define (dv-axpy a x y)            ; y + a*x
+  (dv-tabulate (vector-length y) (lambda (i) (+ (vector-ref y i) (* a (vector-ref x i))))))
+(define (dv-check-length who v n)
+  (if (not (and (vector? v) (= (vector-length v) n)))
+      (error (string-append who ": expected a vector of length " (number->string n)) v)))
+(define (dv-positive who x)
+  (if (not (and (real? x) (> x 0)))
+      (error (string-append who ": expected a positive real") x)))
+(define (dv-mat-vec m v)
+  (dv-tabulate (vector-length m) (lambda (i) (dv-dot (vector-ref m i) v))))
+(define (dv-all-exact? v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0))
+      (or (= i n) (and (exact? (vector-ref v i)) (loop (+ i 1)))))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;; 1. Blackbox differentiation of combinatorial solvers
+;; ═══════════════════════════════════════════════════════════════════════
+
+;; (blackbox-vjp solver w y g lambda): the Vlastelica et al. pullback.
+;; y must be solver(w); lambda > 0 is the interpolation strength.
+(define (blackbox-vjp solver w y g lam)
+  (dv-positive "blackbox-vjp" lam)
+  (let* ((g (dv-vec g))
+         (y2 (dv-vec (solver (dv-axpy lam g w)))))
+    (dv-check-length "blackbox-vjp" y2 (vector-length y))
+    (dv-tabulate (vector-length y)
+      (lambda (i) (/ (- (vector-ref y2 i) (vector-ref y i)) lam)))))
+
+;; (blackbox-solve t w-node solver lambda): record y = solver(w) on tape t.
+;; `solver` maps a cost vector w to argmin_{y in Y} <w, y> (any combinatorial
+;; solver: ranking, shortest path, matching, ...). Returns the output node.
+(define (blackbox-solve t w-node solver lam)
+  (dv-positive "blackbox-solve" lam)
+  (let* ((w (dv-vec (node-value w-node)))
+         (y (dv-vec (solver w))))
+    (record-op! t (list w-node) y
+      (lambda (g) (list (blackbox-vjp solver w y g lam))))))
+
+;; (rank-solver w): normalized descending rank. The largest weight gets 1/n,
+;; the smallest 1; ties break by index. By the rearrangement inequality this is
+;; argmin <w, y> over the permutations of (1/n, 2/n, ..., 1). Exact rationals.
+(define (rank-solver w)
+  (let* ((w (dv-vec w)) (n (vector-length w)))
+    (dv-tabulate n
+      (lambda (i)
+        (let count ((j 0) (c 0))
+          (if (< j n)
+              (count (+ j 1)
+                     (if (or (> (vector-ref w j) (vector-ref w i))
+                             (and (= (vector-ref w j) (vector-ref w i)) (< j i)))
+                         (+ c 1) c))
+              (/ (+ c 1) n)))))))
+
+;; (grid-path-solver rows cols): a solver for vertex costs on a rows x cols
+;; grid (row-major vector). Returns w -> indicator of the minimum-cost
+;; monotone path from the top-left to the bottom-right cell (moves right or
+;; down), i.e. argmin <w, y> over those path indicators. Dynamic programming
+;; over the grid DAG, so negative perturbed costs are handled exactly; ties
+;; prefer the move down.
+(define (grid-path-solver rows cols)
+  (if (not (and (integer? rows) (integer? cols) (> rows 0) (> cols 0)))
+      (error "grid-path-solver: expected positive grid dimensions" rows cols))
+  (lambda (w)
+    (let* ((w (dv-vec w)) (n (* rows cols)) (best (make-vector n 0)))
+      (dv-check-length "grid-path-solver" w n)
+      (let fill ((k 0))
+        (if (< k n)
+            (let* ((r (quotient k cols)) (c (remainder k cols))
+                   (here (vector-ref w k)))
+              (vector-set! best k
+                (cond ((and (= r 0) (= c 0)) here)
+                      ((= r 0) (+ here (vector-ref best (- k 1))))
+                      ((= c 0) (+ here (vector-ref best (- k cols))))
+                      (else (+ here (min (vector-ref best (- k 1))
+                                         (vector-ref best (- k cols)))))))
+              (fill (+ k 1)))))
+      (let ((y (make-vector n 0)))
+        (let back ((k (- n 1)))
+          (vector-set! y k 1)
+          (if (> k 0)
+              (let ((r (quotient k cols)) (c (remainder k cols)))
+                (cond ((= r 0) (back (- k 1)))
+                      ((= c 0) (back (- k cols)))
+                      ((<= (vector-ref best (- k cols)) (vector-ref best (- k 1)))
+                       (back (- k cols)))
+                      (else (back (- k 1)))))
+              y))))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;; 2. Perturbed optimizers and Fenchel-Young losses
+;; ═══════════════════════════════════════════════════════════════════════
+
+;; A perturbation is #(perturbation kind samples): kind is 'gumbel or 'normal
+;; and samples is a vector of M noise vectors Z_1..Z_M.
+(define (make-perturbation kind samples)
+  (if (not (memq kind '(gumbel normal)))
+      (error "make-perturbation: kind must be 'gumbel or 'normal" kind))
+  (let ((samples (dv-vec samples)))
+    (if (= (vector-length samples) 0)
+        (error "make-perturbation: expected at least one noise sample"))
+    (vector 'perturbation kind (dv-tabulate (vector-length samples)
+                                 (lambda (m) (dv-vec (vector-ref samples m)))))))
+(define (perturbation-kind p) (vector-ref p 1))
+(define (perturbation-samples p) (vector-ref p 2))
+
+;; (perturbation-noise kind m n seed): M = m draws of length-n noise from an
+;; isolated generator (make-prng seed). The same seed gives the same draws.
+(define (perturbation-noise kind m n seed)
+  (if (not (and (integer? m) (> m 0) (integer? n) (> n 0)))
+      (error "perturbation-noise: expected positive sample count and dimension" m n))
+  (let ((prng (make-prng seed)))
+    (make-perturbation kind
+      (dv-tabulate m
+        (lambda (k)
+          (if (eq? kind 'gumbel)
+              (sample-gumbel-noise n prng)
+              (sample-normal-noise n prng)))))))
+
+;; grad of nu = -log density, componentwise.
+(define (dv-grad-nu kind z)
+  (dv-tabulate (vector-length z)
+    (lambda (i) (if (eq? kind 'gumbel)
+                    (- 1.0 (exp (- (vector-ref z i))))
+                    (vector-ref z i)))))
+
+;; (perturbed-estimate solver theta eps perturbation) ->
+;;   #(y-mean ys max-mean): the Monte Carlo perturbed solution
+;;   y_eps = (1/M) sum_m solver(theta + eps Z_m), the per-sample solutions, and
+;;   F_eps = (1/M) sum_m <solver(theta + eps Z_m), theta + eps Z_m>.
+;; `solver` maps theta to argmax_{y in C} <y, theta>.
+(define (perturbed-estimate solver theta eps perturbation)
+  (dv-positive "perturbed-estimate" eps)
+  (let* ((theta (dv-vec theta)) (n (vector-length theta))
+         (zs (perturbation-samples perturbation)) (m (vector-length zs))
+         (ys (make-vector m #f)))
+    (let loop ((k 0) (sum (make-vector n 0)) (fmax 0))
+      (if (< k m)
+          (let* ((z (vector-ref zs k))
+                 (_ (dv-check-length "perturbed-estimate" z n))
+                 (shifted (dv-axpy eps z theta))
+                 (y (dv-vec (solver shifted))))
+            (dv-check-length "perturbed-estimate" y n)
+            (vector-set! ys k y)
+            (loop (+ k 1) (dv-add sum y) (+ fmax (dv-dot y shifted))))
+          (vector (dv-scale (/ 1 m) sum) ys (/ fmax m))))))
+
+;; (perturbed-vjp perturbation eps ys g): (J y_eps)^T g
+;;   = (1/(eps M)) sum_m <y_m, g> grad-nu(Z_m).
+(define (perturbed-vjp perturbation eps ys g)
+  (let* ((zs (perturbation-samples perturbation)) (m (vector-length zs))
+         (kind (perturbation-kind perturbation)) (g (dv-vec g))
+         (n (vector-length g)))
+    (let loop ((k 0) (acc (make-vector n 0)))
+      (if (< k m)
+          (loop (+ k 1)
+                (dv-axpy (dv-dot (vector-ref ys k) g)
+                         (dv-grad-nu kind (vector-ref zs k)) acc))
+          (dv-scale (/ 1.0 (* eps m)) acc)))))
+
+;; (perturbed-solve t theta-node solver eps perturbation): record y_eps on
+;; tape t with the Monte Carlo Jacobian as its pullback.
+(define (perturbed-solve t theta-node solver eps perturbation)
+  (let* ((est (perturbed-estimate solver (node-value theta-node) eps perturbation))
+         (ys (vector-ref est 1)))
+    (record-op! t (list theta-node) (vector-ref est 0)
+      (lambda (g) (list (perturbed-vjp perturbation eps ys g))))))
+
+;; (perturbed-max t theta-node solver eps perturbation): record the perturbed
+;; maximum F_eps(theta) = E[max_y <y, theta + eps Z>]; grad F_eps = y_eps.
+(define (perturbed-max t theta-node solver eps perturbation)
+  (let ((est (perturbed-estimate solver (node-value theta-node) eps perturbation)))
+    (record-op! t (list theta-node) (vector-ref est 2)
+      (lambda (g) (list (dv-scale g (vector-ref est 0)))))))
+
+;; (top-k-indicator k): solver for the top-k polytope; theta -> indicator of
+;; the k largest entries (ties prefer the lower index).
+(define (top-k-indicator k)
+  (lambda (theta)
+    (let* ((theta (dv-vec theta)) (n (vector-length theta)))
+      (if (not (and (integer? k) (>= k 0) (<= k n)))
+          (error "top-k-indicator: k must lie in 0..n" k n))
+      (dv-tabulate n
+        (lambda (i)
+          (let count ((j 0) (above 0))
+            (if (< j n)
+                (count (+ j 1)
+                       (if (or (> (vector-ref theta j) (vector-ref theta i))
+                               (and (= (vector-ref theta j) (vector-ref theta i)) (< j i)))
+                           (+ above 1) above))
+                (if (< above k) 1.0 0.0))))))))
+
+(define (perturbed-argmax t theta-node eps perturbation)
+  (perturbed-solve t theta-node argmax-onehot eps perturbation))
+(define (perturbed-top-k t theta-node k eps perturbation)
+  (perturbed-solve t theta-node (top-k-indicator k) eps perturbation))
+
+;; One recorder for every Fenchel-Young loss: the loss value and the
+;; prediction y_hat whose difference with the target is the gradient.
+(define (fy-record t theta-node target value prediction)
+  (let ((residual (dv-sub prediction target)))
+    (record-op! t (list theta-node) value
+      (lambda (g) (list (dv-scale g residual))))))
+
+;; Perturbed Fenchel-Young loss F_eps(theta) - <theta, y>; gradient
+;; y_eps(theta) - y. The theta-independent term eps*Omega(y) is omitted.
+(define (perturbed-fenchel-young t theta-node target solver eps perturbation)
+  (let* ((theta (dv-vec (node-value theta-node)))
+         (target (dv-vec target))
+         (est (perturbed-estimate solver theta eps perturbation)))
+    (fy-record t theta-node target
+               (- (vector-ref est 2) (dv-dot theta target))
+               (vector-ref est 0))))
+
+;; Shannon-entropy Fenchel-Young loss (the logistic / cross-entropy loss):
+;;   logsumexp(theta) - <theta, y> + sum_i y_i log y_i,  gradient softmax(theta) - y.
+;; Nonnegative, zero exactly when y = softmax(theta).
+(define (fenchel-young-softmax t theta-node target)
+  (let* ((theta (dv-vec (node-value theta-node))) (n (vector-length theta))
+         (target (dv-vec target))
+         (mx (let loop ((i 1) (m (vector-ref theta 0)))
+               (if (< i n) (loop (+ i 1) (max m (vector-ref theta i))) m)))
+         (lse (+ mx (log (let loop ((i 0) (s 0.0))
+                           (if (< i n) (loop (+ i 1) (+ s (exp (- (vector-ref theta i) mx)))) s)))))
+         (neg-entropy (let loop ((i 0) (s 0.0))
+                        (if (< i n)
+                            (let ((yi (vector-ref target i)))
+                              (loop (+ i 1) (if (> yi 0) (+ s (* yi (log yi))) s)))
+                            s))))
+    (fy-record t theta-node target
+               (+ (- lse (dv-dot theta target)) neg-entropy)
+               (softmax theta))))
+
+;; Gini (squared-norm) Fenchel-Young loss, the sparsemax loss:
+;;   <theta, p> - |p|^2/2 + |y|^2/2 - <theta, y>,  p = sparsemax(theta),
+;;   gradient p - y. Exact on exact input.
+(define (fenchel-young-sparsemax t theta-node target)
+  (let* ((theta (dv-vec (node-value theta-node)))
+         (target (dv-vec target))
+         (p (sparsemax theta)))
+    (fy-record t theta-node target
+               (+ (- (dv-dot theta p) (/ (dv-dot p p) 2))
+                  (- (/ (dv-dot target target) 2) (dv-dot theta target)))
+               p)))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;; 3. Implicit differentiation
+;; ═══════════════════════════════════════════════════════════════════════
+
+;; (diffopt-linear-solve a b): x with a x = b. Exact entries everywhere ->
+;; core.exact_linalg exact-solve (exact rational answer); otherwise the f64
+;; `linear-solve`. Singular systems raise.
+(define (diffopt-linear-solve a b)
+  (let ((n (vector-length a)) (b (dv-vec b)))
+    (dv-check-length "diffopt-linear-solve" b n)
+    (if (and (exact-matrix? a) (dv-all-exact? b))
+        (exact-solve a b)
+        (let ((ta (make-tensor (list n n) 0.0)) (tb (make-tensor (list n) 0.0)))
+          (let fill ((k 0))
+            (if (< k (* n n))
+                (begin (tensor-set! ta k (exact->inexact
+                                           (vector-ref (vector-ref a (quotient k n)) (remainder k n))))
+                       (fill (+ k 1)))))
+          (let fill ((i 0))
+            (if (< i n) (begin (tensor-set! tb i (exact->inexact (vector-ref b i))) (fill (+ i 1)))))
+          (let ((x (linear-solve ta tb)))
+            (dv-tabulate n (lambda (i) (tensor-ref x i))))))))
+
+;; (diffopt-jacobian f x): the Jacobian of f : R^n -> R^m at the vector x as an
+;; m x n matrix (vector of rows), by the compiled `jacobian` operator.
+(define (diffopt-jacobian f x)
+  (let* ((j (jacobian f x)) (shape (tensor-shape j))
+         (m (car shape)) (n (cadr shape)))
+    (dv-tabulate m (lambda (i) (dv-tabulate n (lambda (k) (tensor-ref j i k)))))))
+
+;; Scalar parameters are carried as length-1 vectors internally.
+(define (dv-as-vector v) (if (vector? v) v (vector v)))
+(define (dv-like proto v) (if (vector? proto) v (vector-ref v 0)))
+
+;; (implicit-root-vjp jx jt g): with jx = d_x F (n x n) and jt = d_theta F
+;; (n x p) at the root, return -(jt^T u) where jx^T u = g.
+(define (implicit-root-vjp jx jt g)
+  (let ((u (diffopt-linear-solve (exact-matrix-transpose jx) (dv-vec g))))
+    (dv-scale -1 (dv-mat-vec (exact-matrix-transpose jt) u))))
+
+;; Default partial Jacobians of F(x, theta) by the compiled `jacobian`.
+(define (implicit-default-jacobians F)
+  (list (lambda (x theta) (diffopt-jacobian (lambda (xv) (F xv theta)) x))
+        (lambda (x theta)
+          (if (vector? theta)
+              (diffopt-jacobian (lambda (tv) (F x tv)) theta)
+              (diffopt-jacobian (lambda (tv) (F x (vector-ref tv 0))) (vector theta))))))
+
+;; (implicit-root t F x-star theta-node [jac-x jac-theta]): record x* on tape
+;; t as a function of theta, where F(x*, theta) = 0 (x* comes from any
+;; solver; it is not differentiated through). jac-x and jac-theta, when given,
+;; are procedures (x theta) -> d_x F and d_theta F as matrices; written with
+;; exact arithmetic they make the pullback exact. Otherwise the compiled
+;; `jacobian` supplies them. theta may be a scalar or a vector.
+(define (implicit-root t F x-star theta-node . jacobians)
+  (let* ((jacs (if (null? jacobians) (implicit-default-jacobians F) jacobians))
+         (theta (node-value theta-node))
+         (x (dv-vec x-star)))
+    (if (not (= (length jacs) 2))
+        (error "implicit-root: expected jac-x and jac-theta procedures"))
+    (record-op! t (list theta-node) x
+      (lambda (g)
+        (let ((jx ((car jacs) x theta))
+              (jt ((cadr jacs) x theta)))
+          (list (dv-like theta (implicit-root-vjp jx (implicit-theta-matrix jt theta) g))))))))
+
+;; d_theta F for a scalar theta may be given as a column (n x 1) or a vector.
+(define (implicit-theta-matrix jt theta)
+  (if (and (not (vector? theta)) (> (vector-length jt) 0)
+           (not (vector? (vector-ref jt 0))))
+      (dv-tabulate (vector-length jt) (lambda (i) (vector (vector-ref jt i))))
+      jt))
+
+(define (dv-identity-minus m)      ; m - I
+  (let ((n (vector-length m)))
+    (dv-tabulate n (lambda (i)
+      (dv-tabulate n (lambda (k)
+        (- (vector-ref (vector-ref m i) k) (if (= i k) 1 0))))))))
+
+;; (implicit-fixed-point t T x-star theta-node [jac-x jac-theta]):
+;; x* = T(x*, theta). The root of F = T(x, theta) - x; jac-x / jac-theta, when
+;; given, are the partial Jacobians of T.
+(define (implicit-fixed-point t T x-star theta-node . jacobians)
+  (let* ((F (lambda (x theta) (dv-sub (dv-vec (T x theta)) x)))
+         (tj (if (null? jacobians) (implicit-default-jacobians (lambda (x theta) (dv-vec (T x theta))))
+                 jacobians)))
+    (implicit-root t F x-star theta-node
+      (lambda (x theta) (dv-identity-minus ((car tj) x theta)))
+      (cadr tj))))
+
+;; (implicit-argmin t f x-star theta-node [hess-x cross]): x* = argmin_x
+;; f(x, theta), so grad_x f(x*, theta) = 0. hess-x and cross, when given, are
+;; (x theta) -> d2f/dx2 and d2f/(dx dtheta); otherwise the compiled `hessian`
+;; and the Jacobian of the compiled `gradient` supply them.
+(define (implicit-argmin t f x-star theta-node . second-derivatives)
+  (let ((F (lambda (x theta) (dv-vec (gradient (lambda (xv) (f xv theta)) x)))))
+    (if (null? second-derivatives)
+        (implicit-root t F x-star theta-node
+          (lambda (x theta)
+            (let* ((h (hessian (lambda (xv) (f xv theta)) x)) (n (vector-length x)))
+              (dv-tabulate n (lambda (i) (dv-tabulate n (lambda (k) (tensor-ref h i k)))))))
+          (cadr (implicit-default-jacobians F)))
+        (apply implicit-root t F x-star theta-node second-derivatives))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;; 4. Smooth relaxations: softmax and sparsemax
+;; ═══════════════════════════════════════════════════════════════════════
+
+;; (sparsemax z): Euclidean projection of z onto the probability simplex,
+;; p = max(z - tau, 0) with tau = (sum_{j<=k} z_(j) - 1)/k for the support
+;; size k = max{k : 1 + k z_(k) > sum_{j<=k} z_(j)} (z_(j) sorted descending).
+(define (sparsemax z)
+  (let* ((z (dv-vec z)) (n (vector-length z)) (s (make-vector n 0)))
+    (if (= n 0) (error "sparsemax: expected a nonempty vector"))
+    (let copy ((i 0)) (if (< i n) (begin (vector-set! s i (vector-ref z i)) (copy (+ i 1)))))
+    ;; insertion sort, descending
+    (let outer ((i 1))
+      (if (< i n)
+          (let ((v (vector-ref s i)))
+            (let inner ((j (- i 1)))
+              (if (and (>= j 0) (< (vector-ref s j) v))
+                  (begin (vector-set! s (+ j 1) (vector-ref s j)) (inner (- j 1)))
+                  (vector-set! s (+ j 1) v)))
+            (outer (+ i 1)))))
+    (let scan ((k 1) (cum 0) (best-k 1) (best-cum (vector-ref s 0)))
+      (if (<= k n)
+          (let ((cum (+ cum (vector-ref s (- k 1)))))
+            (if (> (+ 1 (* k (vector-ref s (- k 1)))) cum)
+                (scan (+ k 1) cum k cum)
+                (scan (+ k 1) cum best-k best-cum)))
+          (let ((tau (/ (- best-cum 1) best-k)))
+            (dv-tabulate n (lambda (i) (max (- (vector-ref z i) tau) 0))))))))
+
+(define (dv-support p)
+  (dv-tabulate (vector-length p) (lambda (i) (if (> (vector-ref p i) 0) 1 0))))
+
+;; (sparsemax-jacobian z): diag(s) - s s^T / |S|, s the support indicator.
+(define (sparsemax-jacobian z)
+  (let* ((s (dv-support (sparsemax z))) (n (vector-length s))
+         (size (let loop ((i 0) (c 0)) (if (< i n) (loop (+ i 1) (+ c (vector-ref s i))) c))))
+    (dv-tabulate n (lambda (i)
+      (dv-tabulate n (lambda (k)
+        (- (if (= i k) (vector-ref s i) 0)
+           (/ (* (vector-ref s i) (vector-ref s k)) size))))))))
+
+;; (sparsemax-vjp p g): J^T g = s ⊙ (g - (sum_{i in S} g_i)/|S|) at p = sparsemax(z).
+(define (sparsemax-vjp p g)
+  (let* ((g (dv-vec g)) (s (dv-support p)) (n (vector-length s))
+         (size (let loop ((i 0) (c 0)) (if (< i n) (loop (+ i 1) (+ c (vector-ref s i))) c)))
+         (mean (/ (dv-dot s g) size)))
+    (dv-tabulate n (lambda (i) (* (vector-ref s i) (- (vector-ref g i) mean))))))
+
+;; (softmax-jacobian z): diag(p) - p p^T at p = softmax(z).
+(define (softmax-jacobian z)
+  (let* ((p (softmax z)) (n (vector-length p)))
+    (dv-tabulate n (lambda (i)
+      (dv-tabulate n (lambda (k)
+        (- (if (= i k) (vector-ref p i) 0) (* (vector-ref p i) (vector-ref p k)))))))))
+
+;; Tape layers.
+(define (tape-softmax t z-node)
+  (let ((p (softmax (node-value z-node))))
+    (record-op! t (list z-node) p (lambda (g) (list (softmax-vjp p g))))))
+(define (tape-sparsemax t z-node)
+  (let ((p (sparsemax (node-value z-node))))
+    (record-op! t (list z-node) p (lambda (g) (list (sparsemax-vjp p g))))))
