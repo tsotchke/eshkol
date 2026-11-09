@@ -273,8 +273,11 @@ void test_round_trips(const std::string& scratch) {
                 check(d && w == s[0] && h == s[1], "reads back " + label);
                 const bool lossless = std::strcmp(fmt, "jpeg") != 0;
                 // WebP, like libwebp, keeps an alpha channel only when some
-                // sample is transparent; the "blocks" alpha is.
-                const int expect_c = c == 4 && lossless ? 4 : 3;
+                // sample is transparent.
+                bool transparent = false;
+                for (size_t i = 3; c == 4 && i < img.size(); i += 4) transparent = transparent || img[i] < 1.0;
+                const bool webp = std::strcmp(fmt, "webp") == 0;
+                const int expect_c = c == 4 && lossless && (!webp || transparent) ? 4 : 3;
                 check(oc == expect_c, "channel count " + label);
                 if (d && lossless && oc == expect_c) {
                     bool same = true;
