@@ -253,6 +253,7 @@ Adversarial-campaign pillar harnesses (`tests/`):
 Engineering reports (`docs/reports/`) — see the [reports directory index](reports/README.md) for scope; individual reports:
 
 - [SICP-Completeness Report](reports/SICP_COMPLETENESS_REPORT.md) — release gate: 100% of the SICP book, executable (88/88 probes)
+- [Documentation claims ranked by verification status](reports/DOC_TRUTH_RANKING.md) — the doc-truth ratchet: every `docs/` claim ICC can type, ranked per document, with the per-document quota (phase 1, report-only)
 - [Reference-Implementation Differential Report](reports/REFERENCE_DIFFERENTIAL_REPORT.md) — external R7RS ground-truth conformance oracle (P7a): 34/34 AGREE against chibi-scheme 0.12.0
 - [Generative Multi-Oracle Differential Report](reports/GENERATIVE_DIFFERENTIAL_REPORT.md) — generated closed R7RS-small program family cross-checked against every installed reference implementation (P7c)
 - [Sanitizer Fuzz Report](reports/SANITIZER_FUZZ_REPORT.md)

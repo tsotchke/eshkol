@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Image I/O needs no codec library on any platform.** PNG (every colour
+  type, bit depth and interlacing), JPEG (baseline, extended and progressive
+  Huffman decode; baseline encode) and BMP are decoded and encoded by codecs
+  built into the runtime, with the same output on every platform. Files
+  written by `image-write` keep the bytes the previous system libpng/libjpeg
+  path produced, and decoded pixels match it. WebP is Planned for v1.4.1:
+  `image-write` with `"webp"` and `image-read` of a WebP file return `#f`
+  with a notice. Builds, CI images and release packages no longer carry
+  libpng, libjpeg or libwebp.
+- **Region runtime in four units.** The region lifecycle, escape and
+  evacuation, user region handles and resident owners are separate
+  translation units behind a hidden-visibility internal header; function
+  bodies and exported symbols are unchanged.
+- **Doc-truth ratchet, phase 1.** `scripts/doc_truth_ratchet.py` ranks every
+  typed claim in `docs/` by verification status and records a per-document
+  quota (`docs/reports/doc_truth/quota.json`, summary in
+  `docs/reports/DOC_TRUTH_RANKING.md`). The `doc_truth_ratchet_phase1` CTest
+  recomputes the ranking into the build directory and reports against the
+  quota; `ESHKOL_DOC_TRUTH_ENFORCE=ON` is the phase-2 switch that makes it
+  release-blocking.
+
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix
   calculus (#794), coupled polynomial root towers (#795), preflighted packed

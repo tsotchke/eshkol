@@ -8357,6 +8357,39 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_regions_test COMMAND runtime_regions_test)
 endif()
 
+# Doc-truth ratchet. Phase 1 (v1.4.0) recomputes the ranking of docs/ claims
+# by verification status into ${CMAKE_BINARY_DIR}/doc_truth and reports how
+# each document compares with docs/reports/doc_truth/quota.json without
+# failing. Phase 2 sets ESHKOL_DOC_TRUTH_ENFORCE=ON (release builds), which
+# fails on any document above its quota or a host that cannot recompute.
+option(ESHKOL_DOC_TRUTH_ENFORCE "Fail the doc-truth ratchet on quota excess (phase 2)" OFF)
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_truth_ratchet.py")
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        set(_eshkol_doc_truth_args
+            check --source "${CMAKE_CURRENT_SOURCE_DIR}"
+                  --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                  --quota "${CMAKE_CURRENT_SOURCE_DIR}/docs/reports/doc_truth/quota.json")
+        if(ESHKOL_DOC_TRUTH_ENFORCE)
+            list(APPEND _eshkol_doc_truth_args --enforce)
+        endif()
+        add_test(NAME doc_truth_ratchet_phase1
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/doc_truth_ratchet.py"
+                         ${_eshkol_doc_truth_args})
+        set_tests_properties(doc_truth_ratchet_phase1 PROPERTIES
+            TIMEOUT 3600
+            LABELS "doc-truth"
+            PASS_REGULAR_EXPRESSION "DOC-TRUTH (REPORT|NOT RECOMPUTED)"
+            FAIL_REGULAR_EXPRESSION "FAIL: ")
+        add_test(NAME doc_truth_ratchet_unit
+                 COMMAND ${Python3_EXECUTABLE}
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_doc_truth_ratchet.py"
+                 WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(doc_truth_ratchet_unit PROPERTIES LABELS "doc-truth" TIMEOUT 300)
+    endif()
+endif()
+
 # Built-in image codecs: decode/encode goldens recorded from the platform
 # codec libraries image I/O used before, round trips for every format and
 # channel count, the WebP refusal, the zlib pair and a mutation pass.
