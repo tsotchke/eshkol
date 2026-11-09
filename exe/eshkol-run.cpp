@@ -3360,7 +3360,10 @@ private:
             CallableEffect effect;
             const sr::Contract* contract;
             unresolvedCallable(name, &effect, &contract);
-            if (effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) {
+            if (effect == CallableEffect::TERMINAL_CONTROL) {
+                // exit/error end the path: the caller's open handles matter.
+                result.cls = FnClass::RELEVANT;
+            } else if (effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) {
                 result.cls = FnClass::UNKNOWN;
                 result.reason = "builtin '" + name + "' has no strict resource effect summary";
             } else if (effect == CallableEffect::CONTRACT && contractHasHandleEffect(contract)) {
@@ -3375,7 +3378,9 @@ private:
         }
         switch (info->callable_effect) {
             case CallableEffect::NONE:
+                return;
             case CallableEffect::TERMINAL_CONTROL:
+                result.cls = FnClass::RELEVANT;
                 return;
             case CallableEffect::CONTRACT:
                 if (contractHasHandleEffect(info->contract) || !call_position)
@@ -3524,7 +3529,10 @@ private:
                 for (uint64_t i = 0; i < op.with_region_op.num_body_exprs; ++i)
                     scan(&op.with_region_op.body[i]);
                 return;
-            case ESHKOL_RAISE_OP: scan(op.raise_op.exception); return;
+            case ESHKOL_RAISE_OP:
+                if (result.cls == FnClass::PURE) result.cls = FnClass::RELEVANT;
+                scan(op.raise_op.exception);
+                return;
             case ESHKOL_CALL_CC_OP: scan(op.call_cc_op.proc); return;
             case ESHKOL_DYNAMIC_WIND_OP:
                 scan(op.dynamic_wind_op.before);
