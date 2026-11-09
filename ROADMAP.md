@@ -816,6 +816,11 @@ under the same discipline that made `Qubit` linear.
 
 ## v1.4.1 — the ABI release (target: 2026-11-06) - PLANNED
 
+- [ ] Higher-order differentiation through tensor operations on the VM: the VM tensor carrier
+      holds first-order tangents only, so the VM refuses a higher-order derivative that passes
+      through a tensor operation (by name), while JIT and AOT answer it (ADR-0057). Planned for v1.4.1:
+      a VM tensor carrier with nested levels, the tensor-point nesting tests on the VM, and the
+      browser VM rebuilt with 64-bit epochs
 - [ ] OALR ABI v2 Phase B: migrate the allocator, codegen sites and runtime
       consumers to the 32-byte header (layout descriptors, escape ledgers,
       transfer capsules). Phase A — the header definition, both layouts
