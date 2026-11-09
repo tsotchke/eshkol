@@ -385,7 +385,7 @@ simulates an 83-instruction bytecode VM with native reverse-mode AD.
 ### v1.2 Toolchain and Stdlib
 
 - **JSON Schema validation** (Draft 7 subset): `(json-schema-valid? schema value)` for experiment-manifest enforcement.
-- **Image I/O** (native ImageIO/CoreGraphics, GDI+, or system libpng/libjpeg/libwebp): `(image-read)`, `(image-write)`, `(image-resize)`, `(image-to-grayscale)` returning tensors of shape `(H W C)`.
+- **Image I/O** (built-in PNG, JPEG and BMP codecs, identical on every platform; WebP Planned for v1.4.1): `(image-read)`, `(image-write)`, `(image-resize)`, `(image-to-grayscale)` returning tensors of shape `(H W C)`.
 - **CSV/DataFrame extensions**: `(csv-parse-typed str)` with type inference,
   `(csv-select df names)` for column selection, `(csv-filter df pred)` for row
   filtering. Group-by is not yet implemented.

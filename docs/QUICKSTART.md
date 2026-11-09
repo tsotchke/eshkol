@@ -103,7 +103,7 @@ eshkol-run hello.esk -o hello
 ./hello
 ```
 
-**Requirements**: LLVM 21 by default — the compiler builds against LLVM **18 through 24**, selected with `-DESHKOL_REQUIRED_LLVM_MAJOR=<n>`; a C++20 compiler; CMake 3.14+; Ninja; native image codecs on Linux (`libpng-dev`, `libjpeg-dev`, `libwebp-dev`; macOS uses ImageIO/CoreGraphics)
+**Requirements**: LLVM 21 by default — the compiler builds against LLVM **18 through 24**, selected with `-DESHKOL_REQUIRED_LLVM_MAJOR=<n>`; a C++20 compiler; CMake 3.14+; Ninja. Image I/O needs no codec package: its PNG, JPEG and BMP codecs are built into the runtime
 **Platforms**: Linux, macOS (x86-64, ARM64), Windows (native x86-64)
 
 **Web REPL**: Visit [eshkol.ai](https://eshkol.ai) for an interactive Eshkol environment without installation — includes a full REPL, tutorials, and runnable examples.

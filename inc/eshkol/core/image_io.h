@@ -3,7 +3,9 @@
  * @brief Image I/O API — read/write PNG, JPEG, BMP as tensor data.
  *
  * Images are normalized doubles (0.0-1.0). Shapes: (H,W,C) for color,
- * (H,W) for grayscale.
+ * (H,W) for grayscale. The codecs are built into the runtime and behave
+ * identically on every platform; no external codec library is linked.
+ * WebP is Planned for v1.4.1.
  *
  * Memory ownership: returned arrays are arena-allocated from the Eshkol
  * global arena. Callers must **not** free() them — the arena releases all
@@ -20,11 +22,13 @@ extern "C" {
 
 /**
  * Read image file → flat double array (normalized 0-1, row-major, HWC layout).
- * @param path      Path to image file (native backend formats: PNG, JPEG,
- *                  WebP where available, plus platform-supported formats)
+ * @param path      Path to image file: PNG (every colour type, bit depth and
+ *                  interlacing), JPEG (baseline, extended and progressive
+ *                  Huffman) or BMP; the format is detected from content
  * @param out_w     Output: image width
  * @param out_h     Output: image height
- * @param out_c     Output: number of channels (1=gray, 3=RGB, 4=RGBA)
+ * @param out_c     Output: number of channels (3=RGB, or 4=RGBA when the file
+ *                  carries transparency; gray files are expanded to RGB)
  * @return Arena-allocated array of (w*h*c) doubles, or NULL on failure.
  *         Owned by the global arena — do NOT free().
  */
@@ -37,8 +41,8 @@ double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c);
  * @param w         Image width
  * @param h         Image height
  * @param channels  Number of channels (1, 3, or 4)
- * @param format    "png", "jpg"/"jpeg", "webp" where available, "bmp" on
- *                  platform backends (NULL defaults to "png")
+ * @param format    "png", "jpg"/"jpeg" (quality 90, alpha dropped) or "bmp"
+ *                  (NULL defaults to "png")
  * @return 0 on success, -1 on failure
  */
 int eshkol_image_write(const char* path, const double* data,

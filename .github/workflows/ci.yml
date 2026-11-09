@@ -2095,7 +2095,6 @@ jobs:
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev \
             libpcre2-dev libsqlite3-dev \
-            libpng-dev libjpeg-dev libwebp-dev \
             git python3 python3-clang-${LLVM_MAJOR}
           if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
             scripts/ci_retry.sh --attempts 3 --base-delay 15 -- \
@@ -3067,7 +3066,7 @@ jobs:
             cmake ninja-build \
             llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
             libreadline-dev pkg-config libssl-dev libncurses-dev \
-            libpcre2-dev libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev \
+            libpcre2-dev libsqlite3-dev \
             git python3
           sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
 

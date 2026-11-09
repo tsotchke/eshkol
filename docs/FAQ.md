@@ -9,8 +9,8 @@
 - **CMake 3.14+** (build system)
 - **C++20 compiler** (GCC 12+, Clang 15+, or MSVC 2022)
 - **Ninja** (recommended, but Make works too)
-- **Native image codecs** for source builds (Linux: `libpng-dev`,
-  `libjpeg-dev`, `libwebp-dev`; macOS uses ImageIO/CoreGraphics)
+- No image codec packages: PNG, JPEG and BMP read/write are built into the
+  runtime on every platform
 
 ### How do I install LLVM 21?
 
@@ -23,7 +23,7 @@ brew install llvm@21
 ```bash
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
 echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-sudo apt update && sudo apt install llvm-21 llvm-21-dev libpng-dev libjpeg-dev libwebp-dev pkg-config
+sudo apt update && sudo apt install llvm-21 llvm-21-dev pkg-config
 ```
 
 **Windows:**

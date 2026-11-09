@@ -185,8 +185,6 @@ add_platform_args() {
                 "-framework" "Metal"
                 "-framework" "MetalPerformanceShaders"
                 "-framework" "Foundation"
-                "-framework" "ImageIO"
-                "-framework" "CoreGraphics"
                 "-framework" "CoreFoundation"
             )
             sdk_path="$(xcrun --show-sdk-path 2>/dev/null || true)"

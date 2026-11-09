@@ -2407,8 +2407,14 @@ endif()
 list(APPEND LIB_SRC ${ESHKOL_EVENT_LOOP_SRC})
 message(STATUS "Event-loop backend: ${ESHKOL_EVENT_LOOP_BACKEND} (${ESHKOL_EVENT_LOOP_SRC})")
 
-# Image I/O (native platform/system codec backends)
-list(APPEND LIB_SRC lib/core/image_io.c)
+# Image I/O (built-in runtime codecs; no external codec library)
+set(ESHKOL_IMAGE_CODEC_SRC
+  lib/core/image_zlib.cpp
+  lib/core/image_png.cpp
+  lib/core/image_jpeg_decode.cpp
+  lib/core/image_jpeg_encode.cpp
+  lib/core/image_bmp.cpp)
+list(APPEND LIB_SRC lib/core/image_io.c ${ESHKOL_IMAGE_CODEC_SRC})
 set_source_files_properties(lib/core/image_io.c PROPERTIES LANGUAGE CXX)
 
 # C FFI (stable embedding API)
@@ -2589,6 +2595,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/keychain_native.c
   lib/core/dnc_api.c
   lib/core/image_io.c
+  ${ESHKOL_IMAGE_CODEC_SRC}
   lib/core/inference.cpp
   lib/core/kb_persistence.cpp
   lib/core/sdnc_api.c
@@ -3235,9 +3242,9 @@ if(TARGET pjrt_reusable_program_test AND LLVM_LIBRARY_DIRS)
     target_link_directories(pjrt_reusable_program_test PRIVATE ${LLVM_LIBRARY_DIRS})
 endif()
 
-# Propagate the runtime's transitive system link deps (Apple ImageIO/CoreGraphics/
-# CoreFoundation for image_io.c, Windows Gdiplus/Advapi32/Ntdll, libpng/jpeg/webp,
-# clang builtins) to the static/runtime libraries' PUBLIC interface. Previously
+# Propagate the runtime's transitive system link deps (Apple CoreFoundation/
+# Security, Windows Advapi32/Ntdll, clang builtins) to the static/runtime
+# libraries' PUBLIC interface. Image I/O adds none: its codecs are built in. Previously
 # these lived only on the eshkol-run/eshkol-repl executables, so a downstream
 # consumer linking libeshkol-static.a directly (e.g. libnoesis-core) hit
 # "Undefined symbols: _CGImageDestinationCreateWithURL ..." and had to re-declare
@@ -3637,7 +3644,7 @@ install(DIRECTORY lib/ DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib
 set(ESHKOL_PC_EXTRA_LIBS "")
 if(APPLE)
   set(ESHKOL_PC_EXTRA_LIBS
-      "-framework Accelerate -framework Metal -framework MetalPerformanceShaders -framework Foundation -framework Security -framework CoreFoundation -framework ImageIO -framework CoreGraphics -lobjc")
+      "-framework Accelerate -framework Metal -framework MetalPerformanceShaders -framework Foundation -framework Security -framework CoreFoundation -lobjc")
 elseif(WIN32)
   set(ESHKOL_PC_EXTRA_LIBS "-lbcrypt -lws2_32")
 endif()
@@ -3822,12 +3829,13 @@ if(REPL_SRC)
 
   endforeach()
 
-  # Linux binary releases stage libpng/libjpeg/libwebp and their codec-side
-  # closure under lib/eshkol/runtime-deps.  Keep the tools relocatable: the
-  # same binaries continue to use distro libraries in the build tree, then
-  # resolve the packaged SONAMEs through this relative RUNPATH after archive
-  # extraction.  Generated AOT/cache executables receive an absolute path to
-  # the relocated directory at link time via platform_runtime.cpp.
+  # Linux binary releases may stage runtime dependencies under
+  # lib/eshkol/runtime-deps (none today: the image codecs are built into the
+  # runtime).  Keep the tools relocatable: the same binaries use distro
+  # libraries in the build tree, then resolve any packaged SONAMEs through
+  # this relative RUNPATH after archive extraction.  Generated AOT/cache
+  # executables receive an absolute path to the relocated directory at link
+  # time via platform_runtime.cpp.
   if(UNIX AND NOT APPLE)
     set(_eshkol_packaged_runtime_rpath
         "\$ORIGIN/../lib/eshkol/runtime-deps")
@@ -8339,6 +8347,29 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     endif()
     target_link_libraries(runtime_regions_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME runtime_regions_test COMMAND runtime_regions_test)
+endif()
+
+# Built-in image codecs: decode/encode goldens recorded from the platform
+# codec libraries image I/O used before, round trips for every format and
+# channel count, the WebP refusal, the zlib pair and a mutation pass.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/image_codecs_test.cpp")
+    add_executable(image_codecs_test tests/core/image_codecs_test.cpp)
+    target_compile_features(image_codecs_test PRIVATE cxx_std_17)
+    target_include_directories(image_codecs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(image_codecs_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(image_codecs_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(image_codecs_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/image_codecs_scratch")
+    add_test(NAME image_codecs_test
+             COMMAND image_codecs_test
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/image_fixtures"
+                     "${CMAKE_CURRENT_BINARY_DIR}/image_codecs_scratch")
+    set_tests_properties(image_codecs_test PROPERTIES
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS: image codecs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/parameter_region_barrier_test.cpp")
@@ -13374,6 +13405,19 @@ endif()
 # axes.  The VM parity corpus carries the corresponding hash reduction through
 # vm-src and emitted ESKB; these native tests keep the JIT and AOT paths from
 # drifting independently.
+# image-read/image-write/image-to-grayscale through compiled Eshkol code.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME image_io_language_test
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/v1_2_edge_cases/image_io_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(image_io_language_test PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "RESULT: ALL PASS"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME hash_constructor_or_jit_smoke

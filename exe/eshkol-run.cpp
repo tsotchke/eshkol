@@ -8043,10 +8043,6 @@ int main(int argc, char **argv)
         link_args.emplace_back("-framework");
         link_args.emplace_back("Foundation");
         link_args.emplace_back("-framework");
-        link_args.emplace_back("ImageIO");
-        link_args.emplace_back("-framework");
-        link_args.emplace_back("CoreGraphics");
-        link_args.emplace_back("-framework");
         link_args.emplace_back("CoreFoundation");
         // Add the macOS SDK lib dir so `-lobjc` resolves portably (libobjc.tbd
         // lives in <sdk>/usr/lib). Resolved at runtime, never hardcoded, so a

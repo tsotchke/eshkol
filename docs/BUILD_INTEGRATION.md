@@ -160,8 +160,9 @@ The imported target is **`Eshkol::eshkol`**, an `UNKNOWN IMPORTED` library whose
 `IMPORTED_LOCATION` is `Eshkol_LIBRARY` and whose `INTERFACE_LINK_LIBRARIES` starts
 with `Eshkol_STDLIB_OBJECT` unconditionally, then adds the platform link line: on
 Apple, `Accelerate`, `Metal`, `MetalPerformanceShaders`, `Foundation`, `Security`,
-`CoreFoundation`, `ImageIO`, `CoreGraphics` and `-lobjc`; on Windows, `bcrypt` and
-`ws2_32`.
+`CoreFoundation` and `-lobjc`; on Windows, `bcrypt` and `ws2_32`. Image I/O adds
+nothing to this line on any platform: its PNG/JPEG/BMP codecs are built into the
+runtime.
 
 One documented limitation, stated in the module itself: a build configured with
 `ESHKOL_GPU_BACKEND`, `ESHKOL_QUANTUM_ENABLED` or an external BLAS links additional
