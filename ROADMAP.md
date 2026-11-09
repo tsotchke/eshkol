@@ -1216,9 +1216,9 @@ single-machine platform surface.
 - [x] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration): built-in decision procedure (Omega test, exact simplex, congruence closure) and optional z3 backend, ADR-0044
 - [x] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level) — inferred effect rows with effect polymorphism, `declare-effects` enforced under `--strict-types` (ADR-0045)
 - [x] Algebraic effects and handlers (structured side-effect management) — `define-effect`, deep and shallow `handle`, multi-shot resumptions, `core.effects` (state, reader, writer, exceptions, choice, generators, async) on native JIT, AOT and the VM (ADR-0045)
-- [ ] Row polymorphism for records (structural subtyping)
-- [ ] Higher-rank types (rank-2 polymorphism for combinators)
-- [ ] Session types for communication protocols
+- [x] Row polymorphism for records (structural subtyping) (ADR-0046)
+- [x] Higher-rank types (rank-2 polymorphism for combinators) (ADR-0046)
+- [x] Session types for communication protocols (ADR-0046)
 - [ ] `IncrementalizePass` (DBSP incrementalization as a compiler pass)
 - [x] HoTT identity types, univalence and higher inductive types: a cubical kernel with path induction, transport, function extensionality, computing univalence, the circle, suspensions and truncations; the fundamental group of the circle computed by encode-decode (ADR-0043, `(hott ...)` / `(hott-eval ...)`, all engines)
 

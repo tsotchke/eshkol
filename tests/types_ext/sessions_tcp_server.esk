@@ -1,0 +1,24 @@
+;; Server peer of sessions_tcp_ok.esk: a separate process. It listens on an
+;; ephemeral port, publishes the port in $TYPES_EXT_PORT_FILE, serves one
+;; session-typed connection and exits.
+(require stdlib)
+(require core.sessions)
+(require core.net)
+
+(define-type Echo (rec loop (offer (ping (? string (! string loop)))
+                                   (stop end))))
+
+(define (echo-server (c : (chan Echo))) : null
+  (session-offer c
+    'ping (lambda (c)
+            (let-values (((msg c) (session-recv c)))
+              (echo-server (session-send c (string-append "ping:" msg)))))
+    'stop (lambda (c) (session-close c))))
+
+(define listener (tcp-listen "127.0.0.1" 0))
+(let ((out (open-output-file (get-environment-variable "TYPES_EXT_PORT_FILE"))))
+  (write (net-local-port listener) out)
+  (newline out)
+  (close-port out))
+(echo-server (tcp-session (tcp-accept listener 30000)))
+(tcp-close listener)

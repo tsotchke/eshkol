@@ -23,11 +23,14 @@
  *
  * The dependent-type (ADR-0042) and refinement (ADR-0044) verdicts take the
  * same route through the same helper: eshkol_dependent_check_source() and
- * eshkol_refinement_check_source().
+ * eshkol_refinement_check_source(). The structural layer's row, rank and
+ * protocol violations (ADR-0046) are proofs of ill-typing like a clone, so
+ * they travel with the linear verdict.
  *
- * Each entry point deliberately reports ONLY its own verdict. Gradual typing's
- * other findings belong to the engine that is generating code and are none of
- * the VM's business; a type warning here would be noise the VM cannot act on.
+ * Each entry point deliberately reports ONLY its own proven verdict. Gradual
+ * typing's other findings belong to the engine that is generating code and
+ * are none of the VM's business; a type warning here would be noise the VM
+ * cannot act on.
  */
 
 #include "eshkol/eshkol.h"
@@ -102,6 +105,8 @@ int checkSource(const char* source, const char* source_name, Verdict verdict) {
     const bool unsafe = cfg ? cfg->unsafe_mode != 0 : false;
     eshkol::hott::TypeChecker checker(env, /*strict_types=*/false, unsafe);
 
+    checker.beginProgram(flat.data(), flat.size());
+
     // Register type aliases first, exactly as the native path does, so a linear
     // type reached through a `define-type` is resolved and not silently missed.
     for (auto& a : flat) {
@@ -134,7 +139,11 @@ extern "C" {
 int eshkol_linear_check_source(const char* source, const char* source_name) {
     return checkSource(source, source_name,
                        [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>&) {
-                           return static_cast<int>(checker.linearityViolations());
+                           // Structural violations (ADR-0046: rows, higher
+                           // rank, session protocols) travel with the linear
+                           // verdict, and the VM refuses them the same way.
+                           return static_cast<int>(checker.linearityViolations() +
+                                                   checker.structuralViolations());
                        });
 }
 
