@@ -88,6 +88,23 @@ numbers, given the point's shape by `eshkol_gradient_in_point_shape`.
 Un-nested passes do not reach the predicate's true arm, so the reverse tape
 and its one-pass sweep remain the fast path.
 
+### 2b. An outermost reverse pass retries as forward columns
+
+A reverse `gradient` or `jacobian` that no other reverse pass encloses counts
+the forward passes that return while its tape is live (the mixed-record
+counter). When its first primal moves the counter, it discards that primal and
+takes its derivative as forward columns, so an inner pass that captured a value
+the outer pass computed from its variables carries that dependence.
+
+The same pass *arms* the retry for its first primal
+(`eshkol_ad_retry_arm`). A tensor-point reverse `gradient` that meets an armed
+tape -- reverse over reverse, which one double per tape node cannot carry --
+defers instead of refusing: it moves the counter and answers a zero
+placeholder, which the armed pass discards. In the forward-column retry the
+inner gradient runs inside a live pass and is itself forward columns (section
+2). A tensor-point reverse pass under a tape that is not armed still refuses
+by name.
+
 ### 3. Forward-over-reverse linearises against the components
 
 When the runtime-closure `gradient` meets a point some of whose components are
@@ -114,6 +131,9 @@ spellings reach the same arm.
   pass's variables is linearised like any other (section 3).
 
 ## Consequences
+
+- The forward-column retry costs one forward evaluation per point coordinate
+  on top of the first primal, the cost the per-component reverse replay had.
 
 - Nesting depth, per-level order and the number of passes in a process are
   limited only by memory, in every combination of forward and reverse passes.

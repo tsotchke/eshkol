@@ -645,6 +645,10 @@ every composition exact
             #(3.0))                                      ;; => #(8.0)
   ```
 
+  The same retry covers reverse over reverse at tensor points: an inner
+  tensor-point `gradient` that meets the first primal's tape defers to it, and
+  the retry runs the inner gradient as forward columns inside a live pass.
+
 Un-nested passes reach neither rule, so the jet, the tower and the one-pass
 reverse sweep stay the fast paths.
 

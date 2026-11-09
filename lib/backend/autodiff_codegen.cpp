@@ -505,6 +505,12 @@ llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_coeffs_list", &ctx.module());
 }
+/** ADR-0057: arm (or, with a null tape, disarm) the forward-column retry of an outermost reverse pass; returns the previously armed tape. */
+llvm::Value* emitRetryArm(CodegenContext& ctx, llvm::Value* tape_or_null) {
+    llvm::FunctionCallee f = ctx.module().getOrInsertFunction("eshkol_ad_retry_arm",
+        llvm::FunctionType::get(ctx.ptrType(), {ctx.ptrType()}, false));
+    return ctx.builder().CreateCall(f, {tape_or_null});
+}
 /** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, tower_depth i64, out tagged*) -> i64 route (ADR-0027, ADR-0057). */
 llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_seed")) return f;
@@ -5101,6 +5107,10 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         {arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
                     Value* rvt_saved_tape = current_tape_ptr_;
                     current_tape_ptr_ = rvt_tape;
+                    // Whether any reverse pass encloses this one (ADR-0057).
+                    Value* rvt_outermost = b.CreateICmpEQ(
+                        b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape()),
+                        ConstantPointerNull::get(ctx_.ptrType()), "rvt_outermost_reverse");
                     pushTapeContext(rvt_tape);
 
                     // The pointer array and synthetic AD tensor are private to
@@ -5170,6 +5180,9 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         "eshkol_ad_mixed_record_count",
                         FunctionType::get(ctx_.int64Type(), {}, false));
                     Value* rvt_mixed_before = b.CreateCall(rvt_mixed_count_fn, {}, "rvt_mixed_before");
+                    // ADR-0057: this primal may be retried as forward columns.
+                    Value* rvt_retry_saved = emitRetryArm(ctx_, b.CreateSelect(rvt_outermost,
+                        rvt_tape, ConstantPointerNull::get(ctx_.ptrType())));
                     b.CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
                     Value* rvt_ad_tagged = tagged_.packPtr(
                         b.CreatePtrToInt(rvt_ad, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
@@ -5177,6 +5190,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         std::vector<Value*>{rvt_ad_tagged}, "autodiff", callback_context_);
                     b.CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
                     popTapeContext();
+                    emitRetryArm(ctx_, rvt_retry_saved);
 
                     if (!rvt_out) {
                         eshkol_error("gradient: failed to call runtime tensor function");
@@ -5321,9 +5335,6 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         Value* rvt_moved = ctx_.builder().CreateICmpNE(
                             ctx_.builder().CreateCall(rvt_mixed_count_fn, {}, "rvt_mixed_after"),
                             rvt_mixed_before);
-                        Value* rvt_outermost = ctx_.builder().CreateICmpEQ(
-                            ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.currentAdTape()),
-                            ConstantPointerNull::get(ctx_.ptrType()));
                         BasicBlock* rvt_cols = BasicBlock::Create(ctx_.context(), "grad_rt_mixed_fwd_columns", current_func);
                         BasicBlock* rvt_keep = BasicBlock::Create(ctx_.context(), "grad_rt_sweep_result", current_func);
                         ctx_.builder().CreateCondBr(ctx_.builder().CreateAnd(rvt_moved, rvt_outermost),
@@ -6250,6 +6261,12 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     }
     BasicBlock* grad_unified_exit = BasicBlock::Create(ctx_.context(), "grad_unified_exit", grad_entry_fn);
 
+    // Whether any reverse pass encloses this one; decides the forward-column
+    // retry below (ADR-0057).
+    Value* grad_outermost_rev = ctx_.builder().CreateICmpEQ(
+        ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.currentAdTape()),
+        ConstantPointerNull::get(ctx_.ptrType()), "grad_outermost_reverse");
+
     // ── ADR-0057: a vector-point gradient inside a live pass ──────────────
     // The reverse tape stores one raw double per node, so neither an enclosing
     // forward perturbation nor a carrier inside the point has anywhere to live
@@ -6320,7 +6337,41 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
                                     guard_has_outer_tape));
         ctx_.builder().CreateCondBr(guard_unsupported,
             guard_refuse, guard_continue);
+        // ADR-0057: inside the first primal of an outermost reverse pass that
+        // armed its forward-column retry, a tensor-point reverse pass over its
+        // tape defers instead: it answers a zero placeholder, which that pass
+        // discards when it recomputes its derivative as forward columns.
         ctx_.builder().SetInsertPoint(guard_refuse);
+        BasicBlock* guard_defer = BasicBlock::Create(ctx_.context(),
+            "gradient_defer_to_forward_columns", guard_fn);
+        BasicBlock* guard_refuse_now = BasicBlock::Create(ctx_.context(),
+            "gradient_refuse_nested_reverse", guard_fn);
+        Value* guard_armed = ctx_.builder().CreateICmpNE(
+            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction("eshkol_ad_retry_armed",
+                FunctionType::get(ctx_.int32Type(), {}, false)), {}),
+            ConstantInt::get(ctx_.int32Type(), 0));
+        ctx_.builder().CreateCondBr(ctx_.builder().CreateAnd(guard_has_outer_tape, guard_armed),
+                                    guard_defer, guard_refuse_now);
+        ctx_.builder().SetInsertPoint(guard_defer);
+        {
+            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+                "eshkol_ad_defer_to_forward_columns", FunctionType::get(ctx_.voidType(), {}, false)), {});
+            AllocaInst* defer_pt;
+            AllocaInst* defer_out;
+            {
+                IRBuilder<> eb(&guard_fn->getEntryBlock(), guard_fn->getEntryBlock().begin());
+                defer_pt = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "defer_point");
+                defer_out = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "defer_result");
+            }
+            ctx_.builder().CreateStore(vector_val, defer_pt);
+            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction("eshkol_ad_zero_gradient",
+                FunctionType::get(ctx_.voidType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+                {getArenaPtr(), defer_pt, defer_out});
+            ctx_.builder().CreateStore(ctx_.builder().CreateLoad(ctx_.taggedValueType(), defer_out),
+                                       grad_result_slot);
+            ctx_.builder().CreateBr(grad_unified_exit);
+        }
+        ctx_.builder().SetInsertPoint(guard_refuse_now);
         FunctionCallee refuse = ctx_.module().getOrInsertFunction(
             "eshkol_ad_refuse_perturbed_operand",
             FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
@@ -7733,6 +7784,12 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
     pushTapeContext(partial_tape);
+    // ADR-0057: the first primal of an outermost pass may be retried as
+    // forward columns, so an inner reverse pass that meets this tape defers.
+    Value* grad_retry_saved = emitRetryArm(ctx_, ctx_.builder().CreateSelect(
+        ctx_.builder().CreateAnd(grad_outermost_rev,
+            ctx_.builder().CreateICmpEQ(i, ConstantInt::get(ctx_.int64Type(), 0))),
+        partial_tape, ConstantPointerNull::get(ctx_.ptrType())));
 
     // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
@@ -7755,6 +7812,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
     popTapeContext();
+    emitRetryArm(ctx_, grad_retry_saved);
 
     // NESTED GRADIENT FIX: Restore ctx_.outerAdNodeStorage() after function returns
     ctx_.builder().CreateStore(saved_outer_ad_node_scalar, ctx_.outerAdNodeStorage());
@@ -7828,6 +7886,12 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
     pushTapeContext(partial_tape);
+    // ADR-0057: the first primal of an outermost pass may be retried as
+    // forward columns, so an inner reverse pass that meets this tape defers.
+    Value* grad_retry_saved_v = emitRetryArm(ctx_, ctx_.builder().CreateSelect(
+        ctx_.builder().CreateAnd(grad_outermost_rev,
+            ctx_.builder().CreateICmpEQ(i, ConstantInt::get(ctx_.int64Type(), 0))),
+        partial_tape, ConstantPointerNull::get(ctx_.ptrType())));
 
     // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
@@ -7850,6 +7914,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
     popTapeContext();
+    emitRetryArm(ctx_, grad_retry_saved_v);
 
     // NESTED GRADIENT FIX: Restore ctx_.outerAdNodeStorage() after function returns
     ctx_.builder().CreateStore(saved_outer_ad_node_vector, ctx_.outerAdNodeStorage());
@@ -8105,12 +8170,9 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // per-component replay: each component is a forward pass, and the inner
     // pass nests in it as a level, so every capture carries its dependence.
     {
-        Value* enclosing_tape = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
-        Value* outermost_reverse = ctx_.builder().CreateICmpEQ(enclosing_tape,
-            ConstantPointerNull::get(ctx_.ptrType()));
         Value* to_columns = ctx_.builder().CreateAnd(
             ctx_.builder().CreateAnd(is_first_comp, ctx_.builder().CreateNot(mixed_unchanged)),
-            outermost_reverse);
+            grad_outermost_rev);
         BasicBlock* columns_bb = BasicBlock::Create(ctx_.context(), "grad_mixed_fwd_columns", current_func);
         BasicBlock* advance_bb = BasicBlock::Create(ctx_.context(), "grad_advance", current_func);
         ctx_.builder().CreateCondBr(to_columns, columns_bb, advance_bb);
@@ -9266,6 +9328,13 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         "eshkol_ad_seed_swap",
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* jac_saved_seed = ctx_.builder().CreateCall(jac_seed_swap, {jac_seed_node});
+    // ADR-0057: the first entry of an outermost Jacobian may be retried as
+    // forward columns, so an inner reverse pass that meets this tape defers.
+    Value* jac_retry_saved = emitRetryArm(ctx_, ctx_.builder().CreateSelect(
+        ctx_.builder().CreateAnd(jac_outermost, ctx_.builder().CreateAnd(
+            ctx_.builder().CreateICmpEQ(i_out, ConstantInt::get(ctx_.int64Type(), 0)),
+            ctx_.builder().CreateICmpEQ(j_in, ConstantInt::get(ctx_.int64Type(), 0)))),
+        jac_tape, ConstantPointerNull::get(ctx_.ptrType())));
 
     Value* jac_output_tagged;
     if (func_ptr) {
@@ -9295,6 +9364,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 
     // ESH-0120: restore the previously active seed node.
     ctx_.builder().CreateCall(jac_seed_swap, {jac_saved_seed});
+    emitRetryArm(ctx_, jac_retry_saved);
 
     // PHASE 1 FIX: Set AD mode flag back to false after lambda call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
@@ -11076,6 +11146,7 @@ llvm::Value* AutodiffCodegen::emitNestedHessian(llvm::Function* func_ptr, llvm::
     b.SetInsertPoint(done);
     return b.CreateLoad(ctx_.taggedValueType(), h, "hn_result");
 }
+
 
 /**
  * @brief ADR-0057: is a differentiation pass live here, or does the point

@@ -192,6 +192,29 @@ void eshkol_ad_state_restore(unsigned char mode_active, uint64_t tape_depth,
     __eshkol_ad_mixed_record_count = mixed_record_count;
 }
 
+// ADR-0057: the tape of an outermost reverse pass that has armed the
+// forward-column retry for its first primal. An inner reverse pass at a tensor
+// point that meets this tape -- a reverse over reverse the tape cannot carry --
+// defers (eshkol_ad_defer_to_forward_columns) instead of refusing, because the
+// armed pass discards that primal and recomputes its derivative as forward
+// columns, in which the inner pass is a level and answers exactly.
+thread_local void* __ad_retry_tape = nullptr;
+
+void* eshkol_ad_retry_arm(void* tape) {
+    void* previous = __ad_retry_tape;
+    __ad_retry_tape = tape;
+    return previous;
+}
+
+int32_t eshkol_ad_retry_armed(void) {
+    return (__ad_retry_tape && __ad_retry_tape == (void*)__current_ad_tape) ? 1 : 0;
+}
+
+void eshkol_ad_defer_to_forward_columns(void) {
+    // The armed pass reads this counter after its first primal.
+    __eshkol_ad_mixed_record_count++;
+}
+
 // Publish a new active seed node; returns the previous one so callers can
 // save/restore around nested gradient passes.
 void* eshkol_ad_seed_swap(void* node) {

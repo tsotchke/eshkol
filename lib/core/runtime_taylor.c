@@ -3654,6 +3654,17 @@ void eshkol_ad_gradient_store_component(arena_t* arena, eshkol_tagged_value_t* g
     ((eshkol_tagged_value_t*)(void*)t->elements)[j] = *component;
 }
 
+/** @brief A zero gradient with one component per coordinate of `point` (ADR-0057 deferral placeholder). */
+void eshkol_ad_zero_gradient(arena_t* arena, const eshkol_tagged_value_t* point,
+                             eshkol_tagged_value_t* out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->type = ESHKOL_VALUE_NULL;
+    int64_t n = point ? eshkol_ad_point_length(point) : 0;
+    const eshkol_tagged_value_t zero = eshkol_make_double(0.0);
+    for (int64_t j = 0; j < n; j++) eshkol_ad_gradient_store_component(arena, out, n, j, &zero);
+}
+
 /* Element (i, j) of a matrix: a rank-2 tensor (f64 or tagged) or a vector of
  * rows. Out of range reads an exact 0 (a field that does not depend on a
  * coordinate has a vanishing partial). */
