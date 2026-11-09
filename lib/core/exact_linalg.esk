@@ -61,6 +61,61 @@
 (define (exact-matrix-ref m i j)
   (if (tensor? m) (tensor-ref m i j) (vector-ref (vector-ref m i) j)))
 
+;; Generic "every entry of this row satisfies pred" — used by both the
+;; exactness predicate and the (looser) well-formedness check below.
+(define (el-row-all? row pred)
+  (let ((n (vector-length row)))
+    (let loop ((j 0))
+      (if (>= j n)
+          #t
+          (and (pred (vector-ref row j)) (loop (+ j 1)))))))
+
+(define (el-exact-num? x) (and (number? x) (exact? x)))
+
+;; The rows form of exact-matrix?: a non-empty vector of equal-length
+;; vectors whose every entry is an exact number.
+(define (el-rows-exact-matrix? m)
+  (and (vector? m)
+       (> (vector-length m) 0)
+       (vector? (vector-ref m 0))
+       (let ((cols (vector-length (vector-ref m 0))))
+         (let loop ((i 0))
+           (if (>= i (vector-length m))
+               #t
+               (let ((row (vector-ref m i)))
+                 (and (vector? row)
+                      (= (vector-length row) cols)
+                      (el-row-all? row el-exact-num?)
+                      (loop (+ i 1)))))))))
+
+;; Shape-only validation used internally: non-empty vector of equal-length
+;; numeric-entry vectors, exact or inexact. Distinct from exact-matrix? on
+;; purpose — see the module-level exactness-contract note above.
+(define (el-well-formed? m)
+  (and (vector? m)
+       (> (vector-length m) 0)
+       (vector? (vector-ref m 0))
+       (let ((cols (vector-length (vector-ref m 0))))
+         (let loop ((i 0))
+           (if (>= i (vector-length m))
+               #t
+               (let ((row (vector-ref m i)))
+                 (and (vector? row)
+                      (= (vector-length row) cols)
+                      (el-row-all? row number?)
+                      (loop (+ i 1)))))))))
+
+;; (exact-matrix? m) — #t iff m is a non-empty vector of equal-length
+;; vectors whose every entry is an exact number, or a rank-2 exact tensor.
+;; Purely a query predicate: the other functions below do NOT require this
+;; to be #t on their input (they accept any well-formed numeric matrix and
+;; let R7RS contagion decide the exactness of the result). Every helper is
+;; defined before its first use, as the bytecode VM's module loader requires.
+(define (exact-matrix? m)
+  (if (tensor? m)
+      (and (eq? (tensor-dtype m) 'exact) (= (length (tensor-shape m)) 2))
+      (el-rows-exact-matrix? m)))
+
 ;; ---- tensor operands (ADR-0055) --------------------------------------
 ;; A rank-2 tensor is read into the rows representation entry by entry with
 ;; tensor-ref, so an exact tensor's entries stay exact and an f64 tensor's
@@ -112,58 +167,6 @@
         ((el-vector-exact? v) (tensor-cast v 'exact))
         (else (tensor v))))
 
-;; Generic "every entry of this row satisfies pred" — used by both the
-;; exactness predicate and the (looser) well-formedness check below.
-(define (el-row-all? row pred)
-  (let ((n (vector-length row)))
-    (let loop ((j 0))
-      (if (>= j n)
-          #t
-          (and (pred (vector-ref row j)) (loop (+ j 1)))))))
-
-(define (el-exact-num? x) (and (number? x) (exact? x)))
-
-;; (exact-matrix? m) — #t iff m is a non-empty vector of equal-length
-;; vectors whose every entry is an exact number. Purely a query predicate:
-;; the other functions below do NOT require this to be #t on their input
-;; (they accept any well-formed numeric matrix and let R7RS contagion
-;; demote inexact results).
-(define (exact-matrix? m)
-  (if (tensor? m)
-      (and (eq? (tensor-dtype m) 'exact) (= (length (tensor-shape m)) 2))
-      (el-rows-exact-matrix? m)))
-
-(define (el-rows-exact-matrix? m)
-  (and (vector? m)
-       (> (vector-length m) 0)
-       (vector? (vector-ref m 0))
-       (let ((cols (vector-length (vector-ref m 0))))
-         (let loop ((i 0))
-           (if (>= i (vector-length m))
-               #t
-               (let ((row (vector-ref m i)))
-                 (and (vector? row)
-                      (= (vector-length row) cols)
-                      (el-row-all? row el-exact-num?)
-                      (loop (+ i 1)))))))))
-
-;; Shape-only validation used internally: non-empty vector of equal-length
-;; numeric-entry vectors, exact or inexact. Distinct from exact-matrix? on
-;; purpose — see the module-level exactness-contract note above.
-(define (el-well-formed? m)
-  (and (vector? m)
-       (> (vector-length m) 0)
-       (vector? (vector-ref m 0))
-       (let ((cols (vector-length (vector-ref m 0))))
-         (let loop ((i 0))
-           (if (>= i (vector-length m))
-               #t
-               (let ((row (vector-ref m i)))
-                 (and (vector? row)
-                      (= (vector-length row) cols)
-                      (el-row-all? row number?)
-                      (loop (+ i 1)))))))))
-
 (define (el-copy-row row)
   (let* ((n (vector-length row)) (c (make-vector n 0)))
     (let loop ((j 0))
@@ -204,10 +207,6 @@
 
 ;; (exact-matrix-mul a b) — matrix product of an (ra x ca) and a (cb x cb2)
 ;; matrix (ca must equal the row count of b); contagion-exact.
-(define (exact-matrix-mul a0 b0)
-  (el-matrix-answer (or (tensor? a0) (tensor? b0))
-                    (el-matrix-mul (el-as-rows a0) (el-as-rows b0))))
-
 (define (el-matrix-mul a b)
   (if (not (and (el-well-formed? a) (el-well-formed? b)))
       (error "exact-matrix-mul: not a well-formed matrix" a b)
@@ -221,15 +220,16 @@
                     (begin (vector-set! result i (el-mul-row a b i ca cb)) (loop (+ i 1)))
                     result)))))))
 
+(define (exact-matrix-mul a0 b0)
+  (el-matrix-answer (or (tensor? a0) (tensor? b0))
+                    (el-matrix-mul (el-as-rows a0) (el-as-rows b0))))
+
 (define (el-transpose-col m j r)
   (let ((col (make-vector r 0)))
     (let loop ((i 0))
       (if (< i r) (begin (vector-set! col i (exact-matrix-ref m i j)) (loop (+ i 1))) col))))
 
 ;; (exact-matrix-transpose m) — the r x c transpose of a c x r matrix.
-(define (exact-matrix-transpose m0)
-  (el-matrix-answer (tensor? m0) (el-matrix-transpose (el-as-rows m0))))
-
 (define (el-matrix-transpose m)
   (if (not (el-well-formed? m))
       (error "exact-matrix-transpose: not a well-formed matrix" m)
@@ -238,6 +238,9 @@
           (if (< j c)
               (begin (vector-set! result j (el-transpose-col m j r)) (loop (+ j 1)))
               result)))))
+
+(define (exact-matrix-transpose m0)
+  (el-matrix-answer (tensor? m0) (el-matrix-transpose (el-as-rows m0))))
 
 ;; ---- exact-det: Bareiss fraction-free elimination ----------------------
 
@@ -279,9 +282,6 @@
 ;; running matrix never holds a non-integral intermediate value for
 ;; integer inputs; on rational inputs the same recurrence is simply exact
 ;; field division throughout, still contagion-exact.
-(define (exact-det m0)
-  (el-det (el-as-rows m0)))
-
 (define (el-det m)
   (if (not (el-well-formed? m))
       (error "exact-det: not a well-formed matrix" m)
@@ -289,6 +289,9 @@
         (if (not (= n (el-cols m)))
             (error "exact-det: matrix must be square" m)
             (el-bareiss (el-copy-matrix m) n)))))
+
+(define (exact-det m0)
+  (el-det (el-as-rows m0)))
 
 ;; ---- el-rref: the shared row-reduction workhorse --------------------
 
@@ -397,10 +400,6 @@
 ;; full-rank a. Raises on a singular coefficient matrix (via (error ...),
 ;; catchable with `guard` like the rest of the stdlib) rather than
 ;; returning a fabricated value.
-(define (exact-solve a0 b0)
-  (el-vector-answer (or (tensor? a0) (tensor? b0))
-                    (el-solve (el-as-rows a0) (el-as-vector b0))))
-
 (define (el-solve a b)
   (if (not (el-well-formed? a))
       (error "exact-solve: not a well-formed matrix" a)
@@ -412,6 +411,10 @@
                 (if (< (exact-rank a) n)
                     (error "exact-solve: singular matrix" a)
                     (el-extract-solution (car (el-rref (el-augment-column a b))) n)))))))
+
+(define (exact-solve a0 b0)
+  (el-vector-answer (or (tensor? a0) (tensor? b0))
+                    (el-solve (el-as-rows a0) (el-as-vector b0))))
 
 (define (el-identity-row n i)
   (let ((row (make-vector n 0))) (vector-set! row i 1) row))
@@ -450,9 +453,6 @@
 
 ;; (exact-inverse a) — the exact inverse of a square, full-rank matrix, via
 ;; Gauss-Jordan elimination on [a | I]. Raises on a singular a.
-(define (exact-inverse a0)
-  (el-matrix-answer (tensor? a0) (el-inverse (el-as-rows a0))))
-
 (define (el-inverse a)
   (if (not (el-well-formed? a))
       (error "exact-inverse: not a well-formed matrix" a)
@@ -462,6 +462,9 @@
             (if (< (exact-rank a) n)
                 (error "exact-inverse: singular matrix" a)
                 (el-extract-right-half (car (el-rref (el-augment-identity a n))) n))))))
+
+(define (exact-inverse a0)
+  (el-matrix-answer (tensor? a0) (el-inverse (el-as-rows a0))))
 
 ;; ---- torus-average / torus-average-2d -----------------------------------
 
