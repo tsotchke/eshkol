@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 186** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3288** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 186** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3292** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -197,7 +197,7 @@ tensors are documented in [rigorous_numerics.md](rigorous_numerics.md).
 | [`core.plot`](../../../lib/core/plot.esk) | yes | [plot.md](plot.md) | `sparkline` `bar-chart` `histogram` |
 | [`core.protobuf`](../../../lib/core/protobuf.esk) | no | [protobuf.md](protobuf.md) | `protobuf-schema` `protobuf-schema?` `protobuf-schema-from-proto` `protobuf-parse-proto` `protobuf-message` `protobuf-message?` `protobuf-message-type` `protobuf-message-entries` `protobuf-message-unknown` `protobuf-ref` `protobuf-has?` `protobuf-encode` `protobuf-decode` `protobuf-encoder` `protobuf-decoder` `protobuf-enum-number` `protobuf-enum-name` |
 | [`core.reflection`](../../../lib/core/reflection.esk) | yes | [reflection.md](reflection.md) | `describe` `type-name` |
-| [`core.sdnc`](../../../lib/core/sdnc.esk) | no | [sdnc.md](sdnc.md) | `sdnc-program` `sdnc-run` `sdnc-weight-grad` `sdnc-params` `sdnc-set-params!` `sdnc-improve!` `sdnc?` |
+| [`core.sdnc`](../../../lib/core/sdnc.esk) | no | [sdnc.md](sdnc.md) | `sdnc-program` `sdnc-run` `sdnc-weight-grad` `sdnc-params` `sdnc-set-params!` `sdnc-improve!` `sdnc?` `sdnc-load-weights!` `sdnc-mismatches` `sdnc-repair!` `sdnc-default-repair-beta` |
 | [`core.synthesis`](../../../lib/core/synthesis.esk) | no | [synthesis.md](synthesis.md) | `syn-spec` `syn-synthesize` `syn-enumerate` `syn-flashfill` `syn-deduce-map` `syn-deduce-filter` `syn-deduce-filter-map` `syn-library-costs` `syn-default-library` `syn-eval` `syn-program->procedure` `syn-benchmarks` `syn-run-benchmarks` |
 | [`core.sexp`](../../../lib/core/sexp.esk) | yes | [sexp.md](sexp.md) | `sexp->string` `sexp->canonical-string` |
 | [`core.streams`](../../../lib/core/streams.esk) | yes | [streams.md](streams.md) | `stream-null` `stream-null?` `stream-pair?` `stream?` `stream-cons` `stream-car` `stream-cdr` `stream-take` `stream-drop` `stream-ref` `stream-map` `stream-filter` `stream-for-each` `stream-zip` `stream-append` `stream-iterate` `stream-from` `stream-take-while` `stream-drop-while` `stream-length` `stream->list` `list->stream` |
