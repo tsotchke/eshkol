@@ -14798,6 +14798,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(NAME signed_curvature_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
         "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk"
+        "-DESHKOL_VERDICT=ALL PASS"
         "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/signed_curvature_aot${CMAKE_EXECUTABLE_SUFFIX}"
         "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")

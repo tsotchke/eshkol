@@ -469,6 +469,34 @@ static int vm_manifold_has_value(VM* vm, Value mv) {
 /** @brief Get manifold @p mv's stored constant curvature, setting *@p ok to
  *         whether the lookup succeeded. */
 static double vm_geometric_manifold_curvature(VM* vm, Value mv, int* ok) {
+    /* core.manifold constructs #(type dim), while the lower-level VM
+     * constructors produce opaque handles. Bootstrap retains builtin 808
+     * under the shared accessor name, so it must understand both formats.
+     * Like the Scheme accessor, this query does not use the dimension. */
+    if (mv.type == VAL_VECTOR && is_heap_type(vm, mv, HEAP_VECTOR)) {
+        VmVector* record = (VmVector*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
+        if (record && record->len == 2 && record->items &&
+            record->items[0].type == VAL_SYMBOL &&
+            is_heap_type(vm, record->items[0], HEAP_STRING)) {
+            VmString* type = (VmString*)vm->heap.objects[record->items[0].as.ptr]->opaque.ptr;
+            if (type && type->data) {
+                if (type->byte_len == 9 && !memcmp(type->data, "euclidean", 9)) {
+                    if (ok) *ok = 1;
+                    return 0.0;
+                }
+                if (type->byte_len == 10 && !memcmp(type->data, "hyperbolic", 10)) {
+                    if (ok) *ok = 1;
+                    return -1.0;
+                }
+                if (type->byte_len == 9 && !memcmp(type->data, "spherical", 9)) {
+                    if (ok) *ok = 1;
+                    return 1.0;
+                }
+            }
+        }
+        if (ok) *ok = 0;
+        return 0.0;
+    }
     if (!vm_manifold_has_value(vm, mv)) {
         if (ok) *ok = 0;
         return 0.0;

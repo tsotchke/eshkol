@@ -1,6 +1,6 @@
 # `eshkol/backend/riemannian_core.h`
 
-The ADR-0018 signed-curvature stereographic chart (one chart for every sign of K, alpha = 1) and the embedded round sphere, in f64, shared by the VM's geometric opcodes, the AD bridge and the native core.curvature module. WHY THIS FILE EXISTS. `lib/backend/vm_geometric.c` used to implement the curved operations as their FLAT counterparts: `hyperbolic-exp-map` was vector addition, `hyperbolic-log-map` subtraction, `geodesic-distance` and `poincare-distance` the L2 distance, `mobius-add` addition, `mobius-scalar-mul` a scale, `parallel-transport` and `riemannian-grad` the identity. Each of them accepted a curvature argument and discarded it. That body was the one every shipped VM build compiled — every CI lane, every release binary, the WASM playground. The result was Euclidean answers returned under Riemannian names, with nothing in the output showing the argument had been dropped: the same plausible-but-non-Riemannian-number class `frechet_mean_core.h` documents for the Euclidean weighted average that used to stand in for the Frechet mean. That second legacy qLLM dispatch body has since been deleted outright — it did not compile against the current libsemiclassical_qllm ABI and was fp32 throughout — so the forms below are the ONE implementation of this geometry on the VM engine, not the default of two. WHY A HEADER AND NOT A LIBRARY TU. Identical reason to `inc/eshkol/backend/frechet_mean_core.h`: `lib/backend/vm_geometric.c` is a unity-build include consumed by `lib/backend/eshkol_vm.c`, which is also built as a single translation unit on its own (the `eshkol-vm-standalone-test` target), so a call to an external symbol would not link there. Static functions in a header give every caller ONE source of truth with no link edge. ═══ THE MODEL, IN ONE PLACE (ADR-0018) ════════════════════════════════════ Every entry point below takes `K,` the SIGNED SECTIONAL CURVATURE, and evaluates ONE chart for every sign: the kappa-stereographic chart in the canonical-flat gauge alpha = 1 (docs/design/adr/0018-signed-curvature- stereographic-geometry.md). The chart and its normalisation are fixed by one constant and two accessors, and nothing else in this file or its callers open-codes them: ESHKOL_RM_ALPHA the conformal factor at the origin (alpha = 1) eshkol_rm_ball_param(c) the chart parameter B = c alpha^2 / 4, c = -K eshkol_rm_lambda(x,K,n) the conformal factor at a point The metric is g_K(x) = lambda_x^2 <.,.>, lambda_x = alpha / (1 - B |x|^2), B = -K alpha^2 / 4 (so rho = K/4 = -B at alpha = 1), and the gyrovector operations are Mobius addition (+)_B with the SAME signed B. Consequences, all of them by construction rather than by special case: K < 0 B > 0: the open ball of radius 1/sqrt(B) = 2/sqrt(-K). K = 0 B = 0: canonical Euclidean R^n, lambda = 1, (+)_0 = vector sum. K > 0 B < 0: the round sphere of radius 1/sqrt(K) minus one point (the POLE, at infinity in the chart). Every finite point is a point of the manifold; the antipode of x is -x/(|B| |x|^2), its CUT LOCUS. The family is real-analytic in K through K = 0 at fixed chart coordinates. The generalized trigonometric ratios (eshkol_rm_psi, eshkol_rm_tan_ratio, eshkol_rm_artan_ratio) are functions of one dimensionless signed argument and switch to a degree-10 series for |argument| <= ESHKOL_RM_Q_SERIES, so the K -> 0 corner and the K = 0 point are one expression. Positive cut loci and the negative ball boundary are explicit domain errors, never clamps. Legacy coordinates (LEGACY_BALL_V1: the alpha = 2 ball of radius 1/sqrt(-K), K = 0 with lambda = 1, K > 0 as an ambient sphere in R^{n+1}) are read only through the migration helpers at the end of this file: x_v2 = 2 x_v1 for ball points and tangent vectors, the stereographic projection for ambient sphere points. Serialized geometry carries ESHKOL_GEOMETRY_CONVENTION_* and is refused when the id is missing or does not match. The ambient round sphere survives as an EMBEDDED MODEL, not as a second chart: the `eshkol_rm_sphere_*` functions take points of R^{n+1} on the sphere of radius 1/sqrt(K) and back the ops whose contract is that embedding (`great-circle-distance`, `slerp`, `spherical-exp/log/project`, and the space-form SPHERICAL factor). eshkol_rm_sphere_to_chart and eshkol_rm_chart_to_sphere are the isometry between the two. exp, log, parallel transport, projection and Mobius addition depend on the chart parameter B only: a constant conformal rescale of a metric leaves the Levi-Civita connection unchanged. Distances, norms, the gradient conversion and the curvature derivatives carry alpha. RELATION TO THE AD BRIDGE. `lib/bridge/qllm_bridge.cpp` includes this header and calls these same f64 primitives for its hyperbolic distance, Poincare exponential/logarithmic maps, and geodesic-attention distance scores. The bridge validates that its public curvature is negative, converts it to the common ball parameter c = -K, and retains the common forward weights for its reverse rule. There is no second bridge-side forward formula to drift from this model: the VM and bridge distance/map forwards are one implementation. Copyright (C) tsotchke SPDX-License-Identifier: MIT
+The ADR-0018 signed-curvature stereographic chart (one chart for every sign of K, alpha = 1) and the embedded round sphere, in f64, shared by the VM's geometric opcodes, the AD bridge and the native core.curvature module. WHY THIS FILE EXISTS. `lib/backend/vm_geometric.c` used to implement the curved operations as their FLAT counterparts: `hyperbolic-exp-map` was vector addition, `hyperbolic-log-map` subtraction, `geodesic-distance` and `poincare-distance` the L2 distance, `mobius-add` addition, `mobius-scalar-mul` a scale, `parallel-transport` and `riemannian-grad` the identity. Each of them accepted a curvature argument and discarded it. That body was the one every shipped VM build compiled — every CI lane, every release binary, the WASM playground. The result was Euclidean answers returned under Riemannian names, with nothing in the output showing the argument had been dropped: the same plausible-wrong-number class `frechet_mean_core.h` documents for the Euclidean weighted average that used to stand in for the Frechet mean. That second legacy qLLM dispatch body has since been deleted outright — it did not compile against the current libsemiclassical_qllm ABI and was fp32 throughout — so the forms below are the ONE implementation of this geometry on the VM engine, not the default of two. WHY A HEADER AND NOT A LIBRARY TU. Identical reason to `inc/eshkol/backend/frechet_mean_core.h`: `lib/backend/vm_geometric.c` is a unity-build include consumed by `lib/backend/eshkol_vm.c`, which is also built as a single translation unit on its own (the `eshkol-vm-standalone-test` target), so a call to an external symbol would not link there. Static functions in a header give every caller ONE source of truth with no link edge. ═══ THE MODEL, IN ONE PLACE (ADR-0018) ════════════════════════════════════ Every entry point below takes `K,` the SIGNED SECTIONAL CURVATURE, and evaluates ONE chart for every sign: the kappa-stereographic chart in the canonical-flat gauge alpha = 1 (docs/design/adr/0018-signed-curvature- stereographic-geometry.md). The chart and its normalisation are fixed by one constant and two accessors, and nothing else in this file or its callers open-codes them: ESHKOL_RM_ALPHA the conformal factor at the origin (alpha = 1) eshkol_rm_ball_param(c) the chart parameter B = c alpha^2 / 4, c = -K eshkol_rm_lambda(x,K,n) the conformal factor at a point The metric is g_K(x) = lambda_x^2 <.,.>, lambda_x = alpha / (1 - B |x|^2), B = -K alpha^2 / 4 (so rho = K/4 = -B at alpha = 1), and the gyrovector operations are Mobius addition (+)_B with the SAME signed B. Consequences, all of them by construction rather than by special case: K < 0 B > 0: the open ball of radius 1/sqrt(B) = 2/sqrt(-K). K = 0 B = 0: canonical Euclidean R^n, lambda = 1, (+)_0 = vector sum. K > 0 B < 0: the round sphere of radius 1/sqrt(K) minus one point (the POLE, at infinity in the chart). Every finite point is a point of the manifold; the antipode of x is -x/(|B| |x|^2), its CUT LOCUS. The family is real-analytic in K through K = 0 at fixed chart coordinates. The generalized trigonometric ratios (eshkol_rm_psi, eshkol_rm_tan_ratio, eshkol_rm_artan_ratio) are functions of one dimensionless signed argument and switch to a degree-10 series for |argument| <= ESHKOL_RM_Q_SERIES, so the K -> 0 corner and the K = 0 point are one expression. Positive cut loci and the negative ball boundary are explicit domain errors, never clamps. Legacy coordinates (LEGACY_BALL_V1: the alpha = 2 ball of radius 1/sqrt(-K), K = 0 with lambda = 1, K > 0 as an ambient sphere in R^{n+1}) are read only through the migration helpers at the end of this file: x_v2 = 2 x_v1 for ball points and tangent vectors, the stereographic projection for ambient sphere points. Serialized geometry carries ESHKOL_GEOMETRY_CONVENTION_* and is refused when the id is missing or does not match. The ambient round sphere survives as an EMBEDDED MODEL, not as a second chart: the `eshkol_rm_sphere_*` functions take points of R^{n+1} on the sphere of radius 1/sqrt(K) and back the ops whose contract is that embedding (`great-circle-distance`, `slerp`, `spherical-exp/log/project`, and the space-form SPHERICAL factor). eshkol_rm_sphere_to_chart and eshkol_rm_chart_to_sphere are the isometry between the two. exp, log, parallel transport, projection and Mobius addition depend on the chart parameter B only: a constant conformal rescale of a metric leaves the Levi-Civita connection unchanged. Distances, norms, the gradient conversion and the curvature derivatives carry alpha. RELATION TO THE AD BRIDGE. `lib/bridge/qllm_bridge.cpp` includes this header and calls these same f64 primitives for its hyperbolic distance, Poincare exponential/logarithmic maps, and geodesic-attention distance scores. The bridge validates that its public curvature is negative, converts it to the common ball parameter c = -K, and retains the common forward weights for its reverse rule. There is no second bridge-side forward formula to drift from this model: the VM and bridge distance/map forwards are one implementation. Copyright (C) tsotchke SPDX-License-Identifier: MIT
 
 115 public symbol(s) — 50 documented, 65 undocumented.
 
@@ -429,7 +429,7 @@ Mobius scalar multiplication r (x)_B x = tan_B(r artan_B(|x|)) x/|x| on the char
 
 ### `eshkol_rm_project`
 
-*Function* — line 1733
+*Function* — line 1747
 
 ```c
 static const char* eshkol_rm_project(const double* x, double K, int n, double* out) { ... }
@@ -443,7 +443,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_egrad_to_rgrad`
 
-*Function* — line 1768
+*Function* — line 1782
 
 ```c
 static const char* eshkol_rm_egrad_to_rgrad(const double* g, const double* x,
@@ -458,7 +458,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_sphere_distance`
 
-*Function* — line 1789
+*Function* — line 1803
 
 ```c
 static const char* eshkol_rm_sphere_distance(const double* x, const double* y,
@@ -469,7 +469,7 @@ Geodesic distance R theta on the embedded sphere, theta from the cancellation-fr
 
 ### `eshkol_rm_sphere_exp_map`
 
-*Function* — line 1805
+*Function* — line 1819
 
 ```c
 static const char* eshkol_rm_sphere_exp_map(const double* x, const double* v,
@@ -480,7 +480,7 @@ exp_x(v) = cos(|v|/R) x + R sin(|v|/R) v/|v| on the embedded sphere, with the ta
 
 ### `eshkol_rm_sphere_log_map`
 
-*Function* — line 1826
+*Function* — line 1840
 
 ```c
 static const char* eshkol_rm_sphere_log_map(const double* x, const double* y,
@@ -491,7 +491,7 @@ log_x(y) on the embedded sphere; the antipode is refused.
 
 ### `eshkol_rm_sphere_project`
 
-*Function* — line 1847
+*Function* — line 1861
 
 ```c
 static const char* eshkol_rm_sphere_project(const double* x, double K, int n,
@@ -502,7 +502,7 @@ Rescale `x` onto the embedded sphere of radius 1/sqrt(K); the origin has no proj
 
 ### `eshkol_rm_sphere_to_chart`
 
-*Function* — line 1889
+*Function* — line 1903
 
 ```c
 static const char* eshkol_rm_sphere_to_chart(const double* p, double K, int n,
@@ -513,7 +513,7 @@ The isometry from the embedded sphere of radius R = 1/sqrt(K) in R^{n+1} (`p,` n
 
 ### `eshkol_rm_chart_to_sphere`
 
-*Function* — line 1916
+*Function* — line 1930
 
 ```c
 static const char* eshkol_rm_chart_to_sphere(const double* x, double K, int n,
@@ -524,7 +524,7 @@ The inverse isometry, chart -> embedded sphere: p' = lambda_x x, p_n = R (2 lamb
 
 ### `eshkol_rm_distance_dK`
 
-*Function* — line 2068
+*Function* — line 2082
 
 ```c
 static const char* eshkol_rm_distance_dK(const double* x, const double* y,
@@ -546,7 +546,7 @@ NULL on success, else a reason.
 
 ### `eshkol_rm_sq_distance_dK`
 
-*Function* — line 2189
+*Function* — line 2203
 
 ```c
 static const char* eshkol_rm_sq_distance_dK(const double* x, const double* y,
@@ -558,7 +558,7 @@ The curvature jet of the SQUARED distance, from the distance jet: (d^2)' = 2 d d
 
 ### `eshkol_rm_default_temperature`
 
-*Function* — line 2217
+*Function* — line 2231
 
 ```c
 static double eshkol_rm_default_temperature(int head_dim) { ... }
@@ -568,7 +568,7 @@ The default attention temperature sqrt(head_dim).
 
 ### `eshkol_rm_attention_row`
 
-*Function* — line 2230
+*Function* — line 2244
 
 ```c
 static const char* eshkol_rm_attention_row(const double* q, const double* keys,
@@ -591,7 +591,7 @@ NULL on success, else a reason (a refused pair names the domain).
 
 ### `eshkol_geometry_header_t`
 
-*Struct* — line 2262
+*Struct* — line 2276
 
 ```c
 typedef struct {
@@ -606,7 +606,7 @@ The header every serialized geometry record carries.
 
 ### `eshkol_rm_geometry_header`
 
-*Function* — line 2270
+*Function* — line 2284
 
 ```c
 static void eshkol_rm_geometry_header(double K, eshkol_geometry_header_t* h) { ... }
@@ -616,7 +616,7 @@ Fill `h` for the current convention at curvature `K.`
 
 ### `eshkol_rm_check_geometry_header`
 
-*Function* — line 2282
+*Function* — line 2296
 
 ```c
 static const char* eshkol_rm_check_geometry_header(const eshkol_geometry_header_t* h) { ... }
@@ -626,7 +626,7 @@ Accept a serialized header only when it names the current convention and gauge. 
 
 ### `eshkol_rm_migrate_legacy_point`
 
-*Function* — line 2305
+*Function* — line 2319
 
 ```c
 static const char* eshkol_rm_migrate_legacy_point(const double* x_v1, double K,
@@ -637,7 +637,7 @@ Migrate a legacy ball point (alpha = 2, radius 1/sqrt(-K)) to the current chart:
 
 ### `eshkol_rm_migrate_legacy_tangent`
 
-*Function* — line 2327
+*Function* — line 2341
 
 ```c
 static const char* eshkol_rm_migrate_legacy_tangent(const double* v_v1, double K,
@@ -648,7 +648,7 @@ Migrate a legacy tangent vector (or first-moment optimizer state) by the differe
 
 ### `eshkol_rm_migrate_legacy_temperature`
 
-*Function* — line 2351
+*Function* — line 2365
 
 ```c
 static const char* eshkol_rm_migrate_legacy_temperature(double legacy_scale,
@@ -705,25 +705,25 @@ Migrate a legacy attention score scale s (logit = -s d) to a squared-distance te
 | `eshkol_rm_check_output` | Function | 1125 |
 | `eshkol_rm_chart_mobius_add` | Function | 1127 |
 | `eshkol_rm_inverse_power_mul` | Function | 1303 |
-| `eshkol_rm_distance_dK_small_q` | Function | 1943 |
-| `eshkol_rm_directional` | Struct | 2377 |
-| `eshkol_rm_directional::value` | Variable | 2378 |
-| `eshkol_rm_directional::tangent` | Variable | 2379 |
-| `eshkol_rm_dadd` | Function | 2382 |
-| `eshkol_rm_dsub` | Function | 2387 |
-| `eshkol_rm_dneg` | Function | 2392 |
-| `eshkol_rm_dmul` | Function | 2396 |
-| `eshkol_rm_ddiv` | Function | 2402 |
-| `eshkol_rm_dsqrt` | Function | 2408 |
-| `eshkol_rm_dtan_ratio` | Function | 2416 |
-| `eshkol_rm_dnorm` | Function | 2422 |
-| `eshkol_rm_dscaled_norm2_times` | Function | 2429 |
-| `eshkol_rm_done_minus_bnorm2` | Function | 2435 |
-| `eshkol_rm_done_plus_dot` | Function | 2441 |
-| `eshkol_rm_done_minus_dot` | Function | 2449 |
-| `eshkol_rm_dmobius_den` | Function | 2457 |
-| `eshkol_rm_daxpby_exact` | Function | 2482 |
-| `eshkol_rm_dmobius_add` | Function | 2497 |
-| `eshkol_rm_distance_directional` | Function | 2519 |
-| `eshkol_rm_exp_directional` | Function | 2574 |
-| `eshkol_rm_log_directional` | Function | 2617 |
+| `eshkol_rm_distance_dK_small_q` | Function | 1957 |
+| `eshkol_rm_directional` | Struct | 2391 |
+| `eshkol_rm_directional::value` | Variable | 2392 |
+| `eshkol_rm_directional::tangent` | Variable | 2393 |
+| `eshkol_rm_dadd` | Function | 2396 |
+| `eshkol_rm_dsub` | Function | 2401 |
+| `eshkol_rm_dneg` | Function | 2406 |
+| `eshkol_rm_dmul` | Function | 2410 |
+| `eshkol_rm_ddiv` | Function | 2416 |
+| `eshkol_rm_dsqrt` | Function | 2422 |
+| `eshkol_rm_dtan_ratio` | Function | 2430 |
+| `eshkol_rm_dnorm` | Function | 2436 |
+| `eshkol_rm_dscaled_norm2_times` | Function | 2443 |
+| `eshkol_rm_done_minus_bnorm2` | Function | 2449 |
+| `eshkol_rm_done_plus_dot` | Function | 2455 |
+| `eshkol_rm_done_minus_dot` | Function | 2463 |
+| `eshkol_rm_dmobius_den` | Function | 2471 |
+| `eshkol_rm_daxpby_exact` | Function | 2496 |
+| `eshkol_rm_dmobius_add` | Function | 2511 |
+| `eshkol_rm_distance_directional` | Function | 2533 |
+| `eshkol_rm_exp_directional` | Function | 2588 |
+| `eshkol_rm_log_directional` | Function | 2631 |

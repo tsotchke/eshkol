@@ -389,4 +389,3 @@
   {1, -0x1.fffffffffffffp+1023, 1, 1, 1, 0x1.076e60879fcf7p-510, -0x0p+0, 0x0p+0, {0x1.796efe509a92ap-509, 0x1.5150ded74eb99p-511, -0x1.5fed52cb3884p-510}}, \
   {2, -0x1.fffffffffffffp+1023, 1, 1, 1, 0x1.a85e23665f2e7p-509, -0x0p+0, 0x0p+0, {0x1.9ea0fca10c5bap-499, -0x1.e8ca2bdfcfdefp-510, 0x0p+0}}, \
   {4, -0x1.fffffffffffffp+1023, 1, 1, 1, 0x0p+0, 0x0p+0, 0x0p+0, {0x0p+0, 0x0p+0, 0x0p+0}}, \
-

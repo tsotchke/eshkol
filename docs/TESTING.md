@@ -133,6 +133,29 @@ figures that older documents quote: 541/541 and 198/198, each measured on an
 earlier commit; and 183/183, superseded by 190/190 for the v1.3.4-evolve cut
 (remeasured on 2026-08-25 against `4bf871a0`).
 
+### Library AOT suites: one verdict contract
+
+Every `<suite>_aot` CTest entry runs `scripts/run_stdlib_aot.cmake`, which
+compiles the suite (natively, or to bytecode for the VM when `ESHKOL_VM` is
+given), runs it, and accepts it only when all of these hold:
+
+- the compile exits 0 and prints no failure marker;
+- for a native compile, the build tree's own `stdlib.o` and `stdlib.bc` are
+  present in `ESHKOL_LINK_DIR` (`scripts/require_local_stdlib.cmake`), so a
+  suite never links an installed standard library;
+- the program exits 0 and prints no `FAIL:`, `RESULT: FAIL` or fatal signal;
+- the program prints its verdict line on a line of its own.
+
+The verdict line is selected with `ESHKOL_VERDICT`, which takes exactly two
+values: `PASS` (the default, `RESULT: PASS`) and `ALL PASS`
+(`RESULT: ALL PASS`, for suites that report a catalogue, such as the DBSP
+acceptance programs and `signed_curvature_test`). Any other value stops the
+test, so a registration can choose a verdict but never widen what counts as
+one. `ESHKOL_COMPILE_TIMEOUT` and `ESHKOL_RUN_TIMEOUT` (defaults 720 and 120
+seconds) give long suites their time. `tests/toolchain/test_stdlib_aot_runner.py`
+checks each rule with a fake compiler, including the refusal of a mismatched
+or unknown verdict and of a missing local standard library.
+
 ### ABI semantic inventory dependency
 
 The `abi_header_inventory_semantic_ratchet` check runs
