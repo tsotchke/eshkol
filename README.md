@@ -679,7 +679,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient` (or `eshkol-run -r 
 - **Model serialization**: `.eshkol-model` ESKB-extended binary format for round-tripping trained networks
 - **Stable C FFI**: pybind11 Python bindings with NumPy zero-copy interop
 - **Per-thread arenas**: Safe concurrent memory allocation; deep recursion (100K stack frames) on a 512 MB thread stack
-- **Image I/O**: PNG/JPEG/WebP/BMP read/write/resize for vision pipelines via native platform/system codecs
+- **Image I/O**: PNG/JPEG/WebP/BMP read/write/resize for vision pipelines through codecs built into the runtime (no external library on any platform)
 - **Plotting stdlib**: Inline matplotlib-style charts via PNG output
 - **Actionable error messages**: Compile errors point at the exact source line and column with caret underline
 - **JSON Schema validation**: Draft 7 subset for experiment-manifest / preregistration enforcement (`json-schema-valid?`, `json-schema-validate`)

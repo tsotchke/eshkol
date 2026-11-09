@@ -83,7 +83,7 @@ ls build/eshkol-*
 sudo apt-get install -y \
     llvm-21 llvm-21-dev clang-21 \
     cmake ninja-build build-essential \
-    pkg-config libpng-dev libjpeg-dev libwebp-dev \
+    pkg-config \
     libopenblas-dev  # Optional: BLAS acceleration
 
 # Build
@@ -95,7 +95,6 @@ cmake --build build -j$(nproc)
 
 ```bash
 # Install via Homebrew.
-# Image I/O uses macOS ImageIO/CoreGraphics system frameworks.
 brew install llvm@21 cmake ninja
 
 # Configure with LLVM path
@@ -538,17 +537,13 @@ sudo dnf install openblas-devel
 # macOS — Accelerate is built-in, should auto-detect
 ```
 
-### Image codec libraries not found
+### Image I/O formats
 
-Native Linux image I/O requires libpng, libjpeg, and libwebp development
-packages, with `pkg-config` available for libwebp discovery.
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install pkg-config libpng-dev libjpeg-dev libwebp-dev
-
-# macOS — ImageIO/CoreGraphics are system frameworks
-```
+Image I/O needs no codec library on any platform: PNG, JPEG, BMP and WebP
+are decoded and encoded by codecs built into the runtime
+(`lib/core/image_*.cpp`), and configuration reports
+`Image I/O capability: BUILTIN`. `image-write` with `"webp"` writes lossless
+WebP; `image-read` accepts lossy and lossless WebP, with alpha.
 
 ### Linker errors with stdlib
 

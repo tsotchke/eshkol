@@ -1481,12 +1481,11 @@ std::vector<std::string> host_runtime_link_args() {
     std::string item;
 
 #ifdef __linux__
-    // Binary Linux releases carry the native image-codec closure beside the
-    // executables.  CMake records the builder's concrete PNG/JPEG locations
-    // (and -lwebp) in build_config.h so source-tree/Nix builds remain exact;
-    // those absolute development paths are not valid after relocating a
-    // release archive.  Prefer the package-local regular-file aliases when
-    // the bundle exists, while leaving ordinary source builds unchanged.
+    // Binary Linux releases may carry runtime dependencies in
+    // lib/eshkol/runtime-deps beside the executables (none today: image I/O
+    // codecs are built into the runtime).  When that directory exists, put it
+    // on the generated program's search and run paths; ordinary source
+    // builds are unchanged.
     const auto executable_dir = executable_directory();
     const auto dependency_dir = executable_dir.empty()
         ? std::filesystem::path{}
@@ -1548,30 +1547,6 @@ std::vector<std::string> host_runtime_link_args() {
                 cuda_libraries.emplace_back(item.substr(cuda_marker.size()));
                 continue;
             }
-#ifdef __linux__
-            if (has_packaged_dependency_dir && std::filesystem::path(item).is_absolute()) {
-                const std::string filename = std::filesystem::path(item).filename().string();
-                const char* alias = nullptr;
-                if (filename.rfind("libpng", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libpng.so";
-                } else if (filename.rfind("libjpeg", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libjpeg.so";
-                } else if (filename.rfind("libwebp", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libwebp.so";
-                } else if (filename.rfind("libsharpyuv", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libsharpyuv.so";
-                } else if (filename.rfind("libz", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libz.so";
-                }
-                if (alias != nullptr) {
-                    const auto packaged = dependency_dir / alias;
-                    std::error_code ec;
-                    if (std::filesystem::is_regular_file(packaged, ec)) {
-                        item = packaged.generic_string();
-                    }
-                }
-            }
-#endif
             args.push_back(cxx_driver_link_arg(std::move(item)));
         }
     }

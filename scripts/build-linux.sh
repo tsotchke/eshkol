@@ -100,8 +100,8 @@ build-linux.sh: unrecognized distribution ID='${ID:-unknown}' ID_LIKE='${ID_LIKE
 
 Manual path: install LLVM ${LLVM_VERSION} (clang, llvm devel headers, lld),
 plus: gcc/g++ or clang, cmake, ninja, git, pkg-config, python3, and devel
-packages for openblas, pcre2, readline, sqlite3, openssl, libpng, libjpeg,
-libwebp, zlib, libcurl, and ncurses. Then run:
+packages for openblas, pcre2, readline, sqlite3, openssl, zlib, libcurl,
+and ncurses. Then run:
 
   scripts/bootstrap_linux_build_host.sh --no-install-deps
 EOF
@@ -216,7 +216,7 @@ install_arch() {
     sudo_cmd pacman -Sy --needed --noconfirm \
         base-devel cmake ninja git pkgconf python \
         openblas pcre2 readline sqlite openssl \
-        libpng libjpeg-turbo libwebp zlib curl ncurses
+        zlib curl ncurses
     # Rolling release: use the current llvm when it is the required major,
     # otherwise the versioned legacy packages (llvm21/clang21/lld21) that
     # Arch keeps in [extra] across major transitions.
@@ -243,7 +243,7 @@ install_fedora() {
     local common=(
         gcc gcc-c++ make cmake ninja-build git pkgconf-pkg-config python3
         openblas-devel pcre2-devel readline-devel sqlite-devel openssl-devel
-        libpng-devel libjpeg-turbo-devel libwebp-devel zlib-devel
+        zlib-devel
         libcurl-devel ncurses-devel
     )
     local default_major=""
@@ -271,7 +271,7 @@ install_suse() {
     sudo_cmd zypper --non-interactive install \
         gcc gcc-c++ cmake ninja git pkg-config python3 \
         openblas-devel pcre2-devel readline-devel sqlite3-devel \
-        libopenssl-devel libpng16-devel libjpeg8-devel libwebp-devel \
+        libopenssl-devel \
         zlib-devel libcurl-devel ncurses-devel \
         "llvm${LLVM_VERSION}" "llvm${LLVM_VERSION}-devel" \
         "clang${LLVM_VERSION}" "lld${LLVM_VERSION}"
@@ -289,7 +289,7 @@ install_alpine() {
     sudo_cmd apk add --no-cache \
         build-base cmake ninja git pkgconf python3 \
         openblas-dev pcre2-dev readline-dev sqlite-dev openssl-dev \
-        libpng-dev libjpeg-turbo-dev libwebp-dev zlib-dev curl-dev \
+        zlib-dev curl-dev \
         ncurses-dev \
         "llvm${LLVM_VERSION}-dev" "clang${LLVM_VERSION}" lld
     verify_llvm_major "llvm-config-${LLVM_VERSION}" ||

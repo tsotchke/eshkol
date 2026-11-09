@@ -157,7 +157,7 @@ if(Eshkol_FOUND AND NOT TARGET Eshkol::eshkol)
     # not silently unsupported.
     foreach(_eshkol_framework IN ITEMS
         Accelerate Metal MetalPerformanceShaders Foundation
-        Security CoreFoundation ImageIO CoreGraphics)
+        Security CoreFoundation)
       find_library(_eshkol_${_eshkol_framework}_framework NAMES ${_eshkol_framework})
       if(_eshkol_${_eshkol_framework}_framework)
         list(APPEND _eshkol_interface_link_libraries "${_eshkol_${_eshkol_framework}_framework}")

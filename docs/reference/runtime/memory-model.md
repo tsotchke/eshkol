@@ -185,7 +185,9 @@ POSIX altstack is per thread.
 ## Regions and `with-region`
 
 Regions are lexically-scoped arenas layered on top of the allocator
-(`lib/core/runtime_regions.cpp`). A thread-local region stack tracks the active
+(`lib/core/runtime_regions.cpp` for the lifecycle, with escape/evacuation,
+user region handles and resident owners in `runtime_regions_evacuation.cpp`,
+`runtime_regions_handles.cpp` and `runtime_regions_resident.cpp`). A thread-local region stack tracks the active
 region; allocations route to the current region's arena and are reclaimed when
 the region exits. Both engines reclaim, by different mechanisms — see
 [Which engine reclaims](#which-engine-reclaims).
