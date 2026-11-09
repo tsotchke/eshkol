@@ -1,10 +1,19 @@
 ;; Numeric IPv4/IPv6 TCP and UDP. Bounded operations; no implicit DNS.
+;; Every socket is a SOCKET-kind lease in the shared runtime registry: one
+;; operation at a time per handle, one monotonic deadline per operation, waits
+;; on the event loop, and cancellation or close from any thread.
+;; Acquire sites: tcp-listen (listener), tcp-connect and tcp-accept (stream),
+;; udp-bind (datagram). Close sites: tcp-close (listener, stream), udp-close.
 (require stdlib)
 (require core.capabilities)
 (provide tcp-listen tcp-connect tcp-accept tcp-read tcp-write tcp-close
          udp-bind udp-sendto udp-recvfrom udp-close
          net-local-address net-peer-address net-local-port net-peer-port
-         net-nonblocking! network-error? network-error-code network-error-operation)
+         net-nonblocking! network-error? network-error-code network-error-operation
+         network-error-reason tcp-read! tcp-write! tcp-write-all! tcp-shutdown
+         net-cancel! udp-send-to! udp-receive-from!
+         call-with-tcp-listener call-with-tcp-connection call-with-tcp-accept
+         call-with-udp-socket)
 (extern ptr -net-alloc i64 :real malloc)
 (extern void -net-free ptr :real free)
 (extern i64 -net-open ptr i32 i32 i32 :real eshkol_net_open)
@@ -16,12 +25,26 @@
 (extern i32 -net-address i64 i32 ptr i32 :real eshkol_net_address)
 (extern i32 -net-port i64 i32 :real eshkol_net_port)
 (extern i32 -net-nonblocking i64 i32 :real eshkol_net_nonblocking)
-(extern i32 -net-close i64 :real eshkol_net_close)
+(extern i32 -net-close-kind i64 i32 :real eshkol_net_close_kind)
+(extern i32 -net-read-bytes i64 ptr i64 i64 i32 :real eshkol_net_read_bytes)
+(extern i32 -net-write-bytes i64 ptr i64 i64 i32 :real eshkol_net_write_bytes)
+(extern i64 -net-write-all-bytes i64 ptr i64 i64 i32 :real eshkol_net_write_all_bytes)
+(extern i32 -net-sendto-bytes i64 ptr i32 ptr i64 i64 i32 :real eshkol_net_sendto_bytes)
+(extern i32 -net-recvfrom-bytes i64 ptr i64 i64 ptr i32 i32 :real eshkol_net_recvfrom_bytes)
+(extern i32 -net-shutdown i64 i32 :real eshkol_net_shutdown)
+(extern i32 -net-cancel i64 :real eshkol_net_cancel)
 
 (define (network-error? v)
   (and (vector? v) (= (vector-length v) 3) (eq? (vector-ref v 0) 'network-error)))
 (define (network-error-code v) (vector-ref v 1))
 (define (network-error-operation v) (vector-ref v 2))
+(define (network-error-reason v)
+  "Symbolic outcome for a network error code."
+  (let ((code (vector-ref v 1)))
+    (cond ((= code -1) 'system) ((= code -2) 'timeout) ((= code -3) 'unsupported)
+          ((= code -4) 'invalid) ((= code -5) 'busy) ((= code -6) 'cancelled)
+          ((= code -7) 'reset) ((= code -8) 'truncated) ((= code -9) 'refused)
+          (else 'system))))
 ;; Keep ports, counts and error codes exact across generic FFI numeric boxing.
 (define (-net-result n op)
   (if (< n 0) (vector 'network-error (inexact->exact n) op) (inexact->exact n)))
@@ -107,6 +130,91 @@
       (-net-result (-net-nonblocking h (if enabled 1 0)) 'net-nonblocking!)
       (-net-result -4 'net-nonblocking!)))
 (define (tcp-close h)
-  (if (-net-handle? h) (-net-result (-net-close h) 'tcp-close) (-net-result -4 'tcp-close)))
+  "Close a TCP listener or stream exactly once; a UDP handle is refused."
+  (if (-net-handle? h) (-net-result (-net-close-kind h 1) 'tcp-close) (-net-result -4 'tcp-close)))
 (define (udp-close h)
-  (if (-net-handle? h) (-net-result (-net-close h) 'udp-close) (-net-result -4 'udp-close)))
+  "Close a UDP socket exactly once; a TCP handle is refused."
+  (if (-net-handle? h) (-net-result (-net-close-kind h 2) 'udp-close) (-net-result -4 'udp-close)))
+
+;; Byte-counted I/O on caller bytevectors: [start, start + count).
+(define (-net-range? bv start count minimum)
+  (and (bytevector? bv) (-net-int? start 0 2147483647) (-net-int? count minimum 2147483647)
+       (<= (+ start count) (bytevector-length bv))))
+(define (tcp-read! h bv start count timeout-ms)
+  "Read up to count bytes into bv at start: a byte count, the eof object, or an error."
+  (capability-require! 'network)
+  (if (and (-net-handle? h) (-net-range? bv start count 1) (-net-timeout? timeout-ms))
+      (let ((n (-net-read-bytes h bv start count timeout-ms)))
+        (if (= n 0) (eof-object) (-net-result n 'tcp-read!)))
+      (-net-result -4 'tcp-read!)))
+(define (tcp-write! h bv start count timeout-ms)
+  "Write bv[start, start + count); returns the possibly partial byte count sent."
+  (capability-require! 'network)
+  (if (and (-net-handle? h) (-net-range? bv start count 0) (-net-timeout? timeout-ms))
+      (-net-result (-net-write-bytes h bv start count timeout-ms) 'tcp-write!)
+      (-net-result -4 'tcp-write!)))
+(define (tcp-write-all! h bv start count timeout-ms)
+  "Write the whole range under one deadline; returns count or an error."
+  (capability-require! 'network)
+  (if (and (-net-handle? h) (-net-range? bv start count 0) (-net-timeout? timeout-ms))
+      (-net-result (-net-write-all-bytes h bv start count timeout-ms) 'tcp-write-all!)
+      (-net-result -4 'tcp-write-all!)))
+(define (tcp-shutdown h how)
+  "Shut down the 'read, 'write or 'both directions of a TCP stream."
+  (let ((mode (cond ((eq? how 'read) 0) ((eq? how 'write) 1) ((eq? how 'both) 2) (else -1))))
+    (if (and (-net-handle? h) (>= mode 0))
+        (-net-result (-net-shutdown h mode) 'tcp-shutdown)
+        (-net-result -4 'tcp-shutdown))))
+(define (net-cancel! h)
+  "Cancel the operation waiting on h (from any thread), or the next one to wait."
+  (if (-net-handle? h) (-net-result (-net-cancel h) 'net-cancel!) (-net-result -4 'net-cancel!)))
+(define (udp-send-to! h host port bv start count timeout-ms)
+  "Send bv[start, start + count) as one datagram; returns the byte count."
+  (capability-require! 'network host port)
+  (if (and (-net-handle? h) (-net-host? host) (-net-int? port 0 65535)
+           (-net-range? bv start count 0) (<= count 65507) (-net-timeout? timeout-ms))
+      (-net-result (-net-sendto-bytes h host port bv start count timeout-ms) 'udp-send-to!)
+      (-net-result -4 'udp-send-to!)))
+(define (udp-receive-from! h bv start count timeout-ms)
+  "Receive one datagram into bv: #(byte-count sender truncated?). A longer
+   datagram is consumed; its first count bytes are stored and truncated? is #t."
+  (capability-require! 'network)
+  (if (and (-net-handle? h) (-net-range? bv start count 1) (<= count 65535)
+           (-net-timeout? timeout-ms))
+      (let ((peer (-net-alloc 64)))
+        (if (= (ptr->usize peer) 0) (-net-result -1 'udp-receive-from!)
+            (let* ((n (inexact->exact (-net-recvfrom-bytes h bv start count peer 64 timeout-ms)))
+                   (result (cond ((= n -8) (vector count (ptr->string peer) #t))
+                                 ((< n 0) (-net-result n 'udp-receive-from!))
+                                 (else (vector n (ptr->string peer) #f)))))
+              (-net-free peer) result)))
+      (-net-result -4 'udp-receive-from!)))
+
+;; Guaranteed close: the handle is closed exactly once when proc returns,
+;; raises, or escapes through a continuation. Re-entering a finished scope
+;; raises an invalid-handle network error before proc runs again. A failed
+;; acquisition returns its network error without calling proc.
+(define (-net-scoped resource close op proc)
+  (if (network-error? resource) resource
+      (let ((state 'fresh))
+        (dynamic-wind
+          (lambda ()
+            (if (eq? state 'fresh) (set! state 'open)
+                (raise (vector 'network-error -4 op))))
+          (lambda () (proc resource))
+          (lambda ()
+            (if (eq? state 'open)
+                (begin (set! state 'closed) (close resource))
+                #t))))))
+(define (call-with-tcp-listener host port proc)
+  "Listen on host:port, call (proc listener), and always close the listener."
+  (-net-scoped (tcp-listen host port) tcp-close 'call-with-tcp-listener proc))
+(define (call-with-tcp-connection host port timeout-ms proc)
+  "Connect, call (proc stream), and always close the stream."
+  (-net-scoped (tcp-connect host port timeout-ms) tcp-close 'call-with-tcp-connection proc))
+(define (call-with-tcp-accept listener timeout-ms proc)
+  "Accept one connection, call (proc stream), and always close the stream."
+  (-net-scoped (tcp-accept listener timeout-ms) tcp-close 'call-with-tcp-accept proc))
+(define (call-with-udp-socket host port proc)
+  "Bind a datagram socket, call (proc socket), and always close it."
+  (-net-scoped (udp-bind host port) udp-close 'call-with-udp-socket proc))

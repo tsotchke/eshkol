@@ -333,7 +333,9 @@ static void concurrent_close_invalidates_first(void) {
     assert(close_elapsed < 250);
     assert(eshkol_tls_session_close(session) == -4);
     assert(pthread_join(reader_thread, NULL) == 0);
-    assert(reader.result == -2 || reader.result == -1);
+    /* Close wakes the reader through its TCP lease well before its deadline. */
+    assert(monotonic_ms() - started < 500);
+    assert(reader.result == -6);
     assert(pthread_join(server_thread, NULL) == 0);
     assert(eshkol_tls_listener_close(server.listener) == 0);
 }

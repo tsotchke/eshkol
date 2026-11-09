@@ -1946,8 +1946,23 @@ static const VmTypedExternSpec* vm_typed_extern_spec(const Node* form) {
     return NULL;
 }
 
+/* Native sockets own kernel descriptors through the hosted resource lease
+ * registry, which the bytecode VM does not carry; report that explicitly. */
+static int vm_extern_is_socket_lease(const Node* form) {
+    if (!form || form->type != N_LIST || form->n_children < 2) return 0;
+    Node* real_name = form->children[form->n_children - 1];
+    return real_name && real_name->type == N_SYMBOL &&
+           (strncmp(real_name->symbol, "eshkol_net_", 11) == 0 ||
+            strncmp(real_name->symbol, "eshkol_tls_", 11) == 0);
+}
+
 static int vm_compile_typed_extern_binding(FuncChunk* c, Node* form) {
     const VmTypedExternSpec* spec = vm_typed_extern_spec(form);
+    if (!spec && vm_extern_is_socket_lease(form)) {
+        vm_compile_error("core.net and core.tls are not supported by the bytecode VM",
+                         "TCP/UDP/TLS sockets run on the native JIT and AOT engines");
+        return 0;
+    }
     if (!spec) {
         vm_compile_error("unsupported or malformed VM extern declaration",
                          "only the exact agent.sqlite and agent.crypto ABI signatures are admitted");

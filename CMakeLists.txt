@@ -2674,6 +2674,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/threads.c
   lib/core/net.c
   lib/core/tls.c
+  lib/core/resource_lease.c
   lib/core/workspace.cpp
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
@@ -15556,14 +15557,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
 endif()
 
 # Standalone networking boundary: independent POSIX peers, no LLVM rebuild.
+# Sockets own their descriptors through the shared resource lease layer and
+# wait on the portable event loop, so every standalone test links that stack.
+set(ESHKOL_NET_LEASE_STACK_SRC
+    lib/core/resource_lease.c lib/core/runtime_handle.cpp
+    lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
 if(ESHKOL_BUILD_TESTS)
-    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c)
+    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(net_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         find_package(Threads REQUIRED)
         target_link_libraries(net_runtime_test PRIVATE Threads::Threads)
     endif()
-    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c)
+    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c lib/core/net.c
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_clock_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         target_link_libraries(net_clock_failure_test PRIVATE Threads::Threads)
@@ -15575,7 +15583,8 @@ if(ESHKOL_BUILD_TESTS)
     set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
 
     add_executable(tls_context_test
-        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c)
+        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(tls_context_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(ESHKOL_TLS_OPENSSL_FOUND)
         set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
@@ -15589,6 +15598,28 @@ if(ESHKOL_BUILD_TESTS)
         find_package(Threads REQUIRED)
         target_link_libraries(tls_context_test PRIVATE Threads::Threads)
     endif()
+endif()
+
+# Local test PKI, generated under the build directory for every TLS lease test;
+# the trust anchors and leaves never leave the build tree and no test uses the
+# network beyond loopback.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_TLS_OPENSSL_FOUND AND UNIX AND NOT EMSCRIPTEN)
+    set(ESHKOL_TLS_TEST_PKI "${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki")
+    add_executable(tls_test_ca tests/network/tls_test_ca.c)
+    target_link_libraries(tls_test_ca PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME tls_test_pki COMMAND $<TARGET_FILE:tls_test_ca> "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_test_pki PROPERTIES FIXTURES_SETUP tls_test_pki
+        PASS_REGULAR_EXPRESSION "PASS: test PKI written")
+    add_executable(tls_lease_test tests/network/tls_lease_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(tls_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    set_source_files_properties(tests/network/tls_lease_test.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    target_link_libraries(tls_lease_test PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    add_test(NAME tls_lease_test COMMAND tls_lease_test "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_lease_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE
+        FIXTURES_REQUIRED tls_test_pki LABELS "network;tls;ownership"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 # TLS acceptance is registered only for a build with the verified native
@@ -15724,12 +15755,64 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
+# Public core.net/core.tls lease surfaces on both native engines.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
+    set(_net_core_cases net_core net_scope_continuation)
+    if(ESHKOL_TLS_OPENSSL_FOUND AND TARGET tls_test_ca)
+        list(APPEND _net_core_cases tls_net_core)
+    endif()
+    foreach(_case IN LISTS _net_core_cases)
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/${_case}_test.esk")
+        add_test(NAME ${_case}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_source}"
+            "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_case}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_case}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+            LABELS "network;ownership"
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_TLS_TEST_PKI=${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        if(_case STREQUAL "tls_net_core")
+            set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES FIXTURES_REQUIRED tls_test_pki)
+        endif()
+    endforeach()
+endif()
+
+# The bytecode VM has no hosted socket leases: compiling core.net for it is
+# refused with an explicit message rather than producing a partial program.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME net_vm_refusal COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm
+        --emit-eskb "${CMAKE_CURRENT_BINARY_DIR}/net_vm_refusal.eskb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/net_vm_refusal.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(net_vm_refusal PROPERTIES TIMEOUT 120 LABELS "network;vm"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "core.net and core.tls are not supported by the bytecode VM")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
-    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c)
+    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
+        lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(net_close_concurrency_test PRIVATE Threads::Threads)
     add_test(NAME net_close_concurrency_test COMMAND net_close_concurrency_test)
     set_tests_properties(net_close_concurrency_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Socket leases: partial writes, reset, deadlines, cancellation, shutdown,
+# truncation and a constant descriptor count across 1,000 cycles.
+if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_lease_test tests/network/net_lease_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(net_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_lease_test PRIVATE Threads::Threads)
+    add_test(NAME net_lease_test COMMAND net_lease_test)
+    set_tests_properties(net_lease_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+        LABELS "network;ownership"
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 

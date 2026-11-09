@@ -41,6 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an independent binary128 reference checks it at every finite binade of `K`
   of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
   (`migrate-legacy-ball-point`); distances are unchanged by the migration.
+- **Sockets and TLS sessions are resource leases.** TCP and UDP sockets are
+  owned through the shared runtime handle registry: one operation per handle,
+  one monotonic deadline per operation, waits on the event loop, cancellation
+  and close from any thread, byte-counted bytevector I/O, shutdown, explicit
+  datagram truncation, and scoped forms that close on return, exception and
+  continuation escape. TLS sessions start on owned TCP streams in either role,
+  hold the stream's lease, verify peers by default and report untrusted and
+  mismatched certificates separately (ADR-0055, Proposed).
+
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix
   calculus (#794), coupled polynomial root towers (#795), preflighted packed

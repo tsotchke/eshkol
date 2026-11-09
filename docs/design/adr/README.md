@@ -54,6 +54,7 @@ documentation hub lists the same records in
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
 | [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
+<<<<<<< HEAD
 | [0030](0030-stackful-coroutines-for-fibers.md) | Fibers run on stackful coroutines with a per-context dynamic state | Accepted — implemented on native JIT and AOT; bytecode VM Planned for v1.4.1 | 2026-10-23 | `inc/eshkol/core/coroutine.h`, `lib/core/runtime_coroutines_hosted.cpp`, `lib/core/fibers.esk`, gate `scripts/run_fibers_gate.py` |
 | [0031](0031-differentiable-optimization.md) | Differentiating through optimization is one tape pullback per rule | Accepted — implemented in v1.4.0-connection | 2026-10-23 | `core.ml.diffopt` in `lib/core/ml/diffopt.esk`, gate `tests/ml/diffopt_test.esk` (CTest `diffopt_runtime_smoke`, `diffopt_aot_smoke`) |
 | [0032](0032-exact-forward-control-fine-tuning.md) | Exact-forward control fine-tuning of the constructed interpreter | Accepted — implemented for v1.4.0 | 2026-10-23 | `lib/core/sdnc_finetune.c`, `inc/eshkol/core/saturating_vjp.h`, `sdnc_backward_smoothed` in `lib/core/sdnc_core.h`, ctests `sdnc_control_finetune`, `sdnc_finetune_unit`, `sdnc_finetune_surface_jit` |
@@ -77,6 +78,7 @@ documentation hub lists the same records in
 | [0051](0051-reasoning.md) | `core.reasoning`: chaining, constraints and SAT, knowledge graphs | Proposed | 2026-10-30 | — (targets v1.6.0-reasoning; library `lib/core/reasoning/`, gate `scripts/run_reasoning_gate.sh`) |
 | [0052](0052-program-synthesis.md) | Program synthesis, `??` synthesis holes and graph neural networks | Proposed — implemented on native JIT and AOT | 2026-10-30 | v1.7.0 |
 | [0054](0054-effective-and-presented-categories.md) | Effective and finitely presented categories: infinite categories in `core.category` | Proposed — implemented in `core.category.effective`, `.presented`, `.standard`, `.effective_kan` | 2026-10-30 | `lib/core/category/effective.esk`, `presented.esk`, `standard.esk`, `effective_kan.esk`; suites `tests/stdlib/category_effective_test.esk`, `tests/nlab/nlab_category_effective_test.esk`; proofs `tests/formal/coq/StringRewriting.v`; reference [`category-effective.md`](../../reference/stdlib/category-effective.md) |
+| [0055](0055-socket-resource-leases.md) | Sockets and TLS sessions as resource leases | Proposed — implemented on native JIT and AOT | 2026-11-08 | v1.4.0 |
 
 ## Numbering
 

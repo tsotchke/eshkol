@@ -153,11 +153,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/linear_solve_portable.h`](core/linear_solve_portable.md) | 1 | 1 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
-| [`core/net.h`](core/net.md) | 10 | 10 |
+| [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
 | [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
+| [`core/resource_lease.h`](core/resource_lease.md) | 25 | 22 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 67 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 73 | 56 |
 | [`core/saturating_vjp.h`](core/saturating_vjp.md) | 2 | 1 |
@@ -165,7 +166,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
 | [`core/tensor_inverse_checked.h`](core/tensor_inverse_checked.md) | 3 | 0 |
-| [`core/tls.h`](core/tls.md) | 12 | 11 |
+| [`core/tls.h`](core/tls.md) | 20 | 17 |
 | [`core/unicode.h`](core/unicode.md) | 5 | 0 |
 | [`core/workspace.h`](core/workspace.md) | 15 | 4 |
 
