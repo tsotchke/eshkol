@@ -305,9 +305,10 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
 //     f(x0 + t) = sum_{k=0..K} c[k] * t^k        =>   f^(n)(x0) = n! * c[n].
 // Stored behind a tagged HEAP_PTR with subtype HEAP_SUBTYPE_TAYLOR. Mirrors
 // HEAP_SUBTYPE_TENSOR's homogeneous-double storage: the header is followed by
-// (order_k + 1) doubles. `flags` reserves a coefficient-type field and a
-// perturbation-confusion EPOCH tag so nested `derivative` levels never mix
-// (§5a). Differentiating the variable seeds {x0, 1, 0, ...}.
+// (order_k + 1) doubles. `flags` holds the coefficient-type field and
+// `epoch` the 64-bit perturbation tag of the pass that owns the series, so
+// nested differentiation levels never mix (§5a, ADR-0055). Differentiating
+// the variable seeds {x0, 1, 0, ...}.
 /**
  * @brief Arbitrary-order forward-mode AD Taylor series (Taylor tower).
  *
@@ -319,9 +320,9 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
  */
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
-    uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
-    uint32_t reserved_epochs[3]; // zero; the companion lanes' epoch tags, retired by ADR-0027
-    uint32_t reserved1;     // pad: keeps `exact_c`/`c` 8-byte aligned for COEFF_RATIONAL
+    uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | zero[16..31]
+    uint64_t epoch;     // perturbation tag of the owning pass (never 0, never reused; ADR-0055)
+    uint32_t reserved[2];   // zero; keeps `exact_c`/`c` 8-byte aligned and the layout at 32 bytes
     eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
 } esh_taylor_t;
@@ -336,7 +337,7 @@ typedef struct esh_taylor {
 // `eshkol_tagged_value_t c[order_k+1]` (each entry an exact int64/bignum/
 // rational tagged value, produced by Eshkol's existing exact numeric tower)
 // instead of raw doubles. This is safe because `c`'s offset (right after
-// order_k/flags/reserved_epochs/reserved1/exact_c,
+// order_k/flags/epoch/reserved/exact_c,
 // 32 bytes in) is 8-byte aligned, matching
 // alignof(eshkol_tagged_value_t); accessors in lib/core/runtime_taylor.c
 // never raw-index across coefficient types (design section 4/12).
@@ -396,26 +397,16 @@ typedef struct esh_taylor {
 // one thing: the reverse-seed tangent of reverse-over-Taylor (design section 8).
 // Nesting between forward passes is carried by level carriers
 // (ESH_TAYLOR_COEFF_CARRIER, ADR-0027), never by a companion lane.
-/** @brief Bit position (16) of the epoch tag inside esh_taylor_t::flags. */
-#define ESH_TAYLOR_EPOCH_SHIFT   16u
 /**
- * @brief Mask of the 16-bit epoch tag, bits 16..31 of esh_taylor_t::flags.
+ * @brief Build a flags word from a coefficient representation.
  *
- * The epoch identifies the differentiation pass that owns the series, so
- * that nested passes never mix their perturbations.
+ * @p coeff is masked to 8 bits; every other bit (tangent, sign-hint and
+ * exactness bits) is clear and is OR'd in separately. The perturbation tag is
+ * not part of the flags word: it is esh_taylor_t::epoch, a 64-bit counter
+ * value that is never reused within a process (ADR-0055), so the order of two
+ * tags is always the order in which their passes opened.
  */
-#define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
-/** @brief Extract the epoch tag (0..65535) from flags word @p fl. */
-#define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
-/**
- * @brief Build a flags word from a coefficient representation and an epoch.
- *
- * @p coeff is masked to 8 bits and @p epoch to 16 bits; every other bit
- * (tangent, sign-hint and exactness bits) is clear and is OR'd in separately.
- */
-#define ESH_TAYLOR_MK_FLAGS(coeff, epoch) \
-    (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
-    (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+#define ESH_TAYLOR_MK_FLAGS(coeff) ((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK)
 
 /**
  * @brief Order two values by their primal (c[0]) coefficient.
@@ -437,17 +428,22 @@ int32_t eshkol_taylor_order_tagged(
     void* arena, const eshkol_tagged_value_t* left,
     const eshkol_tagged_value_t* right, int op);
 
-// ADR-0027: nested-pass route codes. eshkol_ad_nested_seed() returns
-// ESH_AD_NEST_NONE for an un-nested pass, or ESH_AD_NEST_LEVEL packed with the
-// level's epoch in bits 8..23 and, in bit 24, whether the seed unit is inexact;
-// codegen threads that i32 to the matching eshkol_ad_nested_extract().
-// See docs/design/adr/0027-recursive-taylor-level-carrier.md.
+// ADR-0027 / ADR-0055: nested-pass routes. eshkol_ad_nested_seed() returns
+// ESH_AD_NEST_NONE (0) for an un-nested pass; for a pass that runs as a level
+// it returns the level's route, `(epoch << 1) | inexact`, where `epoch` is the
+// level's 64-bit perturbation tag (never 0) and bit 0 records whether the seed
+// unit is inexact. Codegen threads that i64 to the matching
+// eshkol_ad_nested_extract(). See docs/design/adr/0027-recursive-taylor-level-carrier.md
+// and docs/design/adr/0055-nested-differentiation-in-every-mode.md.
 /** @brief Route 0: the pass is not nested; the caller seeds it as usual. */
 #define ESH_AD_NEST_NONE         0
-/** @brief Route 2: the pass runs as a level whose coefficients are numbers of the enclosing levels (ADR-0027). */
-#define ESH_AD_NEST_LEVEL        2
-/** @brief Route -1: the level carrier could not be allocated; the caller raises. */
-#define ESH_AD_NEST_UNSUPPORTED (-1)
+/** @brief The perturbation tag carried by a nonzero level route. */
+#define ESH_AD_NEST_ROUTE_EPOCH(route)   ((uint64_t)(route) >> 1)
+/** @brief Whether a nonzero level route was seeded with an inexact unit. */
+#define ESH_AD_NEST_ROUTE_INEXACT(route) (((uint64_t)(route) & 1u) != 0u)
+/** @brief Build the route of a level with tag @p epoch. */
+#define ESH_AD_NEST_ROUTE(epoch, inexact) \
+    ((int64_t)(((uint64_t)(epoch) << 1) | ((inexact) ? 1u : 0u)))
 
 /**
  * @brief Complex number for signal processing, FFT, and complex analysis.

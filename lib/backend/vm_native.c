@@ -6472,7 +6472,7 @@ static Value vm_ad_coeff_value(VM* vm, VmDual* c) {
 /** @brief Section 4 on one real component: coefficient k (or k! times it) of
  *         @p part in @p epoch, or, when the part does not depend on this
  *         level, the part itself at order 0 and a zero otherwise. */
-static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint32_t epoch, uint32_t k,
+static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint64_t epoch, uint32_t k,
                                int derivative, int point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
     if (epoch == 0 && part->kind == VM_DUAL_KIND_SCALAR && k <= 1) {
@@ -6495,7 +6495,7 @@ static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint32_t epoch, uint32_t k,
  *         dual pass): coefficient @p k, or k! times it when @p derivative.
  *         A vector or list result is read element by element, a complex
  *         result part by part. */
-static Value vm_ad_level_read(VM* vm, Value result, uint32_t epoch, uint32_t k,
+static Value vm_ad_level_read(VM* vm, Value result, uint64_t epoch, uint32_t k,
                               int derivative, int point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
     if (result.type == VAL_VECTOR && result.as.ptr >= 0 &&
@@ -6547,9 +6547,9 @@ static Value vm_ad_level_read(VM* vm, Value result, uint32_t epoch, uint32_t k,
  *         point is exact. A complex point perturbs its real coordinate (the
  *         holomorphic dz = 1); the imaginary part is constant in this pass. */
 static Value vm_ad_seed_and_call(VM* vm, Value f, Value point, uint32_t order,
-                                 uint32_t* epoch_out, int* point_exact) {
+                                 uint64_t* epoch_out, int* point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
-    uint32_t epoch = vm_dual_next_taylor_epoch();
+    uint64_t epoch = vm_dual_next_taylor_epoch();
     int level = vm_ad_runs_as_level(vm, point);
     *epoch_out = epoch;
     *point_exact = 0;
@@ -6588,7 +6588,7 @@ static Value vm_taylor_pass(VM* vm, Value f, Value point, uint32_t order,
         Value evaluated = vm_ad_call_closure(vm, f, &point, 1);
         return want_list ? vm_cons_value(vm, evaluated, NIL_VAL) : evaluated;
     }
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     int point_exact = 0;
     Value result = vm_ad_seed_and_call(vm, f, point, order, &epoch, &point_exact);
     if (vm->error) return NIL_VAL;
@@ -6602,7 +6602,7 @@ static Value vm_taylor_pass(VM* vm, Value f, Value point, uint32_t order,
 
 /** @brief A first-order `derivative` that runs as an order-1 level. */
 static Value vm_derivative_level(VM* vm, Value f, Value x) {
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     int point_exact = 0;
     Value result = vm_ad_seed_and_call(vm, f, x, 1, &epoch, &point_exact);
     if (vm->error) return NIL_VAL;
@@ -6639,9 +6639,9 @@ static Value vm_ad_call_components(VM* vm, Value f, Value* args, int n, int arit
  *         when @p dir is NULL. Returns f(x); @p epoch_out names the level. */
 static Value vm_ad_level_pass(VM* vm, Value f, const Value* comps, int n, int arity,
                               int i, const Value* dir, uint32_t order,
-                              uint32_t* epoch_out) {
+                              uint64_t* epoch_out) {
     VmRegionStack* rs = &vm->heap.regions;
-    uint32_t epoch = vm_dual_next_taylor_epoch();
+    uint64_t epoch = vm_dual_next_taylor_epoch();
     *epoch_out = epoch;
     Value* args = vm_ad_arg_slots(vm, n);
     if (!args) return NIL_VAL;
@@ -6732,7 +6732,7 @@ static Value vm_ad_level_jacobian(VM* vm, Value f, const Value* comps, int n, in
     if (!cols) return NIL_VAL;
     int m = -1;
     for (int i = 0; i < n; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         if (r.type != VAL_VECTOR && r.type != VAL_PAIR) {
@@ -6760,7 +6760,7 @@ static Value vm_ad_level_hessian(VM* vm, Value f, const Value* comps, int n, int
     if (!e || !args) return NIL_VAL;
     for (int i = 0; i < n; i++) {
         for (int j = i; j < n; j++) {
-            uint32_t e1 = vm_dual_next_taylor_epoch(), e2 = vm_dual_next_taylor_epoch();
+            uint64_t e1 = vm_dual_next_taylor_epoch(), e2 = vm_dual_next_taylor_epoch();
             for (int k = 0; k < n; k++) {
                 VmDual* x = vm_ad_point_carrier(vm, comps[k]);
                 if (x && k == i) x = vm_dual_level_seed(rs, x, 1, e1);
@@ -6783,7 +6783,7 @@ static Value vm_ad_level_hessian(VM* vm, Value f, const Value* comps, int n, int
 static Value vm_ad_level_divergence(VM* vm, Value f, const Value* comps, int n, int arity) {
     Value acc = INT_VAL(0);
     for (int i = 0; i < n && !vm->error; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         acc = vm_ad_value_axpy(vm, acc, vm_ad_field_part(vm, vm_ad_level_read(vm, r, epoch, 1, 1, 0), i), 1);
@@ -6795,7 +6795,7 @@ static Value vm_ad_level_divergence(VM* vm, Value f, const Value* comps, int n, 
 static Value vm_ad_level_laplacian(VM* vm, Value f, const Value* comps, int n, int arity) {
     Value acc = INT_VAL(0);
     for (int i = 0; i < n && !vm->error; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 2, &epoch);
         if (vm->error) return NIL_VAL;
         acc = vm_ad_value_axpy(vm, acc, vm_ad_level_read(vm, r, epoch, 2, 1, 0), 1);
@@ -6809,7 +6809,7 @@ static Value vm_ad_level_curl(VM* vm, Value f, const Value* comps, int n, int ar
     int nc = n < 3 ? n : 3;
     Value col[3] = { INT_VAL(0), INT_VAL(0), INT_VAL(0) };
     for (int j = 0; j < nc; j++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, nc, arity, j, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         col[j] = vm_ad_level_read(vm, r, epoch, 1, 1, 0);
@@ -6827,7 +6827,7 @@ static Value vm_ad_level_curl(VM* vm, Value f, const Value* comps, int n, int ar
 /** @brief D_v f = d/dt f(x + v t) at t = 0, one level. */
 static Value vm_ad_level_directional(VM* vm, Value f, const Value* comps,
                                      const Value* dir, int n, int arity) {
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     Value r = vm_ad_level_pass(vm, f, comps, n, arity, -1, dir, 1, &epoch);
     if (vm->error) return NIL_VAL;
     return vm_ad_level_read(vm, r, epoch, 1, 1, 0);
@@ -6923,7 +6923,7 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         Value* args = vm_ad_arg_slots(vm, n);
         if (!args) return FLOAT_VAL(0);
         for (int i = 0; i < n && !vm->error; i++) {
-            uint32_t epoch = vm_dual_next_taylor_epoch();
+            uint64_t epoch = vm_dual_next_taylor_epoch();
             VmDual* p = vm_ad_point_carrier(vm, comps[i]);
             Value seed = vm_make_taylor_val(vm, vm_dual_level_seed(&vm->heap.regions, p, 1, epoch));
             for (int j = 0; j < n; j++) args[j] = j == i ? seed : comps[j];
@@ -16970,15 +16970,15 @@ tensor_inverse_done:
             for (int i = 0; i < n; i++) {
                 for (int j = i; j < n; j++) {
                     Value r;
-                    uint32_t hess_e1 = 0, hess_e2 = 0;
+                    uint64_t hess_e1 = 0, hess_e2 = 0;
                     if (vm_closure_arity(vm, f_val) == 1) {
                         /* A unary collection loss receives one vector, just
                          * like gradient. Two nested order-1 levels carry the
                          * two directions (ADR-0027): x_k = p_k + d_ki t1 +
                          * d_kj t2, and H_ij is the t2-coefficient of the
                          * t1-coefficient of the result. */
-                        uint32_t e1 = vm_dual_next_taylor_epoch();
-                        uint32_t e2 = vm_dual_next_taylor_epoch();
+                        uint64_t e1 = vm_dual_next_taylor_epoch();
+                        uint64_t e2 = vm_dual_next_taylor_epoch();
                         for (int k = 0; k < n; k++) {
                             VmDual* x = vm_dual_constant(&vm->heap.regions, point[k], NULL);
                             if (x && k == i) x = vm_dual_level_seed(&vm->heap.regions, x, 1, e1);

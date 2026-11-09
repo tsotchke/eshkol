@@ -469,10 +469,34 @@ coefficient (`d12`) carries the exact second-order term. Every arithmetic op
 propagates all four components in closed form (see `dualUnaryChain` in
 `autodiff_codegen.cpp`) — no finite differences, no recursion.
 
-**Two levels are exact; three is not.** A 4-component jet cannot carry a third
-independent perturbation, so a third nested `derivative` *aliases* onto `e2` and
-the compiler emits a `nested derivative depth N exceeds exact 2-level forward
-AD` warning rather than silently returning a wrong-but-plausible number.
+**Nesting has no depth limit.** The jet holds two forward directions, so the
+first two nested `derivative` passes use `e1` and `e2`. A pass opened while two
+jet levels, a Taylor tower or a level is already live runs as a **level**
+([ADR-0027](../../design/adr/0027-recursive-taylor-level-carrier.md)): a
+truncated series in its own perturbation whose coefficients are numbers of the
+enclosing passes (jets, towers, other levels, exact or inexact scalars). Depth
+and the order of each level are limited only by memory:
+
+```scheme
+(define (d f) (lambda (x) (derivative f x)))
+((d (d (d (d (lambda (x) (* x x x x x x))))))) 2.0)   ;; => 1440.0
+((d (d (d (d (lambda (x) (* x x x x x x))))))) 1/2)   ;; => 90, exact
+```
+
+## Perturbation tags
+
+Every level carries a **perturbation tag**, its epoch: a 64-bit value drawn
+from one process-wide counter when the pass seeds (`esh_taylor_t::epoch` on
+native, `VmDual::epoch` on the VM). Tags are never reused, so a pass opened
+later always has a larger tag than every pass enclosing it, for the life of the
+process. Level arithmetic takes the largest tag among its operands as the
+active level and reads every other operand, whole, as a coefficient; two series
+combine only when their tags are equal. That is what makes perturbation
+confusion impossible: the inner pass of
+`(derivative (lambda (x) (* x (derivative (lambda (y) (+ x y)) 1.0))) 1.0)`
+cannot absorb the outer perturbation, and the answer is `1`, not `2`.
+[ADR-0055](../../design/adr/0055-nested-differentiation-in-every-mode.md)
+records the tag width and the route that carries it from seed to extraction.
 
 ---
 
@@ -577,13 +601,52 @@ composition `(hessian f point)` performs, and it agrees with it entry-for-entry:
 (hessian  f (vector 2.0 3.0))   ;; => #((6 4) (4 0))
 ```
 
-The one shape that still refuses is a point *computed* from the enclosing pass's
-variables — `(jacobian (lambda (v) (g (vector (* 2.0 (vref v 0))))) point)` —
-where no component IS the published active seed, so no edge can be threaded
-back. That **raises** (a loud refusal, not a silent zero): the `(vector …)`
-spelling is caught by the point coercion, `evaluation point is not a number`,
-before the tensor arm is reached; a tensor of non-seed nodes is caught by the
-pre-scan itself, `unsupported nested differentiation`. See KNOWN_ISSUES.md.
+The forward evaluation records its local linearisation against the point's
+components, not against the enclosing pass's seed: for output `i` it records
+`grad_i + sum_k H[i][k] (x_k - value_k)` over every component `x_k` that is a
+tape node (`eshkol_ad_linear_record`), so a point *computed* from the enclosing
+pass's variables answers like a point made of them:
+
+```scheme
+(define g3 (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0)))))
+(jacobian (lambda (v) (g3 (vector (* 2.0 (vref v 0))))) (vector 1.0))   ;; => #((24))
+```
+
+## Reverse passes inside and around forward passes
+
+The reverse tape stores one raw double per node, so it can hold neither an
+enclosing forward perturbation nor a carrier inside its point. Two rules keep
+every composition exact
+([ADR-0055](../../design/adr/0055-nested-differentiation-in-every-mode.md)):
+
+- **Inside a live pass, a vector-point operator is forward columns.** When a
+  forward pass, a tower or a level is live, or the point carries a carrier,
+  `gradient`, `jacobian` and `hessian` compute each column as a forward pass
+  of its own, so each is a level of the enclosing passes:
+
+  ```scheme
+  (derivative (lambda (s)
+    (derivative (lambda (t)
+      (vref (gradient (lambda (v) (* s t (vref v 0) (vref v 0))) (vector 3.0)) 0))
+      2.0))
+    1.0)                                                  ;; => 6.0
+  ```
+
+- **Around an inner forward pass, the outermost reverse pass is forward
+  columns.** A forward pass that returns while a reverse tape is live is
+  counted. When the first primal of a `gradient` that no other reverse pass
+  encloses moves that count, the gradient is taken as forward columns instead
+  of the tape sweep, so an inner pass that captured a value the outer pass
+  computed from its variables carries that dependence:
+
+  ```scheme
+  (gradient (lambda (v) (let ((p (* 2.0 (vref v 0))))
+                          (derivative (lambda (x) (* p x x)) 2.0)))
+            #(3.0))                                      ;; => #(8.0)
+  ```
+
+Un-nested passes reach neither rule, so the jet, the tower and the one-pass
+reverse sweep stay the fast paths.
 
 See [support-matrix.md](support-matrix.md) for the per-cell evidence.
 

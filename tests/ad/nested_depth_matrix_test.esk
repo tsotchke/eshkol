@@ -1,0 +1,291 @@
+;; tests/ad/nested_depth_matrix_test.esk
+;; Nested differentiation at depth 1..4, in every mode, on every engine.
+;;
+;; Every differentiation pass is a level with its own perturbation tag
+;; (ADR-0027); tags are 64-bit and never reused, so the order of two tags is
+;; the order their passes opened (ADR-0055). A vector-point operator inside a
+;; live pass is forward columns, and an inner pass that meets an enclosing
+;; reverse pass's tape nodes records its exact local linearisation against
+;; those nodes. This file checks the consequences:
+;;
+;;   1. the derivative of the derivative of ... f, to depth 4, on polynomials;
+;;   2. exp/sin compositions, against derivative-n, taylor and exact values;
+;;   3. closures and captured variables at depth 4;
+;;   4. perturbation-confusion controls at depth 2, 3 and 4;
+;;   5. mixed modes: reverse over forward, forward over reverse, reverse over
+;;      reverse over reverse, forward over hessian and jacobian, and a curried
+;;      gradient at a point computed from the enclosing pass's variables;
+;;   6. higher-order derivatives against exact Taylor coefficients, with
+;;      exactness preserved through every level;
+;;   7. more than 65536 passes in one process, then nesting again.
+;;
+;; Expected values are exact analytic results (SymPy for the transcendental
+;; rows). The file runs unchanged on the native JIT, AOT and the bytecode VM.
+
+(define failures 0)
+(define checks 0)
+
+(define (fail name got want)
+  (set! failures (+ failures 1))
+  (display "FAIL: ") (display name)
+  (display " got=") (display got)
+  (display " want=") (display want) (newline))
+
+(define (pass name)
+  (display "  ok   ") (display name) (newline))
+
+(define (near? x y tol) (<= (abs (- x y)) (* tol (+ 1.0 (abs y)))))
+
+(define (check name got want)
+  (set! checks (+ checks 1))
+  (if (and (number? got) (near? got want 1e-9))
+      (pass name)
+      (fail name got want)))
+
+;; exact equality AND exactness of the answer
+(define (check-exact name got want)
+  (set! checks (+ checks 1))
+  (if (and (number? got) (exact? got) (= got want))
+      (pass name)
+      (fail name got want)))
+
+(define (vref1 v) (vref v 0))
+(define (mref m i j) (tensor-ref m i j))
+
+;; d: the derivative operator as a function on functions
+(define (d f) (lambda (x) (derivative f x)))
+
+;; ===========================================================================
+;; 1. DEPTH 1..4 ON POLYNOMIALS
+;;    p(x) = x^6: p' = 6x^5, p'' = 30x^4, p''' = 120x^3, p'''' = 360x^2.
+;; ===========================================================================
+(define (p6 x) (* x x x x x x))
+(check "depth1 p6 @2" ((d p6) 2.0) 192.0)
+(check "depth2 p6 @2" ((d (d p6)) 2.0) 480.0)
+(check "depth3 p6 @2" ((d (d (d p6))) 2.0) 960.0)
+(check "depth4 p6 @2" ((d (d (d (d p6)))) 2.0) 1440.0)
+(check "depth4 p6 @2, explicit lambdas"
+       (derivative (lambda (a)
+         (derivative (lambda (b)
+           (derivative (lambda (c) (derivative p6 c)) b)) a)) 2.0)
+       1440.0)
+(check "depth4 equals derivative-n 4" ((d (d (d (d p6)))) 2.0) (derivative-n p6 2.0 4))
+(check "depth2 over derivative-n 2 = p''''" ((d (d (lambda (x) (derivative-n p6 x 2)))) 2.0) 1440.0)
+(check "derivative-n 2 over derivative-n 2" (derivative-n (lambda (x) (derivative-n p6 x 2)) 2.0 2) 1440.0)
+;; two enclosing first-order levels over an order-2 inner pass
+(check "two levels over order-2 inner"
+       (derivative (lambda (s)
+         (derivative (lambda (t) (derivative-n (lambda (u) (* u u u u)) (+ 1.0 s t) 2)) 0.0)) 0.0)
+       24.0)
+(check "three levels over order-2 inner"
+       (derivative (lambda (r)
+         (derivative (lambda (s)
+           (derivative (lambda (t) (derivative-n (lambda (u) (* u u u u u)) (+ 1.0 r s t) 2)) 0.0)) 0.0)) 0.0)
+       120.0)
+
+;; ===========================================================================
+;; 2. exp/sin COMPOSITIONS, depth 1..4, three spellings each
+;; ===========================================================================
+(define (es x) (exp (sin x)))
+(check "exp(sin) depth1" ((d es) 0.5) 1.4174242246593912)
+(check "exp(sin) depth2" ((d (d es)) 0.5) 0.46956439926573405)
+(check "exp(sin) depth3" ((d (d (d es))) 0.5) -2.3644414408552015)
+(check "exp(sin) depth4" ((d (d (d (d es)))) 0.5) -5.7077340361773342)
+(check "exp(sin) derivative-n 4" (derivative-n es 0.5 4) -5.7077340361773342)
+(check "exp(sin) 4! * taylor c4" (* 24 (list-ref (taylor es 0.5 4) 4)) -5.7077340361773342)
+(define (sx2 x) (sin (* x x)))
+(check "sin(x^2) depth3" ((d (d (d sx2))) 0.75) -7.6547192467290359)
+(check "sin(x^2) depth4" ((d (d (d (d sx2)))) 0.75) -26.539748776894975)
+(check "sin(x^2) depth2 over derivative-n 2" ((d (d (lambda (x) (derivative-n sx2 x 2)))) 0.75) -26.539748776894975)
+
+;; ===========================================================================
+;; 3. CLOSURES AND CAPTURES AT DEPTH 4
+;;    f(a,b,c,e) = a^2 b^3 c e^2:  d/da d/db d/dc d/de f = 2a 3b^2 2e = 1080
+;;    at a=2, b=3, c=4, e=5.
+;; ===========================================================================
+(check "four captured levels"
+       (derivative (lambda (a)
+         (derivative (lambda (b)
+           (derivative (lambda (c)
+             (derivative (lambda (e) (* a a b b b c e e)) 5.0)) 4.0)) 3.0)) 2.0)
+       1080.0)
+(define (make-cubic k) (lambda (x) (* k x x x)))
+(check "closure factory, depth 3 over the coefficient"
+       ((d (lambda (k) ((d (d (make-cubic (* k k)))) 1.0))) 3.0)
+       36.0)
+(define (compose f g) (lambda (x) (f (g x))))
+(check "composed closures, depth 2"
+       ((d (d (compose sin (lambda (x) (* 2.0 x))))) 0.25)
+       (* -4.0 (sin 0.5)))
+
+;; ===========================================================================
+;; 4. PERTURBATION CONFUSION
+;;    A carrier that confused two levels answers the wrong number in each row.
+;; ===========================================================================
+;; Siskind-Pearlmutter: d/dx [x * d/dy (x + y)] = d/dx [x] = 1
+(check "confusion depth2" ((d (lambda (x) (* x ((d (lambda (y) (+ x y))) 1.0)))) 1.0) 1.0)
+;; d/dx [x * d/dy [x y * d/dz (x + y + z)]] = d/dx [x^2] = 2
+(check "confusion depth3"
+       ((d (lambda (x) (* x ((d (lambda (y) (* x y ((d (lambda (z) (+ x y z))) 1.0)))) 1.0)))) 1.0)
+       2.0)
+;; d/dw [w * d/dx [w x * d/dy [x y w * d/dz (w + x + y + z)]]] = 6 at w = x = 1
+(check "confusion depth4"
+       ((d (lambda (w)
+              (* w ((d (lambda (x)
+                         (* w x ((d (lambda (y)
+                                      (* x y w ((d (lambda (z) (+ w x y z))) 1.0))))
+                                 1.0))))
+                    1.0))))
+        1.0)
+       6.0)
+;; the same derivative operator object at two levels
+(define (D f x) (derivative f x))
+(check "one operator object, two levels" (D (lambda (x) (D (lambda (y) (* x y)) 1.0)) 3.0) 1.0)
+;; an inner pass that does not depend on the outer variable is a constant
+(check "independent inner level" ((d (lambda (x) (+ (* x x) ((d (d p6)) 1.0)))) 3.0) 6.0)
+;; sibling passes over the same variable stay independent
+(check "sibling inner levels"
+       ((d (lambda (a) (+ ((d (lambda (b) (* a b b))) 1.0) ((d (lambda (c) (* a c c c))) 1.0)))) 5.0)
+       5.0)
+
+;; ===========================================================================
+;; 5. MIXED MODES
+;; ===========================================================================
+;; reverse over forward
+(define rof (gradient (lambda (v) (derivative (lambda (x) (* (vref1 v) x x x)) 2.0)) (vector 3.0)))
+(check "reverse over forward" (vref1 rof) 12.0)
+;; ... capturing a value the reverse pass computed from its variable
+(define rofc (gradient (lambda (v) (let ((p (* 2.0 (vref1 v)))) (derivative (lambda (x) (* p x x)) 2.0)))
+                       (vector 3.0)))
+(check "reverse over forward, computed capture" (vref1 rofc) 8.0)
+;; ... at a tensor point, where the outer pass runs on the reverse tape
+(define roft (gradient (lambda (v) (let ((p (* 2.0 (vref v 0)))) (derivative (lambda (x) (* p x x)) 2.0)))
+                       #(3.0)))
+(check "reverse over forward, tensor point, computed capture" (vref1 roft) 8.0)
+(define roft2 (gradient (lambda (v) (let ((p (* (vref v 0) (vref v 1)))) (derivative (lambda (x) (* p x x)) 1.0)))
+                        #(2.0 3.0)))
+(check "reverse over forward, 2-d tensor point [0]" (vref roft2 0) 6.0)
+(check "reverse over forward, 2-d tensor point [1]" (vref roft2 1) 4.0)
+;; ... through a first-class gradient operator
+(define (gradient-of f p) (gradient f p))
+(check "reverse over forward through a parameter, seed capture"
+       (vref1 (gradient-of (lambda (v) (derivative (lambda (x) (* (vref1 v) x x x)) 2.0)) #(3.0)))
+       12.0)
+(check "reverse over forward through a parameter, computed capture"
+       (vref1 (gradient-of (lambda (v) (let ((p (* 2.0 (vref1 v)))) (derivative (lambda (x) (* p x x)) 2.0))) #(3.0)))
+       8.0)
+;; jacobian over forward, computed capture: d/dv [2 (2v) x]_{x=2} = 8
+(check "jacobian over forward, computed capture"
+       (mref (jacobian (lambda (v) (vector (let ((p (* 2.0 (vref1 v)))) (derivative (lambda (x) (* p x x)) 2.0))))
+                       #(3.0))
+             0 0)
+       8.0)
+;; forward over reverse
+(check "forward over reverse"
+       (derivative (lambda (t) (vref1 (gradient (lambda (v) (* t (vref1 v) (vref1 v))) (vector 3.0)))) 2.0)
+       6.0)
+;; forward over forward over reverse: d/ds d/dt [2 s t v] at v = 3
+(check "forward over forward over reverse"
+       (derivative (lambda (s)
+         (derivative (lambda (t) (vref1 (gradient (lambda (v) (* s t (vref1 v) (vref1 v))) (vector 3.0)))) 2.0))
+         1.0)
+       6.0)
+;; reverse over reverse, and over reverse again: d^3/dw^3 w^4 = 24 w
+(define (w4 w) (* (vref1 w) (vref1 w) (vref1 w) (vref1 w)))
+(check "reverse over reverse"
+       (vref1 (gradient (lambda (v) (vref1 (gradient w4 v))) (vector 2.0)))
+       48.0)
+(check "reverse over reverse over reverse"
+       (vref1 (gradient (lambda (u) (vref1 (gradient (lambda (v) (vref1 (gradient w4 v))) u))) (vector 2.0)))
+       48.0)
+(check "reverse to depth 4"
+       (vref1 (gradient (lambda (r)
+                (vref1 (gradient (lambda (u)
+                         (vref1 (gradient (lambda (v) (vref1 (gradient w4 v))) u))) r)))
+              (vector 2.0)))
+       24.0)
+;; reverse over reverse over forward: d/du d/dv [2 v^2 x]_{x=1} = 4
+(check "reverse over reverse over forward"
+       (vref1 (gradient (lambda (u)
+                (vref1 (gradient (lambda (v) (derivative (lambda (x) (* (vref1 v) (vref1 v) x x)) 1.0)) u)))
+              (vector 2.0)))
+       4.0)
+;; forward over hessian: H00 = 2 t^2, d/dt = 4t = 12 at t = 3
+(check "forward over hessian"
+       (derivative (lambda (t) (mref (hessian (lambda (v) (* t t (vref1 v) (vref1 v))) (vector 1.0)) 0 0)) 3.0)
+       12.0)
+;; forward over jacobian: J = 2 t v, d/dt = 2 v = 4 at v = 2
+(check "forward over jacobian"
+       (derivative (lambda (t) (mref (jacobian (lambda (v) (vector (* t (vref1 v) (vref1 v)))) (vector 2.0)) 0 0)) 3.0)
+       4.0)
+;; a curried gradient under a reverse pass, at a point the pass computed:
+;; g(w) = 3 w^2, g(2v) = 12 v^2, so the Jacobian is 24 v = 24 at v = 1
+(define g3 (gradient (lambda (w) (* (vref1 w) (vref1 w) (vref1 w)))))
+(check "curried gradient at a computed point"
+       (mref (jacobian (lambda (v) (g3 (vector (* 2.0 (vref1 v))))) (vector 1.0)) 0 0)
+       24.0)
+;; g(w) = (w1, w0) at (v, 2v) is (2v, v): the Jacobian column is (2, 1)
+(define gsw (gradient (lambda (w) (* (vref w 0) (vref w 1)))))
+(define jsw (jacobian (lambda (v) (gsw (vector (vref1 v) (* 2.0 (vref1 v))))) (vector 1.0)))
+(check "curried gradient, mixed components [0]" (mref jsw 0 0) 2.0)
+(check "curried gradient, mixed components [1]" (mref jsw 1 0) 1.0)
+;; the curried Hessian agrees with the direct one
+(define (fxy v) (* (vref v 0) (vref v 0) (vref v 1)))
+(define gxy (gradient fxy))
+(define jh (jacobian gxy (vector 2.0 3.0)))
+(define hh (hessian fxy (vector 2.0 3.0)))
+(check "curried Hessian [0][1] = direct" (mref jh 0 1) (mref hh 0 1))
+(check "curried Hessian [0][0] = direct" (mref jh 0 0) (mref hh 0 0))
+
+;; ===========================================================================
+;; 6. EXACT TAYLOR COEFFICIENTS, EXACTNESS THROUGH EVERY LEVEL
+;;    h(x) = (1+x)^5 at 1/3: taylor coefficients 1024/243 1280/81 640/27
+;;    160/9 20/3; h'''' = 4! * 20/3 = 160.
+;;    r(x) = 1/(1-x) at 1/2: r'''' = 4!/(1/2)^5 = 768.
+;; ===========================================================================
+(define (h x) (* (+ 1 x) (+ 1 x) (+ 1 x) (+ 1 x) (+ 1 x)))
+(define (r x) (/ 1 (- 1 x)))
+(define ht (taylor h 1/3 4))
+(check-exact "taylor c0 exact" (list-ref ht 0) 1024/243)
+(check-exact "taylor c2 exact" (list-ref ht 2) 640/27)
+(check-exact "taylor c4 exact" (list-ref ht 4) 20/3)
+(check-exact "depth1 exact = 1! c1" ((d h) 1/3) 1280/81)
+(check-exact "depth2 exact = 2! c2" ((d (d h)) 1/3) 1280/27)
+(check-exact "depth3 exact = 3! c3" ((d (d (d h))) 1/3) 320/3)
+(check-exact "depth4 exact = 4! c4" ((d (d (d (d h)))) 1/3) 160)
+(check-exact "depth4 exact, rational function" ((d (d (d (d r)))) 1/2) 768)
+(check-exact "depth2 over derivative-n 2, exact" ((d (d (lambda (x) (derivative-n r x 2)))) 1/2) 768)
+(check-exact "exact x^6 depth4 @1/2" ((d (d (d (d p6)))) 1/2) 90)
+(check-exact "exact four captured levels"
+             (derivative (lambda (a)
+               (derivative (lambda (b)
+                 (derivative (lambda (c)
+                   (derivative (lambda (e) (* a a b b b c e e)) 1/5)) 1/4)) 1/3)) 1/2)
+             2/15)
+
+;; ===========================================================================
+;; 7. MORE THAN 65536 PASSES IN ONE PROCESS
+;;    Each call below opens several passes; 20000 calls cross 2^16 tags. The
+;;    nested answer must not change, and the accumulator stays a plain number.
+;; ===========================================================================
+(define (nested-pass) (derivative-n (lambda (a) (derivative-n (lambda (b) (* a a b b)) 1.0 2)) 1.0 2))
+(define (sweep n bad acc)
+  (if (= n 0)
+      (cons bad acc)
+      (let ((v (nested-pass)))
+        (sweep (- n 1) (if (= v 4.0) bad (+ bad 1)) (+ acc v)))))
+(define sw (sweep 20000 0 0))
+(set! checks (+ checks 1))
+(if (= (car sw) 0) (pass "20000 nested calls, every answer 4") (fail "20000 nested calls" (car sw) 0))
+(check "20000 nested calls, accumulated" (cdr sw) 80000.0)
+(check "nesting after the sweep" ((d (d (d (d p6)))) 2.0) 1440.0)
+(check "confusion after the sweep"
+       ((d (lambda (x) (* x ((d (lambda (y) (* x y ((d (lambda (z) (+ x y z))) 1.0)))) 1.0)))) 1.0)
+       2.0)
+
+(newline)
+(display "checks: ") (display checks) (newline)
+(if (= failures 0)
+    (begin (display "PASS: nested depth matrix") (newline) (exit 0))
+    (begin (display "TOTAL FAILURES: ") (display failures) (newline)
+           (display "FAIL: nested_depth_matrix_test") (newline) (exit 1)))

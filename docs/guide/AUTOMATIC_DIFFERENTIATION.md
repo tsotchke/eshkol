@@ -815,11 +815,42 @@ an exact answer while every operation is exactness-preserving.
 2
 ```
 
+Forward and reverse passes nest in every combination too. A vector-point
+`gradient`, `jacobian` or `hessian` inside a live pass is computed as forward
+columns, each a level of the enclosing passes, and an inner pass that meets an
+enclosing reverse pass's values records its exact linearisation against them
+([ADR-0055](../design/adr/0055-nested-differentiation-in-every-mode.md)):
+
+```scheme
+(define (w4 w) (* (vref w 0) (vref w 0) (vref w 0) (vref w 0)))
+;; reverse over reverse over reverse: d3/dw3 w^4 = 24 w at w = 2
+(display (vref (gradient (lambda (u) (vref (gradient (lambda (v) (vref (gradient w4 v) 0)) u) 0))
+               (vector 2.0)) 0)) (newline)
+;; forward over forward over reverse: d/ds d/dt [2 s t v] at v = 3
+(display (derivative (lambda (s)
+           (derivative (lambda (t)
+             (vref (gradient (lambda (v) (* s t (vref v 0) (vref v 0))) (vector 3.0)) 0)) 2.0)) 1.0)) (newline)
+;; reverse over forward, the inner pass capturing a value the outer pass computed
+(display (gradient (lambda (v) (let ((p (* 2.0 (vref v 0))))
+                                 (derivative (lambda (x) (* p x x)) 2.0)))
+                   #(3.0))) (newline)
+```
+```
+48.0
+6.0
+#(8.0)
+```
+
+Perturbation tags are 64-bit and never reused, so these hold however many
+passes a program has already run.
+
 Gated by `tests/ad/nested_towers_matrix_test.esk` (every operator and order
 pairing, the depth-3 order sweep, nesting through the point, exact seeds, and
 the perturbation-confusion controls), `tests/ad/nested_operator_matrix_test.esk`
-(the captured-variable matrix) and `tests/ad/ad_carrier_nesting_test.esk`, on
-the JIT and AOT lanes. The table, with the verified output of every row, is in
+(the captured-variable matrix), `tests/ad/ad_carrier_nesting_test.esk`, and
+`tests/ad/nested_depth_matrix_test.esk` (depth 4 in every mode, exact Taylor
+coefficients, and more than 65536 passes in one process, on JIT, AOT and the
+VM). The table, with the verified output of every row, is in
 [the AD support matrix](../reference/ad/support-matrix.md#nesting).
 
 
