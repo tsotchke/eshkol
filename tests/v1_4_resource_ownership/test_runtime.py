@@ -9,7 +9,97 @@ import threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CASES = ("loopback", "borrow", "both-branches", "scalar-shadow")
+CASES = ("loopback", "borrow", "both-branches", "scalar-shadow",
+         "file-borrow-scopes", "file-call-with-port", "file-loop-drain", "file-do-loop",
+         "file-for-each", "function-handles", "tail-recursive-drain", "dynamic-wind-close",
+         "guard-handle", "callcc-escape", "thread-join", "event-loop",
+         "lend-closes-on-raise", "lend-closes-on-escape")
+
+# Handle-family positives run with --strict-resources in a fresh working
+# directory: (fixture, input files, expected output marker, expected files).
+HANDLE_CASES = {
+    "file-borrow-scopes": ("positive-file-borrow-scopes", {}, "line one",
+                           {"strict-borrow.txt": "line one\n"}),
+    "file-call-with-port": ("positive-file-call-with-port", {"strict-port.txt": "ported\n"},
+                            "ported", {}),
+    "file-loop-drain": ("positive-file-loop-drain", {"strict-drain.txt": "a\nb\nc\n"}, "3", {}),
+    "file-do-loop": ("positive-file-do-loop", {}, None, {"strict-do.txt": "row\nrow\nrow\n"}),
+    "file-for-each": ("positive-file-for-each", {}, None, {"strict-each.txt": "a\nb\nc\n"}),
+    "function-handles": ("positive-function-handles", {}, None,
+                         {"strict-fn.txt": "hello strict\n"}),
+    "tail-recursive-drain": ("positive-tail-recursive-drain", {"strict-tail.txt": "x\ny\n"},
+                             "2", {}),
+    "dynamic-wind-close": ("positive-dynamic-wind-close", {"strict-wind.txt": "wound\n"},
+                           "wound", {}),
+    "guard-handle": ("positive-guard-handle", {"strict-guard.txt": "guarded\n"}, "stop", {}),
+    "callcc-escape": ("positive-callcc-escape", {"strict-callcc.txt": "head\n"}, "head", {}),
+    "thread-join": ("positive-thread-join", {}, "42", {}),
+    "event-loop": ("positive-event-loop", {}, None, {}),
+}
+
+# The runtime half of the borrow contract, observed in the default profile
+# (the observation itself keeps the loan past its scope, which the strict
+# profile rejects): a borrow scope closes its port when a raise or a
+# continuation escape leaves it.
+LEND_RUNTIME = {
+    "lend-closes-on-raise": """(define saved #f)
+(guard (e (#t (display (if (input-port-open? saved) "PORT-OPEN" "PORT-CLOSED")) (newline)))
+  (call-with-input-file "strict-lend.txt"
+    (lambda (p) (set! saved p) (raise 'boom))))
+""",
+    "lend-closes-on-escape": """(define saved #f)
+(call/cc
+  (lambda (k)
+    (call-with-input-file "strict-lend.txt"
+      (lambda (p) (set! saved p) (k 0)))))
+(display (if (input-port-open? saved) "PORT-OPEN" "PORT-CLOSED"))
+(newline)
+""",
+}
+
+
+def run_in_directory(runner: Path, lib_dir: Path, env: dict, source: Path, mode: str,
+                     work: Path, strict: bool) -> subprocess.CompletedProcess:
+    flags = ["--strict-resources"] if strict else []
+    if mode == "jit":
+        return subprocess.run([str(runner), *flags, "-r", str(source), "-L", str(lib_dir)],
+                              env=env, cwd=work, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=60)
+    executable = work / "strict-handle-aot"
+    compiled = subprocess.run([str(runner), *flags, "-O0", "-o", str(executable), str(source),
+                               "-L", str(lib_dir)], env=env, cwd=work, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    if compiled.returncode != 0:
+        raise RuntimeError(f"AOT compile failed ({compiled.returncode}):\n{compiled.stdout}")
+    return subprocess.run([str(executable)], env=env, cwd=work, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+
+
+def run_handle_case(case: str, runner: Path, lib_dir: Path, env: dict):
+    for mode in ("jit", "aot"):
+        with tempfile.TemporaryDirectory(prefix=f"strict-handles-{mode}-") as temp:
+            work = Path(temp)
+            if case in LEND_RUNTIME:
+                (work / "strict-lend.txt").write_text("lent\n")
+                source = work / "lend.esk"
+                source.write_text(LEND_RUNTIME[case])
+                completed = run_in_directory(runner, lib_dir, env, source, mode, work, False)
+                if completed.returncode != 0 or "PORT-CLOSED" not in completed.stdout:
+                    raise RuntimeError(f"{case} {mode} ({completed.returncode}):\n{completed.stdout}")
+                print(f"PASS {case} {mode} marker=PORT-CLOSED")
+                continue
+            fixture, inputs, marker, outputs = HANDLE_CASES[case]
+            for name, text in inputs.items():
+                (work / name).write_text(text)
+            source = HERE / "fixtures" / f"{fixture}.esk"
+            completed = run_in_directory(runner, lib_dir, env, source, mode, work, True)
+            if completed.returncode != 0 or (marker and marker not in completed.stdout):
+                raise RuntimeError(f"{case} {mode} ({completed.returncode}):\n{completed.stdout}")
+            for name, text in outputs.items():
+                actual = (work / name).read_text() if (work / name).exists() else None
+                if actual != text:
+                    raise RuntimeError(f"{case} {mode}: {name} holds {actual!r}, expected {text!r}")
+            print(f"PASS {case} {mode} marker={marker or 'files'}")
 
 
 class PongHandler(socketserver.BaseRequestHandler):
@@ -62,6 +152,10 @@ def run_case(case: str, runner: Path, lib_dir: Path):
     env["ESHKOL_LIB_DIR"] = str(lib_dir)
     env["ESHKOL_PATH"] = os.pathsep.join((str(source_root / "lib"), str(module_root)))
     env["ESHKOL_JIT_CACHE"] = "0"
+
+    if case in HANDLE_CASES or case in LEND_RUNTIME:
+        run_handle_case(case, runner, lib_dir, env)
+        return
 
     if case == "loopback":
         template = (HERE / "fixtures" / "positive-loopback.esk").read_text()

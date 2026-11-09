@@ -54,6 +54,7 @@ documentation hub lists the same records in
 | [0026](0026-syntax-rules-one-engine-one-renaming-rule.md) | One `syntax-rules` engine and one renaming rule | Accepted — implemented (SW-192) | 2026-09-22 | v1.3.5 |
 | [0027](0027-recursive-taylor-level-carrier.md) | Nested differentiation uses one recursive Taylor level carrier | Accepted — implemented on native JIT and AOT | 2026-09-22 | v1.3.5 |
 | [0028](0028-one-number-syntax-recognizer.md) | One number-syntax recognizer for every reader | Accepted — implemented on native JIT, AOT and the bytecode VM | 2026-09-22 | v1.3.5 |
+| [0055](0055-linear-handle-typestate.md) | Linear handle typestate for the strict resource profile | Proposed | 2026-11-08 | `inc/eshkol/strict_resource_contracts.h`, the ownership checker in `exe/eshkol-run.cpp` (`--strict-resources`), borrow-scope cleanup frames in `lib/core/runtime_continuations.cpp`; corpus `tests/v1_4_resource_ownership/` |
 
 ## Numbering
 

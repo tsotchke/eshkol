@@ -1,0 +1,5 @@
+(require core.tls)
+(define ctx (tls-client-context #f))
+(if (tls-error? ctx)
+    #f
+    (begin (tls-context-close ctx) (tls-listen ctx "127.0.0.1" 0)))

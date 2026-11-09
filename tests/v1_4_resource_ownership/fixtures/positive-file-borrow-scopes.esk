@@ -1,0 +1,11 @@
+;; call-with-output-file and call-with-input-file lend a port for one scope
+;; and close it on every exit; the lambda only uses the loan.
+(call-with-output-file "strict-borrow.txt"
+  (lambda (out)
+    (write-string "line one" out)
+    (newline out)))
+(define first-line
+  (call-with-input-file "strict-borrow.txt"
+    (lambda (in) (read-line in))))
+(display first-line)
+(newline)

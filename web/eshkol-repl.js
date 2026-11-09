@@ -2318,6 +2318,10 @@ class EshkolRepl {
                 eshkol_error_object_message:   (_obj, _out) => {},
                 eshkol_error_object_irritants: (_obj, _out) => {},
                 eshkol_unwind_dynamic_wind: () => {},
+                // Borrow-scope cleanup frames (call-with-port and friends) degrade like
+                // the other unwinding hooks: normal return still closes the port.
+                eshkol_push_dynamic_wind_cleanup: () => {},
+                eshkol_runtime_close_port_cleanup: () => {},
                 // Multi-shot re-entry (eshkol_continuation_resume) and its
                 // rerooting companion depend on the same native longjmp this
                 // build already can't provide, so they degrade the same way:

@@ -1,0 +1,3 @@
+(require agent.subprocess)
+(define proc (process-spawn-argv (list "true") #f))
+(if proc (process-wait proc 1000) #f)

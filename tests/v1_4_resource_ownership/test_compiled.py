@@ -26,6 +26,22 @@ POSITIVE = (
     "positive-resource-move-to-owner",
     "positive-udp-bind-close",
     "positive-safe-scalar-conversion",
+    "positive-file-borrow-scopes",
+    "positive-file-call-with-port",
+    "positive-file-branches",
+    "positive-file-loop-drain",
+    "positive-file-do-loop",
+    "positive-file-iteration-scoped",
+    "positive-file-for-each",
+    "positive-function-handles",
+    "positive-tail-recursive-drain",
+    "positive-dynamic-wind-close",
+    "positive-guard-handle",
+    "positive-callcc-escape",
+    "positive-thread-join",
+    "positive-event-loop",
+    "positive-tls-context",
+    "positive-process",
 )
 NEGATIVE = (
     "negative-leak",
@@ -78,7 +94,76 @@ NEGATIVE = (
     "negative-tcp-accept-wrong-kind",
     "negative-forged-safe-scalar-extern",
     "negative-imported-safe-scalar-collision",
+    "negative-file-unclosed",
+    "negative-file-one-branch-unclosed",
+    "negative-file-two-arm-if",
+    "negative-file-double-close",
+    "negative-file-use-after-close",
+    "negative-file-close-while-borrowed",
+    "negative-file-borrow-close-owner",
+    "negative-file-borrow-escape",
+    "negative-call-with-port-reuse",
+    "negative-wrong-kind-close",
+    "negative-loop-closes-outer",
+    "negative-loop-iteration-unclosed",
+    "negative-do-loop-closes-outer",
+    "negative-loop-nontail",
+    "negative-for-each-closes",
+    "negative-function-unclosed",
+    "negative-function-double-close",
+    "negative-function-result-dropped",
+    "negative-closure-escape",
+    "negative-guard-loses-local",
+    "negative-raise-before-close",
+    "negative-callcc-reentry",
+    "negative-callcc-open-on-escape",
+    "negative-dynamic-wind-double-close",
+    "negative-thread-captures-handle",
+    "negative-thread-not-joined",
+    "negative-mutex-not-destroyed",
+    "negative-event-loop-unrefined",
+    "negative-event-loop-unclosed",
+    "negative-process-unclosed",
+    "negative-tls-unclosed",
+    "negative-tls-use-after-close",
 )
+
+# Every handle-family falsifier must fail for its own reason, not for an
+# unrelated diagnostic: the expected text is part of the contract.
+EXPECTED_DIAGNOSTIC = {
+    "negative-file-unclosed": "resource 'in' may still be live at scope exit",
+    "negative-file-one-branch-unclosed": "resource 'in' may still be live at scope exit",
+    "negative-file-two-arm-if": "resource 'in' may still be live at scope exit",
+    "negative-file-double-close": "duplicate close of resource 'out'",
+    "negative-file-use-after-close": "use of closed or moved resource 'in'",
+    "negative-file-close-while-borrowed": "cannot close borrowed resource 'p'",
+    "negative-file-borrow-close-owner": "cannot consume borrowed resource 'in'",
+    "negative-file-borrow-escape": "borrowed resource 'p' escapes its borrow scope",
+    "negative-call-with-port-reuse": "use of closed or moved resource 'in'",
+    "negative-wrong-kind-close": "wrong resource kind passed to close-input-port",
+    "negative-loop-closes-outer": "leaves handle 'in' closed on its back edge",
+    "negative-loop-iteration-unclosed": "acquired in an iteration of loop 'loop'",
+    "negative-do-loop-closes-outer": "do loop leaves handle 'out' closed on its back edge",
+    "negative-loop-nontail": "call to loop 'loop' is not in tail position",
+    "negative-for-each-closes": "runs zero or more times but changes handle 'out'",
+    "negative-function-unclosed": "in 'peek-first'",
+    "negative-function-double-close": "duplicate close of resource 'out'",
+    "negative-function-result-dropped": "factory result from 'open-log' must be bound directly",
+    "negative-closure-escape": "is captured by a closure whose calls the checker cannot see",
+    "negative-guard-loses-local": "is still open when an exception raised by read-line leaves its scope",
+    "negative-raise-before-close": "terminal control transfer 'raise' occurs while resource 'in'",
+    "negative-callcc-reentry": "continuation 'k' escapes as a value",
+    "negative-callcc-open-on-escape": "is still open when continuation 'k' leaves its scope",
+    "negative-dynamic-wind-double-close": "duplicate close of resource 'in'",
+    "negative-thread-captures-handle": "is captured by a thread body",
+    "negative-thread-not-joined": "resource 't' may still be live at scope exit",
+    "negative-mutex-not-destroyed": "resource 'm' may still be live at scope exit",
+    "negative-event-loop-unrefined": "must be refined with a truth test",
+    "negative-event-loop-unclosed": "resource 'loop' may still be live at scope exit",
+    "negative-process-unclosed": "resource 'proc' may still be live at scope exit",
+    "negative-tls-unclosed": "resource 'ctx' may still be live at scope exit",
+    "negative-tls-use-after-close": "use of closed or moved resource 'ctx'",
+}
 
 
 def main():
@@ -114,6 +199,9 @@ def main():
                                        stderr=subprocess.STDOUT, text=True, timeout=90)
             is_negative = name in NEGATIVE
             diagnostic = "Strict resource error:" in completed.stdout
+            expected = EXPECTED_DIAGNOSTIC.get(name)
+            if expected is not None:
+                diagnostic = diagnostic and expected in completed.stdout
             passed = (completed.returncode == 1 and diagnostic and not artifact.exists()) if is_negative \
                      else (completed.returncode == 0 and artifact.exists())
             results.append((name, passed, completed.returncode, diagnostic, artifact.exists(), completed.stdout))
@@ -131,6 +219,15 @@ def main():
                 results.append(("reject-mixed-opaque-object", mixed.returncode == 1 and
                                 mixed_diagnostic and not mixed_output.exists(), mixed.returncode,
                                 mixed_diagnostic, mixed_output.exists(), mixed.stdout))
+            vm_output = out_dir / "strict-unsupported.eskb"
+            vm = subprocess.run(
+                [runner, "--strict-resources", "--profile", "hosted-vm", "-o", str(vm_output),
+                 str(FIXTURES / f"{POSITIVE[0]}.esk")], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+            vm_diagnostic = "supported only by native compilation" in vm.stdout
+            results.append(("reject-vm-profile", vm.returncode == 1 and
+                            vm_diagnostic and not vm_output.exists(), vm.returncode,
+                            vm_diagnostic, vm_output.exists(), vm.stdout))
             wasm_output = out_dir / "strict-unsupported.wasm"
             wasm = subprocess.run(
                 [runner, "--strict-resources", "--wasm", "-o", str(wasm_output),

@@ -1,0 +1,6 @@
+;; A do loop writes through the port on every iteration and leaves it open.
+(define out (open-output-file "strict-do.txt"))
+(do ((i 0 (+ i 1)))
+    ((= i 3) (close-port out))
+  (write-string "row" out)
+  (newline out))

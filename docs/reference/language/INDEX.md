@@ -39,6 +39,7 @@ it is called out explicitly.
 | 17 | Type annotations and the gradual checker: what is checked where, function types, branch joins, loop typing, diagnostics | [../../guide/GRADUAL_TYPING.md](../../guide/GRADUAL_TYPING.md) |
 | 18 | Macros: `define-syntax`, `let-syntax`, `letrec-syntax`, `syntax-rules`, hygiene | [macros.md](macros.md) |
 | 19 | Explicit compiler differentiation graph: scalar admission and numeric lowering | [differentiation.md](differentiation.md) |
+| 20 | Linear handles: `open → borrowed → closed`, the borrow pattern, `--strict-resources` | [linear-handles.md](linear-handles.md) |
 
 ## Known-issue conventions
 

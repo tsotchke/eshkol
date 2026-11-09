@@ -13538,14 +13538,39 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
             --runner $<TARGET_FILE:eshkol-run>
             --lib-dir ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(strict_resource_profile_compiled PROPERTIES
-        TIMEOUT 300 LABELS "ownership;strict-resources;regression")
+        TIMEOUT 900 LABELS "ownership;strict-resources;regression")
     add_test(NAME strict_resource_profile_runtime
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_runtime.py
             --runner $<TARGET_FILE:eshkol-run>
-            --lib-dir ${CMAKE_CURRENT_BINARY_DIR})
+            --lib-dir ${CMAKE_CURRENT_BINARY_DIR}
+            --case loopback --case borrow --case both-branches --case scalar-shadow)
     set_tests_properties(strict_resource_profile_runtime PROPERTIES
         TIMEOUT 120 LABELS "ownership;strict-resources;runtime;network")
+    # Every other handle family (file ports, threads, the event loop) on JIT
+    # and AOT, plus the borrow scopes' close-on-raise and close-on-escape.
+    set(_strict_handle_cases
+        file-borrow-scopes file-call-with-port file-loop-drain file-do-loop
+        file-for-each function-handles tail-recursive-drain dynamic-wind-close
+        guard-handle callcc-escape thread-join event-loop
+        lend-closes-on-raise lend-closes-on-escape)
+    set(_strict_handle_case_args)
+    foreach(_case IN LISTS _strict_handle_cases)
+        list(APPEND _strict_handle_case_args --case ${_case})
+    endforeach()
+    add_test(NAME strict_resource_handles_runtime
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_runtime.py
+            --runner $<TARGET_FILE:eshkol-run>
+            --lib-dir ${CMAKE_CURRENT_BINARY_DIR}
+            ${_strict_handle_case_args})
+    set_tests_properties(strict_resource_handles_runtime PROPERTIES
+        TIMEOUT 900 LABELS "ownership;strict-resources;runtime")
+    add_test(NAME strict_resource_contract_pins
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/strict_resource_pins.py --check)
+    set_tests_properties(strict_resource_contract_pins PROPERTIES
+        TIMEOUT 60 LABELS "ownership;strict-resources;regression")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND

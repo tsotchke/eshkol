@@ -1,0 +1,7 @@
+(require core.tls)
+;; A TLS context is refined with tls-error? and closed on its open path.
+(define ctx (tls-client-context #f))
+(if (tls-error? ctx)
+    (display "no tls")
+    (tls-context-close ctx))
+(newline)

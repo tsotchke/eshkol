@@ -1,0 +1,6 @@
+;; The escape leaves the let while its port is still open.
+(call/cc
+  (lambda (k)
+    (let ((in (open-input-file "strict-escape-open.txt")))
+      (if (eof-object? (peek-char in)) (k #f) #t)
+      (close-port in))))

@@ -4323,7 +4323,9 @@ private:
         Frame frame;
         frame.kind = kind;
         frame.id = next_frame_id_++;
-        frame.depth = scope_stack_.size();
+        // The loop's own scope is checked on the back edge: a handle defined
+        // directly in the body must be closed before the next iteration.
+        frame.depth = scope_stack_.empty() ? 0 : scope_stack_.size() - 1;
         frame.loop_name = name;
         frame.loop_binding_id = binding_id;
         for (const auto& scope : scope_stack_)
@@ -8676,7 +8678,8 @@ int main(int argc, char **argv)
         return 1;
     }
     if (strict_resources && vm_only_profile) {
-        eshkol_error("--strict-resources is currently supported only by native compilation");
+        eshkol_error("--strict-resources is currently supported only by native compilation "
+                     "(JIT -r and AOT); the bytecode VM profile is refused rather than run unchecked");
         return 1;
     }
     if (strict_resources && eval_expr) {

@@ -1,0 +1,7 @@
+;; Each iteration opens a port and starts the next iteration with it open.
+(let loop ((i 0))
+  (if (< i 3)
+      (let ((in (open-input-file "strict-iter-open.txt")))
+        (read-line in)
+        (loop (+ i 1)))
+      #t))

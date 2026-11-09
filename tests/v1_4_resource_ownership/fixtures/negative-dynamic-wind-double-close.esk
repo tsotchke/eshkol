@@ -1,0 +1,6 @@
+;; The body closes the port and the after thunk closes it again.
+(define in (open-input-file "strict-wind-double.txt"))
+(dynamic-wind
+  (lambda () #f)
+  (lambda () (close-port in))
+  (lambda () (close-port in)))

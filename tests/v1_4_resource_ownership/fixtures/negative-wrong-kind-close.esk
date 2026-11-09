@@ -1,0 +1,3 @@
+;; close-input-port on an output port is the wrong handle kind.
+(define out (open-output-file "strict-kind.txt"))
+(close-input-port out)
