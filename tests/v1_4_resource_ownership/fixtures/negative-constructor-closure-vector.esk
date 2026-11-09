@@ -1,0 +1,3 @@
+;; A closure that captures a handle constructor is stored in a vector.
+(define slots (make-vector 1 #f))
+(vector-set! slots 0 (lambda (path) (open-input-file path)))

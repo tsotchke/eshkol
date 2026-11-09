@@ -3042,6 +3042,12 @@ private:
             if (info && (info->resource_kind != ResourceKind::NONE ||
                          info->callable_effect != CallableEffect::NONE))
                 captures.insert(info->binding_id);
+            if (!info) {
+                // An unshadowed builtin with a handle contract (open-input-file,
+                // make-event-loop, ...) is captured like a contract binding.
+                const sr::Contract* builtin = sr::findBuiltinContract(name.c_str());
+                if (builtin && contractHasHandleEffect(builtin)) captured_builtin_contracts_.insert(name);
+            }
             return;
         }
         if (node->type == ESHKOL_CONS) {
@@ -3209,9 +3215,14 @@ private:
             lexical.back().insert(lambda->operation.lambda_op.rest_param);
         std::set<uint64_t> captures;
         capture_scan_truncated_ = false;
+        captured_builtin_contracts_.clear();
         collectCapturedResourceIds(lambda->operation.lambda_op.body, lexical, captures);
         if (capture_scan_truncated_)
             reportResourceError("closure capture analysis exceeded the checked depth; closure effects are unsupported");
+        if (reject_callable_contract_captures)
+            for (const auto& name : captured_builtin_contracts_)
+                reportResourceError("resource contract callable '" + name +
+                    "' is captured by a closure; closure effects are unsupported");
         for (uint64_t id : captures) {
             std::string name;
             VariableInfo* info = findBindingById(id, &name);
@@ -3647,9 +3658,9 @@ private:
             return info->resource_kind;
         }
         if (!(spec.accepts & sr::bit(info->resource_kind))) {
-            reportResourceError("wrong resource kind passed to " + operation + ": '" + name +
-                "' is a " + kindText(info->resource_kind) + ", " + operation + " expects a " +
-                acceptedText(spec.accepts));
+            reportResourceError("resource kind mismatch: " + operation + " expects " +
+                acceptedText(spec.accepts) + ", got '" + name + "' (" +
+                kindText(info->resource_kind) + ")");
         }
         return info->resource_kind;
     }
@@ -3665,9 +3676,9 @@ private:
         }
         allowed_resource_use_nodes_.insert(argument);
         if (!(contract.handle_args[0].accepts & sr::bit(info->resource_kind))) {
-            reportResourceError("wrong resource kind passed to " + operation + " for '" + name +
-                "': it is a " + kindText(info->resource_kind) + ", " + operation + " closes a " +
-                acceptedText(contract.handle_args[0].accepts));
+            reportResourceError("resource kind mismatch: " + operation + " expects " +
+                acceptedText(contract.handle_args[0].accepts) + ", got '" + name + "' (" +
+                kindText(info->resource_kind) + ")");
             return;
         }
         if (info->lent) {
@@ -4605,6 +4616,7 @@ private:
     int handler_depth_ = 0;
     uint64_t callable_epoch_ = 0;
     bool capture_scan_truncated_ = false;
+    std::set<std::string> captured_builtin_contracts_;
     bool active_resource_effects_enabled_ = true;
     WorkItem astChild(const eshkol_ast_t* node) const {
         return WorkItem::astNode(node, active_resource_effects_enabled_);

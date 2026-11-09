@@ -21,13 +21,13 @@ open ──borrow──▶ borrowed ──loan ends──▶ open ──close─
 ```
 
 Under `eshkol-run --strict-resources`, the compiler checks that typestate on
-every path it can see and refuses to produce an artifact when a rule is broken:
+every path it can see and refuses to produce an artifact when a rule does not hold:
 
 - a handle that is still open when its scope ends (an **unclosed handle**);
 - a **double close**;
 - a **use after close**, including a use on a path where it may be closed;
 - a **close while borrowed**, and a borrowed handle that **escapes** its loan;
-- a handle passed to an operation of the wrong kind.
+- a handle passed to an operation that expects a different kind.
 
 The default profile does not run these rules. There, the runtime handle
 registry still refuses a double close or a use after close when it happens,

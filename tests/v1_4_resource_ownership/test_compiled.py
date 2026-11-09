@@ -44,6 +44,7 @@ POSITIVE = (
     "positive-tls-context",
     "positive-process",
     "positive-callee-closes-then-exits",
+    "positive-constructor-closure-unused",
 )
 NEGATIVE = (
     "negative-leak",
@@ -105,7 +106,7 @@ NEGATIVE = (
     "negative-file-borrow-close-owner",
     "negative-file-borrow-escape",
     "negative-call-with-port-reuse",
-    "negative-wrong-kind-close",
+    "negative-kind-mismatch-close",
     "negative-loop-closes-outer",
     "negative-loop-iteration-unclosed",
     "negative-do-loop-closes-outer",
@@ -129,6 +130,11 @@ NEGATIVE = (
     "negative-tls-unclosed",
     "negative-tls-use-after-close",
     "negative-callee-exits-with-local",
+    "negative-constructor-closure-higher-order",
+    "negative-constructor-closure-set-global",
+    "negative-constructor-closure-vector",
+    "negative-constructor-closure-returned",
+    "negative-constructor-closure-exported",
 )
 
 # Every handle-family falsifier must fail for its own reason, not for an
@@ -143,7 +149,7 @@ EXPECTED_DIAGNOSTIC = {
     "negative-file-borrow-close-owner": "cannot consume borrowed resource 'in'",
     "negative-file-borrow-escape": "borrowed resource 'p' escapes its borrow scope",
     "negative-call-with-port-reuse": "use of closed or moved resource 'in'",
-    "negative-wrong-kind-close": "wrong resource kind passed to close-input-port",
+    "negative-kind-mismatch-close": "resource kind mismatch: close-input-port expects input file port, got 'out'",
     "negative-loop-closes-outer": "leaves handle 'in' closed on its back edge",
     "negative-loop-iteration-unclosed": "acquired in an iteration of loop 'loop'",
     "negative-do-loop-closes-outer": "do loop leaves handle 'out' closed on its back edge",
@@ -166,6 +172,11 @@ EXPECTED_DIAGNOSTIC = {
     "negative-process-unclosed": "resource 'proc' may still be live at scope exit",
     "negative-tls-unclosed": "resource 'ctx' may still be live at scope exit",
     "negative-tls-use-after-close": "use of closed or moved resource 'ctx'",
+    "negative-constructor-closure-higher-order": "procedure 'opener' returns an owned handle to a higher-order operation that does not track it",
+    "negative-constructor-closure-set-global": "resource contract callable 'open-input-file' is captured by a closure",
+    "negative-constructor-closure-vector": "resource contract callable 'open-input-file' is captured by a closure",
+    "negative-constructor-closure-returned": "resource contract callable 'open-input-file' is captured by a closure",
+    "negative-constructor-closure-exported": "factory result from 'opener' must be bound directly",
     "negative-callee-exits-with-local": "call to 'quit-now' may end the process while resource 'in'",
 }
 

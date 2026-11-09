@@ -13538,7 +13538,10 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
             --runner $<TARGET_FILE:eshkol-run>
             --lib-dir ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(strict_resource_profile_compiled PROPERTIES
-        TIMEOUT 1800 LABELS "ownership;strict-resources;regression")
+        TIMEOUT 300 LABELS "ownership;strict-resources;regression")
+    # The corpus is about 115 independent compiles at 10-13 s each on a loaded
+    # build host; four parallel workers measured 516 s there.
+    set_tests_properties(strict_resource_profile_compiled PROPERTIES TIMEOUT 1800)
     add_test(NAME strict_resource_profile_runtime
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_runtime.py
@@ -13570,7 +13573,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/strict_resource_pins.py --check)
     set_tests_properties(strict_resource_contract_pins PROPERTIES
-        TIMEOUT 60 LABELS "ownership;strict-resources;regression")
+        TIMEOUT 60 LABELS "ownership;strict-resources")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
