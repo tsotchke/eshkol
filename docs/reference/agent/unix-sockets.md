@@ -6,7 +6,7 @@ described in Selene `apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md`
 scaffolding below, and Gabe Kahen writes the socket core that makes them
 pass. Nothing on this page is implemented yet. `lib/agent/unix_socket.esk`
 currently raises `"Planned for v1.4.0"` from every operation, via the
-scaffold in `lib/core/unix_socket_stream_stub.c`.
+scaffold in `lib/agent/c/agent_unix_socket_stream.c`.
 
 ```scheme
 (require agent.unix_stream_socket)

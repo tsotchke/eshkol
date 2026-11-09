@@ -8039,17 +8039,19 @@ endif()
 
 # Unix-domain stream socket scaffold (paired build: this lane writes tests,
 # stubs, and docs; Gabe Kahen owns the socket core). Every native fixture
-# links the scaffold stub (lib/core/unix_socket_stream_stub.c), which
-# performs no socket I/O and reports ESHKOL_UNIX_STREAM_SOCKET_PLANNED for every
-# call. The acceptance cases are registered under CTest label
-# "ipc-unix-pending" and DISABLED so they never affect the default suite; a
-# separate, always-on contract test confirms they exist and that the stub
-# reports the planned result.
+# links the scaffold stub (lib/agent/c/agent_unix_socket_stream.c -- kept
+# under lib/agent/c/, not lib/core/, so it is excluded from the top-level
+# lib/*.c* glob the same way agent_subprocess.c is, and only ever linked
+# once, explicitly, per target), which performs no socket I/O and reports
+# ESHKOL_UNIX_STREAM_SOCKET_PLANNED for every call. The acceptance cases are
+# registered under CTest label "ipc-unix-pending" and DISABLED so they never
+# affect the default suite; a separate, always-on contract test confirms
+# they exist and that the stub reports the planned result.
 if(ESHKOL_BUILD_TESTS AND UNIX)
     find_package(Threads REQUIRED)
     add_executable(eshkol-unix-stream-socket-stream-test
         tests/agent/unix_socket_stream_test.c
-        lib/core/unix_socket_stream_stub.c)
+        lib/agent/c/agent_unix_socket_stream.c)
     target_compile_features(eshkol-unix-stream-socket-stream-test PRIVATE c_std_11)
     target_compile_definitions(eshkol-unix-stream-socket-stream-test PRIVATE _GNU_SOURCE)
     target_include_directories(eshkol-unix-stream-socket-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -8074,7 +8076,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
 
     add_executable(eshkol-unix-stream-socket-stub-contract-test
         tests/agent/unix_socket_stream_stub_contract_test.c
-        lib/core/unix_socket_stream_stub.c)
+        lib/agent/c/agent_unix_socket_stream.c)
     target_compile_features(eshkol-unix-stream-socket-stub-contract-test PRIVATE c_std_11)
     target_include_directories(eshkol-unix-stream-socket-stub-contract-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     add_test(NAME agent-unix-stream-socket-stub-contract
@@ -12444,12 +12446,7 @@ if(ESHKOL_BUILD_AGENT_FFI)
             ${AGENT_FFI_DIR}/agent_subprocess_stream_binding.c
             ${AGENT_FFI_DIR}/agent_sse.c
             ${AGENT_FFI_DIR}/agent_unix_socket_binding.c
-            # lib/core/unix_socket_stream_stub.c is NOT listed here: it is a
-            # lib/core/*.c* file, so the top-level file(GLOB_RECURSE LIB_SRC
-            # "lib/*.c*") already compiles it into eshkol-static (only
-            # lib/agent/.* is excluded from that glob). Listing it again
-            # here would double-define every eshkol_unix_stream_socket_*
-            # symbol once both libraries are linked together.
+            ${AGENT_FFI_DIR}/agent_unix_socket_stream.c
         )
 
         # HTTP server / WebSocket / local-socket primitives.  The C source

@@ -6,7 +6,7 @@
 
 /* Eshkol bytevector payloads contain an i64 length followed by their bytes.
  * These bindings only translate the bytevector boundary; they never touch a
- * socket themselves (see lib/core/unix_socket_stream_stub.c). */
+ * socket themselves (see lib/agent/c/agent_unix_socket_stream.c). */
 
 int64_t eshkol_unix_stream_socket_read_bytevector(int64_t id, void *buffer,
                                             int64_t start, int64_t count) {
