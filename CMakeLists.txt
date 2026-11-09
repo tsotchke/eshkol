@@ -14521,6 +14521,19 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# Socket leases: partial writes, reset, deadlines, cancellation, shutdown,
+# truncation and a constant descriptor count across 1,000 cycles.
+if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_lease_test tests/network/net_lease_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(net_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_lease_test PRIVATE Threads::Threads)
+    add_test(NAME net_lease_test COMMAND net_lease_test)
+    set_tests_properties(net_lease_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+        LABELS "network;ownership"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
     foreach(reverse_fixture IN ITEMS incremental_reverse incremental_reverse_alias_seed certified_nonlinear certified_nonlinear_independent certified_continuation certified_continuation_independent)
         add_test(NAME ${reverse_fixture}_vm
