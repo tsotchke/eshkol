@@ -602,7 +602,7 @@
       "output_lines": 57
     },
     "examples/mathematics_cohomology_rings_cup_products.esk": {
-      "source_sha256": "8924c4013f4c33a930c262f4015217a29fc78c812a65c6060e9e5e91e2885c24",
+      "source_sha256": "477404079549a166a41dba2c054c3e32c5fcb954ac49364a78174a2a6fbef207",
       "jit": {
         "status": "NOT-RUN"
       },
@@ -1203,7 +1203,7 @@
       "output_lines": 10
     },
     "examples/mathematics_group_cohomology_order_eight.esk": {
-      "source_sha256": "bb98e994c63e4b49bd0abcdcfc96466858787df0b98e96917e610012d549eb91",
+      "source_sha256": "dade8fe72b273753f87915cb6db66580e7ddc7e4763a874da9f552c2650792ff",
       "jit": {
         "status": "NOT-RUN"
       },

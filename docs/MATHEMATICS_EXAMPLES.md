@@ -422,7 +422,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Cup products and Bockstein on finite-group nerves
 
-Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_cohomology_rings_cup_products.esk#L1). SHA-256: `8924c4013f4c33a930c262f4015217a29fc78c812a65c6060e9e5e91e2885c24`.
+Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_cohomology_rings_cup_products.esk#L1). SHA-256: `477404079549a166a41dba2c054c3e32c5fcb954ac49364a78174a2a6fbef207`.
 
 **Published result:** The classical ring structures H*(BZ/2; F₂) = F₂[x] and H*(BZ/p; F_p) = Λ[y] ⊗ F_p[x₂] for odd p, with x₂ = β(y) (Hatcher, Example 3.41 and §3.E), the Bockstein identity Sq¹ = β, and de Wild Propitius's identification (1995) of the type I, II, III Dijkgraaf–Witten cocycles on (Z/2)³ with cubic monomials, whose 7 independent classes give H³((Z/2)³; Q/Z) ≅ (Z/2)⁷.
 
@@ -448,7 +448,7 @@ Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_
 
 **Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_cup_products.esk#L1), [line 64](../examples/mathematics_cohomology_rings_cup_products.esk#L64), [line 221](../examples/mathematics_cohomology_rings_cup_products.esk#L221), [line 226](../examples/mathematics_cohomology_rings_cup_products.esk#L226), [line 228](../examples/mathematics_cohomology_rings_cup_products.esk#L228).
+Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_cup_products.esk#L1), [line 64](../examples/mathematics_cohomology_rings_cup_products.esk#L64), [line 231](../examples/mathematics_cohomology_rings_cup_products.esk#L231), [line 236](../examples/mathematics_cohomology_rings_cup_products.esk#L236), [line 238](../examples/mathematics_cohomology_rings_cup_products.esk#L238).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
@@ -1009,7 +1009,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Integral homology and twists of order-eight groups
 
-Source: [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_group_cohomology_order_eight.esk#L1). SHA-256: `bb98e994c63e4b49bd0abcdcfc96466858787df0b98e96917e610012d549eb91`.
+Source: [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_group_cohomology_order_eight.esk#L1). SHA-256: `dade8fe72b273753f87915cb6db66580e7ddc7e4763a874da9f552c2650792ff`.
 
 **Published result:** The integral homology of the five groups of order eight through degree 3 (Brown, Cohomology of Groups: Künneth, Schur multipliers, and the periodicity of Q₈), the resulting counts |H³(G; Q/Z)| = |H₃(G; Z)| of Dijkgraaf–Witten twists, and de Wild Propitius's observation that the type-III twist of (Z/2)³ produces a non-abelian twisted quantum double D^ω((Z/2)³) with 22 simple objects, the number for the untwisted doubles of D₄ and Q₈ (Dijkgraaf–Pasquier–Roche).
 
@@ -1035,7 +1035,7 @@ Source: [mathematics_group_cohomology_order_eight.esk](../examples/mathematics_g
 
 **Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Implementation/check anchors: [line 1](../examples/mathematics_group_cohomology_order_eight.esk#L1), [line 65](../examples/mathematics_group_cohomology_order_eight.esk#L65), [line 66](../examples/mathematics_group_cohomology_order_eight.esk#L66), [line 375](../examples/mathematics_group_cohomology_order_eight.esk#L375), [line 377](../examples/mathematics_group_cohomology_order_eight.esk#L377), [line 385](../examples/mathematics_group_cohomology_order_eight.esk#L385).
+Implementation/check anchors: [line 1](../examples/mathematics_group_cohomology_order_eight.esk#L1), [line 65](../examples/mathematics_group_cohomology_order_eight.esk#L65), [line 66](../examples/mathematics_group_cohomology_order_eight.esk#L66), [line 376](../examples/mathematics_group_cohomology_order_eight.esk#L376), [line 378](../examples/mathematics_group_cohomology_order_eight.esk#L378), [line 386](../examples/mathematics_group_cohomology_order_eight.esk#L386).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
