@@ -2502,6 +2502,9 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/memory_abi_v2.cpp
   lib/core/runtime_object_alloc.cpp
   lib/core/runtime_regions.cpp
+  lib/core/runtime_regions_evacuation.cpp
+  lib/core/runtime_regions_handles.cpp
+  lib/core/runtime_regions_resident.cpp
   lib/core/runtime_shared_memory.cpp
   lib/core/runtime_string.cpp
   lib/core/unicode.cpp
@@ -2963,7 +2966,12 @@ eshkol_require_exhaustive_dispatch(
   # Region evacuation: heap_subtype_t -> EvacKind classification and the
   # EvacKind interior-walk switch. The ESH-0214d class — a subtype that falls
   # to a shallow leaf copy leaves interior pointers in a reclaimed arena.
+  # The other region units keep the flags they were compiled with before the
+  # region code was split into four translation units.
   lib/core/runtime_regions.cpp
+  lib/core/runtime_regions_evacuation.cpp
+  lib/core/runtime_regions_handles.cpp
+  lib/core/runtime_regions_resident.cpp
 )
 
 function(eshkol_apply_common_compile_settings target_name)

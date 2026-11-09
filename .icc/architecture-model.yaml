@@ -136,9 +136,16 @@ components:
       evacuator must deep-walk every interior-pointer heap subtype (ESH-0214d).
     modules:
       - lib/core/runtime_regions.cpp
+      - lib/core/runtime_regions_evacuation.cpp
+      - lib/core/runtime_regions_handles.cpp
+      - lib/core/runtime_regions_resident.cpp
+      - lib/core/runtime_regions_internal.h
       - lib/core/arena_memory.h
     entry_points:
       - {path: lib/core/runtime_regions.cpp}
+      - {path: lib/core/runtime_regions_evacuation.cpp}
+      - {path: lib/core/runtime_regions_handles.cpp}
+      - {path: lib/core/runtime_regions_resident.cpp}
 
   - id: ad-tower
     role: backend
@@ -699,7 +706,7 @@ invariants:
         path: inc/eshkol/eshkol.h
         key_pattern: 'HEAP_SUBTYPE_([A-Z0-9_]+)\s*=\s*\d+,\s*//.*\[DEEPWALK\]'
       - id: region-evacuator-switch
-        path: lib/core/runtime_regions.cpp
+        path: lib/core/runtime_regions_evacuation.cpp
         key_pattern: 'case\s+HEAP_SUBTYPE_(\w+)\s*:\s*return\s+EVAC_(?!LEAF\b)'
 
   # 6b. The SAME invariant for the bytecode VM's Stage-1 evacuator (SW-14).
