@@ -747,7 +747,7 @@ under the same discipline that made `Qubit` linear.
       analytic through `K = 0` with curvature jets, squared-distance geodesic
       attention, versioned coordinate migration (`x_v2 = 2 x_v1`), and the
       binary128 reference-grid gates across every `K` binade
-- [ ] Stochastic Binary Lambda Calculus, first slice (ADR-0017): `core.sblc`
+- [x] Stochastic Binary Lambda Calculus, first slice (ADR-0017): `core.sblc`
       with the four-form `sblc-v1` prefix code, fair choice, seeded sampling,
       exact rational distribution semantics under a step bound, the exact
       `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
@@ -782,6 +782,18 @@ under the same discipline that made `Qubit` linear.
       into `mathematics_group_cohomology_order_eight`,
       `mathematics_cohomology_rings_cup_products`,
       `mathematics_fermat_hodge_classes_sweep` and `multimodular_test`
+- [x] Simplicial and homological algebra as libraries (ADR-0037):
+      `core.simplicial` gives simplicial sets in Eilenberg-Zilber normal
+      form with products, joins, cones and suspensions, nerves of finite
+      categories, posets, groups (BG) and crossed modules, McCord finite
+      models, the Kan and quasi-category conditions over every compatible
+      horn, Kan's homotopy groups and mapping spaces `Map(X, Y)`;
+      `core.homological` gives complexes over `core.ring` carriers (Z with
+      torsion through `core.integer_linalg`, Q, F_p), cones and long exact
+      sequences, Ext and Tor over Z, spectral sequences of filtered and double
+      complexes checked page by page and in the limit, cup and cup-i products,
+      Steenrod squares and group cohomology with twisted coefficients. Eight
+      algebraic-topology examples run on them
 - [x] Finite category theory as a library (ADR-0036): `core.category` gives
       functors and natural transformations checked by their laws, functor,
       comma and slice categories, limits, colimits, ends and coends, the
@@ -840,6 +852,34 @@ under the same discipline that made `Qubit` linear.
       (co)limits and named refusals; `core.category.effective_kan` gives Kan
       extensions with finite comma categories, skeleta and coskeleta.
       Newman's lemma and rewriting soundness are checked in Rocq
+- [x] Effective homology as a library (ADR-0038): `core.effective` gives
+      reductions and the basic perturbation lemma with every identity and
+      the nilpotency hypothesis checked on the cells a computation uses,
+      reductions from discrete vector fields (Eilenberg-Zilber, twisted
+      Eilenberg-Zilber, K(Z,1), W-bar G onto the bar construction), K(Z,n)
+      and K(Z/m,n) with effective homology, the Whitehead tower computing
+      pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2 and
+      pi_6(S^3) = Z/12, and hypercovers of finite spaces restoring descent
+      where the Cech nerve does not (stage S6.3)
+- [x] Differentiable optimization: blackbox solvers, perturbed optimizers,
+      Fenchel-Young losses, implicit differentiation (ADR-0031):
+      `core.ml.diffopt` puts each rule on the reverse-mode tape as one
+      pullback — blackbox ranking and shortest-path solvers, Gumbel/Normal
+      perturbed argmax and top-k with a seeded Monte Carlo Jacobian,
+      perturbed/softmax/sparsemax Fenchel-Young losses, and implicit
+      root/fixed-point/argmin layers whose adjoint system is solved exactly on
+      exact data — gated on JIT and AOT by `tests/ml/diffopt_test.esk`
+- [x] Manifolds glued from charts (ADR-0018 amendment): `core.manifold.atlas`
+      represents atlases as gluing data on `core.sheaf` — charts, transition
+      maps, the cocycle condition on triple overlaps and the chain rule of
+      transition Jacobians (forward-mode AD) checked exactly on exact atlases
+      and to a stated tolerance on float ones, with core.sheaf obstructions
+      as witnesses; the stereographic sphere atlas and the ball/half-space
+      atlas, of which the ADR-0018 chart is one chart, with the `K = 0`
+      contract preserved; transport of points, vectors, covectors and
+      metrics; and the nerve of the cover as a finite space, with `w1`
+      (orientation-reversing loops as witnesses) and Cech and derived
+      cohomology with constant and orientation coefficients
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
@@ -865,15 +905,32 @@ under the same discipline that made `Qubit` linear.
       case + Python one-liner per new AD/quantum feature) goes live
 - [ ] qLLM backward completion: `input2` wiring for conv2d/batchnorm/
       layernorm/attention tape nodes
-- [ ] Symbolic multivariate polynomial and truncated-series values (sparse
+- [x] SDNC control fine-tuning with an exact forward pass (ADR-0032): the
+      constructed interpreter's gate thresholds are fine-tuned while every
+      forward step stays exact — a smoothed backward (logistic-perturbed gate,
+      one shared rule with `qllm_backward.c`) ranks one-unit threshold moves
+      over tied construction gates, the exact forward accepts them; `core.sdnc`
+      gains `sdnc-load-weights!`, `sdnc-mismatches`, `sdnc-repair!` and a
+      smoothing argument to `sdnc-weight-grad`; a switched-off ADD dispatch is
+      repaired to 127/127 battery programs with every recorded transition
+      byte-identical (`ctest -R sdnc_control_finetune`)
+- [x] Symbolic multivariate polynomial and truncated-series values (sparse
       ring over `Q` and `GF(p)`, series values carrying a coefficient norm),
       and polynomial-valued duals — the AD operators applied to a symbolic
       ansatz so a residual comes back as a graded value whose coefficients can
-      be collected and solved, rather than as a number. **Partially SHIPPED in
-      v1.3.5-evolve:** `core.symbolic` provides polynomials and truncated power
-      series over the exact rationals, consumed by the `core.pde.ns-residual`
-      oracle. Remaining: `GF(p)`, the coefficient norm on series values, and
-      polynomial-valued duals
+      be collected and solved, rather than as a number. `core.symbolic`
+      polynomials and truncated power series over the exact rationals shipped
+      in v1.3.5-evolve. **SHIPPED in v1.4.0-connection:** a coefficient field
+      on every value (`coefficient-field-gf`, `poly->field`, `series->field`;
+      GF(p) on the exact integer tower with a deterministic primality check),
+      the B_rho weighted l1 norm `series-norm`, and polynomial-valued duals:
+      `series-of` applies a procedure that uses the built-in AD operators to a
+      symbolic point and returns the graded value, which `poly-collect` /
+      `series-collect` group by a grading variable and `poly-solve-linear`
+      solves over Q or GF(p). Taylor-tower nesting depth is one process-wide
+      counter, so a pass opened in the precompiled stdlib and a pass opened in
+      user code nest as levels of one carrier. Gated JIT and AOT by
+      `scripts/run_symbolic_fields_gate.sh`
 - [ ] Exact linear algebra, remainder: an exact tensor element type.
       **Partially SHIPPED in v1.3.5-evolve:** `core.exact_linalg` provides
       matrix multiply, transpose, fraction-free determinant, solve, inverse,
@@ -894,8 +951,15 @@ under the same discipline that made `Qubit` linear.
       `rings_functor_of_points` JIT and AOT, no compiler change). Planned for v1.4.1 (library `core.ring`,
       `core.multimodular`) through v1.5.0 (carriers in the type system), one
       stage per rung as the record lists
-- [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy
-      oracle pilot on the exact-AD surface
+- [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane
+- [x] Assurance: SymPy oracle pilot on the exact-AD surface. **SHIPPED in
+      v1.4.0-connection:** `scripts/sympy_exact_ad_oracle.py` runs a fixed
+      corpus (`tests/sympy_oracle/exact_ad_corpus.json`) of `derivative-n`,
+      `taylor`, `derivative`, `gradient`, `hessian` and `jacobian` cases on
+      exact inputs under JIT and AOT, compares each with SymPy (exact
+      equality where the documented contract promises an exact result, f64
+      rounding where it promises a double), and emits one ICC trace per case
+      plus `sympy_exact_ad_oracle_pilot`. CTest `sympy_exact_ad_oracle`
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
       accuracy and throughput, pinned hardware)
 - [ ] Codebase: native image I/O dependency removal; decompose
@@ -1088,7 +1152,7 @@ workflow (ADR-0007 Phase 1).
 v1.5.0 cannot publish before v1.4.5. Its former Dec 5, 2026 target is subject
 to joint rebaseline with the former Q1 2027 v1.4.5 window; the v1.5.0 date
 slides if v1.4.5 device gates are incomplete. ADR-0017 assigns the first
-SBLC slice to v1.4.0; this release line does not claim its gate is implemented.
+SBLC slice to v1.4.0; `scripts/run_sblc_gate.sh` is its gate.
 
 Note: the arbitrary-order AD substrate this section used to stage here
 (P5/P7/P9/P10) shipped complete in v1.3.0-evolve, ahead of this plan — see

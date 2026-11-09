@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/sqlite_changefeed.esk
+  - tests/stdlib/dbsp_sqlite_changefeed_test.esk
+---
+
 # Transactional SQLite DBSP changefeeds
 
 `(require core.dbsp.sqlite_changefeed)` exports:

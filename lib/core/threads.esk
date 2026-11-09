@@ -2,7 +2,11 @@
 ;;
 ;; (require core.threads)
 ;;
-;; This module provides three families of primitives:
+;; This module provides five families of primitives, all built on one
+;; facility: the recursive mutex and condition variable below.  Counting
+;; semaphores and reusable barriers are ordinary Eshkol state guarded by
+;; that pair; the only primitive they add to lib/core/threads.c is the
+;; bounded wait condvar-wait-timeout!.
 ;;
 ;; 1. MUTEX (recursive POSIX pthread_mutex_t)
 ;;    Used to serialise access to shared state — the canonical use is
@@ -15,7 +19,20 @@
 ;;    Used to coordinate workers waiting on a state change — pair with
 ;;    a mutex via condvar-wait!.
 ;;
-;; 3. THREAD (make-thread / thread-join)
+;; 3. SEMAPHORE (counting; make-semaphore / semaphore-acquire! /
+;;    semaphore-try-acquire! / semaphore-release!)
+;;    Bounds how many threads may hold a resource at once.  Acquire
+;;    blocks while no permit is free; try-acquire returns #f instead,
+;;    or waits at most a given number of milliseconds.
+;;
+;; 4. BARRIER (reusable, generation-counted; make-barrier / barrier-wait!)
+;;    N parties meet at barrier-wait!; none returns until all N have
+;;    arrived.  Each completed meeting advances the barrier's generation,
+;;    so the same barrier serves any number of phases, and a waiter
+;;    returns only when its own generation has completed — a spurious
+;;    wakeup or a later phase's arrivals can never release it early.
+;;
+;; 5. THREAD (make-thread / thread-join)
 ;;    Spawns the thunk on a thread-pool worker concurrently with the
 ;;    spawner; thread-join blocks until the worker completes.  Backed
 ;;    by `(future thunk)` which (since #223 + #224 architectural fix)
@@ -26,7 +43,12 @@
 
 (provide
   make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
-  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!
+  make-condvar condvar-wait! condvar-wait-timeout! condvar-signal!
+  condvar-broadcast! condvar-destroy!
+  make-semaphore semaphore? semaphore-acquire! semaphore-try-acquire!
+  semaphore-release! semaphore-value semaphore-destroy!
+  make-barrier barrier? barrier-wait! barrier-parties barrier-generation
+  barrier-destroy!
   make-thread thread-join thread? thread-result-ready?)
 
 ;; ── FFI declarations ─────────────────────────────────────────────────
@@ -38,6 +60,8 @@
 
 (extern ptr condvar-create-raw                       :real eshkol_condvar_create)
 (extern i32 condvar-wait-raw     ptr ptr             :real eshkol_condvar_wait)
+(extern i32 condvar-timedwait-raw ptr ptr i64        :real eshkol_condvar_timedwait)
+(extern i32 condvar-timeout-code-raw                 :real eshkol_condvar_timeout_code)
 (extern i32 condvar-signal-raw   ptr                 :real eshkol_condvar_signal)
 (extern i32 condvar-broadcast-raw ptr                :real eshkol_condvar_broadcast)
 (extern i32 condvar-destroy-raw  ptr                 :real eshkol_condvar_destroy)
@@ -97,6 +121,18 @@
    before returning.  m MUST be held by this thread on entry."
   (condvar-wait-raw c m))
 
+(define (condvar-wait-timeout! c m timeout-ms)
+  "Like condvar-wait!, but give up after timeout-ms milliseconds of
+   monotonic time.  Returns #t when woken and #f when the timeout
+   elapsed; either way m is held again on return.  A wakeup may be
+   spurious, so callers re-check their condition in a loop.  m MUST be
+   held exactly once by this thread on entry."
+  (let ((rc (condvar-timedwait-raw c m timeout-ms)))
+    (cond
+      ((= rc 0) #t)
+      ((= rc (condvar-timeout-code-raw)) #f)
+      (else (error "condvar-wait-timeout!: wait failed" rc)))))
+
 (define (condvar-signal! c)
   "Wake one thread waiting on c."
   (condvar-signal-raw c))
@@ -108,6 +144,202 @@
 (define (condvar-destroy! c)
   "Destroy and free the condition variable."
   (condvar-destroy-raw c))
+
+;; ── Shared helpers for semaphore and barrier ───────────────────────
+
+(define (-sync-wait! c m who)
+  ;; Block on c (releasing m) until woken.  Any non-zero status is a
+  ;; failed wait, reported under the caller's name.
+  (let ((rc (condvar-wait! c m)))
+    (if (= rc 0) #t (error (string-append who ": condition wait failed") rc))))
+
+(define (-sync-check-count who n minimum)
+  (if (and (integer? n) (exact? n) (>= n minimum))
+      n
+      (error (string-append who ": expected an exact integer >= "
+                            (number->string minimum))
+             n)))
+
+;; ── Counting semaphore ───────────────────────────────────────────────
+;;
+;; Layout: vector of length 4.
+;;   0: tag 'eshkol-semaphore
+;;   1: free permits (exact integer >= 0), read and written only with
+;;      the mutex held
+;;   2: mutex
+;;   3: condvar, signalled once per released permit
+;;
+;; Every waiter re-checks the permit count after each wakeup, so spurious
+;; wakeups and wakeups that lose the race to another acquirer simply wait
+;; again; a permit is consumed only by the thread that observed it free
+;; under the mutex.
+
+(define (make-semaphore permits)
+  "Create a counting semaphore holding `permits` free permits (an exact
+   integer >= 0)."
+  (-sync-check-count "make-semaphore" permits 0)
+  (vector 'eshkol-semaphore permits (make-mutex) (make-condvar)))
+
+(define (semaphore? s)
+  "Predicate: is s a semaphore returned by make-semaphore?"
+  (and (vector? s)
+       (= (vector-length s) 4)
+       (eq? (vector-ref s 0) 'eshkol-semaphore)))
+
+(define (-semaphore-check s who)
+  (if (semaphore? s) s (error (string-append who ": not a semaphore") s)))
+
+(define (-semaphore-take! s)
+  ;; Caller holds the mutex.  Consume one permit if any is free.
+  (let ((n (vector-ref s 1)))
+    (if (> n 0)
+        (begin (vector-set! s 1 (- n 1)) #t)
+        #f)))
+
+(define (semaphore-acquire! s)
+  "Take one permit, blocking until one is free.  Returns #t."
+  (-semaphore-check s "semaphore-acquire!")
+  (let ((m (vector-ref s 2))
+        (c (vector-ref s 3)))
+    (with-mutex m
+      (lambda ()
+        (let loop ()
+          (if (-semaphore-take! s)
+              #t
+              (begin (-sync-wait! c m "semaphore-acquire!")
+                     (loop))))))))
+
+(define (semaphore-try-acquire! s . timeout)
+  "Take one permit if one is free and return #t; otherwise return #f.
+   With a timeout argument (milliseconds), wait up to that long for a
+   permit before returning #f.  The bound is measured on the monotonic
+   clock and is not extended by spurious wakeups."
+  (-semaphore-check s "semaphore-try-acquire!")
+  (let ((m (vector-ref s 2))
+        (c (vector-ref s 3))
+        (deadline (cond
+                    ((null? timeout) #f)
+                    ((real? (car timeout))
+                     (+ (monotonic-time-ms) (car timeout)))
+                    (else
+                     (error "semaphore-try-acquire!: timeout must be a number of milliseconds"
+                            (car timeout))))))
+    (with-mutex m
+      (lambda ()
+        (let loop ()
+          (cond
+            ((-semaphore-take! s) #t)
+            ((not deadline) #f)
+            (else
+             (let ((remaining (- deadline (monotonic-time-ms))))
+               (if (<= remaining 0)
+                   #f
+                   (begin (condvar-wait-timeout! c m (exact (ceiling remaining)))
+                          (loop)))))))))))
+
+(define (semaphore-release! s . count)
+  "Return permits to the semaphore (one, or `count` when given) and wake
+   one waiter per permit.  Returns the number of free permits after the
+   release."
+  (-semaphore-check s "semaphore-release!")
+  (let ((k (if (null? count)
+               1
+               (-sync-check-count "semaphore-release!" (car count) 1)))
+        (m (vector-ref s 2))
+        (c (vector-ref s 3)))
+    (with-mutex m
+      (lambda ()
+        (let ((n (+ (vector-ref s 1) k)))
+          (vector-set! s 1 n)
+          (let wake ((i 0))
+            (if (< i k)
+                (begin (condvar-signal! c) (wake (+ i 1)))))
+          n)))))
+
+(define (semaphore-value s)
+  "Number of free permits at the moment of the call."
+  (-semaphore-check s "semaphore-value")
+  (with-mutex (vector-ref s 2) (lambda () (vector-ref s 1))))
+
+(define (semaphore-destroy! s)
+  "Release the semaphore's mutex and condvar.  No thread may be waiting
+   on s, and s MUST NOT be used afterwards."
+  (-semaphore-check s "semaphore-destroy!")
+  (condvar-destroy! (vector-ref s 3))
+  (mutex-destroy! (vector-ref s 2)))
+
+;; ── Reusable barrier ─────────────────────────────────────────────────
+;;
+;; Layout: vector of length 6.
+;;   0: tag 'eshkol-barrier
+;;   1: parties (exact integer >= 1)
+;;   2: arrived in the current generation
+;;   3: generation (completed meetings so far)
+;;   4: mutex
+;;   5: condvar, broadcast when a generation completes
+;;
+;; A waiter records the generation it arrived in and waits until the
+;; generation number moves past it.  The last arrival resets the arrival
+;; count before broadcasting, so parties that immediately re-enter for
+;; the next phase count toward the new generation and cannot release
+;; anyone still leaving the previous one.
+
+(define (make-barrier parties)
+  "Create a reusable barrier for `parties` threads (an exact integer
+   >= 1)."
+  (-sync-check-count "make-barrier" parties 1)
+  (vector 'eshkol-barrier parties 0 0 (make-mutex) (make-condvar)))
+
+(define (barrier? b)
+  "Predicate: is b a barrier returned by make-barrier?"
+  (and (vector? b)
+       (= (vector-length b) 6)
+       (eq? (vector-ref b 0) 'eshkol-barrier)))
+
+(define (-barrier-check b who)
+  (if (barrier? b) b (error (string-append who ": not a barrier") b)))
+
+(define (barrier-wait! b)
+  "Block until all parties have called barrier-wait! for the current
+   generation.  Returns #t in exactly one party per generation (the one
+   whose arrival completed it) and #f in the others."
+  (-barrier-check b "barrier-wait!")
+  (let ((m (vector-ref b 4))
+        (c (vector-ref b 5)))
+    (with-mutex m
+      (lambda ()
+        (let ((gen (vector-ref b 3))
+              (arrived (+ (vector-ref b 2) 1)))
+          (if (= arrived (vector-ref b 1))
+              (begin
+                (vector-set! b 2 0)
+                (vector-set! b 3 (+ gen 1))
+                (condvar-broadcast! c)
+                #t)
+              (begin
+                (vector-set! b 2 arrived)
+                (let loop ()
+                  (if (= (vector-ref b 3) gen)
+                      (begin (-sync-wait! c m "barrier-wait!")
+                             (loop))
+                      #f)))))))))
+
+(define (barrier-parties b)
+  "Number of parties the barrier waits for."
+  (-barrier-check b "barrier-parties")
+  (vector-ref b 1))
+
+(define (barrier-generation b)
+  "Number of generations the barrier has completed."
+  (-barrier-check b "barrier-generation")
+  (with-mutex (vector-ref b 4) (lambda () (vector-ref b 3))))
+
+(define (barrier-destroy! b)
+  "Release the barrier's mutex and condvar.  No thread may be waiting
+   on b, and b MUST NOT be used afterwards."
+  (-barrier-check b "barrier-destroy!")
+  (condvar-destroy! (vector-ref b 5))
+  (mutex-destroy! (vector-ref b 4)))
 
 ;; ── Thread (eager: runs on a pool worker concurrently) ──────────────
 ;;

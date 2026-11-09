@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_farkas.esk
+  - tests/stdlib/algebraic_farkas_test.esk
+---
+
 # Exact Farkas infeasibility witnesses
 
 `(require core.ad.algebraic_farkas)` exports:

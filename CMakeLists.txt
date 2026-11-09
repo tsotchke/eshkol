@@ -2652,6 +2652,9 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/inference.cpp
   lib/core/kb_persistence.cpp
   lib/core/sdnc_api.c
+  # Exact-forward control fine-tuning of the constructed SDNC interpreter
+  # (tied-gate threshold optimizer; ADR 0032).
+  lib/core/sdnc_finetune.c
   lib/core/logic.cpp
   lib/core/logic_builtins.cpp
   lib/core/merkle.c
@@ -4453,6 +4456,35 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# core.effective (ADR-0038): reductions and the perturbation lemma, discrete
+# vector fields, Eilenberg-Zilber, twisted products, classifying spaces and
+# K(pi, n) with effective homology (effective_test); homotopy groups of
+# spheres through the Whitehead tower (effective_homotopy_test). Hypercovers
+# and descent for 2-types and 3-types, stage S6.3 (effective_hypercover_test),
+# run about 30 GB and are not CTest entries: scripts/run_effective_gate.sh
+# invokes effective_hypercover_jit/aot directly, the same way it already runs
+# the long-run effective_pi6_s3_test and effective_hypercover_3type_test.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_eff_suite effective_test effective_homotopy_test)
+        string(REPLACE "_test" "" _eff_name ${_eff_suite})
+        add_test(NAME ${_eff_name}_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_eff_suite}.esk")
+        add_test(NAME ${_eff_name}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_eff_suite}.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_eff_name}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DESHKOL_COMPILE_TIMEOUT=1500"
+            "-DESHKOL_RUN_TIMEOUT=1500"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_eff_name}_jit ${_eff_name}_aot PROPERTIES
+            TIMEOUT 3000
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+            PASS_REGULAR_EXPRESSION "PASS: ${_eff_suite}"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+    endforeach()
+endif()
+
 # core.simplicial and core.homological (ADR-0037): simplicial sets, nerves,
 # Kan complexes, mapping spaces; complexes over ring carriers, homology with
 # torsion, cones, Ext/Tor, spectral sequences, cup and cup-i products,
@@ -4911,6 +4943,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(certificate_lean_export_current PROPERTIES TIMEOUT 120
             PASS_REGULAR_EXPRESSION "RESULT: LEAN EXPORT CURRENT" FAIL_REGULAR_EXPRESSION "OUT OF DATE|Traceback")
     endif()
+endif()
+
+# Stochastic Binary Lambda Calculus (ADR-0017): the gate runs the core.sblc
+# suite on JIT and AOT, requires every oracle on both engines and
+# byte-identical output (fixed-seed parity), and writes its ICC trace into
+# the build tree.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME sblc_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "TRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/sblc-gate-traces"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_gate.sh")
+    set_tests_properties(sblc_gate PROPERTIES
+        TIMEOUT 600
+        LABELS "stdlib;sblc;parity"
+        PASS_REGULAR_EXPRESSION "SBLC GATE: PASS"
+        FAIL_REGULAR_EXPRESSION "SBLC GATE: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
 # Mathematics examples with exact verdicts: the incompressible porous media
@@ -7048,6 +7097,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
             PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # core.ml.diffopt (ADR-0031): blackbox solver, perturbed-optimizer,
+    # Fenchel-Young, implicit-differentiation and sparsemax/softmax pullbacks,
+    # each checked against an exact closed form, exact rationals or a central
+    # difference. Seeded noise makes the Monte Carlo checks deterministic, so
+    # the JIT and AOT legs see the same draws.
+    add_test(
+        NAME diffopt_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/diffopt_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    add_test(
+        NAME diffopt_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/diffopt_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/diffopt_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/diffopt_aot'"
+    )
+    set_tests_properties(diffopt_runtime_smoke diffopt_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # A libm math symbol must not bind to an unrelated symbol of the same name.
     # Measured on the v1.3.5 candidate: `(elu t 2)` followed by `(exp -2.0)` in
     # one program killed the COMPILER with SIGSEGV at address 0x10 -- a null
@@ -8741,6 +8812,15 @@ if(ESHKOL_BUILD_TESTS)
     add_test(NAME handle_c_api_test COMMAND handle_c_api_test)
     set_tests_properties(handle_c_api_test PROPERTIES
         TIMEOUT 30 LABELS "resource;ffi")
+    # The shared protobuf wire primitives (ONNX export, PJRT compile options)
+    # against hand-derived golden vectors from the encoding specification.
+    add_executable(protobuf_wire_test tests/core/protobuf_wire_test.c)
+    target_compile_features(protobuf_wire_test PRIVATE c_std_11)
+    target_include_directories(protobuf_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME protobuf_wire_test COMMAND protobuf_wire_test)
+    set_tests_properties(protobuf_wire_test PROPERTIES
+        TIMEOUT 30 LABELS "protobuf;wire"
+        PASS_REGULAR_EXPRESSION "PASS: protobuf wire golden vectors")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resource_limits_test.cpp")
@@ -12747,6 +12827,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     target_include_directories(weight_matrices PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core
     )
     # The standalone interpreter includes VM units directly, while its arena
     # hooks come from the normal runtime archive. Permit the intentional
@@ -12772,7 +12853,65 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
         set_tests_properties(sdnc_paper_weight_tests PROPERTIES
             PASS_REGULAR_EXPRESSION "Results: [0-9]+ passed, 0 failed"
         )
+
+        # Exact-forward control fine-tuning (ADR 0032): record every
+        # transition of the verifier battery, switch off the ADD dispatch,
+        # show that the exact control derivative is identically zero, repair
+        # with smoothed-backward-ranked / exact-forward-accepted threshold
+        # moves, then require the full battery and every recorded transition
+        # byte for byte. Writes the weights and transitions the core.sdnc
+        # surface test loads. The 11 checks are pinned so a check that stops
+        # running cannot stay green.
+        set(ESHKOL_SDNC_FINETUNE_ARTIFACTS ${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune)
+        file(MAKE_DIRECTORY ${ESHKOL_SDNC_FINETUNE_ARTIFACTS})
+        add_test(
+            NAME sdnc_control_finetune
+            COMMAND $<TARGET_FILE:weight_matrices> --control-finetune
+                    --artifacts ${ESHKOL_SDNC_FINETUNE_ARTIFACTS}
+        )
+        set_tests_properties(sdnc_control_finetune PROPERTIES
+            PASS_REGULAR_EXPRESSION "Control fine-tune: 11 passed, 0 failed"
+            FIXTURES_SETUP sdnc_finetune_artifacts
+            TIMEOUT 1800
+        )
     endif()
+endif()
+
+# Unit checks of the fine-tuning facility: shared logistic/softmax VJP rule
+# against central differences, beta = 1 bit-identity, saturation, tied gates,
+# SDTR/QLMW round trips and a synthetic repair.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_unit_test.c")
+    add_executable(sdnc_finetune_unit_test
+        tests/sdnc/sdnc_finetune_unit_test.c
+        lib/core/sdnc_finetune.c)
+    target_include_directories(sdnc_finetune_unit_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+    if(NOT ESHKOL_USING_MSVC)
+        target_link_libraries(sdnc_finetune_unit_test PRIVATE m)
+    endif()
+    set(ESHKOL_SDNC_FINETUNE_UNIT_DIR ${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune_unit)
+    file(MAKE_DIRECTORY ${ESHKOL_SDNC_FINETUNE_UNIT_DIR})
+    add_test(NAME sdnc_finetune_unit
+             COMMAND sdnc_finetune_unit_test ${ESHKOL_SDNC_FINETUNE_UNIT_DIR})
+    set_tests_properties(sdnc_finetune_unit PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 21 passed, 0 failed")
+endif()
+
+# core.sdnc surface of the same repair (sdnc-load-weights!, sdnc-mismatches,
+# sdnc-repair!, smoothed sdnc-weight-grad) on the artifacts written above.
+if(ESHKOL_BUILD_TESTS AND TARGET weight_matrices AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_test.esk")
+    add_test(NAME sdnc_finetune_surface_jit
+             COMMAND $<TARGET_FILE:eshkol-run> -r
+                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/sdnc/sdnc_finetune_test.esk"
+                     "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(sdnc_finetune_surface_jit PROPERTIES
+        ENVIRONMENT "ESHKOL_SDNC_ARTIFACTS=${CMAKE_CURRENT_BINARY_DIR}/sdnc_finetune"
+        FIXTURES_REQUIRED sdnc_finetune_artifacts
+        PASS_REGULAR_EXPRESSION "Results: 16 passed, 0 failed"
+        TIMEOUT 1200)
 endif()
 
 # ===== SDNC training-mode module: weight-matrix backward pass ==========# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
@@ -14808,6 +14947,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "PASS: signed_curvature_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
+    # core.manifold.atlas: atlases as gluing data (ADR-0018 amendment, charts
+    # as gluing data) on core.sheaf; cross-checks the sphere and space-form
+    # atlases against core.manifold and core.curvature, so it runs beside them.
+    add_test(NAME manifold_atlas_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/manifold/manifold_atlas_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME manifold_atlas_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/manifold/manifold_atlas_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/manifold_atlas_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(manifold_atlas_jit manifold_atlas_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: manifold_atlas_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|error:|Unhandled exception|LLVM module verification failed|fatal signal")
+
     add_test(NAME exact_psd_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_psd_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME exact_psd_aot COMMAND ${CMAKE_COMMAND}
         "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
@@ -14858,6 +15013,52 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: algebraic_field_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    # core.symbolic: the Q suite and the coefficient-field / norm /
+    # polynomial-valued-dual suite, each under JIT and AOT.
+    foreach(_sym_suite symbolic symbolic_fields)
+        add_test(NAME ${_sym_suite}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_sym_suite}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sym_suite}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set(_sym_suite_tests ${_sym_suite}_jit ${_sym_suite}_aot)
+        if(TARGET eshkol-vm-standalone-test)
+            add_test(NAME ${_sym_suite}_vm COMMAND ${CMAKE_COMMAND}
+                "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+                "-DESHKOL_VM=$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_sym_suite}_test.esk"
+                "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_sym_suite}_vm.eskb"
+                "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+            list(APPEND _sym_suite_tests ${_sym_suite}_vm)
+        endif()
+        set_tests_properties(${_sym_suite_tests} PROPERTIES TIMEOUT 900
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            PASS_REGULAR_EXPRESSION "Failed: 0"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+    endforeach()
+
+    # SymPy differential oracle on the exact-AD surface (JIT + AOT). SKIPs
+    # (77) with the reason when no interpreter can import SymPy; point
+    # ESHKOL_SYMPY_PYTHON at one that can.
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME sympy_exact_ad_oracle
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sympy_exact_ad_oracle.py"
+                --eshkol-run $<TARGET_FILE:eshkol-run>
+                --lib-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                --trace-dir "${CMAKE_CURRENT_BINARY_DIR}/icc_traces"
+                --work-dir "${CMAKE_CURRENT_BINARY_DIR}/sympy-oracle-work")
+        set_tests_properties(sympy_exact_ad_oracle PROPERTIES TIMEOUT 1800
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            FIXTURES_REQUIRED exact_foundations_local_stdlib
+            SKIP_RETURN_CODE 77
+            LABELS "oracle;ad;sympy")
+    endif()
 
     add_test(NAME dbsp_circuit_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/dbsp_circuit_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME dbsp_circuit_aot COMMAND ${CMAKE_COMMAND}
@@ -16024,6 +16225,15 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TA
         --all-routes)
     set_tests_properties(msgpack_wire_all_routes PROPERTIES TIMEOUT 900
         PASS_REGULAR_EXPRESSION "PASS: MessagePack four execution routes"
+        FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
+
+    add_test(NAME protobuf_wire_all_routes COMMAND ${Python3_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_wire_format_gate.py" --suite protobuf
+        --runner $<TARGET_FILE:eshkol-run> --vm-runner $<TARGET_FILE:eshkol-vm-standalone-test>
+        --native-test $<TARGET_FILE:protobuf_wire_test>
+        --all-routes)
+    set_tests_properties(protobuf_wire_all_routes PROPERTIES TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: Protocol Buffers four execution routes"
         FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|ERROR:|fatal signal")
 
     set(_metadata_name_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/metadata_name_collision.esk")

@@ -466,7 +466,7 @@ make-event-loop	vm-supported	ESH-0011: integer handle on both surfaces; #f where
 make-parameter	gap	no VM name binding
 make-pipe	vm-supported	
 make-polar	vm-supported	
-make-prng	gap	PRNG surface has no VM binding
+make-prng	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
 make-promise	gap	no VM name binding
 make-rational	gap	no VM name binding
 make-rectangular	vm-supported	
@@ -515,7 +515,7 @@ op:BORROW	native-only-justified	OALR ownership — native-arena construct
 op:CALL	vm-supported	core call opcode
 op:CALL_CC	vm-supported	escape continuations verified 2026-07
 op:CALL_WITH_VALUES	vm-supported	verified 2026-07
-op:CASE	vm-supported	vm_compiler special-form dispatch
+op:CASE	vm-supported	vm_compiler special-form dispatch uses existing eqv? (not numeric =); symbol/captured closure and mixed-datum coverage in corpus/case_datum_dispatch.esk
 op:CASE_LAMBDA	vm-supported	VM dispatches clauses in source order by exact/minimum arity; unmatched calls fail through clause arity checks (corpus/case_lambda_wrong_clause.esk)
 op:COMPOSE	gap	compose undefined in VM
 op:COND	vm-supported	vm_compiler special-form dispatch
@@ -663,9 +663,9 @@ positional-encoding	gap	ml faculty has no VM fid coverage
 positive?	vm-supported	
 pow	vm-supported	
 prevent-sleep	vm-supported	
-prng-random	gap	PRNG surface has no VM binding
-prng-random-integer	gap	PRNG surface has no VM binding
-prng?	gap	PRNG surface has no VM binding
+prng-random	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+prng-random-integer	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+prng?	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
 procedure-arity	gap	no VM name binding
 procedure?	vm-supported	
 process-kill	vm-supported	
@@ -726,6 +726,12 @@ right?	gap	no VM name binding
 rmsprop-step	gap	ml faculty has no VM fid coverage
 rotary-embedding	gap	ml faculty has no VM fid coverage
 round	vm-supported	
+sblc-coins-from-prng	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
+sblc-condition	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM. sblc-condition needs the PRNG for the seeded witness runs its receipt carries.
+sblc-sample	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
+sblc-sample-closed-program	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
+sblc-sample-prng	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
+sblc-sample-program	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
 scaled-dot-attention	vm-supported	forward dual carrier and scalar scaled-dot-attention path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 scheme-report-environment	gap	port/file IO surface missing in VM
 sdnc-improve!	gap	core.sdnc has no VM fids

@@ -1,0 +1,78 @@
+format = "eshkol-vm-case-qualification-v1"
+base_revision = "51a93586951b1c75b413b14531d0465c660ae579"
+platform = "Linux aarch64"
+toolchain = "clang/LLVM 21.1.8"
+build = "Release CPU; agent FFI ON; GPU/XLA/BLAS/tensorcore/qLLM/quantum OFF"
+compiler_rebuilt = true
+fixture = "tests/vm_parity/corpus/case_datum_dispatch.esk"
+fixture_checks_per_engine = 27
+engines = ["JIT", "executed AOT", "VM source", "newly emitted ESKB"]
+fixture_output_byte_identical = true
+pre_fix_vm_result = "FAIL: later-symbol"
+full_vm_parity_command = "bash scripts/run_vm_parity.sh"
+full_vm_parity_passed = 433
+full_vm_parity_failed = 0
+full_vm_parity_infrastructure_failures = 0
+bounded_ctest_passed = 2
+bounded_ctest_failed = 0
+bounded_ctest_names = ["vm_prelude_cache_is_current", "vm_binding_origins_current"]
+cache_regenerated_with_owner_target = true
+generated_cache_changed = false
+source_files_unchanged_during_qualification = 5294
+runtime_artifacts_unchanged_during_qualification = true
+physical_browser_wasm_qualified = false
+existing_eskb_must_be_reemitted = true
+
+[composition]
+scope = "One bounded checkpoint -> signed update -> restore/resume witness, not full search-handle VM qualification"
+prng_revision = "918b04e3e3ef84227a3f1ae5ea21f37f9f1f168f"
+sblc_update_revision = "320f4b9a3fe69e6d4fa4f18e71985cad8f0e84de"
+engines = ["JIT", "AOT", "VM source", "ESKB via existing emitter API"]
+byte_identical_to_native_jit_and_aot = true
+eskb_emitter = "eshkol_emit_eskb_with_source_path"
+initial_standalone_cli_emission_produced_no_file = true
+canonical_receipt_sha256 = "72f4d4bc6040df984eda81e8530088f4668fa65a0a9ba1538021b4d1f8f1ca51"
+composed_source_vm_sha256 = "e5a07af52f35b9301ad8dab09dd6d8832264935bd060a03a805890b137b709da"
+composed_eskb_sha256 = "f2d453cc158333b961881682653bc0501ea3cd9b49147ffed04f393e76a1944b"
+
+[known_boundary]
+scope = "Native rational/bignum case matching remains outside this cross-engine panel; native backend unchanged"
+witness = "(write (list\n  (case 1/3 ((1/2) 'half) ((1/3) 'third) (else 'miss))\n  (case (expt 2 100) ((1) 'small) ((1267650600228229401496703205376) 'large) (else 'miss)))) (newline)\n"
+native_stdout = "(miss miss)"
+vm_stdout = "(third large)"
+
+[[artifact]]
+name = "eshkol-run"
+sha256 = "291854dbb9984cd88dcb531ab4632fd6c9db0c54565631d74b91792e94865379"
+
+[[artifact]]
+name = "eshkol-vm-standalone-test"
+sha256 = "2205b5f8638d15fba37173fd61853244133e4f41c6c4837f3b9b6f7f334cf770"
+
+[[artifact]]
+name = "stdlib.bc"
+sha256 = "6b2e69dd7455a7dd30a6703cd5e4916be9354dd532d618e6c1751b6a6bad46b7"
+
+[[artifact]]
+name = "libeshkol-runtime.a"
+sha256 = "b4a782cc5c8f5bafcca1c8380a554a29367d4a728f30863d424551faa7b4da72"
+
+[[artifact]]
+name = "libeshkol-static.a"
+sha256 = "c6ebd028970b37c6dc670e7eacca7b772759548fc48bae25932113a48b46e4da"
+
+[[input]]
+path = "lib/backend/vm_compiler.c"
+sha256 = "2d612c8b5095685a8a5068b4a8767a6d368869d7b7cee9845cdfb5ee922e16bf"
+
+[[input]]
+path = "tests/vm_parity/PARITY.tsv"
+sha256 = "a24b9038d67547b790e4d7a2b6590b569b4d329095c30873e9fd49b11ade47f2"
+
+[[input]]
+path = "tests/vm_parity/corpus/case_datum_dispatch.esk"
+sha256 = "c2f74a1b5dca74107e9227c3a401ab092e66268c37cae5053d4f0cb86a0e0607"
+
+[[input]]
+path = "lib/backend/vm_prelude_cache.h"
+sha256 = "f5f4fe4c84e0f66a84c2616de4832b22537707b2509d5286c63d8a4c68b323cf"

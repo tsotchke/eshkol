@@ -133,7 +133,7 @@
   (let* ((sc (sieve-category (module-presheaf-category F) c S)) (K (car sc)) (pi (cdr sc))
          (L (module-presheaf-limit (module-presheaf-restrict F pi))) (rc (module-presheaf-rank F c))
          (cols (cd-restricted-columns F K pi rc)) (N (car cols)))
-    (list (module-limit-rank L) rc (if (or (= rc 0) (= N 0)) 0 (ring-rank (module-presheaf-ring F) (integer-matrix-from-columns (cdr cols) N))))))
+    (list (module-limit-rank L) rc (if (or (= rc 0) (= N 0)) 0 (sheaf-module-rank (module-presheaf-ring F) (integer-matrix-from-columns (cdr cols) N))))))
 ;; (N . columns): the restrictions of the basis vectors of F(c) to the
 ;; objects of the sieve category, as vectors of the total space
 (define (cd-restricted-columns F K pi rc)
@@ -167,14 +167,14 @@
                                       (loop (+ k 1) (+ o rd)))))
                               v))
                           (cd-range rc)))
-         (map-rank (if (or (= rc 0) (= N 0)) 0 (ring-rank ring (integer-matrix-from-columns restricted N)))))
+         (map-rank (if (or (= rc 0) (= N 0)) 0 (sheaf-module-rank ring (integer-matrix-from-columns restricted N)))))
     (cond ((< map-rank rc) (list 'not-separated map-rank))
           ((< rc r) (list 'not-glueing (- r rc)))
           ((eq? ring 'Q) (list 'iso r))
           ((= r 0) (list 'iso 0))
           (else
            (let* ((BM (integer-matrix-from-columns B N))
-                  (coords (map (lambda (v) (ring-solve ring BM r v)) restricted))
+                  (coords (map (lambda (v) (sheaf-module-solve ring BM r v)) restricted))
                   (index (apply * (integer-invariant-factors (integer-matrix-from-columns coords r)))))
              (if (= 1 index) (list 'iso r) (list 'not-glueing index)))))))
 
@@ -209,7 +209,7 @@
                                                            (let fill ((p 0)) (if (< p (module-presheaf-rank M x)) (begin (vector-set! w (+ oK p) (vector-ref v (+ oJ p))) (fill (+ p 1)))))))
                                              UK)
                                    (if (= rK 0) (make-vector 0 0)
-                                       (let ((c (ring-solve ring BK rK w)))
+                                       (let ((c (sheaf-module-solve ring BK rK w)))
                                          (if (not c) (error "finite-space-cover-sections-presheaf: a restricted section is not a section" (list J K)))
                                          c))))
                                (module-limit-basis (vector-ref Ls J)))))

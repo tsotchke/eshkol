@@ -80,6 +80,8 @@ done < "$W/doc-examples.list"
 echo "hott gate: $pass passed, $fail failed"
 # ICC evidence (criterion v19_hott_identity, .icc/completion-oracles.yaml).
 TRACE_DIR="${TRACE_DIR:-$S/scripts/icc_traces}"
+. "$S/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$S" || exit $?
 mkdir -p "$TRACE_DIR"
 value=PASS; [ "$fail" -eq 0 ] || value=FAIL
 python3 - "$TRACE_DIR/v19_hott_identity.jsonl" "$value" "hott gate: $pass passed, $fail failed (kernel, JIT, AOT, VM; programs, rejections, doc examples)" <<'PY'

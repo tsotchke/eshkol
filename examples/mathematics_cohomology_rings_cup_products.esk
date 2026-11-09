@@ -84,6 +84,15 @@
 (define (coboundary-mod-p? X n u p) (homology-boundary? (cochains X n (field p)) n u))
 (define (independent? X n us p) (homology-classes-independent? (cochains X n (field p)) n us))
 (define (dim-Hn X n p) (cadr (list-ref (cohomology (cochains X n (field p))) n)))
+;; The degree-n coboundary delta_n : C^n(BG; Z/p) -> C^{n+1}(BG; Z/p) applied
+;; to every basis n-cochain of the classifying space X, as a list of VECTORS
+;; in the (n+1)-cochain basis -- the columns of the coboundary matrix whose
+;; rank mod p is cross-checked below.
+(define (coboundary-image X n p)
+  (map (lambda (i) (simplicial-coboundary X (cochain-basis-vector X n i) n (field p)))
+       (range (simplicial-set-count X n))))
+(define (rank-mod-p image p)
+  (coefficient-rank (field p) (integer-matrix-from-columns image (vector-length (car image)))))
 (define (cup X u a v b p) (cup-product X u a v b (field p)))
 (define (vec-add-mod u v p) (coefficient-vector-add (field p) u v))
 (define (vec-scale-mod u c p) (coefficient-vector-scale (field p) c u))

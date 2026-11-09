@@ -1,0 +1,186 @@
+;;; core.effective.homotopy -- cohomology classes as simplicial maps into
+;;; K(pi, n), principal fibrations, and the homotopy groups of simply
+;;; connected simplicial sets of finite type through the Whitehead tower.
+;;;
+;;; Usage: (require core.effective.homotopy)   or   (require core.effective)
+;;;
+;;; Sources: J. P. May, "Simplicial Objects in Algebraic Topology" (1967),
+;;; 23-25 (minimal K(pi, n), the universal twisting function, principal
+;;; fibrations, Postnikov systems); G. W. Whitehead, "Fiber spaces and the
+;;; Eilenberg homology groups", PNAS 38 (1952) (the Whitehead tower);
+;;; F. Sergeraert, "The computability problem in algebraic topology", Adv.
+;;; Math. 104 (1994); J. Rubio, F. Sergeraert, "Constructive algebraic
+;;; topology", Bull. Sci. Math. 126 (2002), Section 6 (homotopy groups by
+;;; the Whitehead tower and effective homology); A. Hatcher, "Algebraic
+;;; Topology" (2002), 4.2 (Hurewicz), 4.3 (Postnikov towers).
+;;;
+;;; A normalized n-cocycle z on X with values in pi = Z or Z/m is the
+;;; simplicial map X -> K(pi, n) sending a k-simplex to the cochain z(sigma^*)
+;;; on Delta^k (the minimal model). Here K(pi, n) is the iterated
+;;; classifying space W-bar^(n-1) K(pi, 1) of core.effective.simplicial, so
+;;; the cochain is carried into it by Psi_n(y) = (Psi_(n-1)(t y),
+;;; Psi_(n-1)(t d_0 y), ..., Psi_(n-1)(t d_0^(k-1) y)), with Psi_1(y) the word
+;;; (y(0,1), ..., y(k-1,k)) and t the twisting of the minimal models,
+;;;   (t y)(J) = y({0} u (J+1)) - [0 not in J] y({1} u (J+1))
+;;; (the cone on vertex 0, corrected by the cone on vertex 0 of d_0 y so
+;;; that t y is again a cocycle). The twisting function of the principal
+;;; fibration K(pi, n-1) -> X x_tau K(pi, n-1) -> X classified by z is
+;;; tau(sigma) = Psi_(n-1)(t sigma^* z), the first component of Psi_n.
+;;;
+;;; Whitehead tower: X_2 = X (simply connected); pi_k(X) = H_k(X_k) by
+;;; Hurewicz; z_k represents the identity of H_k(X_k) = pi_k in
+;;; H^k(X_k; pi_k) = Hom(H_k(X_k), pi_k) (universal coefficients, X_k being
+;;; (k-1)-connected); X_(k+1) = X_k x_tau K(pi_k, k-1) is k-connected. Every
+;;; X_k carries effective homology (twisted products and classifying spaces,
+;;; core.effective.simplicial), so each H_k is computed exactly.
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.simplicial.sset)
+(require core.effective.chain)
+(require core.effective.perturbation)
+(require core.effective.simplicial)
+
+(provide eilenberg-maclane-space-cached cochain-pullback minimal-twisting cochain-to-eilenberg-maclane
+         cocycle-twisting homology-functional cyclic-homology-functional whitehead-step
+         homotopy-groups homotopy-group-report sphere-space)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix hm-)
+;; ---------------------------------------------------------------------------
+(define (hm-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (hm-mod m a) (if (= m 0) a (modulo a m)))
+(define (hm-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (hm-all? pred (cdr xs))) (else #f)))
+
+;; one object per (m, n), so that every fibration over the same K(pi, n)
+;; shares its memoized reductions
+(define hm-em-table (make-hash-table))
+(define (eilenberg-maclane-space-cached m n)
+  (let ((key (cons m n)))
+    (or (hash-table-ref/default hm-em-table key #f)
+        (let ((S (if (= n 1) (eilenberg-maclane-space m 1)
+                     (classifying-space-of (eilenberg-maclane-space-cached m (- n 1)) (not (= m 0))))))
+          (hash-table-set! hm-em-table key S)
+          S))))
+
+;; ---------------------------------------------------------------------------
+;; Cochains on Delta^k: hash tables from increasing vertex lists to values
+;; ---------------------------------------------------------------------------
+(define (hm-ref y S) (hash-table-ref/default y S 0))
+;; sigma^* z: the values of z on the n-faces of the k-simplex sigma of X
+;; (zero on degenerate faces)
+(define (cochain-pullback X z n sigma m)
+  (let ((y (make-hash-table)) (k (simplex-degree sigma)))
+    (for-each (lambda (S)
+                (let ((f (simplicial-set-restrict X sigma S)))
+                  (if (simplex-nondegenerate? f)
+                      (let ((v (hm-mod m (z (simplex-base f))))) (if (not (= v 0)) (hash-table-set! y S v))))))
+              (ordered-subsets (hm-range (+ k 1)) (+ n 1)))
+    y))
+;; t y for an n-cochain y on Delta^k: an (n-1)-cochain on Delta^(k-1)
+(define (minimal-twisting y n k m)
+  (let ((t (make-hash-table)))
+    (for-each (lambda (J)
+                (let* ((J1 (map (lambda (j) (+ j 1)) J))
+                       (v (hm-mod m (- (hm-ref y (cons 0 J1)) (if (memv 0 J) 0 (hm-ref y (cons 1 J1)))))))
+                  (if (not (= v 0)) (hash-table-set! t J v))))
+              (ordered-subsets (hm-range k) n))
+    t))
+;; y restricted to the vertices j .. k, renumbered from 0
+(define (hm-shift y j)
+  (let ((t (make-hash-table)))
+    (for-each (lambda (S) (if (>= (car S) j) (hash-table-set! t (map (lambda (v) (- v j)) S) (hash-table-ref/default y S 0))))
+              (hash-table-keys y))
+    t))
+;; Psi_n(y): the k-simplex of K(pi, n) = W-bar^(n-1) K(pi, 1) of the cocycle y
+(define (cochain-to-eilenberg-maclane y n k m)
+  (if (= n 1)
+      (k-pi-1-simplex m (map (lambda (i) (hm-ref y (list i (+ i 1)))) (hm-range k)))
+      (let ((G (effective-space-group (eilenberg-maclane-space-cached m (- n 1)))))
+        (if (< k n) (simplex-from-surjection (map (lambda (i) 0) (hm-range (+ k 1))) '())
+            (classifying-normal-form
+             G k
+             (map (lambda (j) (cochain-to-eilenberg-maclane (minimal-twisting (hm-shift y j) n (- k j) m) (- n 1) (- k j 1) m))
+                  (hm-range k)))))))
+;; the twisting function of the fibration classified by the n-cocycle z
+;; (a procedure on nondegenerate simplex values of X), fibre K(pi, n-1)
+(define (cocycle-twisting X z n m)
+  (lambda (x k)
+    (if (< k n)
+        (cochain-to-eilenberg-maclane (make-hash-table) (- n 1) (- k 1) m)
+        (cochain-to-eilenberg-maclane (minimal-twisting (cochain-pullback X z n (simplex x k) m) n k m) (- n 1) (- k 1) m))))
+
+;; ---------------------------------------------------------------------------
+;; Cohomology classes dual to cyclic homology
+;; ---------------------------------------------------------------------------
+;; For an effective complex E and a degree k: H_k = coker(C) where the
+;; boundaries are written in a basis of the cycles. Returns
+;; (list invariants U L) with U C V = D and L a left inverse of the cycle
+;; basis, so that row i of U L is a cocycle E_k -> Z / d_i.
+(define (homology-functional E k)
+  (let* ((nk (effective-complex-rank E k))
+         (B (if (= k 0) #f (effective-complex-matrix E k)))
+         (A (effective-complex-matrix E (+ k 1)))
+         (Ks (integer-kernel B nk)) (r (length Ks)))
+    (if (= r 0) (list '() #f #f r)
+        (let* ((KM (integer-matrix-from-columns Ks nk))
+               (sK (smith-normal-form KM))
+               (UK (smith-left sK)) (VK (smith-right sK))
+               (L (integer-matrix-mul VK (let ((M (integer-matrix r nk)))
+                                           (for-each (lambda (i) (for-each (lambda (j) (integer-matrix-set! M i j (integer-matrix-ref UK i j))) (hm-range nk))) (hm-range r))
+                                           M)))
+               (cols (map (lambda (j) (integer-solve-in-basis sK r (integer-matrix-column A j))) (hm-range (integer-matrix-cols A))))
+               (C (if (null? cols) #f (integer-matrix-from-columns cols r)))
+               (sC (if C (smith-normal-form C) #f))
+               (d (if sC (smith-diagonal sC) '()))
+               (U (if sC (smith-left sC) (integer-identity-matrix r))))
+          (if (not (hm-all? (lambda (v) v) cols)) (error "homology-functional: a boundary is not a cycle" k))
+          (list (append d (map (lambda (i) 0) (hm-range (- r (length d))))) U L r)))))
+;; when H_k is cyclic (Z or Z/m): (m . phi) with phi a vector on E_k, the
+;; cocycle inducing H_k ~ Z/m; (1 . #f) when H_k = 0
+(define (cyclic-homology-functional E k)
+  (let* ((hf (homology-functional E k)) (inv (car hf)) (r (cadddr hf))
+         (idx (filter (lambda (i) (not (= 1 (list-ref inv i)))) (hm-range (length inv)))))
+    (cond ((null? idx) (cons 1 #f))
+          ((not (null? (cdr idx))) (error "cyclic-homology-functional: the homology group is not cyclic (planned for v1.4.1: products of Eilenberg-MacLane fibres)" k inv))
+          (else
+           (let* ((i (car idx)) (m (list-ref inv i)) (UL (integer-matrix-mul (cadr hf) (caddr hf))))
+             (cons m (vector-ref UL i)))))))
+
+;; ---------------------------------------------------------------------------
+;; The Whitehead tower
+;; ---------------------------------------------------------------------------
+(define (sphere-space n) (finite-effective-space (simplicial-sphere n)))
+;; one stage: from a (k-1)-connected effective space Xk, (H_k . X_(k+1))
+(define (whitehead-step Xk k)
+  (let* ((E (effective-space-small Xk))
+         (H (effective-complex-homology E k))
+         (hk (list-ref H k))
+         (mf (cyclic-homology-functional E k)) (m (car mf)) (phi (cdr mf)))
+    (if (not (hm-all? (lambda (row) (or (= 0 (car row)) (and (= 0 (cadr row)) (null? (caddr row))))) (cdr (list-head H k))))
+        (error "whitehead-step: the space is not (k-1)-connected" k H))
+    (if (= m 1) (cons hk Xk)
+        (let* ((X (effective-space-simplicial-set Xk)) (r (effective-space-reduction Xk))
+               (z (lambda (x) (let ((v (effective-complex-vector E k (reduction-f-cell r k x))))
+                                (hm-mod (if (= m 0) 0 m) (let loop ((i 0) (s 0)) (if (= i (vector-length v)) s (loop (+ i 1) (+ s (* (vector-ref v i) (vector-ref phi i))))))))))
+               (pm (if (= m 0) 0 m))
+               (F (eilenberg-maclane-space-cached pm (- k 1)))
+               (tau (cocycle-twisting X z k pm))
+               (memo (make-hash-table))
+               (tau* (lambda (x d) (let ((key (cons d x))) (or (hash-table-ref/default memo key #f)
+                                                               (let ((v (tau x d))) (hash-table-set! memo key v) v)))))
+               (name (string-append (effective-space-name Xk) "<" (number->string k) ">")))
+          (cons hk (twisted-product-space name Xk F tau*))))))
+(define (list-head l k) (let loop ((l l) (k k) (acc '())) (if (or (= k 0) (null? l)) (reverse acc) (loop (cdr l) (- k 1) (cons (car l) acc)))))
+;; pi_k(X) for k = 2 .. nmax as homology rows (k betti torsion)
+(define (homotopy-groups Xspace nmax)
+  (let loop ((k 2) (Xk Xspace) (acc '()))
+    (if (> k nmax) (reverse acc)
+        (let ((step (whitehead-step Xk k)))
+          (loop (+ k 1) (cdr step) (cons (car step) acc))))))
+(define (homotopy-group-report row)
+  (let ((b (cadr row)) (t (caddr row)))
+    (cond ((and (= b 0) (null? t)) "0")
+          ((and (= b 1) (null? t)) "Z")
+          ((and (= b 0) (= 1 (length t))) (string-append "Z/" (number->string (car t))))
+          (else (string-append "Z^" (number->string b) " + torsion")))))

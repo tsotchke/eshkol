@@ -61,10 +61,20 @@ PJRT_Error* deviceKind(PJRT_DeviceDescription_Kind_Args* a) {
 PJRT_Error* deviceAddressable(PJRT_Device_IsAddressable_Args* a) {
     a->is_addressable = true; return nullptr;
 }
+// CompileOptionsProto for one replica, derived by hand from the protobuf
+// encoding: field 3 (LEN, 4 bytes) holding ExecutableBuildOptionsProto
+// { field 4 (VARINT) = 1, field 5 (VARINT) = 1 }. Every compile the runtime
+// issues against this fixture must send exactly these bytes.
+const unsigned char single_replica_compile_options[] = {0x1A, 0x04, 0x20, 0x01, 0x28, 0x01};
+
 PJRT_Error* compile(PJRT_Client_Compile_Args* a) {
     ++compile_calls;
     const char* fail = std::getenv("PJRT_TEST_COMPILE_FAIL");
     if (fail && std::strcmp(fail, "1") == 0) return &compile_error_handle;
+    if (a->compile_options_size != sizeof single_replica_compile_options ||
+        std::memcmp(a->compile_options, single_replica_compile_options,
+                    sizeof single_replica_compile_options) != 0)
+        return &compile_error_handle;
     a->executable = reinterpret_cast<PJRT_LoadedExecutable*>(&loaded_executable_handle);
     return nullptr;
 }

@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2919/6551 public symbols documented (44.6%), 3632 undocumented.
+**Coverage:** 2929/6575 public symbols documented (44.5%), 3646 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -129,7 +129,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-331/672 symbols documented.
+341/696 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -155,9 +155,11 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/net.h`](core/net.md) | 10 | 10 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
+| [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 67 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 73 | 56 |
+| [`core/saturating_vjp.h`](core/saturating_vjp.md) | 2 | 1 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
