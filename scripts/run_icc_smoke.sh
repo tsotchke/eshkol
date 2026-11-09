@@ -348,16 +348,11 @@ probe eskm_v1_model_load_engine_parity \
         "$ESHKOL_RUN" "$BUILD_DIR_PATH/eshkol-vm-standalone-test"'
 
 probe image_io_works "image-read returns a tensor of expected shape" \
-    'tmp=$(mktemp).esk; img=$(mktemp).png;
-     printf "\\x89PNG\\r\\n\\x1a\\n" > "$img";  ## just a header — image-read should error gracefully
-     cat > "$tmp" <<EOF
-;; Smoke: builtin recognized and callable. Real shape probe deferred to
-;; tests/v1_2_edge_cases/image_io_test.esk.
-(define (probe) (with-exception-handler (lambda (e) #t)
-                                         (lambda () (image-read "/nonexistent.png"))))
-(probe) (exit 0)
-EOF
-     "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp" "$img"; exit $rc'
+    'cd "$REPO_ROOT";
+     ## The real shape test: PNG/JPEG/BMP round trips through image-write and
+     ## image-read with shape and sample checks, plus the WebP refusal.
+     out=$("$ESHKOL_RUN" -r tests/v1_2_edge_cases/image_io_test.esk 2>&1) || { printf "%s" "$out"; exit 1; };
+     printf "%s" "$out" | grep -q "RESULT: ALL PASS"'
 
 probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
     'cd "$REPO_ROOT";
@@ -543,13 +538,14 @@ probe parallel_map_scope_reclaim_race \
 probe jit_cache_hit_invalidates 'eshkol-run -r persistent cache hits and source edits invalidate' \
     'bash "$REPO_ROOT/tests/v1_3_edge_cases/jit_cache_test.sh" "$ESHKOL_RUN"'
 
-probe native_image_io_no_stb 'image-read uses platform APIs, not bundled deps/stb' \
+probe native_image_io_no_stb 'image-read uses the built-in codecs: no deps/stb and no external codec library' \
     'cd "$REPO_ROOT";
-     ## v1.3 commits to removing deps/stb in favour of native platform
-     ## media APIs. This probe fails if the vendored tree or direct include
-     ## path comes back.
-     if grep -q "deps/stb" lib/core/image_io.c 2>/dev/null; then exit 1; fi;
+     ## v1.4 moves image codecs into the runtime. This probe fails if the
+     ## vendored stb tree comes back, if image I/O includes a system or
+     ## third-party codec header, or if the CMake module searches for one.
      if [ -d deps/stb ]; then exit 1; fi;
+     if grep -qE "deps/stb|<png[.]h>|<jpeglib[.]h>|<webp/|<ImageIO/|<gdiplus[.]h>" lib/core/image_io.c lib/core/image_*.cpp 2>/dev/null; then exit 1; fi;
+     if sed "s/#.*//" cmake/EshkolImageIO.cmake | grep -qE "find_package|find_library|pkg_check_modules"; then exit 1; fi;
      exit 0'
 
 probe pgo_pipeline_works 'cmake -DESHKOL_PGO=generate/use supports a profile-guided binary' \

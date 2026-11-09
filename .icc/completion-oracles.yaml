@@ -1378,7 +1378,7 @@ oracles:
           event_names: ["native_image_io_no_stb"]
           event_values: ["PASS"]
         severity: high
-        label: 'image-read uses platform APIs, not bundled deps/stb'
+        label: 'image-read uses the built-in codecs: no bundled deps/stb and no external codec library (no codec header in lib/core/image_*, no codec search in cmake/EshkolImageIO.cmake)'
         action: ./scripts/run_icc_smoke.sh
 
       # severity: high (F19 false-green sweep): measured behaviour (the PGO
@@ -2185,6 +2185,20 @@ oracles:
         severity: high
         label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
         action: run_icc_smoke
+
+      # ROADMAP v1.4.0 codebase row. One group over the six CTest gates the
+      # row ships with (member floor 6): image codec goldens recorded from the
+      # previous system codecs, the language-level image round trip, the
+      # configure contract with codec packages disabled, the region runtime
+      # test over the four region units, and doc-truth phase 1 (unit + the
+      # recomputed ranking against the committed quota).
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["v140_codebase_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'v1.4.0 codebase: image I/O with built-in PNG/JPEG/BMP codecs and no external codec library, runtime regions in four translation units, doc-truth ratchet phase 1 (image_codecs_test, image_io_language_test, test_native_image_io_contract, runtime_regions_test, doc_truth_ratchet_unit, doc_truth_ratchet_phase1)'
+        action: ./scripts/run_ctest_gate.sh
 
       # ─────────────────────────────────────────────────────────
       # Networking (#145/#146/#148/#150/#161)
