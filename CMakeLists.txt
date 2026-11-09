@@ -2566,6 +2566,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
   lib/core/runtime_tensor_math.cpp
+  lib/core/runtime_exact_tensor.cpp
   lib/core/tensor_validation.cpp
   lib/core/runtime_vector_mutation.cpp
   lib/core/tensor_cross_entropy.c
@@ -15036,6 +15037,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
         FIXTURES_REQUIRED exact_foundations_local_stdlib
         PASS_REGULAR_EXPRESSION "PASS: exact_psd_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+
+    # ADR-0058: the exact tensor element type (construction, exact kernels,
+    # contagion, refusals, lib/math.esk exact seeds, NS mechanization steps),
+    # cross-checked against core.exact_linalg under JIT and AOT.
+    add_test(NAME exact_tensor_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_tensor_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME exact_tensor_aot COMMAND ${CMAKE_COMMAND}
+        "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+        "-DESHKOL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/exact_tensor_test.esk"
+        "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/exact_tensor_aot${CMAKE_EXECUTABLE_SUFFIX}"
+        "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+    set_tests_properties(exact_tensor_jit exact_tensor_aot PROPERTIES TIMEOUT 900
+        ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0"
+        FIXTURES_REQUIRED exact_foundations_local_stdlib
+        PASS_REGULAR_EXPRESSION "PASS: exact_tensor_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
     add_test(NAME tensor_snapshot_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/tensor_snapshot_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")

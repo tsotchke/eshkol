@@ -71,6 +71,9 @@
 #include <eshkol/core/unicode.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
+static_assert(eshkol::TensorCodegen::TENSOR_DTYPE_EXACT == ESHKOL_TENSOR_DTYPE_EXACT &&
+                  eshkol::TensorCodegen::TENSOR_DTYPE_DUAL == ESHKOL_TENSOR_DTYPE_DUAL,
+              "TensorCodegen dtype mirrors must match lib/core/arena_memory.h");
 #include <sstream>
 #include <cstdlib>
 
@@ -18269,9 +18272,7 @@ private:
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
                 // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
                 Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
-                Value* t_tagged = builder->CreateOr(
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
+                Value* t_tagged = ctx_->emitDtypeHasTaggedSlots(tdtype);
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -18365,9 +18366,7 @@ private:
                 Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
                 // ADR-0020: a promoted (boxed) carrier's slots are tagged values.
                 Value* tdtype = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 4));
-                Value* t_tagged = builder->CreateOr(
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)),
-                    builder->CreateICmpEQ(tdtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)));
+                Value* t_tagged = ctx_->emitDtypeHasTaggedSlots(tdtype);
                 builder->CreateBr(mb);
                 BasicBlock* tb_exit = builder->GetInsertBlock();
                 builder->SetInsertPoint(vb);
@@ -36934,9 +36933,7 @@ private:
         {
             Value* tref_dtype = builder->CreateLoad(int64_type,
                 builder->CreateStructGEP(tensor_type, vector_ptr, 4), "tref_dtype");
-            Value* tref_is_tagged = builder->CreateOr(
-                builder->CreateICmpEQ(tref_dtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_DUAL)),
-                builder->CreateICmpEQ(tref_dtype, ConstantInt::get(int64_type, ESHKOL_TENSOR_DTYPE_BOXED)));
+            Value* tref_is_tagged = ctx_->emitDtypeHasTaggedSlots(tref_dtype);
             BasicBlock* tref_tagged = BasicBlock::Create(*context, "vref_tensor_tagged_slot", current_func);
             BasicBlock* tref_numeric = BasicBlock::Create(*context, "vref_tensor_numeric_slot", current_func);
             builder->CreateCondBr(tref_is_tagged, tref_tagged, tref_numeric);
@@ -37224,9 +37221,10 @@ private:
                 builder->CreateStructGEP(tensor_type, ptr_a, 4));
             Value* b_dtype = builder->CreateLoad(int64_type,
                 builder->CreateStructGEP(tensor_type, ptr_b, 4));
-            Value* dual_code = ConstantInt::get(int64_type, eshkol::TensorCodegen::TENSOR_DTYPE_DUAL);
-            Value* a_is_dual = builder->CreateICmpEQ(a_dtype, dual_code);
-            Value* b_is_dual = builder->CreateICmpEQ(b_dtype, dual_code);
+            // ADR-0058: an exact tensor takes the same tagged kernel, which
+            // multiplies and sums through the generic exact ring.
+            Value* a_is_dual = ctx_->emitDtypeIsTaggedNumeric(a_dtype);
+            Value* b_is_dual = ctx_->emitDtypeIsTaggedNumeric(b_dtype);
             Value* any_dual = builder->CreateOr(a_is_dual, b_is_dual);
 
             Function* mm_fn = builder->GetInsertBlock()->getParent();

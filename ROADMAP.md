@@ -950,16 +950,22 @@ under the same discipline that made `Qubit` linear.
       counter, so a pass opened in the precompiled stdlib and a pass opened in
       user code nest as levels of one carrier. Gated JIT and AOT by
       `scripts/run_symbolic_fields_gate.sh`
-- [ ] Exact linear algebra, remainder: an exact tensor element type.
-      **Partially SHIPPED in v1.3.5-evolve:** `core.exact_linalg` provides
-      matrix multiply, transpose, fraction-free determinant, solve, inverse,
-      rank, nullspace and torus averaging over the scalar exact tower, staying
-      exact under R7RS numeric contagion whenever every input does. Still open:
-      `lib/math.esk`'s `det`/`inv` seed inexact constants,
-      `lib/core/linear_solve.cpp` and the BLAS entry points are f64-only, and
-      tensors are f64-backed, so an exact system over tensor storage must still
-      be written out on Scheme vectors. Both items are used step by step in
+- [x] Exact linear algebra: an exact tensor element type - SHIPPED in
+      v1.4.0-connection (ADR-0058). Tensors of dtype `exact` carry exact
+      rationals of the scalar tower in tensor storage (`(tensor-cast X 'exact)`,
+      `(make-tensor shape fill :dtype 'exact)`); element access, elementwise
+      arithmetic, `matmul`, `transpose`, `tensor-sum`, `tensor-det`,
+      `tensor-inverse`, `tensor-solve` and `linear-solve` stay exact when every
+      operand is exact (fraction-free elimination; singularity decided exactly),
+      mixed exact/inexact operands follow R7RS contagion by operand dtype, and
+      the f64 kernels (BLAS, the f64 LU family, `linear_solve.cpp`) are never
+      handed an exact tensor: linear algebra dispatches it to the exact path and
+      every other f64-only kernel refuses it by name. `lib/math.esk`'s `det`/`inv`/`solve`
+      seed exact constants, and `core.exact_linalg` (v1.3.5) accepts exact
+      tensors and cross-checks the native kernels. The Navier-Stokes steps of
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+      that solve exact systems run on exact tensors. Exact tensors on the
+      bytecode VM are planned for v1.4.1 (the VM refuses the dtype explicitly)
 - [ ] Ring carriers, the functor-of-points evaluation model (ADR-0034,
       Proposed): one ring-carrier protocol, registered once per engine, for
       the numeric tower, the forward-mode and Taylor AD carriers, modular,

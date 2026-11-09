@@ -2147,6 +2147,18 @@ oracles:
   - name: v1.4-connection
     aliases: [v1.4, v1.4-release, release-1.4, connection]
     requires:
+      # ADR-0058 exact tensor element type (v1.4.0 item: exact linear algebra
+      # over tensor storage, cross-checked against core.exact_linalg).
+      - test_evidence: true
+        severity: high
+        label: Exact tensors keep exact rationals through arithmetic, matmul, det, inverse and solve, follow contagion, and match core.exact_linalg under JIT
+        required_names: [exact_tensor_jit]
+        action: ctest --test-dir build --output-on-failure -R '^exact_tensor_jit$'
+      - test_evidence: true
+        severity: high
+        label: Exact tensors keep exact rationals through arithmetic, matmul, det, inverse and solve, follow contagion, and match core.exact_linalg under AOT
+        required_names: [exact_tensor_aot]
+        action: ctest --test-dir build --output-on-failure -R '^exact_tensor_aot$'
       - runtime_event:
           event_kinds: [ad_exact]
           event_names: ["ad_taylor_p4_guw_multivariate"]

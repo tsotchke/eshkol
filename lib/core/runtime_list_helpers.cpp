@@ -15,12 +15,15 @@
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/rational.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
 extern "C" {
 
 extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+extern void eshkol_enforce_tensor_elements(int64_t num_elements);
+extern void* eshkol_tensor_cast_alloc(void* arena, void* tensor_ptr, int64_t dtype);
 
 /* ESH-0393: the AD seed/point coercion authority (lib/core/runtime_taylor.c).
  * Converts any numeric tagged value — int64, double, bignum, rational, jet,
@@ -278,9 +281,43 @@ static void coll_raise(const char* message) {
  * primal or as its pointer bits. Anything else is not a number and raises. */
 static void coll_store_leaf(eshkol_tensor_t* t, uint64_t pos,
                             const eshkol_tagged_value_t* e) {
+    // An exact tensor under construction is the explicit conversion
+    // `(tensor-cast X 'exact)` asked for (ADR-0058): an exact leaf is kept as
+    // it is and a finite double becomes the exact rational it denotes, as
+    // `exact` gives it. Anything else has no exact value and raises.
+    if (t->dtype == ESHKOL_TENSOR_DTYPE_EXACT) {
+        eshkol_tagged_value_t leaf = *e;
+        if ((leaf.type & 0x0F) == ESHKOL_VALUE_DOUBLE) {
+            if (!std::isfinite(leaf.data.double_val)) {
+                coll_raise("tensor-cast: an infinite or NaN element has no exact value");
+                return;
+            }
+            eshkol_double_to_exact_tagged(get_global_arena(), leaf.data.double_val, &leaf);
+        }
+        if (eshkol_tensor_slot_store(t, (int64_t)pos, &leaf) != ESHKOL_SLOT_STORE_OK) {
+            coll_raise("tensor-cast: element is not a real number, so it has no exact value");
+        }
+        return;
+    }
     if (eshkol_tensor_slot_store(t, (int64_t)pos, e) != ESHKOL_SLOT_STORE_OK) {
         coll_raise("tensor: element is not a number");
     }
+}
+
+/* Allocate a rank-`ndim` tensor of `total` slots for the walker: f64 slots, or
+ * tagged slots when `exact` (ADR-0058). Dimensions are left for the caller. */
+static eshkol_tensor_t* coll_allocate(arena_t* arena, uint64_t ndim, uint64_t total,
+                                      bool exact) {
+    if (!exact) return arena_allocate_tensor_full(arena, ndim, total);
+    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, ndim, 0);
+    if (!t) return nullptr;
+    eshkol_enforce_tensor_elements((int64_t)total);
+    t->elements = (int64_t*)arena_allocate(
+        arena, (size_t)(total ? total : 1) * sizeof(eshkol_tagged_value_t));
+    if (!t->elements) return nullptr;
+    t->total_elements = total;
+    t->dtype = ESHKOL_TENSOR_DTYPE_EXACT;
+    return t;
 }
 
 /**
@@ -431,18 +468,20 @@ static bool coll_fill(const eshkol_tagged_value_t* node,
 // (garbage), and (tensor (list (list 1 2) (list 3 4))) made a rank-1 tensor of
 // zeros. Returns the tensor pointer, or nullptr on allocation failure; a
 // non-rectangular nest raises a catchable error and does not return.
-void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
+static void* tensor_from_collection_impl(arena_t* arena, const eshkol_tagged_value_t* input,
+                                         bool exact) {
     if (!arena || !input) return nullptr;
 
     const coll_kind_t kind = coll_classify(input);
 
     if (kind == COLL_TENSOR) {
-        return (void*)(uintptr_t)input->data.ptr_val;  // already a tensor
+        void* t = (void*)(uintptr_t)input->data.ptr_val;  // already a tensor
+        return exact ? eshkol_tensor_cast_alloc(arena, t, ESHKOL_TENSOR_DTYPE_EXACT) : t;
     }
 
     if (kind == COLL_LEAF) {
         // Scalar -> 1-element tensor.
-        eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, 1);
+        eshkol_tensor_t* t = coll_allocate(arena, 1, 1, exact);
         if (!t) return nullptr;
         if (t->dimensions) t->dimensions[0] = 1;
         coll_store_leaf(t, 0, input);
@@ -472,7 +511,7 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
         total *= dims[i];
     }
 
-    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)ndim, total);
+    eshkol_tensor_t* t = coll_allocate(arena, (uint64_t)ndim, total, exact);
     if (!t) return nullptr;
     if (t->dimensions) {
         for (int i = 0; i < ndim; i++) t->dimensions[i] = dims[i];
@@ -483,6 +522,18 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
         return nullptr;  // coll_fill already raised
     }
     return t;
+}
+
+void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
+    return tensor_from_collection_impl(arena, input, false);
+}
+
+/* (tensor-cast X 'exact) for a list, a vector, a nest of them, a scalar or a
+ * tensor: the same walker and shape rules as `(tensor X)`, building an exact
+ * tensor (ADR-0058). Exact leaves are kept whole; a finite double becomes the
+ * exact rational it denotes. */
+void* eshkol_exact_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
+    return tensor_from_collection_impl(arena, input, true);
 }
 
 /**
