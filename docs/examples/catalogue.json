@@ -1554,7 +1554,7 @@
     },
     {
       "path": "examples/mathematics_cohomology_rings_cup_products.esk",
-      "source_sha256": "477404079549a166a41dba2c054c3e32c5fcb954ac49364a78174a2a6fbef207",
+      "source_sha256": "e6682f735bf5c10e428c6cab54203cdccba7a8217f8acecd63962945c4bf0f53",
       "title": "Cup products and Bockstein on finite-group nerves",
       "kind": "mathematics",
       "purpose": "Compute ring information beyond cohomology dimensions and identify selected Dijkgraaf–Witten twists.",
@@ -1585,15 +1585,15 @@
           "text": "(define (range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))"
         },
         {
-          "line": 231,
+          "line": 230,
           "text": "(check \"none of the 127 nonzero combinations of the seven surviving monomials is a Q/Z coboundary: the twists form (Z/2)^7\""
         },
         {
-          "line": 236,
+          "line": 235,
           "text": "(check \"the seven survivors span the twists together with the three Sq^1 images: 7 + 3 = 10 = dim H^3(G; Z/2)\""
         },
         {
-          "line": 238,
+          "line": 237,
           "text": "(check \"negative control -- the zero cochain and the coboundary of a 2-cochain are Q/Z coboundaries\""
         }
       ],

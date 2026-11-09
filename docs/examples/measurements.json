@@ -602,7 +602,7 @@
       "output_lines": 57
     },
     "examples/mathematics_cohomology_rings_cup_products.esk": {
-      "source_sha256": "477404079549a166a41dba2c054c3e32c5fcb954ac49364a78174a2a6fbef207",
+      "source_sha256": "e6682f735bf5c10e428c6cab54203cdccba7a8217f8acecd63962945c4bf0f53",
       "jit": {
         "status": "NOT-RUN"
       },

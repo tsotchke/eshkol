@@ -422,7 +422,7 @@ Manual commands from the repository root, after satisfying the prerequisites:
 
 ## Cup products and Bockstein on finite-group nerves
 
-Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_cohomology_rings_cup_products.esk#L1). SHA-256: `477404079549a166a41dba2c054c3e32c5fcb954ac49364a78174a2a6fbef207`.
+Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_cohomology_rings_cup_products.esk#L1). SHA-256: `e6682f735bf5c10e428c6cab54203cdccba7a8217f8acecd63962945c4bf0f53`.
 
 **Published result:** The classical ring structures H*(BZ/2; F₂) = F₂[x] and H*(BZ/p; F_p) = Λ[y] ⊗ F_p[x₂] for odd p, with x₂ = β(y) (Hatcher, Example 3.41 and §3.E), the Bockstein identity Sq¹ = β, and de Wild Propitius's identification (1995) of the type I, II, III Dijkgraaf–Witten cocycles on (Z/2)³ with cubic monomials, whose 7 independent classes give H³((Z/2)³; Q/Z) ≅ (Z/2)⁷.
 
@@ -448,7 +448,7 @@ Source: [mathematics_cohomology_rings_cup_products.esk](../examples/mathematics_
 
 **Measured at `60f345def`** (Eshkol Compiler v1.3.6-evolve, Release, macOS arm64): **NOT-RUN**. This source now delegates to core.simplicial and core.homological and was not measured at the recorded release SHA. The original source receipt is preserved under previous_source_receipt. Run the release compiler and re-ingest before assigning a new release PASS.
 
-Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_cup_products.esk#L1), [line 64](../examples/mathematics_cohomology_rings_cup_products.esk#L64), [line 231](../examples/mathematics_cohomology_rings_cup_products.esk#L231), [line 236](../examples/mathematics_cohomology_rings_cup_products.esk#L236), [line 238](../examples/mathematics_cohomology_rings_cup_products.esk#L238).
+Implementation/check anchors: [line 1](../examples/mathematics_cohomology_rings_cup_products.esk#L1), [line 64](../examples/mathematics_cohomology_rings_cup_products.esk#L64), [line 230](../examples/mathematics_cohomology_rings_cup_products.esk#L230), [line 235](../examples/mathematics_cohomology_rings_cup_products.esk#L235), [line 237](../examples/mathematics_cohomology_rings_cup_products.esk#L237).
 
 Manual commands from the repository root, after satisfying the prerequisites:
 
