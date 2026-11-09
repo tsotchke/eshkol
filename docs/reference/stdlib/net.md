@@ -5,66 +5,142 @@ owner-area: runtime
 since: v1.4.0-connection
 sources:
   - lib/core/net.esk
+  - lib/core/net.c
+  - lib/core/resource_lease.c
+  - inc/eshkol/core/net.h
+  - inc/eshkol/core/resource_lease.h
 ---
 
 # TCP and UDP
 
-`(require core.net)` exposes bounded native POSIX sockets for numeric IPv4 and
-IPv6 addresses. DNS, TLS and standalone VM FFI integration are not implemented
-by this module. Windows and WASM return error code `-3` (unsupported) rather
-than pretending to create a socket. Native Linux and macOS use nonblocking
-kernel sockets with monotonic deadlines.
+`(require core.net)` exposes native sockets for numeric IPv4 and IPv6
+addresses. Every socket is a SOCKET-kind handle in the runtime's shared
+resource registry (see [resource leases](../runtime/resource-leases.md)):
+
+- one operation holds a handle at a time (an exclusive lease);
+- every operation has one monotonic deadline, shared by all of its retries;
+- waits go through the calling thread's event loop (kqueue on macOS, epoll on
+  Linux), so a close or cancellation from another thread wakes them at once;
+- every handle closes exactly once, at a single close site per kind, and the
+  scoped forms close it on every exit path.
+
+DNS is not performed: addresses are numeric. TLS lives in [core.tls](tls.md).
+Native JIT and AOT programs on Linux and macOS run sockets. Windows sockets are
+Planned for v1.4.1 and return error code `-3` (unsupported) until then, as do
+WebAssembly builds. The bytecode VM refuses `core.net` at compile time with
+`core.net and core.tls are not supported by the bytecode VM`.
+
+## Handles and their kinds
+
+| Kind | Acquire | Close | Scoped form |
+|---|---|---|---|
+| TCP listener | `(tcp-listen address port)` | `tcp-close` | `(call-with-tcp-listener address port proc)` |
+| TCP stream | `(tcp-connect address port timeout-ms)`, `(tcp-accept listener timeout-ms)` | `tcp-close` | `(call-with-tcp-connection address port timeout-ms proc)`, `(call-with-tcp-accept listener timeout-ms proc)` |
+| UDP socket | `(udp-bind address port)` | `udp-close` | `(call-with-udp-socket address port proc)` |
+
+`tcp-close` refuses a UDP handle and `udp-close` refuses a TCP handle. A second
+close of the same handle, or a close of a stale handle, returns error `-4`.
+Handles are exact positive integers no larger than 2^53 - 1, distinct from OS
+descriptors, and never reused, so a stale handle cannot reach a later socket
+that received the same descriptor. They cannot survive serialization or move
+to another process. The descriptor limit of the process bounds how many are
+open at once; reaching it returns error `-1` and closing a handle frees a slot.
+
+A scoped form acquires the handle, calls `(proc handle)`, and closes the handle
+exactly once when `proc` returns, raises, or escapes through a continuation.
+It returns `proc`'s value; an exception or continuation escape keeps its
+original value. Re-entering a finished scope through a saved continuation
+raises a network error with code `-4` before `proc` runs again. If acquisition
+fails, the scoped form returns that network error without calling `proc`.
+
+## Byte-counted I/O
+
+These procedures read and write a range `[start, start + count)` of a caller
+bytevector and never copy through strings.
 
 | Procedure | Result |
 |---|---|
-| `(tcp-listen address port)` | Listener handle; port zero chooses an ephemeral port. Backlog is 64. |
-| `(tcp-connect address port timeout-ms)` | Connected handle. |
-| `(tcp-accept listener timeout-ms)` | A separate connected handle. |
-| `(tcp-read handle capacity timeout-ms)` | Up to capacity bytes as a string; `""` means EOF. |
-| `(tcp-write handle data timeout-ms)` | Bytes sent, potentially fewer than the input byte length. |
-| `(udp-bind address port)` | Datagram handle. |
-| `(udp-sendto handle address port data timeout-ms)` | Datagram byte count. |
-| `(udp-recvfrom handle capacity timeout-ms)` | `#(payload sender-endpoint)`. IPv6 endpoints use `[address]:port`. |
-| `(net-local-address handle)`, `(net-peer-address handle)` | Numeric address string. |
-| `(net-local-port handle)`, `(net-peer-port handle)` | Exact integer port. Peer queries require a connected socket. |
-| `(net-nonblocking! handle enabled)` | Zero on success; enabled handles ignore wait budgets and return immediately. |
-| `(tcp-close handle)`, `(udp-close handle)` | Zero on success. Close applies to either handle family. |
+| `(tcp-read! stream bv start count timeout-ms)` | Bytes received (at least one), the eof object at end of stream, or an error. `count` must be positive. |
+| `(tcp-write! stream bv start count timeout-ms)` | Bytes accepted by the kernel, possibly fewer than `count`. |
+| `(tcp-write-all! stream bv start count timeout-ms)` | `count` once every byte is sent within one deadline, or an error. |
+| `(tcp-shutdown stream how)` | Zero; `how` is `'read`, `'write` or `'both`. The peer of a `'write` shutdown reads end of stream. |
+| `(udp-send-to! socket address port bv start count timeout-ms)` | Datagram byte count (at most 65,507). |
+| `(udp-receive-from! socket bv start count timeout-ms)` | `#(byte-count sender truncated?)`. A longer datagram is consumed: its first `count` bytes are stored, `byte-count` is `count` and `truncated?` is `#t`. |
+| `(net-cancel! handle)` | Zero. Cancels the operation waiting on `handle` from any thread, or else the next operation to wait; that operation returns error `-6`. Cancellation is consumed once. |
 
-Failures return an opaque error object. Inspect it with `network-error?`,
-`network-error-code`, and `network-error-operation`:
+The string procedures remain available: `(tcp-read handle capacity timeout-ms)`
+returns a string (`""` at end of stream), `(tcp-write handle data timeout-ms)`
+a partial byte count, `(udp-sendto handle address port data timeout-ms)` a
+byte count, and `(udp-recvfrom handle capacity timeout-ms)` a vector
+`#(payload sender)`; it refuses a datagram longer than `capacity` with error
+`-8` after consuming it. String reads take at most 1 MiB per call.
 
-| Code | Meaning |
-|---|---|
-| `-1` | System/network failure, including connection refusal or allocation failure. |
-| `-2` | Timeout or would-block; distinct from TCP EOF and a zero-length UDP datagram. |
-| `-3` | Unsupported platform. |
-| `-4` | Invalid argument, stale/wrong-kind handle, or oversized received datagram. |
+Endpoint queries: `(net-local-address h)`, `(net-peer-address h)` return a
+numeric address; `(net-local-port h)`, `(net-peer-port h)` an exact port.
+Senders render as `address:port`, with brackets for IPv6. `(net-nonblocking! h
+#t)` makes every later wait on `h` a single readiness pass.
 
-Counts, ports and timeout budgets must be exact integers in range. Timeouts
-range from zero through 2,147,483,647 milliseconds. Reads require positive
-capacity (TCP at most 1 MiB; UDP at most 65,535 bytes); writes accept empty
-strings and preserve embedded NUL bytes. TCP writes are partial: use the
-returned **byte count** to send the remaining bytes. A short TCP read is normal.
-UDP sends are limited to 65,507 bytes; a datagram exceeding receive capacity
-is consumed and rejected, never silently returned as a truncated payload.
+## Deadlines
 
-Handles are process-local, opaque positive integers, distinct from OS file
-descriptors. There are 256 simultaneously allocated slots and at most 2^53 - 1 handle
-allocations per process; exhaustion refuses further creation. Handles are never
-reused, so a stale close cannot close a later socket that reused its OS
-file descriptor. Close invalidates a handle immediately; in-flight operations
-retain the underlying descriptor until completion. It is not a cancellation
-API: blocked operations may return EOF/error or wait until their own deadline.
-The caller must close all handles before process exit. They cannot survive
-serialization or be transferred to another process.
+A timeout is an exact integer from zero to 2,147,483,647 milliseconds. It
+becomes one monotonic deadline when the operation starts; retries after a
+signal or a partial transfer use the time that remains and never restart it. A
+zero timeout performs one nonblocking readiness pass and returns error `-2`
+(would-block) instead of sleeping. A read or write that reaches its deadline
+leaves the handle usable.
 
-The Scheme network operations enforce `core.capabilities` network policy;
-endpoint queries and cleanup remain available after revocation. Addresses are
-explicit: `127.0.0.1`/`::1` are loopback, while `0.0.0.0`/`::` expose listeners
-on every interface. No address or service is contacted implicitly.
+## Outcomes
 
-`python3 scripts/run_net_gate.py` runs public Scheme TCP/UDP roundtrips with a
-30-second process deadline. `net_runtime_test` separately uses independent
-POSIX peers, checks IPv6, real timeout timing and 1,000 close/reopen cycles.
-Unsupported-platform test builds verify refusal; they do not certify Windows
-or WASM networking support.
+Failures return an error object; inspect it with `network-error?`,
+`network-error-code`, `network-error-operation` and `network-error-reason`:
+
+| Code | Reason | Meaning |
+|---|---|---|
+| `-1` | `system` | Operating-system failure, including descriptor exhaustion. |
+| `-2` | `timeout` | Deadline reached; a zero deadline reports would-block. |
+| `-3` | `unsupported` | No socket support on this platform or build. |
+| `-4` | `invalid` | Invalid argument, out-of-range bytevector range, or a stale, closed or wrong-kind handle. |
+| `-5` | `busy` | Another operation (or a TLS session) holds the handle. |
+| `-6` | `cancelled` | Cancelled with `net-cancel!`, or closed by another thread during the operation. |
+| `-7` | `reset` | The peer reset the connection or stopped reading. |
+| `-8` | `truncated` | A datagram exceeded the string receive capacity. |
+| `-9` | `refused` | The peer refused the connection. |
+
+## Concurrency
+
+Handles may be used from any thread, one operation at a time. A second
+operation on a handle that is in use returns `-5` instead of waiting. `tcp-close`
+or `udp-close` from another thread makes the handle unusable at once, wakes the
+operation in progress (which returns `-6`), and closes the descriptor when that
+operation ends. Use `net-cancel!` to stop an operation and keep the handle.
+
+## Capabilities
+
+Creating sockets and moving bytes require the `network` capability from
+`core.capabilities`; acquisition also checks the address and port. Endpoint
+queries, cancellation and close remain available after the policy changes, so
+owned sockets can always be released. Addresses are explicit: `127.0.0.1` and
+`::1` are loopback, while `0.0.0.0` and `::` expose a listener on every
+interface.
+
+## Static ownership checking
+
+`eshkol-run --strict-resources` recognizes the acquire and close sites above
+for the stock `core.net` module (see
+[strict resource ownership](../../development/strict_resource_ownership.md)).
+The runtime guarantees hold without it.
+
+## Evidence
+
+- `net_lease_test` (C): partial writes against a slow peer, peer reset, read,
+  accept and connect deadlines, cancellation from another thread, busy leases,
+  shutdown, kind-checked close, truncation, and an unchanged descriptor count
+  after 1,000 connection cycles.
+- `net_core_jit`, `net_core_aot`: the same behaviours through the Scheme surface,
+  plus guaranteed close on return, exception and continuation escape, re-entry
+  refusal, and network capability denial.
+- `net_close_concurrency_test`: close during a blocked accept, read and receive
+  cancels the operation promptly; descriptor exhaustion refuses and recovers.
+- `net_runtime_test`, `net_roundtrip_jit`, `net_roundtrip_aot`,
+  `net_clock_failure_test`: independent POSIX peers, IPv6, and clock failure.
+- `net_vm_refusal`: the bytecode VM refusal.
