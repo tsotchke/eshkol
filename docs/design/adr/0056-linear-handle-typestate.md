@@ -28,10 +28,10 @@ sources:
 
 ## Context
 
-ADR-0004 fixes the model: a handle is an affine owner with a typestate index,
+ADR-0004 sets the model: a handle is an affine owner with a typestate index,
 `close` consumes its owner, a borrowed operation returns the owner to its
 state when the loan ends, and statically known double close and use after
-close are errors. It does not fix how a checker follows that typestate through
+close are errors. It does not say how a checker follows that typestate through
 Eshkol's control forms, which handle families it covers, or what the borrow
 pattern means at run time.
 
