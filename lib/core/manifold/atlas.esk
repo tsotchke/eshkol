@@ -623,7 +623,7 @@
 ;; the cohomology of the glued manifold (Leray).
 (define (atlas-cech-cohomology a kmax coefficients)
   (let ((cx (atlas-cech-complex a kmax coefficients)))
-    (ring-cochain-cohomology 'Z (car cx) (cadr cx))))
+    (sheaf-module-cochain-cohomology 'Z (car cx) (cadr cx))))
 ;; The nerve as a finite space (McCord): its points are the nerve simplices
 ;; J, with J <= I when J contains I, so the minimal open set of I is the
 ;; overlap U_I. Returns (X simplices).

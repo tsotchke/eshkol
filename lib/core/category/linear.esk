@@ -73,7 +73,7 @@
 (define (module-presheaf-limit F)
   (let* ((C (module-presheaf-category F)) (o (cl-offsets F)) (N (vector-ref o (category-object-count C)))
          (A (module-presheaf-limit-relations F))
-         (basis (ring-kernel (module-presheaf-ring F) (if (= 0 (vector-length A)) #f A) N)))
+         (basis (sheaf-module-kernel (module-presheaf-ring F) (if (= 0 (vector-length A)) #f A) N)))
     (vector 'module-limit (module-presheaf-ring F) (length basis) basis o)))
 (define (module-limit-rank L) (vector-ref L 2))
 (define (module-limit-basis L) (vector-ref L 3))
@@ -183,7 +183,7 @@
 ;; ((k betti torsion) ...), k = 0..kmax; torsion only over Z
 (define (module-presheaf-derived-limits F kmax)
   (let ((cx (module-presheaf-cosimplicial-complex F kmax)))
-    (ring-cochain-cohomology (module-presheaf-ring F) (car cx) (cadr cx))))
+    (sheaf-module-cochain-cohomology (module-presheaf-ring F) (car cx) (cadr cx))))
 ;; the hypercohomology of a two-term complex F --phi--> G (degrees 0 and 1),
 ;; phi a vector c -> matrix F(c) -> G(c) natural in c: the total complex
 ;; Tot^n = C^n(F) (+) C^{n-1}(G), D(a, b) = (delta a, phi a - delta b)
@@ -209,7 +209,7 @@
                 (if (> n 0)
                     (let rows ((p 0)) (if (< p (vector-ref dG n)) (begin (let cols ((q 0)) (if (< q b) (begin (integer-matrix-set! M (+ a2 p) (+ a q) (- (integer-matrix-ref (vector-ref DG (- n 1)) p q))) (cols (+ q 1))))) (rows (+ p 1))))))
                 M))))
-    (ring-cochain-cohomology (module-presheaf-ring F) (map tot (cl-range (+ kmax 1))) (map D (cl-range (+ kmax 1))))))
+    (sheaf-module-cochain-cohomology (module-presheaf-ring F) (map tot (cl-range (+ kmax 1))) (map D (cl-range (+ kmax 1))))))
 ;; dim_{F_p} H^k(-; Z/p) for k = 0..kmax-1 from integral groups ((k betti
 ;; torsion) ... up to kmax) by the universal coefficient theorem:
 ;; b_k + #{p | t in tors_k} + #{p | t in tors_{k+1}}
