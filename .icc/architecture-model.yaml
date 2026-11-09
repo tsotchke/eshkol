@@ -163,6 +163,23 @@ components:
     entry_points:
       - {path: lib/backend/arithmetic_codegen.cpp}
 
+  - id: lambda-calculus
+    role: runtime
+    description: >
+      Lambda-calculus foundations in pure Eshkol (ADR-0005, ADR-0017):
+      core.blc, Tromp's binary lambda calculus and the deterministic truth
+      oracle, and core.sblc, the stochastic binary lambda calculus (the
+      four-form sblc-v1 prefix code, seeded sampling over the isolated PRNG,
+      exact rational distributions under a step bound, the 2^-length prior
+      and exact conditioning). Probabilities are numeric-tower rationals.
+    modules:
+      - lib/core/blc.esk
+      - lib/core/sblc.esk
+      - tests/stdlib/sblc_test.esk
+      - scripts/run_sblc_gate.sh
+    entry_points:
+      - {path: lib/core/sblc.esk}
+
   - id: quantum-backend
     role: backend
     description: >
@@ -455,6 +472,16 @@ capabilities:
     dependencies: [ad-tower]
     dependency_constructor: 'run_case "fd-counter" tests/ad/fd_counter_negative_test\.esk'
     dependency_paths: [scripts/run_ad_exactness_gate.sh]
+
+  - id: sblc_exact_semantics
+    feature: Stochastic binary lambda calculus with exact rational distribution semantics, prior and conditioning (ADR-0017 first slice)
+    entry_points:
+      - {path: lib/core/sblc.esk}
+    arming:
+      kind: runtime_event
+      path: scripts/run_sblc_gate.sh
+      pattern: sblc_first_slice
+    dependencies: [lambda-calculus, numeric-tower]
 
 # --------------------------------------------------------------------------
 # INVARIANTS — one per incident class from the adversarial campaign
