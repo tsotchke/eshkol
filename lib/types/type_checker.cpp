@@ -6376,7 +6376,7 @@ static UseRange countLinearUses(const eshkol_ast_t* e,
 
         case ESHKOL_HOTT_OP:
             // Kernel syntax mentions no program variables.
-            return 0;
+            return {};
 
         case ESHKOL_QUOTE_OP:
             return {};   // quoted data is never evaluated
