@@ -742,7 +742,7 @@ Ordered. These are v1.3.5-line items, not v1.4 features:
 **Focus:** A resource-sound systems profile — connect to the outside world
 under the same discipline that made `Qubit` linear.
 
-- [ ] Signed-curvature stereographic geometry (ADR-0018): one κ-stereographic
+- [x] Signed-curvature stereographic geometry (ADR-0018): one κ-stereographic
       chart for all curvature signs in the canonical-flat `alpha = 1` gauge,
       analytic through `K = 0` with curvature jets, squared-distance geodesic
       attention, versioned coordinate migration (`x_v2 = 2 x_v1`), and the

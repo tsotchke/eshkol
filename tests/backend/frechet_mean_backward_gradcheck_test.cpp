@@ -64,7 +64,9 @@ double dot(const std::vector<double>& a, const std::vector<double>& b) {
 }
 double norm(const std::vector<double>& a) { return std::sqrt(dot(a, a)); }
 
-/** @brief Möbius addition a (+)_c x on the ball of curvature -c. */
+/** @brief Möbius addition a (+)_c x with Möbius parameter c. In the ADR-0018
+ *  chart (alpha = 1) the ball of curvature K has c = -K/4 and radius 2/sqrt(-K);
+ *  the coordinate exp/log maps below depend on c only. */
 std::vector<double> mobius_add(const std::vector<double>& a,
                                const std::vector<double>& x, double c) {
     double ax = dot(a, x), aa = dot(a, a), xx = dot(x, x);
@@ -97,7 +99,7 @@ std::vector<double> exp_map(const std::vector<double>& mu,
                             const std::vector<double>& v, double c) {
     double s = std::sqrt(c), nv = norm(v);
     if (nv <= 0.0) return mu;
-    double lam_half = s / (1.0 - c * dot(mu, mu));   /* sqrt(c) * lambda_mu / 2 */
+    double lam_half = s / (1.0 - c * dot(mu, mu));   /* sqrt(c) * lambda_mu (alpha = 1) */
     double t = std::tanh(lam_half * nv) / (s * nv);
     std::vector<double> scaled(v.size());
     for (size_t i = 0; i < v.size(); i++) scaled[i] = t * v[i];
@@ -142,12 +144,12 @@ std::vector<double> frechet_mean(const std::vector<std::vector<double>>& X,
 
 /* ===== Fixture ============================================================ */
 
-constexpr double kK = -1.0;              /* sectional curvature; c = 1        */
-constexpr double kC = 1.0;
+constexpr double kK = -1.0;              /* sectional curvature                */
+constexpr double kC = 0.25;              /* chart parameter -K/4: radius 2     */
 constexpr int64_t kN = 4;
 constexpr int64_t kD = 3;
 
-/* Points strictly inside the unit ball, deliberately asymmetric so the mean is
+/* Points strictly inside the ball, deliberately asymmetric so the mean is
  * not at the origin and no coordinate accidentally decouples. */
 const double kPts[kN * kD] = {
      0.30, -0.10,  0.20,
@@ -191,7 +193,7 @@ struct Fixture {
     double resid = 0.0;
 
     explicit Fixture(double curvature_K = kK) {
-        double c = -curvature_K;
+        double c = -0.25 * curvature_K;
         pts_data.assign(kPts, kPts + (size_t)(kN * kD));
         w_data.assign(kW, kW + (size_t)kN);
         if (c > 0.0) {
@@ -244,14 +246,14 @@ double rel_err(double a, double b) {
 
 /* ===== Near-boundary configuration: the residual SCALE ==================== */
 
-/* Four points on the sphere of radius 0.9999 in a narrow angular cluster, so
- * that the mean also sits at |mu| ~ 0.9999 and the conformal factor
- * lambda_mu = 2/(1 - c|mu|^2) is ~1e4, while the mutual hyperbolic distances
+/* Four points on the sphere of radius 2 * 0.9999 in a narrow angular cluster,
+ * so that the mean also sits at |mu| ~ 1.9998 and the conformal factor
+ * lambda_mu = 1/(1 - c|mu|^2) is ~5e3, while the mutual hyperbolic distances
  * stay around 0.1 and the problem is perfectly well conditioned in Riemannian
  * terms. This is the configuration that separates the two possible scales for
  * the stationarity residual, and it is the reason the gate measures it in
  * Riemannian units. See the check that uses it. */
-const double kNearR = 0.9999;
+const double kNearR = 2.0 * 0.9999;
 const double kNearDirs[kN * kD] = {
     1.0,  1.0e-5,  0.0,
     1.0, -2.0e-5,  1.0e-5,
@@ -295,7 +297,7 @@ void residual_ratios(const std::vector<double>& flat_pts,
         }
     }
     double fn  = norm(F);
-    double lam = 2.0 / (1.0 - c * dot(mu, mu));
+    double lam = 1.0 / (1.0 - c * dot(mu, mu));
     *amb  = fn / (wsum * (1.0 + max_log));
     *riem = (lam * fn) / (wsum * (1.0 + lam * max_log));
 }
@@ -336,13 +338,13 @@ void body_barely_not_converged() {
 
 void body_point_outside_ball() {
     Fixture f;
-    f.pts_data[0] = 1.5;      /* |x| > 1 with c = 1 */
+    f.pts_data[0] = 2.5;      /* |x| > 2, outside the K = -1 ball */
     f.dispatch();
 }
 
 void body_mean_outside_ball() {
     Fixture f;
-    f.mu[0] = 1.25;
+    f.mu[0] = 2.25;
     f.dispatch();
 }
 
@@ -353,7 +355,7 @@ void body_missing_points() {
 }
 
 /* Non-stationary by 1e-7 units of hyperbolic distance, at a mean whose conformal
- * factor is ~1e4. Measuring the residual in the ambient ball coordinates puts
+ * factor is ~5e3. Measuring the residual in the ambient ball coordinates puts
  * this at ~1e-11, comfortably inside the 1e-9 bar, so the gate would accept it
  * and the rule would return a plausible wrong gradient. Measured in the units
  * the manifold defines, it is ~1e-7 and refused. */

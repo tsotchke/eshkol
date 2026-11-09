@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 174** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3016** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 175** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3041** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -67,6 +67,7 @@ tensors are documented in [rigorous_numerics.md](rigorous_numerics.md).
 | [`core.ad.sparsity`](../../../lib/core/ad/sparsity.esk) | no | [ad_sparsity.md](ad_sparsity.md) | `hessian-color-graph` |
 | [`core.algebraic_batch`](../../../lib/core/algebraic_batch.esk) | no | [algebraic_batch.md](algebraic_batch.md) | `make-algebraic-multiplication-plan` `algebraic-batch-mul` |
 | [`core.control.trampoline`](../../../lib/core/control/trampoline.esk) | yes | [control_trampoline.md](control_trampoline.md) | `trampoline` `bounce` `done` |
+| [`core.curvature`](../../../lib/core/curvature.esk) | no | [curvature.md](curvature.md) | `chart-convention-id` `chart-alpha` `make-geometry-header` `geometry-header-check` `chart-distance` `chart-sq-distance` `chart-conformal-factor` `chart-distance-jet` `chart-sq-distance-jet` `chart-sq-distance-gradient` `chart-exp-map` `chart-log-map` `chart-transport` `chart-mobius-add` `chart-mobius-scalar` `chart-project` `chart-riemannian-grad` `chart-default-temperature` `chart-attention` `chart-attention-weights` `sphere->chart` `chart->sphere` `migrate-legacy-ball-point` `migrate-legacy-ball-tangent` `migrate-legacy-temperature` |
 | [`core.cyclotomic`](../../../lib/core/cyclotomic.esk) | no | [cyclotomic.md](cyclotomic.md) | `make-cyclotomic-field` `cyclotomic-order` `cyclotomic-degree` `cyclotomic-polynomial` `cyclotomic-element` `cyclotomic-coefficients` `cyclotomic-root` `cyclotomic-add` `cyclotomic-sub` `cyclotomic-scale` `cyclotomic-mul` `cyclotomic-inverse` `cyclotomic-zero?` `cyclotomic-equal?` `cyclotomic-rational` `cyclotomic-galois` `cyclotomic-norm` |
 | [`core.sheaf`](../../../lib/core/sheaf.esk) | no | [sheaf.md](sheaf.md) | (loads core.integer_linalg and the five core.sheaf modules below) |
 | [`core.integer_linalg`](../../../lib/core/integer_linalg.esk) | no | [integer_linalg.md](integer_linalg.md) | `integer-matrix` `integer-identity-matrix` `integer-matrix-rows` `integer-matrix-cols` `integer-matrix-ref` `integer-matrix-set!` `integer-matrix-copy` `integer-matrix-mul` `integer-matrix-equal?` `integer-matrix-from-columns` `integer-matrix-column` `integer-matrix-vector` `integer-matrix-vstack` `integer-matrix-hstack` `smith-normal-form` `smith-diagonal` `smith-left` `smith-right` `integer-rank` `integer-kernel` `integer-solve-in-basis` `integer-in-column-span?` `integer-same-lattice?` `integer-invariant-factors` `matrix-clear-denominators` `rational-rank` `rational-kernel` `rational-solve` `rational-same-span?` `cochain-cohomology` `cochain-cohomology-generators` |
