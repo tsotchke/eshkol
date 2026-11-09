@@ -4244,7 +4244,9 @@ private:
         const auto& call = node->operation.call_op;
         for (uint64_t i = 0; i < call.num_vars; ++i) {
             const eshkol_ast_t* arg = &call.variables[i];
-            if (proc_arg_nodes_.count(arg)) continue;
+            // Handle arguments the contract accepted, and procedure
+            // arguments it runs inline, are not escapes.
+            if (proc_arg_nodes_.count(arg) || allowed_resource_use_nodes_.count(arg)) continue;
             if (expressionProducesResourceValue(arg)) {
                 reportResourceError("resource value escapes through unsupported call '" +
                     function_name + "'");

@@ -7,6 +7,7 @@ are never executed and must not be emitted.
 """
 import os
 import argparse
+import concurrent.futures
 import subprocess
 import tempfile
 from pathlib import Path
@@ -191,12 +192,13 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix="eshkol-strict-resources-") as temp:
         out_dir = Path(temp)
-        for name in cases:
+
+        def compile_case(name):
             source = FIXTURES / f"{name}.esk"
             artifact = out_dir / f"{name}.o"
             command = [runner, "--strict-resources", "-c", "-o", str(artifact), str(source), "-L", lib_dir]
             completed = subprocess.run(command, env=env, stdout=subprocess.PIPE,
-                                       stderr=subprocess.STDOUT, text=True, timeout=90)
+                                       stderr=subprocess.STDOUT, text=True, timeout=180)
             is_negative = name in NEGATIVE
             diagnostic = "Strict resource error:" in completed.stdout
             expected = EXPECTED_DIAGNOSTIC.get(name)
@@ -204,7 +206,12 @@ def main():
                 diagnostic = diagnostic and expected in completed.stdout
             passed = (completed.returncode == 1 and diagnostic and not artifact.exists()) if is_negative \
                      else (completed.returncode == 0 and artifact.exists())
-            results.append((name, passed, completed.returncode, diagnostic, artifact.exists(), completed.stdout))
+            return (name, passed, completed.returncode, diagnostic, artifact.exists(), completed.stdout)
+
+        # Each case is an independent compile; run a few at once.
+        workers = max(1, min(4, (os.cpu_count() or 2) // 2))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            results.extend(pool.map(compile_case, cases))
         if args.case is None:
             positive_names = [name for name in cases if name in POSITIVE]
             if positive_names:

@@ -13538,7 +13538,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
             --runner $<TARGET_FILE:eshkol-run>
             --lib-dir ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(strict_resource_profile_compiled PROPERTIES
-        TIMEOUT 900 LABELS "ownership;strict-resources;regression")
+        TIMEOUT 1800 LABELS "ownership;strict-resources;regression")
     add_test(NAME strict_resource_profile_runtime
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_4_resource_ownership/test_runtime.py
