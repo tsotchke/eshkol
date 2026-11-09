@@ -23,6 +23,9 @@ sys.path.insert(0, str(SCRIPT.parent))
 import doc_truth_ratchet as dtr  # noqa: E402
 
 
+CONTRADICTED = dtr.ICC_CONTRADICTED_STATUS  # ICC's status for a contradicted claim
+
+
 def claim(path: str, status: str, ctype: str = "file_path") -> dict:
     return {"claim_type": ctype, "status": status, "location": {"path": path, "line": 1}}
 
@@ -32,11 +35,11 @@ PAYLOAD = {
     "docs": [{"path": p} for p in ("docs/a.md", "docs/b.md", "docs/c.md", "docs/reports/DOC_TRUTH_RANKING.md")],
     "claims": [
         claim("docs/a.md", "grounded"), claim("docs/a.md", "unknown", "arity"),
-        claim("docs/b.md", "wrong"), claim("docs/b.md", "grounded"),
+        claim("docs/b.md", CONTRADICTED), claim("docs/b.md", "grounded"),
         claim("docs/c.md", "table_row_mismatch", "table_row"), claim("docs/c.md", "unknown"),
         claim("docs/c.md", "unknown"),
-        claim("docs/reports/DOC_TRUTH_RANKING.md", "wrong"),
-        claim("README.md", "wrong"),
+        claim("docs/reports/DOC_TRUTH_RANKING.md", CONTRADICTED),
+        claim("README.md", CONTRADICTED),
     ],
     "findings": [],
 }
@@ -64,7 +67,7 @@ class DocTruthRatchetTests(unittest.TestCase):
         quota = json.loads(quota_path.read_text())
         self.assertEqual(dtr.compare(ranking, quota)["over_quota"], [])
         worse = json.loads(json.dumps(PAYLOAD))
-        worse["claims"].append(claim("docs/a.md", "wrong"))
+        worse["claims"].append(claim("docs/a.md", CONTRADICTED))
         claims = self.work / "worse.json"
         claims.write_text(json.dumps(worse))
         base = [sys.executable, str(SCRIPT), "check", "--source", str(ROOT), "--build-dir", str(self.work),
@@ -84,7 +87,7 @@ class DocTruthRatchetTests(unittest.TestCase):
         quota_path = self.work / "quota.json"
         dtr.write_quota(ranking, quota_path, self.work / "summary.md", None)
         worse = json.loads(json.dumps(PAYLOAD))
-        worse["claims"].append(claim("docs/b.md", "wrong"))
+        worse["claims"].append(claim("docs/b.md", CONTRADICTED))
         rpath = self.work / "ranking.json"
         rpath.write_text(json.dumps(dtr.rank(worse, "docs/", "test")))
         cmd = [sys.executable, str(SCRIPT), "update-quota", "--ranking", str(rpath),

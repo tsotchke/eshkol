@@ -3,15 +3,15 @@
  * @brief Gate for the runtime's built-in image codecs.
  *
  * The golden values below were recorded from the platform codec libraries
- * (libpng 1.6, libjpeg-turbo 2.1) that image I/O used before its codecs moved
- * into the runtime:
+ * (libpng 1.6, libjpeg-turbo 2.1, libwebp 1.5) that image I/O used before its
+ * codecs moved into the runtime:
  *   - decode goldens: dimensions/channels and an FNV-1a hash of the 8-bit
  *     samples image-read produced for each fixture in tests/core/image_fixtures;
  *   - encode goldens: size and FNV-1a hash of the file image-write produced
  *     for deterministic gradient and block images (PNG and JPEG).
  * Matching them shows the built-in codecs keep pixels and file bytes
- * identical.  The test also round-trips every format and channel count,
- * checks the WebP refusal, exercises the zlib encoder/decoder pair, and runs
+ * identical.  The test also round-trips every format and channel count
+ * (WebP losslessly), exercises the zlib encoder/decoder pair, and runs
  * a deterministic mutation pass over the fixtures (every input must return).
  *
  * Usage: image_codecs_test <fixture-dir> <scratch-dir>
@@ -91,6 +91,18 @@ const DecodeGolden kDecode[] = {
     {"bad_trunc_5.jpg", 200, 150, 3, 0xd4088ba4cec71282ull},
     {"bad_trunc_0.png", 0, 0, 0, 0ull},
     {"bad_flip_0.png", 0, 0, 0, 0ull},
+    {"webp_g0010_1x1_k1_a1_l0_q100_m4.webp", 1, 1, 4, 0xab619dcc29b8979eull},
+    {"webp_g0170_64x48_k0_a2_l0_q75_m5.webp", 64, 48, 4, 0xbba075da5931ba0cull},
+    {"webp_g0177_64x48_k1_a0_l0_q75_m6.webp", 64, 48, 3, 0x84b443c7dedb8f5dull},
+    {"webp_g0191_64x48_k3_a2_l0_q75_m1.webp", 64, 48, 4, 0x3b734aea338f10a1ull},
+    {"webp_g0174_64x48_k0_a2_l1_q100_m1.webp", 64, 48, 4, 0xcdee68c84ee86963ull},
+    {"webp_g0186_64x48_k2_a2_l1_q0_m1.webp", 64, 48, 4, 0x03e5be7814922db5ull},
+    {"webp_g0195_64x48_k3_a2_l1_q100_m3.webp", 64, 48, 4, 0xa40e02c8d94ddafaull},
+    {"webp_g0246_257x129_k3_a0_l0_q40_m1.webp", 257, 129, 3, 0x0d65a479b7e9831aull},
+    {"webp_pil_rgb_icc_1.webp", 5, 9, 3, 0xcf22ab01c7adc89bull},
+    {"webp_pil_rgba_lossy_2.webp", 64, 64, 4, 0x8064ea9e9259051bull},
+    {"webp_pil_webp_lossless_13x7.webp", 13, 7, 3, 0x07556fe15328f737ull},
+    {"webp_bad_m00.webp", 0, 0, 0, 0ull},
 };
 
 struct EncodeGolden {
@@ -251,7 +263,7 @@ void test_round_trips(const std::string& scratch) {
     for (const auto& s : sizes) {
         for (int c : {1, 3, 4}) {
             const std::vector<double> img = make_image("blocks", s[0], s[1], c);
-            for (const char* fmt : {"png", "bmp", "jpeg"}) {
+            for (const char* fmt : {"png", "bmp", "webp", "jpeg"}) {
                 const std::string path = scratch + "/rt." + fmt;
                 const std::string label = std::string(fmt) + " " + std::to_string(s[0]) + "x" +
                                           std::to_string(s[1]) + "x" + std::to_string(c);
@@ -260,6 +272,8 @@ void test_round_trips(const std::string& scratch) {
                 double* d = eshkol_image_read(path.c_str(), &w, &h, &oc);
                 check(d && w == s[0] && h == s[1], "reads back " + label);
                 const bool lossless = std::strcmp(fmt, "jpeg") != 0;
+                // WebP, like libwebp, keeps an alpha channel only when some
+                // sample is transparent; the "blocks" alpha is.
                 const int expect_c = c == 4 && lossless ? 4 : 3;
                 check(oc == expect_c, "channel count " + label);
                 if (d && lossless && oc == expect_c) {
@@ -277,18 +291,6 @@ void test_round_trips(const std::string& scratch) {
             }
         }
     }
-}
-
-void test_webp_planned(const std::string& scratch) {
-    const std::vector<double> img = make_image("grad", 4, 4, 3);
-    const std::string path = scratch + "/planned.webp";
-    check(eshkol_image_write(path.c_str(), img.data(), 4, 4, 3, "webp") == -1, "WebP write is refused (Planned)");
-    std::vector<uint8_t> riff = {'R', 'I', 'F', 'F', 20, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', 'L',
-                                 8, 0, 0, 0, 0x2f, 0, 0, 0, 0, 0, 0, 0};
-    write_all(path, riff);
-    int w = 0, h = 0, c = 0;
-    check(eshkol_image_read(path.c_str(), &w, &h, &c) == nullptr, "WebP read is refused (Planned)");
-    std::remove(path.c_str());
 }
 
 void test_zlib() {
@@ -372,7 +374,6 @@ int main(int argc, char** argv) {
     test_decode_goldens(fixtures);
     test_encode_goldens(scratch);
     test_round_trips(scratch);
-    test_webp_planned(scratch);
     test_zlib();
     test_mutations(fixtures, scratch);
     if (failures == 0) {

@@ -20,7 +20,7 @@ Eshkol requires:
 - **C++20 compiler** (GCC 11+, Clang 14+, or Apple Clang 15+)
 - **Ninja** (recommended build tool)
 - **Git** (for source checkout)
-- No image codec packages: image I/O (PNG, JPEG, BMP) is built into the runtime
+- No image codec packages: image I/O (PNG, JPEG, BMP, WebP) is built into the runtime
 
 ### Building from Source
 

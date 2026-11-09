@@ -11,12 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Image I/O needs no codec library on any platform.** PNG (every colour
   type, bit depth and interlacing), JPEG (baseline, extended and progressive
-  Huffman decode; baseline encode) and BMP are decoded and encoded by codecs
-  built into the runtime, with the same output on every platform. Files
-  written by `image-write` keep the bytes the previous system libpng/libjpeg
-  path produced, and decoded pixels match it. WebP is Planned for v1.4.1:
-  `image-write` with `"webp"` and `image-read` of a WebP file return `#f`
-  with a notice. Builds, CI images and release packages no longer carry
+  Huffman decode; baseline encode), BMP and WebP (VP8 lossy and VP8L lossless
+  decode with alpha and the extended container; lossless encode) are decoded
+  and encoded by codecs built into the runtime, with the same output on every
+  platform. Files written as PNG or JPEG keep the bytes the previous system
+  libpng/libjpeg path produced, decoded pixels match the previous
+  libpng/libjpeg/libwebp path, and `image-write` with `"webp"` now writes
+  lossless WebP. Builds, CI images and release packages no longer carry
   libpng, libjpeg or libwebp.
 - **Region runtime in four units.** The region lifecycle, escape and
   evacuation, user region handles and resident owners are separate

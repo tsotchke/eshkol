@@ -314,10 +314,4 @@ bool bmp_encode(const uint8_t* pixels, int width, int height, int channels,
     return true;
 }
 
-/* WebP support is Planned (see image_io.c); only the container check lives
- * here so the reader can report the format precisely. */
-bool webp_is_signature(const uint8_t* data, size_t size) {
-    return data && size >= 12 && std::memcmp(data, "RIFF", 4) == 0 && std::memcmp(data + 8, "WEBP", 4) == 0;
-}
-
 } // namespace eshkol::image

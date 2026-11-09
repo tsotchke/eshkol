@@ -143,7 +143,7 @@ These files are real hosted features, but they should not be renamed into runtim
 | --- | --- | --- | --- |
 | `lib/core/kb_persistence.cpp` | `out-of-runtime` hosted service | direct | File persistence for the knowledge-base subsystem. Hosted and file-based, but not runtime substrate. |
 | `lib/core/image_io.c` | `out-of-runtime` hosted service | direct | Optional image functionality, not runtime substrate. |
-| `lib/core/image_zlib.cpp`, `image_png.cpp`, `image_jpeg_decode.cpp`, `image_jpeg_encode.cpp`, `image_bmp.cpp` | `out-of-runtime` hosted service | direct | Built-in codecs behind `image_io.c` (zlib streams, PNG, JPEG, BMP); byte-buffer only, no I/O of their own. |
+| `lib/core/image_zlib.cpp`, `image_png.cpp`, `image_jpeg_decode.cpp`, `image_jpeg_encode.cpp`, `image_bmp.cpp`, `image_webp.cpp` | `out-of-runtime` hosted service | direct | Built-in codecs behind `image_io.c` (zlib streams, PNG, JPEG, BMP, WebP); byte-buffer only, no I/O of their own. |
 | `lib/core/onnx_export.c` | `out-of-runtime` hosted service | direct | Optional model export functionality, not runtime substrate. |
 | `lib/ffi/eshkol_ffi.cpp` | `out-of-runtime` hosted service | direct | Embedding and JIT service; depends on `ReplJITContext` and hosted stdout pipe capture. |
 

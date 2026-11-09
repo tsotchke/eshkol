@@ -539,11 +539,11 @@ sudo dnf install openblas-devel
 
 ### Image I/O formats
 
-Image I/O needs no codec library on any platform: PNG, JPEG and BMP are
-decoded and encoded by codecs built into the runtime (`lib/core/image_*.cpp`),
-and configuration reports `Image I/O capability: BUILTIN`. WebP is Planned for
-v1.4.1; until then `image-write` with `"webp"` returns `#f` and `image-read` of
-a WebP file returns `#f`, each with a one-line notice on stderr.
+Image I/O needs no codec library on any platform: PNG, JPEG, BMP and WebP
+are decoded and encoded by codecs built into the runtime
+(`lib/core/image_*.cpp`), and configuration reports
+`Image I/O capability: BUILTIN`. `image-write` with `"webp"` writes lossless
+WebP; `image-read` accepts lossy and lossless WebP, with alpha.
 
 ### Linker errors with stdlib
 

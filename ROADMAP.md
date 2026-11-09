@@ -802,8 +802,8 @@ under the same discipline that made `Qubit` linear.
       accuracy and throughput, pinned hardware)
 - [x] Codebase: native image I/O dependency removal; decompose
       `runtime_regions.cpp`; doc-truth ratchet phase 1 (rank + quota, not
-      yet release-blocking). Image I/O uses built-in PNG/JPEG/BMP codecs
-      on every platform (WebP Planned for v1.4.1); the region runtime is
+      yet release-blocking). Image I/O uses built-in PNG/JPEG/BMP/WebP
+      codecs on every platform; the region runtime is
       four translation units; `doc_truth_ratchet_phase1` ranks `docs/`
       claims against `docs/reports/doc_truth/quota.json`
 - [ ] W6 interface spike: compile and execute one StableHLO module through

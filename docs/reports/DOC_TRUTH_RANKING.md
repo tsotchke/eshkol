@@ -19,7 +19,7 @@ every claim that is not verified.
 ## Totals
 
 - Documents: 535
-- Claims: 18772 (verified 736, unverified 17938, table-contradicted 0, contradicted 98)
+- Claims: 18769 (verified 736, unverified 17935, table-contradicted 0, contradicted 98)
 - Release-critical documents: 183, contradicted 1, unsupported 9634
 
 ### By claim type
@@ -34,7 +34,7 @@ every claim that is not verified.
 | percentage | 0 | 120 | 0 | 0 |
 | ratio | 0 | 165 | 0 | 0 |
 | throughput | 0 | 6 | 0 | 0 |
-| version | 0 | 1115 | 0 | 0 |
+| version | 0 | 1112 | 0 | 0 |
 
 ## Ranking (top 40 documents by contradicted, then unsupported)
 
@@ -46,7 +46,7 @@ every claim that is not verified.
 | 4 | `docs/V1.1_SCOPE.md` | 30 | 0 | 4 | 30 |
 | 5 | `docs/breakdown/SCHEME_COMPATIBILITY.md` | 465 | 0 | 3 | 465 |
 | 6 | `docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md` | 450 | 0 | 3 | 450 |
-| 7 | `docs/breakdown/OVERVIEW.md` | 56 | 8 | 3 | 48 |
+| 7 | `docs/breakdown/OVERVIEW.md` | 55 | 8 | 3 | 47 |
 | 8 | `docs/design/adr/0001-oalr-concurrent-resident.md` | 50 | 42 | 3 | 8 |
 | 9 | `docs/breakdown/XLA_BACKEND.md` | 51 | 6 | 2 | 45 |
 | 10 | `docs/FEATURE_MATRIX.md` | 61 | 4 | 1 | 57 |

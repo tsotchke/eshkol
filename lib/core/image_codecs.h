@@ -12,7 +12,9 @@
  *     output is the byte stream zlib produces at its default level;
  *   - PNG (all critical-chunk colour types, bit depths and Adam7);
  *   - JPEG: baseline and progressive Huffman decoding, baseline encoding;
- *   - BMP: uncompressed and bit-field bitmaps, 24/32-bit writer.
+ *   - BMP: uncompressed and bit-field bitmaps, 24/32-bit writer;
+ *   - WebP: VP8 lossy and VP8L lossless decode with ALPH alpha and the VP8X
+ *     container; lossless VP8L encode.
  *
  * Decoders return interleaved 8-bit samples.  The channel layout follows the
  * contract image-read has always exposed: 3 channels (RGB), or 4 (RGBA) when
@@ -114,6 +116,12 @@ bool bmp_encode(const uint8_t* pixels, int width, int height, int channels,
 /* ---- WebP -------------------------------------------------------------- */
 
 bool webp_is_signature(const uint8_t* data, size_t size);
+/** Decode lossy (VP8, optional ALPH) or lossless (VP8L) WebP, simple or
+ *  extended (VP8X) container; RGB, or RGBA when the file carries alpha. */
+bool webp_decode(const uint8_t* data, size_t size, Raster* out);
+/** Encode 1, 3 or 4 channels as lossless VP8L (alpha kept when used). */
+bool webp_encode_lossless(const uint8_t* pixels, int width, int height, int channels,
+                          std::vector<uint8_t>* out);
 
 } // namespace eshkol::image
 

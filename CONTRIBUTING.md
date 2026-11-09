@@ -65,7 +65,7 @@ To set up your development environment for Eshkol, you'll need:
    - Ensure `llvm-config` is in your PATH on macOS/Linux, or set `LLVM_DIR` on native Windows
 
 4. **Image I/O codecs**
-   - Nothing to install: PNG, JPEG and BMP codecs are part of the runtime on every platform
+   - Nothing to install: PNG, JPEG, BMP and WebP codecs are part of the runtime on every platform
 
 5. **Git**
    - On macOS: `brew install git`

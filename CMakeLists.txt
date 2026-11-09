@@ -2413,7 +2413,8 @@ set(ESHKOL_IMAGE_CODEC_SRC
   lib/core/image_png.cpp
   lib/core/image_jpeg_decode.cpp
   lib/core/image_jpeg_encode.cpp
-  lib/core/image_bmp.cpp)
+  lib/core/image_bmp.cpp
+  lib/core/image_webp.cpp)
 list(APPEND LIB_SRC lib/core/image_io.c ${ESHKOL_IMAGE_CODEC_SRC})
 set_source_files_properties(lib/core/image_io.c PROPERTIES LANGUAGE CXX)
 
@@ -8392,7 +8393,7 @@ endif()
 
 # Built-in image codecs: decode/encode goldens recorded from the platform
 # codec libraries image I/O used before, round trips for every format and
-# channel count, the WebP refusal, the zlib pair and a mutation pass.
+# channel count, the zlib pair and a mutation pass.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/image_codecs_test.cpp")
     add_executable(image_codecs_test tests/core/image_codecs_test.cpp)
     target_compile_features(image_codecs_test PRIVATE cxx_std_17)

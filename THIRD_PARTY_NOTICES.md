@@ -29,7 +29,7 @@ artifact verifier.
 | LLVM shared runtime (macOS binary packages only) | Exact `llvm@21` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | Apache-2.0 with LLVM exceptions; `licenses/llvm-LICENSE.TXT` |
 | zstd shared runtime (macOS binary packages only) | Exact `zstd` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | BSD-3-Clause; `licenses/zstd-LICENSE` |
 
-Image I/O uses PNG, JPEG and BMP codecs written as part of the Eshkol runtime
+Image I/O uses PNG, JPEG, BMP and WebP codecs written as part of the Eshkol runtime
 (MIT), so no binary package links or redistributes an image-codec library. The
 release check fails a Linux package whose executables resolve libpng, libjpeg
 or libwebp. Linux packages still

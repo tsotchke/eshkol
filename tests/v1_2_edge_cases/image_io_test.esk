@@ -2,8 +2,8 @@
 ;;
 ;; Regression: image-read/image-to-grayscale crossed an ownership boundary
 ;; incorrectly and corrupted arena-backed runtime storage. The native image
-;; codecs are built into the runtime, so PNG, JPEG and BMP round trips are
-;; required on every platform and WebP must be refused as Planned.
+;; codecs are built into the runtime, so PNG, JPEG, BMP and WebP round trips
+;; are required on every platform.
 
 (require stdlib)
 
@@ -161,6 +161,7 @@
 
 (format-round-trip "JPEG round-trip" "jpeg" ".jpg")
 (format-round-trip "BMP round-trip" "bmp" ".bmp")
+(format-round-trip "WebP round-trip" "webp" ".webp")
 
 ;; BMP is lossless: the mixed sample must come back within one 8-bit step.
 (define bmp-path (if (string? temp-root)
@@ -175,14 +176,17 @@
                    (pixel-rgb-approx? b 2 2 0.25 0.5 0.75 0.01)))))
 (if (string? bmp-path) (delete-file bmp-path))
 
-;; WebP is Planned for v1.4.1: image-write must refuse it rather than write
-;; a file in some other format.
+;; WebP is lossless here: the mixed sample must come back exactly.
 (define webp-path (if (string? temp-root)
                       (make-temp-file "eshkol-img-native-webp-" ".webp" temp-root)
                       #f))
-(check "WebP write is refused (Planned)"
+(check "WebP keeps mixed quantized sample"
        (and (string? webp-path)
-            (not (image-write webp-path test-tensor "webp"))))
+            (image-write webp-path test-tensor "webp")
+            (let ((b (image-read webp-path)))
+              (and (tensor? b)
+                   (shape-color? (tensor-shape b) 4 4)
+                   (pixel-rgb-approx? b 2 2 0.25 0.5 0.75 0.01)))))
 (if (string? webp-path) (delete-file webp-path))
 
 ;; After all the above calls, the arena has been exercised heavily.

@@ -51,11 +51,15 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 LEVELS = ("verified", "unverified", "table-contradicted", "contradicted")
+# ICC's external status vocabulary for a claim the source tree contradicts.
+# It is the one place that spelling appears; everything here reports the
+# public level "contradicted".
+ICC_CONTRADICTED_STATUS = "wrong"
 ICC_STATUS_TO_LEVEL = {
     "grounded": "verified",
     "unknown": "unverified",
     "table_row_mismatch": "table-contradicted",
-    "wrong": "contradicted",
+    ICC_CONTRADICTED_STATUS: "contradicted",
 }
 DEFAULT_PREFIX = "docs/"
 # The ratchet's own generated outputs describe the ranking; counting their

@@ -23,9 +23,9 @@
   "docs/guide/*"
  ],
  "totals": {
-  "claims": 18772,
+  "claims": 18769,
   "contradicted_total": 98,
-  "unsupported": 18036
+  "unsupported": 18033
  },
  "documents": {
   "docs/AD_CAMPAIGN.md": {
@@ -486,7 +486,7 @@
   },
   "docs/api/core/image_io.md": {
    "contradicted_total": 0,
-   "unsupported": 1
+   "unsupported": 0
   },
   "docs/api/core/inference.md": {
    "contradicted_total": 0,
@@ -762,7 +762,7 @@
   },
   "docs/breakdown/COMPILATION_GUIDE.md": {
    "contradicted_total": 0,
-   "unsupported": 24
+   "unsupported": 23
   },
   "docs/breakdown/COMPILER_ARCHITECTURE.md": {
    "contradicted_total": 5,
@@ -822,7 +822,7 @@
   },
   "docs/breakdown/OVERVIEW.md": {
    "contradicted_total": 3,
-   "unsupported": 48
+   "unsupported": 47
   },
   "docs/breakdown/PACKAGE_MANAGER.md": {
    "contradicted_total": 0,

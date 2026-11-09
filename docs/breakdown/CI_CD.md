@@ -237,7 +237,7 @@ All CI and release jobs share the same dependency set:
 | pkg-config | latest | Library discovery |
 | OpenBLAS | latest | Linear algebra (Linux Docker builds) |
 
-On macOS, LLVM 21 is installed via Homebrew (`brew install llvm@21`). On Linux, LLVM 21 is installed from the official LLVM apt repository at `apt.llvm.org`. On Windows, the CI downloads the official LLVM 21 SDK archive and points `LLVM_DIR` at its CMake package. No lane installs an image codec package: image I/O uses the runtime's built-in PNG, JPEG and BMP codecs on every platform.
+On macOS, LLVM 21 is installed via Homebrew (`brew install llvm@21`). On Linux, LLVM 21 is installed from the official LLVM apt repository at `apt.llvm.org`. On Windows, the CI downloads the official LLVM 21 SDK archive and points `LLVM_DIR` at its CMake package. No lane installs an image codec package: image I/O uses the runtime's built-in PNG, JPEG, BMP and WebP codecs on every platform.
 
 ---
 

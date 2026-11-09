@@ -161,7 +161,7 @@ The imported target is **`Eshkol::eshkol`**, an `UNKNOWN IMPORTED` library whose
 with `Eshkol_STDLIB_OBJECT` unconditionally, then adds the platform link line: on
 Apple, `Accelerate`, `Metal`, `MetalPerformanceShaders`, `Foundation`, `Security`,
 `CoreFoundation` and `-lobjc`; on Windows, `bcrypt` and `ws2_32`. Image I/O adds
-nothing to this line on any platform: its PNG/JPEG/BMP codecs are built into the
+nothing to this line on any platform: its PNG/JPEG/BMP/WebP codecs are built into the
 runtime.
 
 One documented limitation, stated in the module itself: a build configured with

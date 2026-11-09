@@ -4,7 +4,7 @@
  *
  * This file keeps the historical .c path for build-system compatibility, but
  * CMake compiles it as C++.  Decoding and encoding are done by the built-in
- * codecs declared in image_codecs.h (PNG, JPEG, BMP), identically on every
+ * codecs declared in image_codecs.h (PNG, JPEG, BMP, WebP), identically on every
  * platform; no system or third-party codec library is linked.  This file
  * owns the public C API, the capability checks and the conversion between
  * 8-bit samples and normalized double tensors.
@@ -159,24 +159,12 @@ bool write_file_bytes(const char* path, const std::vector<uint8_t>& bytes) {
     return written == bytes.size() && closed;
 }
 
-/** WebP has a container check but no codec yet: say so instead of failing
- *  silently, once per process. */
-void report_webp_planned(const char* operation) {
-    static bool reported = false;
-    if (reported) return;
-    reported = true;
-    std::fprintf(stderr,
-                 "eshkol: image-%s: WebP is Planned for v1.4.1; the built-in codecs "
-                 "read and write PNG, JPEG and BMP\n",
-                 operation);
-}
-
 /**
  * @brief Decode @p path with the built-in codec matching its signature.
  *
- * PNG and JPEG are recognized by content; BMP by its "BM" header.  The result
- * has 3 (RGB) or 4 (RGBA) channels.  Returns nullptr for unreadable files,
- * unrecognized or malformed data, and formats without a codec.
+ * PNG, JPEG and WebP are recognized by content; BMP by its "BM" header.  The
+ * result has 3 (RGB) or 4 (RGBA) channels.  Returns nullptr for unreadable
+ * files and unrecognized or malformed data.
  */
 double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) {
     std::vector<uint8_t> encoded;
@@ -192,7 +180,7 @@ double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) 
     } else if (eshkol::image::bmp_is_signature(bytes, size)) {
         ok = eshkol::image::bmp_decode(bytes, size, &raster);
     } else if (eshkol::image::webp_is_signature(bytes, size)) {
-        report_webp_planned("read");
+        ok = eshkol::image::webp_decode(bytes, size, &raster);
     }
     if (!ok || !valid_dimensions(raster.width, raster.height, raster.channels)) return nullptr;
     double* result = bytes_to_arena_doubles(raster.pixels.data(), raster.width, raster.height,
@@ -208,7 +196,8 @@ double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) 
  * @brief Encode @p data to @p path with the built-in codec named by @p format.
  *
  * "png" (also the default for NULL/empty), "jpg"/"jpeg" (quality 90, alpha
- * dropped) and "bmp".  Channel counts 1, 3 and 4 are accepted.
+ * dropped), "bmp" and "webp" (lossless).  Channel counts 1, 3 and 4 are
+ * accepted.
  *
  * @return 0 on success, -1 on invalid input, an unsupported format or an I/O error.
  */
@@ -226,7 +215,7 @@ int write_image_native(const char* path, const double* data,
     } else if (fmt == "bmp") {
         ok = eshkol::image::bmp_encode(pixels.data(), w, h, channels, &encoded);
     } else if (fmt == "webp") {
-        report_webp_planned("write");
+        ok = eshkol::image::webp_encode_lossless(pixels.data(), w, h, channels, &encoded);
     }
     if (!ok) return -1;
     return write_file_bytes(path, encoded) ? 0 : -1;
@@ -263,7 +252,7 @@ double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) 
  * (denying and returning -1 if not permitted), then encodes with the
  * built-in codecs.
  *
- * @param format "png", "jpg"/"jpeg" or "bmp"; NULL defaults to "png".
+ * @param format "png", "jpg"/"jpeg", "bmp" or "webp"; NULL defaults to "png".
  * @return 0 on success, -1 on failure or capability denial.
  */
 int eshkol_image_write(const char* path, const double* data,

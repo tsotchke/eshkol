@@ -9,7 +9,7 @@
 - **CMake 3.14+** (build system)
 - **C++20 compiler** (GCC 12+, Clang 15+, or MSVC 2022)
 - **Ninja** (recommended, but Make works too)
-- No image codec packages: PNG, JPEG and BMP read/write are built into the
+- No image codec packages: PNG, JPEG, BMP and WebP read/write are built into the
   runtime on every platform
 
 ### How do I install LLVM 21?

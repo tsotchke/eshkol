@@ -638,9 +638,9 @@ each gate CAN fail before it reports that nothing failed.
 - **Image codecs keep the bytes and pixels of the previous system codecs.**
   `image_codecs_test` decodes the fixtures in `tests/core/image_fixtures` and
   encodes deterministic images, comparing against goldens recorded from
-  libpng/libjpeg-turbo before the codecs moved into the runtime, then
-  round-trips PNG/JPEG/BMP at 1, 3 and 4 channels, checks the WebP refusal,
-  the zlib encoder/decoder pair and a mutation pass. `image_io_language_test`
+  libpng/libjpeg-turbo/libwebp before the codecs moved into the runtime, then
+  round-trips PNG/JPEG/BMP/WebP at 1, 3 and 4 channels, the zlib
+  encoder/decoder pair and a mutation pass. `image_io_language_test`
   runs `tests/v1_2_edge_cases/image_io_test.esk` through `eshkol-run -r`.
 
 - **Evidence paths are absolute before first use** (#695).

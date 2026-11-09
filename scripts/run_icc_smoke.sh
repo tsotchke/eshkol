@@ -349,8 +349,8 @@ probe eskm_v1_model_load_engine_parity \
 
 probe image_io_works "image-read returns a tensor of expected shape" \
     'cd "$REPO_ROOT";
-     ## The real shape test: PNG/JPEG/BMP round trips through image-write and
-     ## image-read with shape and sample checks, plus the WebP refusal.
+     ## The real shape test: PNG/JPEG/BMP/WebP round trips through image-write
+     ## and image-read with shape and sample checks.
      out=$("$ESHKOL_RUN" -r tests/v1_2_edge_cases/image_io_test.esk 2>&1) || { printf "%s" "$out"; exit 1; };
      printf "%s" "$out" | grep -q "RESULT: ALL PASS"'
 

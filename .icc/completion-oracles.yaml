@@ -2197,7 +2197,7 @@ oracles:
           event_names: ["v140_codebase_gate"]
           event_values: ["PASS"]
         severity: high
-        label: 'v1.4.0 codebase: image I/O with built-in PNG/JPEG/BMP codecs and no external codec library, runtime regions in four translation units, doc-truth ratchet phase 1 (image_codecs_test, image_io_language_test, test_native_image_io_contract, runtime_regions_test, doc_truth_ratchet_unit, doc_truth_ratchet_phase1)'
+        label: 'v1.4.0 codebase: image I/O with built-in PNG/JPEG/BMP/WebP codecs and no external codec library, runtime regions in four translation units, doc-truth ratchet phase 1 (image_codecs_test, image_io_language_test, test_native_image_io_contract, runtime_regions_test, doc_truth_ratchet_unit, doc_truth_ratchet_phase1)'
         action: ./scripts/run_ctest_gate.sh
 
       # ─────────────────────────────────────────────────────────
