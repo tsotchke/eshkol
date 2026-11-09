@@ -150,7 +150,7 @@ EXPECTED_DIAGNOSTIC = {
     "negative-function-double-close": "duplicate close of resource 'out'",
     "negative-function-result-dropped": "factory result from 'open-log' must be bound directly",
     "negative-closure-escape": "is captured by a closure whose calls the checker cannot see",
-    "negative-guard-loses-local": "is still open when an exception raised by read-line leaves its scope",
+    "negative-guard-loses-local": "handle 'in' (input file port) is still open when an exception raised by",
     "negative-raise-before-close": "terminal control transfer 'raise' occurs while resource 'in'",
     "negative-callcc-reentry": "continuation 'k' escapes as a value",
     "negative-callcc-open-on-escape": "is still open when continuation 'k' leaves its scope",
