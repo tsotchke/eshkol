@@ -18,6 +18,12 @@
     (if (< i (bytevector-length bv))
         (begin (bytevector-u8-set! bv i (modulo (+ seed (* i 7) (quotient i 509)) 256))
                (loop (+ i 1))))))
+;; Content comparison of two bytevectors, byte by byte.
+(define (bytes=? a b)
+  (and (= (bytevector-length a) (bytevector-length b))
+       (let loop ((i 0))
+         (or (= i (bytevector-length a))
+             (and (= (bytevector-u8-ref a i) (bytevector-u8-ref b i)) (loop (+ i 1)))))))
 (define (descriptor-count)
   (length (directory-list (if (file-exists? "/proc/self/fd") "/proc/self/fd" "/dev/fd"))))
 
@@ -96,7 +102,7 @@
               (drain sent2 now))))
       got))
 (check (= (drain (car offered) 0) total) "the slow reader receives every byte")
-(check (equal? received payload) "slow-peer stream preserves every byte in order")
+(check (bytes=? received payload) "slow-peer stream preserves every byte in order")
 (tcp-close slow-client)
 (tcp-close slow-server)
 
