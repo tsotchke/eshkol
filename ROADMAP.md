@@ -782,6 +782,18 @@ under the same discipline that made `Qubit` linear.
       into `mathematics_group_cohomology_order_eight`,
       `mathematics_cohomology_rings_cup_products`,
       `mathematics_fermat_hodge_classes_sweep` and `multimodular_test`
+- [x] Simplicial and homological algebra as libraries (ADR-0037):
+      `core.simplicial` gives simplicial sets in Eilenberg-Zilber normal
+      form with products, joins, cones and suspensions, nerves of finite
+      categories, posets, groups (BG) and crossed modules, McCord finite
+      models, the Kan and quasi-category conditions over every compatible
+      horn, Kan's homotopy groups and mapping spaces `Map(X, Y)`;
+      `core.homological` gives complexes over `core.ring` carriers (Z with
+      torsion through `core.integer_linalg`, Q, F_p), cones and long exact
+      sequences, Ext and Tor over Z, spectral sequences of filtered and double
+      complexes checked page by page and in the limit, cup and cup-i products,
+      Steenrod squares and group cohomology with twisted coefficients. Eight
+      algebraic-topology examples run on them
 - [x] Finite category theory as a library (ADR-0036): `core.category` gives
       functors and natural transformations checked by their laws, functor,
       comma and slice categories, limits, colimits, ends and coends, the
@@ -840,6 +852,15 @@ under the same discipline that made `Qubit` linear.
       (co)limits and named refusals; `core.category.effective_kan` gives Kan
       extensions with finite comma categories, skeleta and coskeleta.
       Newman's lemma and rewriting soundness are checked in Rocq
+- [x] Effective homology as a library (ADR-0038): `core.effective` gives
+      reductions and the basic perturbation lemma with every identity and
+      the nilpotency hypothesis checked on the cells a computation uses,
+      reductions from discrete vector fields (Eilenberg-Zilber, twisted
+      Eilenberg-Zilber, K(Z,1), W-bar G onto the bar construction), K(Z,n)
+      and K(Z/m,n) with effective homology, the Whitehead tower computing
+      pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2 and
+      pi_6(S^3) = Z/12, and hypercovers of finite spaces restoring descent
+      where the Cech nerve does not (stage S6.3)
 - [ ] TCP/UDP sockets with linear resource types (guaranteed close)
 - [ ] TLS/SSL via system libraries
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve

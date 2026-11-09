@@ -51,7 +51,7 @@
          make-delta-complex delta-complex-faces make-simplicial-complex simplicial-complex-simplices
          delta-complex-from-tetrahedra lens-space real-projective-space
          standard-simplex simplex-boundary horn simplicial-sphere discrete-simplicial-set point-simplicial-set
-         simplicial-skeleton simplicial-product simplicial-join simplicial-cone simplicial-suspension
+         simplicial-skeleton simplicial-product simplicial-product-simplex simplicial-join simplicial-cone simplicial-suspension
          monotone-surjections monotone-injections ordered-subsets)
 
 ;; ---------------------------------------------------------------------------
@@ -393,6 +393,9 @@
                                              (fold-left (lambda (acc b) (if (ss-no-common-collapse? a b) (cons (list a b) acc) acc))
                                                         acc bs))
                                            acc as)))))))))
+;; the n-simplex (a, b) of X x Y in normal form, for n-simplices a of X and b
+;; of Y (twisted products, which change only a face operator, use it too)
+(define (simplicial-product-simplex X Y a b) (ss-pair-normal X Y a b))
 (define (simplicial-product X Y)
   (let ((md (and (simplicial-set-max-dim X) (simplicial-set-max-dim Y) (+ (simplicial-set-max-dim X) (simplicial-set-max-dim Y)))))
     (make-simplicial-set
