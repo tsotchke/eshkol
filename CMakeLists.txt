@@ -4431,10 +4431,13 @@ endif()
 # core.effective (ADR-0038): reductions and the perturbation lemma, discrete
 # vector fields, Eilenberg-Zilber, twisted products, classifying spaces and
 # K(pi, n) with effective homology (effective_test); homotopy groups of
-# spheres through the Whitehead tower (effective_homotopy_test); hypercovers
-# and descent for 2-types and 3-types, stage S6.3 (effective_hypercover_test).
+# spheres through the Whitehead tower (effective_homotopy_test). Hypercovers
+# and descent for 2-types and 3-types, stage S6.3 (effective_hypercover_test),
+# run about 30 GB and are not CTest entries: scripts/run_effective_gate.sh
+# invokes effective_hypercover_jit/aot directly, the same way it already runs
+# the long-run effective_pi6_s3_test and effective_hypercover_3type_test.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    foreach(_eff_suite effective_test effective_homotopy_test effective_hypercover_test)
+    foreach(_eff_suite effective_test effective_homotopy_test)
         string(REPLACE "_test" "" _eff_name ${_eff_suite})
         add_test(NAME ${_eff_name}_jit
             COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_eff_suite}.esk")

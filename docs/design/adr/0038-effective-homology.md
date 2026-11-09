@@ -182,10 +182,10 @@ rather than written a second time.
 - `tests/stdlib/effective_test.esk` (CTest `effective_jit`, `effective_aot`).
 - `tests/stdlib/effective_homotopy_test.esk` (CTest `effective_homotopy_jit`,
   `effective_homotopy_aot`).
-- `tests/stdlib/effective_hypercover_test.esk` (CTest
-  `effective_hypercover_jit`, `effective_hypercover_aot`).
-- Long-run checks, run by the gate on the JIT and kept out of the default
-  CTest suite for their memory: `tests/stdlib/effective_pi6_s3_test.esk`
+- Long-run checks, run by the gate directly (not as CTest entries) and kept
+  out of the default CTest suite for their memory (about 30 GB each):
+  `tests/stdlib/effective_hypercover_test.esk` (`effective_hypercover_jit`
+  and `effective_hypercover_aot`), `tests/stdlib/effective_pi6_s3_test.esk`
   (pi_6(S^3) = Z/12) and `tests/stdlib/effective_hypercover_3type_test.esk`
   (the 3-type on the product hypercover).
 - `scripts/run_effective_gate.sh` emits the criterion `v14_effective_homology`.
