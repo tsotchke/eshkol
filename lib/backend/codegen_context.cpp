@@ -101,12 +101,18 @@ void CodegenContext::emitSlotStoreStatusCheck(llvm::Value* status, const char* w
                "(a tensor-backed vector holds real numbers only)");
     llvm::Value* container_msg = builder_.CreateGlobalString(
         name + ": operand is not a vector or tensor");
+    llvm::Value* inexact_msg = builder_.CreateGlobalString(
+        name + ": an exact tensor holds exact numbers only, and this value is inexact; "
+               "store an exact value, or convert the tensor with (tensor-cast t 'f64)");
     llvm::Value* is_bounds = builder_.CreateICmpEQ(status,
         llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_BOUNDS));
     llvm::Value* is_value = builder_.CreateICmpEQ(status,
         llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_VALUE));
+    llvm::Value* is_inexact = builder_.CreateICmpEQ(status,
+        llvm::ConstantInt::get(int32Type(), ESHKOL_SLOT_STORE_INEXACT));
     llvm::Value* message = builder_.CreateSelect(is_bounds, bounds_msg,
-        builder_.CreateSelect(is_value, value_msg, container_msg));
+        builder_.CreateSelect(is_value, value_msg,
+            builder_.CreateSelect(is_inexact, inexact_msg, container_msg)));
     emitRaiseWithMessagePtr(message);
 
     builder_.SetInsertPoint(ok_bb);

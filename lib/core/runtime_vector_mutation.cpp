@@ -292,6 +292,14 @@ eshkol_tagged_value_t tensor_slot_value(const eshkol_tensor_t* tensor, int64_t i
     return tagged_double(reinterpret_cast<const double*>(tensor->elements)[index]);
 }
 
+// The status for a value the tensor refused: an inexact real offered to an
+// exact tensor is named as such, anything else has no slot representation.
+int32_t refusal_status(const eshkol_tensor_t* tensor, const eshkol_tagged_value_t& value) {
+    double ignored = 0.0;
+    return (tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT && tagged_real_to_double(value, &ignored))
+               ? ESHKOL_SLOT_STORE_INEXACT : ESHKOL_SLOT_STORE_VALUE;
+}
+
 void encode_tensor_slot(eshkol_tensor_t* tensor, int64_t index,
                         const eshkol_tagged_value_t& value) {
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED ||
@@ -399,7 +407,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
             for (int64_t i = 0; i < count; ++i) {
                 if (!widen_tensor_for(dst_tensor, staged[static_cast<size_t>(i)],
                                       /*allow_boxed=*/true)) {
-                    return ESHKOL_SLOT_STORE_VALUE;
+                    return refusal_status(dst_tensor, staged[static_cast<size_t>(i)]);
                 }
             }
             for (int64_t i = 0; i < count; ++i) {
@@ -473,7 +481,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     // numeric carrier cannot hold promotes it once (ADR-0020).
     for (int64_t i = 0; i < count; ++i) {
         if (!widen_tensor_for(dst_tensor, src_values[i], /*allow_boxed=*/true)) {
-            return ESHKOL_SLOT_STORE_VALUE;
+            return refusal_status(dst_tensor, src_values[i]);
         }
     }
     for (int64_t i = 0; i < count; ++i) {
@@ -502,7 +510,7 @@ static int32_t tensor_slot_store(void* tensor_object, int64_t index,
     auto* tensor = reinterpret_cast<eshkol_tensor_t*>(tensor_object);
     const int64_t length = sequence_length(tensor_object, HEAP_SUBTYPE_TENSOR);
     if (index < 0 || index >= length) return ESHKOL_SLOT_STORE_BOUNDS;
-    if (!widen_tensor_for(tensor, *value, promote)) return ESHKOL_SLOT_STORE_VALUE;
+    if (!widen_tensor_for(tensor, *value, promote)) return refusal_status(tensor, *value);
     encode_tensor_slot(tensor, index, *value);
     return ESHKOL_SLOT_STORE_OK;
 }
