@@ -1213,6 +1213,21 @@ extern "C" uint8_t eshkol_lazy_future_is_ready(eshkol_lazy_future* lf) {
     return lf ? lf->forced : 1;
 }
 
+/** @brief `future-ready?`: can `force` return @p lf's value without blocking?
+ *
+ * True once the value has been forced, and also as soon as an eagerly
+ * submitted future's pool task has completed, before anyone forced it. This
+ * is the documented meaning of `future-ready?` and the one a scheduler needs:
+ * it lets a fiber wait for a pool computation without blocking its thread.
+ * `eshkol_lazy_future_is_ready` keeps its narrower "forced" meaning, which is
+ * what `force` itself tests before reading the cached result. A null future
+ * is ready. */
+extern "C" uint8_t eshkol_lazy_future_result_available(eshkol_lazy_future* lf) {
+    if (!lf || lf->forced) return 1;
+    return (lf->pool_future &&
+            future_is_ready(static_cast<eshkol_future_t*>(lf->pool_future))) ? 1 : 0;
+}
+
 /** @brief Get @p lf's wrapped thunk pointer (0 if @p lf is null). */
 extern "C" uint64_t eshkol_lazy_future_get_thunk_ptr(eshkol_lazy_future* lf) {
     return lf ? lf->thunk_ptr : 0;

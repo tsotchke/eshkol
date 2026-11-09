@@ -12,6 +12,7 @@
 
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
+#include <eshkol/core/coroutine.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -119,9 +120,53 @@ void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
  * @param param_ptr  Parameter handle from eshkol_make_parameter (no-op if null).
  * @param val        Value to bind for the dynamic extent being entered.
  */
+/* ── Bindings belong to the execution context ───────────────────────────
+ *
+ * A parameter's binding stack is shared by every computation that can see the
+ * parameter, but a `parameterize` binding belongs to the computation whose
+ * dynamic extent made it. With coroutines, several computations take turns on
+ * one thread, so each context records the bindings it pushed (oldest first),
+ * and a coroutine switch lifts the outgoing context's bindings off their
+ * parameters and puts the incoming context's back (inc/eshkol/core/coroutine.h).
+ * At any moment only the running context's bindings are on the stacks: a fiber
+ * sees its own `parameterize`, never another fiber's. */
+struct ParamLogEntry { void* param; };
+static thread_local ParamLogEntry* t_param_log = nullptr;
+static thread_local uint64_t t_param_log_count = 0;
+static thread_local uint64_t t_param_log_capacity = 0;
+
+/* Room for one more record, so publishing a binding cannot fail after it. */
+static bool param_log_reserve(void) {
+    if (t_param_log_count < t_param_log_capacity) return true;
+    uint64_t want = t_param_log_capacity ? t_param_log_capacity * 2 : 8;
+    void* grown = std::realloc(t_param_log, (size_t)want * sizeof(ParamLogEntry));
+    if (!grown) return false;
+    t_param_log = (ParamLogEntry*)grown;
+    t_param_log_capacity = want;
+    return true;
+}
+
+static void param_log_push(void* param) {
+    if (param_log_reserve()) t_param_log[t_param_log_count++].param = param;
+}
+
+static void param_log_pop(void* param) {
+    for (uint64_t i = t_param_log_count; i-- > 0;) {
+        if (t_param_log[i].param != param) continue;
+        for (uint64_t j = i + 1; j < t_param_log_count; ++j) t_param_log[j - 1] = t_param_log[j];
+        t_param_log_count--;
+        return;
+    }
+}
+
 void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
     if (!param_ptr) return;
     eshkol_param_t* param = (eshkol_param_t*)param_ptr;
+    if (!param_log_reserve()) {
+        eshkol_warn("parameter-push: binding record could not grow; "
+                    "new binding dropped, previous value remains");
+        return;
+    }
 
     if (param->top + 1 >= param->capacity) {
         int new_capacity = param->capacity * 2;
@@ -150,6 +195,7 @@ void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
     eshkol_region_write_barrier_into(&promoted, &param->stack[param->top + 1], &val);
     param->stack[param->top + 1] = promoted;
     param->top++;
+    param_log_push(param_ptr);         /* capacity was reserved above */
 }
 
 /**
@@ -165,7 +211,54 @@ void eshkol_parameter_pop(void* param_ptr) {
 
     if (param->top > 0) {
         param->top--;
+        param_log_pop(param_ptr);
     }
+}
+
+typedef struct {
+    void* param;
+    eshkol_tagged_value_t value;
+} eshkol_parameter_binding_t;
+
+int eshkol_parameter_context_save(eshkol_exec_context_t* ctx) {
+    const uint64_t n = t_param_log_count;
+    if (n > ctx->param_capacity) {
+        void* grown = std::realloc(ctx->param_bindings,
+                                   (size_t)n * sizeof(eshkol_parameter_binding_t));
+        if (!grown) return 0;
+        ctx->param_bindings = grown;
+        ctx->param_capacity = n;
+    }
+    auto* out = (eshkol_parameter_binding_t*)ctx->param_bindings;
+    /* Lift innermost first, so each pop exposes the binding beneath it. */
+    for (uint64_t i = n; i-- > 0;) {
+        eshkol_param_t* param = (eshkol_param_t*)t_param_log[i].param;
+        out[i].param = param;
+        if (param->top > 0) {
+            out[i].value = param->stack[param->top];
+            param->top--;
+        } else {
+            out[i].value = eshkol_parameter_null_value();
+        }
+    }
+    ctx->param_count = n;
+    t_param_log_count = 0;
+    return 1;
+}
+
+void eshkol_parameter_context_load(eshkol_exec_context_t* ctx) {
+    auto* in = (eshkol_parameter_binding_t*)ctx->param_bindings;
+    /* Capacity for every binding was held by this context when it was saved,
+     * and lifting never shrinks a parameter's stack, so these pushes neither
+     * allocate nor fail. Values were promoted when first bound. */
+    for (uint64_t i = 0; i < ctx->param_count; ++i) {
+        eshkol_param_t* param = (eshkol_param_t*)in[i].param;
+        if (param->top + 1 < param->capacity) {
+            param->stack[++param->top] = in[i].value;
+            param_log_push(param);
+        }
+    }
+    ctx->param_count = 0;
 }
 
 /**

@@ -643,9 +643,17 @@ probe_run v14_atomics_surface \
     'run_atomics_surface' \
     '^routes passed: jit aot \(atomics_contention_test\)$'
 
-# #159 fibers/coroutines require end-to-end evidence.
-probe_unverified v14_fibers_coroutines \
-    'requires an end-to-end fibers or coroutines behavior test'
+# #159 fibers/coroutines: stackful coroutines (inc/eshkol/core/coroutine.h)
+# and the core.fibers scheduler over the event loop. scripts/run_fibers_gate.py
+# runs the coroutine, scheduler and 10,000-fiber stress programs through JIT
+# and O1 AOT (ordering, round-robin fairness, cancellation with exactly-once
+# dynamic-wind after thunks, raises crossing fibers by identity, a fiber parked
+# on a pipe through the event loop, channel ping-pong, continuations inside
+# coroutines) and compares peak RSS of one and four stress waves.
+probe_run v14_fibers_coroutines \
+    'Fibers/coroutines (#159): JIT + AOT behaviour, pipe readiness via the event loop, 10000-fiber stress with flat memory' \
+    'python3 "$REPO_ROOT/scripts/run_fibers_gate.py" --runner "$ESHKOL_RUN"' \
+    '^PASS: fibers gate'
 
 # Semaphores and barriers: core.threads counting semaphores (acquire,
 # try-acquire, timed try-acquire, release) and reusable generation-counted

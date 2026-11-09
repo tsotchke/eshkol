@@ -136,3 +136,19 @@ else, a native compile requires the build tree's own `stdlib.o` and
 Every registration keeps the verdict its suite prints: the DBSP acceptance
 programs and `signed_curvature_aot` select `ALL PASS`, every other suite the
 default.
+
+## 8. Effect handlers and coroutines share one dynamic-state record
+
+Coroutines (ADR-0030) keep the dynamic state of each computation in one
+record, `eshkol_exec_context_t`, saved and loaded on every switch. The
+algebraic-effect handler context (ADR-0045) is dynamic state of the same
+kind, so it is a field of that record (`effect_context`), saved and loaded
+by `lib/core/runtime_continuations.cpp` together with the dynamic-wind chain
+it lives beside. A coroutine that suspends inside `handle` resumes with that
+handler installed; the context it switches to runs with its own handlers; a
+new coroutine starts with none, because its resumer's handlers are not on its
+stack and a resumption cannot span two stacks. An operation with no handler
+on the coroutine's stack raises `unhandled-effect-error?`, which reaches the
+resumer as any raise in a body does. `tests/fibers/effects_coroutine_test.esk`
+checks handlers inside and outside a coroutine across yield and resume, on
+JIT and AOT, in the fibers gate.
