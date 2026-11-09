@@ -62,7 +62,7 @@ eshkol_test_isolation_init "sblc-gate"
 trap eshkol_test_isolation_cleanup EXIT
 
 TRACE_DIR="${TRACE_DIR:-$PROJECT_ROOT/scripts/icc_traces}"
-. "$SCRIPT_DIR/lib/evidence_paths.sh"
+. "$PROJECT_ROOT/scripts/lib/evidence_paths.sh"
 eshkol_evidence_abs_var TRACE_DIR "$PROJECT_ROOT" || exit $?
 mkdir -p "$TRACE_DIR"
 TRACE_FILE="$TRACE_DIR/sblc.jsonl"

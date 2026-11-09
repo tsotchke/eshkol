@@ -8,6 +8,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 ESHKOL_RUN="${ESHKOL_RUN:-$BUILD_DIR/eshkol-run}"
 if [ ! -x "$ESHKOL_RUN" ]; then
   echo "INFRA: eshkol-run not found at $ESHKOL_RUN (set BUILD_DIR or ESHKOL_RUN)" >&2

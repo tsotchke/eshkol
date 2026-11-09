@@ -8,6 +8,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build}"
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 ESHKOL_RUN="${ESHKOL_RUN:-$BUILD_DIR/eshkol-run}"
 TRACE_FILE="$TRACE_DIR/symbolic_fields_gate.jsonl"
 WORK="$BUILD_DIR/symbolic-fields-gate"
