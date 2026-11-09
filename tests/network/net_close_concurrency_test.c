@@ -9,34 +9,40 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
 #include "eshkol/core/net.h"
+#include "eshkol/core/event_loop.h"
 
-/* Instrument poll after net.c acquires the handle ref. */
+/* Instrument the event-loop wait after the operation holds its lease. */
 static pthread_mutex_t poll_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t poll_cv;
 static int poll_watch_armed;
 static int poll_entered;
-static int watched_poll(struct pollfd *, nfds_t, int);
-#define poll watched_poll
-#include "../../lib/core/net.c"
-#undef poll
+static int watched_poll(eshkol_event_loop_t *, int, const eshkol_event_t **, int *);
+#define eshkol_event_loop_poll watched_poll
+#include "../../lib/core/resource_lease.c"
+#undef eshkol_event_loop_poll
 
-static int watched_poll(struct pollfd *fds, nfds_t count, int timeout_ms) {
+static int watched_poll(eshkol_event_loop_t *loop, int timeout_ms,
+                        const eshkol_event_t **events, int *count) {
     int rc = pthread_mutex_lock(&poll_mutex);
-    if (rc) return -1;
+    if (rc) return ESHKOL_EVENT_LOOP_EINVAL;
     if (poll_watch_armed && !poll_entered) {
         poll_entered = 1;
         rc = pthread_cond_signal(&poll_cv);
     }
     int unlock_rc = pthread_mutex_unlock(&poll_mutex);
-    if (rc || unlock_rc) return -1;
-    return poll(fds, count, timeout_ms);
+    if (rc || unlock_rc) return ESHKOL_EVENT_LOOP_EINVAL;
+    return eshkol_event_loop_poll(loop, timeout_ms, events, count);
 }
 
-#define OP_TIMEOUT_MS 1200
-#define JOIN_GRACE_MS 1500
-#define SLOT_COUNT 256
+/* Far beyond the completion bound: a worker that returns only at its own
+ * deadline fails the prompt-cancellation check. */
+#define OP_TIMEOUT_MS 20000
+#define CANCEL_BOUND_MS 2000
+#define FD_HEADROOM 24
 
 enum operation { OP_ACCEPT, OP_TCP_READ, OP_UDP_RECV };
 typedef struct {
@@ -134,9 +140,9 @@ static void *blocked_operation(void *opaque) {
     return NULL;
 }
 
-/* The hook proves acquire() has incremented refs before close. The documented
- * contract invalidates the handle immediately, but does not promise prompt
- * cancellation: an in-flight operation may wait until its own finite deadline. */
+/* The hook proves the operation holds its lease and is waiting. Close
+ * invalidates the handle at once, wakes the waiter (which reports
+ * cancellation), and closes the descriptor when the waiter releases. */
 static void close_race(enum operation op, int64_t handle, const char *label) {
     worker_case c;
     memset(&c, 0, sizeof(c));
@@ -166,12 +172,12 @@ static void close_race(enum operation op, int64_t handle, const char *label) {
         goto cleanup;
     }
     int in_flight = wait_for_poll(OP_TIMEOUT_MS);
-    check(in_flight, "operation acquired handle and reached bounded poll");
+    check(in_flight, "operation holds its lease and reached the event-loop wait");
     check(eshkol_net_close(handle) == 0, "close succeeds during an in-flight operation");
     check(eshkol_net_close(handle) == -4, "closed handle is immediately stale");
 
     struct timespec deadline;
-    int deadline_ok = deadline_after(&deadline, OP_TIMEOUT_MS + JOIN_GRACE_MS) == 0;
+    int deadline_ok = deadline_after(&deadline, CANCEL_BOUND_MS) == 0;
     check(deadline_ok, "create monotonic worker deadline");
     int lock_rc = pthread_mutex_lock(&c.mutex);
     check_pthread(lock_rc, "lock worker completion");
@@ -181,19 +187,13 @@ static void close_race(enum operation op, int64_t handle, const char *label) {
     int done = !lock_rc && c.done;
     if (!lock_rc) check_pthread(pthread_mutex_unlock(&c.mutex), "unlock worker completion");
     if (!done) {
-        fprintf(stderr, "FAIL: %s worker exceeded bounded API wait\n", label);
+        fprintf(stderr, "FAIL: %s worker was not woken by close\n", label);
         atomic_fetch_add(&failures, 1);
         /* Do not return with a live worker even on a failure path. */
         check_pthread(pthread_cancel(thread), "cancel timed-out worker");
     }
     check_pthread(pthread_join(thread, NULL), "join operation worker");
-    if (done) {
-        /* Since poll was reached after acquire, a stale-before-acquire result
-         * is excluded. UDP is limited to documented timeout/error outcomes. */
-        int allowed = c.result == -2 || c.result == -1 ||
-                      (op == OP_TCP_READ && c.result == 0);
-        check(allowed, "in-flight operation returns timeout/error/EOF");
-    }
+    if (done) check(c.result == ESHKOL_IO_CANCELLED, "in-flight operation reports cancellation");
 cleanup:
     pthread_cond_destroy(&c.done_cv);
     pthread_mutex_destroy(&c.mutex);
@@ -227,27 +227,40 @@ static void stale_id_and_slot_control(void) {
     int64_t first = open_udp();
     check(first > 0 && eshkol_net_close(first) == 0, "close first UDP handle");
     int64_t second = open_udp();
-    check(second > first, "opaque handle IDs increase rather than reuse");
+    check(second > 0 && second != first, "opaque handle IDs are not reused");
     check(eshkol_net_close(first) == -4, "stale ID cannot close later socket");
     check(second > 0 && eshkol_net_port(second, 0) >= 0, "later socket remains live after stale close");
     if (second > 0) eshkol_net_close(second);
 
-    int64_t handles[SLOT_COUNT] = {0};
+    /* No fixed slot table: the descriptor limit bounds live sockets. Lower it,
+     * exhaust it, and recover by closing one. */
+    struct rlimit original;
+    check(getrlimit(RLIMIT_NOFILE, &original) == 0, "read descriptor limit");
+    int probe = dup(0);
+    check(probe >= 0, "probe descriptor");
+    if (probe >= 0) close(probe);
+    struct rlimit lowered = original;
+    lowered.rlim_cur = (rlim_t)(probe + FD_HEADROOM);
+    if (probe < 0 || setrlimit(RLIMIT_NOFILE, &lowered) != 0) {
+        check(0, "lower descriptor limit");
+        return;
+    }
+    int64_t handles[FD_HEADROOM + 4] = {0};
     int opened = 0;
-    for (; opened < SLOT_COUNT; opened++) {
+    for (; opened < FD_HEADROOM + 4; opened++) {
         handles[opened] = open_udp();
         if (handles[opened] <= 0) break;
     }
-    check(opened == SLOT_COUNT, "all 256 documented socket slots can be occupied");
-    int64_t overflow = open_udp();
-    check(overflow < 0, "slot exhaustion refuses another socket");
-    if (overflow > 0) eshkol_net_close(overflow);
+    check(opened > 0 && opened < FD_HEADROOM + 4, "descriptor exhaustion refuses another socket");
+    check(opened < FD_HEADROOM + 4 && handles[opened] == ESHKOL_IO_SYSTEM,
+          "exhaustion reports a system outcome");
     if (opened > 0) {
-        check(eshkol_net_close(handles[0]) == 0, "free one exhausted slot");
+        check(eshkol_net_close(handles[0]) == 0, "free one descriptor");
         handles[0] = open_udp();
-        check(handles[0] > 0, "socket slot recovers after close");
+        check(handles[0] > 0, "socket creation recovers after close");
     }
     for (int i = 0; i < opened; i++) if (handles[i] > 0) eshkol_net_close(handles[i]);
+    check(setrlimit(RLIMIT_NOFILE, &original) == 0, "restore descriptor limit");
 }
 
 int main(void) {
@@ -265,7 +278,7 @@ int main(void) {
         fprintf(stderr, "RESULT: FAIL (%d failures)\n", count);
         return 1;
     }
-    puts("PASS: in-flight close, stale IDs, and slot exhaustion/recovery");
+    puts("PASS: in-flight close cancels promptly, stale IDs, and descriptor exhaustion/recovery");
     puts("RESULT: PASS");
     return 0;
 }

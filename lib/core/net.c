@@ -1,10 +1,18 @@
-/* Numeric-address networking. All kernel sockets are nonblocking; poll owns
- * each deadline. Opaque monotonically increasing handles prevent a stale
- * handle from closing a newly reused OS descriptor. */
+/* Numeric-address TCP/UDP sockets on the shared resource lease layer.
+ *
+ * Every socket is adopted into the process resource registry as a SOCKET-kind
+ * handle tagged listener, stream or datagram (see resource_lease.h). Each
+ * operation borrows the handle exclusively, performs nonblocking system calls,
+ * and waits for readiness through the calling thread's event loop under one
+ * monotonic deadline. Close from another thread wakes the borrower, whose
+ * operation returns ESHKOL_IO_CANCELLED; the descriptor is closed exactly once
+ * when that borrow ends. Identities are exact, positive and never reused, so a
+ * stale handle cannot reach a newer socket that reused its descriptor. */
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "eshkol/core/net.h"
+#include "eshkol/core/resource_lease.h"
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
@@ -12,44 +20,31 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
-#include <pthread.h>
+#include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
-#include <time.h>
 #include <unistd.h>
 
-#define NET_SLOTS 256
 #define NET_MAX_BYTES (1024 * 1024)
-/* Handles remain exact even across numeric FFI paths using binary64. */
-#define NET_LAST_ID INT64_C(9007199254740991)
-typedef struct { int fd, kind, refs, closed, nonblocking; int64_t id; } Net;
-static Net slots[NET_SLOTS];
-static int64_t next_id = 1;
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static int64_t now_ms(void) {
-    struct timespec t;
-    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return -1;
-    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
-}
-static int wait_fd(int fd, short events, int64_t deadline) {
-    for (;;) {
-        int64_t current = now_ms();
-        if (current < 0) return -1;
-        int64_t remaining = deadline - current;
-        struct pollfd p = {fd, events, 0};
-        int r = poll(&p, 1, remaining > 0 ? (int)remaining : 0);
-        if (r < 0 && errno == EINTR) continue;
-        if (r < 0) return -1;
-        if (!r) return -2;
-        if (p.revents & POLLNVAL) return -1;
-        /* HUP/ERR must reach recv/send/getsockopt for EOF or exact failure. */
-        return 0;
-    }
+#define NET_MAX_DATAGRAM 65507
+enum { NET_LISTENER = 1, NET_STREAM = 2, NET_DATAGRAM = 3 };
+#define NET_MASK(tag) (UINT32_C(1) << (tag))
+#define NET_ANY 0u
+#define NET_TCP (NET_MASK(NET_LISTENER) | NET_MASK(NET_STREAM))
+
+typedef struct { int fd; int nonblocking; } NetSocket;
+
+static int net_close_native(eshkol_handle_kind_t kind, uintptr_t native, void *user_data) {
+    (void)kind; (void)user_data;
+    NetSocket *socket_record = (NetSocket *)native;
+    int result = close(socket_record->fd);
+    free(socket_record);
+    return result == 0 || errno == EINTR ? 0 : -1;
 }
 static int address(const char *host, int port, struct sockaddr_storage *out, socklen_t *len) {
-    if (!host || port < 0 || port > 65535) return -4;
+    if (!host || port < 0 || port > 65535) return ESHKOL_IO_INVALID;
     memset(out, 0, sizeof(*out));
     struct sockaddr_in *a4 = (struct sockaddr_in *)out;
     struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)out;
@@ -62,7 +57,7 @@ static int address(const char *host, int port, struct sockaddr_storage *out, soc
         a6->sin6_family = AF_INET6; a6->sin6_port = htons((uint16_t)port);
         *len = sizeof(*a6); return AF_INET6;
     }
-    return -4;
+    return ESHKOL_IO_INVALID;
 }
 static int prepare(int fd) {
     int f = fcntl(fd, F_GETFL);
@@ -74,140 +69,203 @@ static int prepare(int fd) {
 #endif
     return 0;
 }
-static int64_t register_fd(int fd, int kind) {
-    int64_t result = -1;
-    pthread_mutex_lock(&lock);
-    if (next_id <= NET_LAST_ID) for (int i = 0; i < NET_SLOTS; i++) {
-        if (!slots[i].id) {
-            slots[i] = (Net){fd, kind, 0, 0, 0, next_id++};
-            result = slots[i].id; break;
-        }
-    }
-    pthread_mutex_unlock(&lock);
-    if (result < 0) close(fd);
-    return result;
+/* The single acquire site for sockets: ownership of fd moves to the registry
+ * on success and is closed here on failure. */
+static int64_t adopt_fd(int fd, int tag) {
+    NetSocket *record = (NetSocket *)calloc(1, sizeof(*record));
+    if (!record) { close(fd); return ESHKOL_IO_SYSTEM; }
+    record->fd = fd;
+    int64_t id = eshkol_resource_adopt(ESHKOL_HANDLE_KIND_SOCKET, (uint32_t)tag,
+                                       (uintptr_t)record, net_close_native, NULL);
+    if (id < 0) { close(fd); free(record); }
+    return id;
 }
-static Net *acquire(int64_t id, int kind, int timeout, int64_t *deadline) {
-    Net *n = NULL;
-    if (deadline) *deadline = 0;
-    if (id <= 0 || timeout < 0) return NULL;
-    pthread_mutex_lock(&lock);
-    for (int i = 0; i < NET_SLOTS; i++) if (slots[i].id == id && !slots[i].closed) {
-        if (!kind || slots[i].kind == kind) {
-            int64_t current = deadline ? now_ms() : 0;
-            if (current < 0) { *deadline = -1; break; }
-            n = &slots[i]; n->refs++;
-            if (deadline) *deadline = current + (n->nonblocking ? 0 : timeout);
-        }
-        break;
+static int errno_outcome(int error) {
+    switch (error) {
+        case ECONNRESET: case EPIPE: case ECONNABORTED: return ESHKOL_IO_RESET;
+        case ECONNREFUSED: return ESHKOL_IO_REFUSED;
+        case ETIMEDOUT: return ESHKOL_IO_TIMEOUT;
+        default: return ESHKOL_IO_SYSTEM;
     }
-    pthread_mutex_unlock(&lock);
-    return n;
-}
-static void release(Net *n) {
-    pthread_mutex_lock(&lock);
-    n->refs--;
-    if (n->closed && !n->refs) { close(n->fd); memset(n, 0, sizeof(*n)); }
-    pthread_mutex_unlock(&lock);
 }
 static int again(void) { return errno == EAGAIN || errno == EWOULDBLOCK; }
+/* Borrow, then compute the operation deadline: user nonblocking mode makes
+ * every wait a single readiness pass. */
+static int borrow(int64_t h, uint32_t mask, int32_t timeout, eshkol_resource_lease_t *lease,
+                  NetSocket **out, int64_t *deadline) {
+    if (h <= 0 || timeout < 0) return ESHKOL_IO_INVALID;
+    int status = eshkol_resource_borrow(h, ESHKOL_HANDLE_KIND_SOCKET, mask, lease);
+    if (status) return status;
+    *out = (NetSocket *)lease->native;
+    if (deadline) {
+        *deadline = eshkol_resource_deadline((*out)->nonblocking ? 0 : timeout);
+        if (*deadline < 0) { eshkol_resource_release(lease); return ESHKOL_IO_SYSTEM; }
+    }
+    return 0;
+}
+
 int64_t eshkol_net_open(const char *host, int32_t port, int32_t kind, int32_t timeout) {
     struct sockaddr_storage a; socklen_t len;
-    if (kind < 1 || kind > 3 || timeout < 0) return -4;
+    if (kind < NET_LISTENER || kind > NET_DATAGRAM || timeout < 0) return ESHKOL_IO_INVALID;
     int family = address(host, port, &a, &len);
     if (family < 0) return family;
-    int fd = socket(family, kind == 3 ? SOCK_DGRAM : SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-    if (prepare(fd)) { close(fd); return -1; }
-    int result = 0;
-    if (kind == 2) {
-        if (connect(fd, (struct sockaddr *)&a, len) < 0) {
-            if (errno != EINPROGRESS) result = -1;
-            else {
-                int64_t current = now_ms();
-                result = current < 0 ? -1 : wait_fd(fd, POLLOUT, current + timeout);
-                if (!result) {
-                    int error = 0; socklen_t size = sizeof(error);
-                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &size) || error) result = -1;
-                }
-            }
+    int64_t deadline = eshkol_resource_deadline(timeout);
+    if (deadline < 0) return ESHKOL_IO_SYSTEM;
+    int fd = socket(family, kind == NET_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM, 0);
+    if (fd < 0) return ESHKOL_IO_SYSTEM;
+    if (prepare(fd)) { close(fd); return ESHKOL_IO_SYSTEM; }
+    if (kind != NET_STREAM) {
+        if (bind(fd, (struct sockaddr *)&a, len) || (kind == NET_LISTENER && listen(fd, 64))) {
+            close(fd); return ESHKOL_IO_SYSTEM;
         }
-    } else {
-        if (bind(fd, (struct sockaddr *)&a, len) || (kind == 1 && listen(fd, 64))) result = -1;
+        return adopt_fd(fd, kind);
     }
-    if (result) { close(fd); return result; }
-    return register_fd(fd, kind);
+    int64_t id = adopt_fd(fd, NET_STREAM);
+    if (id < 0) return id;
+    eshkol_resource_lease_t lease; NetSocket *s;
+    int result = borrow(id, NET_MASK(NET_STREAM), timeout, &lease, &s, NULL);
+    if (result) { (void)eshkol_resource_close(id, ESHKOL_HANDLE_KIND_SOCKET, NET_ANY); return result; }
+    if (connect(s->fd, (struct sockaddr *)&a, len) < 0) {
+        if (errno != EINPROGRESS && errno != EINTR) result = errno_outcome(errno);
+        else if (!(result = eshkol_resource_wait(&lease, s->fd, ESHKOL_RESOURCE_WRITE, deadline))) {
+            int error = 0; socklen_t size = sizeof(error);
+            if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &error, &size)) result = ESHKOL_IO_SYSTEM;
+            else if (error) result = errno_outcome(error);
+        }
+    }
+    eshkol_resource_release(&lease);
+    if (result) { (void)eshkol_resource_close(id, ESHKOL_HANDLE_KIND_SOCKET, NET_ANY); return result; }
+    return id;
 }
 int64_t eshkol_net_accept(int64_t h, int32_t timeout) {
-    int64_t deadline; Net *n = acquire(h, 1, timeout, &deadline);
-    if (!n) return deadline < 0 ? -1 : -4;
-    int fd = -1, result = 0;
-    for (;;) {
-        fd = accept(n->fd, NULL, NULL);
-        if (fd >= 0) break;
-        if (errno == EINTR) {
-            int64_t current = now_ms();
-            if (current < 0) { result = -1; break; }
-            if (current >= deadline) { result = -2; break; }
-            continue;
-        }
-        if (!again()) { result = -1; break; }
-        if ((result = wait_fd(n->fd, POLLIN, deadline))) break;
-    }
-    release(n);
+    eshkol_resource_lease_t lease; NetSocket *s; int64_t deadline;
+    int result = borrow(h, NET_MASK(NET_LISTENER), timeout, &lease, &s, &deadline);
     if (result) return result;
-    if (prepare(fd)) { close(fd); return -1; }
-    return register_fd(fd, 2);
+    int fd = -1;
+    for (;;) {
+        fd = accept(s->fd, NULL, NULL);
+        if (fd >= 0) break;
+        if (errno == EINTR || errno == ECONNABORTED) continue;
+        if (!again()) { result = ESHKOL_IO_SYSTEM; break; }
+        if ((result = eshkol_resource_wait(&lease, s->fd, ESHKOL_RESOURCE_READ, deadline))) break;
+    }
+    eshkol_resource_release(&lease);
+    if (result) return result;
+    if (prepare(fd)) { close(fd); return ESHKOL_IO_SYSTEM; }
+    return adopt_fd(fd, NET_STREAM);
 }
-static int transfer(int64_t h, void *buf, int32_t length, int32_t timeout, int writing) {
-    if (!buf || length < 0 || length > NET_MAX_BYTES || (!writing && !length)) return -4;
-    int64_t deadline; Net *n = acquire(h, 2, timeout, &deadline);
-    if (!n) return deadline < 0 ? -1 : -4;
-    int result;
+/* One stream transfer under an active borrow: returns as soon as any bytes move. */
+static int32_t stream_io(const eshkol_resource_lease_t *lease, NetSocket *s, uint8_t *buf,
+                         int32_t length, int64_t deadline, int writing) {
+    int32_t result;
     for (;;) {
         int flags = 0;
 #ifdef MSG_NOSIGNAL
         if (writing) flags = MSG_NOSIGNAL;
 #endif
-        ssize_t count = writing ? send(n->fd, buf, (size_t)length, flags) : recv(n->fd, buf, (size_t)length, 0);
-        if (count >= 0) { result = (int)count; break; }
-        if (errno == EINTR) {
-            int64_t current = now_ms();
-            if (current < 0) { result = -1; break; }
-            if (current >= deadline) { result = -2; break; }
-            continue;
-        }
-        if (!again()) { result = -1; break; }
-        if ((result = wait_fd(n->fd, writing ? POLLOUT : POLLIN, deadline))) break;
+        ssize_t count = writing ? send(s->fd, buf, (size_t)length, flags)
+                                : recv(s->fd, buf, (size_t)length, 0);
+        if (count >= 0) { result = (int32_t)count; break; }
+        if (errno == EINTR) continue;
+        if (!again()) { result = errno_outcome(errno); break; }
+        if ((result = eshkol_resource_wait(lease, s->fd,
+                writing ? ESHKOL_RESOURCE_WRITE : ESHKOL_RESOURCE_READ, deadline))) break;
     }
-    release(n); return result;
+    return result;
+}
+static int32_t stream_transfer(int64_t h, uint8_t *buf, int32_t length, int32_t timeout, int writing) {
+    eshkol_resource_lease_t lease; NetSocket *s; int64_t deadline;
+    int result = borrow(h, NET_MASK(NET_STREAM), timeout, &lease, &s, &deadline);
+    if (result) return result;
+    result = stream_io(&lease, s, buf, length, deadline, writing);
+    eshkol_resource_release(&lease);
+    return result;
+}
+int32_t eshkol_net_leased_io(const eshkol_resource_lease_t *lease, void *buffer, int32_t length,
+                             int64_t deadline, int32_t writing) {
+    if (!lease || !lease->lease || lease->tag != NET_STREAM || !buffer || length <= 0 ||
+        deadline < 0)
+        return ESHKOL_IO_INVALID;
+    return stream_io(lease, (NetSocket *)lease->native, (uint8_t *)buffer, length, deadline,
+                     writing != 0);
+}
+int32_t eshkol_net_borrow_stream(int64_t handle, eshkol_resource_lease_t *lease) {
+    return eshkol_resource_borrow(handle, ESHKOL_HANDLE_KIND_SOCKET, NET_MASK(NET_STREAM), lease);
 }
 int32_t eshkol_net_read(int64_t h, void *buf, int32_t cap, int32_t timeout) {
-    return transfer(h, buf, cap, timeout, 0);
+    if (!buf || cap <= 0 || cap > NET_MAX_BYTES) return ESHKOL_IO_INVALID;
+    return stream_transfer(h, (uint8_t *)buf, cap, timeout, 0);
 }
 int32_t eshkol_net_write(int64_t h, const void *buf, int32_t len, int32_t timeout) {
-    return transfer(h, (void *)buf, len, timeout, 1);
+    if (!buf || len < 0 || len > NET_MAX_BYTES) return ESHKOL_IO_INVALID;
+    return stream_transfer(h, (uint8_t *)buf, len, timeout, 1);
 }
-int32_t eshkol_net_sendto(int64_t h, const char *host, int32_t port, const void *buf, int32_t len, int32_t timeout) {
-    if (!buf || len < 0 || len > 65507) return -4;
-    struct sockaddr_storage a; socklen_t size;
-    if (address(host, port, &a, &size) < 0) return -4;
-    int64_t deadline; Net *n = acquire(h, 3, timeout, &deadline);
-    if (!n) return deadline < 0 ? -1 : -4;
-    int result;
-    for (;;) {
-        ssize_t count = sendto(n->fd, buf, (size_t)len, 0, (struct sockaddr *)&a, size);
-        if (count >= 0) { result = (int)count; break; }
-        if (errno == EINTR) {
-            int64_t current = now_ms();
-            if (current < 0) { result = -1; break; }
-            if (current >= deadline) { result = -2; break; }
-            continue;
-        }
-        if (!again()) { result = -1; break; }
-        if ((result = wait_fd(n->fd, POLLOUT, deadline))) break;
+int32_t eshkol_net_read_bytes(int64_t h, void *bytevector, int64_t start, int64_t count,
+                              int32_t timeout) {
+    uint8_t *bytes;
+    if (count <= 0 || count > INT32_MAX ||
+        eshkol_resource_bytes(bytevector, start, count, &bytes)) return ESHKOL_IO_INVALID;
+    return stream_transfer(h, bytes, (int32_t)count, timeout, 0);
+}
+int32_t eshkol_net_write_bytes(int64_t h, const void *bytevector, int64_t start, int64_t count,
+                               int32_t timeout) {
+    uint8_t *bytes;
+    if (count < 0 || count > INT32_MAX ||
+        eshkol_resource_bytes(bytevector, start, count, &bytes)) return ESHKOL_IO_INVALID;
+    return stream_transfer(h, bytes, (int32_t)count, timeout, 1);
+}
+int64_t eshkol_net_write_all_bytes(int64_t h, const void *bytevector, int64_t start,
+                                   int64_t count, int32_t timeout) {
+    uint8_t *bytes;
+    if (count < 0 || eshkol_resource_bytes(bytevector, start, count, &bytes))
+        return ESHKOL_IO_INVALID;
+    eshkol_resource_lease_t lease; NetSocket *s; int64_t deadline;
+    int result = borrow(h, NET_MASK(NET_STREAM), timeout, &lease, &s, &deadline);
+    if (result) return result;
+    int64_t done = 0;
+    while (done < count) {
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags = MSG_NOSIGNAL;
+#endif
+        size_t chunk = (size_t)(count - done > INT32_MAX ? INT32_MAX : count - done);
+        ssize_t sent = send(s->fd, bytes + done, chunk, flags);
+        if (sent >= 0) { done += sent; continue; }
+        if (errno == EINTR) continue;
+        if (!again()) { result = errno_outcome(errno); break; }
+        if ((result = eshkol_resource_wait(&lease, s->fd, ESHKOL_RESOURCE_WRITE, deadline))) break;
     }
-    release(n); return result;
+    eshkol_resource_release(&lease);
+    return result ? result : done;
+}
+static int32_t datagram_send(int64_t h, const char *host, int32_t port, const uint8_t *buf,
+                             int32_t len, int32_t timeout) {
+    struct sockaddr_storage a; socklen_t size;
+    if (!buf || len < 0 || len > NET_MAX_DATAGRAM) return ESHKOL_IO_INVALID;
+    if (address(host, port, &a, &size) < 0) return ESHKOL_IO_INVALID;
+    eshkol_resource_lease_t lease; NetSocket *s; int64_t deadline;
+    int result = borrow(h, NET_MASK(NET_DATAGRAM), timeout, &lease, &s, &deadline);
+    if (result) return result;
+    for (;;) {
+        ssize_t count = sendto(s->fd, buf, (size_t)len, 0, (struct sockaddr *)&a, size);
+        if (count >= 0) { result = (int32_t)count; break; }
+        if (errno == EINTR) continue;
+        if (!again()) { result = errno_outcome(errno); break; }
+        if ((result = eshkol_resource_wait(&lease, s->fd, ESHKOL_RESOURCE_WRITE, deadline))) break;
+    }
+    eshkol_resource_release(&lease);
+    return result;
+}
+int32_t eshkol_net_sendto(int64_t h, const char *host, int32_t port, const void *buf, int32_t len,
+                          int32_t timeout) {
+    return datagram_send(h, host, port, (const uint8_t *)buf, len, timeout);
+}
+int32_t eshkol_net_sendto_bytes(int64_t h, const char *host, int32_t port, const void *bytevector,
+                                int64_t start, int64_t count, int32_t timeout) {
+    uint8_t *bytes;
+    if (count < 0 || count > NET_MAX_DATAGRAM ||
+        eshkol_resource_bytes(bytevector, start, count, &bytes)) return ESHKOL_IO_INVALID;
+    return datagram_send(h, host, port, bytes, (int32_t)count, timeout);
 }
 static int render(const struct sockaddr_storage *a, char *buf, int cap, int with_port) {
     char host[INET6_ADDRSTRLEN]; const void *src; int port;
@@ -217,89 +275,126 @@ static int render(const struct sockaddr_storage *a, char *buf, int cap, int with
     } else if (a->ss_family == AF_INET6) {
         const struct sockaddr_in6 *v = (const struct sockaddr_in6 *)a;
         src = &v->sin6_addr; port = ntohs(v->sin6_port);
-    } else return -1;
-    if (!inet_ntop(a->ss_family, src, host, sizeof(host))) return -1;
+    } else return ESHKOL_IO_SYSTEM;
+    if (!inet_ntop(a->ss_family, src, host, sizeof(host))) return ESHKOL_IO_SYSTEM;
     int length = with_port ? snprintf(buf, (size_t)cap, a->ss_family == AF_INET6 ? "[%s]:%d" : "%s:%d", host, port)
                            : snprintf(buf, (size_t)cap, "%s", host);
-    return length >= cap ? -4 : length;
+    return length >= cap ? ESHKOL_IO_INVALID : length;
 }
-int32_t eshkol_net_recvfrom(int64_t h, void *buf, int32_t cap, char *peer, int32_t peer_cap, int32_t timeout) {
-    if (!buf || cap <= 0 || cap > 65535 || !peer || peer_cap < 64) return -4;
-    int64_t deadline; Net *n = acquire(h, 3, timeout, &deadline);
-    if (!n) return deadline < 0 ? -1 : -4;
-    int result;
+/* Receive one datagram. A datagram larger than the capacity is consumed; its
+ * prefix and sender are stored and ESHKOL_IO_TRUNCATED is returned. */
+static int32_t datagram_receive(int64_t h, uint8_t *buf, int32_t cap, char *peer, int32_t peer_cap,
+                                int32_t timeout) {
+    if (!buf || cap <= 0 || cap > 65535 || !peer || peer_cap < 64) return ESHKOL_IO_INVALID;
+    eshkol_resource_lease_t lease; NetSocket *s; int64_t deadline;
+    int result = borrow(h, NET_MASK(NET_DATAGRAM), timeout, &lease, &s, &deadline);
+    if (result) return result;
     for (;;) {
         struct sockaddr_storage a;
         struct iovec iov = {buf, (size_t)cap};
         struct msghdr msg; memset(&msg, 0, sizeof(msg));
         msg.msg_name = &a; msg.msg_namelen = sizeof(a); msg.msg_iov = &iov; msg.msg_iovlen = 1;
-        ssize_t count = recvmsg(n->fd, &msg, 0);
+        ssize_t count = recvmsg(s->fd, &msg, 0);
         if (count >= 0) {
-            result = (msg.msg_flags & MSG_TRUNC) ? -4 : (int)count;
-            if (result >= 0 && render(&a, peer, peer_cap, 1) < 0) result = -1;
+            result = (msg.msg_flags & MSG_TRUNC) ? ESHKOL_IO_TRUNCATED : (int32_t)count;
+            int rendered = render(&a, peer, peer_cap, 1);
+            if (rendered < 0) result = rendered;
             break;
         }
-        if (errno == EINTR) {
-            int64_t current = now_ms();
-            if (current < 0) { result = -1; break; }
-            if (current >= deadline) { result = -2; break; }
-            continue;
-        }
-        if (!again()) { result = -1; break; }
-        if ((result = wait_fd(n->fd, POLLIN, deadline))) break;
+        if (errno == EINTR) continue;
+        if (!again()) { result = errno_outcome(errno); break; }
+        if ((result = eshkol_resource_wait(&lease, s->fd, ESHKOL_RESOURCE_READ, deadline))) break;
     }
-    release(n); return result;
+    eshkol_resource_release(&lease);
+    return result;
 }
-static int endpoint(Net *n, int peer, struct sockaddr_storage *a) {
+int32_t eshkol_net_recvfrom(int64_t h, void *buf, int32_t cap, char *peer, int32_t peer_cap,
+                            int32_t timeout) {
+    return datagram_receive(h, (uint8_t *)buf, cap, peer, peer_cap, timeout);
+}
+int32_t eshkol_net_recvfrom_bytes(int64_t h, void *bytevector, int64_t start, int64_t count,
+                                  char *peer, int32_t peer_cap, int32_t timeout) {
+    uint8_t *bytes;
+    if (count <= 0 || count > 65535 || eshkol_resource_bytes(bytevector, start, count, &bytes))
+        return ESHKOL_IO_INVALID;
+    return datagram_receive(h, bytes, (int32_t)count, peer, peer_cap, timeout);
+}
+static int endpoint(NetSocket *s, int peer, struct sockaddr_storage *a) {
     socklen_t size = sizeof(*a);
-    return peer ? getpeername(n->fd, (struct sockaddr *)a, &size) : getsockname(n->fd, (struct sockaddr *)a, &size);
+    return peer ? getpeername(s->fd, (struct sockaddr *)a, &size)
+                : getsockname(s->fd, (struct sockaddr *)a, &size);
 }
 int32_t eshkol_net_address(int64_t h, int32_t peer, char *buf, int32_t cap) {
-    if (!buf || cap < INET6_ADDRSTRLEN || (peer != 0 && peer != 1)) return -4;
-    Net *n = acquire(h, 0, 0, NULL); if (!n) return -4;
+    if (!buf || cap < INET6_ADDRSTRLEN || (peer != 0 && peer != 1)) return ESHKOL_IO_INVALID;
+    eshkol_resource_lease_t lease; NetSocket *s;
+    int result = borrow(h, NET_ANY, 0, &lease, &s, NULL);
+    if (result) return result;
     struct sockaddr_storage a;
-    int result = endpoint(n, peer, &a) ? -1 : render(&a, buf, cap, 0);
-    release(n); return result;
+    result = endpoint(s, peer, &a) ? errno_outcome(errno) : render(&a, buf, cap, 0);
+    eshkol_resource_release(&lease);
+    return result;
 }
 int32_t eshkol_net_port(int64_t h, int32_t peer) {
-    if (peer != 0 && peer != 1) return -4;
-    Net *n = acquire(h, 0, 0, NULL); if (!n) return -4;
-    struct sockaddr_storage a; int result = -1;
-    if (!endpoint(n, peer, &a)) result = a.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&a)->sin_port)
-                                                          : ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
-    release(n); return result;
+    if (peer != 0 && peer != 1) return ESHKOL_IO_INVALID;
+    eshkol_resource_lease_t lease; NetSocket *s;
+    int result = borrow(h, NET_ANY, 0, &lease, &s, NULL);
+    if (result) return result;
+    struct sockaddr_storage a;
+    if (endpoint(s, peer, &a)) result = errno_outcome(errno);
+    else result = a.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&a)->sin_port)
+                                         : ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+    eshkol_resource_release(&lease);
+    return result;
 }
 int32_t eshkol_net_nonblocking(int64_t h, int32_t enabled) {
-    if (enabled != 0 && enabled != 1) return -4;
-    int result = -4;
-    pthread_mutex_lock(&lock);
-    for (int i = 0; i < NET_SLOTS; i++) if (slots[i].id == h && !slots[i].closed && h > 0) {
-        slots[i].nonblocking = enabled; result = 0; break;
-    }
-    pthread_mutex_unlock(&lock); return result;
+    if (enabled != 0 && enabled != 1) return ESHKOL_IO_INVALID;
+    eshkol_resource_lease_t lease; NetSocket *s;
+    int result = borrow(h, NET_ANY, 0, &lease, &s, NULL);
+    if (result) return result;
+    s->nonblocking = enabled;
+    eshkol_resource_release(&lease);
+    return 0;
 }
-int32_t eshkol_net_close(int64_t h) {
-    int result = -4;
-    pthread_mutex_lock(&lock);
-    for (int i = 0; i < NET_SLOTS; i++) if (slots[i].id == h && !slots[i].closed && h > 0) {
-        Net *n = &slots[i]; n->closed = 1;
-        shutdown(n->fd, SHUT_RDWR);
-        if (!n->refs) { close(n->fd); memset(n, 0, sizeof(*n)); }
-        result = 0; break;
-    }
-    pthread_mutex_unlock(&lock); return result;
+int32_t eshkol_net_shutdown(int64_t h, int32_t how) {
+    if (how < 0 || how > 2) return ESHKOL_IO_INVALID;
+    eshkol_resource_lease_t lease; NetSocket *s;
+    int result = borrow(h, NET_MASK(NET_STREAM), 0, &lease, &s, NULL);
+    if (result) return result;
+    static const int modes[3] = {SHUT_RD, SHUT_WR, SHUT_RDWR};
+    if (shutdown(s->fd, modes[how]) != 0) result = errno_outcome(errno);
+    eshkol_resource_release(&lease);
+    return result;
 }
+int32_t eshkol_net_cancel(int64_t h) {
+    return eshkol_resource_cancel(h, ESHKOL_HANDLE_KIND_SOCKET, NET_ANY);
+}
+int32_t eshkol_net_close_kind(int64_t h, int32_t family) {
+    uint32_t mask = family == 1 ? NET_TCP : family == 2 ? NET_MASK(NET_DATAGRAM) : NET_ANY;
+    if (family < 0 || family > 2) return ESHKOL_IO_INVALID;
+    return eshkol_resource_close(h, ESHKOL_HANDLE_KIND_SOCKET, mask);
+}
+int32_t eshkol_net_close(int64_t h) { return eshkol_net_close_kind(h, 0); }
 #else
-/* Unsupported platforms must refuse, never act as successful no-op sockets. */
+/* Unsupported platforms refuse; they never act as successful no-op sockets. */
 #define UNUSED(x) (void)(x)
-int64_t eshkol_net_open(const char*a,int32_t b,int32_t c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return -3;}
-int64_t eshkol_net_accept(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return -3;}
-int32_t eshkol_net_read(int64_t a,void*b,int32_t c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return -3;}
-int32_t eshkol_net_write(int64_t a,const void*b,int32_t c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return -3;}
-int32_t eshkol_net_sendto(int64_t a,const char*b,int32_t c,const void*d,int32_t e,int32_t f){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);UNUSED(f);return -3;}
-int32_t eshkol_net_recvfrom(int64_t a,void*b,int32_t c,char*d,int32_t e,int32_t f){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);UNUSED(f);return -3;}
-int32_t eshkol_net_address(int64_t a,int32_t b,char*c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return -3;}
-int32_t eshkol_net_port(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return -3;}
-int32_t eshkol_net_nonblocking(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return -3;}
-int32_t eshkol_net_close(int64_t a){UNUSED(a);return -3;}
+int64_t eshkol_net_open(const char*a,int32_t b,int32_t c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return ESHKOL_IO_UNSUPPORTED;}
+int64_t eshkol_net_accept(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_read(int64_t a,void*b,int32_t c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_write(int64_t a,const void*b,int32_t c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_read_bytes(int64_t a,void*b,int64_t c,int64_t d,int32_t e){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_write_bytes(int64_t a,const void*b,int64_t c,int64_t d,int32_t e){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);return ESHKOL_IO_UNSUPPORTED;}
+int64_t eshkol_net_write_all_bytes(int64_t a,const void*b,int64_t c,int64_t d,int32_t e){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_sendto(int64_t a,const char*b,int32_t c,const void*d,int32_t e,int32_t f){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);UNUSED(f);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_sendto_bytes(int64_t a,const char*b,int32_t c,const void*d,int64_t e,int64_t f,int32_t g){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);UNUSED(f);UNUSED(g);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_recvfrom(int64_t a,void*b,int32_t c,char*d,int32_t e,int32_t f){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);UNUSED(f);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_recvfrom_bytes(int64_t a,void*b,int64_t c,int64_t d,char*e,int32_t f,int32_t g){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);UNUSED(f);UNUSED(g);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_address(int64_t a,int32_t b,char*c,int32_t d){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_port(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_nonblocking(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_shutdown(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_cancel(int64_t a){UNUSED(a);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_close_kind(int64_t a,int32_t b){UNUSED(a);UNUSED(b);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_close(int64_t a){UNUSED(a);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_leased_io(const eshkol_resource_lease_t*a,void*b,int32_t c,int64_t d,int32_t e){UNUSED(a);UNUSED(b);UNUSED(c);UNUSED(d);UNUSED(e);return ESHKOL_IO_UNSUPPORTED;}
+int32_t eshkol_net_borrow_stream(int64_t a,eshkol_resource_lease_t*b){UNUSED(a);UNUSED(b);return ESHKOL_IO_UNSUPPORTED;}
 #endif

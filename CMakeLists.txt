@@ -2608,6 +2608,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/threads.c
   lib/core/net.c
   lib/core/tls.c
+  lib/core/resource_lease.c
   lib/core/workspace.cpp
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
@@ -14334,14 +14335,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
 endif()
 
 # Standalone networking boundary: independent POSIX peers, no LLVM rebuild.
+# Sockets own their descriptors through the shared resource lease layer and
+# wait on the portable event loop, so every standalone test links that stack.
+set(ESHKOL_NET_LEASE_STACK_SRC
+    lib/core/resource_lease.c lib/core/runtime_handle.cpp
+    lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
 if(ESHKOL_BUILD_TESTS)
-    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c)
+    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(net_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         find_package(Threads REQUIRED)
         target_link_libraries(net_runtime_test PRIVATE Threads::Threads)
     endif()
-    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c)
+    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c lib/core/net.c
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_clock_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         target_link_libraries(net_clock_failure_test PRIVATE Threads::Threads)
@@ -14353,7 +14361,8 @@ if(ESHKOL_BUILD_TESTS)
     set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
 
     add_executable(tls_context_test
-        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c)
+        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(tls_context_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(ESHKOL_TLS_OPENSSL_FOUND)
         set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
@@ -14503,7 +14512,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
-    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c)
+    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
+        lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(net_close_concurrency_test PRIVATE Threads::Threads)
     add_test(NAME net_close_concurrency_test COMMAND net_close_concurrency_test)
