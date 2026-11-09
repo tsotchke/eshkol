@@ -14378,6 +14378,28 @@ if(ESHKOL_BUILD_TESTS)
     endif()
 endif()
 
+# Local test PKI, generated under the build directory for every TLS lease test;
+# the trust anchors and leaves never leave the build tree and no test uses the
+# network beyond loopback.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_TLS_OPENSSL_FOUND AND UNIX AND NOT EMSCRIPTEN)
+    set(ESHKOL_TLS_TEST_PKI "${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki")
+    add_executable(tls_test_ca tests/network/tls_test_ca.c)
+    target_link_libraries(tls_test_ca PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME tls_test_pki COMMAND $<TARGET_FILE:tls_test_ca> "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_test_pki PROPERTIES FIXTURES_SETUP tls_test_pki
+        PASS_REGULAR_EXPRESSION "PASS: test PKI written")
+    add_executable(tls_lease_test tests/network/tls_lease_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(tls_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    set_source_files_properties(tests/network/tls_lease_test.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    target_link_libraries(tls_lease_test PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    add_test(NAME tls_lease_test COMMAND tls_lease_test "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_lease_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE
+        FIXTURES_REQUIRED tls_test_pki LABELS "network;tls;ownership"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 # TLS acceptance is registered only for a build with the verified native
 # OpenSSL implementation. These tests exercise the public C, Scheme JIT, AOT,
 # and Python SSL peer paths on loopback; unsupported builds expose stubs only.
