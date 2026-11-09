@@ -10,8 +10,9 @@
  *   runtime_regions_resident.cpp    resident owners
  *
  * Everything here is runtime-private: it lives in eshkol::regions_internal
- * and has hidden visibility, so the split adds no exported symbol.  The
- * public region ABI remains in arena_memory.h.
+ * and has hidden visibility on ELF and Mach-O (COFF exports nothing without
+ * dllexport), so the split adds no exported symbol.  The public region ABI
+ * remains in arena_memory.h.
  */
 #ifndef ESHKOL_CORE_RUNTIME_REGIONS_INTERNAL_H
 #define ESHKOL_CORE_RUNTIME_REGIONS_INTERNAL_H
@@ -34,7 +35,7 @@
 #include <mutex>
 #include <array>
 
-#if defined(__GNUC__) || defined(__clang__)
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_WIN32)
 #pragma GCC visibility push(hidden)
 #endif
 
@@ -238,7 +239,7 @@ bool region_escape_values_in_place(eshkol_tagged_value_t* vals, uint64_t n);
 
 } // namespace eshkol::regions_internal
 
-#if defined(__GNUC__) || defined(__clang__)
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_WIN32)
 #pragma GCC visibility pop
 #endif
 
