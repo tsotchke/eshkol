@@ -1,0 +1,11 @@
+;; Stability (ADR-0042): only stable terms occur in types. n indexes the
+;; type of v, so assigning n would make that type describe a different
+;; length than v has.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: 'n' occurs in a dependent type and cannot be assigned with set!
+
+(define (scale (n : integer) (v : (vector real n))) : integer
+  (set! n (+ n 1))
+  n)
+(display (scale 2 (vector 1.0 2.0)))

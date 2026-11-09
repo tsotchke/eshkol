@@ -21,8 +21,9 @@
  * before. One source of truth, and a divergence between the engines becomes
  * impossible by construction rather than by discipline.
  *
- * The refinement verdict (ADR-0044) takes the same route through the same
- * helper: eshkol_refinement_check_source().
+ * The dependent-type (ADR-0042) and refinement (ADR-0044) verdicts take the
+ * same route through the same helper: eshkol_dependent_check_source() and
+ * eshkol_refinement_check_source().
  *
  * Each entry point deliberately reports ONLY its own verdict. Gradual typing's
  * other findings belong to the engine that is generating code and are none of
@@ -90,9 +91,10 @@ int checkSource(const char* source, const char* source_name, Verdict verdict) {
     }
 
     eshkol::hott::TypeEnvironment env;
-    // strict_types stays FALSE: this bridge draws the linear verdict only, and
-    // strictness governs whether ordinary type errors are fatal — a decision
-    // for the engine emitting code, not for a linearity probe. unsafe_mode is
+    // strict_types stays FALSE: this bridge draws the verdicts that are fatal
+    // in every mode -- linearity and failed dependent-type obligations
+    // (ADR-0042) -- and strictness governs whether ordinary type errors are
+    // fatal, a decision for the engine emitting code, not for this probe. unsafe_mode is
     // honoured because `--unsafe` documents that linear types may be duplicated
     // (no-cloning bypassed), and that hatch must mean the same thing on both
     // engines.
@@ -133,6 +135,16 @@ int eshkol_linear_check_source(const char* source, const char* source_name) {
     return checkSource(source, source_name,
                        [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>&) {
                            return static_cast<int>(checker.linearityViolations());
+                       });
+}
+
+/* Dependent types (ADR-0042) reach the VM through the same helper: the
+ * number of failed dependent-type obligations the checker recorded while
+ * synthesizing the program, or -1 when the source could not be analysed. */
+int eshkol_dependent_check_source(const char* source, const char* source_name) {
+    return checkSource(source, source_name,
+                       [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>&) {
+                           return static_cast<int>(checker.obligationViolations());
                        });
 }
 

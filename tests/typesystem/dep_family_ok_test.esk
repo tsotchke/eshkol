@@ -1,0 +1,17 @@
+;; Type families (ADR-0042): a define-type family with declared parameter
+;; sorts is expanded with its arguments, so (Matrix real 2 3) is the type
+;; (vector (vector real 3) 2) and a 2x3 literal has it.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define-type (Matrix (a : (universe 0)) (m : integer) (n : integer))
+  (vector (vector a n) m))
+
+(define (rows (x : (Matrix real r c))) : integer (vector-length x))
+
+(: m23 (Matrix real 2 3))
+(define m23 (vector (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0)))
+(display (rows m23))
+(newline)

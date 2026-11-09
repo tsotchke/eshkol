@@ -1,0 +1,14 @@
+;; Gradual boundary (ADR-0042): a vector whose length is not known
+;; statically (built by list->vector) is accepted where (vector real 3) is
+;; expected; the obligation is not refuted, so the call compiles in both
+;; modes.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+
+(define (norm2 (v : (vector real 3))) : real
+  (+ (* (vector-ref v 0) (vector-ref v 0))
+     (* (vector-ref v 1) (vector-ref v 1))
+     (* (vector-ref v 2) (vector-ref v 2))))
+(display (norm2 (list->vector (list 1.0 2.0 2.0))))
+(newline)

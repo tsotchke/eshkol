@@ -2930,6 +2930,21 @@ public:
                     return std::make_pair(nullptr, nullptr);
                 }
 
+                // A failed obligation of the dependent fragment (ADR-0042) is
+                // fatal in every mode but --unsafe, for the same reason as a
+                // linearity violation: the program states a dependent type
+                // (an index, a universe, a Pi or Sigma) and the checker has
+                // proved it does not hold. Only programs that write
+                // dependent types can incur one, so gradual programs are
+                // unaffected.
+                if (type_checker.hasObligationViolations() && !cfg->unsafe_mode) {
+                    eshkol_error("HoTT: %zu dependent type obligation(s) not met",
+                                 type_checker.obligationViolations());
+                    eshkol_error("Refusing to generate code for a program whose dependent "
+                                 "types do not hold");
+                    return std::make_pair(nullptr, nullptr);
+                }
+
                 // Report accumulated type error summary
                 if (type_checker.hasErrors()) {
                     if (cfg->strict_types) {
@@ -9296,6 +9311,18 @@ private:
             case HOTT_TYPE_REFINE:  // erased to its base (ADR-0044)
                 return type_expr->refine.base ? resolveDeclaredHottTypeId(type_expr->refine.base)
                                               : BuiltinTypes::Value;
+            // The dependent type language erases to the runtime types its
+            // values have (ADR-0042): a Pi is a procedure, a Sigma a pair, a
+            // length-indexed vector a vector.
+            case HOTT_TYPE_DEPENDENT:
+                return BuiltinTypes::Function;
+            case HOTT_TYPE_SIGMA:
+                return BuiltinTypes::Pair;
+            case HOTT_TYPE_APP:
+                if (type_expr->app.head && std::string(type_expr->app.head) == "vector") {
+                    return BuiltinTypes::Vector;
+                }
+                return BuiltinTypes::Value;
             case HOTT_TYPE_VAR:
                 if (type_expr->var_name) {
                     auto builtin = ctx_->hottTypes().lookupType(type_expr->var_name);

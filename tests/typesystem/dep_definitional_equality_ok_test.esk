@@ -1,0 +1,20 @@
+;; Definitional equality by normalization (ADR-0042): index arithmetic is
+;; compared in polynomial normal form, so (+ m n) at m = 2, n = 3 is 5, and
+;; (+ n 1) and (+ 1 n) are the same index.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define (concat (a : (vector real m)) (b : (vector real n))) : (vector real (+ m n))
+  (vector-append a b))
+
+(: v (vector real 5))
+(define v (concat (vector 1.0 2.0) (vector 3.0 4.0 5.0)))
+(display v)
+(newline)
+
+(define (grow (n : integer) (v : (vector real (+ n 1)))) : (vector real (+ 1 n))
+  v)
+(display (grow 2 (vector 7.0 8.0 9.0)))
+(newline)

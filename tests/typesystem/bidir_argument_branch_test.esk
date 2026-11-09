@@ -1,0 +1,12 @@
+;; Bidirectional checking (ADR-0042): an argument is checked against its
+;; parameter tail by tail, so a branch that cannot be a Number is found even
+;; though the join of the branches is Value.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: [ERROR] Type error: argument 1 of 'area': expected Number, got String (line 12
+
+(define (area (r : number)) (* r r))
+(define flag #t)
+(display (area (if flag
+                   2
+                   "two")))

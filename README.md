@@ -223,7 +223,7 @@ The gradual type system, grounded in Homotopy Type Theory, enables compile-time 
 Eshkol is implemented as a **production compiler** written in C17/C++20, utilizing LLVM for native code generation. The implementation comprises:
 
 - **Parser driven by an explicit continuation stack** — a child parse suspends into a heap-allocated coroutine frame, so native stack consumption is independent of grammar nesting — with comprehensive macro expansion (syntax-rules)
-- **HoTT type checker** with bidirectional *inference* (synthesis today; the checking direction for lambdas is planned for v1.9.0 under ADR-0004 — at v1.3.6 `TypeChecker::checkLambdaTask` synthesizes the lambda's type without consulting its `expected` parameter, `lib/types/type_checker.cpp:4516-4520`) and dependent type support
+- **HoTT type checker** with bidirectional checking: synthesis, and the checking direction for lambdas, applications, `let`, `define`, declarations and `(the T e)`, judged tail by tail; dependent types (Pi, Sigma, universe levels, length-indexed vectors, `define-type` families) with definitional equality by normalization, enforced at compile time (ADR-0042)
 - **LLVM backend** with 39 code generation modules totalling 120,420 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,407 lines — measured at the v1.3.6-evolve source (`60f345def`)
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state

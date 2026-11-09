@@ -6937,15 +6937,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* -- define-type (type alias: compile-time only, no runtime effect). Like
-     * every form it leaves one value, so the enclosing sequence's pop stays
-     * balanced. -- */
-    if (is_sym(head, "define-type")) { chunk_emit(c, OP_NIL, 0); return; }
+    /* -- define-type (type alias: compile-time only, no runtime effect). It
+     *    is not a definition of a variable, so like every expression it
+     *    leaves one value -- the unspecified value -- for its context to
+     *    consume, and the enclosing sequence's pop stays balanced. -- */
+    if (is_sym(head, "define-type")) { chunk_emit(c, OP_VOID, 0); return; }
 
-    /* -- (the type expr): an ascription, checked before compilation (the
-     * gradual checker, and refinements through the front-end bridge,
-     * ADR-0044); at run time it is exactly expr, as on the native engine. -- */
-    if (is_sym(head, "the") && node->n_children == 3) {
+    /* -- (: name type) declarations and (the type expr) ascriptions
+     *    (ADR-0042, ADR-0044): types are compile-time only, checked before
+     *    compilation (the gradual and dependent checkers, and refinements,
+     *    through the front-end bridge). A declaration is the unspecified
+     *    value; an ascription is its expression, exactly the code the native
+     *    engine emits for it. A user binding of either name is an ordinary
+     *    call. -- */
+    if (is_sym(head, ":") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
+        chunk_emit(c, OP_VOID, 0);
+        return;
+    }
+    if (is_sym(head, "the") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
         compile_expr(c, node->children[2], tail);
         return;
     }
