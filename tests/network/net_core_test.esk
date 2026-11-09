@@ -1,7 +1,8 @@
 ;; core.net on the SOCKET lease layer: byte-counted TCP and UDP, partial
 ;; writes against a slow peer, peer reset, deadlines, cancellation, shutdown,
-;; truncation, guaranteed close on every exit path, re-entry refusal, a constant
-;; descriptor count across 1,000 cycles, and network capability checks.
+;; truncation, guaranteed close on return and exception, a constant descriptor
+;; count across 1,000 cycles, and network capability checks. Continuation exits
+;; are covered by net_scope_continuation_test.esk.
 (require stdlib)
 (require core.net)
 (require core.threads)
@@ -129,21 +130,6 @@
     (call-with-tcp-listener "127.0.0.1" 0 (lambda (l) (set! seen l) (raise 'boom)))))
 (check (eq? raised 'boom) "the original exception propagates")
 (check (reason? (tcp-close seen) 'invalid) "an exception closed the listener")
-(define escaped
-  (call/cc (lambda (k)
-    (call-with-tcp-listener "127.0.0.1" 0 (lambda (l) (set! seen l) (k 'escaped) 'not-reached)))))
-(check (eq? escaped 'escaped) "a continuation escape keeps its target value")
-(check (reason? (tcp-close seen) 'invalid) "a continuation escape closed the listener")
-(define reentry-k #f)
-(define reentry-passes 0)
-(define (reentry-probe)
-  (guard (e ((network-error? e) (network-error-reason e)))
-    (let ((v (call-with-tcp-listener "127.0.0.1" 0
-               (lambda (l) (call/cc (lambda (k) (set! reentry-k k) 'first))))))
-      (set! reentry-passes (+ reentry-passes 1))
-      (if (= reentry-passes 1) (reentry-k 'again) v))))
-(check (eq? (reentry-probe) 'invalid) "re-entering a finished scope raises before proc runs")
-(check (= reentry-passes 1) "the receiver did not run again after re-entry")
 (check (reason? (call-with-tcp-connection "127.0.0.1" 1 1000 (lambda (c) 'never)) 'refused)
        "a failed acquisition returns its error without calling proc")
 

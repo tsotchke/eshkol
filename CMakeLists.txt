@@ -14535,7 +14535,7 @@ endif()
 
 # Public core.net/core.tls lease surfaces on both native engines.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
-    set(_net_core_cases net_core)
+    set(_net_core_cases net_core net_scope_continuation)
     if(ESHKOL_TLS_OPENSSL_FOUND AND TARGET tls_test_ca)
         list(APPEND _net_core_cases tls_net_core)
     endif()

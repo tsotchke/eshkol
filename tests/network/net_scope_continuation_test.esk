@@ -1,0 +1,41 @@
+;; Guaranteed close of core.net scopes under continuations: an escape closes
+;; the handle and keeps its target value, and re-entering a finished scope
+;; through a saved continuation raises before the receiver runs again.
+(require stdlib)
+(require core.net)
+
+(define failures 0)
+(define (check value label)
+  (if value #t
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (newline))))
+(define (reason? value reason)
+  (and (network-error? value) (eq? (network-error-reason value) reason)))
+(define seen #f)
+(define escaped
+  (call/cc (lambda (k)
+    (call-with-tcp-listener "127.0.0.1" 0 (lambda (l) (set! seen l) (k 'escaped) 'not-reached)))))
+(check (eq? escaped 'escaped) "a continuation escape keeps its target value")
+(check (reason? (tcp-close seen) 'invalid) "a continuation escape closed the listener")
+(define reentry-k #f)
+(define reentry-passes 0)
+(define (reentry-probe)
+  (guard (e ((network-error? e) (network-error-reason e)))
+    (let ((v (call-with-tcp-listener "127.0.0.1" 0
+               (lambda (l) (call/cc (lambda (k) (set! reentry-k k) 'first))))))
+      (set! reentry-passes (+ reentry-passes 1))
+      (if (= reentry-passes 1) (reentry-k 'again) v))))
+(check (eq? (reentry-probe) 'invalid) "re-entering a finished scope raises before proc runs")
+(check (= reentry-passes 1) "the receiver did not run again after re-entry")
+(define accept-listener (tcp-listen "127.0.0.1" 0))
+(define accept-port (net-local-port accept-listener))
+(define client (tcp-connect "127.0.0.1" accept-port 1000))
+(define escaped-stream
+  (call/cc (lambda (k)
+    (call-with-tcp-accept accept-listener 1000 (lambda (s) (set! seen s) (k s))))))
+(check (reason? (tcp-close escaped-stream) 'invalid) "an escape from an accept scope closed the stream")
+(tcp-close client)
+(tcp-close accept-listener)
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
