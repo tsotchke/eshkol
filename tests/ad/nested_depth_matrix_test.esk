@@ -284,8 +284,8 @@
        2.0)
 
 (newline)
-(display "checks: ") (display checks) (newline)
 (if (= failures 0)
-    (begin (display "PASS: nested depth matrix") (newline) (exit 0))
+    (begin (display "PASS: nested depth matrix ") (display checks) (display "/") (display checks)
+           (display " checks") (newline) (exit 0))
     (begin (display "TOTAL FAILURES: ") (display failures) (newline)
            (display "FAIL: nested_depth_matrix_test") (newline) (exit 1)))

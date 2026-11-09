@@ -7456,19 +7456,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         # coefficients and more than 2^16 passes in one process, on the native
         # JIT, AOT and the bytecode VM.
         add_test(NAME nested_depth_matrix_jit
-            COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
-                $<TARGET_FILE:eshkol-run> -r
+            COMMAND $<TARGET_FILE:eshkol-run> -r
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_depth_matrix_test.esk"
-                -L"${CMAKE_CURRENT_BINARY_DIR}")
+                -L${CMAKE_CURRENT_BINARY_DIR})
         add_test(NAME nested_depth_matrix_aot
             COMMAND sh -c
                 "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_depth_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_depth_matrix_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_depth_matrix_aot'")
         add_test(NAME nested_depth_matrix_vm
             COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_depth_matrix_test.esk")
+        set_tests_properties(nested_depth_matrix_jit PROPERTIES ENVIRONMENT "ESHKOL_JIT_CACHE=0")
         set_tests_properties(nested_depth_matrix_jit nested_depth_matrix_aot nested_depth_matrix_vm
             PROPERTIES TIMEOUT 600
-                PASS_REGULAR_EXPRESSION "PASS: nested depth matrix"
+                PASS_REGULAR_EXPRESSION "PASS: nested depth matrix [0-9]+/[0-9]+ checks"
                 FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|TOTAL FAILURES|LLVM module verification failed|fatal signal")
         add_test(
             NAME hessian_capture_scalar_vm_smoke
