@@ -9,7 +9,7 @@ sources:
   - lib/core/runtime_continuations.cpp
   - tests/v1_4_resource_ownership/test_compiled.py
 ---
-# ADR-0055: Linear handle typestate for the strict resource profile
+# ADR-0056: Linear handle typestate for the strict resource profile
 
 - **Status:** Proposed
 - **Date:** 2026-11-08

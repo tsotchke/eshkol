@@ -6,7 +6,7 @@ contexts, listeners and sessions, file ports, the event loop, threads,
 mutexes and condition variables, subprocesses) through the typestate
 `open -> borrowed -> open -> closed`. The language-level description is
 [docs/reference/language/linear-handles.md](../reference/language/linear-handles.md);
-the rules are [ADR-0055](../design/adr/0055-linear-handle-typestate.md).
+the rules are [ADR-0056](../design/adr/0056-linear-handle-typestate.md).
 
 The profile is available for native compilation and `--run`; it does not
 change the default compiler path. The bytecode VM profile, `--eval`, WebAssembly

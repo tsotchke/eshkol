@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   escaping loan are compile errors. `call-with-port`, `call-with-input-file`
   and `call-with-output-file` close their port on a raise or a continuation
   escape as well as on return. One contract table describes every handle
-  operation (ADR-0055, `docs/reference/language/linear-handles.md`).
+  operation (ADR-0056, `docs/reference/language/linear-handles.md`).
 
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix

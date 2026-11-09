@@ -6,7 +6,7 @@
  *
  * One table describes how each handle-producing, handle-consuming, and
  * handle-observing operation moves a handle through the typestate
- * `open -> borrowed -> open ... -> closed` (docs/design/adr/0055-linear-handle-typestate.md).
+ * `open -> borrowed -> open ... -> closed` (docs/design/adr/0056-linear-handle-typestate.md).
  * The ownership checker in exe/eshkol-run.cpp reads only this table: no
  * operation name is special-cased elsewhere.
  *

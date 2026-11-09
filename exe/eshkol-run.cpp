@@ -1675,7 +1675,7 @@ class OwnershipAnalyzer {
 public:
     using ResourceKind = sr::Kind;
 
-    // Typestate of one tracked handle binding (docs/design/adr/0055-linear-handle-typestate.md).
+    // Typestate of one tracked handle binding (docs/design/adr/0056-linear-handle-typestate.md).
     enum class ResourceState : uint8_t {
         NONE,
         ERROR_OR_LIVE,    // acquisition result not yet refined

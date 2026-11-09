@@ -8,7 +8,7 @@ sources:
   - exe/eshkol-run.cpp
   - tests/v1_4_resource_ownership/test_compiled.py
   - tests/v1_4_resource_ownership/test_runtime.py
-  - docs/design/adr/0055-linear-handle-typestate.md
+  - docs/design/adr/0056-linear-handle-typestate.md
 ---
 # Linear handles and the borrow pattern
 
@@ -32,7 +32,7 @@ every path it can see and refuses to produce an artifact when a rule is broken:
 The default profile does not run these rules. There, the runtime handle
 registry still refuses a double close or a use after close when it happens,
 as a catchable condition. The rules and their rationale are in
-[ADR-0055](../../design/adr/0055-linear-handle-typestate.md).
+[ADR-0056](../../design/adr/0056-linear-handle-typestate.md).
 
 ## Using the strict profile
 
