@@ -3440,7 +3440,14 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeDefineTask(eshkol_ast_t
             quantum::Signature qsig;
             qsig.name = def.name;
             qsig.variadic = def.is_variadic;
-            const auto resolve = [this](const hott_type_expr_t* t) { return resolveType(t); };
+            // The quantum probe reads every annotation, but only quantum
+            // families decide it. An annotation in the dependent type
+            // language (ADR-0042) is resolved once, by resolveSignature()
+            // above, where its index variables can be implicit binders; the
+            // probe sees it as an unknown plain type and reports nothing.
+            const auto resolve = [this](const hott_type_expr_t* t) {
+                return usesDependentSyntax(t) ? BuiltinTypes::Value : resolveType(t);
+            };
             const auto is_alias = [this](const std::string& n) { return ctx_.lookupTypeAlias(n).has_value(); };
             for (size_t i = 0; i < def.num_params; i++) {
                 if (def.parameters && def.parameters[i].type == ESHKOL_VAR && def.parameters[i].variable.id) {
