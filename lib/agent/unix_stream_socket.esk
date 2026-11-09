@@ -1,0 +1,121 @@
+;; Unix-domain stream sockets on the event loop -- paired-build scaffold.
+;;
+;; API shape follows Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md
+;; ("Later Unix streams" row) and the week's socket design addendum. Every
+;; operation below checks its arguments, requires the `network` capability
+;; (reusing the existing policy, same as lib/core/net.esk), and then raises
+;; "Planned for v1.4.0" from the native scaffold in
+;; lib/core/unix_socket_stream_stub.c. This file never performs socket I/O;
+;; Gabe Kahen's core implementation replaces the native stub underneath this
+;; same surface.
+(require stdlib)
+(require core.capabilities)
+(provide unix-stream-socket-listen unix-stream-socket-accept unix-stream-socket-connect
+         unix-stream-socket-read! unix-stream-socket-write! unix-stream-socket-cancel! unix-stream-socket-close!
+         unix-stream-socket-read-status unix-stream-socket-read-count unix-stream-socket-read-error
+         unix-stream-socket-write-status unix-stream-socket-write-count unix-stream-socket-write-error
+         unix-stream-socket-planned?)
+
+(extern i64 -unix-stream-socket-listen-raw i64 ptr :real eshkol_unix_stream_socket_listen)
+(extern i64 -unix-stream-socket-accept-raw i64 i32 :real eshkol_unix_stream_socket_accept)
+(extern i64 -unix-stream-socket-connect-raw i64 ptr i32 :real eshkol_unix_stream_socket_connect)
+(extern i64 -unix-stream-socket-read-bv-raw i64 ptr i64 i64 :real eshkol_unix_stream_socket_read_bytevector)
+(extern i64 -unix-stream-socket-write-bv-raw i64 ptr i64 i64 :real eshkol_unix_stream_socket_write_bytevector)
+(extern i32 -unix-stream-socket-cancel-raw i64 :real eshkol_unix_stream_socket_cancel)
+(extern i32 -unix-stream-socket-close-raw i64 :real eshkol_unix_stream_socket_close)
+
+(define -unix-stream-socket-planned-code -100)
+
+(define (unix-stream-socket-planned? n) (= n -unix-stream-socket-planned-code))
+
+(define (-unix-stream-socket-id! who n)
+  (unless (and (integer? n) (exact? n) (> n 0) (<= n 9007199254740991))
+    (error who "expected exact positive resource identity" n)))
+
+(define (-unix-stream-socket-bound! who n)
+  (unless (and (integer? n) (exact? n) (>= n 0) (<= n 2147483647))
+    (error who "expected exact nonnegative signed-word bound" n)))
+
+(define (-unix-stream-socket-checked who n)
+  (cond ((unix-stream-socket-planned? n) (error who "Planned for v1.4.0" n))
+        ((< n 0) (error who "native unix-socket operation failed" n))
+        (else (inexact->exact n))))
+
+(define (unix-stream-socket-listen path)
+  "Bind and listen on a filesystem path. Refuses a pre-existing path that nothing is listening on."
+  (capability-require! 'network path)
+  (unless (and (string? path) (> (string-length path) 0))
+    (error "unix-stream-socket-listen: expected a non-empty path"))
+  (-unix-stream-socket-checked "unix-stream-socket-listen" (-unix-stream-socket-listen-raw 0 path)))
+
+(define (unix-stream-socket-accept listener deadline-ms)
+  "Accept one connection within one monotonic deadline; zero makes one
+   nonblocking pass and never sleeps."
+  (capability-require! 'network)
+  (-unix-stream-socket-id! "unix-stream-socket-accept" listener)
+  (-unix-stream-socket-bound! "unix-stream-socket-accept" deadline-ms)
+  (-unix-stream-socket-checked "unix-stream-socket-accept" (-unix-stream-socket-accept-raw listener deadline-ms)))
+
+(define (unix-stream-socket-connect path deadline-ms)
+  "Connect within one monotonic deadline shared across retries."
+  (capability-require! 'network path)
+  (unless (and (string? path) (> (string-length path) 0))
+    (error "unix-stream-socket-connect: expected a non-empty path"))
+  (-unix-stream-socket-bound! "unix-stream-socket-connect" deadline-ms)
+  (-unix-stream-socket-checked "unix-stream-socket-connect" (-unix-stream-socket-connect-raw 0 path deadline-ms)))
+
+(define (unix-stream-socket-read! id buffer start count)
+  "Read bytes into a caller bytevector. Returns a result vector; use the
+   accessors below to distinguish data, EOF, would-block, and an
+   operation-labelled error. NUL bytes and payloads over 16 MiB survive
+   unmodified; reads may be partial."
+  (capability-require! 'network)
+  (-unix-stream-socket-id! "unix-stream-socket-read!" id)
+  (-unix-stream-socket-bound! "unix-stream-socket-read! start" start)
+  (-unix-stream-socket-bound! "unix-stream-socket-read! count" count)
+  (unless (and (bytevector? buffer) (> count 0)
+               (<= start (bytevector-length buffer))
+               (<= count (- (bytevector-length buffer) start)))
+    (error "unix-stream-socket-read!: invalid bytevector range"))
+  (let ((n (-unix-stream-socket-read-bv-raw id buffer start count)))
+    (cond ((unix-stream-socket-planned? n) (error "unix-stream-socket-read!" "Planned for v1.4.0" n))
+          ((> n 0) (vector 'data (inexact->exact n) #f))
+          ((= n 0) (vector 'eof 0 #f))
+          ((= n -2) (vector 'would-block 0 #f))
+          (else (vector 'error 0 (vector 'unix-stream-socket-read! (inexact->exact n)))))))
+
+(define (unix-stream-socket-write! id buffer start count)
+  "Write bytes from a caller bytevector; the byte count may be partial."
+  (capability-require! 'network)
+  (-unix-stream-socket-id! "unix-stream-socket-write!" id)
+  (-unix-stream-socket-bound! "unix-stream-socket-write! start" start)
+  (-unix-stream-socket-bound! "unix-stream-socket-write! count" count)
+  (unless (and (bytevector? buffer) (> count 0)
+               (<= start (bytevector-length buffer))
+               (<= count (- (bytevector-length buffer) start)))
+    (error "unix-stream-socket-write!: invalid bytevector range"))
+  (let ((n (-unix-stream-socket-write-bv-raw id buffer start count)))
+    (cond ((unix-stream-socket-planned? n) (error "unix-stream-socket-write!" "Planned for v1.4.0" n))
+          ((>= n 0) (vector 'data (inexact->exact n) #f))
+          ((= n -2) (vector 'would-block 0 #f))
+          (else (vector 'error 0 (vector 'unix-stream-socket-write! (inexact->exact n)))))))
+
+(define (unix-stream-socket-read-status result) (vector-ref result 0))
+(define (unix-stream-socket-read-count result) (vector-ref result 1))
+(define (unix-stream-socket-read-error result) (vector-ref result 2))
+(define (unix-stream-socket-write-status result) (vector-ref result 0))
+(define (unix-stream-socket-write-count result) (vector-ref result 1))
+(define (unix-stream-socket-write-error result) (vector-ref result 2))
+
+(define (unix-stream-socket-cancel! id)
+  "Request cancellation of an outstanding accept, connect, read, or write."
+  (capability-require! 'network)
+  (-unix-stream-socket-id! "unix-stream-socket-cancel!" id)
+  (-unix-stream-socket-checked "unix-stream-socket-cancel!" (-unix-stream-socket-cancel-raw id)))
+
+(define (unix-stream-socket-close! id)
+  "Close a listener, an accepted peer, or an outbound connection exactly
+   once. A listener close unlinks the path it bound."
+  (capability-require! 'network)
+  (-unix-stream-socket-id! "unix-stream-socket-close!" id)
+  (-unix-stream-socket-checked "unix-stream-socket-close!" (-unix-stream-socket-close-raw id)))

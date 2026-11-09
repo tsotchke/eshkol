@@ -1,0 +1,13 @@
+(require stdlib)
+(require agent.subprocess)
+(define loop (make-event-loop 8))
+(define child (get-environment-variable "ESHKOL_STREAM_TEST_CHILD"))
+(define resume #f)
+(define escaped
+  (call/cc (lambda (escape)
+    (call-with-subprocess-streams loop (list child "--child=idle") '()
+      (lambda (session)
+        (call/cc (lambda (k) (set! resume k) (escape 'escaped))))))))
+(display "REENTRY-ATTEMPT") (newline)
+(resume 'again)
+(error "closed scope unexpectedly re-entered")

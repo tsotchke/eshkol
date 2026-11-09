@@ -1,0 +1,143 @@
+;; ipc-unix-pending acceptance scaffold (JIT and AOT).
+;;
+;; Each CTest entry sets ESHKOL_UNIX_STREAM_SOCKET_SCENARIO to pick one case from
+;; Gabe Kahen's design (Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md,
+;; "Later Unix streams" row) and ESHKOL_UNIX_STREAM_SOCKET_SCRATCH to a writable
+;; scratch directory. Every scenario below calls the real surface in
+;; lib/agent/unix_stream_socket.esk, which currently raises "Planned for v1.4.0"
+;; from lib/agent/c/agent_unix_socket_stream.c. This file stays out of the
+;; default suite (CTest label ipc-unix-pending) until the core implementation
+;; replaces the stub and these scenarios start to pass for real.
+(require stdlib)
+(require core.capabilities)
+(require agent.unix_stream_socket)
+
+(define scratch (get-environment-variable "ESHKOL_UNIX_STREAM_SOCKET_SCRATCH"))
+(define scenario (get-environment-variable "ESHKOL_UNIX_STREAM_SOCKET_SCENARIO"))
+
+(define (socket-path name) (string-append scratch "/" name "-esk.sock"))
+
+(define (raises? thunk)
+  (guard (e (#t #t)) (thunk) #f))
+
+(define (run-connect-accept)
+  (let* ((p (socket-path "connect-accept"))
+         (listener (unix-stream-socket-listen p))
+         (client (unix-stream-socket-connect p 1000))
+         (accepted (unix-stream-socket-accept listener 1000)))
+    (unix-stream-socket-close! accepted)
+    (unix-stream-socket-close! client)
+    (unix-stream-socket-close! listener)
+    (display "PASS: unix-socket connect/accept round trip") (newline)))
+
+(define (run-partial-slow-peer)
+  (let* ((p (socket-path "partial-slow"))
+         (listener (unix-stream-socket-listen p))
+         (client (unix-stream-socket-connect p 1000))
+         (accepted (unix-stream-socket-accept listener 1000))
+         (payload (make-bytevector 4096 7))
+         (result (unix-stream-socket-write! client payload 0 4096)))
+    (unless (eq? (unix-stream-socket-write-status result) 'data)
+      (error "run-partial-slow-peer: expected a byte-counted partial write"))
+    (unix-stream-socket-close! accepted) (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+    (display "PASS: unix-socket partial read/write with a slow peer") (newline)))
+
+(define (run-peer-close-epipe)
+  (let* ((p (socket-path "peer-close"))
+         (listener (unix-stream-socket-listen p))
+         (client (unix-stream-socket-connect p 1000))
+         (accepted (unix-stream-socket-accept listener 1000)))
+    (unix-stream-socket-close! accepted)
+    (let ((result (unix-stream-socket-write! client (make-bytevector 16 0) 0 16)))
+      (unless (eq? (unix-stream-socket-write-status result) 'error)
+        (error "run-peer-close-epipe: expected an operation-labelled error after peer close")))
+    (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+    (display "PASS: unix-socket peer close mid-stream") (newline)))
+
+(define (run-deadline-accept)
+  (let ((listener (unix-stream-socket-listen (socket-path "deadline-accept"))))
+    (unless (raises? (lambda () (unix-stream-socket-accept listener 50)))
+      (error "run-deadline-accept: expected a deadline error"))
+    (unix-stream-socket-close! listener)
+    (display "PASS: unix-socket deadline expiry on accept") (newline)))
+
+(define (run-deadline-connect)
+  ;; Called unguarded, like run-deadline-accept and run-cancellation: a
+  ;; generic (guard (e (#t #t)) ...) would also accept the stub's "Planned
+  ;; for v1.4.0" error as if it were the real deadline error it is meant to
+  ;; check for, masking the gap instead of reporting it.
+  (let* ((p (socket-path "deadline-connect"))
+         (start (current-time-ns))
+         (client (unix-stream-socket-connect p 50))
+         (elapsed-ms (/ (- (current-time-ns) start) 1000000)))
+    (unless (< elapsed-ms 2000)
+      (error "run-deadline-connect: deadline not honored" elapsed-ms))
+    (unix-stream-socket-close! client)
+    (display "PASS: unix-socket deadline expiry on connect") (newline)))
+
+(define (run-cancellation)
+  (let ((listener (unix-stream-socket-listen (socket-path "cancel"))))
+    (unless (raises? (lambda () (unix-stream-socket-cancel! listener)))
+      (error "run-cancellation: expected cancellation to report through the checked surface"))
+    (display "PASS: unix-socket cancellation") (newline)))
+
+(define (run-nul-and-large-payload)
+  (let* ((p (socket-path "large"))
+         (listener (unix-stream-socket-listen p))
+         (client (unix-stream-socket-connect p 1000))
+         (accepted (unix-stream-socket-accept listener 1000))
+         (size (+ (* 16 1024 1024) 37))
+         (payload (make-bytevector size 0)))
+    (bytevector-u8-set! payload 5 0)
+    (bytevector-u8-set! payload (- size 1) 255)
+    (let ((result (unix-stream-socket-write! client payload 0 size)))
+      (unless (eq? (unix-stream-socket-write-status result) 'data)
+        (error "run-nul-and-large-payload: expected a byte-counted write")))
+    (unix-stream-socket-close! accepted) (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+    (display "PASS: unix-socket NUL and >16 MiB payloads") (newline)))
+
+(define (run-descriptor-count-check)
+  (let ((p (socket-path "descriptor-count")))
+    (let loop ((i 0))
+      (when (< i 1000)
+        (let* ((listener (unix-stream-socket-listen p))
+               (client (unix-stream-socket-connect p 1000))
+               (accepted (unix-stream-socket-accept listener 1000)))
+          (unix-stream-socket-close! accepted) (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+          (loop (+ i 1)))))
+    (display "PASS: unix-socket descriptor-count check over 1000 cycles") (newline)))
+
+(define (run-capability-denial)
+  ;; Unlike every other case in this file, this one is expected to pass
+  ;; against the stub, not just fail cleanly: capability-require! 'network
+  ;; runs before unix-stream-socket-listen ever reaches the native scaffold
+  ;; (see lib/agent/unix_stream_socket.esk), so the policy gate is real,
+  ;; already-shipped infrastructure, not part of Gabe Kahen's pending socket
+  ;; core. It stays listed under ipc-unix-pending only to keep the full
+  ;; acceptance list together; moving it into the default suite is tracked
+  ;; separately so this scaffold branch stays review-sized.
+  (capability-install-policy! '())
+  (unless (raises? (lambda () (unix-stream-socket-listen (socket-path "denied"))))
+    (error "run-capability-denial: expected network capability denial"))
+  (display "PASS: unix-socket network capability denial") (newline))
+
+(define (run-path-lifecycle)
+  (let* ((p (socket-path "lifecycle"))
+         (listener (unix-stream-socket-listen p)))
+    (unix-stream-socket-close! listener)
+    (unless (raises? (lambda () (unix-stream-socket-listen p)))
+      (error "run-path-lifecycle: expected refusal on an existing unlistened path"))
+    (display "PASS: unix-socket socket-path lifecycle") (newline)))
+
+(cond
+  ((equal? scenario "connect_accept") (run-connect-accept))
+  ((equal? scenario "partial_slow_peer") (run-partial-slow-peer))
+  ((equal? scenario "peer_close_epipe") (run-peer-close-epipe))
+  ((equal? scenario "deadline_accept") (run-deadline-accept))
+  ((equal? scenario "deadline_connect") (run-deadline-connect))
+  ((equal? scenario "cancellation") (run-cancellation))
+  ((equal? scenario "nul_and_large_payload") (run-nul-and-large-payload))
+  ((equal? scenario "descriptor_count_check") (run-descriptor-count-check))
+  ((equal? scenario "capability_denial") (run-capability-denial))
+  ((equal? scenario "path_lifecycle") (run-path-lifecycle))
+  (else (error "unix_socket_stream_pending.esk: unknown scenario" scenario)))

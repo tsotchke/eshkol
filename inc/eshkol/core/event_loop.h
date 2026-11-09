@@ -100,6 +100,7 @@ extern "C" {
 #define ESHKOL_EVENT_LOOP_ENOTSUP  (-4) /**< Platform cannot watch this object.   */
 #define ESHKOL_EVENT_LOOP_ENOENT   (-5) /**< Descriptor is not registered.        */
 #define ESHKOL_EVENT_LOOP_EFULL    (-6) /**< Registration table is at max_events. */
+#define ESHKOL_EVENT_LOOP_EBUSY    (-7) /**< A scoped resource still retains the loop. */
 /** @} */
 
 /** Upper bound accepted by eshkol_event_loop_create() for @p max_events. */
@@ -248,6 +249,15 @@ eshkol_event_loop_t* eshkol_event_loop_from_handle(int64_t handle);
  * @return ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_EINVAL.
  */
 int eshkol_event_loop_close_handle(int64_t handle);
+
+/* Single-owner-thread lifetime pins for scoped resource registrations. Both
+ * pointer and handle close reject retained loops. Release never closes a loop. */
+int eshkol_event_loop_retain_handle(int64_t handle);
+int eshkol_event_loop_release_handle(int64_t handle);
+
+/* Validate a live resource registration without exposing descriptor authority. */
+int eshkol_event_loop_registration_matches(const eshkol_event_loop_t* loop,
+    int fd, int events, uint64_t user_data);
 
 #ifdef __cplusplus
 }
