@@ -103,7 +103,7 @@ int eshkol_handle_create_tagged(eshkol_handle_registry_t *registry,
     eshkol_handle_close_fn close_fn, void *user_data, eshkol_handle_id_t *out_id);
 /**
  * @brief Report the kind and tag of a live identity without borrowing it.
- * @return OK, or ENOENT for unknown, stale, closed or close-requested IDs.
+ * @return OK, or ENOENT for unknown, retired, closed or close-requested IDs.
  */
 int eshkol_handle_get_kind(eshkol_handle_registry_t *registry,
     eshkol_handle_id_t id, eshkol_handle_kind_t *out_kind, uint32_t *out_tag);
@@ -133,14 +133,14 @@ int eshkol_handle_close(eshkol_handle_registry_t *registry, eshkol_handle_id_t i
  * @brief Close now when open; when borrowed, refuse new use at once, interrupt
  * the borrower, and run the close callback exactly once on its release.
  * @return OK (closed now or close scheduled), ECLOSE when an immediate close
- * callback failed, EBUSY while another close runs, ENOENT when stale.
+ * callback failed, EBUSY while another close runs, ENOENT when retired.
  */
 int eshkol_handle_close_after_release(eshkol_handle_registry_t *registry,
     eshkol_handle_id_t id);
 /**
  * @brief Mark a live identity interrupted and wake its borrower, if any.
  * The mark persists until the next borrower consumes it.
- * @return OK, or ENOENT for unknown, stale or closed IDs.
+ * @return OK, or ENOENT for unknown, retired or closed IDs.
  */
 int eshkol_handle_interrupt(eshkol_handle_registry_t *registry, eshkol_handle_id_t id);
 /**

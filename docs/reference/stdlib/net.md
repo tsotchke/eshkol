@@ -39,9 +39,9 @@ WebAssembly builds. The bytecode VM refuses `core.net` at compile time with
 | UDP socket | `(udp-bind address port)` | `udp-close` | `(call-with-udp-socket address port proc)` |
 
 `tcp-close` refuses a UDP handle and `udp-close` refuses a TCP handle. A second
-close of the same handle, or a close of a stale handle, returns error `-4`.
+close of the same handle, or a close of a retired handle, returns error `-4`.
 Handles are exact positive integers no larger than 2^53 - 1, distinct from OS
-descriptors, and never reused, so a stale handle cannot reach a later socket
+descriptors, and never reused, so a retired handle cannot reach a later socket
 that received the same descriptor. They cannot survive serialization or move
 to another process. The descriptor limit of the process bounds how many are
 open at once; reaching it returns error `-1` and closing a handle frees a slot.
@@ -99,7 +99,7 @@ Failures return an error object; inspect it with `network-error?`,
 | `-1` | `system` | Operating-system failure, including descriptor exhaustion. |
 | `-2` | `timeout` | Deadline reached; a zero deadline reports would-block. |
 | `-3` | `unsupported` | No socket support on this platform or build. |
-| `-4` | `invalid` | Invalid argument, out-of-range bytevector range, or a stale, closed or wrong-kind handle. |
+| `-4` | `invalid` | Invalid argument, out-of-range bytevector range, or a retired, closed or other-kind handle. |
 | `-5` | `busy` | Another operation (or a TLS session) holds the handle. |
 | `-6` | `cancelled` | Cancelled with `net-cancel!`, or closed by another thread during the operation. |
 | `-7` | `reset` | The peer reset the connection or stopped reading. |

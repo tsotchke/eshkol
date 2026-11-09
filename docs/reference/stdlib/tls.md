@@ -52,7 +52,7 @@ encrypted keys are refused rather than prompting for a password.
 A session takes ownership of its TCP stream and holds that stream's lease
 for its whole life: other uses of the stream handle return `-5` (busy), and
 closing the session closes the stream. If the handshake fails the stream is
-closed. A stream that is already in use, closed or of the wrong kind is
+closed. A stream that is already in use, closed or of the other kind is
 refused with `-5` or `-4` and stays with the caller. Each start, connect and
 accept completes the TCP and TLS phases within one deadline.
 
@@ -94,5 +94,5 @@ under the build directory (`tls_test_ca`); they use loopback only.
   a hostname mismatch, the explicit insecure option, cancellation, and
   guaranteed close.
 - `tls_context_native`, `tls_public_scheme_jit`, `tls_public_scheme_aot` and the
-  Python-peer suites: context validation, expired and wrong certificates,
+  Python-peer suites: context validation, expired and mismatched certificates,
   concurrent close, and interoperation with an independent TLS stack.

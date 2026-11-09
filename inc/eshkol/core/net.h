@@ -9,7 +9,7 @@ extern "C" {
  * (eshkol/core/resource_lease.h): SOCKET-kind registry handles tagged
  * listener, stream or datagram. Results use the ESHKOL_IO_* outcome codes:
  * -1 system, -2 timeout/would-block, -3 unsupported platform, -4 invalid
- * argument or stale/wrong-kind handle, -5 busy (another operation holds the
+ * argument or retired or other-kind handle, -5 busy (another operation holds the
  * handle), -6 cancelled (or closed during the operation), -7 peer reset,
  * -8 datagram truncated, -9 connection refused. Positive handles are exact and
  * never reused. Each operation waits on the calling thread's event loop under
@@ -58,8 +58,8 @@ int32_t eshkol_net_shutdown(int64_t handle, int32_t how);
 int32_t eshkol_net_cancel(int64_t handle);
 /** Close once: family 1 accepts TCP listeners and streams, 2 UDP sockets,
  * 0 any socket. A close during another thread's operation cancels it and
- * closes the descriptor when that operation ends. Stale, double-closed and
- * wrong-family handles return -4. */
+ * closes the descriptor when that operation ends. Retired, double-closed and
+ * other-family handles return -4. */
 int32_t eshkol_net_close_kind(int64_t handle, int32_t family);
 int32_t eshkol_net_close(int64_t handle);
 /** For owners layered on a stream (TLS): hold an exclusive borrow of a TCP

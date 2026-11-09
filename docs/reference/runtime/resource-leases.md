@@ -25,7 +25,7 @@ in `eshkol/core/resource_lease.h` is the contract every resource kind shares:
 | Deadline | One monotonic deadline per operation (`eshkol_resource_deadline`), shared across retries and phases; a zero timeout is one nonblocking pass. |
 | Wait | `eshkol_resource_wait` waits for readiness on the calling thread's event loop (kqueue, epoll), together with a wake pipe. Each thread creates its loop on first use and releases it at thread exit. |
 | Cancel | `eshkol_resource_cancel` from any thread wakes the borrower, whose wait returns `ESHKOL_IO_CANCELLED`; with no borrower, the next wait observes it once. |
-| Close | `eshkol_resource_close` is the one close site. An open handle closes now. A borrowed handle becomes unusable at once, its borrower is woken, and the close callback runs exactly once when that borrow ends. Stale, double and wrong-kind closes return `ESHKOL_IO_INVALID`. |
+| Close | `eshkol_resource_close` is the one close site. An open handle closes now. A borrowed handle becomes unusable at once, its borrower is woken, and the close callback runs exactly once when that borrow ends. Retired, repeated and other-kind closes return `ESHKOL_IO_INVALID`. |
 | Bytes | `eshkol_resource_bytes` validates a `[start, start + count)` range of an Eshkol bytevector for byte-counted I/O. |
 
 ## Outcome codes
@@ -39,7 +39,7 @@ every kind:
 | `-1` | `ESHKOL_IO_SYSTEM` | Operating-system failure. |
 | `-2` | `ESHKOL_IO_TIMEOUT` | Deadline reached (would-block for a zero deadline). |
 | `-3` | `ESHKOL_IO_UNSUPPORTED` | Not available on this build or platform. |
-| `-4` | `ESHKOL_IO_INVALID` | Invalid argument or a stale, closed or wrong-kind handle. |
+| `-4` | `ESHKOL_IO_INVALID` | Invalid argument or a retired, closed or other-kind handle. |
 | `-5` | `ESHKOL_IO_BUSY` | Another operation holds the lease. |
 | `-6` | `ESHKOL_IO_CANCELLED` | Cancelled, or closed during the operation. |
 | `-7` | `ESHKOL_IO_RESET` | The peer reset the connection or closed its reader. |

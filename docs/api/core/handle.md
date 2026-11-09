@@ -89,7 +89,7 @@ Report the kind and tag of a live identity without borrowing it.
 
 **Returns**
 
-OK, or ENOENT for unknown, stale, closed or close-requested IDs.
+OK, or ENOENT for unknown, retired, closed or close-requested IDs.
 
 ### `eshkol_handle_borrow`
 
@@ -153,7 +153,7 @@ Close now when open; when borrowed, refuse new use at once, interrupt the borrow
 
 **Returns**
 
-OK (closed now or close scheduled), ECLOSE when an immediate close callback failed, EBUSY while another close runs, ENOENT when stale.
+OK (closed now or close scheduled), ECLOSE when an immediate close callback failed, EBUSY while another close runs, ENOENT when retired.
 
 ### `eshkol_handle_interrupt`
 
@@ -167,7 +167,7 @@ Mark a live identity interrupted and wake its borrower, if any. The mark persist
 
 **Returns**
 
-OK, or ENOENT for unknown, stale or closed IDs.
+OK, or ENOENT for unknown, retired or closed IDs.
 
 ### `eshkol_handle_set_waker`
 

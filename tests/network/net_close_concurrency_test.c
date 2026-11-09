@@ -278,7 +278,7 @@ int main(void) {
         fprintf(stderr, "RESULT: FAIL (%d failures)\n", count);
         return 1;
     }
-    puts("PASS: in-flight close cancels promptly, stale IDs, and descriptor exhaustion/recovery");
+    puts("PASS: in-flight close cancels promptly, retired IDs, and descriptor exhaustion/recovery");
     puts("RESULT: PASS");
     return 0;
 }

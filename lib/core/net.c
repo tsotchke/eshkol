@@ -7,7 +7,7 @@
  * monotonic deadline. Close from another thread wakes the borrower, whose
  * operation returns ESHKOL_IO_CANCELLED; the descriptor is closed exactly once
  * when that borrow ends. Identities are exact, positive and never reused, so a
- * stale handle cannot reach a newer socket that reused its descriptor. */
+ * retired handle cannot reach a newer socket that reused its descriptor. */
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif

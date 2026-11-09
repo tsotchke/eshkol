@@ -35,7 +35,7 @@ extern "C" {
 #define ESHKOL_IO_SYSTEM       (-1)  /**< Operating-system failure.                    */
 #define ESHKOL_IO_TIMEOUT      (-2)  /**< Deadline reached; zero deadline = would-block. */
 #define ESHKOL_IO_UNSUPPORTED  (-3)  /**< Not available on this build or platform.     */
-#define ESHKOL_IO_INVALID      (-4)  /**< Invalid argument, stale or wrong-kind handle. */
+#define ESHKOL_IO_INVALID      (-4)  /**< Invalid argument, retired or other-kind handle. */
 #define ESHKOL_IO_BUSY         (-5)  /**< Another operation holds the lease.            */
 #define ESHKOL_IO_CANCELLED    (-6)  /**< Cancelled, or closed during the operation.    */
 #define ESHKOL_IO_RESET        (-7)  /**< Peer reset the connection or closed its reader. */
@@ -78,7 +78,7 @@ int64_t eshkol_resource_adopt(eshkol_handle_kind_t kind, uint32_t tag, uintptr_t
 /**
  * @brief Exclusively borrow @p id when its kind matches and its tag is in @p tag_mask
  * (bit 1u << tag); a zero mask accepts any tag.
- * @return 0, ESHKOL_IO_INVALID (unknown, stale, closed, wrong kind) or ESHKOL_IO_BUSY.
+ * @return 0, ESHKOL_IO_INVALID (unknown, retired, closed, other kind) or ESHKOL_IO_BUSY.
  */
 int eshkol_resource_borrow(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_mask,
                            eshkol_resource_lease_t *out);
@@ -88,8 +88,8 @@ void eshkol_resource_release(eshkol_resource_lease_t *lease);
  * @brief The close site. Open identities close now; a borrowed identity
  * becomes unusable at once, its borrower is woken (its operation returns
  * ESHKOL_IO_CANCELLED) and the close runs when that borrow ends.
- * @return 0, or ESHKOL_IO_INVALID for unknown, stale, double-closed or
- * wrong-kind identities.
+ * @return 0, or ESHKOL_IO_INVALID for unknown, retired, double-closed or
+ * other-kind identities.
  */
 int eshkol_resource_close(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_mask);
 /**
