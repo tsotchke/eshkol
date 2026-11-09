@@ -44,7 +44,8 @@
 ;;; exactness guarantee this module can offer.
 
 (provide exact-matrix? exact-matrix-ref exact-matrix-mul exact-matrix-transpose
-         exact-det exact-solve exact-affine-solve exact-inverse exact-rank exact-nullspace
+         exact-det exact-plu exact-solve exact-affine-solve exact-inverse exact-rank
+         exact-pivot-columns exact-nullspace
          torus-average torus-average-2d)
 
 ;; ============================================================
@@ -219,6 +220,56 @@
             (error "exact-det: matrix must be square" m)
             (el-bareiss (el-copy-matrix m) n)))))
 
+;; (exact-plu m) — an exact factorization P m = L U of a square matrix:
+;; returns (list perm L U sign) where row i of P m is row (list-ref perm i)
+;; of m, L is unit lower triangular, U is upper triangular and sign is the
+;; sign of the permutation, so (exact-det m) = sign * (product of U's
+;; diagonal). Pivots are the first nonzero entry at or below the diagonal;
+;; a column with no such entry is left as is (U then has a zero diagonal
+;; entry and m is singular). The input is never mutated. This is the
+;; witness core.certificate records for a determinant (ADR-0047): a
+;; checker confirms it by one matrix product, without elimination.
+(define (exact-plu m)
+  (if (not (el-well-formed? m))
+      (error "exact-plu: not a well-formed matrix" m))
+  (let ((n (el-rows m)))
+    (if (not (= n (el-cols m)))
+        (error "exact-plu: matrix must be square" m))
+    (let ((w (el-copy-matrix m)) (l (el-identity n)) (perm (make-vector n 0)))
+      (let fill ((i 0)) (if (< i n) (begin (vector-set! perm i i) (fill (+ i 1)))))
+      (let loop ((k 0) (sign 1))
+        (if (>= k n)
+            (list (vector->list perm) l w sign)
+            (let ((r (el-find-pivot w n k k)))
+              (if (< r 0)
+                  (loop (+ k 1) sign)
+                  (begin
+                    (if (not (= r k))
+                        (begin
+                          (el-swap-rows! w k r)
+                          (let ((t (vector-ref perm k)))
+                            (vector-set! perm k (vector-ref perm r)) (vector-set! perm r t))
+                          (let swap-l ((j 0))
+                            (if (< j k)
+                                (let ((t (exact-matrix-ref l k j)))
+                                  (vector-set! (vector-ref l k) j (exact-matrix-ref l r j))
+                                  (vector-set! (vector-ref l r) j t)
+                                  (swap-l (+ j 1)))))))
+                    (let ((pivot (exact-matrix-ref w k k)))
+                      (let rows ((i (+ k 1)))
+                        (if (< i n)
+                            (let ((f (/ (exact-matrix-ref w i k) pivot)))
+                              (vector-set! (vector-ref l i) k f)
+                              (if (not (zero? f))
+                                  (let cols ((j k))
+                                    (if (< j n)
+                                        (begin
+                                          (vector-set! (vector-ref w i) j
+                                            (- (exact-matrix-ref w i j) (* f (exact-matrix-ref w k j))))
+                                          (cols (+ j 1))))))
+                              (rows (+ i 1))))))
+                    (loop (+ k 1) (if (= r k) sign (- sign)))))))))))
+
 ;; ---- el-rref: the shared row-reduction workhorse --------------------
 
 (define (el-normalize-row! w r col)
@@ -266,6 +317,12 @@
 
 ;; (exact-rank m) — rank via row reduction (works on rectangular matrices).
 (define (exact-rank m) (length (cdr (el-rref m))))
+
+;; (exact-pivot-columns m) — the ascending pivot column indices of the
+;; reduced row echelon form of m; their number is (exact-rank m). Applied
+;; to the transpose it lists a maximal set of independent rows, so the
+;; rows and columns together name a nonsingular rank x rank minor.
+(define (exact-pivot-columns m) (cdr (el-rref m)))
 
 ;; ---- exact-nullspace -----------------------------------------------------
 

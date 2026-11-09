@@ -267,6 +267,7 @@ def extract_special_forms():
         "delay-force": "ESHKOL_CALL_OP",
         "make-promise": "ESHKOL_CALL_OP",
         "force": "ESHKOL_CALL_OP",
+        "certify": "ESHKOL_CALL_OP",                  # (certify (f ...)) -> certify-call (ADR-0047)
         "let-match": "ESHKOL_MATCH_OP",
         "define-values": "ESHKOL_DEFINE_OP",
         "named-let": "ESHKOL_LET_OP",                 # (let name (bindings) body)

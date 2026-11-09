@@ -84,6 +84,21 @@ generate an intermediate fraction.
 (display (exact-det m2-cov)) (newline)      ; 19/80
 ```
 
+### `(exact-plu m)`
+An exact factorization `P m = L U` of a square matrix, returned as
+`(list perm L U sign)`: row `i` of `P m` is row `(list-ref perm i)` of `m`,
+`L` is unit lower triangular, `U` upper triangular and `sign` the sign of
+the permutation, so `(exact-det m)` is `sign` times the product of `U`'s
+diagonal. Pivots are the first nonzero entry at or below the diagonal; a
+singular `m` gives a zero on `U`'s diagonal. This is the witness a
+determinant certificate records ([certificate.md](certificate.md)).
+
+```scheme
+(define r (exact-plu (vector (vector 0 2 1) (vector 1 1 0) (vector 3 0 2))))
+(car r)      ; (1 0 2)
+(cadddr r)   ; -1
+```
+
 ### `(exact-solve a b)`
 The exact solution vector `x` of `a x = b`, for a square, **full-rank**
 `a`, via Gauss-Jordan elimination with exact pivoting (any nonzero pivot
@@ -99,6 +114,12 @@ matrix" a)` on a singular `a`.
 
 ### `(exact-rank m)`
 The rank of `m` (square or rectangular) via row reduction.
+
+### `(exact-pivot-columns m)`
+The ascending pivot column indices of the reduced row echelon form of `m`;
+their number is `(exact-rank m)`. Applied to the transpose it lists a
+maximal set of independent rows, so the two lists name a nonsingular
+rank x rank minor (the witness of a rank certificate).
 
 ### `(exact-nullspace m)`
 A list of exact basis vectors spanning `ker(m)` — one per free (non-pivot)
