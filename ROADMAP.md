@@ -767,7 +767,7 @@ under the same discipline that made `Qubit` linear.
 - [ ] The self-hosted mesh becomes the primary CI executor (#529):
       `ESHKOL_MESH_PRIMARY` routes the Linux contexts to self-hosted runners,
       with the hosted lanes as the declared fallback
-- [x] Nested-differentiation carrier rewrite (ledger SW-154). The v1.3.5
+- [x] Nested-differentiation carrier rewrite. The v1.3.5
       carrier holds exactly one first-order companion, so two enclosing
       differentiation levels over an order-2 inner pass raise a diagnostic
       rather than answer; the rewrite is what lifts that restriction and
