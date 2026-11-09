@@ -479,8 +479,8 @@ and the order of each level are limited only by memory:
 
 ```scheme
 (define (d f) (lambda (x) (derivative f x)))
-((d (d (d (d (lambda (x) (* x x x x x x))))))) 2.0)   ;; => 1440.0
-((d (d (d (d (lambda (x) (* x x x x x x))))))) 1/2)   ;; => 90, exact
+((d (d (d (d (lambda (x) (* x x x x x x)))))) 2.0)   ;; => 1440.0
+((d (d (d (d (lambda (x) (* x x x x x x)))))) 1/2)   ;; => 90, exact
 ```
 
 ## Perturbation tags
