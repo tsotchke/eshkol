@@ -239,10 +239,13 @@ static void scenario_path_lifecycle(const char *scratch_dir) {
 }
 
 static void scenario_capability_denial(const char *scratch_dir) {
-    /* The capability gate lives in lib/agent/unix_socket.esk's
-     * (capability-require! 'network ...); the native scaffold has no policy
-     * layer of its own. This records the native half only (no I/O was
-     * attempted before this check could run); see
+    /* Unlike every other scenario in this file, this one is expected to
+     * pass against the stub, not fail: the capability gate lives in
+     * lib/agent/unix_stream_socket.esk's (capability-require! 'network ...),
+     * which runs before any native call, so denial is already real,
+     * shipped behavior, not part of Gabe Kahen's pending socket core. The
+     * native scaffold itself has no policy layer and never attempts I/O, so
+     * there is nothing more to check here; see
      * tests/agent/unix_socket_stream_pending.esk capability_denial for the
      * gated half of this acceptance case. */
     (void)scratch_dir;

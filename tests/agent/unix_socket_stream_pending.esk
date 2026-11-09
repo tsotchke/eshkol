@@ -4,8 +4,8 @@
 ;; Gabe Kahen's design (Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md,
 ;; "Later Unix streams" row) and ESHKOL_UNIX_STREAM_SOCKET_SCRATCH to a writable
 ;; scratch directory. Every scenario below calls the real surface in
-;; lib/agent/unix_socket.esk, which currently raises "Planned for v1.4.0"
-;; from lib/core/unix_socket_stream_stub.c. This file stays out of the
+;; lib/agent/unix_stream_socket.esk, which currently raises "Planned for v1.4.0"
+;; from lib/agent/c/agent_unix_socket_stream.c. This file stays out of the
 ;; default suite (CTest label ipc-unix-pending) until the core implementation
 ;; replaces the stub and these scenarios start to pass for real.
 (require stdlib)
@@ -62,9 +62,17 @@
     (display "PASS: unix-socket deadline expiry on accept") (newline)))
 
 (define (run-deadline-connect)
-  (let ((p (socket-path "deadline-connect")))
-    (unless (raises? (lambda () (unix-stream-socket-connect p 50)))
-      (error "run-deadline-connect: expected a deadline error"))
+  ;; Called unguarded, like run-deadline-accept and run-cancellation: a
+  ;; generic (guard (e (#t #t)) ...) would also accept the stub's "Planned
+  ;; for v1.4.0" error as if it were the real deadline error it is meant to
+  ;; check for, masking the gap instead of reporting it.
+  (let* ((p (socket-path "deadline-connect"))
+         (start (current-time-ns))
+         (client (unix-stream-socket-connect p 50))
+         (elapsed-ms (/ (- (current-time-ns) start) 1000000)))
+    (unless (< elapsed-ms 2000)
+      (error "run-deadline-connect: deadline not honored" elapsed-ms))
+    (unix-stream-socket-close! client)
     (display "PASS: unix-socket deadline expiry on connect") (newline)))
 
 (define (run-cancellation)
@@ -100,6 +108,14 @@
     (display "PASS: unix-socket descriptor-count check over 1000 cycles") (newline)))
 
 (define (run-capability-denial)
+  ;; Unlike every other case in this file, this one is expected to pass
+  ;; against the stub, not just fail cleanly: capability-require! 'network
+  ;; runs before unix-stream-socket-listen ever reaches the native scaffold
+  ;; (see lib/agent/unix_stream_socket.esk), so the policy gate is real,
+  ;; already-shipped infrastructure, not part of Gabe Kahen's pending socket
+  ;; core. It stays listed under ipc-unix-pending only to keep the full
+  ;; acceptance list together; moving it into the default suite is tracked
+  ;; separately so this scaffold branch stays review-sized.
   (capability-install-policy! '())
   (unless (raises? (lambda () (unix-stream-socket-listen (socket-path "denied"))))
     (error "run-capability-denial: expected network capability denial"))
