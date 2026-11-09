@@ -9,6 +9,12 @@
  * DC, TM, VE, HE, RD, VR, LD, VL, HD, HU.  kCodeToPlane entries encode a
  * distance-map offset as (dy << 4) | (8 - dx).
  *
+ * Provenance: the probability, mode and distance-map values are the constants
+ * specified by RFC 6386 (VP8 Data Format and Decoding Guide) and RFC 9649
+ * (WebP Image Format); they were checked against libwebp. RFC code components
+ * are provided under the Simplified BSD License (IETF Trust Legal Provisions);
+ * libwebp is Copyright (c) 2010, Google Inc., BSD-3-Clause. See
+ * THIRD_PARTY_NOTICES.md. The surrounding layout and code:
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 #ifndef ESHKOL_CORE_IMAGE_WEBP_TABLES_H

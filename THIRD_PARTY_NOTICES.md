@@ -32,7 +32,11 @@ artifact verifier.
 Image I/O uses PNG, JPEG, BMP and WebP codecs written as part of the Eshkol runtime
 (MIT), so no binary package links or redistributes an image-codec library. The
 release check fails a Linux package whose executables resolve libpng, libjpeg
-or libwebp. Linux packages still
+or libwebp. The WebP decoder's constant tables (VP8 coefficient, mode and
+distance-map values) are the values specified in RFC 6386 and RFC 9649, checked
+against libwebp. RFC code components are used under the Simplified BSD License
+(IETF Trust Legal Provisions); libwebp is Copyright (c) 2010, Google Inc.,
+BSD-3-Clause. Linux packages still
 link against platform OpenSSL libraries at final AOT link time and do not
 redistribute OpenSSL binaries. macOS release packages bundle OpenSSL 3 dylibs
 for compiler/JIT TLS and static archives for generated AOT TLS executables.
