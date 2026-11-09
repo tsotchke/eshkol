@@ -35,12 +35,15 @@
 #include <mutex>
 #include <array>
 
+// Public runtime entry points one unit defines and another calls. Declared
+// before the hidden-visibility region so they keep default visibility: both
+// are resolved by name from generated and JIT code.
+extern "C" eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val);
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+
 #if (defined(__GNUC__) || defined(__clang__)) && !defined(_WIN32)
 #pragma GCC visibility push(hidden)
 #endif
-
-extern "C" eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val);
-extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
 
 namespace eshkol::regions_internal {
 
