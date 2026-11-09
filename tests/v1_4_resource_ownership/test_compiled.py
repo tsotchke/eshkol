@@ -43,6 +43,7 @@ POSITIVE = (
     "positive-event-loop",
     "positive-tls-context",
     "positive-process",
+    "positive-callee-closes-then-exits",
 )
 NEGATIVE = (
     "negative-leak",
@@ -127,6 +128,7 @@ NEGATIVE = (
     "negative-process-unclosed",
     "negative-tls-unclosed",
     "negative-tls-use-after-close",
+    "negative-callee-exits-with-local",
 )
 
 # Every handle-family falsifier must fail for its own reason, not for an
@@ -164,6 +166,7 @@ EXPECTED_DIAGNOSTIC = {
     "negative-process-unclosed": "resource 'proc' may still be live at scope exit",
     "negative-tls-unclosed": "resource 'ctx' may still be live at scope exit",
     "negative-tls-use-after-close": "use of closed or moved resource 'ctx'",
+    "negative-callee-exits-with-local": "call to 'quit-now' may end the process while resource 'in'",
 }
 
 

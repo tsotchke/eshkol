@@ -1952,6 +1952,8 @@ private:
         bool returned_handle = false;
         bool returned_value = false;
         bool return_conflict = false;
+        bool may_exit = false;          // some path ends the process
+        bool may_raise_unhandled = false;  // some path raises with no handler in the chain
         ResourceKind return_kind = ResourceKind::NONE;
         ResourceState return_state = ResourceState::NONE;
     };
@@ -1972,6 +1974,8 @@ private:
         bool returns_handle = false;
         ResourceKind return_kind = ResourceKind::NONE;
         ResourceState return_state = ResourceState::NONE;
+        bool may_exit = false;
+        bool may_raise_unhandled = false;
     };
 
     struct ArgHandle {
@@ -2398,6 +2402,7 @@ private:
         if (hasHandlerFrame() || handler_depth_ > 0) {
             recordRaisePoint("the exception raised by " + what);
         } else {
+            if (fn_) fn_->may_raise_unhandled = true;
             for (const auto& scope : scope_stack_)
                 for (const auto& entry : scope.variables)
                     if (entry.second.resource_kind != ResourceKind::NONE &&
@@ -3843,6 +3848,7 @@ private:
 
     static bool sameSummary(const Summary& a, const Summary& b) {
         if (a.dead != b.dead || a.returns_handle != b.returns_handle ||
+            a.may_exit != b.may_exit || a.may_raise_unhandled != b.may_raise_unhandled ||
             a.return_kind != b.return_kind || a.return_state != b.return_state ||
             a.env_post.size() != b.env_post.size() || a.param_post.size() != b.param_post.size())
             return false;
@@ -4025,6 +4031,8 @@ private:
             if (borrow != borrowed_counts_.end()) borrowed_counts_.erase(borrow);
         }
         summary.returns_handle = context.returned_handle && !context.returned_value;
+        summary.may_exit = context.may_exit;
+        summary.may_raise_unhandled = context.may_raise_unhandled;
         summary.return_kind = context.return_kind;
         summary.return_state = context.return_state;
         popScope();
@@ -4046,7 +4054,33 @@ private:
         return summary;
     }
 
+    // A callee that may end the process, or raise with no handler anywhere
+    // in the chain, does so while the caller's own handles are open.
+    void checkCallerHandlesAtProgramEnd(const PendingCall& pending, const Summary& summary) {
+        if (dead_ || !(summary.may_exit || summary.may_raise_unhandled)) return;
+        if (fn_) {
+            fn_->may_exit = fn_->may_exit || summary.may_exit;
+            fn_->may_raise_unhandled = fn_->may_raise_unhandled || summary.may_raise_unhandled;
+        }
+        // The callee already checked its parameters and the scopes it closes
+        // over; only the caller's own deeper scopes are left.
+        std::set<uint64_t> passed;
+        for (const auto& handle : pending.handles) passed.insert(handle.caller_id);
+        const int env_depth = std::max(0, findScopeIndexById(pending.function.function_scope_id));
+        for (size_t i = static_cast<size_t>(env_depth) + 1; i < scope_stack_.size(); ++i)
+            for (const auto& entry : scope_stack_[i].variables) {
+                const auto& info = entry.second;
+                if (info.resource_kind == ResourceKind::NONE || info.lent || passed.count(info.binding_id) ||
+                    !isLiveResourceState(info.resource_state))
+                    continue;
+                reportResourceError("call to '" + pending.name + "' may " +
+                    (summary.may_exit ? std::string("end the process") : std::string("raise with no handler")) +
+                    " while resource '" + entry.first + "' may still be live");
+            }
+    }
+
     void applySummary(const eshkol_ast_t* node, const PendingCall& pending, const Summary& summary) {
+        checkCallerHandlesAtProgramEnd(pending, summary);
         for (const auto& entry : summary.env_post) {
             VariableInfo* target = findBindingById(entry.first);
             if (target) copyMutable(*target, entry.second);
@@ -4921,6 +4955,7 @@ private:
                     continue;
                 case WorkItem::Kind::TERMINAL_AFTER:
                     if (item.flag) {
+                        if (fn_ && !dead_) fn_->may_exit = true;
                         if (!dead_)
                             for (const auto& scope : scope_stack_)
                                 for (const auto& entry : scope.variables)
