@@ -16,7 +16,7 @@
  * may re-enter while destruction is in progress.
  *
  * Failure outputs are left untouched. A successful state query may report
- * CLOSED until its slot is reused; stale IDs after reuse are invalid. Lease
+ * CLOSED until its slot is reused; expired IDs after reuse are invalid. Lease
  * values are never recycled; exhaustion makes future borrows fail. Slots at
  * the maximum generation are retired instead of wrapping to an old ID.
  *

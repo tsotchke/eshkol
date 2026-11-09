@@ -232,7 +232,7 @@ static void stale_id_and_slot_control(void) {
     check(second > 0 && eshkol_net_port(second, 0) >= 0, "later socket remains live after stale close");
     if (second > 0) eshkol_net_close(second);
 
-    /* No fixed slot table: the descriptor limit bounds live sockets. Lower it,
+    /* No slot table: the descriptor limit bounds live sockets. Lower it,
      * exhaust it, and recover by closing one. */
     struct rlimit original;
     check(getrlimit(RLIMIT_NOFILE, &original) == 0, "read descriptor limit");

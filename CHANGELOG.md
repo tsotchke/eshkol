@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   datagram truncation, and scoped forms that close on return, exception and
   continuation escape. TLS sessions start on owned TCP streams in either role,
   hold the stream's lease, verify peers by default and report untrusted and
-  mismatched certificates separately (ADR-0054, Proposed).
+  mismatched certificates separately (ADR-0055, Proposed).
 
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix

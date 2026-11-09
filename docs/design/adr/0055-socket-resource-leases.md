@@ -1,4 +1,4 @@
-# ADR-0054: Sockets and TLS sessions as resource leases
+# ADR-0055: Sockets and TLS sessions as resource leases
 
 - **Status:** Proposed
 - **Date:** 2026-11-08

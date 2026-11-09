@@ -757,7 +757,7 @@ under the same discipline that made `Qubit` linear.
       resource leases with one acquire and one close site per kind, byte-counted
       I/O, one monotonic deadline per operation, event-loop waits, cancellation,
       and scoped forms that close on return, exception and continuation escape
-      (ADR-0054). Compile-time tracking is the separate row below; Windows
+      (ADR-0055). Compile-time tracking is the separate row below; Windows
       sockets are Planned for v1.4.1; the bytecode VM refuses `core.net`
 - [x] TLS/SSL via system libraries - SHIPPED in v1.4.0-connection through
       OpenSSL on Linux and macOS: client and server handshakes on owned TCP
