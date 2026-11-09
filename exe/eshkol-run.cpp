@@ -1520,13 +1520,16 @@ static ModuleSymbolTable g_symbol_table;
 // reviewed for this feature. Export names alone are not a contract: an edited
 // module could keep its surface while changing acquisition/close behavior.
 static constexpr const char* kStrictResourceCoreNetSha256 =
-    "c160df956437b9cff155dcd030fa90586cd9d3c26e9822c453948c336ad3f680";
+    "7ada0e09a9ffa49fc6319455d0402036e85f47fc4d42e9059d491191f61ccb05";
 static const std::set<std::string> kStrictResourceCoreNetExports = {
     "tcp-listen", "tcp-connect", "tcp-accept", "tcp-read", "tcp-write",
     "tcp-close", "udp-bind", "udp-sendto", "udp-recvfrom", "udp-close",
     "net-local-address", "net-peer-address", "net-local-port", "net-peer-port",
     "net-nonblocking!", "network-error?", "network-error-code",
-    "network-error-operation"
+    "network-error-operation", "network-error-reason", "tcp-read!", "tcp-write!",
+    "tcp-write-all!", "tcp-shutdown", "net-cancel!", "udp-send-to!",
+    "udp-receive-from!", "call-with-tcp-listener", "call-with-tcp-connection",
+    "call-with-tcp-accept", "call-with-udp-socket"
 };
 static std::set<std::string> g_verified_core_net_exports;
 static bool g_untrusted_core_net_required = false;
@@ -1865,12 +1868,16 @@ private:
         if (name == "tcp-close") return CallableEffect::CLOSE_TCP;
         if (name == "udp-close") return CallableEffect::CLOSE_UDP;
         if (name == "network-error?") return CallableEffect::ERROR_PREDICATE;
-        if (name == "network-error-code" || name == "network-error-operation")
+        if (name == "network-error-code" || name == "network-error-operation" ||
+            name == "network-error-reason")
             return CallableEffect::ERROR_OBSERVER;
         if (name == "tcp-read" || name == "tcp-write" || name == "udp-sendto" ||
             name == "udp-recvfrom" || name == "net-local-address" ||
             name == "net-peer-address" || name == "net-local-port" ||
-            name == "net-peer-port" || name == "net-nonblocking!")
+            name == "net-peer-port" || name == "net-nonblocking!" ||
+            name == "tcp-read!" || name == "tcp-write!" || name == "tcp-write-all!" ||
+            name == "tcp-shutdown" || name == "net-cancel!" || name == "udp-send-to!" ||
+            name == "udp-receive-from!")
             return CallableEffect::RESOURCE_OBSERVER;
         return CallableEffect::NONE;
     }
