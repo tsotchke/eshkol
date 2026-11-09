@@ -369,6 +369,7 @@ int64_t dtype_code_for_name(const char* name) {
     if (std::strcmp(name, "f16") == 0)  return 2;
     if (std::strcmp(name, "bf16") == 0) return 3;
     if (std::strcmp(name, "i8") == 0)   return 4;
+    if (std::strcmp(name, "exact") == 0) return (int64_t)TensorCodegen::TENSOR_DTYPE_EXACT;
     return -1;
 }
 
@@ -452,13 +453,30 @@ llvm::Value* TensorCodegen::tensorCast(const eshkol_operations_t* op) {
     }
     int64_t code = dtype_code_for_name(extract_symbol_arg_name(&op->call_op.variables[1]));
     if (code < 0) {
-        eshkol_error("tensor-cast dtype must be one of f64/f32/f16/bf16/i8");
+        eshkol_error("tensor-cast dtype must be one of f64/f32/f16/bf16/i8/exact");
         return nullptr;
     }
     auto& builder = ctx_.builder();
     llvm::Value* t = codegenAST(&op->call_op.variables[0]);
     if (!t) return nullptr;
     llvm::Value* arena_ptr = ctx_.currentArena();
+    if (code == (int64_t)TENSOR_DTYPE_EXACT) {
+        // ADR-0055: the explicit conversion into the exact element type. The
+        // operand may be a tensor, a list, a vector or a nest of them (the
+        // shape rules of `(tensor X)`); exact elements are kept whole and a
+        // finite double becomes the exact rational it denotes.
+        if (t->getType() != ctx_.taggedValueType()) {
+            t = t->getType()->isFloatingPointTy() ? tagged_.packDouble(t)
+                                                  : tagged_.packInt64(t, true);
+        }
+        llvm::Value* slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "exact_cast_src");
+        builder.CreateStore(t, slot);
+        llvm::FunctionCallee exact_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_exact_tensor_from_collection",
+            llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+        llvm::Value* exact = builder.CreateCall(exact_fn, {arena_ptr, slot}, "exact_tensor");
+        return tagged_.packHeapPtr(exact);
+    }
     llvm::Value* ptr_int = tagged_.unpackInt64(t);
     llvm::Value* ptr = builder.CreateIntToPtr(ptr_int, ctx_.ptrType());
     llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_cast_alloc");
@@ -485,7 +503,7 @@ llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
             int64_t code = dtype_code_for_name(
                 extract_symbol_arg_name(&op->call_op.variables[i + 1]));
             if (code < 0) {
-                eshkol_error("make-tensor :dtype expects one of f64/f32/f16/bf16/i8");
+                eshkol_error("make-tensor :dtype expects one of f64/f32/f16/bf16/i8/exact");
                 return nullptr;
             }
             dtype_code = code;
@@ -497,12 +515,39 @@ llvm::Value* TensorCodegen::makeTensor(const eshkol_operations_t* op) {
 
     eshkol_operations_t eff = *op;
     eff.call_op.num_vars = positional;
+    if (dtype_code == (int64_t)TENSOR_DTYPE_EXACT) {
+        // ADR-0055: (make-tensor shape fill :dtype 'exact). The fill is
+        // evaluated once and stored whole in every slot of an exact tensor; an
+        // inexact fill is refused rather than rounded into exactness.
+        if (positional != 2) {
+            eshkol_error("make-tensor :dtype 'exact takes a shape and an exact fill; "
+                         "build an exact tensor from elements with (tensor-cast (list ...) 'exact)");
+            return nullptr;
+        }
+        llvm::Value* fill = nullptr;
+        llvm::Value* t = makeTensorImpl(&eff, &fill);
+        if (!t || !fill) return nullptr;
+        auto& builder = ctx_.builder();
+        if (fill->getType() != ctx_.taggedValueType()) {
+            fill = fill->getType()->isFloatingPointTy() ? tagged_.packDouble(fill)
+                                                        : tagged_.packInt64(fill, true);
+        }
+        llvm::Value* fill_slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "exact_fill");
+        builder.CreateStore(fill, fill_slot);
+        llvm::Value* ptr = builder.CreateIntToPtr(tagged_.unpackInt64(t), ctx_.ptrType());
+        llvm::FunctionCallee fill_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_make_exact_filled",
+            llvm::FunctionType::get(ctx_.voidType(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+        builder.CreateCall(fill_fn, {ptr, fill_slot});
+        return t;
+    }
     llvm::Value* t = makeTensorImpl(&eff);
     if (!t) return nullptr;
     return applyDtypeToTensor(t, dtype_code);
 }
 
-llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
+llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op,
+                                           llvm::Value** evaluated_fill) {
     // make-tensor: Two modes:
     //   (make-tensor shape fill_value) - create tensor with given shape filled with fill_value
     //   (make-tensor e1 e2 e3 ...)    - create 1D tensor from elements (falls back to tensor())
@@ -525,6 +570,7 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
 
     llvm::Value* fill_arg = codegenAST(&op->call_op.variables[1]);
     if (!fill_arg) return nullptr;
+    if (evaluated_fill) *evaluated_fill = fill_arg;
 
     // Extract fill value as double → int64 bit pattern
     llvm::Value* fill_double;

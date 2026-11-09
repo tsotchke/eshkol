@@ -1097,14 +1097,30 @@ typedef enum eshkol_tensor_dtype {
     // its address, so every alias sees the promotion. A promoted carrier is no
     // longer a numeric tensor: `tensor?` answers #f for it and every tensor
     // kernel refuses it through the operand check.
-    ESHKOL_TENSOR_DTYPE_BOXED = 65
+    ESHKOL_TENSOR_DTYPE_BOXED = 65,
+    // ADR-0055: the exact element type. `elements` holds 16-byte tagged values,
+    // each an exact rational of the scalar tower (fixnum, bignum or rational),
+    // laid out exactly like the two tagged dtypes above. Unlike a boxed
+    // carrier it IS a numeric tensor (`tensor?` answers #t): the kernels with
+    // an exact rule (construction, element access, elementwise arithmetic,
+    // matmul, transpose, sum, det, inverse, solve) compute over the generic
+    // exact ring, and every other tensor kernel refuses it by name through the
+    // operand check instead of reading its slots as doubles.
+    ESHKOL_TENSOR_DTYPE_EXACT = 66
 } eshkol_tensor_dtype_t;
 
 // True when `elements` holds 16-byte tagged values rather than f64 bit
-// patterns. Both tagged dtypes are laid out the same way; they differ only in
-// what the values are allowed to be.
+// patterns. The three tagged dtypes are laid out the same way; they differ
+// only in what the values are allowed to be.
 static inline int eshkol_tensor_dtype_is_tagged(uint64_t dtype) {
-    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_BOXED;
+    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_BOXED ||
+           dtype == ESHKOL_TENSOR_DTYPE_EXACT;
+}
+
+// True for the tagged dtypes that are still numeric tensors and take the
+// generic-scalar kernels (forward-mode jets and exact elements).
+static inline int eshkol_tensor_dtype_is_tagged_numeric(uint64_t dtype) {
+    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_EXACT;
 }
 
 // Tensor structure for multi-dimensional arrays

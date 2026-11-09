@@ -135,6 +135,33 @@ void CodegenContext::emitTensorFill(llvm::Value* tensor_ptr, llvm::Value* tagged
     emitSlotStoreStatusCheck(builder_.CreateCall(fill, {tensor_ptr, val_slot}, "tfill_status"), who);
 }
 
+llvm::Value* CodegenContext::emitDtypeHasTaggedSlots(llvm::Value* dtype) {
+    auto is = [&](uint64_t code) {
+        return builder_.CreateICmpEQ(dtype, llvm::ConstantInt::get(int64Type(), code));
+    };
+    return builder_.CreateOr(
+        builder_.CreateOr(is(ESHKOL_TENSOR_DTYPE_DUAL), is(ESHKOL_TENSOR_DTYPE_BOXED)),
+        is(ESHKOL_TENSOR_DTYPE_EXACT), "dtype_tagged_slots");
+}
+
+llvm::Value* CodegenContext::emitDtypeIsTaggedNumeric(llvm::Value* dtype) {
+    auto is = [&](uint64_t code) {
+        return builder_.CreateICmpEQ(dtype, llvm::ConstantInt::get(int64Type(), code));
+    };
+    return builder_.CreateOr(is(ESHKOL_TENSOR_DTYPE_DUAL), is(ESHKOL_TENSOR_DTYPE_EXACT),
+                             "dtype_tagged_numeric");
+}
+
+llvm::Value* CodegenContext::emitTensorHasTaggedSlots(llvm::Value* tensor_ptr) {
+    return emitDtypeHasTaggedSlots(builder_.CreateLoad(int64Type(),
+        builder_.CreateStructGEP(tensorType(), tensor_ptr, 4), "tensor_dtype"));
+}
+
+llvm::Value* CodegenContext::emitTensorIsTaggedNumeric(llvm::Value* tensor_ptr) {
+    return emitDtypeIsTaggedNumeric(builder_.CreateLoad(int64Type(),
+        builder_.CreateStructGEP(tensorType(), tensor_ptr, 4), "tensor_dtype"));
+}
+
 void CodegenContext::emitTensorSlotStore(llvm::Value* tensor_ptr, llvm::Value* index,
                                          llvm::Value* tagged_value, const char* who,
                                          bool promote_on_non_numeric) {

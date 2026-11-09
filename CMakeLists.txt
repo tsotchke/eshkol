@@ -2508,6 +2508,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
   lib/core/runtime_tensor_math.cpp
+  lib/core/runtime_exact_tensor.cpp
   lib/core/tensor_validation.cpp
   lib/core/runtime_vector_mutation.cpp
   lib/core/tensor_cross_entropy.c

@@ -233,6 +233,62 @@ llvm::Value* TensorCodegen::tensorLU(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(cons1);
 }
 
+TensorCodegen::ExactLinalgDispatch TensorCodegen::beginExactLinalgDispatch(
+        int32_t kind, llvm::Value* a_tagged, llvm::Value* b_tagged, const char* op_name) {
+    ExactLinalgDispatch d;
+    const bool a_tag = a_tagged && a_tagged->getType() == ctx_.taggedValueType();
+    const bool b_tag = b_tagged && b_tagged->getType() == ctx_.taggedValueType();
+    // Only a tagged operand can name a tensor at all.
+    if (!a_tag && !b_tag) return d;
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* a_slot = a_tag ? ctx_.spillTaggedToEntrySlot(a_tagged, "linalg_exact_a") : null_ptr;
+    llvm::Value* b_slot = b_tag ? ctx_.spillTaggedToEntrySlot(b_tagged, "linalg_exact_b") : null_ptr;
+    llvm::FunctionCallee test_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_linalg_operands_exact",
+        llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* any_exact = builder.CreateICmpNE(
+        builder.CreateCall(test_fn, {a_slot, b_slot}, "linalg_any_exact"),
+        llvm::ConstantInt::get(ctx_.int32Type(), 0));
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* exact_bb = llvm::BasicBlock::Create(ctx_.context(), "linalg_exact", fn);
+    llvm::BasicBlock* f64_bb = llvm::BasicBlock::Create(ctx_.context(), "linalg_f64", fn);
+    d.join = llvm::BasicBlock::Create(ctx_.context(), "linalg_join", fn);
+    builder.CreateCondBr(any_exact, exact_bb, f64_bb);
+
+    builder.SetInsertPoint(exact_bb);
+    emitSetErrorLocation();
+    llvm::Value* out_slot = ctx_.spillTaggedToEntrySlot(
+        llvm::UndefValue::get(ctx_.taggedValueType()), "linalg_exact_out");
+    llvm::FunctionCallee exact_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_exact_linalg_tagged",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.int32Type(), ctx_.ptrType(), ctx_.ptrType(),
+             ctx_.ptrType(), ctx_.ptrType()}, false));
+    builder.CreateCall(exact_fn, {ctx_.currentArena(),
+                                  llvm::ConstantInt::get(ctx_.int32Type(), kind),
+                                  a_slot, b_slot, ctx_.internCString(op_name), out_slot});
+    d.exact_value = builder.CreateLoad(ctx_.taggedValueType(), out_slot, "linalg_exact_value");
+    d.exact_exit = builder.GetInsertBlock();
+    builder.CreateBr(d.join);
+
+    builder.SetInsertPoint(f64_bb);
+    return d;
+}
+
+llvm::Value* TensorCodegen::finishExactLinalgDispatch(const ExactLinalgDispatch& d,
+                                                      llvm::Value* f64_result) {
+    if (!d.join || !f64_result) return f64_result;
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::BasicBlock* f64_exit = builder.GetInsertBlock();
+    builder.CreateBr(d.join);
+    builder.SetInsertPoint(d.join);
+    llvm::PHINode* phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "linalg_result");
+    phi->addIncoming(d.exact_value, d.exact_exit);
+    phi->addIncoming(f64_result, f64_exit);
+    return phi;
+}
+
 llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     // tensor-det: (tensor-det A) -> scalar determinant
     if (op->call_op.num_vars != 1) {
@@ -243,6 +299,7 @@ llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     llvm::IRBuilder<>& builder = ctx_.builder();
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     if (!a_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(0, a_tagged, nullptr, "tensor-det");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-det",
@@ -306,7 +363,7 @@ llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     llvm::Function* det_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_det_from_lu", det_ft);
     llvm::Value* det = builder.CreateCall(det_fn, {lu_data, n, sign}, "det_val");
 
-    return tagged_.packDouble(det);
+    return finishExactLinalgDispatch(exact, tagged_.packDouble(det));
 }
 
 llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
@@ -319,6 +376,7 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
     llvm::IRBuilder<>& builder = ctx_.builder();
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     if (!a_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(1, a_tagged, nullptr, "tensor-inverse");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-inverse",
@@ -381,7 +439,7 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
     ctx_.emitRaise("tensor-inverse: matrix is singular or contains non-finite values");
     builder.SetInsertPoint(inv_ready);
 
-    return tagged_.packHeapPtr(result_ptr);
+    return finishExactLinalgDispatch(exact, tagged_.packHeapPtr(result_ptr));
 }
 
 llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
@@ -395,6 +453,7 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     llvm::Value* b_tagged = codegenAST(&op->call_op.variables[1]);
     if (!a_tagged || !b_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(2, a_tagged, b_tagged, "tensor-solve");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-solve",
@@ -517,7 +576,7 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
         builder.SetInsertPoint(done);
     }
 
-    return tagged_.packHeapPtr(result_ptr);
+    return finishExactLinalgDispatch(exact, tagged_.packHeapPtr(result_ptr));
 }
 
 llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
@@ -536,6 +595,7 @@ llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     llvm::Value* b_tagged = codegenAST(&op->call_op.variables[1]);
     if (!a_tagged || !b_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(3, a_tagged, b_tagged, "linear-solve");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     // Native typed validation first: reject wrong-typed operands via
@@ -634,7 +694,7 @@ llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
     builder.CreateUnreachable();
 
     builder.SetInsertPoint(ok_bb);
-    return tagged_.packHeapPtr(result_ptr);
+    return finishExactLinalgDispatch(exact, tagged_.packHeapPtr(result_ptr));
 }
 
 llvm::Value* TensorCodegen::tensorCholesky(const eshkol_operations_t* op) {

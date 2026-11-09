@@ -28,6 +28,10 @@
 // the interned symbol object pointer, which is exactly what a HEAP_PTR-tagged
 // symbol value carries (see wrap_interned in introspection.cpp).
 extern "C" void* eshkol_intern_symbol_lookup(const char* name);
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+extern "C" void eshkol_enforce_tensor_elements(int64_t num_elements);
+extern "C" void eshkol_double_to_exact_tagged(void* arena, double d, eshkol_tagged_value_t* out);
+extern "C" int32_t eshkol_tensor_real_to_double(const eshkol_tagged_value_t* value, double* out);
 
 namespace {
 
@@ -157,6 +161,7 @@ const char* dtype_name(uint64_t dtype) {
         case ESHKOL_TENSOR_DTYPE_F16:  return "f16";
         case ESHKOL_TENSOR_DTYPE_BF16: return "bf16";
         case ESHKOL_TENSOR_DTYPE_I8:   return "i8";
+        case ESHKOL_TENSOR_DTYPE_EXACT: return "exact";
         case ESHKOL_TENSOR_DTYPE_F64:
         default:                       return "f64";
     }
@@ -195,6 +200,17 @@ void* eshkol_tensor_apply_dtype(void* tensor_ptr, int64_t dtype) {
     if (!tensor_ptr) return tensor_ptr;
     eshkol_tensor_t* t = reinterpret_cast<eshkol_tensor_t*>(tensor_ptr);
     uint64_t dt = static_cast<uint64_t>(dtype);
+    if (dt == ESHKOL_TENSOR_DTYPE_EXACT || eshkol_tensor_dtype_is_tagged(t->dtype)) {
+        // A change of slot layout allocates new slots; the descriptor keeps
+        // its address, so every alias sees the converted tensor.
+        eshkol_tensor_t* converted = reinterpret_cast<eshkol_tensor_t*>(
+            eshkol_tensor_cast_alloc(get_global_arena(), tensor_ptr, dtype));
+        if (converted) {
+            t->elements = converted->elements;
+            t->dtype = converted->dtype;
+        }
+        return tensor_ptr;
+    }
     if (t->elements && dt != ESHKOL_TENSOR_DTYPE_F64) {
         double* data = reinterpret_cast<double*>(t->elements);
         for (uint64_t i = 0; i < t->total_elements; i++) {
@@ -208,21 +224,71 @@ void* eshkol_tensor_apply_dtype(void* tensor_ptr, int64_t dtype) {
 // Allocate a new tensor with the given dtype, copying dims and casting every
 // element through the target precision. Returns the new tensor data pointer
 // (HEAP_PTR payload), or null on failure. Used by (tensor-cast t 'f16).
+//
+// ADR-0055: `'exact` is the explicit conversion into the exact element type
+// (each finite double becomes the exact rational it denotes, as `exact` gives
+// it); an exact source cast to a precision dtype is the explicit conversion
+// out of it (each slot projected as `inexact` gives it, then reduced). A jet
+// tensor or a boxed carrier has no element-wise cast and is refused.
 void* eshkol_tensor_cast_alloc(void* arena, void* tensor_ptr, int64_t dtype) {
     if (!arena || !tensor_ptr) return nullptr;
     eshkol_tensor_t* src = reinterpret_cast<eshkol_tensor_t*>(tensor_ptr);
+    const uint64_t dt = static_cast<uint64_t>(dtype);
+    if (src->dtype == ESHKOL_TENSOR_DTYPE_DUAL || src->dtype == ESHKOL_TENSOR_DTYPE_BOXED) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+            "tensor-cast: a tensor of %s has no element-wise cast",
+            src->dtype == ESHKOL_TENSOR_DTYPE_DUAL ? "dual numbers" : "non-numeric elements");
+        return nullptr;
+    }
+    const bool to_exact = dt == ESHKOL_TENSOR_DTYPE_EXACT;
+    const bool from_exact = src->dtype == ESHKOL_TENSOR_DTYPE_EXACT;
     eshkol_tensor_t* dst = arena_allocate_tensor_full(
-        reinterpret_cast<arena_t*>(arena), src->num_dimensions, src->total_elements);
+        reinterpret_cast<arena_t*>(arena), src->num_dimensions,
+        to_exact ? 0 : src->total_elements);
     if (!dst) return nullptr;
 
     for (uint64_t i = 0; i < src->num_dimensions; i++) {
         dst->dimensions[i] = src->dimensions[i];
     }
-    uint64_t dt = static_cast<uint64_t>(dtype);
-    const double* sdata = reinterpret_cast<const double*>(src->elements);
+    const uint64_t n = src->total_elements;
+    if (to_exact) {
+        eshkol_enforce_tensor_elements(static_cast<int64_t>(n));
+        auto* slots = static_cast<eshkol_tagged_value_t*>(arena_allocate(
+            reinterpret_cast<arena_t*>(arena),
+            (size_t)(n ? n : 1) * sizeof(eshkol_tagged_value_t)));
+        if (!slots) return nullptr;
+        if (from_exact) {
+            std::memcpy(slots, src->elements, (size_t)n * sizeof(eshkol_tagged_value_t));
+        } else {
+            const double* sdata = reinterpret_cast<const double*>(src->elements);
+            for (uint64_t i = 0; i < n; i++) {
+                if (!std::isfinite(sdata[i])) {
+                    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                        "tensor-cast: element %llu is infinite or NaN and has no exact value",
+                        (unsigned long long)i);
+                    return nullptr;
+                }
+                eshkol_double_to_exact_tagged(arena, sdata[i], &slots[i]);
+            }
+        }
+        dst->elements = reinterpret_cast<int64_t*>(slots);
+        dst->total_elements = n;
+        dst->dtype = ESHKOL_TENSOR_DTYPE_EXACT;
+        return dst;
+    }
     double* ddata = reinterpret_cast<double*>(dst->elements);
-    for (uint64_t i = 0; i < src->total_elements; i++) {
-        ddata[i] = reduce_precision(sdata[i], dt);
+    if (from_exact) {
+        const auto* slots = reinterpret_cast<const eshkol_tagged_value_t*>(src->elements);
+        for (uint64_t i = 0; i < n; i++) {
+            double value = 0.0;
+            eshkol_tensor_real_to_double(&slots[i], &value);
+            ddata[i] = reduce_precision(value, dt);
+        }
+    } else {
+        const double* sdata = reinterpret_cast<const double*>(src->elements);
+        for (uint64_t i = 0; i < n; i++) {
+            ddata[i] = reduce_precision(sdata[i], dt);
+        }
     }
     dst->dtype = dt;
     return dst;
@@ -273,6 +339,7 @@ int64_t eshkol_tensor_dtype_from_name(const char* name) {
     if (std::strcmp(name, "f16") == 0)  return ESHKOL_TENSOR_DTYPE_F16;
     if (std::strcmp(name, "bf16") == 0) return ESHKOL_TENSOR_DTYPE_BF16;
     if (std::strcmp(name, "i8") == 0)   return ESHKOL_TENSOR_DTYPE_I8;
+    if (std::strcmp(name, "exact") == 0) return ESHKOL_TENSOR_DTYPE_EXACT;
     return ESHKOL_TENSOR_DTYPE_F64;
 }
 

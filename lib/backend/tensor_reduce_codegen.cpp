@@ -499,7 +499,7 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
         return b.CreateLoad(ctx_.taggedValueType(), jet_result_slot);
     };
     {
-        llvm::Value* any_jet = b.CreateOr(isDualTensor(a.tensor), isDualTensor(c.tensor),
+        llvm::Value* any_jet = b.CreateOr(isTaggedNumericTensor(a.tensor), isTaggedNumericTensor(c.tensor),
                                           "dense_arith_any_jet");
         llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(
             ctx_.context(), "dense_arith_jet", fn);
@@ -813,7 +813,7 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
         // the numeric kernels below read f64 slots only.
         if (autodiff_ && hasJetTensorArithmeticRule(operation)) {
             llvm::Value* any_jet = ctx_.builder().CreateOr(
-                isDualTensor(a1_ptr), isDualTensor(a2_ptr), "arith_any_jet");
+                isTaggedNumericTensor(a1_ptr), isTaggedNumericTensor(a2_ptr), "arith_any_jet");
             llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(
                 ctx_.context(), "arith_jet", current_func);
             llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
@@ -2501,7 +2501,7 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::Value* dsum_result = nullptr;
     llvm::BasicBlock* dsum_exit_block = nullptr;
     if (autodiff_) {
-        llvm::Value* tsum_is_dual = isDualTensor(src_ptr);
+        llvm::Value* tsum_is_dual = isTaggedNumericTensor(src_ptr);
         llvm::BasicBlock* dsum_bb = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual", current_func);
         llvm::BasicBlock* tsum_normal_bb = llvm::BasicBlock::Create(ctx_.context(), "tsum_not_dual", current_func);
         ctx_.builder().CreateCondBr(tsum_is_dual, dsum_bb, tsum_normal_bb);

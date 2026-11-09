@@ -12261,6 +12261,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
         if (!t || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        if (vm_tensor_dtype_name_is_exact(dtype_name->data)) {
+            vm_raise_error_msg(vm, "tensor-cast: the exact tensor element type runs on the "
+                                   "native engines; it is planned for the bytecode VM in v1.4.1");
+            break;
+        }
         VmTensor* out = vm_tensor_cast_dtype(&vm->heap.regions, t,
                                              vm_tensor_dtype_from_name(dtype_name->data));
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -12273,6 +12278,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
         if (!shape || n_dims == 0 || !dtype_name) { vm_raise_error_msg(vm, "make-tensor: invalid shape or dtype"); break; }
+        if (vm_tensor_dtype_name_is_exact(dtype_name->data)) {
+            vm_raise_error_msg(vm, "make-tensor: the exact tensor element type runs on the "
+                                   "native engines; it is planned for the bytecode VM in v1.4.1");
+            break;
+        }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
         if (!t) { vm_raise_error_msg(vm, "make-tensor: invalid shape or allocation limit"); break; }
         t->dtype = vm_tensor_dtype_from_name(dtype_name->data);

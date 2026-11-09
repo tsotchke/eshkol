@@ -59,6 +59,13 @@ public:
     static constexpr uint64_t TENSOR_DTYPE_DUAL = 64;
 
     /**
+     * ADR-0055 exact-element dtype. Mirrors ESHKOL_TENSOR_DTYPE_EXACT in
+     * lib/core/arena_memory.h (asserted equal in llvm_codegen.cpp). A tensor
+     * with this dtype stores 16-byte tagged exact rationals in `elements`.
+     */
+    static constexpr uint64_t TENSOR_DTYPE_EXACT = 66;
+
+    /**
      * Destructor - defined in .cpp where XLACodegen is complete.
      */
     ~TensorCodegen();
@@ -430,6 +437,25 @@ public:
     /** LU decomposition: returns (L, U, P) as a list of tensors */
     llvm::Value* tensorLU(const eshkol_operations_t* op);
     /** Determinant via LU decomposition */
+    /**
+     * Exact dispatch for tensor-det / tensor-inverse / tensor-solve /
+     * linear-solve (ADR-0055). begin...() emits a runtime test: when an
+     * operand is an exact tensor, the call is answered by
+     * eshkol_exact_linalg_tagged (fraction-free elimination over the exact
+     * ring, or the f64 kernel on the projections when contagion makes the
+     * result inexact); otherwise control continues into the f64 kernel the
+     * caller emits next. finish...() joins the two results.
+     */
+    struct ExactLinalgDispatch {
+        llvm::BasicBlock* join = nullptr;
+        llvm::BasicBlock* exact_exit = nullptr;
+        llvm::Value* exact_value = nullptr;
+    };
+    ExactLinalgDispatch beginExactLinalgDispatch(int32_t kind, llvm::Value* a_tagged,
+                                                 llvm::Value* b_tagged, const char* op_name);
+    llvm::Value* finishExactLinalgDispatch(const ExactLinalgDispatch& dispatch,
+                                           llvm::Value* f64_result);
+
     llvm::Value* tensorDet(const eshkol_operations_t* op);
     /** Matrix inverse via LU decomposition */
     llvm::Value* tensorInverse(const eshkol_operations_t* op);
@@ -758,7 +784,11 @@ public:
     llvm::Value* makeTensor(const eshkol_operations_t* op);
 
     /** Implementation of make-tensor without dtype handling (idx 0-3 layout). */
-    llvm::Value* makeTensorImpl(const eshkol_operations_t* op);
+    /** @param evaluated_fill When non-null, receives the fill operand as
+     *  evaluated (so a caller can re-encode it without evaluating it twice);
+     *  null in element-literal mode. */
+    llvm::Value* makeTensorImpl(const eshkol_operations_t* op,
+                                llvm::Value** evaluated_fill = nullptr);
 
     /** Apply a dtype code to an already-built tensor value (in place). */
     llvm::Value* applyDtypeToTensor(llvm::Value* tensor_val, int64_t dtype_code);
@@ -1427,6 +1457,16 @@ private:
      * @param tensor_struct_ptr Pointer to an eshkol_tensor struct.
      */
     llvm::Value* isDualTensor(llvm::Value* tensor_struct_ptr);
+
+    /**
+     * True when the tensor is a numeric tensor with 16-byte tagged slots: a
+     * jet tensor (dtype DUAL) or an exact tensor (dtype EXACT, ADR-0055).
+     * These take the generic-scalar runtime kernels (elementwise arithmetic,
+     * matmul, sum, element access), which apply the language's own scalar
+     * operators slot by slot, so an exact tensor stays exact and a jet tensor
+     * keeps its derivative coefficients.
+     */
+    llvm::Value* isTaggedNumericTensor(llvm::Value* tensor_struct_ptr);
 
     /**
      * Tensor arithmetic for TENSOR_PTR type.

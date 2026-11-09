@@ -1211,6 +1211,9 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "transpose_tensor", current_func);
     llvm::BasicBlock* exit_block = llvm::BasicBlock::Create(ctx_.context(), "transpose_exit", current_func);
+    // Joins the numeric result (after its reverse-mode record) and the tagged
+    // result (which has no f64 element buffer to record).
+    llvm::BasicBlock* final_block = llvm::BasicBlock::Create(ctx_.context(), "transpose_final", current_func);
 
     // Use alloca-based merge (avoids PHI predecessor issues with XLA blocks)
     llvm::Value* result_alloca = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "trans_result");
@@ -1240,6 +1243,24 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
                           {src_ndim});
 
         ctx_.builder().SetInsertPoint(trans_dims_ok);
+    }
+
+    // ADR-0055: an exact tensor's 16-byte tagged slots are moved whole by the
+    // runtime, so every entry keeps its exact value; the f64 loop below reads
+    // 8-byte slots only.
+    {
+        llvm::BasicBlock* tagged_bb = llvm::BasicBlock::Create(ctx_.context(), "transpose_tagged", current_func);
+        llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(ctx_.context(), "transpose_numeric", current_func);
+        ctx_.builder().CreateCondBr(isTaggedNumericTensor(src_ptr), tagged_bb, numeric_bb);
+        ctx_.builder().SetInsertPoint(tagged_bb);
+        llvm::FunctionCallee tagged_fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tagged_tensor_transpose",
+            llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+        llvm::Value* transposed = ctx_.builder().CreateCall(
+            tagged_fn, {allocationArena(), src_ptr}, "transpose_tagged_result");
+        ctx_.builder().CreateStore(tagged_.packHeapPtr(transposed), result_alloca);
+        ctx_.builder().CreateBr(final_block);
+        ctx_.builder().SetInsertPoint(numeric_bb);
     }
 
 #ifdef ESHKOL_XLA_ENABLED
@@ -1379,8 +1400,10 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
         llvm::PHINode* result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "transpose_result");
         result->addIncoming(dense_result, record_exit);
         result->addIncoming(plain_result, plain_exit);
-        return result;
+        ctx_.builder().CreateStore(result, result_alloca);
     }
+    ctx_.builder().CreateBr(final_block);
+    ctx_.builder().SetInsertPoint(final_block);
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "transpose_result");
 }
 

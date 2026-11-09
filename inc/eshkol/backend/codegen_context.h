@@ -214,6 +214,22 @@ public:
                                llvm::Value* tagged_value, const char* who);
 
     /**
+     * Tensor slot layout predicates over a dtype value (field 4 of a tensor).
+     * The one IR spelling of eshkol_tensor_dtype_is_tagged /
+     * eshkol_tensor_dtype_is_tagged_numeric (lib/core/arena_memory.h), so every
+     * site that chooses a slot width or a kernel agrees with the runtime.
+     *  - HasTaggedSlots: `elements` holds 16-byte tagged values (a jet tensor,
+     *    a boxed carrier or an exact tensor, ADR-0020 / ADR-0055).
+     *  - IsTaggedNumeric: a numeric tensor whose slots are tagged, so it takes
+     *    the generic-scalar kernels (a jet tensor or an exact tensor).
+     */
+    llvm::Value* emitDtypeHasTaggedSlots(llvm::Value* dtype);
+    llvm::Value* emitDtypeIsTaggedNumeric(llvm::Value* dtype);
+    /** Load field 4 of @p tensor_ptr and apply the predicate above. */
+    llvm::Value* emitTensorHasTaggedSlots(llvm::Value* tensor_ptr);
+    llvm::Value* emitTensorIsTaggedNumeric(llvm::Value* tensor_ptr);
+
+    /**
      * Store @p tagged_value at linear @p index of the tensor @p tensor_ptr
      * (payload pointer; the index is NOT bounds-checked inline because tensor
      * callers have already checked it per dimension). A DOUBLE into an f64
