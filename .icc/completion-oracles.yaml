@@ -2173,6 +2173,32 @@ oracles:
         label: P11 tower-based user numerics converge on ODE/root/inversion examples
         action: ./scripts/run_ad_numerics_gate.sh
 
+      # ROADMAP v1.4.0 "Symbolic multivariate polynomial and truncated-series
+      # values": core.symbolic over Q and GF(p), the B_rho coefficient norm on
+      # series values, and polynomial-valued duals (series-of over the
+      # built-in AD operators, collect, affine solve). The producer runs the
+      # Q suite and the fields suite under JIT and AOT.
+      - runtime_event:
+          event_kinds: [symbolic_exact]
+          event_names: ["core_symbolic_fields_norm_duals"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'core.symbolic over Q and GF(p), series coefficient norm and polynomial-valued duals pass their JIT and AOT suites'
+        action: ./scripts/run_symbolic_fields_gate.sh
+
+      # ROADMAP v1.4.0 assurance item "SymPy oracle pilot on the exact-AD
+      # surface": derivative-n / taylor / derivative / gradient / hessian /
+      # jacobian on exact inputs against SymPy, case by case, JIT and AOT.
+      # Needs an interpreter with SymPy (ESHKOL_SYMPY_PYTHON); without one the
+      # producer records SKIP, which never satisfies this criterion.
+      - runtime_event:
+          event_kinds: [sympy_oracle]
+          event_names: ["sympy_exact_ad_oracle_pilot"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SymPy differential oracle agrees with every exact-AD corpus case under JIT and AOT'
+        action: ./scripts/run_sympy_exact_ad_oracle_gate.sh
+
       # ESH-0011 (workplan Tier 0, package P2) — the async foundation every
       # Tier 1 networking primitive registers its descriptors against. Real
       # criterion, not a placeholder: the probe runs the acceptance battery on
