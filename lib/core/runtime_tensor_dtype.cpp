@@ -32,6 +32,7 @@ extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* f
 extern "C" void eshkol_enforce_tensor_elements(int64_t num_elements);
 extern "C" void eshkol_double_to_exact_tagged(void* arena, double d, eshkol_tagged_value_t* out);
 extern "C" int32_t eshkol_tensor_real_to_double(const eshkol_tagged_value_t* value, double* out);
+extern "C" void* eshkol_tensor_cast_alloc(void* arena, void* tensor_ptr, int64_t dtype);
 
 namespace {
 
