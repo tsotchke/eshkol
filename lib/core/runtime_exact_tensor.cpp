@@ -27,6 +27,7 @@
  */
 
 #include "arena_memory.h"
+#include "taylor_opcodes.h"
 
 #include <cmath>
 #include <cstdint>
@@ -43,7 +44,6 @@ int32_t eshkol_tensor_real_to_double(const eshkol_tagged_value_t* value, double*
 void eshkol_taylor_binary_tagged(arena_t* arena, const eshkol_tagged_value_t* left,
                                  const eshkol_tagged_value_t* right, int op,
                                  eshkol_tagged_value_t* result);
-int eshkol_taylor_binary_opcode(const char* spelling);
 void eshkol_rational_compare_tagged_ptr(void* arena, const eshkol_tagged_value_t* a,
                                         const eshkol_tagged_value_t* b, int op,
                                         eshkol_tagged_value_t* result);
