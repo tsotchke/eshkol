@@ -16168,13 +16168,11 @@ private:
             Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
             if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
-            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
             Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
-            FunctionCallee close_fn = module->getOrInsertFunction(
-                "eshkol_runtime_close_port", FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(close_fn, {close_fp});
+            pushPortCleanupWind(close_fp);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
+            popPortCleanupWindAndClose(close_fp);
             co_return ensureTaggedValue(result);
         }
         // call-with-input-file: (call-with-input-file filename proc)
@@ -16189,14 +16187,11 @@ private:
             Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
             if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
-            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
-            // Close
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
             Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
-            FunctionCallee close_fn = module->getOrInsertFunction(
-                "eshkol_runtime_close_port", FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(close_fn, {close_fp});
+            pushPortCleanupWind(close_fp);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
+            popPortCleanupWindAndClose(close_fp);
             co_return ensureTaggedValue(result);
         }
         // call-with-output-file: (call-with-output-file filename proc)
@@ -16209,13 +16204,11 @@ private:
             Value* proc_val = (co_await codegenASTTask(&op->call_op.variables[1]));
             if (!proc_val) co_return nullptr;
             proc_val = ensureTaggedValue(proc_val);
-            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
             Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
             Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
-            FunctionCallee close_fn = module->getOrInsertFunction(
-                "eshkol_runtime_close_port", FunctionType::get(int32_type,
-                    {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(close_fn, {close_fp});
+            pushPortCleanupWind(close_fp);
+            Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
+            popPortCleanupWindAndClose(close_fp);
             co_return ensureTaggedValue(result);
         }
         // with-input-from-file: (with-input-from-file filename thunk)
@@ -24949,6 +24942,31 @@ private:
     // Syntax: (dynamic-wind before thunk after)
     // Calls before(), then thunk(), then after(), returns thunk's result
     // before/after are also called during continuation jumps across dynamic-wind boundaries
+    // Borrow scopes close their port on every exit: a native cleanup frame on
+    // the dynamic-wind stack closes it when a raise or a continuation escape
+    // unwinds the scope, and normal return pops the frame and closes it here.
+    void pushPortCleanupWind(Value* close_fp) {
+        FunctionCallee push_fn = module->getOrInsertFunction(
+            "eshkol_push_dynamic_wind_cleanup",
+            FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false));
+        FunctionCallee cleanup_fn = module->getOrInsertFunction(
+            "eshkol_runtime_close_port_cleanup",
+            FunctionType::get(builder->getVoidTy(), {builder->getPtrTy()}, false));
+        builder->CreateCall(push_fn, {getArenaPtr(), cleanup_fn.getCallee(), close_fp});
+    }
+
+    void popPortCleanupWindAndClose(Value* close_fp) {
+        if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) return;
+        FunctionCallee pop_fn = module->getOrInsertFunction(
+            "eshkol_pop_dynamic_wind", FunctionType::get(builder->getVoidTy(), {}, false));
+        builder->CreateCall(pop_fn, {});
+        FunctionCallee close_fn = module->getOrInsertFunction(
+            "eshkol_runtime_close_port", FunctionType::get(builder->getInt32Ty(),
+                {builder->getPtrTy()}, false));
+        builder->CreateCall(close_fn, {close_fp});
+    }
+
     Value* codegenDynamicWind(const eshkol_operations_t* op) {
         // Evaluate the three thunks. Each operand goes through
         // ensureTaggedValue, the normalisation every other procedure operand

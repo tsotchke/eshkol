@@ -1,0 +1,3 @@
+;; A borrow scope lends the port; closing the loan is a static error.
+(call-with-input-file "strict-lend.txt"
+  (lambda (p) (close-port p)))

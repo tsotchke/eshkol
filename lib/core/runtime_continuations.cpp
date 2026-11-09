@@ -751,6 +751,17 @@ static void call_thunk_from_tagged(const eshkol_tagged_value_t* thunk) {
     call_thunk_closure(closure);
 }
 
+// Run the exit action of one dynamic-wind entry.
+static void run_wind_after(eshkol_dynamic_wind_entry_t* entry) {
+    if (entry->native_after) {
+        void (*cleanup)(void*) = entry->native_after;
+        entry->native_after = nullptr;  // exactly once, even if the entry is re-entered
+        cleanup(entry->native_after_arg);
+        return;
+    }
+    call_thunk_from_tagged(&entry->after);
+}
+
 // Push a dynamic-wind entry onto the global stack
 extern "C" void eshkol_push_dynamic_wind(void* arena_void,
     const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after) {
@@ -760,6 +771,23 @@ extern "C" void eshkol_push_dynamic_wind(void* arena_void,
     if (!entry) return;
     entry->before = *before;
     entry->after = *after;
+    entry->native_after = nullptr;
+    entry->native_after_arg = nullptr;
+    entry->prev = g_dynamic_wind_stack;
+    g_dynamic_wind_stack = entry;
+}
+
+// Push a frame whose exit action is a native cleanup (borrow scopes).
+extern "C" void eshkol_push_dynamic_wind_cleanup(void* arena_void,
+    void (*cleanup)(void* arg), void* arg) {
+    arena_t* arena = (arena_t*)arena_void;
+    eshkol_dynamic_wind_entry_t* entry = (eshkol_dynamic_wind_entry_t*)
+        arena_allocate_aligned(arena, sizeof(eshkol_dynamic_wind_entry_t), 8);
+    if (!entry) return;
+    entry->before = eshkol_tagged_value_t{};
+    entry->after = eshkol_tagged_value_t{};
+    entry->native_after = cleanup;
+    entry->native_after_arg = arg;
     entry->prev = g_dynamic_wind_stack;
     g_dynamic_wind_stack = entry;
 }
@@ -777,7 +805,7 @@ extern "C" void eshkol_unwind_dynamic_wind(void* saved_wind_mark) {
     while (g_dynamic_wind_stack != nullptr && g_dynamic_wind_stack != mark) {
         eshkol_dynamic_wind_entry_t* entry = g_dynamic_wind_stack;
         g_dynamic_wind_stack = entry->prev;
-        call_thunk_from_tagged(&entry->after);
+        run_wind_after(entry);
     }
 }
 
@@ -834,7 +862,7 @@ extern "C" void eshkol_reroot_dynamic_wind(void* target_void) {
     while (g_dynamic_wind_stack != common) {
         eshkol_dynamic_wind_entry_t* entry = g_dynamic_wind_stack;
         g_dynamic_wind_stack = entry->prev;
-        call_thunk_from_tagged(&entry->after);
+        run_wind_after(entry);
     }
     /* Enter: outermost `before` first. */
     eshkol_wind_enter(target, common);

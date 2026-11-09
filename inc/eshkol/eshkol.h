@@ -2065,6 +2065,12 @@ typedef struct eshkol_dynamic_wind_entry {
     eshkol_tagged_value_t before;       // Before thunk (callable)
     eshkol_tagged_value_t after;        // After thunk (callable)
     struct eshkol_dynamic_wind_entry* prev;  // Previous entry in stack
+    // Native cleanup run instead of `after` when non-NULL. Borrow scopes
+    // (call-with-port, call-with-input-file, call-with-output-file) use it to
+    // close their handle on an exception or continuation escape as well as
+    // on normal return.
+    void (*native_after)(void* arg);
+    void* native_after_arg;
 } eshkol_dynamic_wind_entry_t;
 
 // Global dynamic-wind stack
@@ -2204,6 +2210,14 @@ void eshkol_push_dynamic_wind(void* arena, const eshkol_tagged_value_t* before, 
  * the after-thunk is invoked directly by the generated code.
  */
 void eshkol_pop_dynamic_wind(void);
+/**
+ * @brief Push a dynamic-wind frame whose exit action is a native cleanup.
+ *
+ * The frame has no before thunk. @p cleanup runs once with @p arg when a
+ * raise or a continuation escape unwinds past the frame. On normal exit the
+ * generated code pops the frame and performs the same cleanup itself.
+ */
+void eshkol_push_dynamic_wind_cleanup(void* arena, void (*cleanup)(void* arg), void* arg);
 /**
  * @brief Run after-thunks for all dynamic-wind frames above a saved marker.
  *

@@ -1,0 +1,6 @@
+;; A named-let loop keeps the port open on its back edge and closes it on exit.
+(define in (open-input-file "strict-drain.txt"))
+(let loop ((line (read-line in)) (count 0))
+  (if (eof-object? line)
+      (begin (close-port in) (display count) (newline))
+      (loop (read-line in) (+ count 1))))

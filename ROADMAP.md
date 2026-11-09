@@ -894,8 +894,15 @@ under the same discipline that made `Qubit` linear.
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
 - [ ] Unix domain sockets for local IPC
 - [ ] HTTP client/server and WebSocket, on the shipped event loop
-- [ ] Linear types for all handles: `open → borrowed → closed` with compile-time tracking
-- [ ] Borrow pattern for temporary resource access
+- [x] Linear types for all handles: `open → borrowed → closed` with compile-time tracking -
+      SHIPPED in v1.4.0-connection under `--strict-resources` (ADR-0056): sockets, TLS, file
+      ports, the event loop, threads, mutexes, condition variables and processes, tracked
+      across branches, loops, calls, closures, `guard`, `dynamic-wind` and `call/cc`;
+      Unix-domain socket handles join the contract table with the local IPC core
+- [x] Borrow pattern for temporary resource access - SHIPPED in v1.4.0-connection:
+      `borrow`, `call-with-input-file`, `call-with-output-file`, `call-with-port` and
+      `with-mutex` lend a handle that cannot be closed or escape; the `call-with-*` scopes
+      close their port on return, on a raise and on a continuation escape
 - [ ] Agent runtime unblocked: SSE streaming, subprocess pipe contract,
       durable session persistence
 - [ ] WebGPU backend for the WASM target (#562), inside the ordinary GPU

@@ -1,0 +1,7 @@
+;; The loop closes the port and then iterates again: the back edge sees a
+;; closed handle where the loop started with an open one.
+(define in (open-input-file "strict-loop.txt"))
+(let loop ((i 0))
+  (if (< i 3)
+      (begin (close-port in) (loop (+ i 1)))
+      #t))

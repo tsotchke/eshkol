@@ -44,6 +44,7 @@ it is called out explicitly.
 | 21 | Synthesis holes `??`: type-directed completion by the compiler | [synthesis-holes.md](synthesis-holes.md) |
 | 22 | Algebraic effects: `define-effect`, `handle`, `handle-shallow`, effect rows, `declare-effects`, `core.effects` | [effects.md](effects.md) |
 | 23 | Structural types: row-polymorphic records, higher-rank polymorphism, session types | [structural-types.md](structural-types.md) |
+| 24 | Linear handles: `open → borrowed → closed`, the borrow pattern, `--strict-resources` | [linear-handles.md](linear-handles.md) |
 
 ## Known-issue conventions
 

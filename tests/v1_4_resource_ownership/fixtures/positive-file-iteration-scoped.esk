@@ -1,0 +1,10 @@
+;; A handle acquired inside an iteration is closed before the next one.
+(let loop ((i 0))
+  (if (< i 2)
+      (begin
+        (call-with-output-file "strict-iter.txt" (lambda (out) (write-string "z" out)))
+        (let ((in (open-input-file "strict-iter.txt")))
+          (read-line in)
+          (close-port in))
+        (loop (+ i 1)))
+      (display "done")))

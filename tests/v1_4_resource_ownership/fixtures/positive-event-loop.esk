@@ -1,0 +1,7 @@
+;; make-event-loop returns #f when the platform has no loop: a truth test
+;; refines it before use, and the loop is closed on the open path.
+(define loop (make-event-loop 8))
+(if loop
+    (begin (event-loop-poll loop 0) (event-loop-close loop))
+    (display "no event loop"))
+(newline)

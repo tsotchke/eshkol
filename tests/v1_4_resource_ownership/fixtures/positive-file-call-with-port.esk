@@ -1,0 +1,5 @@
+;; call-with-port takes the owner, lends it, and closes it.
+(define in (open-input-file "strict-port.txt"))
+(define line (call-with-port in (lambda (p) (read-line p))))
+(display line)
+(newline)
