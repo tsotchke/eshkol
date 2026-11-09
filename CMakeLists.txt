@@ -8040,20 +8040,20 @@ endif()
 # Unix-domain stream socket scaffold (paired build: this lane writes tests,
 # stubs, and docs; Gabe Kahen owns the socket core). Every native fixture
 # links the scaffold stub (lib/core/unix_socket_stream_stub.c), which
-# performs no socket I/O and reports ESHKOL_UNIX_SOCKET_PLANNED for every
+# performs no socket I/O and reports ESHKOL_UNIX_STREAM_SOCKET_PLANNED for every
 # call. The acceptance cases are registered under CTest label
 # "ipc-unix-pending" and DISABLED so they never affect the default suite; a
 # separate, always-on contract test confirms they exist and that the stub
 # reports the planned result.
 if(ESHKOL_BUILD_TESTS AND UNIX)
     find_package(Threads REQUIRED)
-    add_executable(eshkol-unix-socket-stream-test
+    add_executable(eshkol-unix-stream-socket-stream-test
         tests/agent/unix_socket_stream_test.c
         lib/core/unix_socket_stream_stub.c)
-    target_compile_features(eshkol-unix-socket-stream-test PRIVATE c_std_11)
-    target_compile_definitions(eshkol-unix-socket-stream-test PRIVATE _GNU_SOURCE)
-    target_include_directories(eshkol-unix-socket-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-    target_link_libraries(eshkol-unix-socket-stream-test PRIVATE Threads::Threads)
+    target_compile_features(eshkol-unix-stream-socket-stream-test PRIVATE c_std_11)
+    target_compile_definitions(eshkol-unix-stream-socket-stream-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-unix-stream-socket-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE Threads::Threads)
 
     set(ESHKOL_IPC_UNIX_PENDING_CASES
         connect_accept partial_slow_peer peer_close_epipe deadline_accept
@@ -8066,21 +8066,21 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
 
     foreach(case_name ${ESHKOL_IPC_UNIX_PENDING_CASES})
         add_test(NAME ipc-unix-pending-${case_name}
-            COMMAND eshkol-unix-socket-stream-test ${case_name}
+            COMMAND eshkol-unix-stream-socket-stream-test ${case_name}
                 ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch)
         set_tests_properties(ipc-unix-pending-${case_name} PROPERTIES
             LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 60)
     endforeach()
 
-    add_executable(eshkol-unix-socket-stub-contract-test
+    add_executable(eshkol-unix-stream-socket-stub-contract-test
         tests/agent/unix_socket_stream_stub_contract_test.c
         lib/core/unix_socket_stream_stub.c)
-    target_compile_features(eshkol-unix-socket-stub-contract-test PRIVATE c_std_11)
-    target_include_directories(eshkol-unix-socket-stub-contract-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
-    add_test(NAME agent-unix-socket-stub-contract
-        COMMAND eshkol-unix-socket-stub-contract-test
+    target_compile_features(eshkol-unix-stream-socket-stub-contract-test PRIVATE c_std_11)
+    target_include_directories(eshkol-unix-stream-socket-stub-contract-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME agent-unix-stream-socket-stub-contract
+        COMMAND eshkol-unix-stream-socket-stub-contract-test
             "${CMAKE_CTEST_COMMAND}" "${CMAKE_BINARY_DIR}" "${ESHKOL_IPC_UNIX_PENDING_TOTAL}")
-    set_tests_properties(agent-unix-socket-stub-contract PROPERTIES
+    set_tests_properties(agent-unix-stream-socket-stub-contract PROPERTIES
         TIMEOUT 60 LABELS "resource;socket;stub-contract")
 endif()
 

@@ -23,9 +23,9 @@
  * Native acceptance fixtures for Unix-domain stream sockets, in the order
  * listed for the v1.4.0 socket-scaffold lane. These exercise the real
  * contract from Gabe Kahen's design (notes/IPC_DESIGN-2026-11-02.md, "Later
- * Unix streams" row): every call below goes through eshkol_unix_socket_*,
+ * Unix streams" row): every call below goes through eshkol_unix_stream_socket_*,
  * which is currently a scaffold (lib/core/unix_socket_stream_stub.c) that
- * reports ESHKOL_UNIX_SOCKET_PLANNED for everything. Each scenario is
+ * reports ESHKOL_UNIX_STREAM_SOCKET_PLANNED for everything. Each scenario is
  * therefore expected to fail its first real-behavior CHECK -- that clean,
  * reported failure (not a hang or a crash) is the acceptance signal that the
  * stub is wired to the real contract. The suite stays out of the default run
@@ -59,30 +59,30 @@ static void make_path(const char *scratch_dir, const char *name) {
 
 static void scenario_connect_accept(const char *scratch_dir) {
     make_path(scratch_dir, "connect-accept");
-    int64_t listener = eshkol_unix_socket_listen(0, g_path);
+    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(listener > 0);
-    int64_t client = eshkol_unix_socket_connect(0, g_path, 1000);
+    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
     CHECK(client > 0);
-    int64_t accepted = eshkol_unix_socket_accept(listener, 1000);
+    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
     CHECK(accepted > 0);
-    CHECK(eshkol_unix_socket_close(accepted) == 0);
-    CHECK(eshkol_unix_socket_close(client) == 0);
-    CHECK(eshkol_unix_socket_close(listener) == 0);
+    CHECK(eshkol_unix_stream_socket_close(accepted) == 0);
+    CHECK(eshkol_unix_stream_socket_close(client) == 0);
+    CHECK(eshkol_unix_stream_socket_close(listener) == 0);
 }
 
 static void scenario_partial_slow_peer(const char *scratch_dir) {
     make_path(scratch_dir, "partial-slow");
-    int64_t listener = eshkol_unix_socket_listen(0, g_path);
+    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(listener > 0);
-    int64_t client = eshkol_unix_socket_connect(0, g_path, 1000);
+    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
     CHECK(client > 0);
-    int64_t accepted = eshkol_unix_socket_accept(listener, 1000);
+    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
     CHECK(accepted > 0);
     unsigned char payload[4096];
     for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (unsigned char)i;
     int64_t written = 0;
     while (written < (int64_t)sizeof(payload)) {
-        int64_t n = eshkol_unix_socket_write(client, payload + written,
+        int64_t n = eshkol_unix_stream_socket_write(client, payload + written,
             (int64_t)sizeof(payload) - written);
         CHECK(n >= 0);
         written += n;
@@ -90,54 +90,54 @@ static void scenario_partial_slow_peer(const char *scratch_dir) {
     unsigned char got[4096];
     int64_t read_total = 0;
     while (read_total < (int64_t)sizeof(payload)) {
-        int64_t n = eshkol_unix_socket_read(accepted, got + read_total,
+        int64_t n = eshkol_unix_stream_socket_read(accepted, got + read_total,
             (int64_t)sizeof(got) - read_total);
         CHECK(n >= 0);
         read_total += n;
     }
     CHECK(memcmp(payload, got, sizeof(payload)) == 0);
-    eshkol_unix_socket_close(accepted);
-    eshkol_unix_socket_close(client);
-    eshkol_unix_socket_close(listener);
+    eshkol_unix_stream_socket_close(accepted);
+    eshkol_unix_stream_socket_close(client);
+    eshkol_unix_stream_socket_close(listener);
 }
 
 static void scenario_peer_close_epipe(const char *scratch_dir) {
     make_path(scratch_dir, "peer-close");
     signal(SIGPIPE, SIG_IGN); /* guards this harness only; the core must
                                  suppress SIGPIPE on the write path itself. */
-    int64_t listener = eshkol_unix_socket_listen(0, g_path);
+    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(listener > 0);
-    int64_t client = eshkol_unix_socket_connect(0, g_path, 1000);
+    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
     CHECK(client > 0);
-    int64_t accepted = eshkol_unix_socket_accept(listener, 1000);
+    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
     CHECK(accepted > 0);
-    CHECK(eshkol_unix_socket_close(accepted) == 0);
+    CHECK(eshkol_unix_stream_socket_close(accepted) == 0);
     unsigned char payload[16] = {0};
-    int64_t n = eshkol_unix_socket_write(client, payload, sizeof(payload));
-    CHECK(n == ESHKOL_UNIX_SOCKET_ESYSTEM);
-    eshkol_unix_socket_close(client);
-    eshkol_unix_socket_close(listener);
+    int64_t n = eshkol_unix_stream_socket_write(client, payload, sizeof(payload));
+    CHECK(n == ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM);
+    eshkol_unix_stream_socket_close(client);
+    eshkol_unix_stream_socket_close(listener);
 }
 
 static void scenario_deadline_accept(const char *scratch_dir) {
     make_path(scratch_dir, "deadline-accept");
-    int64_t listener = eshkol_unix_socket_listen(0, g_path);
+    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(listener > 0);
     int64_t start = now_ms();
-    int64_t accepted = eshkol_unix_socket_accept(listener, 150);
+    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 150);
     int64_t elapsed = now_ms() - start;
-    CHECK(accepted == ESHKOL_UNIX_SOCKET_ETIMEDOUT);
+    CHECK(accepted == ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT);
     CHECK(elapsed >= 140 && elapsed < 2000);
-    eshkol_unix_socket_close(listener);
+    eshkol_unix_stream_socket_close(listener);
 }
 
 static void scenario_deadline_connect(const char *scratch_dir) {
     make_path(scratch_dir, "deadline-connect");
     /* nothing listens on this path */
     int64_t start = now_ms();
-    int64_t client = eshkol_unix_socket_connect(0, g_path, 150);
+    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 150);
     int64_t elapsed = now_ms() - start;
-    CHECK(client == ESHKOL_UNIX_SOCKET_ETIMEDOUT || client == ESHKOL_UNIX_SOCKET_ESYSTEM);
+    CHECK(client == ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT || client == ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM);
     CHECK(elapsed < 2000);
 }
 
@@ -145,29 +145,29 @@ static void *cancel_after(void *arg) {
     int64_t id = *(int64_t *)arg;
     struct timespec ts = {0, 50 * 1000000};
     nanosleep(&ts, &ts);
-    eshkol_unix_socket_cancel(id);
+    eshkol_unix_stream_socket_cancel(id);
     return NULL;
 }
 
 static void scenario_cancellation(const char *scratch_dir) {
     make_path(scratch_dir, "cancel");
-    int64_t listener = eshkol_unix_socket_listen(0, g_path);
+    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(listener > 0);
     pthread_t canceller;
     CHECK(pthread_create(&canceller, NULL, cancel_after, &listener) == 0);
-    int64_t accepted = eshkol_unix_socket_accept(listener, 5000);
+    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 5000);
     pthread_join(canceller, NULL);
-    CHECK(accepted == ESHKOL_UNIX_SOCKET_ECANCELED);
-    eshkol_unix_socket_close(listener);
+    CHECK(accepted == ESHKOL_UNIX_STREAM_SOCKET_ECANCELED);
+    eshkol_unix_stream_socket_close(listener);
 }
 
 static void scenario_nul_and_large_payload(const char *scratch_dir) {
     make_path(scratch_dir, "large");
-    int64_t listener = eshkol_unix_socket_listen(0, g_path);
+    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(listener > 0);
-    int64_t client = eshkol_unix_socket_connect(0, g_path, 1000);
+    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
     CHECK(client > 0);
-    int64_t accepted = eshkol_unix_socket_accept(listener, 1000);
+    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
     CHECK(accepted > 0);
     size_t size = 16u * 1024u * 1024u + 37u;
     unsigned char *payload = malloc(size);
@@ -176,7 +176,7 @@ static void scenario_nul_and_large_payload(const char *scratch_dir) {
         payload[i] = (unsigned char)((i % 7 == 0) ? 0 : (i * 31));
     size_t written = 0;
     while (written < size) {
-        int64_t n = eshkol_unix_socket_write(client, payload + written,
+        int64_t n = eshkol_unix_stream_socket_write(client, payload + written,
             (int64_t)(size - written));
         CHECK(n >= 0);
         written += (size_t)n;
@@ -185,7 +185,7 @@ static void scenario_nul_and_large_payload(const char *scratch_dir) {
     CHECK(got != NULL);
     size_t read_total = 0;
     while (read_total < size) {
-        int64_t n = eshkol_unix_socket_read(accepted, got + read_total,
+        int64_t n = eshkol_unix_stream_socket_read(accepted, got + read_total,
             (int64_t)(size - read_total));
         CHECK(n >= 0);
         read_total += (size_t)n;
@@ -193,34 +193,34 @@ static void scenario_nul_and_large_payload(const char *scratch_dir) {
     CHECK(memcmp(payload, got, size) == 0);
     free(payload);
     free(got);
-    eshkol_unix_socket_close(accepted);
-    eshkol_unix_socket_close(client);
-    eshkol_unix_socket_close(listener);
+    eshkol_unix_stream_socket_close(accepted);
+    eshkol_unix_stream_socket_close(client);
+    eshkol_unix_stream_socket_close(listener);
 }
 
 static void scenario_descriptor_leak(const char *scratch_dir) {
     make_path(scratch_dir, "descriptor-count");
     for (int i = 0; i < 1000; ++i) {
         unlink(g_path);
-        int64_t listener = eshkol_unix_socket_listen(0, g_path);
+        int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
         CHECK(listener > 0);
-        int64_t client = eshkol_unix_socket_connect(0, g_path, 1000);
+        int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
         CHECK(client > 0);
-        int64_t accepted = eshkol_unix_socket_accept(listener, 1000);
+        int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
         CHECK(accepted > 0);
-        CHECK(eshkol_unix_socket_close(accepted) == 0);
-        CHECK(eshkol_unix_socket_close(client) == 0);
-        CHECK(eshkol_unix_socket_close(listener) == 0);
+        CHECK(eshkol_unix_stream_socket_close(accepted) == 0);
+        CHECK(eshkol_unix_stream_socket_close(client) == 0);
+        CHECK(eshkol_unix_stream_socket_close(listener) == 0);
     }
 }
 
 static void scenario_path_lifecycle(const char *scratch_dir) {
     make_path(scratch_dir, "path-lifecycle");
-    int64_t listener = eshkol_unix_socket_listen(0, g_path);
+    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
     CHECK(listener > 0);
     struct stat st;
     CHECK(stat(g_path, &st) == 0);
-    CHECK(eshkol_unix_socket_close(listener) == 0);
+    CHECK(eshkol_unix_stream_socket_close(listener) == 0);
     CHECK(stat(g_path, &st) != 0); /* unlinked on close */
 
     /* A stale path left on disk with nothing listening must be refused,
@@ -233,8 +233,8 @@ static void scenario_path_lifecycle(const char *scratch_dir) {
     strncpy(addr.sun_path, g_path, sizeof(addr.sun_path) - 1);
     CHECK(bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
     close(fd); /* leaves a stale path: bound once, never listened on */
-    int64_t second = eshkol_unix_socket_listen(0, g_path);
-    CHECK(second == ESHKOL_UNIX_SOCKET_EEXIST);
+    int64_t second = eshkol_unix_stream_socket_listen(0, g_path);
+    CHECK(second == ESHKOL_UNIX_STREAM_SOCKET_EEXIST);
     unlink(g_path);
 }
 

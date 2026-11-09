@@ -1,4 +1,4 @@
-# `agent.unix_socket` — Unix-Domain Stream Sockets (blueprint)
+# `agent.unix_stream_socket` — Unix-Domain Stream Sockets (blueprint)
 
 **Status: Planned for v1.4.0.** This page is a skeleton for the paired build
 described in Selene `apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md`
@@ -9,26 +9,26 @@ currently raises `"Planned for v1.4.0"` from every operation, via the
 scaffold in `lib/core/unix_socket_stream_stub.c`.
 
 ```scheme
-(require agent.unix_socket)
+(require agent.unix_stream_socket)
 ```
 
 Source: `lib/agent/unix_socket.esk`. C header: `inc/eshkol/core/unix_socket_stream.h`.
-C symbols: `eshkol_unix_socket_*`.
+C symbols: `eshkol_unix_stream_socket_*`.
 
 ## Surface (blueprint)
 
 | Operation | Contract |
 |---|---|
-| `unix-socket-listen path` | Bind and listen on a filesystem path on the existing event loop. Owns the path: close unlinks it. Refuses a pre-existing, non-stale path rather than unlinking and reusing it. |
-| `unix-socket-accept listener deadline-ms` | Accept one connection within one bounded, monotonic deadline. Zero makes one nonblocking pass and never sleeps. |
-| `unix-socket-connect path deadline-ms` | Connect within one monotonic deadline shared across retries. |
-| `unix-socket-read! id buffer start count` | Byte-counted nonblocking read into a caller bytevector. Returns a result vector distinguishing data, EOF, would-block, and an operation-labelled error. NUL bytes and payloads over 16 MiB survive unmodified; reads may be partial. |
-| `unix-socket-write! id buffer start count` | Byte-counted nonblocking write, possibly partial. A closed peer reports an operation-labelled error; SIGPIPE is suppressed by the write path itself. |
-| `unix-socket-cancel! id` | Request cancellation of an outstanding accept, connect, read, or write. |
-| `unix-socket-close! id` | Close a listener, an accepted peer, or an outbound connection exactly once. A listener close unlinks the path it bound. |
+| `unix-stream-socket-listen path` | Bind and listen on a filesystem path on the existing event loop. Owns the path: close unlinks it. Refuses a pre-existing, non-stale path rather than unlinking and reusing it. |
+| `unix-stream-socket-accept listener deadline-ms` | Accept one connection within one bounded, monotonic deadline. Zero makes one nonblocking pass and never sleeps. |
+| `unix-stream-socket-connect path deadline-ms` | Connect within one monotonic deadline shared across retries. |
+| `unix-stream-socket-read! id buffer start count` | Byte-counted nonblocking read into a caller bytevector. Returns a result vector distinguishing data, EOF, would-block, and an operation-labelled error. NUL bytes and payloads over 16 MiB survive unmodified; reads may be partial. |
+| `unix-stream-socket-write! id buffer start count` | Byte-counted nonblocking write, possibly partial. A closed peer reports an operation-labelled error; SIGPIPE is suppressed by the write path itself. |
+| `unix-stream-socket-cancel! id` | Request cancellation of an outstanding accept, connect, read, or write. |
+| `unix-stream-socket-close! id` | Close a listener, an accepted peer, or an outbound connection exactly once. A listener close unlinks the path it bound. |
 
-Result accessors: `unix-socket-read-status`/`-count`/`-error` and
-`unix-socket-write-status`/`-count`/`-error`, mirroring the subprocess stream
+Result accessors: `unix-stream-socket-read-status`/`-count`/`-error` and
+`unix-stream-socket-write-status`/`-count`/`-error`, mirroring the subprocess stream
 contract in [subprocess](subprocess.md).
 
 ## Ownership rules (blueprint)
@@ -42,7 +42,7 @@ Following the same pattern as the `PROCESS` session in
   compile-time linear handles will consume.
 - A listener owns the filesystem path it bound; its close unlinks that path.
   A stale path left on disk with nothing listening must be refused by a new
-  `unix-socket-listen`, never silently unlinked and reused.
+  `unix-stream-socket-listen`, never silently unlinked and reused.
 - Close with an active borrow returns busy, the same as every other leased
   resource; release the borrow before closing.
 - A closed peer on the write side is reported through the byte-counted
@@ -71,7 +71,7 @@ suite until the core implementation lands):
 9. socket-path lifecycle (unlink on close, refusal on an existing stale path)
 10. VM: an explicit unsupported result
 
-A small check in the default suite (`agent-unix-socket-stub-contract`)
+A small check in the default suite (`agent-unix-stream-socket-stub-contract`)
 confirms these cases are registered and that every scaffold entry point
 still reports the planned result.
 

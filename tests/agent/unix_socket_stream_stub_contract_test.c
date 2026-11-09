@@ -31,15 +31,15 @@ static void check(int ok, const char *expr, int line) {
 
 static void check_stub_contract(void) {
     char buf[4] = {0};
-    CHECK(eshkol_unix_socket_listen(0, "/eshkol-scaffold/does-not-exist.sock")
-          == ESHKOL_UNIX_SOCKET_PLANNED);
-    CHECK(eshkol_unix_socket_accept(1, 0) == ESHKOL_UNIX_SOCKET_PLANNED);
-    CHECK(eshkol_unix_socket_connect(0, "/eshkol-scaffold/does-not-exist.sock", 0)
-          == ESHKOL_UNIX_SOCKET_PLANNED);
-    CHECK(eshkol_unix_socket_read(1, buf, sizeof(buf)) == ESHKOL_UNIX_SOCKET_PLANNED);
-    CHECK(eshkol_unix_socket_write(1, buf, sizeof(buf)) == ESHKOL_UNIX_SOCKET_PLANNED);
-    CHECK(eshkol_unix_socket_cancel(1) == ESHKOL_UNIX_SOCKET_PLANNED);
-    CHECK(eshkol_unix_socket_close(1) == ESHKOL_UNIX_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_listen(0, "/eshkol-scaffold/does-not-exist.sock")
+          == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_accept(1, 0) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_connect(0, "/eshkol-scaffold/does-not-exist.sock", 0)
+          == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_read(1, buf, sizeof(buf)) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_write(1, buf, sizeof(buf)) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_cancel(1) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_close(1) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
 }
 
 static int count_pending_tests(const char *ctest_bin, const char *build_dir) {
