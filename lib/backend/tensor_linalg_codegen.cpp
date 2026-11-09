@@ -241,9 +241,19 @@ TensorCodegen::ExactLinalgDispatch TensorCodegen::beginExactLinalgDispatch(
     // Only a tagged operand can name a tensor at all.
     if (!a_tag && !b_tag) return d;
     llvm::IRBuilder<>& builder = ctx_.builder();
+    // Entry-block slots, so a call inside a loop does not grow the stack.
+    auto entry_slot = [&](llvm::Value* value, const char* slot_name) -> llvm::Value* {
+        llvm::Function* f = builder.GetInsertBlock()->getParent();
+        llvm::IRBuilderBase::InsertPoint ip = builder.saveIP();
+        builder.SetInsertPoint(&f->getEntryBlock(), f->getEntryBlock().begin());
+        llvm::AllocaInst* slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, slot_name);
+        builder.restoreIP(ip);
+        if (value) builder.CreateStore(value, slot);
+        return slot;
+    };
     llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
-    llvm::Value* a_slot = a_tag ? ctx_.spillTaggedToEntrySlot(a_tagged, "linalg_exact_a") : null_ptr;
-    llvm::Value* b_slot = b_tag ? ctx_.spillTaggedToEntrySlot(b_tagged, "linalg_exact_b") : null_ptr;
+    llvm::Value* a_slot = a_tag ? entry_slot(a_tagged, "linalg_exact_a") : null_ptr;
+    llvm::Value* b_slot = b_tag ? entry_slot(b_tagged, "linalg_exact_b") : null_ptr;
     llvm::FunctionCallee test_fn = ctx_.module().getOrInsertFunction(
         "eshkol_linalg_operands_exact",
         llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, false));
@@ -258,8 +268,7 @@ TensorCodegen::ExactLinalgDispatch TensorCodegen::beginExactLinalgDispatch(
 
     builder.SetInsertPoint(exact_bb);
     emitSetErrorLocation();
-    llvm::Value* out_slot = ctx_.spillTaggedToEntrySlot(
-        llvm::UndefValue::get(ctx_.taggedValueType()), "linalg_exact_out");
+    llvm::Value* out_slot = entry_slot(nullptr, "linalg_exact_out");
     llvm::FunctionCallee exact_fn = ctx_.module().getOrInsertFunction(
         "eshkol_exact_linalg_tagged",
         llvm::FunctionType::get(ctx_.voidType(),
