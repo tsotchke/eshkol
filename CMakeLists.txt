@@ -14560,6 +14560,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
     endforeach()
 endif()
 
+# The bytecode VM has no hosted socket leases: compiling core.net for it is
+# refused with an explicit message rather than producing a partial program.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME net_vm_refusal COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm
+        --emit-eskb "${CMAKE_CURRENT_BINARY_DIR}/net_vm_refusal.eskb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/net_vm_refusal.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(net_vm_refusal PROPERTIES TIMEOUT 120 LABELS "network;vm"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "core.net and core.tls are not supported by the bytecode VM")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
     add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
         lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
