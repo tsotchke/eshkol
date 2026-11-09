@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `call-with-output-file` close their port on a raise or a continuation
   escape as well as on return. One contract table describes every handle
   operation (ADR-0056, `docs/reference/language/linear-handles.md`).
+- **Differentiation nests to any depth in every mode.** Every pass is a level
+  with a 64-bit perturbation tag that is never reused, so nesting holds however
+  many passes a program has run. A vector-point `gradient` inside a live pass
+  is computed as forward columns, an outermost reverse pass over an inner
+  forward pass that captures a computed value is taken as forward columns, and
+  a curried `gradient` under a reverse pass linearises against each component
+  of its point. Forward over reverse, reverse over forward and reverse over
+  reverse over reverse answer exactly to depth 4 and beyond, with exact inputs
+  exact through every level, on the JIT, AOT and the VM
+  (`tests/ad/nested_depth_matrix_test.esk`, ADR-0057).
 
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix

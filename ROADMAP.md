@@ -911,11 +911,14 @@ under the same discipline that made `Qubit` linear.
 - [ ] The self-hosted mesh becomes the primary CI executor (#529):
       `ESHKOL_MESH_PRIMARY` routes the Linux contexts to self-hosted runners,
       with the hosted lanes as the declared fallback
-- [ ] Nested-differentiation carrier rewrite (ledger SW-154). The v1.3.5
+- [x] Nested-differentiation carrier rewrite. The v1.3.5
       carrier holds exactly one first-order companion, so two enclosing
       differentiation levels over an order-2 inner pass raise a diagnostic
       rather than answer; the rewrite is what lifts that restriction and
-      retires the guard
+      retires the guard. Shipped in v1.4.0-connection: every pass is a level
+      with a 64-bit perturbation tag, forward and reverse passes nest to any
+      depth in every combination, and the guard is retired (ADR-0027,
+      ADR-0057; `tests/ad/nested_depth_matrix_test.esk` on JIT, AOT and VM)
 - [ ] W5 interop wave 2: exactness across the Python/NumPy boundary and a
       silent-demotion CI gate; the definition-of-done rule (external-oracle
       case + Python one-liner per new AD/quantum feature) goes live
@@ -991,6 +994,11 @@ under the same discipline that made `Qubit` linear.
 
 ## v1.4.1 — the ABI release (target: 2026-11-06) - PLANNED
 
+- [ ] Higher-order differentiation through tensor operations on the VM: the VM tensor carrier
+      holds first-order tangents only, so the VM refuses a higher-order derivative that passes
+      through a tensor operation (by name), while JIT and AOT answer it (ADR-0057). Planned for v1.4.1:
+      a VM tensor carrier with nested levels, the tensor-point nesting tests on the VM, and the
+      browser VM rebuilt with 64-bit epochs
 - [ ] OALR ABI v2 Phase B: migrate the allocator, codegen sites and runtime
       consumers to the 32-byte header (layout descriptors, escape ledgers,
       transfer capsules). Phase A — the header definition, both layouts

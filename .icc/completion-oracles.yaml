@@ -2198,6 +2198,17 @@ oracles:
         severity: high
         label: 'SymPy differential oracle agrees with every exact-AD corpus case under JIT and AOT'
         action: ./scripts/run_sympy_exact_ad_oracle_gate.sh
+      # ADR-0027 / ADR-0057 (ROADMAP v1.4.0 nested-differentiation carrier
+      # row): differentiation nests to depth 4 in every mode -- forward,
+      # reverse and mixed -- with exact Taylor coefficients, confusion controls
+      # and more than 2^16 passes in one process, on JIT, AOT and the VM.
+      - runtime_event:
+          event_kinds: [ad_exact]
+          event_names: ["ad_nested_every_mode"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Nested differentiation in every mode: depth-4 nests of derivative/derivative-n/taylor/gradient/jacobian/hessian, forward over reverse, reverse over forward and reverse over reverse over reverse, curried gradients at computed points, exact Taylor coefficients, perturbation-confusion controls and more than 65536 passes, 64/64 checks on each of JIT, AOT and the VM (tests/ad/nested_depth_matrix_test.esk)'
+        action: ./scripts/run_ad_nested_gate.sh
 
       # ESH-0011 (workplan Tier 0, package P2) — the async foundation every
       # Tier 1 networking primitive registers its descriptors against. Real

@@ -2401,13 +2401,13 @@ class EshkolRepl {
                 eshkol_taylor_lift_ad_node:     () => {},
                 eshkol_taylor_project_forward_tangent: () => 0,
                 // ESH-0402 nested-AD carrier composition (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, tagged*)
-                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, tagged*)
+                //   i64  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, tagged*)
+                //   void eshkol_ad_nested_extract(arena*, tagged*, i64, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
-                eshkol_ad_nested_seed:          () => 0,
+                eshkol_ad_nested_seed:          () => 0n,
                 eshkol_ad_nested_extract:       () => {},
                 eshkol_ad_nested_unsupported:   () => {},
                 eshkol_ad_curried_gradient_unsupported: () => {},
