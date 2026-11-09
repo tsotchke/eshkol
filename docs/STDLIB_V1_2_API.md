@@ -1807,6 +1807,8 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.manifold` | `lib/core/manifold.esk` | Yes | Constant-curvature Riemannian manifolds: exp/log maps, geodesic distance, metric, Christoffel, Ricci, Riemann |
 | `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport/vector clocks, counters, OR-Set, LWW register/map, RGA sequence |
 | `core.msgpack` | `lib/core/msgpack.esk` | **No** — `(require core.msgpack)` | MessagePack bytevector encoder/decoder substrate |
+| `core.protobuf` | `lib/core/protobuf.esk` | **No** — `(require core.protobuf)` | Protocol Buffers (proto3): `.proto` parser, schema compiler, generated encoders/decoders |
+| `core.utf8` | `lib/core/utf8.esk` | **No** — `(require core.utf8)` | Strict UTF-8 validation shared by the wire formats |
 | `core.memory` | `lib/core/memory.esk` | **No** — `(require core.memory)` | Append-only, content-addressed, hash-chained, CRDT-merged event log |
 | `core.memory_store` | `lib/core/memory_store.esk` | **No** — `(require core.memory_store)` | Durable fsync-on-append file backing for a `core.memory` log |
 
@@ -2167,6 +2169,35 @@ arrays. Array decode returns lists. Arbitrary vectors are intentionally not an
 encode surface yet; vector numeric-slot lowering is tracked separately, so the
 wire-format module avoids a lossy vector path until that compiler/runtime
 boundary is fixed.
+
+Text payloads are validated by `core.utf8` (`utf8-require-valid`), the strict
+UTF-8 check shared with `core.protobuf`.
+
+#### B.15a `core.protobuf`
+
+```scheme
+(require core.protobuf)
+```
+
+Exports (`protobuf.esk`):
+
+```scheme
+(provide
+  protobuf-schema protobuf-schema? protobuf-schema-from-proto protobuf-parse-proto
+  protobuf-message protobuf-message? protobuf-message-type
+  protobuf-message-entries protobuf-message-unknown
+  protobuf-ref protobuf-has?
+  protobuf-encode protobuf-decode protobuf-encoder protobuf-decoder
+  protobuf-enum-number protobuf-enum-name)
+```
+
+Protocol Buffers (proto3) over bytevectors. Schemas are Eshkol data
+(`(message NAME (field N name TYPE) ...)`, `(enum NAME (VALUE n) ...)`) or are
+parsed from proto3 `.proto` text; `protobuf-encoder`/`protobuf-decoder` return
+the codec closures for one message type. All scalar types, packed and unpacked
+repeated fields, maps, oneof, explicit and implicit presence, message merging
+and unknown-field preservation follow the proto3 rules; malformed input raises
+a catchable error. Full reference: `docs/reference/stdlib/protobuf.md`.
 
 ### B.16 `core.memory`
 

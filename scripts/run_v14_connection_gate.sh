@@ -436,9 +436,19 @@ probe_run v14_cas_merkle_roundtrip \
     '"$ESHKOL_RUN" -r tests/v1_2_edge_cases/merkle_test.esk' \
     '^Failed: 0$'
 
-# #163 Protocol Buffers requires a schema-driven proto3 encode/decode test.
-probe_unverified v14_protobuf_roundtrip \
-    'requires a proto3 schema parser/compiler and generated encoder/decoder round-trip test'
+# #163 Protocol Buffers: lib/core/protobuf.esk parses the proto3 message
+# subset of .proto text into schema forms, compiles them, and returns
+# encoder/decoder closures per message type. tests/v1_2_edge_cases/
+# protobuf_test.esk checks hand-derived spec wire bytes for every scalar
+# type, packed/unpacked repeated, maps, oneof, presence, merging, unknown-
+# field preservation and malformed-input refusal; protobuf_proto_test.esk
+# parses .proto text and round-trips through the generated codecs. Both run
+# on JIT, O1 AOT, VM source and ESKB. protobuf_wire_test checks the native
+# wire primitives shared by the ONNX writer and the PJRT client against the
+# same vectors.
+probe_run v14_protobuf_roundtrip \
+    'Protocol Buffers (#163): proto3 .proto parser and generated codecs, exact spec wire bytes, unknown-field preservation and malformed-input refusal on four routes, plus the native wire primitives' \
+    'python3 scripts/run_wire_format_gate.py --suite protobuf --runner "$ESHKOL_RUN" --vm-runner "$VM_RUN" --native-test "$BUILD_DIR_PATH/protobuf_wire_test" --all-routes'
 
 # ─────────────────────────────────────────────────────────────────
 # Linear resource types + borrow pattern (docs/design/adr/0004-type-
