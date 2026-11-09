@@ -786,16 +786,22 @@ under the same discipline that made `Qubit` linear.
       series over the exact rationals, consumed by the `core.pde.ns-residual`
       oracle. Remaining: `GF(p)`, the coefficient norm on series values, and
       polynomial-valued duals
-- [ ] Exact linear algebra, remainder: an exact tensor element type.
-      **Partially SHIPPED in v1.3.5-evolve:** `core.exact_linalg` provides
-      matrix multiply, transpose, fraction-free determinant, solve, inverse,
-      rank, nullspace and torus averaging over the scalar exact tower, staying
-      exact under R7RS numeric contagion whenever every input does. Still open:
-      `lib/math.esk`'s `det`/`inv` seed inexact constants,
-      `lib/core/linear_solve.cpp` and the BLAS entry points are f64-only, and
-      tensors are f64-backed, so an exact system over tensor storage must still
-      be written out on Scheme vectors. Both items are used step by step in
+- [x] Exact linear algebra: an exact tensor element type - SHIPPED in
+      v1.4.0-connection (ADR-0055). Tensors of dtype `exact` carry exact
+      rationals of the scalar tower in tensor storage (`(tensor-cast X 'exact)`,
+      `(make-tensor shape fill :dtype 'exact)`); element access, elementwise
+      arithmetic, `matmul`, `transpose`, `tensor-sum`, `tensor-det`,
+      `tensor-inverse`, `tensor-solve` and `linear-solve` stay exact when every
+      operand is exact (fraction-free elimination; singularity decided exactly),
+      mixed exact/inexact operands follow R7RS contagion by operand dtype, and
+      the f64 kernels (BLAS, the f64 LU family, `linear_solve.cpp`) are never
+      handed an exact tensor: linear algebra dispatches it to the exact path and
+      every other f64-only kernel refuses it by name. `lib/math.esk`'s `det`/`inv`/`solve`
+      seed exact constants, and `core.exact_linalg` (v1.3.5) accepts exact
+      tensors and cross-checks the native kernels. The Navier-Stokes steps of
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+      that solve exact systems run on exact tensors. Exact tensors on the
+      bytecode VM are planned for v1.4.1 (the VM refuses the dtype explicitly)
 - [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy
       oracle pilot on the exact-AD surface
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,

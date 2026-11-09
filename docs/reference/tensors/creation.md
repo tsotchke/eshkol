@@ -168,6 +168,22 @@ Tensors carry a dtype tag. The default is `f64`. `tensor-cast` converts between
 (tensor-dtype (tensor-cast t 'f64))     ;; => f64
 ```
 
+**Exact elements.** `(tensor-cast X 'exact)` builds an exact tensor (ADR-0055):
+each element is an exact rational of the scalar tower, kept whole, and `X` may
+be a tensor, a list, a vector or a rectangular nest of them. A finite double
+converts as `exact` converts it. `(make-tensor shape fill :dtype 'exact)` fills
+with an exact value. `(tensor-dtype t)` is `exact`, and `(tensor-cast t 'f64)`
+converts back. The kernels with an exact rule and the contagion rules are listed in
+[exact_linalg.md](../stdlib/exact_linalg.md#exact-tensors); every other kernel
+refuses an exact tensor by name.
+
+```scheme
+(define q (tensor-cast (list 1/3 2/7) 'exact))
+(tensor-dtype q)                        ;; => exact
+(tensor-ref q 0)                        ;; => 1/3
+(tensor-ref (tensor 1/3) 0)             ;; => 0.3333333333333333 (the default f64 tensor)
+```
+
 **Status.** The dtype metadata and `tensor-cast` tagging are wired for all four
 types and round-trip correctly. The reduced-precision **software float paths**
 (sf64 kernels) exercised by the GPU pipeline are covered by the

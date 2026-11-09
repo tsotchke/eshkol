@@ -37,7 +37,11 @@ Returns a fresh mutable `make-vector` copy of tensor/vector `T` (used internally
 ```
 
 ### `(det M n)`
-Determinant of the `n`×`n` matrix `M` (flat, row-major) via Gaussian elimination with partial pivoting, O(n³). Returns a `double`. A singular matrix (pivot below `epsilon`) yields `0.0`.
+Determinant of the `n`×`n` matrix `M` (flat, row-major: a vector, an f64 tensor or an exact tensor) via Gaussian elimination with partial pivoting, O(n³). The elimination follows R7RS contagion: its seeds are exact, so an exact matrix (integers and rationals, in a vector or an exact tensor) gives an exact determinant, and an inexact matrix gives a `double`. A singular matrix yields `0` when exact (an exact zero pivot) and `0.0` when inexact (a pivot below `epsilon`).
+
+```scheme
+(display (det (vector 4 3 6 3) 2)) (newline)   ;; -6, exact
+```
 
 ```scheme
 (display (det #(4.0 3.0 6.0 3.0) 2)) (newline)
@@ -47,7 +51,7 @@ Determinant of the `n`×`n` matrix `M` (flat, row-major) via Gaussian eliminatio
 ```
 
 ### `(inv M n)`
-Inverse of the `n`×`n` matrix `M` via Gauss-Jordan elimination. Returns the inverse as a flat vector, or `#f` if singular.
+Inverse of the `n`×`n` matrix `M` via Gauss-Jordan elimination. Returns the inverse as a flat vector, or `#f` if singular. The identity it starts from is exact when every entry of `M` is exact, so an exact matrix has an exact inverse (`(inv (vector 4 3 6 3) 2)` is `#(-1/2 1/2 1 -2/3)`); otherwise the inverse is inexact.
 
 ```scheme
 (display (inv #(4.0 7.0 2.0 6.0) 2)) (newline)
@@ -59,7 +63,7 @@ Inverse of the `n`×`n` matrix `M` via Gauss-Jordan elimination. Returns the inv
 ```
 
 ### `(solve A b n)`
-Solve `A x = b` for the `n`-vector `x` (LU / Gaussian elimination with partial pivoting). `A` is flat `n`×`n`, `b` is length `n`. Returns `x`, or `#f` if singular.
+Solve `A x = b` for the `n`-vector `x` (LU / Gaussian elimination with partial pivoting). `A` is flat `n`×`n`, `b` is length `n`. Returns `x`, or `#f` if singular. Exact when `A` and `b` are exact; a pivot is zero exactly when it is exact, and below `epsilon` when it is inexact. For exact tensor storage and fraction-free elimination see `tensor-solve` in [exact_linalg.md](exact_linalg.md#exact-tensors).
 
 ```scheme
 (display (solve #(2.0 1.0 1.0 3.0) #(3.0 5.0) 2)) (newline)
