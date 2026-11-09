@@ -3,7 +3,7 @@
 ;;
 ;; Every differentiation pass is a level with its own perturbation tag
 ;; (ADR-0027); tags are 64-bit and never reused, so the order of two tags is
-;; the order their passes opened (ADR-0055). A vector-point operator inside a
+;; the order their passes opened (ADR-0057). A vector-point operator inside a
 ;; live pass is forward columns, and an inner pass that meets an enclosing
 ;; reverse pass's tape nodes records its exact local linearisation against
 ;; those nodes. This file checks the consequences:

@@ -7451,7 +7451,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES TIMEOUT 120
                 PASS_REGULAR_EXPRESSION "site scalar Hessian PASS"
                 FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
-        # ADR-0027 / ADR-0055: nested differentiation to depth 4 in every
+        # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every
         # mode (forward, reverse and mixed), confusion controls, exact Taylor
         # coefficients and more than 2^16 passes in one process, on the native
         # JIT, AOT and the bytecode VM.

@@ -184,7 +184,7 @@ struct VmDual {
      * existing arithmetic dispatch remains one closed carrier family. */
     uint32_t kind;         /* VM_DUAL_KIND_SCALAR or VM_DUAL_KIND_TAYLOR */
     uint32_t order;        /* highest coefficient index for a Taylor tower */
-    uint64_t epoch;        /* perturbation tag, never reused (ADR-0055); 0 for scalar duals */
+    uint64_t epoch;        /* perturbation tag, never reused (ADR-0057); 0 for scalar duals */
     int32_t primal_sign;   /* exact sign hint when the double primal underflows */
     double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
     VmRational** exact_coeff; /* optional exact c[0..order] parallel array */

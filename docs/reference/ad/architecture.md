@@ -495,7 +495,7 @@ combine only when their tags are equal. That is what makes perturbation
 confusion impossible: the inner pass of
 `(derivative (lambda (x) (* x (derivative (lambda (y) (+ x y)) 1.0))) 1.0)`
 cannot absorb the outer perturbation, and the answer is `1`, not `2`.
-[ADR-0055](../../design/adr/0055-nested-differentiation-in-every-mode.md)
+[ADR-0057](../../design/adr/0057-nested-differentiation-in-every-mode.md)
 records the tag width and the route that carries it from seed to extraction.
 
 ---
@@ -609,7 +609,7 @@ pass's variables answers like a point made of them:
 
 ```scheme
 (define g3 (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0)))))
-(jacobian (lambda (v) (g3 (vector (* 2.0 (vref v 0))))) (vector 1.0))   ;; => #((24))
+(jacobian (lambda (v) (g3 (vector (* 2.0 (vref v 0))))) (vector 1.0))   ;; => #((24.0))
 ```
 
 ## Reverse passes inside and around forward passes
@@ -617,7 +617,7 @@ pass's variables answers like a point made of them:
 The reverse tape stores one raw double per node, so it can hold neither an
 enclosing forward perturbation nor a carrier inside its point. Two rules keep
 every composition exact
-([ADR-0055](../../design/adr/0055-nested-differentiation-in-every-mode.md)):
+([ADR-0057](../../design/adr/0057-nested-differentiation-in-every-mode.md)):
 
 - **Inside a live pass, a vector-point operator is forward columns.** When a
   forward pass, a tower or a level is live, or the point carries a carrier,

@@ -774,7 +774,7 @@ under the same discipline that made `Qubit` linear.
       retires the guard. Shipped in v1.4.0-connection: every pass is a level
       with a 64-bit perturbation tag, forward and reverse passes nest to any
       depth in every combination, and the guard is retired (ADR-0027,
-      ADR-0055; `tests/ad/nested_depth_matrix_test.esk` on JIT, AOT and VM)
+      ADR-0057; `tests/ad/nested_depth_matrix_test.esk` on JIT, AOT and VM)
 - [ ] W5 interop wave 2: exactness across the Python/NumPy boundary and a
       silent-demotion CI gate; the definition-of-done rule (external-oracle
       case + Python one-liner per new AD/quantum feature) goes live

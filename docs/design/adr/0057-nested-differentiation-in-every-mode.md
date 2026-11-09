@@ -13,7 +13,7 @@ sources:
   - lib/backend/vm_native.c
   - tests/ad/nested_depth_matrix_test.esk
 ---
-# ADR-0055: Nested differentiation in every mode
+# ADR-0057: Nested differentiation in every mode
 
 **Status:** Proposed
 **Builds on:** [ADR-0027](0027-recursive-taylor-level-carrier.md) (one recursive

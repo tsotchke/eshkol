@@ -819,7 +819,7 @@ Forward and reverse passes nest in every combination too. A vector-point
 `gradient`, `jacobian` or `hessian` inside a live pass is computed as forward
 columns, each a level of the enclosing passes, and an inner pass that meets an
 enclosing reverse pass's values records its exact linearisation against them
-([ADR-0055](../design/adr/0055-nested-differentiation-in-every-mode.md)):
+([ADR-0057](../design/adr/0057-nested-differentiation-in-every-mode.md)):
 
 ```scheme
 (define (w4 w) (* (vref w 0) (vref w 0) (vref w 0) (vref w 0)))

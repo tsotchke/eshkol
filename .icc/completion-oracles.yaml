@@ -2173,7 +2173,7 @@ oracles:
         label: P11 tower-based user numerics converge on ODE/root/inversion examples
         action: ./scripts/run_ad_numerics_gate.sh
 
-      # ADR-0027 / ADR-0055 (ROADMAP v1.4.0 nested-differentiation carrier
+      # ADR-0027 / ADR-0057 (ROADMAP v1.4.0 nested-differentiation carrier
       # row): differentiation nests to depth 4 in every mode -- forward,
       # reverse and mixed -- with exact Taylor coefficients, confusion controls
       # and more than 2^16 passes in one process, on JIT, AOT and the VM.

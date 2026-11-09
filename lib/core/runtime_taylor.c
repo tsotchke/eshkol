@@ -3117,7 +3117,7 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
 /* seeding, extraction, differentiation (called from codegen for the API)   */
 /* ----------------------------------------------------------------------- */
 
-/* Monotonic perturbation-tag counter (ADR-0055). 0 is reserved for "no
+/* Monotonic perturbation-tag counter (ADR-0057). 0 is reserved for "no
  * active perturbation" (scalars / constants); every fresh differentiation
  * context gets the next value. The counter is 64 bits wide and never wraps in
  * practice (2^64 passes), so a tag is never reused within a process and the
@@ -3619,7 +3619,7 @@ void eshkol_ad_jacobian_store_column(arena_t* arena, eshkol_tagged_value_t* jac,
 
 /**
  * @brief Store component `j` of a gradient computed as forward columns
- *        (ADR-0055) into the n-element gradient held in `*grad`, allocating it
+ *        (ADR-0057) into the n-element gradient held in `*grad`, allocating it
  *        on the first component.
  *
  * The gradient is a rank-1 tensor of tagged numbers, the same representation

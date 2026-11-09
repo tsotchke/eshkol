@@ -122,7 +122,7 @@ to the same pass ([ADR-0027](../../design/adr/0027-recursive-taylor-level-carrie
 | Complex evaluation points (holomorphic derivatives) | Exact, nested with `derivative-n` and `taylor` too |
 | `gradient`, `hessian` and `jacobian` inside a live pass, and any depth of `derivative` | Exact (each is forward columns, a level of the enclosing passes; a nested `jacobian` or vector `gradient` is a tensor of tagged numbers) |
 | Reverse over reverse over reverse, to any depth | Exact |
-| An outermost `gradient`/`jacobian` over an inner pass that captures a value it computed | Exact (taken as forward columns, [ADR-0055](../../design/adr/0055-nested-differentiation-in-every-mode.md)) |
+| An outermost `gradient`/`jacobian` over an inner pass that captures a value it computed | Exact (taken as forward columns, [ADR-0057](../../design/adr/0057-nested-differentiation-in-every-mode.md)) |
 | A curried `gradient` under a reverse pass, at a point computed from that pass's variables | Exact (linearised against each tape-node component) |
 | More than 65536 passes in one process | Exact (perturbation tags are 64-bit and never reused) |
 

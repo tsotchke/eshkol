@@ -62,7 +62,7 @@ PROFILES = {
         "jit_lib": True,
         "aot_receipt": True,
     },
-    # ADR-0027 / ADR-0055: nested differentiation to depth 4 in every mode.
+    # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every mode.
     "nested": {
         "tests": {"nested_depth_matrix_jit", "nested_depth_matrix_aot",
                   "nested_depth_matrix_vm"},

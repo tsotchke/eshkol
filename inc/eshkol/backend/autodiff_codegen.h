@@ -700,11 +700,11 @@ public:
     llvm::Value* emitNestedHessian(llvm::Function* func_ptr, llvm::Value* closure_val,
                                    const eshkol_ast* fn_ast, uint64_t arity,
                                    llvm::Value* point_tagged);
-    /** ADR-0055: the gradient at a collection point as forward columns (levels when nested). */
+    /** ADR-0057: the gradient at a collection point as forward columns (levels when nested). */
     llvm::Value* emitForwardColumnGradient(llvm::Function* func_ptr, llvm::Value* closure_val,
                                            const eshkol_ast* fn_ast, uint64_t arity,
                                            llvm::Value* point_tagged);
-    /** ADR-0055: i1, a differentiation pass is live or the point carries a carrier. */
+    /** ADR-0057: i1, a differentiation pass is live or the point carries a carrier. */
     llvm::Value* emitPassLiveAt(llvm::Value* point_tagged);
     /** Selects which tower-API extraction mode a taylorApiCore call performs. */
     enum class TowerMode { NONE, DERIV_N, COEFFS };

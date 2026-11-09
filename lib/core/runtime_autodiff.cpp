@@ -489,7 +489,7 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     // pass is reverse-over-forward. Mark it before every early-out (no seed
     // published, no dependency) so a reverse pass's snapshot delta detects it
     // even when this component's partial happens to be zero; the reverse pass
-    // then takes its gradient as forward columns (ADR-0055) or per-component
+    // then takes its gradient as forward columns (ADR-0057) or per-component
     // replay.
     __eshkol_ad_mixed_record_count++;
     ad_node_t* seed = (ad_node_t*)__ad_active_seed_node;
@@ -533,7 +533,7 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     return result;
 }
 
-// ADR-0055: record an inner pass's exact local linearisation against several
+// ADR-0057: record an inner pass's exact local linearisation against several
 // tape nodes of the active (enclosing) reverse tape:
 //
 //     result = value + sum_k partials[k] * (nodes[k] - nodes[k]->value)

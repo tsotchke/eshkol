@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of its point. Forward over reverse, reverse over forward and reverse over
   reverse over reverse answer exactly to depth 4 and beyond, with exact inputs
   exact through every level, on the JIT, AOT and the VM
-  (`tests/ad/nested_depth_matrix_test.esk`, ADR-0055).
+  (`tests/ad/nested_depth_matrix_test.esk`, ADR-0057).
 
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix

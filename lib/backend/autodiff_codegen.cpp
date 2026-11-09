@@ -505,7 +505,7 @@ llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_coeffs_list", &ctx.module());
 }
-/** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, tower_depth i64, out tagged*) -> i64 route (ADR-0027, ADR-0055). */
+/** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, tower_depth i64, out tagged*) -> i64 route (ADR-0027, ADR-0057). */
 llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_seed")) return f;
     llvm::Type* p = ctx.ptrType();
@@ -515,7 +515,7 @@ llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_ad_nested_seed", &ctx.module());
 }
-/** @brief Get or declare `eshkol_ad_nested_extract` (arena*, result tagged*, route i64, order i32, want_list i32, out tagged*) -> void (ADR-0027, ADR-0055). */
+/** @brief Get or declare `eshkol_ad_nested_extract` (arena*, result tagged*, route i64, order i32, want_list i32, out tagged*) -> void (ADR-0027, ADR-0057). */
 llvm::Function* getAdNestedExtractFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_extract")) return f;
     llvm::Type* p = ctx.ptrType();
@@ -4880,7 +4880,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 BasicBlock* grad_rt_done = BasicBlock::Create(
                     ctx_.context(), "grad_rt_done", current_func);
 
-                // ADR-0055: a whole-point closure at a collection point inside a
+                // ADR-0057: a whole-point closure at a collection point inside a
                 // live pass (or at a point carrying a carrier) is forward
                 // columns, exactly like the statically resolved gradient.
                 {
@@ -5040,7 +5040,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     Value* rvt_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 2));
                     Value* rvt_n = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(rvt_tt, rvt_ptr, 3));
 
-                    // ── ADR-0055: which composition is this? ──────────
+                    // ── ADR-0057: which composition is this? ──────────
                     // A tensor element slot holds either an f64 bit pattern or
                     // an `ad_node_t*`, and the ranges overlap, so the residency
                     // probe (never a raw dereference) decides whether some
@@ -5311,7 +5311,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     // have escaped from the differentiated function.
                     ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {rvt_tape});
                     current_tape_ptr_ = rvt_saved_tape;
-                    // ADR-0055: an inner forward pass ran during the primal, so
+                    // ADR-0057: an inner forward pass ran during the primal, so
                     // its captures may be values computed from this pass's
                     // variables, which this one-pass sweep cannot link back.
                     // With no enclosing reverse pass, take the gradient as
@@ -5338,7 +5338,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
                     ctx_.builder().CreateBr(grad_rt_done);
 
-                    // ── ADR-0055: forward-over-reverse ─────────────────────
+                    // ── ADR-0057: forward-over-reverse ─────────────────────
                     //
                     // Some of the point's components are the ENCLOSING reverse
                     // pass's tape nodes: its variables, or values it computed
@@ -6250,7 +6250,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     }
     BasicBlock* grad_unified_exit = BasicBlock::Create(ctx_.context(), "grad_unified_exit", grad_entry_fn);
 
-    // ── ADR-0055: a vector-point gradient inside a live pass ──────────────
+    // ── ADR-0057: a vector-point gradient inside a live pass ──────────────
     // The reverse tape stores one raw double per node, so neither an enclosing
     // forward perturbation nor a carrier inside the point has anywhere to live
     // on it. While a pass is live, or when the point carries a carrier, the
@@ -8097,7 +8097,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // Restore previous tape
     current_tape_ptr_ = saved_tape;
 
-    // ADR-0055: an inner forward pass ran during the first primal (the
+    // ADR-0057: an inner forward pass ran during the first primal (the
     // mixed-record counter moved). Its captures may be values this pass
     // computed from its variables, which the reverse tape can link back only
     // through the published seed itself. When no reverse pass encloses this
@@ -8695,7 +8695,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         jac_fwd_exit = fb.GetInsertBlock();
         fb.SetInsertPoint(jac_rev_bb);
     }
-    // ADR-0055: what the reverse arm needs to decide, after its first entry,
+    // ADR-0057: what the reverse arm needs to decide, after its first entry,
     // whether an inner forward pass ran (the mixed-record counter moved) while
     // no other reverse pass encloses this one.
     FunctionCallee jac_mixed_count_fn = ctx_.module().getOrInsertFunction(
@@ -9445,7 +9445,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // CRITICAL FIX: Clear global tape pointer (like gradient does)
     ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
 
-    // ADR-0055: an inner forward pass ran during the first entry, so its
+    // ADR-0057: an inner forward pass ran during the first entry, so its
     // captures may be values computed from this pass's variables, which the
     // seeded reverse sweep links back only through the seed itself. With no
     // enclosing reverse pass, the Jacobian is forward columns instead.
@@ -11078,7 +11078,7 @@ llvm::Value* AutodiffCodegen::emitNestedHessian(llvm::Function* func_ptr, llvm::
 }
 
 /**
- * @brief ADR-0055: is a differentiation pass live here, or does the point
+ * @brief ADR-0057: is a differentiation pass live here, or does the point
  *        carry a carrier of one?
  *
  * The one predicate every vector-point operator consults before it chooses the
@@ -11109,7 +11109,7 @@ llvm::Value* AutodiffCodegen::emitPassLiveAt(llvm::Value* point_tagged) {
 }
 
 /**
- * @brief ADR-0055: the gradient of a scalar field at a collection point,
+ * @brief ADR-0057: the gradient of a scalar field at a collection point,
  *        computed as forward columns.
  *
  * Component j is one forward pass on coordinate j of the point, seeded and
