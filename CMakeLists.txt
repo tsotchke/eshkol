@@ -14533,6 +14533,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
+# Public core.net/core.tls lease surfaces on both native engines.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
+    set(_net_core_cases net_core)
+    if(ESHKOL_TLS_OPENSSL_FOUND AND TARGET tls_test_ca)
+        list(APPEND _net_core_cases tls_net_core)
+    endif()
+    foreach(_case IN LISTS _net_core_cases)
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/${_case}_test.esk")
+        add_test(NAME ${_case}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_source}"
+            "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_case}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_case}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+            LABELS "network;ownership"
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_TLS_TEST_PKI=${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        if(_case STREQUAL "tls_net_core")
+            set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES FIXTURES_REQUIRED tls_test_pki)
+        endif()
+    endforeach()
+endif()
+
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
     add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
         lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
