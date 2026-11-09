@@ -1527,6 +1527,9 @@ static std::set<std::string> g_untrusted_resource_modules;
 static std::map<const char*, const sr::Contract*> g_trusted_resource_definitions;
 static bool g_verified_stdlib_artifact_identity = false;
 static std::set<const char*> g_verified_stdlib_scalar_primitive_names;
+// Identity-verified stdlib definitions of operations that have a builtin
+// handle contract (for-each, map, ...): the stdlib body is the reviewed one.
+static std::map<const char*, const sr::Contract*> g_verified_stdlib_contracts;
 static const std::set<std::string> kStrictStdlibScalarPrimitives = {
     "inexact->exact", "make-rational"
 };
@@ -1665,7 +1668,20 @@ static void recordVerifiedStdlibScalarPrimitives(
             name = ast.operation.extern_op.name;
         if (name && kStrictStdlibScalarPrimitives.count(name))
             g_verified_stdlib_scalar_primitive_names.insert(name);
+        if (const sr::Contract* contract = sr::findBuiltinContract(name))
+            g_verified_stdlib_contracts[name] = contract;
     }
+}
+
+static const sr::Contract* verifiedStdlibContract(const eshkol_ast_t* ast) {
+    if (!ast || ast->type != ESHKOL_OP) return nullptr;
+    const char* name = nullptr;
+    if (ast->operation.op == ESHKOL_DEFINE_OP)
+        name = ast->operation.define_op.name;
+    else if (ast->operation.op == ESHKOL_EXTERN_OP)
+        name = ast->operation.extern_op.name;
+    auto it = name ? g_verified_stdlib_contracts.find(name) : g_verified_stdlib_contracts.end();
+    return it == g_verified_stdlib_contracts.end() ? nullptr : it->second;
 }
 
 // ===== OWNERSHIP ANALYSIS =====
@@ -2624,6 +2640,10 @@ private:
                     binding.effect = CallableEffect::CONTRACT;
                     binding.contract = contract;
                     binding.proven = true;
+                } else if (const sr::Contract* stdlib_contract = verifiedStdlibContract(&ast)) {
+                    binding.effect = CallableEffect::CONTRACT;
+                    binding.contract = stdlib_contract;
+                    binding.proven = true;
                 } else if (isVerifiedStdlibScalarPrimitive(&ast)) {
                     binding.proven = true;
                 } else if (op.define_op.is_external) {
@@ -2665,7 +2685,11 @@ private:
                 prepared[name] = binding;
             } else if (op.op == ESHKOL_EXTERN_OP && op.extern_op.name) {
                 PreparedBinding binding;
-                if (isVerifiedStdlibScalarPrimitive(&ast)) {
+                if (const sr::Contract* stdlib_contract = verifiedStdlibContract(&ast)) {
+                    binding.effect = CallableEffect::CONTRACT;
+                    binding.contract = stdlib_contract;
+                    binding.proven = true;
+                } else if (isVerifiedStdlibScalarPrimitive(&ast)) {
                     binding.proven = true;
                 } else {
                     binding.effect = CallableEffect::UNKNOWN_RESOURCE_EFFECT;
@@ -3970,6 +3994,16 @@ private:
                                saved.scopes.begin() + std::min<size_t>(saved.scopes.size(),
                                                                        static_cast<size_t>(env_depth) + 1));
         scope_stack_ = std::move(env);
+        // While the call runs, a handle passed as an argument is owned by its
+        // parameter; the caller's binding is not a second owner the callee
+        // may use or must close.
+        for (const auto& handle : handles) {
+            if (handle.caller_id == 0) continue;
+            if (VariableInfo* outer = findBindingById(handle.caller_id)) {
+                outer->moved_from_state = outer->resource_state;
+                outer->resource_state = ResourceState::MOVED;
+            }
+        }
         borrowed_counts_ = saved.borrows;
         dead_ = false;
         frames_.clear();
@@ -5281,7 +5315,11 @@ private:
                 }
                 if (checked) {
                     info.is_defined = true;
-                    if (op->define_op.is_external) {
+                    if (const sr::Contract* stdlib_contract = verifiedStdlibContract(node)) {
+                        info.callable_effect = CallableEffect::CONTRACT;
+                        info.contract = stdlib_contract;
+                        info.is_proven_callable = true;
+                    } else if (op->define_op.is_external) {
                         if (isVerifiedStdlibScalarPrimitive(node)) {
                             info.is_proven_callable = true;
                             info.is_verified_stdlib_primitive = true;
@@ -5586,7 +5624,11 @@ private:
                     auto existing = currentScope().variables.find(name);
                     if (existing != currentScope().variables.end())
                         info.binding_id = existing->second.binding_id;
-                    if (isVerifiedStdlibScalarPrimitive(node)) {
+                    if (const sr::Contract* stdlib_contract = verifiedStdlibContract(node)) {
+                        info.callable_effect = CallableEffect::CONTRACT;
+                        info.contract = stdlib_contract;
+                        info.is_proven_callable = true;
+                    } else if (isVerifiedStdlibScalarPrimitive(node)) {
                         info.is_proven_callable = true;
                         info.is_verified_stdlib_primitive = true;
                     } else {
@@ -8281,6 +8323,7 @@ int main(int argc, char **argv)
     g_trusted_resource_definitions.clear();
     g_verified_stdlib_artifact_identity = false;
     g_verified_stdlib_scalar_primitive_names.clear();
+    g_verified_stdlib_contracts.clear();
     g_strict_source_identities.clear();
     g_strict_source_identity_conflict = false;
     g_capture_strict_source_identity = false;

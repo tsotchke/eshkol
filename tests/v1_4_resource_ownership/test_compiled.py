@@ -231,7 +231,7 @@ def main():
                                 mixed_diagnostic, mixed_output.exists(), mixed.stdout))
             vm_output = out_dir / "strict-unsupported.eskb"
             vm = subprocess.run(
-                [runner, "--strict-resources", "--profile", "hosted-vm", "-o", str(vm_output),
+                [runner, "--strict-resources", "--profile", "hosted-vm", "--emit-eskb", str(vm_output),
                  str(FIXTURES / f"{POSITIVE[0]}.esk")], env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
             vm_diagnostic = "supported only by native compilation" in vm.stdout
