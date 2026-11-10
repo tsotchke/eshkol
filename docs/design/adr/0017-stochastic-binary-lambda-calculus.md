@@ -99,6 +99,13 @@ The VM reports `unsupported` rather than falling back until its PRNG parity gaps
    direct and interpreted exact distributions and seeded traces must agree.
 2. **Resumable E6 search** — dovetailed residual distributions, content-hash checkpoints,
    mesh sharding with deterministic merge (`lib/core/sblc/search.esk`).
+   The in-memory first step is implemented by `sblc-search-start` /
+   `sblc-search-resume` in the existing `core.sblc` owner: fixed-context opaque
+   handles retain exact unfinished frontiers and completed outcomes, and project
+   through the existing conditioning receipt constructor. The separate
+   `scripts/run_sblc_resume_gate.sh` requires fresh/resumed receipt equality and
+   JIT/AOT parity. Durable checkpoints and distributed shard composition remain
+   undelivered; in-memory handles do not attest serialized execution history.
 3. **DBSP / N3 integration** — incremental example deltas and structured
    accepted / rejected / timeout / failure receipts.
 4. **VM RNG parity** — close the four PRNG gaps (`make-prng`, `prng?`, `prng-random`,
