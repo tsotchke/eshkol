@@ -16631,6 +16631,21 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
     endif()
 endif()
 
+# Selected finite-field source donation: exact independent native oracle.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME extension_field_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_extension_field_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(extension_field_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME extension_field_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extension_field_gate_self_test.py")
+    set_tests_properties(extension_field_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
 # Exact observable-space compiler and independent source replay.
 if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
     if(TARGET eshkol-run)
