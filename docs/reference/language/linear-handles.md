@@ -50,18 +50,22 @@ this flag with an explicit diagnostic.
 
 | Family | Acquire | Close | Failed acquisition | Borrow scope |
 |---|---|---|---|---|
-| TCP listener / stream | `tcp-listen`, `tcp-connect`, `tcp-accept` | `tcp-close` | `network-error?` | `borrow` |
-| UDP socket | `udp-bind` | `udp-close` | `network-error?` | `borrow` |
-| TLS context / listener / session | `tls-client-context`, `tls-server-context`, `tls-listen`, `tls-accept`, `tls-connect` | `tls-context-close`, `tls-listener-close`, `tls-session-close` | `tls-error?` | `borrow` |
+| TCP listener / stream | `tcp-listen`, `tcp-connect`, `tcp-accept` | `tcp-close` | `network-error?` | `borrow`, `call-with-tcp-listener`, `call-with-tcp-connection`, `call-with-tcp-accept` |
+| UDP socket | `udp-bind` | `udp-close` | `network-error?` | `borrow`, `call-with-udp-socket` |
+| TLS context / listener / session | `tls-client-context`, `tls-client-context/options`, `tls-server-context`, `tls-listen`, `tls-accept`, `tls-connect`, `tls-client-start`, `tls-server-start` | `tls-context-close`, `tls-listener-close`, `tls-session-close` | `tls-error?` | `borrow`, `call-with-tls-connection`, `call-with-tls-accept`, `call-with-tls-client`, `call-with-tls-server` |
 | Input port | `open-input-file`, `open-binary-input-file` | `close-port`, `close-input-port` | raises | `call-with-input-file`, `call-with-port` |
 | Output port | `open-output-file`, `open-binary-output-file`, `open-output-file-append` | `close-port`, `close-output-port` | raises | `call-with-output-file`, `call-with-port` |
 | Event loop | `make-event-loop` | `event-loop-close` | `#f` | `borrow` |
 | Thread | `make-thread` | `thread-join` | raises | — |
 | Mutex / condition variable | `make-mutex`, `make-condvar` | `mutex-destroy!`, `condvar-destroy!` | raises | `with-mutex` |
+| Semaphore | `make-semaphore` | `semaphore-destroy!` | raises | — |
+| Barrier | `make-barrier` | `barrier-destroy!` | raises | — |
 | Process | `process-spawn`, `process-spawn-argv`, … | `process-destroy` | `#f` | `borrow` |
 
-Every other operation of a family (reading, writing, polling, waiting)
-borrows its handle for the duration of the call. The full table, with the
+Every other operation of a family (reading, writing, polling, waiting,
+half-closing with `tcp-shutdown`, cancelling with `net-cancel!` or
+`tls-cancel!`) borrows its handle for the duration of the call and leaves it
+open. The full table, with the
 accepted kind of every argument, is `inc/eshkol/strict_resource_contracts.h`.
 Module operations are trusted only for the reviewed SDK source of
 `core.net`, `core.tls`, `core.threads`, and `agent.subprocess`; an edited
@@ -92,7 +96,11 @@ a closure that outlives the scope:
 ```
 
 `call-with-port` takes an owner you already hold and closes it, so the owner
-is consumed by the call. `(borrow h body ...)` lends any handle for its body
+is consumed by the call. An operation can take ownership of one argument the
+same way without being a borrow scope: `tls-client-start` and
+`tls-server-start` move the TCP stream they handshake over into the session
+they return, which becomes the single close site for both, so the stream's
+owner is consumed and may not be closed or used again. `(borrow h body ...)` lends any handle for its body
 and gives it back open. `with-mutex` borrows a mutex for its thunk.
 
 A borrow scope closes its port on normal return, when an exception leaves the

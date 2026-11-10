@@ -40,6 +40,8 @@ enum class Kind : uint8_t {
     THREAD,
     MUTEX,
     CONDVAR,
+    SEMAPHORE,
+    BARRIER,
     PROCESS,
     COUNT
 };
@@ -65,6 +67,8 @@ inline const char* kindName(Kind kind) {
         case Kind::THREAD: return "thread";
         case Kind::MUTEX: return "mutex";
         case Kind::CONDVAR: return "condition variable";
+        case Kind::SEMAPHORE: return "semaphore";
+        case Kind::BARRIER: return "barrier";
         case Kind::PROCESS: return "process";
         default: return "value";
     }
@@ -131,6 +135,11 @@ struct HandleArg {
     int8_t index = -1;
     uint32_t accepts = 0;
     bool optional = false;  // absent, or an untracked non-OS value (string port, current port)
+    // The operation takes ownership of this handle: it moves into the value the
+    // operation produces (or into the scope it opens), which is from then on the
+    // only thing that may close it. The caller's owner becomes moved-from, so a
+    // later use or close of it is reported.
+    bool consumed = false;
 };
 
 struct ProcArg {
@@ -150,7 +159,11 @@ struct Contract {
 };
 
 constexpr HandleArg H(int8_t index, uint32_t accepts, bool optional = false) {
-    return HandleArg{index, accepts, optional};
+    return HandleArg{index, accepts, optional, false};
+}
+/** A handle argument whose ownership moves into the operation's result. */
+constexpr HandleArg HMOVE(int8_t index, uint32_t accepts) {
+    return HandleArg{index, accepts, false, true};
 }
 constexpr HandleArg NOH() { return HandleArg{}; }
 constexpr ProcArg P(int8_t index, ProcMode mode) { return ProcArg{index, mode}; }
@@ -176,6 +189,27 @@ inline constexpr Contract kCoreNetContracts[] = {
     {"network-error?", Role::ERROR_PREDICATE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::NETWORK_ERROR, false},
     {"network-error-code", Role::ERROR_OBSERVE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::NETWORK_ERROR, false},
     {"network-error-operation", Role::ERROR_OBSERVE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::NETWORK_ERROR, false},
+    {"network-error-reason", Role::ERROR_OBSERVE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::NETWORK_ERROR, false},
+    // Bytevector-range transfers. They borrow the socket for the call and
+    // return a count, the eof object, or a network error; the handle stays
+    // open and its owner still has to close it.
+    {"tcp-read!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TCP_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"tcp-write!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TCP_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"tcp-write-all!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TCP_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    // Half-close and cancellation leave the handle open: both are observations
+    // of a live socket, and tcp-close/udp-close remains the only close site.
+    {"tcp-shutdown", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TCP_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"net-cancel!", Role::OBSERVE, Kind::NONE, {H(0, kAnySocket), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"udp-send-to!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::UDP_SOCKET)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"udp-receive-from!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::UDP_SOCKET)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    // Borrow scopes: each opens its own handle, lends it to the procedure, and
+    // closes it exactly once on return, on a raise and on a continuation
+    // escape. A failed acquisition returns its network error without calling
+    // the procedure, so the scope never hands out an unrefined handle.
+    {"call-with-tcp-listener", Role::LEND, Kind::TCP_LISTENER, {NOH(), NOH()}, {P(2, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-tcp-connection", Role::LEND, Kind::TCP_STREAM, {NOH(), NOH()}, {P(3, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-tcp-accept", Role::LEND, Kind::TCP_STREAM, {H(0, bit(Kind::TCP_LISTENER)), NOH()}, {P(2, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-udp-socket", Role::LEND, Kind::UDP_SOCKET, {NOH(), NOH()}, {P(2, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
 };
 
 // ── core.tls ────────────────────────────────────────────────────────────
@@ -197,6 +231,24 @@ inline constexpr Contract kCoreTlsContracts[] = {
     {"tls-error?", Role::ERROR_PREDICATE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::TLS_ERROR, false},
     {"tls-error-code", Role::ERROR_OBSERVE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::TLS_ERROR, false},
     {"tls-error-operation", Role::ERROR_OBSERVE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::TLS_ERROR, false},
+    {"tls-error-reason", Role::ERROR_OBSERVE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::TLS_ERROR, false},
+    {"tls-client-context/options", Role::FACTORY, Kind::TLS_CONTEXT, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    // Handshakes over a core.net stream: the stream moves into the session,
+    // which becomes its only close site — a failed handshake closes it too.
+    {"tls-client-start", Role::FACTORY, Kind::TLS_SESSION, {H(0, bit(Kind::TLS_CONTEXT)), HMOVE(1, bit(Kind::TCP_STREAM))}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"tls-server-start", Role::FACTORY, Kind::TLS_SESSION, {H(0, bit(Kind::TLS_CONTEXT)), HMOVE(1, bit(Kind::TCP_STREAM))}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    // Bytevector-range transfers borrow the session for the call only.
+    {"tls-read!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TLS_SESSION)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"tls-write!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TLS_SESSION)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"tls-write-all!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TLS_SESSION)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"tls-cancel!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::TLS_SESSION)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    // Borrow scopes over a session: the context is borrowed for the call, a
+    // handed-in stream moves into the session, and the session closes exactly
+    // once on return, on a raise and on a continuation escape.
+    {"call-with-tls-connection", Role::LEND, Kind::TLS_SESSION, {H(0, bit(Kind::TLS_CONTEXT)), NOH()}, {P(5, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-tls-accept", Role::LEND, Kind::TLS_SESSION, {H(0, bit(Kind::TLS_LISTENER)), NOH()}, {P(2, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-tls-client", Role::LEND, Kind::TLS_SESSION, {H(0, bit(Kind::TLS_CONTEXT)), HMOVE(1, bit(Kind::TCP_STREAM))}, {P(4, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-tls-server", Role::LEND, Kind::TLS_SESSION, {H(0, bit(Kind::TLS_CONTEXT)), HMOVE(1, bit(Kind::TCP_STREAM))}, {P(3, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
 };
 
 // ── core.threads ────────────────────────────────────────────────────────
@@ -218,6 +270,23 @@ inline constexpr Contract kCoreThreadsContracts[] = {
     {"thread-join", Role::CLOSE, Kind::NONE, {H(0, bit(Kind::THREAD)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
     {"thread?", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::THREAD), true), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
     {"thread-result-ready?", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::THREAD)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"condvar-wait-timeout!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::CONDVAR)), H(1, bit(Kind::MUTEX))}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    // Counting semaphores and reusable barriers own the mutex and condition
+    // variable they are built from, so each is one owned handle with one
+    // close site. Their predicates answer for any value, tracked or not.
+    {"make-semaphore", Role::FACTORY, Kind::SEMAPHORE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"semaphore?", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::SEMAPHORE), true), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"semaphore-acquire!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::SEMAPHORE)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"semaphore-try-acquire!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::SEMAPHORE)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"semaphore-release!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::SEMAPHORE)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"semaphore-value", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::SEMAPHORE)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"semaphore-destroy!", Role::CLOSE, Kind::NONE, {H(0, bit(Kind::SEMAPHORE)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"make-barrier", Role::FACTORY, Kind::BARRIER, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"barrier?", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::BARRIER), true), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"barrier-wait!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::BARRIER)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"barrier-parties", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::BARRIER)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"barrier-generation", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::BARRIER)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"barrier-destroy!", Role::CLOSE, Kind::NONE, {H(0, bit(Kind::BARRIER)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
 };
 
 // ── agent.subprocess ────────────────────────────────────────────────────
@@ -263,13 +332,13 @@ struct ModuleContract {
 // (CTest strict_resource_contract_pins).
 inline constexpr ModuleContract kModuleContracts[] = {
     {"core.net", "core/net.esk",
-     "c160df956437b9cff155dcd030fa90586cd9d3c26e9822c453948c336ad3f680",
+     "7ada0e09a9ffa49fc6319455d0402036e85f47fc4d42e9059d491191f61ccb05",
      kCoreNetContracts, sizeof(kCoreNetContracts) / sizeof(kCoreNetContracts[0])},
     {"core.tls", "core/tls.esk",
-     "889c5e60cffdd3ed931cbcfb65a53b498d63237dc59fe498d778a2ca87c30ff5",
+     "91f95582ab932508335fd83df585b956a74fd83264b7cff90823b5bf061f4398",
      kCoreTlsContracts, sizeof(kCoreTlsContracts) / sizeof(kCoreTlsContracts[0])},
     {"core.threads", "core/threads.esk",
-     "c7001ab6a8238c2acbf39412e3b59f7f246460d614b319f0f1956a045a398fb6",
+     "79612384c29b0fdf28b738f6588062a1916cd589588b3e9a617c112ac7de572b",
      kCoreThreadsContracts, sizeof(kCoreThreadsContracts) / sizeof(kCoreThreadsContracts[0])},
     {"agent.subprocess", "agent/subprocess.esk",
      "4691729a42034d3be81f5d64385ae65cdb5a8009f6c647c0c8ceffe509da403e",

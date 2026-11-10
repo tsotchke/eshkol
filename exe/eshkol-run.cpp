@@ -3666,6 +3666,29 @@ private:
         return info->resource_kind;
     }
 
+    /** @brief Move the owner of @p argument out, for an operation that takes
+     *  ownership of the handle (sr::HandleArg::consumed).
+     *
+     *  The produced value — a TLS session over the stream it was handshaked
+     *  on, say — is the single close site from then on, so the caller's owner
+     *  becomes moved-from and a later use or close of it is reported. A
+     *  borrowed owner cannot be given away at all. */
+    void moveHandleOwner(const eshkol_ast_t* argument, const std::string& operation) {
+        const std::string name = getVarName(argument);
+        VariableInfo* info = name.empty() ? nullptr : lookupVariable(name);
+        if (!info || info->resource_kind == ResourceKind::NONE) return;
+        if (info->lent || isBorrowed(info->binding_id)) {
+            reportResourceError("cannot pass borrowed resource '" + name + "' to " + operation +
+                ", which takes ownership of it");
+            return;
+        }
+        if (info->resource_state == ResourceState::LIVE) {
+            info->moved_from_state = ResourceState::LIVE;
+            info->resource_state = ResourceState::MOVED;
+            info->state = State::MOVED;
+        }
+    }
+
     void closeHandle(const eshkol_ast_t* argument, const sr::Contract& contract,
                      const std::string& operation) {
         const std::string name = getVarName(argument);
@@ -4258,8 +4281,10 @@ private:
                         "' must be bound directly to one lexical owner");
                 }
                 for (const auto& spec : contract.handle_args)
-                    if (const eshkol_ast_t* handle = arg(spec.index))
+                    if (const eshkol_ast_t* handle = arg(spec.index)) {
                         useHandleArg(handle, spec, function_name);
+                        if (spec.consumed) moveHandleOwner(handle, function_name);
+                    }
                 if (contract.proc_args[0].index >= 0)
                     setupProcArgs(node, contract, ResourceKind::NONE, work);
                 if (returned) recordReturnedHandle(contract.produces, initialFactoryState(contract.produces));
@@ -4294,6 +4319,17 @@ private:
             }
             case sr::Role::LEND: {
                 ResourceKind lent = contract.produces;
+                // A handle the scope only reads stays with its owner; one the
+                // scope takes over moves, because the scope's own close is from
+                // then on the single close site for it.
+                for (const auto& spec : contract.handle_args) {
+                    if (contract.consumes_handle && spec.index == contract.handle_args[0].index)
+                        continue;
+                    if (const eshkol_ast_t* handle = arg(spec.index)) {
+                        useHandleArg(handle, spec, function_name);
+                        if (spec.consumed) moveHandleOwner(handle, function_name);
+                    }
+                }
                 if (contract.consumes_handle) {
                     const eshkol_ast_t* handle = arg(contract.handle_args[0].index);
                     const std::string name = getVarName(handle);

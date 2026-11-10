@@ -1,0 +1,5 @@
+(require core.threads)
+;; Same for a barrier: barrier-destroy! is its only close site.
+(define bar (make-barrier 1))
+(barrier-wait! bar)
+(newline)

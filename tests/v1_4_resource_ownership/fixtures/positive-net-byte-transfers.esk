@@ -1,0 +1,15 @@
+(require core.net)
+;; Range transfers, a half-close and a cancellation all borrow the stream for
+;; the call; the owner still closes it exactly once.
+(define stream (tcp-connect "127.0.0.1" 9 100))
+(if (network-error? stream)
+    (display "connect failed")
+    (begin
+      (define buffer (make-bytevector 16 0))
+      (tcp-write! stream buffer 0 4 100)
+      (tcp-write-all! stream buffer 0 4 100)
+      (tcp-read! stream buffer 0 8 100)
+      (tcp-shutdown stream 'write)
+      (net-cancel! stream)
+      (tcp-close stream)))
+(newline)
