@@ -390,6 +390,13 @@ inline constexpr Contract kBuiltinContracts[] = {
     {"current-input-port", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
     {"current-output-port", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
     {"current-error-port", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    // Bytevectors carry no handle: they are the buffers the range transfers of
+    // core.net and core.tls read into and write out of, so a strict program
+    // doing bounded I/O needs them to have a summary of their own.
+    {"make-bytevector", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"bytevector-length", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"bytevector-u8-ref", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"bytevector-u8-set!", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
     {"open-input-string", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
     {"open-output-string", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
     {"get-output-string", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
