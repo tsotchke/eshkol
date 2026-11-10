@@ -46,6 +46,8 @@
 
 (require core.blc)
 (require core.list.sort)
+(require core.dbsp)
+(require agent.crypto)
 
 (provide sblc-format-version sblc-rng-policy
          ;; syntax
@@ -70,6 +72,7 @@
          sblc-bits-example sblc-bytes-example sblc-likelihood
          sblc-condition
          sblc-search-start sblc-search-resume sblc-search-receipt sblc-search-work
+         sblc-search-checkpoint sblc-search-restore
          sblc-receipt-status sblc-receipt-evidence sblc-receipt-programs
          sblc-receipt-shortest sblc-receipt-mdl sblc-receipt-witness-runs
          sblc-entry-bits sblc-entry-length sblc-entry-prior sblc-entry-likelihoods
@@ -757,6 +760,7 @@
       (case request
         ((receipt) (sblc-search-copy receipt))
         ((work) (list (- work previous-work) work))
+        ((checkpoint) (sblc-checkpoint-make seed L bound examples programs matrix))
         ((resume)
          (if (not (and (sblc-search-bound? value) (>= value bound)))
              (error "sblc-search-resume: expected a nondecreasing exact step bound")
@@ -773,6 +777,93 @@
 (define (sblc-search-resume search bound) (search 'resume bound))
 (define (sblc-search-receipt search) (search 'receipt #f))
 (define (sblc-search-work search) (search 'work #f))
+
+;; A checkpoint is finite data, not an authenticated history. Canonical keys
+;; belong to DBSP; SHA-256 belongs to the existing crypto primitive.
+(define (sblc-checkpoint-data? datum)
+  (let loop ((todo (list (list datum 0 0))) (n 0))
+    (if (null? todo) #t
+        (let ((x (caar todo)) (depth (cadar todo)) (spine (caddar todo)) (rest (cdr todo)))
+          (and (< n 300000) (<= depth 256) (<= spine 2048)
+               (cond ((pair? x)
+                      (loop (cons (list (car x) (+ depth 1) 0)
+                                  (cons (list (cdr x) depth (+ spine 1)) rest)) (+ n 1)))
+                     ((or (null? x) (symbol? x) (and (rational? x) (exact? x)))
+                      (loop rest (+ n 1)))
+                     ((and (string? x) (<= (string-length x) 4096)) (loop rest (+ n 1)))
+                     (else #f)))))))
+(define (sblc-checkpoint-seal payload)
+  (if (not (sblc-checkpoint-data? payload)) (error "SBLC checkpoint data budget/type refused"))
+  (let* ((owned (sblc-search-copy payload)) (digest (sha256 (zset-row-key owned))))
+    (if (not (and (string? digest) (= (string-length digest) 64)))
+        (error "SBLC checkpoint SHA-256 unavailable"))
+    (list 'sblc-checkpoint-v1 digest owned)))
+(define (sblc-checkpoint-rows programs matrix)
+  (if (null? programs) '()
+      (cons (list (sblc-encode (car programs))
+                  (map (lambda (s) (list (vector-ref s 0) (vector-ref s 3)
+                                         (vector-ref s 1) (vector-ref s 2))) (car matrix)))
+            (sblc-checkpoint-rows (cdr programs) (cdr matrix)))))
+(define (sblc-checkpoint-make seed L bound examples programs matrix)
+  (if (or (> L 16) (> bound 1024)) (error "SBLC checkpoint catalogue/step profile exceeded"))
+  (sblc-checkpoint-seal
+   (list 'sblc-search-state-v1 sblc-format-version 'strong-lo-v1 sblc-rng-policy
+         seed L bound examples (sblc-checkpoint-rows programs matrix))))
+(define (sblc-checkpoint-masses? entries normal)
+  (and (list? entries)
+       (let loop ((xs entries) (seen '()))
+         (if (null? xs) #t
+             (let ((e (car xs)))
+               (and (pair? e) (sblc-search-term? (car e))
+                    (rational? (cdr e)) (exact? (cdr e)) (> (cdr e) 0) (<= (cdr e) 1)
+                    (not (assoc (car e) seen))
+                    (eq? normal (sblc-normal? (car e)))
+                    (loop (cdr xs) (cons e seen))))))))
+(define (sblc-checkpoint-mass entries)
+  (let loop ((xs entries) (m 0)) (if (null? xs) m (loop (cdr xs) (+ m (cdar xs))))))
+(define (sblc-checkpoint-trial wire bound)
+  (if (not (and (list? wire) (= (length wire) 4))) (error "Malformed SBLC checkpoint trial"))
+  (let ((k (car wire)) (work (cadr wire)) (outcomes (caddr wire)) (frontier (cadddr wire)))
+    (if (not (and (sblc-search-bound? k) (<= k bound) (sblc-search-bound? work)
+                  (>= work k) (<= work (- (expt 2 k) 1))
+                  (or (null? frontier) (= k bound))
+                  (sblc-checkpoint-masses? outcomes #t) (sblc-checkpoint-masses? frontier #f)
+                  (= 1 (+ (sblc-checkpoint-mass outcomes) (sblc-checkpoint-mass frontier)))))
+        (error "Invalid SBLC checkpoint counters or probability partition"))
+    (vector k outcomes frontier work)))
+(define (sblc-checkpoint-matrix programs rows examples bound)
+  (cond ((and (null? programs) (null? rows)) '())
+        ((or (null? programs) (null? rows) (not (list? rows)))
+         (error "Incomplete SBLC checkpoint catalogue"))
+        (else
+         (let ((row (car rows)))
+           (if (not (and (list? row) (= (length row) 2)
+                         (string? (car row)) (string=? (car row) (sblc-encode (car programs)))
+                         (list? (cadr row)) (= (length (cadr row)) (length examples))))
+               (error "SBLC checkpoint programme/trial identity mismatch"))
+           (cons (map (lambda (w) (sblc-checkpoint-trial w bound)) (cadr row))
+                 (sblc-checkpoint-matrix (cdr programs) (cdr rows) examples bound))))))
+(define (sblc-search-checkpoint search) (search 'checkpoint #f))
+(define (sblc-search-restore checkpoint seed L examples)
+  (if (not (and (sblc-checkpoint-data? checkpoint) (sblc-search-integer? seed)
+                (sblc-search-bound? L) (<= L 16) (sblc-search-examples? examples)))
+      (error "SBLC checkpoint admission failed"))
+  (let ((owned (sblc-search-copy checkpoint)))
+    (if (not (and (list? owned) (= (length owned) 3) (eq? (car owned) 'sblc-checkpoint-v1)
+                  (string? (cadr owned)) (= (string-length (cadr owned)) 64)
+                  (string=? (cadr owned) (sha256 (zset-row-key (caddr owned))))))
+        (error "SBLC checkpoint content digest mismatch"))
+    (let ((p (caddr owned)))
+      (if (not (and (list? p) (= (length p) 9) (eq? (car p) 'sblc-search-state-v1)
+                    (eq? (cadr p) sblc-format-version) (eq? (caddr p) 'strong-lo-v1)
+                    (eq? (cadddr p) sblc-rng-policy) (equal? (list-ref p 4) seed)
+                    (equal? (list-ref p 5) L) (sblc-search-bound? (list-ref p 6))
+                    (<= (list-ref p 6) 1024) (equal? (list-ref p 7) examples)))
+          (error "SBLC checkpoint context/version mismatch"))
+      (let* ((programs (sblc-bounded-programs L))
+             (matrix (sblc-checkpoint-matrix programs (list-ref p 8) (list-ref p 7) (list-ref p 6)))
+             (work (sblc-search-total-work matrix)))
+        (sblc-search-capture seed L (list-ref p 6) (list-ref p 7) programs matrix work)))))
 
 (define (sblc-condition-entries programs examples bound)
   (if (null? programs) '()

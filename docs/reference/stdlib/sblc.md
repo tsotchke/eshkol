@@ -401,9 +401,10 @@ they are not elapsed time, total kernel invocations or allocation measurements.
 
 Handles are opaque in-memory procedures produced by this module. Pass trusted
 module-created handles to the accessors; arbitrary procedures are not admitted
-as authenticated execution history. They are not serialized checkpoints or
-portable certificates. Durable restoration and deterministic shard composition
-remain separate work. Bounds must be exact nonnegative integers; the seed must
+as authenticated execution history. They are not portable certificates. The
+explicit checkpoint operations below transport trusted execution state;
+deterministic shard composition remains separate work. Bounds must be exact
+nonnegative integers; the seed must
 be an exact integer. Example admission allows at most 64 finite, structurally
 valid term pairs, 300000 datum occurrences and 256 car-nesting levels, rejecting
 cycles before copying. Search expansion retains the existing bounded evaluator's
@@ -413,6 +414,41 @@ Run `ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_sblc_resume_gate.sh`.
 The gate checks fresh/resumed equality across 168 context/bound combinations,
 partially completed probability, independent repeated trials, same-bound zero
 work, detached mutation/forks and invalid continuation bounds in JIT and AOT.
+
+### Durable search checkpoints
+
+`(sblc-search-checkpoint handle)` returns detached finite data containing syntax,
+reduction and RNG versions, seed, bounds, examples, canonical programme identities,
+completed outcomes, unfinished frontiers and cumulative selected work. The
+existing DBSP canonical data key and SHA-256 seal the payload.
+
+Save/read this datum with ordinary Scheme `write`/`read` or existing file utilities.
+`(sblc-search-restore checkpoint seed L examples)` requires the expected job
+context, verifies digest/versions, requires every canonical programme and trial
+exactly once, and checks exact positive masses, complete unit mass, normal outcomes,
+reducible frontiers and compatible counters. It returns a detached handle with
+zero newly selected transitions. Continuing it agrees with uninterrupted and fresh
+evaluation. Reading errors must propagate; admission applies to decoded data.
+
+```scheme
+(define checkpoint (sblc-search-checkpoint pending))
+(define recovered (sblc-search-restore checkpoint 7 4 status-example))
+(sblc-receipt-status (sblc-search-receipt (sblc-search-resume recovered 1))) ; consistent
+```
+
+The current checkpoint profile bounds L to 16, the step bound to 1024, decoded
+data to 300000 occurrences, car nesting to 256, list spines to 2048 and strings
+to 4096 characters. Data contains finite pairs, symbols, strings and exact
+rationals only. A search exceeding this portable profile refuses checkpoint
+creation; its data is never truncated. This is not an arbitrary untrusted byte
+parser or a host-memory bound.
+
+Checkpoints come from trusted execution/storage. A self-hash detects corruption;
+it does not authenticate a fabricated reachable history. Restoration checks the
+saved partition/counters without replaying every historic step. No implicit file
+access, worker, migration or shard merge is installed. Run
+`scripts/run_sblc_checkpoint_gate.sh` for 273 checks per engine, JIT/AOT wire
+parity, and separate producer/consumer processes in both transport directions.
 
 | Function | Contract |
 |---|---|
