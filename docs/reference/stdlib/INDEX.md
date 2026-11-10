@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 190** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3433** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 191** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3441** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -195,6 +195,7 @@ tensors are documented in [rigorous_numerics.md](rigorous_numerics.md).
 | [`core.ml.sparse`](../../../lib/core/ml/sparse.esk) | no | [ml_sparse.md](ml_sparse.md) | `sparse-from-triplets` `sparse-from-dense` `sparse->dense` `sparse->triplets` `sparse?` `sparse-rows` `sparse-cols` `sparse-nnz` `sparse-ref` `sparse-values` `sparse-with-values` `sparse-matvec` `sparse-transpose` `sparse-matmul` `sparse-add` `sparse-scale` `sparse-map-values` `sparse-identity` |
 | [`core.msgpack`](../../../lib/core/msgpack.esk) | no | [msgpack.md](msgpack.md) | `msgpack-null` `msgpack-null?` `msgpack-map` `msgpack-map?` `msgpack-map-entries` `msgpack-encode` `msgpack-decode` `msgpack-decode-prefix` `msgpack-bytes->bytevector` `msgpack-bytevector->bytes` |
 | [`core.numeric_extras`](../../../lib/core/numeric_extras.esk) | yes | [numeric_extras.md](numeric_extras.md) | `exact-integer-sqrt` |
+| [`core.observable_closure`](../../../lib/core/observable_closure.esk) | no | [observable_closure.md](observable_closure.md) | `compile-observable-closure` `verify-observable-closure` `project-observations` `compile-generator-closure` `verify-generator-closure` `observable-status` `observable-certificate` `observable-dimension` |
 | [`core.operators.arithmetic`](../../../lib/core/operators/arithmetic.esk) | yes | [operators_arithmetic.md](operators_arithmetic.md) | `add` `sub` `mul` `divide` |
 | [`core.operators.compare`](../../../lib/core/operators/compare.esk) | yes | [operators_compare.md](operators_compare.md) | `lt` `gt` `le` `ge` `eq` |
 | [`core.pde.ns-residual`](../../../lib/core/pde/ns-residual.esk) | yes | [ns-residual.md](ns-residual.md) | `ns-flow` `ns-flow-ur` `ns-flow-utheta` `ns-flow-uz` `ns-flow-p` `ns-flow-nu` `ns-cflow` `ns-cflow-u` `ns-cflow-p` `ns-cflow-nu` `ns-residual` `ns-residual-cartesian` `ns-divergence` `ns-divergence-cartesian` `ns-simpson-nodes` `ns-simpson-weights` `ns-simpson-step` `ns-grid-integral` `ns-energy` `ns-dissipation` `ns-similarity-field` `ns-residual-tau-series` `ns-singular-orders` `ns-force-smoothness-probe` |

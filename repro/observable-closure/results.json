@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "jit_executable_cache": "disabled",
+  "engines": [
+    "jit",
+    "aot-O2"
+  ],
+  "checks_per_engine": 159,
+  "independent_span_cases": 64,
+  "hawkes_dimensions": [
+    15,
+    4,
+    11
+  ],
+  "producer_free_replay": true,
+  "stdout_sha256": "d196f2353aa65f169634073dbf1a7d79d228c9a8ceb5eb1803d4da3c17c12991",
+  "linalg_source_compiled_explicitly": true,
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "source_sha256": {
+    "lib/core/observable_closure.esk": "dc068e5529ba4b4163841911a34357123b78aa9b1e244e33d404232d31a4d32e",
+    "tests/stdlib/observable_closure_test.esk": "504ef20b8ffe1d944d645648e9567f137eee8e959e4b78180c65395b4f460996",
+    "scripts/run_observable_closure_gate.py": "96386b3b010cf78b7f8d240a388714b823ae437b6fa1e7b905f4e2c7ad944e11",
+    "lib/core/exact_linalg.esk": "53ed603b4acdea1893a8cb7ff81a8d48f4775d07a35beb697db536bcd5802a96",
+    "lib/core/symbolic.esk": "b75c7e6533c8568f1c7d42f9dacd6a7ac2c9991a1603c8e77982c6cee30be9b8"
+  }
+}
