@@ -1,0 +1,41 @@
+format = "eshkol-sblc-update-qualification-v1"
+parent_revision = "b4a3012a1c00b41b16aa774eb80494ea95eb8145"
+runtime = "v1.3.6-evolve Linux x64 lite"
+compiler_rebuilt = false
+checks_per_engine = 61
+jit_aot_identical = true
+actual_dbsp_circuit_observer = true
+cold_checkpoint_to_update_jit_aot = true
+predecessor_checkpoint_commit_consumed = "b4a3012a1c00b41b16aa774eb80494ea95eb8145"
+existing_sblc_checks_per_engine = 104
+resumption_checks_per_engine = 530
+checkpoint_checks_per_engine = 273
+resulting_example_occurrence_limit = 64
+raw_event_masses_exact = true
+normalized_posterior_events = false
+wall_time_speedup_claimed = false
+command = "ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_sblc_update_gate.sh"
+
+[[input]]
+path = "lib/core/sblc.esk"
+sha256 = "bd78d29a5507e58304f3d07932340d676fc3eb6bfd025ad37014b9344e46114d"
+
+[[input]]
+path = "tests/stdlib/sblc_update_test.esk"
+sha256 = "4bb98c6e54d44c5c4be8b656a78215d30b54ad6f6f0da131a3fff999e4937f42"
+
+[[input]]
+path = "scripts/run_sblc_update_gate.sh"
+sha256 = "0bfd0c40e5a4ec619abddfe6c7007298f09f967686de7976dd2ebad562c90233"
+
+[[input]]
+path = "CMakeLists.txt"
+sha256 = "063fc5b8c9efb6d554dcc5ba0444a085961b0e4a4bbdca2ac948a16922ec38f7"
+
+[[input]]
+path = "docs/reference/stdlib/sblc.md"
+sha256 = "20abeb514b0e75ec69af996012c1e04d68c339a49a7bb3845160bd3d2183d716"
+
+[[input]]
+path = "docs/design/adr/0017-stochastic-binary-lambda-calculus.md"
+sha256 = "3f8b40d855d9a2675e30de739ab05f99d6c5a097043086358dd8a6bc83ae8d72"

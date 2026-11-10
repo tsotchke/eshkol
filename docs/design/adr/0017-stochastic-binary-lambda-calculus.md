@@ -111,6 +111,11 @@ The VM reports `unsupported` rather than falling back until its PRNG parity gaps
    remains undelivered.
 3. **DBSP / N3 integration** — incremental example deltas and structured
    accepted / rejected / timeout / failure receipts.
+   The finite observation-update path now integrates signed `core.dbsp` Z-sets,
+   reuses matching independent trials, grows the catalogue, and publishes raw
+   accepted/rejected/timeout mass deltas to existing DBSP circuits. Invalid
+   updates raise without publishing a partial successor. Live N3/mesh dispatch
+   remains separate.
 4. **VM RNG parity** — close the four PRNG gaps (`make-prng`, `prng?`, `prng-random`,
    `prng-random-integer`) and require JIT/AOT/VM trace equality.
 5. **Differentiable proposals** (experimental, `lib/core/sblc/relax.esk`) — exact finite-logit
