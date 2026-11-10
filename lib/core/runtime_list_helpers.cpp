@@ -149,6 +149,55 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
     return vec;
 }
 
+// Read a tensor out as a Scheme vector (HEAP_SUBTYPE_VECTOR) of its elements,
+// each copied verbatim, tag and all.
+//
+// This is the tensor-side counterpart of eshkol_list_to_svec_raw below, and it
+// preserves tags for the same reason: ADR-0058 gives a tensor three tagged
+// element types, and one of them carries a forward-mode jet. A pass nested in
+// another pass meets its inner answer as such a tensor, and reading it as a
+// vector of tagged elements is what keeps each element's perturbation
+// reachable by the extraction that follows. An f64 carrier's elements are
+// int64 bit patterns of doubles, so those are repacked as doubles.
+//
+// Returns the vector DATA pointer (length at offset 0, 16-byte tagged elements
+// at offset 8; header with HEAP_SUBTYPE_VECTOR at -8), or nullptr when the
+// value is not a tensor, which leaves the caller's own refusal in charge. The
+// value is passed by pointer (ABI-safe: avoids 16-byte struct-by-value across
+// the C boundary).
+void* eshkol_tensor_to_svec(arena_t* arena, const eshkol_tagged_value_t* tensor_tv) {
+    if (!arena || !tensor_tv) return nullptr;
+    if ((tensor_tv->type & 0x0F) != ESHKOL_VALUE_HEAP_PTR || !tensor_tv->data.ptr_val)
+        return nullptr;
+    void* ptr = (void*)(uintptr_t)tensor_tv->data.ptr_val;
+    if (ESHKOL_GET_SUBTYPE(ptr) != HEAP_SUBTYPE_TENSOR) return nullptr;
+    const eshkol_tensor_t* tensor = (const eshkol_tensor_t*)ptr;
+    if (!tensor->elements) return nullptr;
+    const uint64_t total = tensor->total_elements;
+    if (total > (uint64_t)INT64_MAX) return nullptr;
+    eshkol_enforce_tensor_elements((int64_t)total);
+    void* vec = arena_allocate_vector_with_header(arena, (size_t)total);
+    if (!vec) return nullptr;
+    *(int64_t*)vec = (int64_t)total;
+    eshkol_tagged_value_t* out =
+        (eshkol_tagged_value_t*)((char*)vec + sizeof(int64_t));
+    if (eshkol_tensor_dtype_is_tagged(tensor->dtype)) {
+        const eshkol_tagged_value_t* src =
+            (const eshkol_tagged_value_t*)tensor->elements;
+        for (uint64_t i = 0; i < total; ++i) out[i] = src[i];
+    } else {
+        for (uint64_t i = 0; i < total; ++i) {
+            double value;
+            std::memcpy(&value, &tensor->elements[i], sizeof(double));
+            out[i].type = ESHKOL_VALUE_DOUBLE;
+            out[i].flags = 0;
+            out[i].reserved = 0;
+            out[i].data.double_val = value;
+        }
+    }
+    return vec;
+}
+
 // Convert a tagged cons-list to a Scheme vector (HEAP_SUBTYPE_VECTOR) WITHOUT
 // coercing any element — each car is copied verbatim, tag and all.
 //

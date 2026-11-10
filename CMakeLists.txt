@@ -9965,7 +9965,11 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
             COMMAND "${ESHKOL_BASH_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stack_overflow_diagnostic.sh"
         )
-        set_tests_properties(stack_overflow_diagnostic_gate PROPERTIES TIMEOUT 900)
+        # The harness resolves the compiler and VM under BUILD_DIR; name this
+        # build tree so the gate runs from whatever directory CMake configured.
+        set_tests_properties(stack_overflow_diagnostic_gate PROPERTIES
+            TIMEOUT 900
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
     endif()
 endif()
 
@@ -11401,6 +11405,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
         )
         set_tests_properties(continuation_pin_budget_boundary PROPERTIES
             TIMEOUT 600
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             PASS_REGULAR_EXPRESSION "continuation_pin_budget_boundary_test.sh: PASS"
             FAIL_REGULAR_EXPRESSION "FAILED|FAIL:")
     endif()
@@ -11720,6 +11725,7 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     set_tests_properties(vm_first_class_builtin_arity_smoke
         PROPERTIES
             TIMEOUT 300
+            ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
             PASS_REGULAR_EXPRESSION "PASS: first-class builtin arity enforcement"
             FAIL_REGULAR_EXPRESSION "FAIL:")
 

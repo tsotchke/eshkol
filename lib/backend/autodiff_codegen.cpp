@@ -1064,16 +1064,52 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
     llvm::BasicBlock* nd_scalar = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_scalar", fn);
     b.CreateCondBr(nd_is_heap, nd_check, nd_scalar);
 
-    // Is the heap object a scheme vector (subtype VECTOR)?
+    // Is the heap object a collection this pass can differentiate component by
+    // component? A scheme vector is read where it lies. A tensor is first read
+    // out as a scheme vector of its elements, because ADR-0058 gives a tensor
+    // three tagged element types — a jet tensor among them — and `gradient`
+    // answers with one of those at a vector point. Without this a pass nested
+    // in another pass met its inner answer as a tensor, fell to the scalar
+    // extraction, and the point coercion refused the collection by name.
+    llvm::AllocaInst* nd_vec_ptr_slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        nd_vec_ptr_slot = eb.CreateAlloca(ctx_.ptrType(), nullptr, "fwd_ex_nd_vec_ptr");
+    }
+    llvm::BasicBlock* nd_tensor = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_tensor", fn);
+
     b.SetInsertPoint(nd_check);
-    llvm::Value* nd_ptr = tagged_.unpackPtr(result_tagged);
     llvm::Value* nd_is_vec = tagged_.checkHeapSubtype(
         result_tagged, HEAP_SUBTYPE_VECTOR);
-    b.CreateCondBr(nd_is_vec, nd_vec, nd_scalar);
+    llvm::Value* nd_is_tensor = tagged_.checkHeapSubtype(
+        result_tagged, HEAP_SUBTYPE_TENSOR);
+    b.CreateStore(tagged_.unpackPtr(result_tagged), nd_vec_ptr_slot);
+    b.CreateCondBr(nd_is_vec, nd_vec, nd_tensor);
+
+    // Tensor result: read its elements out as a scheme vector, keeping each
+    // element's own tag so a jet element arrives as a jet. A result the helper
+    // declines (no tensor, or no arena) takes the scalar extraction, which
+    // reports it rather than reading it as a number.
+    b.SetInsertPoint(nd_tensor);
+    {
+        llvm::Value* nd_tensor_arena = getArenaPtr();
+        llvm::FunctionCallee to_svec = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_to_svec",
+            llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+        llvm::Value* nd_svec = b.CreateCall(to_svec, {nd_tensor_arena, nd_taylor_in},
+                                            "fwd_ex_tensor_svec");
+        b.CreateStore(nd_svec, nd_vec_ptr_slot);
+        llvm::Value* nd_svec_ok = b.CreateAnd(
+            nd_is_tensor,
+            b.CreateICmpNE(nd_svec, llvm::ConstantPointerNull::get(
+                llvm::cast<llvm::PointerType>(ctx_.ptrType()))));
+        b.CreateCondBr(nd_svec_ok, nd_vec, nd_scalar);
+    }
 
     // Vector path: build a scheme vector of per-component derivatives.
     b.SetInsertPoint(nd_vec);
     {
+        llvm::Value* nd_ptr = b.CreateLoad(ctx_.ptrType(), nd_vec_ptr_slot, "fwd_ex_nd_ptr");
         llvm::Value* nd_is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
         llvm::Value* nd_is_l1 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 1));
         llvm::Value* nd_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
