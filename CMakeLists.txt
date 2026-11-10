@@ -4,6 +4,11 @@
 # SPDX-License-Identifier: MIT
 #
 cmake_minimum_required(VERSION 3.14)
+
+# The semantic ABI ratchet reads the compile database. A target picks the
+# setting up when it is created, so it belongs ahead of every target rather
+# than beside the test that consumes it.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
@@ -9628,10 +9633,6 @@ endif()
 # that depends on the current object header, baselined at .icc/abi-header-baseline.json;
 # fails when a commit introduces a new one outside the accessor.
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header_inventory.py")
-    # The semantic ABI ratchet consumes the compile database.  Keep its input
-    # present in every test configuration instead of requiring a manual cache
-    # flag.
-    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
     add_test(NAME abi_header_inventory_ratchet
@@ -9653,6 +9654,13 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/abi_header
     # The negative control temporarily injects a source site. Quiesce other
     # tests so concurrent source readers cannot observe that deliberate edit.
     set_tests_properties(abi_header_inventory_selftest PROPERTIES RUN_SERIAL TRUE)
+    # The inventory resolves the compile database and the compiler under
+    # BUILD_DIR; name this build tree so the ratchet reads the database CMake
+    # just wrote, wherever it was configured.
+    set_tests_properties(abi_header_inventory_ratchet
+                         abi_header_inventory_semantic_ratchet
+                         abi_header_inventory_selftest
+                         PROPERTIES ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 endif()
 
@@ -16614,3 +16622,14 @@ endif()
 # Platform layer tests (ADR-0053).
 set(ESHKOL_PLATFORM_STAGE tests)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
+
+# Every harness that resolves the compiler, the VM or the compile database by
+# itself reads BUILD_DIR and falls back to a directory literally named "build".
+# Name this build tree for all of them at once, so the suite runs from any
+# configured build directory. APPEND leaves a test's own ENVIRONMENT entries in
+# place.
+get_property(ESHKOL_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)
+foreach(ESHKOL_REGISTERED_TEST IN LISTS ESHKOL_REGISTERED_TESTS)
+    set_property(TEST "${ESHKOL_REGISTERED_TEST}" APPEND PROPERTY
+                 ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
+endforeach()
