@@ -271,20 +271,34 @@ static bool check_stack_space() {
     size_t used = (size_t)((char*)stack_addr - here_ptr);
     return (stack_size > used) && ((stack_size - used) > STACK_SAFETY_MARGIN);
 #elif defined(__linux__)
-    pthread_attr_t attr;
-    if (pthread_getattr_np(pthread_self(), &attr) != 0) return true;
-    void* stack_addr;
-    size_t stack_size;
-    pthread_attr_getstack(&attr, &stack_addr, &stack_size);
-    pthread_attr_destroy(&attr);
+    // The thread's stack extent is measured once per thread and kept. For the
+    // main thread glibc's pthread_getattr_np() derives the extent by reading
+    // and parsing /proc/self/maps, so querying it on every parser frame made
+    // the check cost grow with the program's size and its address space; that
+    // was most of the time spent reading source. The extent is queried again
+    // only when the frame lies outside the kept one (a different stack).
+    static thread_local uintptr_t t_stack_bottom = 0;
+    static thread_local size_t t_stack_extent = 0;
+    static thread_local bool t_stack_measured = false;
     // Real frame address, not a local's address: see the macOS branch for why
     // (the AddressSanitizer fake stack makes a local's address lie outside the
     // thread's stack bounds, which reads as exhaustion).
+    const uintptr_t here = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+    if (!t_stack_measured || here < t_stack_bottom || (here - t_stack_bottom) > t_stack_extent) {
+        pthread_attr_t attr;
+        if (pthread_getattr_np(pthread_self(), &attr) != 0) return true;
+        void* stack_addr;
+        size_t stack_size;
+        pthread_attr_getstack(&attr, &stack_addr, &stack_size);
+        pthread_attr_destroy(&attr);
+        t_stack_bottom = reinterpret_cast<uintptr_t>(stack_addr);
+        t_stack_extent = stack_size;
+        t_stack_measured = true;
+    }
     // On Linux the stack grows toward its BOTTOM (lowest address).
     // The distance to that bound is remaining space, not consumed space.
-    const uintptr_t bottom = reinterpret_cast<uintptr_t>(stack_addr);
-    const uintptr_t here = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
-    return here >= bottom && (here - bottom) <= stack_size &&
+    const uintptr_t bottom = t_stack_bottom;
+    return here >= bottom && (here - bottom) <= t_stack_extent &&
            (here - bottom) > STACK_SAFETY_MARGIN;
 #else
     // Unknown platform: assume stack is fine
