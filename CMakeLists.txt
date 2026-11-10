@@ -9672,6 +9672,18 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/wasm_geometry_guard_test.py)
 endif()
 
+# The AOT harness's own controls: scripts/run_stdlib_aot.cmake must reject a
+# zero-exit run with no verdict, a FAIL line beside a PASS verdict, a failed
+# compile and a compiler diagnostic. docs/TESTING.md describes these controls,
+# so CTest runs them.
+if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_stdlib_aot_runner.py")
+    add_test(NAME stdlib_aot_runner_controls
+             COMMAND ${Python3_EXECUTABLE}
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_stdlib_aot_runner.py)
+    set_tests_properties(stdlib_aot_runner_controls PROPERTIES TIMEOUT 300)
+endif()
+
 # Release-invariant contracts are source-level checks for the architecture
 # model and the typed receipts emitted before the release architecture grade.
 # Keep them in CTest so normal developer and CI test selections exercise the
