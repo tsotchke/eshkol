@@ -16631,6 +16631,22 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
     endif()
 endif()
 
+# Complete finite-class Busy Beaver proof replay (follow-up source donation).
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME bb_maximality_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/run_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>
+                --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(bb_maximality_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME bb_maximality_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/self_test.py")
+    set_tests_properties(bb_maximality_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
 # Standalone source-bound cost proof: require clean JIT/AOT exits and a red control.
 if(UNIX AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND Python3_Interpreter_FOUND)
     add_test(NAME busy_beaver_certificates
