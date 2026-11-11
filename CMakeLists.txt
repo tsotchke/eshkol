@@ -2600,6 +2600,9 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/runtime_errors_hosted.cpp
   lib/core/runtime_exceptions_hosted.cpp
   lib/core/runtime_exports_hosted.cpp
+  # The capability policy store: one copy, linked by the native runtime, the
+  # bytecode VM and the VM's WebAssembly bundle (scripts/lib/wasm_vm_sources.sh).
+  lib/core/capability_policy.cpp
   lib/core/runtime_lifecycle_hosted.cpp
   lib/core/runtime_operations_hosted.cpp
   lib/core/runtime_parameters_hosted.cpp

@@ -144,6 +144,38 @@ void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
     std::exit(1);
 }
 
+/*
+ * The capability gate at a sink.
+ *
+ * The policy store (lib/core/capability_policy.cpp) answers whether an
+ * operation is permitted; this is where a denial becomes an Eshkol condition.
+ * It lives beside eshkol_runtime_fatal because it raises through exactly the
+ * same path, so a denial is catchable by `guard` like any other error and
+ * carries the capability name in its message.
+ *
+ * With no policy installed the fast path is a single allow query and a return,
+ * so programs that never install a policy are unaffected.
+ */
+extern "C" int eshkol_capability_runtime_allows(const char* capability);
+extern "C" void eshkol_capability_runtime_deny(const char* capability);
+
+extern "C" void eshkol_capability_enforce(const char* capability,
+                                          const char* operation) {
+    if (capability == nullptr || capability[0] == '\0') return;
+    if (eshkol_capability_runtime_allows(capability)) return;
+
+    eshkol_capability_runtime_deny(capability);
+    if (operation != nullptr && operation[0] != '\0') {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "capability denied: %s (%s)",
+                             capability, operation);
+    } else {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "capability denied: %s",
+                             capability);
+    }
+}
+
 /**
  * @brief Report and raise a type error naming only the expected type (no
  * observed-value type available at the call site).

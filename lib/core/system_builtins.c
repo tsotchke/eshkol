@@ -120,6 +120,11 @@ extern int64_t eshkol_string_byte_length(const char* s);
 extern int eshkol_capability_runtime_allows(const char* capability);
 extern void eshkol_capability_runtime_deny(const char* capability);
 extern int eshkol_capability_require(const char* capability);
+/* The enforcing gate for sinks whose every possible return value is also a
+ * legitimate one — process creation, shell execution, socket creation. Raises
+ * a catchable capability-denied error naming the capability and the operation;
+ * returns normally when the capability is granted or no policy is installed. */
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
 /* ESH-0228: raise a proper R7RS type error (formats "Type error in <proc>:
  * expected <type>" and terminates via ESHKOL_EXCEPTION_TYPE_ERROR). Declared
  * here rather than via runtime.h, which pulls in the C++/C23 tagged-value
@@ -1477,11 +1482,125 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
  * Process Management
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* ── Children spawned through the raw builtin surface ─────────────────
+ *
+ * `(process-spawn ...)`, `(process-spawn-pty ...)` and `(fork)` hand the
+ * program a bare pid. The agent subprocess layer wraps each child in a handle
+ * it waits on and destroys, but a program using the raw builtins directly has
+ * no such owner, so the runtime keeps the book itself: every child it creates
+ * is recorded here with the pty master descriptor that belongs to it, and the
+ * entry is retired when `(process-wait ...)` collects the child.
+ *
+ * At shutdown the runtime walks what is left: any descriptor it still holds is
+ * closed and any child still running is asked to stop and then collected, so a
+ * program's children and their descriptors do not outlive it. The table is
+ * bounded; past the bound the runtime still spawns, it just stops recording,
+ * and the program's own `(process-wait ...)` remains the primary path.
+ *
+ * POSIX only. The Windows branch of `(process-spawn ...)` closes both handles
+ * CreateProcess hands back and re-opens the process by pid when waiting, so
+ * there is nothing to retain there.
+ */
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+#include <pthread.h>
+
+#define SYS_CHILD_TABLE_CAPACITY 256
+
+typedef struct {
+    pid_t pid;        /* > 0 while the slot is in use */
+    int master_fd;    /* pty master descriptor, or -1 */
+} sys_child_entry_t;
+
+static sys_child_entry_t g_sys_children[SYS_CHILD_TABLE_CAPACITY];
+static int g_sys_children_count = 0;
+static pthread_mutex_t g_sys_children_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_sys_children_hook_installed = 0;
+
+extern uint32_t eshkol_register_shutdown_hook(int (*hook)(void*, int), void* context,
+                                              const char* name);
+
+/** Close every pty descriptor still held, then stop and collect every child
+ *  still running. Registered as a shutdown hook the first time a child is
+ *  recorded. */
+static int sys_children_release_all(void* context, int reason) {
+    (void)context;
+    (void)reason;
+    sys_child_entry_t pending[SYS_CHILD_TABLE_CAPACITY];
+    int count = 0;
+
+    pthread_mutex_lock(&g_sys_children_mutex);
+    for (int i = 0; i < g_sys_children_count; i++) {
+        pending[count++] = g_sys_children[i];
+    }
+    g_sys_children_count = 0;
+    pthread_mutex_unlock(&g_sys_children_mutex);
+
+    for (int i = 0; i < count; i++) {
+        if (pending[i].master_fd >= 0) close(pending[i].master_fd);
+        if (pending[i].pid <= 0) continue;
+        int status = 0;
+        if (waitpid(pending[i].pid, &status, WNOHANG) == 0) {
+            (void)kill(pending[i].pid, SIGTERM);
+            (void)waitpid(pending[i].pid, &status, 0);
+        }
+    }
+    return 0;
+}
+
+/** Record a child this runtime created, together with the pty master
+ *  descriptor it owns (-1 when the child has no pty). */
+static void sys_child_record(pid_t pid, int master_fd) {
+    if (pid <= 0) return;
+    pthread_mutex_lock(&g_sys_children_mutex);
+    if (!g_sys_children_hook_installed) {
+        g_sys_children_hook_installed = 1;
+        (void)eshkol_register_shutdown_hook(sys_children_release_all, NULL,
+                                            "process-children");
+    }
+    for (int i = 0; i < g_sys_children_count; i++) {
+        if (g_sys_children[i].pid == pid) {
+            g_sys_children[i].master_fd = master_fd;
+            pthread_mutex_unlock(&g_sys_children_mutex);
+            return;
+        }
+    }
+    if (g_sys_children_count < SYS_CHILD_TABLE_CAPACITY) {
+        g_sys_children[g_sys_children_count].pid = pid;
+        g_sys_children[g_sys_children_count].master_fd = master_fd;
+        g_sys_children_count++;
+    }
+    pthread_mutex_unlock(&g_sys_children_mutex);
+}
+
+/** Retire a child's entry once the program has collected it. The pty
+ *  descriptor is left to the program, which received it from
+ *  `(process-spawn-pty ...)` and closes it with `(socket-close ...)`. */
+static void sys_child_forget(pid_t pid) {
+    if (pid <= 0) return;
+    pthread_mutex_lock(&g_sys_children_mutex);
+    for (int i = 0; i < g_sys_children_count; i++) {
+        if (g_sys_children[i].pid == pid) {
+            g_sys_children[i] = g_sys_children[g_sys_children_count - 1];
+            g_sys_children_count--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_sys_children_mutex);
+}
+#else
+/** No-op on platforms without the POSIX child surface. */
+static void sys_child_record(int pid, int master_fd) { (void)pid; (void)master_fd; }
+/** No-op on platforms without the POSIX child surface. */
+static void sys_child_forget(int pid) { (void)pid; }
+#endif
+
 /** Implements `(fork)`: forks the process, returning the child PID to the
  *  parent and 0 to the child (POSIX only; returns #f where unavailable). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fork_v(void) {
+    eshkol_capability_enforce("subprocess", "fork");
 #if !defined(_WIN32)
     pid_t pid = fork();
+    if (pid > 0) sys_child_record(pid, -1);
     if (pid >= 0) return sys_make_int64((int64_t)pid);
 #endif
     return sys_make_bool(0);
@@ -1516,6 +1635,7 @@ static int sys_execv_argv_from_list(eshkol_sysbuiltin_value_t list,
  *  argument vector (POSIX execv). Only returns — as #f — if the exec fails. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_execv_v(eshkol_sysbuiltin_value_t path_val,
                                                          eshkol_sysbuiltin_value_t argv_val) {
+    eshkol_capability_enforce("subprocess", "execv");
     const char* path = sys_extract_string(path_val);
     if (!path || !*path) return sys_make_bool(0);
 #if !defined(_WIN32)
@@ -1540,6 +1660,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_execv_v(eshkol_sysbuiltin_value_
  *  failure. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuiltin_value_t cmd_val,
                                                         eshkol_sysbuiltin_value_t args_val) {
+    eshkol_capability_enforce("subprocess", "process-spawn");
+    eshkol_capability_enforce("shell", "process-spawn");
     const char* cmd = sys_extract_string(cmd_val);
     const char* env_str = sys_extract_string(args_val); /* optional: env var "KEY=VAL" */
     if (!cmd) return sys_make_int64(-1);
@@ -1563,6 +1685,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
         _exit(127);
     }
     if (pid < 0) return sys_make_int64(-1);
+    sys_child_record(pid, -1);
     return sys_make_int64((int64_t)pid);
 #else
     /* Windows process creation via CreateProcess + cmd /c */
@@ -1576,25 +1699,72 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
     char cmdline[32768];
     snprintf(cmdline, sizeof(cmdline), "cmd /c %s", cmd);
 
-    /* Set environment if provided */
+    /* The child's environment is built as a block and handed to
+     * CreateProcessA, so the overlay applies to the child and to nothing else.
+     * The parent's own environment is left exactly as it was, which matches
+     * the POSIX branch above, where each KEY=VAL lands inside the forked
+     * child. The block is the parent's environment followed by the overlay
+     * pairs, NUL-separated and NUL-terminated; a later key wins, which is how
+     * the process environment resolves duplicates.
+     *
+     * NULL for lpEnvironment means "inherit the parent's", so a spawn with no
+     * overlay needs no block at all. */
+    char* child_env = NULL;
+    char* env_copy = NULL;
     if (env_str && strlen(env_str) > 0) {
-        /* putenv each KEY=VAL pair before creating child */
-        char* env_copy = _strdup(env_str);
-        if (env_copy) {
-            char* pair = strtok(env_copy, " ");
-            while (pair) {
-                _putenv(pair);
-                pair = strtok(NULL, " ");
+        const char* parent_env = GetEnvironmentStringsA();
+        size_t parent_len = 0;
+        if (parent_env) {
+            while (parent_env[parent_len] != '\0' || parent_env[parent_len + 1] != '\0') {
+                parent_len++;
             }
-            free(env_copy);
+            parent_len += 2; /* the entry's NUL and the block's terminator */
         }
+
+        size_t overlay_len = strlen(env_str) + 2;
+        size_t block_size = parent_len + overlay_len;
+        child_env = (char*)malloc(block_size);
+        env_copy = _strdup(env_str);
+        if (!child_env || !env_copy) {
+            if (parent_env) FreeEnvironmentStringsA((LPCH)parent_env);
+            free(child_env);
+            free(env_copy);
+            return sys_make_int64(-1);
+        }
+
+        size_t offset = 0;
+        if (parent_env && parent_len > 2) {
+            /* copy every parent entry, dropping the block's own terminator */
+            memcpy(child_env, parent_env, parent_len - 1);
+            offset = parent_len - 1;
+        }
+        if (parent_env) FreeEnvironmentStringsA((LPCH)parent_env);
+
+        char* pair = strtok(env_copy, " ");
+        while (pair) {
+            size_t pair_len = strlen(pair);
+            if (pair_len > 0 && offset + pair_len + 2 <= block_size) {
+                memcpy(child_env + offset, pair, pair_len);
+                offset += pair_len;
+                child_env[offset++] = '\0';
+            }
+            pair = strtok(NULL, " ");
+        }
+        child_env[offset++] = '\0';
+        free(env_copy);
     }
 
-    if (!CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, 0,
+                                  child_env, NULL, &si, &pi);
+    free(child_env);
+    if (!created) {
         return sys_make_int64(-1);
     }
+    /* Both handles are released here: `(process-wait pid)` re-opens the
+     * process by id, so retaining either one would only hold kernel objects
+     * for the life of the program. */
     CloseHandle(pi.hThread);
-    /* Return process ID — the handle is stored implicitly via the PID */
+    CloseHandle(pi.hProcess);
     return sys_make_int64((int64_t)pi.dwProcessId);
 #endif
 }
@@ -1607,6 +1777,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_wait_v(eshkol_sysbuiltin
 #ifndef _WIN32
     int status = 0;
     if (waitpid((pid_t)pid, &status, 0) < 0) return sys_make_int64(-1);
+    sys_child_forget((pid_t)pid);
     if (WIFEXITED(status)) return sys_make_int64(WEXITSTATUS(status));
     if (WIFSIGNALED(status)) return sys_make_int64(128 + WTERMSIG(status));
     return sys_make_int64(-1);
@@ -1797,6 +1968,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkstemp_v(eshkol_sysbuiltin_valu
  *  @p pid_val (POSIX kill). Returns #t on success (no-op #f on Windows). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_v(eshkol_sysbuiltin_value_t pid_val,
                                                                 eshkol_sysbuiltin_value_t sig_val) {
+    eshkol_capability_enforce("subprocess", "process-kill");
     int64_t pid = (int64_t)pid_val.data;
     int64_t sig = (int64_t)sig_val.data;
 #ifndef _WIN32
@@ -2033,6 +2205,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_pid_v(void) {
  *  pid_val to @p pgid_val (POSIX setpgid). Returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_setpgid_v(eshkol_sysbuiltin_value_t pid_val,
                                                                     eshkol_sysbuiltin_value_t pgid_val) {
+    eshkol_capability_enforce("subprocess", "process-setpgid");
     int64_t pid = (int64_t)pid_val.data;
     int64_t pgid = (int64_t)pgid_val.data;
 #ifndef _WIN32
@@ -2048,6 +2221,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_setpgid_v(eshkol_sysbuil
  *  the single process if the group send fails. Returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_tree_v(eshkol_sysbuiltin_value_t pid_val,
                                                                      eshkol_sysbuiltin_value_t sig_val) {
+    eshkol_capability_enforce("subprocess", "process-kill-tree");
     int64_t pid = (int64_t)pid_val.data;
     int64_t sig = (int64_t)sig_val.data;
 #ifndef _WIN32
@@ -2068,26 +2242,45 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_tree_v(eshkol_sysbu
 #endif
 }
 
-/** Implements `(process-spawn-pty cmd)`: spawns @p cmd_val under a newly
- *  allocated pseudo-terminal (forkpty) so it behaves as if attached to a
- *  real TTY, and returns the child PID (-1 on failure). POSIX only. */
+/** Implements `(process-spawn-pty cmd)`: runs @p cmd_val under the system
+ *  shell in a child attached to a fresh pseudo-terminal, and returns the pair
+ *  `(pid . master-fd)` — the same shape the bytecode VM returns — so the
+ *  program owns the master descriptor and can read the child's output through
+ *  it and close it with `(socket-close ...)`. The child leads its own process
+ *  group, so `(process-kill-tree ...)` reaches it and its descendants.
+ *  Returns -1 on failure, and on platforms without a pseudo-terminal.
+ *  Requires the `subprocess` and `shell` capabilities. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_pty_v(eshkol_sysbuiltin_value_t cmd_val) {
-    /* PTY spawn — allocate a pseudo-terminal for interactive processes */
+    eshkol_capability_enforce("subprocess", "process-spawn-pty");
+    eshkol_capability_enforce("shell", "process-spawn-pty");
     const char* cmd = sys_extract_string(cmd_val);
     if (!cmd) return sys_make_int64(-1);
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
-    int master_fd;
+    int master_fd = -1;
     pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
     if (pid < 0) return sys_make_int64(-1);
     if (pid == 0) {
-        /* Child: exec the command via shell */
+        /* Child: lead a new process group, then exec the command via shell */
+        (void)setpgid(0, 0);
         execlp("/bin/sh", "sh", "-c", cmd, (char*)NULL);
         _exit(127);
     }
-    /* Parent: return master fd (can read/write to it) */
-    /* Pack as cons pair: (pid . master-fd) */
-    /* For simplicity, return just the pid — the master_fd is tracked internally */
-    return sys_make_int64((int64_t)pid);
+    if (master_fd < 0) {
+        (void)kill(pid, SIGTERM);
+        (void)waitpid(pid, NULL, 0);
+        return sys_make_int64(-1);
+    }
+    (void)setpgid(pid, pid);
+    eshkol_sysbuiltin_value_t handle = sys_make_pair(sys_make_int64((int64_t)pid),
+                                                     sys_make_int64((int64_t)master_fd));
+    if (handle.type == SYS_TYPE_NULL) {
+        close(master_fd);
+        (void)kill(pid, SIGTERM);
+        (void)waitpid(pid, NULL, 0);
+        return sys_make_int64(-1);
+    }
+    sys_child_record(pid, master_fd);
+    return handle;
 #else
     return sys_make_int64(-1);
 #endif
@@ -2137,6 +2330,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
  *  Unix-domain socket at @p path_val and returns its file descriptor, or #f
  *  on failure. POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_unix_socket_connect_v(eshkol_sysbuiltin_value_t path_val) {
+    eshkol_capability_enforce("network", "unix-socket-connect");
     const char* path = sys_extract_string(path_val);
     if (!path || !*path) return sys_make_bool(0);
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
@@ -4333,6 +4527,7 @@ static int sys_http_server_store(int listen_fd, int port) {
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_http_server_create_v(eshkol_sysbuiltin_value_t port_val) {
+    eshkol_capability_enforce("network", "http-server-create");
 #if !defined(_WIN32)
     int requested_port = (int)sys_extract_int64(port_val);
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -4545,6 +4740,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
     eshkol_sysbuiltin_value_t headers_val,
     eshkol_sysbuiltin_value_t body_val,
     eshkol_sysbuiltin_value_t timeout_val) {
+    eshkol_capability_enforce("network", "http-request");
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     const char* method = sys_extract_string(method_val);
     const char* url = sys_extract_string(url_val);
@@ -4699,6 +4895,7 @@ static int sys_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
 static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
     eshkol_sysbuiltin_value_t url_val,
     eshkol_sysbuiltin_value_t headers_val) {
+    eshkol_capability_enforce("network", "websocket-connect");
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     const char* url = sys_extract_string(url_val);
     const char* headers = sys_extract_string(headers_val);

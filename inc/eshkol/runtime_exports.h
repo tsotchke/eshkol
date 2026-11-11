@@ -35,6 +35,7 @@ inline constexpr const char* getenv_symbol = "eshkol_getenv";
 inline constexpr const char* setenv_symbol = "eshkol_setenv";
 inline constexpr const char* unsetenv_symbol = "eshkol_unsetenv";
 inline constexpr const char* usleep_symbol = "eshkol_usleep";
+inline constexpr const char* shell_command_symbol = "eshkol_shell_command";
 inline constexpr const char* fopen_symbol = "eshkol_fopen";
 inline constexpr const char* fputs_symbol = "eshkol_fputs";
 inline constexpr const char* access_symbol = "eshkol_access";
@@ -331,6 +332,60 @@ void eshkol_capability_runtime_deny(const char* capability);
  * @return 1 when the capability is granted; 0 after recording the denial.
  */
 int eshkol_capability_require(const char* capability);
+
+/**
+ * @brief Name the first capability an fopen()-style mode string needs and is
+ *        not granted.
+ *
+ * Same mode reading as eshkol_capability_runtime_allows_file_mode(), but
+ * reports *which* capability is missing so a caller can name it in an error.
+ *
+ * @param mode fopen()-style mode string. NULL or empty is treated as
+ *        requiring "file-read".
+ * @return "file-read" or "file-write" naming the first missing capability, or
+ *         NULL when the mode is fully permitted.
+ */
+const char* eshkol_capability_runtime_file_mode_missing(const char* mode);
+
+/**
+ * @brief The gate at a capability sink: permit the operation, or raise a
+ *        catchable Eshkol error naming the capability.
+ *
+ * This is the enforcing counterpart to eshkol_capability_require(), for sinks
+ * whose only correct answer to a denial is a raise rather than a sentinel
+ * return value — process creation, shell execution, socket creation and
+ * dynamic library loading all fall in that class, since every return value
+ * they could produce is also a legitimate one.
+ *
+ * With no policy installed this returns immediately and the program behaves
+ * exactly as it did before capabilities existed. Under an active policy that
+ * does not grant @p capability it raises ESHKOL_EXCEPTION_ERROR with the
+ * message "capability denied: <capability> (<operation>)", which `guard`
+ * catches like any other error; an unhandled raise ends the program the same
+ * way an unhandled `(error ...)` does, rather than continuing into the sink.
+ *
+ * @param capability Capability name the sink requires, e.g. "subprocess".
+ *        NULL requires nothing and returns.
+ * @param operation  The operation to name in the message, e.g.
+ *        "process-spawn". NULL is reported as the capability name alone.
+ */
+void eshkol_capability_enforce(const char* capability, const char* operation);
+
+/**
+ * @brief Run @p command through the host command interpreter, under the
+ *        "shell" capability.
+ *
+ * The runtime entry point `(system cmd)` lowers to on every backend, so the
+ * capability gate sits here once rather than in each code generator. With no
+ * policy installed it is libc system(); under a policy that does not grant
+ * "shell" it raises a catchable capability-denied error and the command never
+ * runs.
+ *
+ * @param command Command line for the host interpreter. NULL reports a -1
+ *        exit status without consulting the policy, since nothing runs.
+ * @return The host interpreter's exit status, as libc system() reports it.
+ */
+int eshkol_shell_command(const char* command);
 
 }
 
