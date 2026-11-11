@@ -199,10 +199,14 @@ fi
 
 # ── 3. the documented input-size cap ───────────────────────────────────────
 echo "=== the input-size cap ==="
+# A long FORM, not a long comment: the front end weighs each form as it reads
+# it, and a comment body never becomes part of one.
 cap_prog="$WORK/cap.esk"
 {
+    printf "(define big '("
+    for _ in $(seq 1 1000); do printf '1234 '; done
+    printf '))\n'
     printf '(display "ok")\n(newline)\n'
-    printf ';; %s\n' "$(repeat_char 'x' 4000)"
 } > "$cap_prog"
 cap_bytes=$(wc -c < "$cap_prog" | tr -d ' ')
 
