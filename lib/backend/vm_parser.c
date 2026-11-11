@@ -810,7 +810,10 @@ static Node* parse_datum_iterative(void) {
         const char c = *src_ptr;
 
         if (!c) {
-            if (st.n == 0) return NULL;   /* EOF between datums is normal */
+            if (st.n == 0) {   /* EOF between datums is normal */
+                vm_read_stack_release(&st);
+                return NULL;
+            }
             if (st.frames[st.n - 1].kind == VM_READ_PREFIX)
                 vm_compile_error("missing datum after reader prefix", NULL);
             else
@@ -852,6 +855,7 @@ static Node* parse_datum_iterative(void) {
             if (st.n == 0) {
                 /* A closing parenthesis with nothing open is not a datum; the
                  * caller reports it as an invalid or incomplete one. */
+                vm_read_stack_release(&st);
                 return NULL;
             }
             if (st.frames[st.n - 1].kind == VM_READ_PREFIX) {

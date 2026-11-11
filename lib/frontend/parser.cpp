@@ -1452,9 +1452,19 @@ static bool read_syntax_datum(SchemeTokenizer& tokenizer, const Token& first,
     return read_syntax_datum_from(next, first, out);
 }
 
-/** @brief Append the tokens that spell @p datum to @p out, in reading order. */
+/** @brief Append the tokens that spell @p datum to @p out, in reading order.
+ *
+ * This walk is natively recursive. The datum reader applies the same 64 KB
+ * headroom margin at read time, so a datum READ from source cannot be deeper
+ * than this walk can take; the guard here does not depend on that staying
+ * true, so a datum from any other producer is reported rather than taking the
+ * stack out. */
 static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Token>& out) {
     using Kind = eshkol::SyntaxDatum::Kind;
+    if (!check_stack_space()) {
+        eshkol_error("macro syntax nested too deeply to spell out");
+        return;
+    }
     Token token{static_cast<TokenType>(datum.token_type), datum.text, 0,
                 datum.line, datum.column};
     token.verbatim = datum.verbatim;
@@ -1497,6 +1507,11 @@ static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Tok
  * datum they were read from (the lowering never makes new atoms); symbols and
  * lists the lowering introduces take the form's own position. */
 static eshkol_syn* effect_datum_to_syn(const eshkol::SyntaxDatum& datum) {
+    /* Natively recursive; same reasoning as emit_syntax_tokens above. */
+    if (!check_stack_space()) {
+        eshkol_error("effect form nested too deeply");
+        return nullptr;
+    }
     using Kind = eshkol::SyntaxDatum::Kind;
     eshkol_syn_kind kind = ESHKOL_SYN_ATOM;
     switch (datum.kind) {
