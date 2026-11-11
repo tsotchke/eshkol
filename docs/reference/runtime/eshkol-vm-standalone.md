@@ -11,7 +11,8 @@ targets.
 It uses a hand-rolled argv parser (there is **no** `--help`):
 
 ```
-eshkol-vm-standalone [--trace] [--emit-eskb PATH] <input.eskb | input.esk> [program args...]
+eshkol-vm-standalone [--trace] [--emit-eskb PATH] [--max-source-bytes=N]
+                     [--max-pass-depth=N] <input.eskb | input.esk> [program args...]
 ```
 
 | Token | Effect |
@@ -20,11 +21,21 @@ eshkol-vm-standalone [--trace] [--emit-eskb PATH] <input.eskb | input.esk> [prog
 | `<file>.esk` | Compile the source and run it |
 | `--trace` | Enable per-instruction VM tracing |
 | `--emit-eskb PATH` | Emit bytecode to `PATH` |
+| `--max-source-bytes=N` | Largest source text accepted (default `64M`; `0` removes the cap) |
+| `--max-pass-depth=N` | Levels of **code** nesting the compiler descends (default `1000`; `0` removes the count) |
 | `--` | Treat the rest of argv as positional |
 | *(no args)* | Run the built-in VM self-tests |
 
 Everything from the input file onward is passed to the program as its command
 line. Set `ESHKOL_VM_NO_DISASM=1` to suppress the disassembly dump.
+
+Nesting depth, when the VM reads a datum, is bounded by memory and by nothing
+else: its reader carries the open containers on its own heap stack. A quoted
+datum a million levels deep reads, compares and prints in full. The two
+options above are the only reading limits, they take the same values as
+`ESHKOL_MAX_SOURCE_BYTES` and `ESHKOL_MAX_PASS_DEPTH`, and they are the same
+numbers the native front end uses — see
+[Environment variables](environment-variables.md#reading-the-input-size-cap-and-why-there-is-no-depth-limit).
 
 ### Verified example
 

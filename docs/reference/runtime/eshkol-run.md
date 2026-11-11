@@ -73,6 +73,8 @@ Object-only `-g -c` output keeps DWARF in the requested object file.
 | `--types=gradual` | The default: nominal type mismatches are warnings and compilation continues |
 | `--types=strict` | Every type error is fatal |
 | `--strict-types` | Same as `--types=strict` |
+| `--max-source-bytes=N` | Largest source text accepted (default `64M`; `0` removes the cap). Also `ESHKOL_MAX_SOURCE_BYTES`. Nesting **depth** has no limit. |
+| `--max-pass-depth=N` | Levels of **code** nesting the compiler descends (default `1000`; `0` removes the count). Also `ESHKOL_MAX_PASS_DEPTH`. Quoted data is unaffected. |
 | `--unsafe` | Skip all type checks |
 
 "Fatal" is enforced, not advisory: under `--strict-types` a program with type
