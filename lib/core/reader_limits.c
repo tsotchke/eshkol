@@ -111,6 +111,6 @@ void eshkol_reader_depth_message(const char* pass_name, size_t depth,
     snprintf(message, cap,
              "%s reached its %zu-level nesting budget "
              "(raise it with ESHKOL_MAX_PASS_DEPTH or --max-pass-depth=N; "
-             "reading itself has no depth limit)",
+             "reading and quoted data have no depth limit)",
              pass_name ? pass_name : "this compiler pass", depth);
 }

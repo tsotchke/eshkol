@@ -7246,7 +7246,66 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
  *        implementation compared pairs and vectors by heap identity, so
  *        freshly-built equal structures reported `#f`.
  */
-static int vm_deep_equal(VM* vm, Value a, Value b) {
+/* ───────────────────────────────────────────────────────────────────────────
+ * equal? carries its own stack
+ *
+ * A pair's spine was already iterated here; a datum nests in the CAR, and a
+ * datum nests as deeply as the reader could read it, so the car descent and
+ * the vector-element descent are carried on an explicit pending set too.  A
+ * million-level quoted datum therefore compares on a constant number of
+ * native frames.  The set starts inline and grows on the heap; if it cannot
+ * grow, the comparison says so rather than answering from a partial walk.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef struct { Value a; Value b; } VmEqualPair;
+
+typedef struct {
+    VmEqualPair  inline_slots[32];
+    VmEqualPair* slots;
+    size_t       n;
+    size_t       cap;
+    int          heap;
+    int          failed;
+} VmEqualWork;
+
+static void vm_equal_work_init(VmEqualWork* w) {
+    w->slots = w->inline_slots;
+    w->n = 0;
+    w->cap = sizeof(w->inline_slots) / sizeof(w->inline_slots[0]);
+    w->heap = 0;
+    w->failed = 0;
+}
+
+static void vm_equal_work_free(VmEqualWork* w) {
+    if (w->heap) free(w->slots);
+    w->slots = w->inline_slots;
+    w->heap = 0;
+}
+
+static int vm_equal_work_push(VmEqualWork* w, Value a, Value b) {
+    if (w->n == w->cap) {
+        const size_t next = w->cap * 2;
+        VmEqualPair* grown;
+        if (w->heap) {
+            grown = (VmEqualPair*)realloc(w->slots, next * sizeof(VmEqualPair));
+        } else {
+            grown = (VmEqualPair*)malloc(next * sizeof(VmEqualPair));
+            if (grown) memcpy(grown, w->slots, w->n * sizeof(VmEqualPair));
+        }
+        if (!grown) { w->failed = 1; return 0; }
+        w->slots = grown;
+        w->cap = next;
+        w->heap = 1;
+    }
+    w->slots[w->n].a = a;
+    w->slots[w->n].b = b;
+    w->n++;
+    return 1;
+}
+
+/* One step: answers for this pair outright, or queues the sub-pairs that
+ * decide it.  A 0 return always means "not equal?". */
+static int vm_deep_equal_step(VM* vm, Value a, Value b, VmEqualWork* work) {
     if (a.type != b.type) {
         /* Native #(...) literals use the tensor representation while
          * (vector ...) uses tagged vector slots. Preserve R7RS equal?
@@ -7298,11 +7357,12 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
                 HeapObject* ao = vm->heap.objects[a.as.ptr];
                 HeapObject* bo = vm->heap.objects[b.as.ptr];
                 if (!ao || !bo) return 0;
-                if (!vm_deep_equal(vm, ao->cons.car, bo->cons.car)) return 0;
+                if (!vm_equal_work_push(work, ao->cons.car, bo->cons.car)) return 0;
                 a = ao->cons.cdr;
                 b = bo->cons.cdr;
             }
-            return vm_deep_equal(vm, a, b); /* compare tails (incl. proper-list NIL) */
+            /* The tails (a proper list's NIL included) decide it too. */
+            return vm_equal_work_push(work, a, b);
         }
         case VAL_VECTOR: {
             HeapObject* ao = vm->heap.objects[a.as.ptr];
@@ -7323,17 +7383,18 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
                         an = ai.type == VAL_INT ? (double)ai.as.i : ai.as.f;
                         bn = bi.type == VAL_INT ? (double)bi.as.i : bi.as.f;
                         if (an != bn) return 0; /* +/-0 equal; NaN unequal */
-                    } else if (a_tensor_literal != b_tensor_literal ||
-                               !vm_deep_equal(vm, ai, bi)) {
+                    } else if (a_tensor_literal != b_tensor_literal) {
                         /* The native tensor/ordinary-vector bridge is 1-D
-                         * and numeric; only two marked tensors recurse. */
+                         * and numeric; only two marked tensors descend. */
+                        return 0;
+                    } else if (!vm_equal_work_push(work, ai, bi)) {
                         return 0;
                     }
                 }
                 return 1;
             }
             for (int i = 0; i < av->len; i++)
-                if (!vm_deep_equal(vm, av->items[i], bv->items[i])) return 0;
+                if (!vm_equal_work_push(work, av->items[i], bv->items[i])) return 0;
             return 1;
         }
         case VAL_BIGNUM: {
@@ -7377,6 +7438,30 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
         default:
             return a.as.ptr == b.as.ptr; /* eq? fallback for opaque types */
     }
+}
+
+/**
+ * @brief Structural equality (R7RS equal?) on two VM values.
+ *
+ * Native stack use is constant in how deeply the values nest.  When the
+ * pending set cannot grow, the VM reports it rather than answering from an
+ * incomplete walk.
+ */
+static int vm_deep_equal(VM* vm, Value a, Value b) {
+    VmEqualWork work;
+    vm_equal_work_init(&work);
+    int answer = vm_deep_equal_step(vm, a, b, &work);
+    while (answer && work.n > 0) {
+        const VmEqualPair pair = work.slots[--work.n];
+        answer = vm_deep_equal_step(vm, pair.a, pair.b, &work);
+    }
+    if (work.failed) {
+        fprintf(stderr, "ERROR: out of memory comparing two values structurally\n");
+        vm->error = 1;
+        answer = 0;
+    }
+    vm_equal_work_free(&work);
+    return answer;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

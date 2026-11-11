@@ -1,4 +1,6 @@
 #include <eshkol/builtin_libraries.h>
+#include <eshkol/core/reader_limits.h>
+#include <eshkol/core/stack_guard.h>
 #include <eshkol/module_resolver.h>
 #if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
 #include "vm_embedded_modules.h"
@@ -930,12 +932,24 @@ static void compile_hott_form(FuncChunk* c, Node* node) {
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
     vm_strip_binding_annotations(node);
     compile_depth++;
-    if (compile_depth > 1000) {
-        /* Fail closed: the subexpression emits no code, so the compilation
-         * must not produce a program. */
-        vm_compile_error("expression nesting too deep (>1000)", NULL);
-        compile_depth--;
-        return;
+    /* CODE nesting has a documented, configurable budget; DATA nesting has
+     * none — the reader, quoted-datum emission and the runtime all carry
+     * their own stack, so a million-level quoted datum goes through this
+     * function at depth two.  The native-stack guard is consulted whatever
+     * the budget is, so raising the budget cannot turn into a signal: this
+     * pass still refuses, one frame before the bound.  Fail closed either
+     * way: the subexpression emits no code, so no program may be produced. */
+    {
+        const size_t budget = eshkol_reader_max_pass_depth();
+        if ((budget && (size_t)compile_depth > budget) || !eshkol_stack_headroom_ok()) {
+            char message[320];
+            eshkol_reader_depth_message("compiling a nested expression",
+                                        budget ? budget : (size_t)compile_depth,
+                                        message, sizeof(message));
+            vm_compile_error("expression nesting too deep", message);
+            compile_depth--;
+            return;
+        }
     }
     compile_expr_impl(c, node, tail);
     compile_depth--;

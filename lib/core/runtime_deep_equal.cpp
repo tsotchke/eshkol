@@ -11,6 +11,7 @@
 #include "../../inc/eshkol/core/rational.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 // eqv? on two inexact reals: equal bit patterns. Distinguishes 0.0 from -0.0
@@ -22,10 +23,68 @@ static inline bool same_double_bits(double a, double b) {
     return ba == bb;
 }
 
-// Runtime helper for deep structural equality of tagged values.
-// Takes pointers to avoid struct-by-value ABI issues.
-bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
-                       const eshkol_tagged_value_t* val2) {
+// ───────────────────────────────────────────────────────────────────────────
+// equal? carries its own stack
+//
+// A value nests as deeply as the reader could read it, and a list is as long
+// as memory allows, so the comparison walks with an explicit pending set
+// rather than native recursion: a million-level quoted datum, and a
+// million-element list, compare on a constant number of native frames.
+//
+// The pending set starts in a small inline buffer — the overwhelming majority
+// of comparisons never leave it — and grows on the heap from there.  If it
+// cannot grow, the comparison raises the ordinary catchable allocation
+// condition rather than answering from an incomplete walk.
+// ───────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+struct EqualPair {
+    eshkol_tagged_value_t a;
+    eshkol_tagged_value_t b;
+};
+
+struct EqualWorklist {
+    EqualPair  inline_slots[32];
+    EqualPair* slots = inline_slots;
+    size_t     n = 0;
+    size_t     cap = 32;
+    bool       heap = false;
+
+    ~EqualWorklist() { if (heap) free(slots); }
+
+    bool push(const eshkol_tagged_value_t& a, const eshkol_tagged_value_t& b) {
+        if (n == cap) {
+            const size_t next = cap * 2;
+            EqualPair* grown = nullptr;
+            if (heap) {
+                grown = (EqualPair*)realloc(slots, next * sizeof(EqualPair));
+            } else {
+                grown = (EqualPair*)malloc(next * sizeof(EqualPair));
+                if (grown) memcpy(grown, slots, n * sizeof(EqualPair));
+            }
+            if (!grown) {
+                eshkol_raise_allocation_failure("structural comparison",
+                                                next * sizeof(EqualPair));
+                return false;
+            }
+            slots = grown;
+            cap = next;
+            heap = true;
+        }
+        slots[n].a = a;
+        slots[n].b = b;
+        n++;
+        return true;
+    }
+};
+
+// One step of the comparison: answers for this pair outright, or queues the
+// sub-pairs that decide it and answers "nothing seen so far says unequal".
+// A false return always means "not equal?".
+bool deep_equal_step(const eshkol_tagged_value_t* val1,
+                     const eshkol_tagged_value_t* val2,
+                     EqualWorklist& pending) {
     if (!val1 || !val2) {
         return val1 == val2;  // Both null -> equal, one null -> not equal.
     }
@@ -83,13 +142,16 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
 
         if (!cell1 || !cell2) return cell1 == cell2;
 
-        eshkol_tagged_value_t car1 = arena_tagged_cons_get_tagged_value(cell1, false);
-        eshkol_tagged_value_t car2 = arena_tagged_cons_get_tagged_value(cell2, false);
-        if (!eshkol_deep_equal(&car1, &car2)) return false;
-
-        eshkol_tagged_value_t cdr1 = arena_tagged_cons_get_tagged_value(cell1, true);
-        eshkol_tagged_value_t cdr2 = arena_tagged_cons_get_tagged_value(cell2, true);
-        return eshkol_deep_equal(&cdr1, &cdr2);
+        const eshkol_tagged_value_t car1 = arena_tagged_cons_get_tagged_value(cell1, false);
+        const eshkol_tagged_value_t car2 = arena_tagged_cons_get_tagged_value(cell2, false);
+        const eshkol_tagged_value_t cdr1 = arena_tagged_cons_get_tagged_value(cell1, true);
+        const eshkol_tagged_value_t cdr2 = arena_tagged_cons_get_tagged_value(cell2, true);
+        // The cdr is queued first so the car is taken next: the walk reaches
+        // a difference in the same order the recursive shape did, which is
+        // what makes a long list's comparison stop as early as it used to.
+        if (!pending.push(cdr1, cdr2)) return false;
+        if (!pending.push(car1, car2)) return false;
+        return true;
     }
 
     bool is_str1 = is_string(type1, val1);
@@ -193,7 +255,7 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
             const eshkol_tagged_value_t* tensor_data =
                 reinterpret_cast<const eshkol_tagged_value_t*>(tensor->elements);
             for (int64_t i = 0; i < vector_len; ++i) {
-                if (!eshkol_deep_equal(&tensor_data[i], &vector_data[i])) return false;
+                if (!pending.push(tensor_data[i], vector_data[i])) return false;
             }
             return true;
         }
@@ -224,7 +286,7 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         eshkol_tagged_value_t* elems2 =
             (eshkol_tagged_value_t*)((uint8_t*)(uintptr_t)val2->data.ptr_val + 8);
         for (int64_t i = 0; i < len1; i++) {
-            if (!eshkol_deep_equal(&elems1[i], &elems2[i])) return false;
+            if (!pending.push(elems1[i], elems2[i])) return false;
         }
         return true;
     }
@@ -287,4 +349,19 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         default:
             return val1->data.int_val == val2->data.int_val;
     }
+}
+
+} // namespace
+
+// Runtime helper for deep structural equality of tagged values.
+// Takes pointers to avoid struct-by-value ABI issues.
+bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
+                       const eshkol_tagged_value_t* val2) {
+    EqualWorklist pending;
+    if (!deep_equal_step(val1, val2, pending)) return false;
+    while (pending.n > 0) {
+        const EqualPair pair = pending.slots[--pending.n];
+        if (!deep_equal_step(&pair.a, &pair.b, pending)) return false;
+    }
+    return true;
 }

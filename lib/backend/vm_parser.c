@@ -7,6 +7,7 @@
 #include "../../inc/eshkol/core/string_escape.h"
 #include "../../inc/eshkol/core/number_syntax.h"
 #include "../../inc/eshkol/core/reader_limits.h"
+#include "../../inc/eshkol/core/stack_guard.h"
 #include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
@@ -1605,7 +1606,27 @@ static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
 /** @brief Scan an AST subtree for a `(set! name ...)` reference to
  *         @p name. */
+/* The binding scanners below walk a form with native recursion.  A form can
+ * be nested as deeply as the reader could read it, so each one asks for stack
+ * headroom on entry and poisons the compilation rather than descending past
+ * its bound.  The answer it then returns is the conservative one; no program
+ * is produced from a poisoned compilation, so it is never acted on. */
+#define VM_SCAN_GUARD(conservative_answer)                                   \
+    do {                                                                     \
+        if (!eshkol_stack_headroom_ok()) {                                   \
+            char vm_scan_message[320];                                       \
+            eshkol_reader_depth_message("scanning a nested form's bindings", \
+                                        eshkol_reader_max_pass_depth(),      \
+                                        vm_scan_message,                     \
+                                        sizeof(vm_scan_message));            \
+            vm_compile_error("form nesting too deep to scan",                \
+                             vm_scan_message);                              \
+            return (conservative_answer);                                    \
+        }                                                                    \
+    } while (0)
+
 static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
         Node* head = node->children[0];
@@ -1743,6 +1764,7 @@ static int scan_for_set(Node* node, const char* name) {
  * mutation remains a direct stack-slot store; this is the VM counterpart of
  * native assignment conversion's alloca fast path and keeps hot loops flat. */
 static int scan_for_callcc(Node* node) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type != N_LIST) return 0;
     if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
@@ -1763,6 +1785,7 @@ static int scan_for_callcc(Node* node) {
  * than one lowered scope. Seeing any closure constructor keeps the local in a
  * shared cell; the no-closure case is the performance case we can prove. */
 static int scan_for_reference_scoped(Node* node, const char* name, int shadowed) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type == N_SYMBOL)
         return !shadowed && strcmp(node->symbol, name) == 0;
@@ -1860,6 +1883,7 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
 }
 
 static int scan_for_observing_context_scoped(Node* node, const char* name, int shadowed) {
+    VM_SCAN_GUARD(1);
     if (!node || node->type != N_LIST) return 0;
     Node* head = node->n_children ? node->children[0] : NULL;
     if (head && head->type == N_SYMBOL) {
@@ -1991,6 +2015,7 @@ static int scan_for_observing_context(Node* node, const char* name) {
  *        whether the current recursion is inside a lambda body.
  */
 static int scan_for_capture(Node* node, const char* name, int in_lambda) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type == N_SYMBOL && in_lambda && strcmp(node->symbol, name) == 0)
         return 1;
@@ -2148,7 +2173,138 @@ static void compile_packed_string_literal(FuncChunk* c, const char* data, size_t
     chunk_emit(c, OP_NATIVE_CALL, ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
 }
 
+/* ───────────────────────────────────────────────────────────────────────────
+ * Quoted data is built with the compiler's own stack
+ *
+ * A quoted datum nests as deeply as the reader could read it, so emitting one
+ * walks the tree with an explicit work stack instead of native recursion.  A
+ * work item is one step of the emission the recursive shape used to perform
+ * in order; items are pushed in reverse, so popping replays that order
+ * exactly — which matters, because the order of chunk_add_const() calls is
+ * the constant-pool layout and therefore part of the emitted bytecode.  That
+ * is also why QW_CONST_INT carries the VALUE and interns it when it runs,
+ * rather than an index computed when it was pushed.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef enum {
+    QW_DATUM,            /* emit this datum (may push further work)         */
+    QW_OP,               /* chunk_emit(op, operand)                        */
+    QW_CONST_INT,        /* OP_CONST of an interned exact integer          */
+    QW_LOCALS_MARK,      /* remember n_locals, then add a temporary local   */
+    QW_LOCALS_RESTORE    /* restore the n_locals remembered by the mark     */
+} QuoteWorkKind;
+
+typedef struct {
+    QuoteWorkKind kind;
+    Node*       datum;
+    uint8_t     op;
+    int32_t     operand;
+    int64_t     value;
+    const char* label;
+} QuoteWork;
+
+typedef struct {
+    QuoteWork* items;  size_t n;  size_t cap;
+    int*       marks;  size_t n_marks;  size_t cap_marks;
+    int        failed;
+} QuoteWorkStack;
+
+static void qw_push(QuoteWorkStack* st, QuoteWork w) {
+    if (st->failed) return;
+    if (st->n == st->cap) {
+        size_t next = st->cap ? st->cap * 2 : 64;
+        QuoteWork* grown = (QuoteWork*)realloc(st->items, next * sizeof(QuoteWork));
+        if (!grown) {
+            vm_compile_error("out of memory emitting quoted data",
+                             "the compiler could not record how deep the datum is");
+            st->failed = 1;
+            return;
+        }
+        st->items = grown;
+        st->cap = next;
+    }
+    st->items[st->n++] = w;
+}
+
+static void qw_push_datum(QuoteWorkStack* st, Node* datum) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = QW_DATUM; w.datum = datum;
+    qw_push(st, w);
+}
+
+static void qw_push_op(QuoteWorkStack* st, uint8_t op, int32_t operand) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = QW_OP; w.op = op; w.operand = operand;
+    qw_push(st, w);
+}
+
+static void qw_push_const_int(QuoteWorkStack* st, int64_t value) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = QW_CONST_INT; w.value = value;
+    qw_push(st, w);
+}
+
+static void qw_push_locals(QuoteWorkStack* st, QuoteWorkKind kind, const char* label) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = kind; w.label = label;
+    qw_push(st, w);
+}
+
+static void qw_mark_locals(QuoteWorkStack* st, int n_locals) {
+    if (st->n_marks == st->cap_marks) {
+        size_t next = st->cap_marks ? st->cap_marks * 2 : 32;
+        int* grown = (int*)realloc(st->marks, next * sizeof(int));
+        if (!grown) {
+            vm_compile_error("out of memory emitting a quoted vector literal",
+                             "the compiler could not record its temporaries");
+            st->failed = 1;
+            return;
+        }
+        st->marks = grown;
+        st->cap_marks = next;
+    }
+    st->marks[st->n_marks++] = n_locals;
+}
+
+static void compile_quote_datum(FuncChunk* c, Node* datum, QuoteWorkStack* st);
+
+/**
+ * @brief Emits the code that builds a quoted datum.
+ *
+ * Native stack use is constant in the datum's nesting depth: the structure is
+ * carried on the work stack above.  When that stack cannot grow, the datum is
+ * refused with the ordinary diagnostic rather than the process ending.
+ */
 static void compile_quote(FuncChunk* c, Node* datum) {
+    QuoteWorkStack st;
+    memset(&st, 0, sizeof(st));
+    qw_push_datum(&st, datum);
+    while (st.n > 0 && !st.failed) {
+        QuoteWork w = st.items[--st.n];
+        switch (w.kind) {
+            case QW_DATUM:
+                compile_quote_datum(c, w.datum, &st);
+                break;
+            case QW_OP:
+                chunk_emit(c, w.op, w.operand);
+                break;
+            case QW_CONST_INT:
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(w.value)));
+                break;
+            case QW_LOCALS_MARK:
+                qw_mark_locals(&st, c->n_locals);
+                add_temporary_local(c, w.label);
+                break;
+            case QW_LOCALS_RESTORE:
+                if (st.n_marks > 0) c->n_locals = st.marks[--st.n_marks];
+                break;
+        }
+    }
+    free(st.items);
+    free(st.marks);
+}
+
+static void compile_quote_datum(FuncChunk* c, Node* datum, QuoteWorkStack* st) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {
         /* Same three-way discrimination compile_expr() applies to an evaluated
@@ -2231,9 +2387,9 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          * its `make-rational` desugar, for the same reason): a hand-written
          * `'(exact-rational x 3)` with a non-literal operand must stay
          * ordinary quoted list data, since quote never evaluates `x`. */
-        compile_quote(c, datum->children[1]);
-        compile_quote(c, datum->children[2]);
-        chunk_emit(c, OP_NATIVE_CALL, 330);
+        qw_push_op(st, OP_NATIVE_CALL, 330);
+        qw_push_datum(st, datum->children[2]);
+        qw_push_datum(st, datum->children[1]);
         return;
     }
     if (datum->type == N_LIST && !datum->is_vector && datum->n_children == 3 &&
@@ -2245,9 +2401,9 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          * vm_number_node above): quoted, it is the complex number, built by
          * make-rectangular (native 300) exactly as the evaluated literal is.
          * Only the reader's own shape -- two inexact literal parts -- counts. */
-        compile_quote(c, datum->children[1]);
-        compile_quote(c, datum->children[2]);
-        chunk_emit(c, OP_NATIVE_CALL, 300);
+        qw_push_op(st, OP_NATIVE_CALL, 300);
+        qw_push_datum(st, datum->children[2]);
+        qw_push_datum(st, datum->children[1]);
         return;
     }
     if (datum->type == N_LIST && datum->is_vector) {
@@ -2267,23 +2423,22 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          * VM_VEC_LITERAL_STACK_CHUNK elements; a quoted literal is compiled
          * once, so it simply always takes the safe shape instead of carrying a
          * second threshold that could drift. */
-        int n_elems = datum->n_children - 1;   /* children[0] is the "vector" tag */
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
-        chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
-        int saved_locals = c->n_locals;
-        add_temporary_local(c, "__quoted_vec_literal__");
-        for (int i = 1; i < datum->n_children; i++) {
-            chunk_emit(c, OP_DUP, 0);                                    /* vec */
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1))); /* idx */
-            int elem_locals = c->n_locals;
-            add_temporary_local(c, "__quoted_vec_idx__");
-            compile_quote(c, datum->children[i]);                        /* val */
-            c->n_locals = elem_locals;
-            chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
-            chunk_emit(c, OP_POP, 0);       /* drop the nil */
+        /* Pushed in reverse so the pop order is the emission order above. */
+        const int n_elems = datum->n_children - 1;   /* children[0] is the "vector" tag */
+        qw_push_locals(st, QW_LOCALS_RESTORE, NULL);
+        for (int i = datum->n_children - 1; i >= 1; i--) {
+            qw_push_op(st, OP_POP, 0);         /* drop the nil */
+            qw_push_op(st, OP_VEC_SET, 0);     /* pops val, idx, vec; pushes nil */
+            qw_push_locals(st, QW_LOCALS_RESTORE, NULL);
+            qw_push_datum(st, datum->children[i]);                   /* val */
+            qw_push_locals(st, QW_LOCALS_MARK, "__quoted_vec_idx__");
+            qw_push_const_int(st, (int64_t)(i - 1));                 /* idx */
+            qw_push_op(st, OP_DUP, 0);                               /* vec */
         }
-        c->n_locals = saved_locals;
+        qw_push_locals(st, QW_LOCALS_MARK, "__quoted_vec_literal__");
+        qw_push_op(st, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
+        qw_push_const_int(st, 0);
+        qw_push_const_int(st, (int64_t)n_elems);
         return;
     }
     if (datum->type == N_LIST) {
@@ -2309,16 +2464,19 @@ static void compile_quote(FuncChunk* c, Node* datum) {
                       datum->children[n - 2]->type == N_SYMBOL &&
                       !datum->children[n - 2]->is_verbatim &&
                       eshkol_syntax_base_is(datum->children[n - 2]->symbol, "."));
+        Node* seed = NULL;
         if (dotted) {
-            compile_quote(c, datum->children[n - 1]);
+            seed = datum->children[n - 1];
             n -= 2;                       /* drop the tail AND the dot */
-        } else {
-            chunk_emit(c, OP_NIL, 0);
         }
-        for (int i = n - 1; i >= 0; i--) {
-            compile_quote(c, datum->children[i]);
-            chunk_emit(c, OP_CONS, 0);
+        /* Pushed in reverse: the seed (the final cdr, or '()) runs first,
+         * then each element followed by its CONS, exactly as before. */
+        for (int i = 0; i < n; i++) {
+            qw_push_op(st, OP_CONS, 0);
+            qw_push_datum(st, datum->children[i]);
         }
+        if (seed) qw_push_datum(st, seed);
+        else      qw_push_op(st, OP_NIL, 0);
         return;
     }
     chunk_emit(c, OP_NIL, 0); /* fallback */
