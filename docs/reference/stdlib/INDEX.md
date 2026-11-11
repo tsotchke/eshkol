@@ -9,7 +9,7 @@ See [module-system.md](module-system.md) for how `require` resolution,
 `(require stdlib)`, and `stdlib.o` precompilation work. The v1.2-scale surface
 notes remain in [../../STDLIB_V1_2_API.md](../../STDLIB_V1_2_API.md).
 
-**Primary module-table entries: 190** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3433** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
+**Primary module-table entries: 191** (plus `stdlib` itself and the module system page) — **provided symbols in that table: 3434** (plus stdlib-level helpers in [stdlib_extras.md](stdlib_extras.md)).
 
 *Auto* = loaded automatically by `(require stdlib)`; otherwise the module must be required individually.
 
@@ -28,6 +28,7 @@ tensors are documented in [rigorous_numerics.md](rigorous_numerics.md).
 
 | Module | Auto | Reference | Provided symbols |
 |---|---|---|---|
+| [`core.blc_bytes`](../../../lib/core/blc_bytes.esk) | no | [blc_bytes.md](blc_bytes.md) | `blc-run-bytes` |
 | [`core.dbsp.sqlite_changefeed`](../../../lib/core/dbsp/sqlite_changefeed.esk) | no | [dbsp_sqlite_changefeed.md](dbsp_sqlite_changefeed.md) | `dbsp-sqlite-create!` `dbsp-sqlite-enqueue!` `dbsp-sqlite-consume!` `dbsp-sqlite-state` |
 | [`core.certified_native_solve`](../../../lib/core/certified_native_solve.esk) | no | [certified_native_solve.md](certified_native_solve.md) | `solve-certified-native` `verify-certified-native-solve` |
 | [`core.certified_solve_pullback`](../../../lib/core/certified_solve_pullback.esk) | no | [certified_solve_pullback.md](certified_solve_pullback.md) | `solve-certified-native-pullback` `verify-certified-native-pullback` |
