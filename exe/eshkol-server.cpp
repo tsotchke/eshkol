@@ -28,11 +28,13 @@
 #endif
 #include "eshkol/eshkol.h"
 #include "eshkol/core/http_syntax.h"
+#include <eshkol/core/reader_limits.h>
 #include "eshkol/http_request_utils.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/logger.h>
 
 #include <iostream>
+#include <new>
 #include <sstream>
 #include <string>
 #include <algorithm>
@@ -292,6 +294,16 @@ std::string json_success_wasm(const std::string& session_id, const uint8_t* wasm
 
 // Compile code to WASM
 std::string compile_to_wasm(const std::string& code, const std::string& session_id) {
+    // One request may not outgrow the shared input cap. Refusing here answers
+    // the client instead of spending the memory, and the cap is the same
+    // number both readers and every other entry point use
+    // (inc/eshkol/core/reader_limits.h; ESHKOL_MAX_SOURCE_BYTES).
+    {
+        char cap_message[320];
+        if (eshkol_reader_source_over_cap(code.size(), cap_message, sizeof(cap_message)))
+            return json_error(cap_message);
+    }
+
     // Parse the code using a stringstream
     std::istringstream code_stream(code);
 

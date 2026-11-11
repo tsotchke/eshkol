@@ -28,6 +28,7 @@
 #include "parser_task.h"
 
 #include <string.h>
+#include <new>
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -11970,7 +11971,9 @@ eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
 
 } // namespace eshkol
 
-eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
+/* The body of eshkol_parse_next_ast_from_stream(); see the wrapper below for
+ * the input cap and the allocation boundary that stand in front of it. */
+static eshkol_ast_t parse_next_ast_from_stream_body(std::istream &in_stream)
 {
     StreamPositionBinding stream_position(in_stream);
     ParserMacroStreamBinding macro_stream(in_stream);
@@ -11979,6 +11982,7 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
     bool in_bar_symbol = false;  // inside an R7RS 7.1.1 |...| vertical-line symbol
     int bracket_depth = 0;
     bool found_expression = false;
+    const size_t source_cap = eshkol_reader_max_source_bytes();
 
     // Read characters until we have a complete S-expression.
     // Comments are stripped *but their newlines are preserved* so the
@@ -11986,6 +11990,21 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
     while (!in_stream.eof()) {
         int c = in_stream.get();
         if (in_stream.eof()) break;
+
+        // The one documented input-size cap, shared by both readers and every
+        // entry point: a single form longer than it is refused here, before
+        // the tokenizer and the continuation frames it would need. Nesting
+        // depth itself has no limit (inc/eshkol/core/reader_limits.h). The cap
+        // is read once per form, not per byte, so this costs one comparison
+        // against a local on the hot path.
+        if (source_cap && input.size() >= source_cap) {
+            char cap_message[320];
+            (void)eshkol_reader_source_over_cap(input.size() + 1,
+                                                cap_message, sizeof(cap_message));
+            Token where{TOKEN_EOF, "", 0, g_stream_line, g_stream_column};
+            PARSE_ERROR_AT(where, "%s", cap_message);
+            return {.type = ESHKOL_INVALID};
+        }
 
         // If the current byte is the payload of a character literal such
         // as #\(, #\), #\", or #\;, it is data, not reader syntax. Not
@@ -12214,6 +12233,34 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
     }
 
     return {.type = ESHKOL_INVALID};
+}
+
+/**
+ * @brief Reads the next top-level form from @p in_stream and returns its AST.
+ *
+ * This is the one choke point every top-level form passes through on the
+ * native front end — the file compiler, the REPL, the server and the
+ * WebAssembly build all arrive here — so it is where running out of memory
+ * while reading becomes an ordinary diagnostic. Nesting is carried on
+ * continuation frames, which are heap allocated, so a deeply nested form
+ * exhausts memory rather than the stack; that exhaustion is reported with the
+ * form's position and the caller sees a refused form, exactly as it would for
+ * a syntax error. The process is never ended by it.
+ */
+eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
+{
+    try {
+        return parse_next_ast_from_stream_body(in_stream);
+    } catch (const std::bad_alloc&) {
+        g_parse_source = NULL;
+        Token where{TOKEN_EOF, "", 0, g_stream_line, g_stream_column};
+        PARSE_ERROR_AT(where,
+                       "out of memory reading this form; its nesting or size "
+                       "needs more memory than this process has (reading has "
+                       "no depth limit, and the input cap is configurable with "
+                       "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N)");
+        return {.type = ESHKOL_INVALID};
+    }
 }
 
 /**

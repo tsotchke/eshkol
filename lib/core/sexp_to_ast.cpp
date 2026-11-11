@@ -11,6 +11,8 @@
  */
 
 #include <eshkol/core/sexp_to_ast.h>
+#include "eshkol/core/reader_limits.h"
+#include "eshkol/core/stack_guard.h"
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/core/introspection.h>
 #include <eshkol/logger.h>
@@ -975,10 +977,26 @@ eshkol_ast_t* convert_call(eshkol_tagged_value_t sexp) {
  * @return Newly allocated AST node, or NULL on error or if the depth cap is hit.
  */
 eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
-    static thread_local int depth = 0;
-    if (depth >= 500) return nullptr;
+    // This conversion is natively recursive, and a datum nests as deeply as
+    // the reader could read it — reading has no depth limit. So it consults
+    // the shared, documented and configurable budget for CODE nesting, and
+    // the native-stack headroom guard alongside it, and it SAYS which one it
+    // reached instead of answering an unexplained nothing.
+    static thread_local size_t depth = 0;
+    {
+        const size_t budget = eshkol_reader_max_pass_depth();
+        if ((budget && depth >= budget) || !eshkol_stack_headroom_ok()) {
+            char message[320];
+            eshkol_reader_depth_message("converting a nested datum to an "
+                                        "expression tree",
+                                        budget ? budget : depth,
+                                        message, sizeof(message));
+            eshkol_error("%s", message);
+            return nullptr;
+        }
+    }
     ++depth;
-    struct DepthGuard { int& d; DepthGuard(int& d_) : d(d_) {} ~DepthGuard() { --d; } } guard(depth);
+    struct DepthGuard { size_t& d; DepthGuard(size_t& d_) : d(d_) {} ~DepthGuard() { --d; } } guard(depth);
 
     // Handle atomic values
 
