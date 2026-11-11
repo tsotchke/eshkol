@@ -39004,7 +39004,63 @@ private:
     // Convert AST to runtime S-expression (quoted list). Identifiers carry
     // their source spelling: this is also the source form of a procedure,
     // whose binders the expander renamed (syntax_color.h).
+    // ───────────────────────────────────────────────────────────────────────
+    // Quoted data is emitted deepest-first, from this emitter's own stack
+    //
+    // A quoted datum nests as deeply as the reader could read it, and reading
+    // has no depth limit, so the spine of nested quoted lists is flattened
+    // here before any code is emitted: the deepest list is emitted first and
+    // every parent finds its children already built, in `quoted_built_`.
+    // Emission order is unchanged — a parent's children were always emitted
+    // before it — so the IR is the same as the recursive shape produced, and
+    // native stack use no longer grows with the datum.
+    //
+    // Only the list shape is flattened, because that is the shape that nests
+    // without bound; every other quoted shape is reached by its parent's own
+    // short descent, exactly as before.
+    std::unordered_map<const eshkol_ast_t*, Value*> quoted_built_;
+    bool quoted_flattening_ = false;
+
+    static bool isQuotedListNode(const eshkol_ast_t* ast) {
+        return ast && ast->type == ESHKOL_OP &&
+               ast->operation.op == ESHKOL_CALL_OP;
+    }
+
     Value* codegenQuotedAST(const eshkol_ast_t* ast) {
+        if (!ast) return packNullToTaggedValue();
+
+        auto built = quoted_built_.find(ast);
+        if (built != quoted_built_.end()) return built->second;
+
+        if (quoted_flattening_ || !isQuotedListNode(ast))
+            return codegenQuotedASTNode(ast);
+
+        // Pre-order walk of the nested-list spine; reversing it puts every
+        // node after all of its descendants.
+        std::vector<const eshkol_ast_t*> order;
+        std::vector<const eshkol_ast_t*> pending{ast};
+        while (!pending.empty()) {
+            const eshkol_ast_t* node = pending.back();
+            pending.pop_back();
+            order.push_back(node);
+            const eshkol_operations_t* op = &node->operation;
+            for (int64_t i = (int64_t)op->call_op.num_vars - 1; i >= 0; --i) {
+                const eshkol_ast_t* child = &op->call_op.variables[i];
+                if (isQuotedListNode(child)) pending.push_back(child);
+            }
+        }
+
+        quoted_flattening_ = true;
+        for (size_t i = order.size(); i-- > 0;)
+            quoted_built_[order[i]] = codegenQuotedASTNode(order[i]);
+        quoted_flattening_ = false;
+
+        Value* result = quoted_built_[ast];
+        quoted_built_.clear();
+        return result;
+    }
+
+    Value* codegenQuotedASTNode(const eshkol_ast_t* ast) {
         if (!ast) return packNullToTaggedValue();
 
         switch (ast->type) {

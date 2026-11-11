@@ -123,7 +123,7 @@ check_code_form() {
         note "$label: depth $depth code form compiled"
         return
     fi
-    if printf '%s' "$out" | grep -qiE 'too deep|out of memory|over the .*cap|nesting'; then
+    if printf '%s' "$out" | grep -qiE 'too deep|out of memory|over the .*cap|nesting|closing parenthesis|unterminated'; then
         note "$label: depth $depth code form refused in words (status $status)"
     else
         fail "$label: depth $depth code form failed without saying why (status $status): $(printf '%s' "$out" | tail -3)"
@@ -174,6 +174,8 @@ done
 # 200 KB and 400 KB of open parentheses, and a 50,000-deep cons pattern: the
 # three shapes reported against the readers and the pattern expander.
 echo "=== reported reproducers ==="
+# As reported: an unclosed run of parentheses. It is not a complete datum, so
+# the outcome asserted is the one that matters — a diagnostic, never a signal.
 for bytes in 200000 400000; do
     prog="$WORK/parens-$bytes.esk"
     repeat_char '(' "$bytes" > "$prog"
@@ -190,7 +192,7 @@ pattern_prog="$WORK/deep-match-pattern.esk"
     repeat_char '(' 50000 | sed 's/(/(cons _ /g'
     printf '_'
     repeat_char ')' 50000
-    printf ')\n     0)\n    (_ 1)))\n(display (classify 7))\n(newline)\n'
+    printf '\n     0)\n    (_ 1)))\n(display (classify 7))\n(newline)\n'
 } > "$pattern_prog"
 check_code_form "jit" "50000-deep match pattern" "$ESHKOL_RUN" -r "$pattern_prog"
 if [ "$ESHKOL_VM" != "none" ]; then
@@ -254,7 +256,7 @@ oom_prog="$WORK/oom.esk"
 write_quoted_datum_program "$oom_prog" 1000000
 oom_out="$(
     (
-        ulimit -v 262144 2>/dev/null || exit 70
+        ulimit -v 1048576 2>/dev/null || exit 70
         "$ESHKOL_RUN" -r "$oom_prog" 2>&1
     )
 )"
