@@ -15035,6 +15035,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
 endif()
 
 include(cmake/AllocationHardeningTests.cmake)
+include(cmake/QuantumCircuitTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
     set(_program_entry_vm_args)

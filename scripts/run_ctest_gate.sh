@@ -103,6 +103,7 @@ fi
 # Each line becomes one roll-up event of kind "ctest", consumed by one
 # criterion under `eshkol-compiler-readiness`.
 CTEST_GATE_GROUPS=$(cat <<'GROUPS'
+quantum_circuit_contract_gate	^quantum_circuit_export_(aot|driver_selftest)$	2	Validated static circuit export and deliberate harness-failure checks
 fixed_point_exact_accumulation_gate	^fixedpoint_	-	Fixed-point / i128 exact-accumulation engine
 exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor|exactness_runtime_property)_(runtime|aot)_smoke$	-	Exact-input AD identity tier
 taylor_tower_exactness_gate	^(taylor_tower|taylor_tower_mono|exact_taylor|reverse_over_taylor|taylor_numerics|region_evac_taylor_exact)_(runtime|aot)_smoke$	12	Taylor-tower exactness stack (P1/P2/P5/P6/P11) in one run
