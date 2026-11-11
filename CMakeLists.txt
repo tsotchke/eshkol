@@ -4463,6 +4463,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# Scoped hawkes-forecast consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-forecast/CTest.cmake")
+
 # core.sheaf: finite sites, sieves, presheaves, gluing, sheafification and
 # cohomology (ADR-0033), with core.integer_linalg. The suite cross-checks
 # against core.exact_linalg and between independent cohomology paths; the
