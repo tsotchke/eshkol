@@ -1677,6 +1677,10 @@ static int vm_reject_type_violations(const char* source, const char* source_name
  *         the VM stopped on a fatal runtime error — propagated to main()'s
  *         exit status so a fatal VM error can never look like success. */
 static int compile_and_run(const char* source) {
+    /* The one documented input-size cap, shared by both readers and every
+     * entry point.  Over it is an ordinary refusal; nesting depth itself has
+     * no limit (see parse_datum_iterative in vm_parser.c). */
+    if (!vm_reader_source_within_cap(source)) return 1;
     /* Engine parity: the linear (no-cloning) rule is decided before a single
      * instruction is emitted, exactly as the native engine decides it before
      * code generation. A violating program must not run on ANY engine. */
@@ -2169,6 +2173,7 @@ static void compile_source_to_chunk_with_options(const char* source,
      * body is compiled — otherwise the ESKB bytecode would keep the stale
      * binding that source execution no longer has, and the VM parity gate
      * would see vm-eskb diverge from vm-src. */
+    if (!vm_reader_source_within_cap(source)) return;
     vm_prescan_redefined_toplevel_names(source);
     /* Same reason, for R7RS-small 5.6.1: the libraries this unit defines have
      * to be known before the first import is compiled, or an import above its
@@ -2461,6 +2466,7 @@ static void repl_session_echo(VM* vm) {
 }
 
 static void repl_session_eval(ReplSession* rs, const char* source, int auto_print) {
+    if (!vm_reader_source_within_cap(source)) { vm_clear_compile_failure(); return; }
     if (!rs || !rs->initialized) return;
 
     vm_clear_compile_failure();
@@ -3127,6 +3133,24 @@ int main(int argc, char** argv) {
                 trace = 1; g_trace_on = 1;
             } else if (!positional_only && strcmp(argv[i], "--emit-eskb") == 0 && i + 1 < argc) {
                 eskb_output = argv[++i]; g_eskb_output_path = eskb_output;
+            } else if (!positional_only &&
+                       strncmp(argv[i], "--max-source-bytes=", 19) == 0) {
+                size_t bytes = 0;
+                if (!eshkol_reader_parse_size(argv[i] + 19, &bytes)) {
+                    fprintf(stderr, "ERROR: --max-source-bytes expects a byte "
+                                    "count (N, NK, NM, NG); 0 removes the cap\n");
+                    return 1;
+                }
+                eshkol_reader_set_max_source_bytes(bytes);
+            } else if (!positional_only &&
+                       strncmp(argv[i], "--max-pass-depth=", 17) == 0) {
+                size_t depth = 0;
+                if (!eshkol_reader_parse_size(argv[i] + 17, &depth)) {
+                    fprintf(stderr, "ERROR: --max-pass-depth expects a level "
+                                    "count; 0 removes the budget\n");
+                    return 1;
+                }
+                eshkol_reader_set_max_pass_depth(depth);
             } else if (!input) {
                 input = argv[i];
                 input_index = i;
@@ -3194,7 +3218,12 @@ int main(int argc, char** argv) {
                 FILE* f = fopen(input, "r");
                 if (!f) { fprintf(stderr, "Cannot open %s\n", input); return 1; }
                 fseek(f, 0, SEEK_END); long flen = ftell(f); fseek(f, 0, SEEK_SET);
-                if (flen < 0 || flen > 100000000) { fprintf(stderr, "File too large or unreadable\n"); fclose(f); return 1; }
+                char size_message[320];
+                if (flen < 0) { fprintf(stderr, "Cannot measure %s\n", input); fclose(f); return 1; }
+                if (eshkol_reader_source_over_cap((size_t)flen, size_message, sizeof(size_message))) {
+                    fprintf(stderr, "ERROR: %s: %s\n", input, size_message);
+                    fclose(f); return 1;
+                }
                 char* source = malloc((size_t)flen + 1);
                 if (!source) { fprintf(stderr, "Out of memory\n"); fclose(f); return 1; }
                 fread(source, 1, (size_t)flen, f); source[flen] = 0; fclose(f);
