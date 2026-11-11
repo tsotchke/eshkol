@@ -3709,13 +3709,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
             --compiler "$<TARGET_FILE:eshkol-run>"
             --llvm-as "${ESHKOL_STDLIB_IDENTITY_LLVM_AS}"
             --llc "${ESHKOL_STDLIB_IDENTITY_LLC}"
-            --expected-release "${ESHKOL_STDLIB_IDENTITY_RELEASE}"
+            --expected-release "${ESHKOL_STDLIB_RELEASE_STRING}"
             --expected-abi "${ESHKOL_STDLIB_IDENTITY_ABI}"
             --expected-source "${ESHKOL_STDLIB_SOURCE_FINGERPRINT}"
             --expected-symbol "${ESHKOL_STDLIB_IDENTITY_SYMBOL}"
             --work-root "${CMAKE_CURRENT_BINARY_DIR}/qualification/stdlib-identity-cli")
     set_tests_properties(stdlib_identity_cli_metadata PROPERTIES
         TIMEOUT 180 LABELS "toolchain;stdlib;metadata")
+    add_test(NAME stdlib_identity_cli_registration
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/stdlib_identity_registration_test.py"
+            --source-dir "${CMAKE_CURRENT_SOURCE_DIR}"
+            --cmake "${CMAKE_COMMAND}" --ctest "${CMAKE_CTEST_COMMAND}"
+            --work-root "${CMAKE_CURRENT_BINARY_DIR}/qualification/stdlib-identity-registration")
+    set_tests_properties(stdlib_identity_cli_registration PROPERTIES
+        TIMEOUT 90 LABELS "toolchain;stdlib;metadata")
   endif()
 endif()
 
