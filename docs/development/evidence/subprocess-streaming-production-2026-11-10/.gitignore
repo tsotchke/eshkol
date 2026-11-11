@@ -1,0 +1,2 @@
+# Retain the historical validation logs linked by this evidence record.
+!*.log
