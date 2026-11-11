@@ -1417,6 +1417,10 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
 class EshkolRuntime {
     constructor() {
         // Handle system
+        // Capability policy: inactive until a program installs one, which is
+        // why a program that installs none is unaffected.
+        this._capabilityPolicyActive = false;
+        this._capabilityAllowed = new Set();
         this.handles = new Map();
         this.nextHandle = 1;
         this.documentHandle = this.createHandle(document);       // 1
@@ -1492,6 +1496,15 @@ class EshkolRuntime {
     }
 
     // === String Helpers ===
+
+    /** Whether the capability policy permits `name`. With no policy installed
+     *  every capability is permitted, which is how a program that installs no
+     *  policy keeps behaving exactly as it did. */
+    _capabilityAllows(name) {
+        if (!name) return false;
+        if (!this._capabilityPolicyActive) return true;
+        return this._capabilityAllowed.has(name);
+    }
 
     readString(ptr) {
         const mem = this.memory || this._importedMemory;
@@ -2663,9 +2676,53 @@ class EshkolRuntime {
                 eshkol_builtin_coroutine_p: (out) => rt.writeFalse(out),
                 eshkol_builtin_coroutine_stats: (out) => rt.writeFalse(out),
 
-                eshkol_capability_runtime_begin_install: () => {},
-                eshkol_capability_runtime_allow:   () => {},
-                eshkol_capability_runtime_clear:   () => {},
+                // The capability policy, kept here so a policy a program installs
+                // means something in the browser too. The page has no command
+                // interpreter, no process creation and no sockets of its own, so
+                // the sinks those capabilities gate are unavailable here
+                // regardless; what the policy still governs is the answer the
+                // program gets, and that answer is now the same one the native
+                // runtime gives.
+                eshkol_capability_runtime_begin_install: () => {
+                    rt._capabilityPolicyActive = true;
+                    rt._capabilityAllowed = new Set();
+                },
+                eshkol_capability_runtime_allow: (namePtr) => {
+                    if (rt._capabilityPolicyActive) {
+                        rt._capabilityAllowed.add(rt.readString(namePtr));
+                    }
+                },
+                eshkol_capability_runtime_clear: () => {
+                    rt._capabilityPolicyActive = false;
+                    rt._capabilityAllowed = new Set();
+                },
+                eshkol_capability_runtime_is_active: () =>
+                    rt._capabilityPolicyActive ? 1 : 0,
+                eshkol_capability_runtime_allows: (namePtr) =>
+                    rt._capabilityAllows(rt.readString(namePtr)) ? 1 : 0,
+                eshkol_capability_runtime_allows_file_mode: () => 1,
+                eshkol_capability_runtime_file_mode_missing: () => 0,
+                eshkol_capability_runtime_deny: (namePtr) => {
+                    console.warn('capability denied: ' + rt.readString(namePtr));
+                },
+                eshkol_capability_require: (namePtr) => {
+                    const name = rt.readString(namePtr);
+                    if (rt._capabilityAllows(name)) return 1;
+                    console.warn('capability denied: ' + name);
+                    return 0;
+                },
+                eshkol_capability_enforce: (namePtr, operationPtr) => {
+                    const name = rt.readString(namePtr);
+                    if (rt._capabilityAllows(name)) return;
+                    const operation = operationPtr ? rt.readString(operationPtr) : '';
+                    throw new Error('capability denied: ' + name +
+                                    (operation ? ' (' + operation + ')' : ''));
+                },
+
+                // (system cmd) lowers to this. A page has no command
+                // interpreter, so it reports the same failure status libc
+                // system() reports when no interpreter can be started.
+                eshkol_shell_command: () => -1,
 
                 // Lazy futures — no browser worker backing for this WASM glue.
                 eshkol_lazy_future_is_ready: () => 1,
