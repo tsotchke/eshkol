@@ -1137,7 +1137,7 @@
       ]
     }
   ],
-  "readiness_self_test": "PASS: actual gate rejects wrong backend data",
+  "readiness_self_test": "PASS: actual gate rejects mismatched backend data",
   "self_test_sha256": "b0045ef5a3a269e02e59a9c5d9231c3f3b6ae88cb787f9a6e032f49f71294293",
   "publication_base": "14dd4d0fbb2714e6fc40e99f53eb91b18a7f68be",
   "publication_notes": "README/dependency notes and readiness self-test added after runtime qualification; numerical programs and evaluator bytes unchanged.",

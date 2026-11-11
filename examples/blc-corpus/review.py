@@ -37,7 +37,7 @@ def check():
     for program in manifest['program']:
         path='review/'+program['id']+'.txt'
         if path not in sealed or corpus.corpus_bytes(path).decode('ascii')!=view(program):
-            raise ValueError('missing/stale readable review: '+path)
+            raise ValueError('missing or outdated readable review: '+path)
     print('REVIEW-PASS: 7 exact readable programs; bounded syntax, full consumption, closed scope and packed padding')
     return manifest
 

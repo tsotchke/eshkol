@@ -61,7 +61,7 @@ BUILD_DIR=build bash scripts/run_blc_bytes_gate.sh
 ```
 
 Add `--corpus` for the slower [seven-program contribution](../../../examples/blc-corpus/README.md).
-The corpus gate fails on any resource refusal, wrong byte or JIT/AOT receipt
+The corpus gate fails on any resource refusal, mismatched byte or JIT/AOT receipt
 difference. Its fixture-specific work/heap/output limits and process limits
 are explicit. Full self-application is intentionally a slow acceptance case.
 CTest runs the focused gate; configure `ESHKOL_BLC_CORPUS_TESTS=ON` to register

@@ -249,7 +249,7 @@ def command(argv, payload, timeout, memory_mib):
                                stderr=subprocess.PIPE, start_new_session=True,
                                preexec_fn=limits)
     # Bound pipes as well as elapsed time: communicate() alone can exhaust
-    # the parent process on a hostile or broken backend's stdout/stderr.
+    # the parent process on an unresponsive or malformed backend's stdout/stderr.
     import selectors
     selector = selectors.DefaultSelector()
     buffers = {process.stdout: bytearray(), process.stderr: bytearray()}

@@ -20,7 +20,7 @@ shared_state_policy = "drand48-msb-v1"
 integer_mapping = "existing binary64 multiply/truncate"
 command = "bash scripts/run_sblc_rng_parity_gate.sh"
 
-[regression]
+[suite]
 command = "bash scripts/run_vm_parity.sh"
 full_run_passed = 432
 full_run_failed = 1
@@ -28,8 +28,8 @@ full_run_infrastructure_failures = 0
 corpus_oos_fatal_checks_passed = 430
 corpus_oos_fatal_checks_failed = 0
 self_verdict_scan_passed = true
-full_run_failure = "Static manifest incorrectly classified six optional core.sblc exports as ambient VM builtins."
-correction = "Remove those six optional-module rows; module gate supplies runtime evidence. Four primitive binding rows remain vm-supported."
+manifest_scope = "Six optional core.sblc exports were listed as ambient VM builtins in the static manifest."
+manifest_rows = "Those six optional-module rows are no longer listed; the module gate supplies runtime evidence. Four primitive binding rows remain vm-supported."
 affected_recheck_command = "bash scripts/run_vm_parity.sh --audit-only"
 affected_recheck_passed = 2
 affected_recheck_failed = 0
