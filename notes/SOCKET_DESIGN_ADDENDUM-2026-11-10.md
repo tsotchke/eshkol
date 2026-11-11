@@ -1,17 +1,17 @@
 # Proposed decision: Unix-domain stream sockets
 
-**Status:** Proposed design; scaffold amendments await owner review. **Date:** 2026-11-10.
+**Status:** Three ownership/cancellation decisions agreed; API and scaffold details remain to align. **Updated:** 2026-11-11.
 **Basis:** [IPC design](https://github.com/Gabriel-Kahen/eshkol/blob/93c02a9679b9476c58296bfeb6e229d251a21224/weeks/IPC_DESIGN-2026-11-02.md); [#916 at `da7005c7f`](https://github.com/tsotchke/eshkol/pull/916). Proposed behavior, not implementation evidence.
 
 **Companion review:** [#916 scaffold findings and proposed resolutions](SOCKET_DESIGN_REVIEW-2026-11-10.md) explain the contract gaps and acceptance-test issues behind this proposal.
 
 ## Context and decision
 
-Provide filesystem `AF_UNIX/SOCK_STREAM` sockets using existing epoll/kqueue, registry and policy facilities. Extend managed-watch dispatch for SOCKET owners alongside PROCESS. Datagrams, descriptor passing and SSE remain outside this slice.
+Provide filesystem `AF_UNIX/SOCK_STREAM` sockets using existing epoll/kqueue and the shared resource-lease machinery proposed in [#917](https://github.com/tsotchke/eshkol/pull/917). Extend that shared machinery for caller-supplied loops and sticky cancellation; keep one lease implementation and coordinate with PROCESS watches. Datagrams, descriptor passing and SSE remain outside this slice.
 
 ## Proposed surface and progress
 
-Prefix: `unix-stream-socket-`. Revise scaffold declarations/tests to match these proposed amendments.
+Prefix: `unix-stream-socket-`. API shapes remain proposed; revise scaffold declarations/tests to match the agreed contract.
 
 | Operation | Contract |
 |---|---|
@@ -26,9 +26,9 @@ Both backends are level-triggered: arm requested interests, remove writable inte
 
 ## Ownership, cancellation and cleanup
 
-Each listener/peer has one generation-checked SOCKET owner: acquire, exclusively borrow, release, close; borrowed close returns busy. Retain the loop until unregister/close; shutdown rejects active ownership. Validate readiness cookies across fd reuse. Runtime ownership prepares future compile-time linear handles; it does not implement them.
+Each listener/peer has one generation-checked SOCKET owner in the shared lease layer. Operations borrow exclusively; a second borrower gets busy. The caller supplies a loop, retained until socket teardown completes; shared wait machinery must support that loop. Validate readiness identities across fd reuse. Runtime ownership prepares future compile-time linear handles; it does not implement them.
 
-I/O stays owner-thread confined. Idempotent, lifetime-safe cross-thread cancellation sets a sticky flag and wakes the loop without borrowing/closing the fd. Cancellation ends further I/O; ownership remains. Unregister before registry close; removal errors retain ownership for retry. Once fd close is attempted, the identity is terminal; repeated close returns invalid. Scoped `dynamic-wind` cleanup rejects re-entry. Checked/native acquisition and I/O require `network`; owned-resource cancel/close need neither renewed capability nor a clock.
+Idempotent, lifetime-safe cross-thread cancellation remains set for the socket, wakes pending work and prevents further I/O; the caller still closes it. Close during a borrow is accepted: reject new uses immediately, wake the operation, and close the descriptor exactly once after release. A close request is not proof teardown finished. Use the shared lease layer; define observable watch-removal and path-cleanup outcomes before implementation, retaining safe ownership until cleanup resolves. Scoped `dynamic-wind` cleanup rejects re-entry. Checked/native acquisition and I/O require `network`; owned-resource cancel/close need neither renewed capability nor a clock.
 
 ## Paths and platforms
 
@@ -38,7 +38,7 @@ Require an absolute, NUL-free path fitting `sun_path` in encoded bytes, inside a
 
 ## Acceptance
 
-Native/JIT/AOT: round trips; actual slow-peer partial I/O; byte-for-byte NUL/>16 MiB transfer; peer close with default SIGPIPE; measured zero/positive deadlines and pending-connect cancellation; measured descriptor counts over 1,000 cycles; path restart/replacement; borrow/expired-ID and exception/re-entry/revocation cleanup. Record Linux/macOS evidence separately; correct scaffold assertions before promotion.
+Native/JIT/AOT: round trips; actual slow-peer partial I/O; byte-for-byte NUL/>16 MiB transfer; peer close with default SIGPIPE; measured zero/positive deadlines and pending-connect cancellation; measured descriptor counts over 1,000 cycles; path restart/replacement; borrow/deferred-close/expired-ID, sticky cancellation and exception/re-entry/revocation cleanup. Record Linux/macOS evidence separately; correct scaffold assertions before promotion.
 
 [1]: https://man7.org/linux/man-pages/man7/unix.7.html
 [2]: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setsockopt.2.html

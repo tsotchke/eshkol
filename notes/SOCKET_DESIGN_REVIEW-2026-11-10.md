@@ -6,11 +6,19 @@
 
 ## Assessment
 
-The draft covers the November 9 plan's required topics. It proposes changes to the scaffold's public API and acceptance tests; it does not claim those changes already exist. Discuss the explicit-loop and cancellable-connect decisions with the component owner before treating the scaffold as the implementation contract. The original IPC ownership and cleanup rules remain the architectural basis.
+The draft covers the November 9 plan's required topics. It proposes changes to the scaffold's public API and acceptance tests; it does not claim those changes already exist. The three decisions below are agreed; the pending-connect API and implementation details still need alignment with the component owner and scaffold. The original IPC ownership and cleanup rules remain the architectural basis.
 
-## Contract gaps and proposed resolutions
+## Agreed direction — 2026-11-11
 
-1. **Define loop ownership and readiness waiting.** The current Scheme listen/connect wrappers pass literal zero, with no definition of the implicit loop's lifetime. There is no socket poll/wait operation. The draft proposes passing a real loop at acquisition, retaining it per socket, and adding `poll` for callers receiving would-block. A documented runtime-owned loop could also satisfy the lifetime requirement; the explicit-loop API is a proposal. Tests should verify the chosen lifetime and close-busy behavior while sockets remain owned. Socket readiness must coexist with #914's managed PROCESS watches rather than bypass their cookie/ownership checks. Sources: `lib/agent/unix_stream_socket.esk:44–65`; `inc/eshkol/core/event_loop.h`; `lib/agent/c/agent_subprocess.c`.
+The caller supplies the loop and each socket retains it; the shared wait machinery must support it. Cancellation stays set on the socket, wakes pending work and blocks future I/O; the caller still closes it. Close during active I/O is accepted, immediately invalidates the identity, wakes the borrower, and closes the descriptor exactly once after release. A second borrower still receives busy. These decisions supersede the original busy-close proposal below.
+
+Use the common adoption, borrow/release, wait, cancellation, close and outcome machinery from [#917](https://github.com/tsotchke/eshkol/pull/917); extend it where needed rather than introducing a second lease implementation. At #917 head `12d437bb6b9fedce0c6e822d15ecb2db473f560b`, wait uses a per-thread loop and cancellation is consumed, so caller-supplied loop and persistent cancellation require integration work. The shared close accepts deferred teardown; close acceptance and completed cleanup are distinct. The exact reporting/recovery of watch-removal and socket-path unlink failures remains to be designed and tested in the shared facility. Pending-connect cancellation still requires a reachable identity or equivalent cancellation target; begin/finish is one proposed API.
+
+The findings below describe the original #916 scaffold at the reviewed head. The scaffold lane owns its amendments; this record does not claim they have landed.
+
+## Original contract gaps and proposed resolutions
+
+1. **Define loop ownership and readiness waiting.** The current Scheme listen/connect wrappers pass literal zero, with no definition of the implicit loop's lifetime. There is no socket poll/wait operation. The draft proposes passing a real loop at acquisition, retaining it per socket, and adding `poll` for callers receiving would-block. A documented runtime-owned loop could also satisfy the lifetime requirement; the explicit-loop API is a proposal. Tests should verify the chosen loop lifetime and deferred-close behavior while sockets remain owned. Socket readiness must coexist with #914's managed PROCESS watches rather than bypass their cookie/ownership checks. Sources: `lib/agent/unix_stream_socket.esk:44–65`; `inc/eshkol/core/event_loop.h`; `lib/agent/c/agent_subprocess.c`.
 
 2. **Make pending-connect cancellation reachable.** The current C `connect` returns the identity only after it completes; `cancel(id)` cannot address a pending connect. The draft proposes `connect-begin`/`connect-finish!` and one deadline captured in begin; another interface with a reachable cancellation target could also resolve the gap. Under the proposed interface, begin publishes without a readiness wait and finish does not reset the budget. If begin cannot publish, undo fd/watch/lease acquisition. Once an identity is returned, the caller retains its close obligation even after timeout/cancellation. Sources: `inc/eshkol/core/unix_socket_stream.h:49–61`; [connect(2)](https://man7.org/linux/man-pages/man2/connect.2.html).
 
@@ -36,13 +44,13 @@ Locations: native `tests/agent/unix_socket_stream_test.c:78–99,104–142,164�
 
 ## Draft decisions and remaining review questions
 
-- **Recommended decisions:** explicit loops; begin/finish connect; sticky cancellation with owner-thread teardown; private pathname sockets; no abstract namespace; explicit unsupported Windows/VM adapters.
+- **Direction and proposals:** caller-supplied loops, sticky cancellation and deferred close are agreed above; begin/finish connect, private pathname sockets, no abstract namespace, and explicit unsupported Windows/VM adapters remain design proposals.
 - **Independent review corrections incorporated:** zero-budget begin either connects immediately or rolls back without publishing an ID; a positive pending begin publishes its owner before waiting. The acquisition deadline applies only while connecting; connected I/O gets independent poll budgets. Failed published attempts remain owned until close, and reads/writes require connected state. Clock errors preserve ownership, while cleanup needs neither a clock nor renewed capability.
-- **Cleanup ordering:** remove watches before invoking registry close. If removal cannot complete, retain the owner and per-step progress for retry. The registry's terminal-on-callback rule begins only once fd close is attempted; never retry that descriptor after an uncertain close. Validate directory ownership/privacy, bind, set 0600, then listen/publish; every setup error must undo unpublished resources.
-- **Tradeoff:** explicit loops and begin/finish require a scaffold API revision, but provide a defined lifetime and a reachable cancellation target. These are proposals, not previously approved interfaces.
+- **Cleanup ordering:** A close request immediately invalidates the identity and defers teardown until the borrower releases. Ensure watches are safely removed before descriptor disposal, and define how cleanup failures remain observable; never retry a descriptor after an uncertain close. Validate directory ownership/privacy, bind, set 0600, then listen/publish; every setup error must undo unpublished resources.
+- **Tradeoff:** the agreed explicit loop and proposed begin/finish API require scaffold changes. Begin/finish is one proposed way to make pending-connect cancellation reachable; its exact interface has not been settled.
 - **Platform boundary:** Windows socket-family probing must preserve non-support errors as distinct from resource/initialization errors. An available family does not establish readiness-backend support. Linux/macOS runtime tests are separate evidence; no platform support is inferred from static review.
 - **Filesystem boundary:** parent-directory privacy is part of the contract. Checking an inode and then unlinking is not a race-free deletion primitive in an adversarial shared directory; the draft does not support such a directory. Socket permissions alone are not a portable access-control boundary.
-- **Evidence boundary:** these documents present a reviewed design proposal and source-review findings. They do not claim scaffold changes, a socket implementation, runtime test results, a submitted #916 PR review, or owner sign-off.
+- **Evidence boundary:** these documents present a reviewed design proposal and source-review findings. They do not claim scaffold changes, a socket implementation, runtime test results, or sign-off on the remaining API details. The original #916 review was submitted separately.
 
 ## Sources checked
 
