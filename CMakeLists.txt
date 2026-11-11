@@ -16687,6 +16687,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test
     set_tests_properties(sblc_rng_parity_gate PROPERTIES TIMEOUT 1800 LABELS "stdlib;sblc;vm;parity")
 endif()
 
+# Source-specific stochastic resource laws and independent native replay.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME sblc_resource_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_resource_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(sblc_resource_gate PROPERTIES TIMEOUT 1000)
+    endif()
+    add_test(NAME sblc_resource_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sblc_resource_gate_self_test.py")
+    set_tests_properties(sblc_resource_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+
 # Platform layer tests (ADR-0053).
 set(ESHKOL_PLATFORM_STAGE tests)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
