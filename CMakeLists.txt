@@ -12352,6 +12352,73 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         endif()
     endif()
 
+    # ── The capability policy at the non-file sinks ──────────────────────
+    #
+    # A program that installs no policy behaves exactly as it always has. Once
+    # a policy is active, the shell, process-creation, socket and
+    # shared-library sinks are refused unless the policy names the capability.
+    # The matrix below runs each sink class with no policy, under a policy that
+    # withholds the capability, and under one that grants it, on every engine
+    # that carries the sink.
+    if(NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/capability_sink_coverage_test.sh")
+        add_test(
+            NAME capability_sink_coverage_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/capability_sink_coverage_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(capability_sink_coverage_test
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: capability_sink_coverage_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
+    # (process-spawn-pty cmd) hands the program the pseudo-terminal master
+    # descriptor along with the pid, on every engine, and repeated spawns stay
+    # within the process's descriptor budget.
+    if(NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_bookkeeping_test.sh")
+        add_test(
+            NAME process_child_bookkeeping_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_bookkeeping_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(process_child_bookkeeping_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: process_child_bookkeeping_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
+    # A child environment overlay belongs to the child: the child sees it and
+    # the spawning program's own environment is unchanged. Registered on every
+    # platform with a bash, because the Windows path builds an environment
+    # block for CreateProcess while the POSIX path assigns inside the forked
+    # child, and both must come out the same way.
+    find_program(ESHKOL_BASH_EXECUTABLE NAMES bash)
+    if(ESHKOL_BASH_EXECUTABLE AND TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_env_test.sh")
+        add_test(
+            NAME process_child_env_test
+            COMMAND "${ESHKOL_BASH_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_child_env_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(process_child_env_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: process_child_env_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
     # make-string checks its length and fill and repeats a non-ASCII fill
     # whole, with the same catchable errors on every engine.
     add_test(

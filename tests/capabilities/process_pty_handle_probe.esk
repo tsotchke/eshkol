@@ -1,0 +1,42 @@
+;;; `(process-spawn-pty cmd)` hands back the pair (pid . master-fd) on both
+;;; engines, so the program owns the pseudo-terminal descriptor and can read
+;;; the child's output through it. Spawning repeatedly must not exhaust the
+;;; process's descriptors, which it would if the master descriptor were not
+;;; handed over and were never closed.
+(require stdlib)
+
+(define first (process-spawn-pty "printf pty-child-ok"))
+
+(display "shape:")
+(display (if (pair? first) "pair" "not-pair"))
+(newline)
+
+(if (pair? first)
+    (begin
+      (display "pid-positive:")
+      (display (if (> (car first) 0) "yes" "no"))
+      (newline)
+      (display "fd-nonnegative:")
+      (display (if (>= (cdr first) 0) "yes" "no"))
+      (newline)
+      (process-wait (car first))
+      (socket-close (cdr first)))
+    #t)
+
+;; Many spawns in a row: each master descriptor is the program's to close, so
+;; the last spawn still succeeds.
+(define (spawn-and-release n last)
+  (if (= n 0)
+      last
+      (let ((handle (process-spawn-pty "exit 0")))
+        (if (pair? handle)
+            (begin
+              (process-wait (car handle))
+              (socket-close (cdr handle))
+              (spawn-and-release (- n 1) handle))
+            (spawn-and-release (- n 1) handle)))))
+
+(define final (spawn-and-release 64 first))
+(display "after-64:")
+(display (if (pair? final) "pair" "not-pair"))
+(newline)

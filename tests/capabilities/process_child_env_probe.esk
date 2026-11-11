@@ -1,0 +1,35 @@
+;;; The environment overlay `(process-spawn cmd env)` takes applies to the
+;;; child and to nothing else: the child's environment carries it, and the
+;;; spawning program's own environment is unchanged afterwards — so a second
+;;; spawn does not inherit the first one's overlay.
+(require stdlib)
+
+(define dump (getenv "ESHKOL_CHILD_ENV_DUMP"))
+(define overlay "ESHKOL_CHILD_ENV_PROBE=child-only")
+
+;; `cmd /c` on Windows, the POSIX shell elsewhere: both honour a redirection,
+;; and each spells a variable reference its own way.
+(define windows? (string=? (os-type) "windows"))
+(define command
+  (if windows?
+      (string-append "echo %ESHKOL_CHILD_ENV_PROBE% > \"" dump "\"")
+      (string-append "printf %s \"$ESHKOL_CHILD_ENV_PROBE\" > '" dump "'")))
+
+(define pid (process-spawn command overlay))
+(if (and (number? pid) (> pid 0)) (process-wait pid) #t)
+
+(display "spawned:")
+(display (if (and (number? pid) (> pid 0)) "yes" "no"))
+(newline)
+
+(display "child-saw-overlay:")
+(display
+  (if (file-exists? dump)
+      (if (string-contains? (read-file dump) "child-only") "yes" "no")
+      "no-dump"))
+(newline)
+
+;; The spawning program's own environment must not have gained the overlay.
+(display "parent-unchanged:")
+(display (if (getenv "ESHKOL_CHILD_ENV_PROBE") "no" "yes"))
+(newline)

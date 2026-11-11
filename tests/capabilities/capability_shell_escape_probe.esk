@@ -1,0 +1,27 @@
+;;; A policy that grants only file-read must hold for the shell as well as for
+;;; the file surface: `(write-file ...)` is refused, and so is a shell command
+;;; that would write the same file. Both refusals are catchable, and the file
+;;; named here must not exist when the program ends.
+(require stdlib)
+(require core.capabilities)
+
+(define target (getenv "ESHKOL_CAP_ESCAPE_TARGET"))
+
+(capability-install-policy! (list 'file-read))
+
+(display "policy-active:")
+(display (capability-policy-active?))
+(newline)
+
+(display "shell:")
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((rc (system (string-append "echo escaped > " target))))
+      (string-append "ran:" (number->string rc)))))
+(newline)
+
+(display "file-write:")
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (if (write-file target "escaped") "ran:wrote" "refused:write-file")))
+(newline)

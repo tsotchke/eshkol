@@ -9,9 +9,13 @@ only the capabilities you list are permitted.
 (require core.capabilities)
 ```
 
-Source: `lib/core/capabilities.esk`. Runtime symbols:
+Source: `lib/core/capabilities.esk`, over the runtime policy store in
+`lib/core/capability_policy.cpp` — one store, linked by the native runtime, the
+bytecode VM and the VM's WebAssembly bundle, so a policy a program installs
+holds whichever engine runs it. Runtime symbols:
 `eshkol_capability_runtime_clear`, `eshkol_capability_runtime_begin_install`,
-`eshkol_capability_runtime_allow`.
+`eshkol_capability_runtime_allow`, `eshkol_capability_require` (the
+allow-or-record guard) and `eshkol_capability_enforce` (the guard that raises).
 
 ## API
 
@@ -31,7 +35,10 @@ that native-side checks see the same policy.
 ## Core capability symbols
 
 `file-read`, `file-write`, `env-read`, `env-write`, `subprocess`, `shell`,
-`network`.
+`network`, `ffi`, `keychain`.
+
+See [the language reference page](../language/capabilities.md) for what each one
+gates, operation by operation.
 
 ## Which agent operations check which capability
 
@@ -43,9 +50,18 @@ that native-side checks see the same policy.
 | `agent.git-ffi` (shells out to `git`) | `shell` / `subprocess` |
 | File I/O builtins | `file-read` / `file-write` |
 | Environment access | `env-read` / `env-write` |
+| `(dlopen path)`, `(dlsym handle name)`, optional platform libraries | `ffi` |
+| `agent.keychain` | `keychain` |
 
 The HTTP client calls `(capability-require! 'network url)` on every request, so
-denying `network` blocks outbound HTTP even if the module is loaded.
+denying `network` blocks outbound HTTP even if the module is loaded. The gate is
+also in the runtime, at the point where each client opens its connection and
+where a socket comes into existence, so a caller that reaches a runtime entry
+point without going through the Scheme wrapper meets the same policy.
+
+A refused process, shell, socket or foreign-code operation raises a catchable
+error naming the capability and the operation, e.g.
+`capability denied: subprocess (process-spawn)`; the effect does not happen.
 
 ## Example
 

@@ -1,0 +1,20 @@
+;;; Shell capability: `(system cmd)` runs the command interpreter.
+;;;
+;;; The mode comes from the environment and is read before any policy is
+;;; installed, so this probe behaves the same in all three modes up to the
+;;; policy it then installs:
+;;;   none   no policy at all — the sink runs, as it always has
+;;;   deny   a policy that does not name the capability — the sink is refused
+;;;   grant  a policy that names it — the sink runs
+(require stdlib)
+(require core.capabilities)
+
+(define mode (getenv "ESHKOL_CAP_MODE"))
+(if (string=? mode "deny") (capability-install-policy! (list 'file-read)) #t)
+(if (string=? mode "grant") (capability-install-policy! (list 'file-read 'shell)) #t)
+
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((rc (system "exit 0")))
+      (string-append "ran:" (number->string rc)))))
+(newline)
