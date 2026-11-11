@@ -2545,6 +2545,7 @@ endif()
 
 set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/abi_fingerprint.c
+  lib/core/reader_limits.c
   lib/core/ad_tape_builtins.c
   lib/core/bignum.cpp
   lib/core/complex_math.cpp
