@@ -22,13 +22,16 @@
  *      ESHKOL_MAX_SOURCE_BYTES environment variable or the
  *      `--max-source-bytes=N` command-line option.  0 means "no cap".
  *
- *   2. TRAVERSAL DEPTH per pass.  Reading a 10^6-deep datum always succeeds
- *      within memory; a later pass that still walks the tree with native
- *      recursion consults eshkol_reader_max_pass_depth() and raises an
- *      ordinary error naming itself and the budget rather than running the
- *      native stack out.  Default ESHKOL_READER_DEFAULT_MAX_PASS_DEPTH; set
- *      by ESHKOL_MAX_PASS_DEPTH or `--max-pass-depth=N`.  0 means "defer to
- *      the native stack guard alone".
+ *   2. EXPRESSION-NESTING BUDGET for the compiler passes that walk a form
+ *      with native recursion.  Reading a 10^6-deep datum always succeeds
+ *      within memory, and so do the paths that build, print, compare and
+ *      collect it; a pass that compiles a 10^6-deep CODE form instead names
+ *      this budget and refuses, with an ordinary error.  Default
+ *      ESHKOL_READER_DEFAULT_MAX_PASS_DEPTH; set by ESHKOL_MAX_PASS_DEPTH or
+ *      `--max-pass-depth=N`.  0 means "no count, the native stack guard
+ *      decides" — and that guard (inc/eshkol/core/stack_guard.h) is consulted
+ *      whatever the count is, so raising this number cannot turn into a
+ *      signal: the pass still refuses, one frame before the bound.
  *
  * Both accessors are safe to call from any reader at any time: the values are
  * resolved from the environment once per process on first use, and a setter
@@ -48,12 +51,13 @@ extern "C" {
  * datum still reads on a machine with a few hundred MiB free. */
 #define ESHKOL_READER_DEFAULT_MAX_SOURCE_BYTES ((size_t)64u * 1024u * 1024u)
 
-/* 1,000,000 levels of nesting for a pass that is still natively recursive.
- * Chosen so the documented reader goal — a 10^6-deep quoted datum reads,
- * prints, compares and is collected — is met by every pass that reaches that
- * depth iteratively, while a pass that does not names this number instead of
- * ending the process. */
-#define ESHKOL_READER_DEFAULT_MAX_PASS_DEPTH ((size_t)1000000u)
+/* 1,000 levels of CODE nesting.  Data nesting has no limit: the readers, the
+ * release of a tree, effect lowering, quoted-datum emission, printing,
+ * comparison and collection all carry their own stack, so a 10^6-deep quoted
+ * datum goes through.  A form nested a thousand deep is a different thing —
+ * no human writes one — and the passes that compile it stay recursive, so
+ * this is the budget they name when they refuse. */
+#define ESHKOL_READER_DEFAULT_MAX_PASS_DEPTH ((size_t)1000u)
 
 /** @brief The input-size cap in bytes; 0 means no cap. */
 size_t eshkol_reader_max_source_bytes(void);
@@ -62,11 +66,12 @@ size_t eshkol_reader_max_source_bytes(void);
  *         (the `--max-source-bytes=N` option).  0 removes the cap. */
 void eshkol_reader_set_max_source_bytes(size_t bytes);
 
-/** @brief The per-pass traversal-depth budget; 0 means no budget. */
+/** @brief The expression-nesting budget; 0 means no count (the native
+ *         stack guard alone decides). */
 size_t eshkol_reader_max_pass_depth(void);
 
-/** @brief Override the per-pass traversal-depth budget (the
- *         `--max-pass-depth=N` option).  0 removes the budget. */
+/** @brief Override the expression-nesting budget (the
+ *         `--max-pass-depth=N` option).  0 removes the count. */
 void eshkol_reader_set_max_pass_depth(size_t depth);
 
 /**
@@ -82,7 +87,7 @@ int eshkol_reader_source_over_cap(size_t bytes, char* message, size_t cap);
 
 /**
  * @brief Fills @p message with the user-facing text for a pass that reached
- *        its traversal-depth budget.
+ *        its expression-nesting budget, or its native stack bound.
  *
  * @param pass_name The pass naming itself, e.g. "quoted-datum code generation".
  * @param depth     The budget that was reached.

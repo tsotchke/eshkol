@@ -17,6 +17,7 @@
 #include <cstring>
 #include <algorithm>
 #include <functional>
+#include <vector>
 
 namespace eshkol {
 
@@ -788,35 +789,57 @@ ContinuationTask<eshkol_ast_t> MacroExpander::expandNodeTask(eshkol_ast_t ast) {
                             value_renames_.bind(name, fresh);
                             return eshkol_ast_string_copy(fresh);
                         };
-                        std::function<eshkol_pattern_t*(const eshkol_pattern_t*)> rename_pattern;
-                        rename_pattern = [&](const eshkol_pattern_t* pattern) -> eshkol_pattern_t* {
-                            if (!pattern) return nullptr;
-                            auto* renamed = new eshkol_pattern_t(*pattern);
-                            if (pattern->type == PATTERN_VARIABLE && pattern->variable.name)
-                                renamed->variable.name = bind_name(pattern->variable.name);
-                            else if (pattern->type == PATTERN_CONS) {
-                                renamed->cons.car_pattern = rename_pattern(pattern->cons.car_pattern);
-                                renamed->cons.cdr_pattern = rename_pattern(pattern->cons.cdr_pattern);
-                            } else if (pattern->type == PATTERN_LIST || pattern->type == PATTERN_OR) {
-                                const auto count = pattern->type == PATTERN_LIST ? pattern->list.num_patterns : pattern->or_pat.num_patterns;
-                                auto** original = pattern->type == PATTERN_LIST ? pattern->list.patterns : pattern->or_pat.patterns;
-                                auto** children = count ? new eshkol_pattern_t*[count] : nullptr;
-                                for (uint64_t j = 0; j < count; ++j) children[j] = rename_pattern(original[j]);
-                                if (pattern->type == PATTERN_LIST) renamed->list.patterns = children;
-                                else renamed->or_pat.patterns = children;
-                            } else if (pattern->type == PATTERN_PREDICATE) {
-                                // The predicate sees the scope around the match, not
-                                // the clause's pattern variables; those are bound
-                                // again afterwards.
-                                value_renames_.restore(saved);
-                                if (pattern->predicate.predicate)
-                                    renamed->predicate.predicate = new eshkol_ast_t(expandNode(*pattern->predicate.predicate));
-                                for (const auto& bound : pattern_names)
-                                    value_renames_.bind(bound.first, bound.second);
-                                if (pattern->predicate.binding_name)
-                                    renamed->predicate.binding_name = bind_name(pattern->predicate.binding_name);
+                        // Renaming a pattern walks it with its own stack, not
+                        // with native recursion: a pattern nests as deeply as
+                        // the reader could read it, and the reader has no depth
+                        // limit. The walk is pre-order — the node, then its car
+                        // subtree, then its cdr, then list members in order —
+                        // which is the order the fresh names are minted in, so
+                        // a renamed pattern is spelled exactly as before.
+                        struct RenameItem {
+                            const eshkol_pattern_t* src;
+                            eshkol_pattern_t** dst;
+                        };
+                        auto rename_pattern = [&](const eshkol_pattern_t* root) -> eshkol_pattern_t* {
+                            eshkol_pattern_t* result = nullptr;
+                            std::vector<RenameItem> work;
+                            work.push_back({root, &result});
+                            while (!work.empty()) {
+                                const RenameItem item = work.back();
+                                work.pop_back();
+                                const eshkol_pattern_t* pattern = item.src;
+                                if (!pattern) { *item.dst = nullptr; continue; }
+                                auto* renamed = new eshkol_pattern_t(*pattern);
+                                *item.dst = renamed;
+                                if (pattern->type == PATTERN_VARIABLE && pattern->variable.name) {
+                                    renamed->variable.name = bind_name(pattern->variable.name);
+                                } else if (pattern->type == PATTERN_CONS) {
+                                    // Pushed in reverse: the car is taken next.
+                                    work.push_back({pattern->cons.cdr_pattern, &renamed->cons.cdr_pattern});
+                                    work.push_back({pattern->cons.car_pattern, &renamed->cons.car_pattern});
+                                } else if (pattern->type == PATTERN_LIST || pattern->type == PATTERN_OR) {
+                                    const auto count = pattern->type == PATTERN_LIST ? pattern->list.num_patterns : pattern->or_pat.num_patterns;
+                                    auto** original = pattern->type == PATTERN_LIST ? pattern->list.patterns : pattern->or_pat.patterns;
+                                    auto** children = count ? new eshkol_pattern_t*[count] : nullptr;
+                                    for (uint64_t j = 0; j < count; ++j) children[j] = nullptr;
+                                    if (pattern->type == PATTERN_LIST) renamed->list.patterns = children;
+                                    else renamed->or_pat.patterns = children;
+                                    for (uint64_t j = count; j-- > 0;)
+                                        work.push_back({original[j], &children[j]});
+                                } else if (pattern->type == PATTERN_PREDICATE) {
+                                    // The predicate sees the scope around the match, not
+                                    // the clause's pattern variables; those are bound
+                                    // again afterwards.
+                                    value_renames_.restore(saved);
+                                    if (pattern->predicate.predicate)
+                                        renamed->predicate.predicate = new eshkol_ast_t(expandNode(*pattern->predicate.predicate));
+                                    for (const auto& bound : pattern_names)
+                                        value_renames_.bind(bound.first, bound.second);
+                                    if (pattern->predicate.binding_name)
+                                        renamed->predicate.binding_name = bind_name(pattern->predicate.binding_name);
+                                }
                             }
-                            return renamed;
+                            return result;
                         };
                         clauses[i].pattern = rename_pattern(clauses[i].pattern);
                         if (clauses[i].body) clauses[i].body = new eshkol_ast_t(co_await expandNodeTask(*clauses[i].body));

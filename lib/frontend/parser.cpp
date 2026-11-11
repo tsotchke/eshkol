@@ -16,6 +16,8 @@
 #include <eshkol/core/symbol_syntax.h>
 #include <eshkol/core/number_syntax.h>
 #include <eshkol/core/string_escape.h>
+#include <eshkol/core/stack_guard.h>
+#include <eshkol/core/reader_limits.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
 #include <eshkol/types/quantum_types.h>
@@ -252,58 +254,13 @@ static thread_local bool g_type_parse_trial_failed = false;
  *         thread is at risk of stack overflow and parsing should bail out.
  */
 static bool check_stack_space() {
-    static const size_t STACK_SAFETY_MARGIN = 65536; // 64 KB reserved
-#ifdef _WIN32
-    (void)STACK_SAFETY_MARGIN;
-    return true;
-#elif defined(__APPLE__)
-    pthread_t self = pthread_self();
-    void* stack_addr = pthread_get_stackaddr_np(self);
-    size_t stack_size = pthread_get_stacksize_np(self);
-    // The probe must be the real frame address, never the address of a local:
-    // under AddressSanitizer with detect_stack_use_after_return (the default
-    // in current clang) locals live on a heap-allocated fake stack, so a
-    // local's address is outside the thread's stack bounds and the guard
-    // would report exhaustion on the first expression. The frame address is
-    // always on the real stack.
-    const char* here_ptr = static_cast<const char*>(__builtin_frame_address(0));
-    // On macOS, stack_addr is the TOP (highest address) of the stack
-    size_t used = (size_t)((char*)stack_addr - here_ptr);
-    return (stack_size > used) && ((stack_size - used) > STACK_SAFETY_MARGIN);
-#elif defined(__linux__)
-    // The thread's stack extent is measured once per thread and kept. For the
-    // main thread glibc's pthread_getattr_np() derives the extent by reading
-    // and parsing /proc/self/maps, so querying it on every parser frame made
-    // the check cost grow with the program's size and its address space; that
-    // was most of the time spent reading source. The extent is queried again
-    // only when the frame lies outside the kept one (a different stack).
-    static thread_local uintptr_t t_stack_bottom = 0;
-    static thread_local size_t t_stack_extent = 0;
-    static thread_local bool t_stack_measured = false;
-    // Real frame address, not a local's address: see the macOS branch for why
-    // (the AddressSanitizer fake stack makes a local's address lie outside the
-    // thread's stack bounds, which reads as exhaustion).
-    const uintptr_t here = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
-    if (!t_stack_measured || here < t_stack_bottom || (here - t_stack_bottom) > t_stack_extent) {
-        pthread_attr_t attr;
-        if (pthread_getattr_np(pthread_self(), &attr) != 0) return true;
-        void* stack_addr;
-        size_t stack_size;
-        pthread_attr_getstack(&attr, &stack_addr, &stack_size);
-        pthread_attr_destroy(&attr);
-        t_stack_bottom = reinterpret_cast<uintptr_t>(stack_addr);
-        t_stack_extent = stack_size;
-        t_stack_measured = true;
-    }
-    // On Linux the stack grows toward its BOTTOM (lowest address).
-    // The distance to that bound is remaining space, not consumed space.
-    const uintptr_t bottom = t_stack_bottom;
-    return here >= bottom && (here - bottom) <= t_stack_extent &&
-           (here - bottom) > STACK_SAFETY_MARGIN;
-#else
-    // Unknown platform: assume stack is fine
-    return true;
-#endif
+    // The measurement itself lives in inc/eshkol/core/stack_guard.h so the
+    // front end, the bytecode VM's toolchain and every pass that stays
+    // natively recursive ask the same question with the same 64 KB margin and
+    // the same per-thread caching of the stack extent. The guard here is
+    // unchanged in strength: same margin, same real-frame-address probe, same
+    // conservative "yes" where a platform offers no way to ask.
+    return eshkol_stack_headroom_ok() != 0;
 }
 
 enum TokenType {
@@ -4509,6 +4466,18 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
  */
 static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
+
+    // A pattern's nesting rides on continuation frames, which are heap
+    // allocated, so this does not fire on nesting alone. It is the same guard
+    // parse_expression() and read_syntax_datum_from() keep, for the same
+    // reason: a caller that entered the parser with an exhausted stack must be
+    // told so rather than discovering it in a later frame.
+    if (!check_stack_space()) {
+        PARSE_ERROR_AT(token, "match pattern nested too deeply");
+        auto* refused = new eshkol_pattern_t;
+        refused->type = PATTERN_INVALID;
+        co_return refused;
+    }
 
     eshkol_pattern_t* pattern = new eshkol_pattern_t;
     pattern->type = PATTERN_INVALID;
