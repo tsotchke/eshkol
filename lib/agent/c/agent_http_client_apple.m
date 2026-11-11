@@ -1,5 +1,11 @@
 #import <Foundation/Foundation.h>
 
+/* Every request path of this client passes through the gate below before a
+ * connection is attempted: an HTTP request is a network operation, and under a
+ * policy that does not grant `network` it raises a catchable capability-denied
+ * error instead of reaching the host. */
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
+
 #include "eshkol/agent_http.h"
 #include "agent_http_internal.h"
 #include "agent_sse_internal.h"
@@ -154,6 +160,7 @@ static NSURLSessionConfiguration* apple_session_configuration(int32_t timeout_ms
 
 static qllm_http_response_t* apple_perform(NSMutableURLRequest* request,
                                            int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     if (!request) return NULL;
     EshkolHTTPDelegate* delegate = [[EshkolHTTPDelegate alloc] init];
     NSOperationQueue* queue = [[NSOperationQueue alloc] init];
@@ -382,6 +389,7 @@ void* eshkol_http_stream_open_bytes(const char* method,
                                     const char* body,
                                     int64_t body_len,
                                     int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         NSMutableURLRequest* request = apple_request(method, url, header_lines,
                                                      body, body_len, timeout_ms);

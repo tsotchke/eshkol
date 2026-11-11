@@ -39,6 +39,8 @@
 #include <wchar.h>
 #endif
 
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
+
 /* ── Subprocess handle ──
  * stdout_buf / stderr_buf accumulate what qllm_process_wait's poll loop
  * reads from the child's stdout/stderr pipes while the child is still
@@ -985,6 +987,13 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
                                                             int force_shell) {
     const char* cwd = cwd_arg;
     if (!command) return NULL;
+    /* The gate for this layer. The Scheme wrappers in lib/agent/subprocess.esk
+     * ask for the same capabilities, and this is the same question one level
+     * down, at the point where the child is actually created, so a caller that
+     * reaches the C entry point directly meets it too. A command that is
+     * handed to the platform shell needs `shell` on top of `subprocess`. */
+    eshkol_capability_enforce("subprocess", "process-spawn");
+    if (force_shell) eshkol_capability_enforce("shell", "process-spawn-shell");
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
@@ -1310,6 +1319,8 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
     const char* tab_packed_argv, const char* cwd_arg, int64_t flags,
     const char* packed_env) {
     if (!tab_packed_argv || !tab_packed_argv[0]) return NULL;
+    /* No shell is involved on this path: argv is exec'd directly. */
+    eshkol_capability_enforce("subprocess", "process-spawn-argv");
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
