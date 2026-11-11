@@ -2364,8 +2364,12 @@ struct arena_tagged_cons_cell;
  * @brief Options controlling how eshkol_display_value_opts() renders a value.
  */
 typedef struct eshkol_display_opts {
-    int max_depth;          // Maximum recursion depth (default: 100)
-    int current_depth;      // Current depth (internal use)
+    int max_depth;          // Explicit elision depth; 0 (the default) prints
+                            // a value as deep as it goes. Nesting is carried
+                            // on the printer's own work stack, so depth costs
+                            // memory rather than native stack.
+    int current_depth;      // Unused: the printer carries each item's depth
+                            // on its own work stack (kept for layout)
     uint8_t quote_strings;  // Quote strings with "" (true for 'write', false for 'display')
     uint8_t show_types;     // Debug: show type tags
     void* output;           // Output stream (FILE*, default: stdout)
@@ -2373,11 +2377,11 @@ typedef struct eshkol_display_opts {
 
 /**
  * @brief Construct the default eshkol_display_opts_t (display semantics, stdout).
- * @return Options with max_depth=100, unquoted strings, no type tags, output=stdout.
+ * @return Options with no elision depth, unquoted strings, no type tags, output=stdout.
  */
 static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
     eshkol_display_opts_t opts;
-    opts.max_depth = 100;
+    opts.max_depth = 0;
     opts.current_depth = 0;
     opts.quote_strings = 0;
     opts.show_types = 0;

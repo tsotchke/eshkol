@@ -258,21 +258,123 @@ void eshkol_display_value(const eshkol_tagged_value_t* value) {
  * recurses into the appropriate helper: lists, vectors, tensors, closures,
  * lambdas, bignums, rationals, complex numbers, logic-engine objects, etc.
  * Honors `opts->quote_strings` (write vs. display semantics), `opts->max_depth`
- * / `opts->current_depth` (truncates with "..." past the depth limit), and
+ * (an explicit elision, when set above zero, truncates with "..."), and
  * `opts->show_types` for the unknown-type fallback. This is the single
  * recursion point every other display helper in this file calls back into.
  *
  * @param value  Tagged value to render; a null pointer prints "()".
  * @param opts   Display options (output port, depth state, quoting); must be non-null.
  */
-void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts) {
+// ───────────────────────────────────────────────────────────────────────────
+// Printing carries its own stack
+//
+// A value nests as deeply as the reader could read it, and reading has no
+// depth limit, so the descent into a list's car and into a vector's elements
+// is carried on an explicit work stack: a million-level quoted datum prints
+// in full on a constant number of native frames. A list or vector body
+// carries its cursor rather than being expanded up front, so a long sequence
+// costs one work item, not one per element.
+//
+// `opts->max_depth` is an explicit elision control, honoured when it is set
+// above zero; zero, the default, prints the value as deep as it goes.
+// ───────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+enum DisplayWorkKind { DV_VALUE, DV_LIST_REST, DV_VECTOR_REST, DV_TEXT };
+
+struct DisplayWork {
+    DisplayWorkKind       kind;
+    eshkol_tagged_value_t value;   // DV_VALUE
+    uint64_t              ptr;     // DV_LIST_REST / DV_VECTOR_REST
+    uint64_t              index;   // vector cursor, or "not the first element"
+    uint64_t              length;  // vector length
+    int                   depth;
+    const char*           text;    // DV_TEXT
+};
+
+struct DisplayStack {
+    DisplayWork  inline_slots[64];
+    DisplayWork* slots = inline_slots;
+    size_t       n = 0;
+    size_t       cap = 64;
+    bool         heap = false;
+    bool         failed = false;
+
+    ~DisplayStack() { if (heap) free(slots); }
+
+    void push(const DisplayWork& w) {
+        if (failed) return;
+        if (n == cap) {
+            const size_t next = cap * 2;
+            DisplayWork* grown;
+            if (heap) {
+                grown = (DisplayWork*)realloc(slots, next * sizeof(DisplayWork));
+            } else {
+                grown = (DisplayWork*)malloc(next * sizeof(DisplayWork));
+                if (grown) memcpy(grown, slots, n * sizeof(DisplayWork));
+            }
+            if (!grown) { failed = true; return; }
+            slots = grown;
+            cap = next;
+            heap = true;
+        }
+        slots[n++] = w;
+    }
+
+    void push_value(const eshkol_tagged_value_t& v, int depth) {
+        DisplayWork w{}; w.kind = DV_VALUE; w.value = v; w.depth = depth; push(w);
+    }
+    void push_list(uint64_t ptr, int depth, uint64_t not_first) {
+        DisplayWork w{}; w.kind = DV_LIST_REST; w.ptr = ptr; w.depth = depth;
+        w.index = not_first; push(w);
+    }
+    void push_vector(uint64_t ptr, int depth, uint64_t index, uint64_t length) {
+        DisplayWork w{}; w.kind = DV_VECTOR_REST; w.ptr = ptr; w.depth = depth;
+        w.index = index; w.length = length; push(w);
+    }
+    void push_text(const char* text) {
+        DisplayWork w{}; w.kind = DV_TEXT; w.text = text; push(w);
+    }
+};
+
+} // namespace
+
+static void display_value_step(const eshkol_tagged_value_t* value,
+                               eshkol_display_opts_t* opts,
+                               int depth, DisplayStack* stack);
+static void display_drain(eshkol_display_opts_t* opts, DisplayStack* stack);
+
+/* Open a list body and queue the rest of it. */
+static void display_push_list(DisplayStack* stack, uint64_t cons_ptr,
+                              int depth, eshkol_display_opts_t* opts) {
+    if (cons_ptr == 0) { fprintf(get_output(opts), "()"); return; }
+    fprintf(get_output(opts), "(");
+    stack->push_list(cons_ptr, depth + 1, 0);
+}
+
+/* Open a vector body and queue the rest of it. */
+static void display_push_vector(DisplayStack* stack, uint64_t vector_ptr,
+                                int depth, eshkol_display_opts_t* opts) {
+    FILE* out = get_output(opts);
+    if (vector_ptr == 0) { fprintf(out, "#()"); return; }
+    const uint64_t length = *(uint64_t*)vector_ptr;
+    /* The same sanity bound the vector printer has always applied. */
+    if (length > 10000) { fprintf(out, "#<invalid-vector>"); return; }
+    fprintf(out, "#(");
+    stack->push_vector(vector_ptr, depth + 1, 0, length);
+}
+
+static void display_value_step(const eshkol_tagged_value_t* value,
+                               eshkol_display_opts_t* opts,
+                               int depth, DisplayStack* stack) {
     if (!value) {
         fprintf(get_output(opts), "()");
         return;
     }
 
-    // Check depth limit
-    if (opts->current_depth > opts->max_depth) {
+    // An explicit elision, when one was asked for.
+    if (opts->max_depth > 0 && depth > opts->max_depth) {
         fprintf(get_output(opts), "...");
         return;
     }
@@ -341,7 +443,7 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             ESHKOL_EXHAUSTIVE_SWITCH_BEGIN
             switch ((heap_subtype_t)header->subtype) {
                 case HEAP_SUBTYPE_CONS:
-                    eshkol_display_list(value->data.ptr_val, opts);
+                    display_push_list(stack, value->data.ptr_val, depth, opts);
                     break;
                 case HEAP_SUBTYPE_STRING: {
                     // Use the header's recorded byte length, NOT strlen, so
@@ -373,7 +475,7 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     }
                     break;
                 case HEAP_SUBTYPE_VECTOR:
-                    display_vector(value->data.ptr_val, opts);
+                    display_push_vector(stack, value->data.ptr_val, depth, opts);
                     break;
                 case HEAP_SUBTYPE_TENSOR:
                     display_tensor(value->data.ptr_val, opts);
@@ -544,7 +646,7 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             break;
 
         case ESHKOL_VALUE_CONS_PTR:
-            eshkol_display_list(value->data.ptr_val, opts);
+            display_push_list(stack, value->data.ptr_val, depth, opts);
             break;
 
         case ESHKOL_VALUE_LAMBDA_SEXPR:
@@ -560,7 +662,7 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             break;
 
         case ESHKOL_VALUE_VECTOR_PTR:
-            display_vector(value->data.ptr_val, opts);
+            display_push_vector(stack, value->data.ptr_val, depth, opts);
             break;
 
         case ESHKOL_VALUE_DUAL_NUMBER: {
@@ -642,6 +744,20 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
 }
 
 // Scheme 'write' semantics - quotes strings
+/**
+ * @brief Displays one value, carrying its nesting on this function's own work
+ *        stack rather than on the native stack.
+ *
+ * Honors `opts->quote_strings` (write vs. display semantics) and
+ * `opts->max_depth` when that is set above zero.
+ */
+void eshkol_display_value_opts(const eshkol_tagged_value_t* value,
+                               eshkol_display_opts_t* opts) {
+    DisplayStack stack;
+    display_value_step(value, opts, 0, &stack);
+    display_drain(opts, &stack);
+}
+
 void eshkol_write_value(const eshkol_tagged_value_t* value) {
     eshkol_display_opts_t opts = eshkol_display_default_opts();
     opts.quote_strings = 1;
@@ -664,74 +780,92 @@ void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port
 }
 
 // Display a list (cons cell chain)
-void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts) {
+/**
+ * @brief Drains a display work stack, emitting in order.
+ *
+ * Native stack use is constant in how deeply the value nests. When the stack
+ * cannot grow, the remaining structure is elided rather than the process
+ * ending, and the elision is visible in what was written.
+ */
+static void display_drain(eshkol_display_opts_t* opts, DisplayStack* stack) {
     FILE* out = get_output(opts);
+    while (stack->n > 0 && !stack->failed) {
+        const DisplayWork w = stack->slots[--stack->n];
+        switch (w.kind) {
+            case DV_VALUE:
+                display_value_step(&w.value, opts, w.depth, stack);
+                break;
+            case DV_TEXT:
+                fputs(w.text, out);
+                break;
+            case DV_LIST_REST: {
+                arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)w.ptr;
+                if (!cell) { fprintf(out, ")"); break; }
+                if (w.index) fprintf(out, " ");
 
-    if (cons_ptr == 0) {
-        fprintf(out, "()");
-        return;
-    }
-
-    // Check depth limit
-    if (opts->current_depth > opts->max_depth) {
-        fprintf(out, "(...)");
-        return;
-    }
-
-    fprintf(out, "(");
-    opts->current_depth++;
-
-    uint64_t current = cons_ptr;
-    bool first = true;
-
-    while (current != 0) {
-        arena_tagged_cons_cell_t* cell = (arena_tagged_cons_cell_t*)current;
-
-        if (!first) {
-            fprintf(out, " ");
-        }
-        first = false;
-
-        // Display car
-        eshkol_display_value_opts(&cell->car, opts);
-
-        // Check cdr type - handle both legacy and consolidated formats
-        uint8_t cdr_full = cell->cdr.type;
-        uint8_t cdr_type = (cdr_full >= 32) ? cdr_full : (cdr_full >= 8) ? cdr_full : (cdr_full & 0x0F);
-
-        if (cdr_type == ESHKOL_VALUE_NULL) {
-            // Proper list end
-            break;
-        } else if (cdr_type == ESHKOL_VALUE_CONS_PTR) {
-            // Legacy cons - continue to next cell
-            current = cell->cdr.data.ptr_val;
-        } else if (cdr_type == ESHKOL_VALUE_HEAP_PTR) {
-            // Consolidated heap pointer - check if it's a cons cell
-            void* cdr_ptr = (void*)cell->cdr.data.ptr_val;
-            if (cdr_ptr) {
-                eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(cdr_ptr);
-                if (hdr->subtype == HEAP_SUBTYPE_CONS) {
-                    // Continue to next cons cell
-                    current = cell->cdr.data.ptr_val;
+                // The cdr decides whether the body continues, ends, or is a
+                // dotted tail. Both the legacy CONS_PTR form and the
+                // consolidated HEAP_PTR form are read, as before.
+                const uint8_t cdr_full = cell->cdr.type;
+                const uint8_t cdr_type = (cdr_full >= 32) ? cdr_full
+                                       : (cdr_full >= 8) ? cdr_full
+                                       : (uint8_t)(cdr_full & 0x0F);
+                uint64_t next = 0;
+                bool dotted = false;
+                if (cdr_type == ESHKOL_VALUE_NULL) {
+                    /* proper list end */
+                } else if (cdr_type == ESHKOL_VALUE_CONS_PTR) {
+                    next = cell->cdr.data.ptr_val;
+                } else if (cdr_type == ESHKOL_VALUE_HEAP_PTR) {
+                    void* cdr_ptr = (void*)cell->cdr.data.ptr_val;
+                    if (cdr_ptr) {
+                        eshkol_object_header_t* hdr = ESHKOL_GET_HEADER(cdr_ptr);
+                        if (hdr->subtype == HEAP_SUBTYPE_CONS) next = cell->cdr.data.ptr_val;
+                        else dotted = true;
+                    }
                 } else {
-                    // Not a cons - dotted pair
-                    fprintf(out, " . ");
-                    eshkol_display_value_opts(&cell->cdr, opts);
-                    break;
+                    dotted = true;
                 }
-            } else {
+
+                if (next) {
+                    stack->push_list(next, w.depth, 1);
+                } else if (dotted) {
+                    stack->push_text(")");
+                    stack->push_value(cell->cdr, w.depth);
+                    stack->push_text(" . ");
+                } else {
+                    stack->push_text(")");
+                }
+                stack->push_value(cell->car, w.depth);
                 break;
             }
-        } else {
-            // Dotted pair - display cdr and break
-            fprintf(out, " . ");
-            eshkol_display_value_opts(&cell->cdr, opts);
-            break;
+            case DV_VECTOR_REST: {
+                if (w.index < w.length) {
+                    if (w.index) fprintf(out, " ");
+                    const uint8_t* elem_base = (const uint8_t*)w.ptr + 8;
+                    const eshkol_tagged_value_t* elem =
+                        (const eshkol_tagged_value_t*)(elem_base +
+                            w.index * sizeof(eshkol_tagged_value_t));
+                    stack->push_vector(w.ptr, w.depth, w.index + 1, w.length);
+                    stack->push_value(*elem, w.depth);
+                } else {
+                    fprintf(out, ")");
+                }
+                break;
+            }
         }
     }
+    if (stack->failed) fprintf(out, " ...");
+}
 
-    opts->current_depth--;
-    fprintf(out, ")");
+/**
+ * @brief Displays a cons list, carrying its nesting on this function's own
+ *        work stack rather than on the native stack.
+ */
+void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts) {
+    DisplayStack stack;
+    display_push_list(&stack, cons_ptr, 0, opts);
+    display_drain(opts, &stack);
 }
 
 // Display a lambda by extracting embedded S-expression or looking up in registry
@@ -928,41 +1062,14 @@ static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts) {
 // etc.
 
 // Display a Scheme vector with proper element formatting
+/**
+ * @brief Displays a Scheme vector, carrying its nesting on this function's own
+ *        work stack rather than on the native stack.
+ */
 static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts) {
-    FILE* out = get_output(opts);
-
-    if (vector_ptr == 0) {
-        fprintf(out, "#()");
-        return;
-    }
-
-    // Read length from start of vector
-    uint64_t* len_ptr = (uint64_t*)vector_ptr;
-    uint64_t length = *len_ptr;
-
-    // Validate length (sanity check)
-    if (length > 10000) {
-        fprintf(out, "#<invalid-vector>");
-        return;
-    }
-
-    fprintf(out, "#(");
-
-    // Elements start after the 8-byte length field
-    // Each element is a tagged_value (16 bytes)
-    uint8_t* elem_base = (uint8_t*)vector_ptr + 8;
-
-    for (uint64_t i = 0; i < length; i++) {
-        if (i > 0) fprintf(out, " ");
-
-        // Get pointer to i-th tagged_value element
-        eshkol_tagged_value_t* elem = (eshkol_tagged_value_t*)(elem_base + i * sizeof(eshkol_tagged_value_t));
-
-        // Recursively display the element
-        eshkol_display_value_opts(elem, opts);
-    }
-
-    fprintf(out, ")");
+    DisplayStack stack;
+    display_push_vector(&stack, vector_ptr, 0, opts);
+    display_drain(opts, &stack);
 }
 
 // ===== END UNIFIED DISPLAY IMPLEMENTATION =====
