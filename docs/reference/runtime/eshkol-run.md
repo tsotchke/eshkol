@@ -163,6 +163,26 @@ a match does not prove linking, execution, consumer compatibility, or release
 qualification. Keep the selected source revision and artifact byte hashes in
 the corresponding baseline receipt.
 
+CMake also writes the exact source-digest input to
+`build/generated/eshkol/stdlib_identity_source.txt`. With the trusted compiler's
+`source=` value recorded independently, compare a candidate source tree using:
+
+```sh
+python3 scripts/check_stdlib_source_identity.py \
+  --source-root /path/to/source \
+  --material /path/to/build/generated/eshkol/stdlib_identity_source.txt \
+  --expected-source-fingerprint '<trusted compiler source= value>'
+```
+
+The checker enumerates the scopes in `cmake/StdlibIdentityInputs.cmake`, including
+hidden and ignored inputs, and compares their relative names and bytes with the
+pinned material. It refuses changed inputs, unsupported collectors, symlinks and
+special files in those scopes. Run it on a quiescent or immutable source tree;
+its change checks do not provide filesystem snapshot isolation. Files outside
+those configured scopes, build flags, external dependencies, artifact provenance
+and runtime behavior need separate evidence. Taking the expected digest from the
+material itself does not establish a compiler/source relationship.
+
 ## Verified examples
 
 ```sh

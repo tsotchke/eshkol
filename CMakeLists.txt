@@ -3591,26 +3591,9 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
 # complete source closure (including relative paths) and effective object ABI;
 # reconfigure when any input changes so the compiler and generated artifacts
 # agree about the expected identity.
-set(_stdlib_identity_inputs "${STDLIB_SOURCE};${STDLIB_TRANSITIVE_SOURCES}")
-# The source digest describes compatibility of emitted and consumed stdlib
-# artifacts, not just the Scheme-level library text. Include the compiler,
-# runtime ABI, JIT consumer, and their CMake/configuration inputs so same-release
-# codegen or layout changes cannot retain an old identity. Use filesystem globs
-# rather than git metadata so source archives configure identically.
-file(GLOB_RECURSE _stdlib_identity_native_inputs CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/inc/eshkol/*"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/*"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/*"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/repl/*"
-     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*")
-file(GLOB _stdlib_identity_config_inputs CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
-list(APPEND _stdlib_identity_inputs
-     ${_stdlib_identity_native_inputs}
-     ${_stdlib_identity_config_inputs}
-     "${CMAKE_CURRENT_SOURCE_DIR}/exe/eshkol-run.cpp")
-list(REMOVE_DUPLICATES _stdlib_identity_inputs)
-list(SORT _stdlib_identity_inputs)
+# Keep the source input scopes shared with the read-only source checker.
+include(cmake/StdlibIdentityInputs.cmake)
+eshkol_collect_stdlib_identity_inputs("${CMAKE_CURRENT_SOURCE_DIR}" _stdlib_identity_inputs)
 set(_stdlib_identity_source_material "")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
      ${_stdlib_identity_inputs})
@@ -3627,6 +3610,11 @@ string(APPEND _stdlib_identity_source_material
        "llvm=${LLVM_PACKAGE_VERSION}\n")
 string(SHA256 ESHKOL_STDLIB_SOURCE_FINGERPRINT
        "${_stdlib_identity_source_material}")
+# Preserve the exact digest preimage for source/artifact tuple qualification.
+# This is build evidence, not an installed SDK or a source-selection authority.
+file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
+file(WRITE "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/stdlib_identity_source.txt"
+     "${_stdlib_identity_source_material}")
 if(ESHKOL_MEMORY_ABI_V2)
   set(ESHKOL_STDLIB_IDENTITY_ABI "object-abi-v2")
 else()
@@ -3723,6 +3711,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
             --cmake "${CMAKE_COMMAND}" --ctest "${CMAKE_CTEST_COMMAND}"
             --work-root "${CMAKE_CURRENT_BINARY_DIR}/qualification/stdlib-identity-registration")
     set_tests_properties(stdlib_identity_cli_registration PROPERTIES
+        TIMEOUT 90 LABELS "toolchain;stdlib;metadata")
+  endif()
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME stdlib_source_identity_metadata
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/stdlib_source_identity_test.py"
+            --source-dir "${CMAKE_CURRENT_SOURCE_DIR}" --cmake "${CMAKE_COMMAND}"
+            --work-root "${CMAKE_CURRENT_BINARY_DIR}/qualification/stdlib-source-identity")
+    set_tests_properties(stdlib_source_identity_metadata PROPERTIES
         TIMEOUT 90 LABELS "toolchain;stdlib;metadata")
   endif()
 endif()
