@@ -45,6 +45,7 @@ struct eshkol_event_loop {
     int  max_events;          /**< Capacity for both registrations and results. */
     int  n_regs;              /**< Number of live entries in `regs`.            */
     int  last_os_error;       /**< errno / GetLastError from the last failure.  */
+    unsigned int retain_count; /**< Scoped resources keep the loop alive. */
 
     eshkol_event_reg_t* regs; /**< malloc'd, `max_events` entries.              */
     eshkol_event_t*     out;  /**< malloc'd, `max_events` entries; poll output. */

@@ -1,0 +1,4 @@
+[REPL] Discovered 791 functions, 965 globals, 24 variadic entries from stdlib.bc
+[REPL] Loaded stdlib from cached object: /home/gabe/.codex/worktrees/ipc-streaming-20261104/package-agent-20261110/lib/eshkol/stdlib-jit-v4-6D25E95D0EBF80BC-x86_64-pc-linux-gnu-abi1h8s0a8.o
+REENTRY-ATTEMPT
+Unhandled exception: call-with-subprocess-streams: closed session re-entry
