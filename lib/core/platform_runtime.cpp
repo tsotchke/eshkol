@@ -38,6 +38,8 @@
 #include <mach-o/dyld.h>
 #endif
 
+extern "C" int eshkol_capability_require(const char* capability);
+
 namespace eshkol::platform {
 
 namespace {
@@ -1708,6 +1710,10 @@ std::string shell_quote(std::string_view argument) {
  * @return -1 if @p arguments is empty; otherwise the subprocess's exit
  *         status (platform-specific encoding). */
 int run_command(const std::vector<std::string>& arguments) {
+    /* Running an external program is a capability sink: under a policy that
+     * does not grant `subprocess` nothing is launched and the caller sees the
+     * same -1 it gets for an empty argument vector. */
+    if (!eshkol_capability_require("subprocess")) return -1;
     if (arguments.empty()) {
         return -1;
     }

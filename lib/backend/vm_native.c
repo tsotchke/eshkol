@@ -9012,6 +9012,29 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
 }
 
+/** @brief The capability gate at a VM sink.
+ *
+ * Consults the one process-wide capability policy (lib/core/capability_policy.cpp,
+ * the same store the native runtime reads) and, when the policy does not grant
+ * @p capability, raises a catchable VM error naming the capability and the
+ * operation. Returns 1 when the caller must not proceed, 0 when it may.
+ *
+ * With no policy installed this is a single allow query that always permits,
+ * so a program that installs no policy reaches the sink exactly as before.
+ *
+ * @param capability Capability the sink requires, e.g. "subprocess".
+ * @param operation  Operation named in the error, e.g. "process-spawn".
+ * @return 1 if the operation was refused (an error has been raised); else 0.
+ */
+static int vm_capability_denied(VM* vm, const char* capability, const char* operation) {
+    if (eshkol_capability_require(capability)) return 0;
+    char message[192];
+    snprintf(message, sizeof(message), "capability denied: %s (%s)",
+             capability, operation ? operation : "");
+    vm_raise_error_msg(vm, message);
+    return 1;
+}
+
 typedef int64_t (*VmSqliteOpenFn)(const char*);
 typedef void (*VmSqliteCloseFn)(int64_t);
 typedef int64_t (*VmSqlitePrepareFn)(int64_t, const char*);
@@ -14842,6 +14865,7 @@ tensor_inverse_done:
     }
     case 2032: { /* dlopen(path) → handle or #f */
         Value path_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "ffi", "dlopen")) break;
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
         VmString* path = vm_value_as_string(vm, path_val);
         if (path && path->data) {
@@ -14861,6 +14885,7 @@ tensor_inverse_done:
     }
     case 2033: { /* dlsym(handle, name) → pointer-integer or #f */
         Value name_val = vm_pop(vm), handle_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "ffi", "dlsym")) break;
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
         int handle = (int)as_number(handle_val);
         VmString* name = vm_value_as_string(vm, name_val);
@@ -15076,6 +15101,7 @@ tensor_inverse_done:
     }
     case 2042: { /* http-server-create(port) → server or #f */
         Value port_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "http-server-create")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         int requested_port = (int)as_number(port_val);
         int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -15215,6 +15241,7 @@ tensor_inverse_done:
     case 2047: { /* http-request(method, url, headers, body, timeout-ms) → (status headers body) or #f */
         Value timeout_val = vm_pop(vm), body_val = vm_pop(vm), headers_val = vm_pop(vm);
         Value url_val = vm_pop(vm), method_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "http-request")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* method = vm_value_as_string(vm, method_val);
         VmString* url = vm_value_as_string(vm, url_val);
@@ -15297,6 +15324,7 @@ tensor_inverse_done:
     }
     case 2048: { /* websocket-connect(url, headers) → ws or #f */
         Value headers_val = vm_pop(vm), url_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "websocket-connect")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* url = vm_value_as_string(vm, url_val);
         VmString* headers = vm_value_as_string(vm, headers_val);
@@ -20341,6 +20369,7 @@ tensor_inverse_done:
                   * argument selects direct argv mode and its second argument
                   * is the child's working directory. */
         Value env_val = vm_pop(vm), args_val = vm_pop(vm), cmd_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-spawn")) break;
         int argv_mode = (cmd_val.type == VAL_PAIR);
         Value program_val = cmd_val;
         Value command_args = args_val;
@@ -20475,6 +20504,7 @@ tensor_inverse_done:
 
     case 1803: { /* process-spawn-argv-options(argv, options) → pid or #f */
         Value options = vm_pop(vm), argv = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-spawn-argv-options")) break;
         Value cwd = vm_string_value(vm, ".", 1);
         Value env = NIL_VAL;
         int valid = 1;
@@ -20551,6 +20581,7 @@ tensor_inverse_done:
 
     case 1782: { /* process-kill(pid, signal) → #t or #f */
         Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-kill")) break;
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
         DWORD pid = (DWORD)vm_process_pid_from_value(vm, pid_val);
         UINT exit_code = (UINT)((int)as_number(sig_val) > 0 ? (int)as_number(sig_val) : 1);
@@ -20629,6 +20660,7 @@ tensor_inverse_done:
 
     case 1785: { /* process-setpgid(pid, pgid) → #t or #f */
         Value pgid_val = vm_pop(vm), pid_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-setpgid")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         pid_t pgid = (pid_t)as_number(pgid_val);
@@ -20649,6 +20681,7 @@ tensor_inverse_done:
                   * that stay in that group; direct kill is the fallback for
                   * externally supplied non-group-leader PIDs. */
         Value sig_val = vm_pop(vm), pid_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-kill-tree")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         pid_t pid = (pid_t)vm_process_pid_from_value(vm, pid_val);
         int sig = (int)as_number(sig_val);
@@ -20672,6 +20705,8 @@ tensor_inverse_done:
 
     case 1787: { /* process-spawn-pty(command) → (pid . master-fd) or #f */
         Value cmd_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "process-spawn-pty")) break;
+        if (vm_capability_denied(vm, "shell", "process-spawn-pty")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         if (cmd_val.type == VAL_STRING && is_valid_heap_ptr(vm, cmd_val.as.ptr)) {
             VmString* cmd = (VmString*)vm->heap.objects[cmd_val.as.ptr]->opaque.ptr;
@@ -20731,6 +20766,7 @@ tensor_inverse_done:
     }
 
     case 1789: { /* fork() → 0 in child, child pid in parent, or #f */
+        if (vm_capability_denied(vm, "subprocess", "fork")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         pid_t pid = fork();
         if (pid >= 0) {
@@ -20744,6 +20780,7 @@ tensor_inverse_done:
 
     case 1790: { /* unix-socket-connect(path) → fd or #f */
         Value path_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "network", "unix-socket-connect")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* path = vm_value_as_string(vm, path_val);
         if (path && path->data && path->byte_len > 0 &&
@@ -20936,6 +20973,7 @@ tensor_inverse_done:
 
     case 1799: { /* execv(path, argv) → does not return on success, #f on error */
         Value argv_val = vm_pop(vm), path_val = vm_pop(vm);
+        if (vm_capability_denied(vm, "subprocess", "execv")) break;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
         VmString* path = vm_value_as_string(vm, path_val);
         if (path && path->data && path->byte_len > 0) {
