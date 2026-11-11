@@ -8924,6 +8924,34 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+# Reader nesting gate: nesting depth is bounded by memory, not by a number.
+# A quoted datum nested 10^4, 10^5 and 10^6 levels deep reads, compares and
+# prints in full on the JIT, ahead-of-time and the bytecode VM; the same
+# nesting written as a code form is either compiled or refused in words; the
+# documented input-size cap is honoured from both the environment variable and
+# the command-line option; and reading a datum too big for the process's
+# address space is a diagnostic. A signal, in any of those, fails this gate.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/reader_nesting_depth_gate.sh")
+    # See resource_limits_enforcement_gate above for why this mirrors the VM
+    # target's own gating condition rather than probing `if(TARGET ...)`.
+    if(NOT WIN32)
+        set(ESHKOL_READER_NESTING_GATE_VM "$<TARGET_FILE:eshkol-vm-standalone-test>")
+    else()
+        set(ESHKOL_READER_NESTING_GATE_VM "none")
+    endif()
+    add_test(NAME reader_nesting_depth_gate
+        COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/limits/reader_nesting_depth_gate.sh"
+            "$<TARGET_FILE:eshkol-run>"
+            "${ESHKOL_READER_NESTING_GATE_VM}"
+            "${CMAKE_CURRENT_BINARY_DIR}/reader-nesting-gate")
+    set_tests_properties(reader_nesting_depth_gate PROPERTIES
+        TIMEOUT 900
+        PASS_REGULAR_EXPRESSION "PASS: nesting depth is bounded by memory"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 # SW-45 gate: bytecode VM closure storage is sized to the procedure's actual
 # capture count, so the former 32-entry boundary and the following top-level
 # definition both execute without silent stack corruption.

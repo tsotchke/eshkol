@@ -16,7 +16,15 @@ Usage: eshkol-repl [OPTIONS]
 ```
 
 Interactively, forms are read (newline-terminated with balanced parens),
-evaluated, and results printed. See `repl_utils.h` for the built-in help topics
+evaluated, and results printed. A form nests as deeply as the session has
+memory for — the reader carries nesting on its own heap stack, so there is no
+depth limit — and a form over the shared input-size cap, or one that needs
+more memory than the session has, is reported and the session continues. The
+cap and the code-nesting budget are `ESHKOL_MAX_SOURCE_BYTES` and
+`ESHKOL_MAX_PASS_DEPTH`; see
+[Environment variables](environment-variables.md#reading-the-input-size-cap-and-why-there-is-no-depth-limit).
+The browser playground runs the same reader, through the same cap, and reports
+the same way instead of ending the page's session. See `repl_utils.h` for the built-in help topics
 (e.g. `with-region [name] [size] body ...`).
 
 ## Machine mode (EREPL protocol)

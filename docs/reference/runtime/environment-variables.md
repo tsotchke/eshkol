@@ -201,6 +201,57 @@ so a run that does not set it is not on a clock. Arming a 30-second wall-clock
 kill on every invocation would also bound AOT compilation and interactive REPL
 sessions.
 
+### Reading: the input-size cap, and why there is no depth limit
+
+Nesting depth, when Eshkol reads a datum, is bounded by memory and by nothing
+else. Both readers — the native front end and the bytecode VM's — carry the
+open containers on their own heap-allocated stack, so the native stack does
+not grow with the source, and there is no nesting limit to raise. A quoted
+datum a million levels deep reads, compares with `equal?`, prints in full and
+is collected, on the JIT, ahead-of-time and the VM alike. The same applies to
+releasing the tree, to lowering effect forms, and to emitting the code that
+builds the datum.
+
+Two numbers *are* configurable, and both are shared by the two readers and by
+every entry point — `eshkol-run`, the REPL, `eshkol-vm-standalone`, the
+compile server and the WebAssembly playground:
+
+| Variable | Option | Default | What it bounds |
+| --- | --- | --- | --- |
+| `ESHKOL_MAX_SOURCE_BYTES` | `--max-source-bytes=N` | `64M` | The largest source text a reader accepts. `0` removes the cap. |
+| `ESHKOL_MAX_PASS_DEPTH` | `--max-pass-depth=N` | `1000` | Levels of **code** nesting the compiler will descend. `0` removes the count. |
+
+Both accept a plain byte count or the suffixes `K`, `M` and `G` (1024-based),
+so `--max-source-bytes=128M` is written as it reads.
+
+A text over the cap is refused before it is read, and the refusal names the
+cap and how to raise it:
+
+```
+source text is 67108865 bytes, over the 67108864-byte input cap (raise it with
+ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N; 0 removes the cap)
+```
+
+`ESHKOL_MAX_PASS_DEPTH` is about **code**, not data. A thousand levels of
+nested *expression* is not something a person writes, and the passes that
+compile one — expression emission, the binding scanners, the datum-to-tree
+conversion `eval` uses — are natively recursive, so that is the budget they
+name when they refuse. Quoted data is unaffected by it at any depth. The
+native stack headroom guard (the one `check_stack_space` has always applied in
+the front end, reserving 64 KB) is consulted alongside the count, so raising
+`ESHKOL_MAX_PASS_DEPTH` cannot turn a refusal into a signal: the pass still
+stops one frame short of the bound and says so.
+
+Running out of memory while reading is an ordinary diagnostic too, with the
+form's position, on every entry point: the compiler driver exits nonzero with
+a message, the REPL reports it and keeps the session, and the compile server
+answers the request and keeps serving every other one.
+
+One modest ceiling remains, and it is on syntax rather than on data: at most
+64 levels of `~{...}` string interpolation nested inside `~{...}`, since each
+level is a fresh source text read on its own frames. Reaching it is an
+ordinary diagnostic naming the number.
+
 ### Bytecode-VM region reclamation and heap growth watchdog
 
 `(with-region ...)` reclaims on the bytecode VM as of the Stage-1 region
