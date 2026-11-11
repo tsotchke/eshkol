@@ -8020,8 +8020,76 @@ void vm_push_i128(VM* vm, __int128 value) {
  * R7RS external-representation syntax.  Keeping this port-aware serializer
  * beside native dispatch lets `(write value port)` work for file and string
  * ports instead of silently falling back to stdout. */
-static void vm_write_value_port(VM* vm, Value value, VmPort* port,
-                                int write_syntax) {
+/* ───────────────────────────────────────────────────────────────────────────
+ * Writing to a port carries its own stack
+ *
+ * Same shape as the console printer in vm_core.c: a list's spine was already
+ * walked iteratively, and the CAR descent and the vector-element descent are
+ * carried on an explicit work stack, so a datum nested as deeply as the
+ * reader could read it is written in full on a constant number of native
+ * frames.  A list or vector body carries its cursor rather than being
+ * expanded up front, so a long sequence costs one item, not one per element.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef enum { VW_VALUE, VW_LIST_REST, VW_VECTOR_REST, VW_TEXT } VmWriteWorkKind;
+
+typedef struct {
+    VmWriteWorkKind kind;
+    Value           value;
+    int             index;
+    const char*     text;
+} VmWriteWork;
+
+typedef struct {
+    VmWriteWork  inline_slots[64];
+    VmWriteWork* slots;
+    size_t       n;
+    size_t       cap;
+    int          heap;
+    int          failed;
+} VmWriteStack;
+
+static void vw_init(VmWriteStack* st) {
+    st->slots = st->inline_slots;
+    st->n = 0;
+    st->cap = sizeof(st->inline_slots) / sizeof(st->inline_slots[0]);
+    st->heap = 0;
+    st->failed = 0;
+}
+
+static void vw_free(VmWriteStack* st) {
+    if (st->heap) free(st->slots);
+    st->slots = st->inline_slots;
+    st->heap = 0;
+}
+
+static void vw_push(VmWriteStack* st, VmWriteWorkKind kind, Value v,
+                    int index, const char* text) {
+    if (st->failed) return;
+    if (st->n == st->cap) {
+        const size_t next = st->cap * 2;
+        VmWriteWork* grown;
+        if (st->heap) {
+            grown = (VmWriteWork*)realloc(st->slots, next * sizeof(VmWriteWork));
+        } else {
+            grown = (VmWriteWork*)malloc(next * sizeof(VmWriteWork));
+            if (grown) memcpy(grown, st->slots, st->n * sizeof(VmWriteWork));
+        }
+        if (!grown) { st->failed = 1; return; }
+        st->slots = grown;
+        st->cap = next;
+        st->heap = 1;
+    }
+    st->slots[st->n].kind = kind;
+    st->slots[st->n].value = v;
+    st->slots[st->n].index = index;
+    st->slots[st->n].text = text;
+    st->n++;
+}
+
+/* Emits one value, queueing the parts of it that are themselves values. */
+static void vm_write_value_step(VM* vm, Value value, VmPort* port,
+                                int write_syntax, VmWriteStack* st) {
     char number[160];
     if (!vm || !port) return;
     switch ((int)value.type) {
@@ -8090,31 +8158,12 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
     }
     case VAL_PAIR: {
         vm_port_write_cstr(port, "(");
-        Value cursor = value;
-        int first = 1;
-        while (cursor.type == VAL_PAIR) {
-            if (!first) vm_port_write_cstr(port, " ");
-            first = 0;
-            HeapObject* cell = vm->heap.objects[cursor.as.ptr];
-            vm_write_value_port(vm, cell->cons.car, port, write_syntax);
-            cursor = cell->cons.cdr;
-        }
-        if (cursor.type != VAL_NIL) {
-            vm_port_write_cstr(port, " . ");
-            vm_write_value_port(vm, cursor, port, write_syntax);
-        }
-        vm_port_write_cstr(port, ")");
+        vw_push(st, VW_LIST_REST, value, 0 /* this is the first element */, NULL);
         break;
     }
     case VAL_VECTOR: {
         vm_port_write_cstr(port, "#(");
-        HeapObject* object = vm->heap.objects[value.as.ptr];
-        VmVector* vector = object ? (VmVector*)object->opaque.ptr : NULL;
-        for (int i = 0; vector && i < vector->len; ++i) {
-            if (i) vm_port_write_cstr(port, " ");
-            vm_write_value_port(vm, vector->items[i], port, write_syntax);
-        }
-        vm_port_write_cstr(port, ")");
+        vw_push(st, VW_VECTOR_REST, value, 0, NULL);
         break;
     }
     case VAL_COMPLEX: {
@@ -8176,6 +8225,62 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
         vm_port_write_cstr(port, number);
         break;
     }
+}
+
+/**
+ * @brief Writes a value to @p port, in display form or R7RS write form.
+ *
+ * Native stack use is constant in how deeply the value nests.  When the work
+ * stack cannot grow, the remaining structure is elided rather than the
+ * process ending, and the elision is visible in what was written.
+ */
+static void vm_write_value_port(VM* vm, Value value, VmPort* port,
+                                int write_syntax) {
+    if (!vm || !port) return;
+    VmWriteStack st;
+    vw_init(&st);
+    vm_write_value_step(vm, value, port, write_syntax, &st);
+    while (st.n > 0 && !st.failed) {
+        const VmWriteWork w = st.slots[--st.n];
+        switch (w.kind) {
+        case VW_VALUE:
+            vm_write_value_step(vm, w.value, port, write_syntax, &st);
+            break;
+        case VW_TEXT:
+            vm_port_write_cstr(port, w.text);
+            break;
+        case VW_LIST_REST: {
+            Value cursor = w.value;
+            if (cursor.type == VAL_PAIR) {
+                if (w.index) vm_port_write_cstr(port, " ");
+                HeapObject* cell = vm->heap.objects[cursor.as.ptr];
+                vw_push(&st, VW_LIST_REST, cell->cons.cdr, 1, NULL);
+                vw_push(&st, VW_VALUE, cell->cons.car, 0, NULL);
+            } else if (cursor.type != VAL_NIL) {
+                vm_port_write_cstr(port, " . ");
+                vw_push(&st, VW_TEXT, cursor, 0, ")");
+                vw_push(&st, VW_VALUE, cursor, 0, NULL);
+            } else {
+                vm_port_write_cstr(port, ")");
+            }
+            break;
+        }
+        case VW_VECTOR_REST: {
+            HeapObject* object = vm->heap.objects[w.value.as.ptr];
+            VmVector* vector = object ? (VmVector*)object->opaque.ptr : NULL;
+            if (vector && w.index < vector->len) {
+                if (w.index) vm_port_write_cstr(port, " ");
+                vw_push(&st, VW_VECTOR_REST, w.value, w.index + 1, NULL);
+                vw_push(&st, VW_VALUE, vector->items[w.index], 0, NULL);
+            } else {
+                vm_port_write_cstr(port, ")");
+            }
+            break;
+        }
+        }
+    }
+    if (st.failed) vm_port_write_cstr(port, " ...");
+    vw_free(&st);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

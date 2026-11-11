@@ -1625,7 +1625,93 @@ static void print_tensor_recursive(VM* vm, const VmTensor* t, int dim, int64_t o
  *        the VM's heap. Most opaque heap types not yet given a full
  *        printer render as a `<type-name>` placeholder.
  */
-static void print_value_mode(VM* vm, Value v, int write_syntax) {
+/* ───────────────────────────────────────────────────────────────────────────
+ * Printing carries its own stack
+ *
+ * A list's spine was already walked iteratively here; a datum nests in the
+ * CAR, and a datum nests as deeply as the reader could read it, so the car
+ * descent and the vector-element descent are carried on an explicit work
+ * stack too.  A million-level quoted datum prints in full, on a constant
+ * number of native frames.
+ *
+ * A work item is one step of the output: a value to print, the remainder of a
+ * list body or of a vector body, or a piece of literal text.  Items are
+ * pushed in reverse, so popping replays the output order exactly.  A list or
+ * vector body carries its cursor rather than being expanded up front, so a
+ * long list still costs one item, not one per element.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef enum { PV_VALUE, PV_LIST_REST, PV_VECTOR_REST, PV_TEXT } PrintWorkKind;
+
+typedef struct {
+    PrintWorkKind kind;
+    Value         value;
+    int           index;      /* vector cursor, or "not the first element" */
+    const char*   text;
+} PrintWork;
+
+typedef struct {
+    PrintWork  inline_slots[64];
+    PrintWork* slots;
+    size_t     n;
+    size_t     cap;
+    int        heap;
+    int        failed;
+} PrintWorkStack;
+
+static void pv_stack_init(PrintWorkStack* st) {
+    st->slots = st->inline_slots;
+    st->n = 0;
+    st->cap = sizeof(st->inline_slots) / sizeof(st->inline_slots[0]);
+    st->heap = 0;
+    st->failed = 0;
+}
+
+static void pv_stack_free(PrintWorkStack* st) {
+    if (st->heap) free(st->slots);
+    st->slots = st->inline_slots;
+    st->heap = 0;
+}
+
+static void pv_push(PrintWorkStack* st, PrintWork w) {
+    if (st->failed) return;
+    if (st->n == st->cap) {
+        const size_t next = st->cap * 2;
+        PrintWork* grown;
+        if (st->heap) {
+            grown = (PrintWork*)realloc(st->slots, next * sizeof(PrintWork));
+        } else {
+            grown = (PrintWork*)malloc(next * sizeof(PrintWork));
+            if (grown) memcpy(grown, st->slots, st->n * sizeof(PrintWork));
+        }
+        if (!grown) { st->failed = 1; return; }
+        st->slots = grown;
+        st->cap = next;
+        st->heap = 1;
+    }
+    st->slots[st->n++] = w;
+}
+
+static void pv_push_value(PrintWorkStack* st, Value v) {
+    PrintWork w; memset(&w, 0, sizeof(w));
+    w.kind = PV_VALUE; w.value = v;
+    pv_push(st, w);
+}
+
+static void pv_push_rest(PrintWorkStack* st, PrintWorkKind kind, Value v, int index) {
+    PrintWork w; memset(&w, 0, sizeof(w));
+    w.kind = kind; w.value = v; w.index = index;
+    pv_push(st, w);
+}
+
+static void pv_push_text(PrintWorkStack* st, const char* text) {
+    PrintWork w; memset(&w, 0, sizeof(w));
+    w.kind = PV_TEXT; w.text = text;
+    pv_push(st, w);
+}
+
+/* Emits one value, queueing the parts of it that are themselves values. */
+static void print_value_step(VM* vm, Value v, int write_syntax, PrintWorkStack* st) {
     switch ((int)v.type) {
         case VAL_NIL:   printf("()"); break;
         case VAL_INT:   printf("%lld", (long long)v.as.i); break;
@@ -1650,24 +1736,11 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
              * (native eshkol_display_fact prints the same). */
             if (v.as.ptr >= 0 && vm->heap.objects[v.as.ptr] &&
                 vm->heap.objects[v.as.ptr]->type == HEAP_FACT) {
-                print_value_mode(vm, vm->heap.objects[v.as.ptr]->cons.car, write_syntax);
+                pv_push_value(st, vm->heap.objects[v.as.ptr]->cons.car);
                 break;
             }
             printf("(");
-            Value cur = v;
-            int first = 1;
-            while (cur.type == VAL_PAIR) {
-                if (!first) printf(" ");
-                first = 0;
-                HeapObject* obj = vm->heap.objects[cur.as.ptr];
-                print_value_mode(vm, obj->cons.car, write_syntax);
-                cur = obj->cons.cdr;
-            }
-            if (cur.type != VAL_NIL) {
-                printf(" . ");
-                print_value_mode(vm, cur, write_syntax);
-            }
-            printf(")");
+            pv_push_rest(st, PV_LIST_REST, v, 0 /* this is the first element */);
             break;
         }
         case VAL_STRING: {
@@ -1706,13 +1779,10 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             printf("#(");
             if (obj && obj->opaque.ptr) {
-                VmVector* vec = (VmVector*)obj->opaque.ptr;
-                for (int i = 0; i < vec->len; i++) {
-                    if (i) printf(" ");
-                    print_value_mode(vm, vec->items[i], write_syntax);
-                }
+                pv_push_rest(st, PV_VECTOR_REST, v, 0);
+            } else {
+                printf(")");
             }
-            printf(")");
             break;
         }
         case VAL_CLOSURE: printf("<closure@%d>", v.as.ptr); break;
@@ -1833,6 +1903,61 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
         case VAL_VOID:        break; /* unspecified — produces no output */
         default: printf("<unknown>"); break;
     }
+}
+
+/**
+ * @brief Prints a value, in display form (@p write_syntax 0) or write form.
+ *
+ * Native stack use is constant in how deeply the value nests.  When the work
+ * stack cannot grow, the remaining structure is elided rather than the
+ * process ending: output already written stays written, and the elision is
+ * visible in it.
+ */
+static void print_value_mode(VM* vm, Value v, int write_syntax) {
+    PrintWorkStack st;
+    pv_stack_init(&st);
+    print_value_step(vm, v, write_syntax, &st);
+    while (st.n > 0 && !st.failed) {
+        const PrintWork w = st.slots[--st.n];
+        switch (w.kind) {
+            case PV_VALUE:
+                print_value_step(vm, w.value, write_syntax, &st);
+                break;
+            case PV_TEXT:
+                fputs(w.text, stdout);
+                break;
+            case PV_LIST_REST: {
+                Value cur = w.value;
+                if (cur.type == VAL_PAIR) {
+                    if (w.index) printf(" ");
+                    HeapObject* obj = vm->heap.objects[cur.as.ptr];
+                    pv_push_rest(&st, PV_LIST_REST, obj->cons.cdr, 1);
+                    pv_push_value(&st, obj->cons.car);
+                } else if (cur.type != VAL_NIL) {
+                    printf(" . ");
+                    pv_push_text(&st, ")");
+                    pv_push_value(&st, cur);
+                } else {
+                    printf(")");
+                }
+                break;
+            }
+            case PV_VECTOR_REST: {
+                HeapObject* obj = vm->heap.objects[w.value.as.ptr];
+                VmVector* vec = (obj && obj->opaque.ptr) ? (VmVector*)obj->opaque.ptr : NULL;
+                if (vec && w.index < vec->len) {
+                    if (w.index) printf(" ");
+                    pv_push_rest(&st, PV_VECTOR_REST, w.value, w.index + 1);
+                    pv_push_value(&st, vec->items[w.index]);
+                } else {
+                    printf(")");
+                }
+                break;
+            }
+        }
+    }
+    if (st.failed) printf(" ...");
+    pv_stack_free(&st);
 }
 
 /** Display-style printer used by diagnostics and the `display` primitive. */

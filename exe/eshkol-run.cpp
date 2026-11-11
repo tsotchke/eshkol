@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstdio>
+#include <new>
 /*
  * Copyright (C) tsotchke
  *
@@ -17,6 +18,7 @@
 #include <eshkol/logger.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/core/reader_limits.h>
 #include <eshkol/core/execution_profile.h>
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
@@ -1340,6 +1342,11 @@ static struct option long_options[] = {
     {"embed-stdlib-identity", required_argument, nullptr, 267},
     {"strict-resources", no_argument, nullptr, 268},
     {"types", required_argument, nullptr, 269},
+    /* The one documented input-size cap and the code-nesting budget, shared
+     * with the bytecode VM and both readers (inc/eshkol/core/reader_limits.h).
+     * Data nesting has no limit and none is configurable. */
+    {"max-source-bytes", required_argument, nullptr, 270},
+    {"max-pass-depth", required_argument, nullptr, 271},
     {0, 0, 0, 0}
 };
 
@@ -6438,6 +6445,13 @@ static void print_help(int x = 0)
         "\t                 strict makes every type error fatal. Dependent-type obligations\n"
         "\t                 and linearity violations are fatal in both modes.\n"
         "\t--strict-types = Same as --types=strict.\n"
+        "\t--max-source-bytes=N = Largest source text accepted, in bytes (N, NK,\n"
+        "\t                 NM, NG; default 64M, 0 removes the cap). Also\n"
+        "\t                 ESHKOL_MAX_SOURCE_BYTES. Nesting DEPTH has no limit:\n"
+        "\t                 both readers carry nesting on their own heap stack.\n"
+        "\t--max-pass-depth=N = Levels of CODE nesting the compiler will descend\n"
+        "\t                 (default 1000, 0 removes the count). Also\n"
+        "\t                 ESHKOL_MAX_PASS_DEPTH. Quoted DATA is unaffected.\n"
         "\t--strict-resources = Check core.net resource ownership in the supported native fragment.\n"
         "\t--unsafe = Skip all type checks.\n\n"
         "Eshkol Compiler v%s\n",
@@ -8368,7 +8382,32 @@ struct OwnedLinkTemporaryObjects {
 
 
 
+/* The compiler's own body; main() below gives it an allocation boundary. */
+static int eshkol_run_main(int argc, char **argv);
+
+/**
+ * @brief Entry point.
+ *
+ * Reading has no depth limit, so a datum nests until memory runs out; when it
+ * does, that is reported as an ordinary error with a nonzero exit status
+ * rather than ending the process abruptly. The reader has its own boundary
+ * (eshkol_parse_next_ast_from_stream); this one covers every later pass, so
+ * the compiler always leaves a diagnostic behind.
+ */
 int main(int argc, char **argv)
+{
+    try {
+        return eshkol_run_main(argc, argv);
+    } catch (const std::bad_alloc&) {
+        eshkol_error("out of memory: this program needs more memory than this "
+                     "process has. Nesting depth is bounded by memory, not by "
+                     "a limit; the input-size cap is configurable with "
+                     "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N");
+        return 1;
+    }
+}
+
+static int eshkol_run_main(int argc, char **argv)
 {
     g_verified_resource_modules.clear();
     g_untrusted_resource_modules.clear();
@@ -8570,6 +8609,26 @@ int main(int argc, char **argv)
                 return 1;
             }
             break;
+        case 270: {
+            size_t bytes = 0;
+            if (!optarg || !eshkol_reader_parse_size(optarg, &bytes)) {
+                eshkol_error("--max-source-bytes takes a byte count "
+                             "(N, NK, NM, NG); 0 removes the cap");
+                return 1;
+            }
+            eshkol_reader_set_max_source_bytes(bytes);
+            break;
+        }
+        case 271: {
+            size_t depth = 0;
+            if (!optarg || !eshkol_reader_parse_size(optarg, &depth)) {
+                eshkol_error("--max-pass-depth takes a level count; "
+                             "0 removes the count");
+                return 1;
+            }
+            eshkol_reader_set_max_pass_depth(depth);
+            break;
+        }
         case 257:
             unsafe_mode = 1;
             break;
