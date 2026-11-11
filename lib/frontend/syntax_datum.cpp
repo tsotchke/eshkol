@@ -7,6 +7,8 @@
  * transformers (ADR-0026). See inc/eshkol/frontend/syntax_datum.h.
  */
 #include <eshkol/frontend/syntax_datum.h>
+#include <eshkol/core/stack_guard.h>
+#include <eshkol/logger.h>
 
 #include <map>
 #include <mutex>
@@ -43,6 +45,13 @@ std::map<const eshkol_macro_def_t*, std::shared_ptr<const MacroSyntax>>& macro_t
 void rename_in(SyntaxDatum& datum, const std::function<void(std::string&)>& rename,
                unsigned mode) {
     using Kind = SyntaxDatum::Kind;
+    /* Natively recursive. The datum reader applies a 64 KB headroom margin at
+     * read time, so a datum read from source cannot be deeper than this walk
+     * can take; this guard does not depend on that staying true. */
+    if (!eshkol_stack_headroom_ok()) {
+        eshkol_error("macro syntax nested too deeply to rename");
+        return;
+    }
     auto enter = [&](const std::string& marker, unsigned current) -> unsigned {
         if (current == 1) return 1;
         if (marker == "'" || marker == "quote") return current == 0 ? 1 : current;
