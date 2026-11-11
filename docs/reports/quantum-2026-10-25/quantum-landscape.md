@@ -73,7 +73,7 @@ The phase is a release gate, not a delivery-date promise. Teams can work in para
 
 | Phase | Outcome | Exit condition |
 |---|---|---|
-| P0: trustworthy baseline | Capabilities, packaging, correctness, diagnostics and evidence | Reproducible ON/OFF builds; no silent wrong-result/refusal gaps in declared scope; documented source/runtime boundaries. |
+| P0: trustworthy baseline | Capabilities, packaging, correctness, diagnostics and evidence | Reproducible ON/OFF builds; no silent incorrect-result or refusal gaps in declared scope; documented source/runtime boundaries. |
 | P1: portable circuit core | Circuit IR, interchange, quantum ownership and compilation | At least two independent executors agree on a declared corpus; transforms preserve semantics and hardware constraints. |
 | P2: useful scientific work | Noise, richer simulation, general differentiable circuits and algorithms | Independent numerical oracles, explicit error/shot budgets, and reproducible application examples. |
 | P3: device and logical execution | Actual QPU jobs, analog controls, QEC and resource accounting | Real hardware evidence where claimed; costs, calibration and physical/logical assumptions recorded. |
@@ -143,9 +143,9 @@ Dependencies: T001. Sources: [E02: Quantum C shim](https://github.com/tsotchke/e
 
 **T005 — Generational quantum handles**
 
-Phase: P0; class: foundation; Eshkol baseline: **partial**. Opaque integer tables and destroy helpers exist; stale-handle reuse needs a specified contract.
+Phase: P0; class: foundation; Eshkol baseline: **partial**. Opaque integer tables and destroy helpers exist; retired-handle reuse needs a specified contract.
 
-Acceptance: Allocate/free/reallocate fuzzing never lets a stale handle access a new state; double destruction is defined; invalid handles produce catchable errors under sanitizers.
+Acceptance: Allocate/free/reallocate fuzzing never lets a retired handle access a new state; double destruction is defined; invalid handles produce catchable errors under sanitizers.
 
 Dependencies: T004. Sources: [E01: Public quantum module](https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/lib/agent/quantum.esk), [E02: Quantum C shim](https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/lib/agent/c/agent_quantum.c), [C25: Guppy](https://docs.quantinuum.com/guppy/).
 
@@ -853,7 +853,7 @@ Dependencies: T054, T077, T079. Sources: [E01: Public quantum module](https://gi
 
 Phase: P0; class: foundation; Eshkol baseline: **partial**. Quantum examples/source tests exist but this stream did not execute every published example on every target.
 
-Acceptance: CI extracts all quantum examples, runs declared supported targets, and marks external hardware prerequisites; wrong expected outputs block release.
+Acceptance: CI extracts all quantum examples, runs declared supported targets, and marks external hardware prerequisites; mismatched expected outputs block release.
 
 Dependencies: T002, T010. Sources: [E04: Quantum reference](https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/docs/reference/agent/quantum.md), [E08: Quantum surface regression](https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/tests/quantum/quantum_surface_coverage_test.esk), [E09: VQE adversarial AD regression](https://github.com/tsotchke/eshkol/blob/341ac812ed600fd9d27c28e9509d66ab71363947/tests/quantum/vqe_ad_adversarial.esk), [C24: ProjectQ](https://projectq.readthedocs.io/en/latest/).
 

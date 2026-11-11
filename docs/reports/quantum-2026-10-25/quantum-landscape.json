@@ -467,13 +467,13 @@
       "title": "Generational quantum handles",
       "baseline_state": "partial",
       "target_class": "foundation",
-      "baseline_evidence": "Opaque integer tables and destroy helpers exist; stale-handle reuse needs a specified contract.",
+      "baseline_evidence": "Opaque integer tables and destroy helpers exist; retired-handle reuse needs a specified contract.",
       "source_ids": [
         "E01",
         "E02",
         "C25"
       ],
-      "acceptance_criteria": "Allocate/free/reallocate fuzzing never lets a stale handle access a new state; double destruction is defined; invalid handles produce catchable errors under sanitizers.",
+      "acceptance_criteria": "Allocate/free/reallocate fuzzing never lets a retired handle access a new state; double destruction is defined; invalid handles produce catchable errors under sanitizers.",
       "dependencies": [
         "T004"
       ],
@@ -2065,7 +2065,7 @@
         "E09",
         "C24"
       ],
-      "acceptance_criteria": "CI extracts all quantum examples, runs declared supported targets, and marks external hardware prerequisites; wrong expected outputs block release.",
+      "acceptance_criteria": "CI extracts all quantum examples, runs declared supported targets, and marks external hardware prerequisites; mismatched expected outputs block release.",
       "dependencies": [
         "T002",
         "T010"

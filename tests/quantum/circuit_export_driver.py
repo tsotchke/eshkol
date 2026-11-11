@@ -97,7 +97,7 @@ def verify_contract_output(output):
 
 
 def self_test():
-    """Prove that a broken child or missing verdict cannot become a pass."""
+    """Prove that a failing child or a missing verdict cannot become a pass."""
     verify_contract_output('circuit_export_test: 50 checks, 0 failed\n')
     for output in ('', 'PASS\n', 'circuit_export_test: 50 checks, 1 failed\n',
                    'circuit_export_test: 49 checks, 0 failed\n'):
@@ -113,7 +113,7 @@ def self_test():
             run([sys.executable, '-c', program], ROOT, 10)
         except RuntimeError:
             continue
-        raise AssertionError(f'accepted broken child: {program}')
+        raise AssertionError(f'accepted failing child: {program}')
     print('PASS: driver self-test: valid verdict and 8 deliberate failure cases')
 
 

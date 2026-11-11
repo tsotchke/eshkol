@@ -66,7 +66,7 @@ not establish compatibility with every OpenQASM backend.
 `qubits` must be a positive exact integer; `bits` a nonnegative exact integer.
 Wire and classical destinations are zero-based exact integers within their
 register bounds. Each operation is a nonempty acyclic proper list whose first item is
-a supported symbol. Unknown symbols, string gate names, wrong arities,
+a supported symbol. Unknown symbols, string gate names, mismatched arities,
 out-of-range operands and repeated qubits within one operation raise an error.
 Cyclic outer lists and cyclic operation lists are detected before traversal.
 A measurement may overwrite a classical destination used by an earlier
