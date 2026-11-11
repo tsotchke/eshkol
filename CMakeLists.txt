@@ -3701,6 +3701,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
           "${ESHKOL_STDLIB_IDENTITY_LLVM_AS}"
           "${ESHKOL_STDLIB_IDENTITY_LLC}")
   set_tests_properties(stdlib_identity_compatibility PROPERTIES TIMEOUT 180)
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND AND ESHKOL_STDLIB_IDENTITY_LLVM_AS AND ESHKOL_STDLIB_IDENTITY_LLC)
+    add_test(NAME stdlib_identity_cli_metadata
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/stdlib_identity_cli_test.py"
+            --compiler "$<TARGET_FILE:eshkol-run>"
+            --llvm-as "${ESHKOL_STDLIB_IDENTITY_LLVM_AS}"
+            --llc "${ESHKOL_STDLIB_IDENTITY_LLC}"
+            --expected-release "${ESHKOL_STDLIB_IDENTITY_RELEASE}"
+            --expected-abi "${ESHKOL_STDLIB_IDENTITY_ABI}"
+            --expected-source "${ESHKOL_STDLIB_SOURCE_FINGERPRINT}"
+            --expected-symbol "${ESHKOL_STDLIB_IDENTITY_SYMBOL}"
+            --work-root "${CMAKE_CURRENT_BINARY_DIR}/qualification/stdlib-identity-cli")
+    set_tests_properties(stdlib_identity_cli_metadata PROPERTIES
+        TIMEOUT 180 LABELS "toolchain;stdlib;metadata")
+  endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32)

@@ -153,6 +153,15 @@ freestanding runtime subset, the reference boards and running images under QEMU.
 | `--version` | | Print version |
 | `--features` | | Print this build's compile-time capabilities as `KEY=VALUE` lines (`version=`, `llvm-backend=`, `gpu=`, `gpu-metal=`, `gpu-cuda=`, `blas=`, `xla=`, `tensor-dtypes=`) and exit |
 | `--abi-fingerprint` | | Print the object-ABI fingerprint this build was compiled against (ADR-0012, `inc/eshkol/abi_fingerprint.h`) as `KEY=VALUE` lines — `symbol=`, `version=`, `header_size=`, `subtype_offset=`, `payload_align=`, `runtime_header_size=` — then exit. `symbol=` is the exact identifier `-r`'s persistent JIT run-cache folds into its cache key (`makeJitRunCacheKey()` in `exe/eshkol-run.cpp`), so two builds can be compared for cache/link compatibility from the CLI instead of via `nm` |
+| `--stdlib-identity` | | Print this build's expected stdlib identity as `KEY=VALUE` lines: `schema=eshkol.stdlib-identity/v1`, `release=`, `abi=`, `source=`, and `symbol=`; exit without loading a stdlib or evaluating code. |
+| `--check-stdlib-identity` | `FILE` | Check the embedded identity in an object or LLVM bitcode file against this compiler. File contents determine the format. A match prints the same identity plus `status=PASS`; missing, unstamped, declaration-only, mixed, or mismatched identities fail with exit 1 and no success output. |
+
+The `source=` field is the configured compiler/runtime/stdlib closure fingerprint,
+including toolchain inputs; it is not a Git revision. The metadata commands use
+the same identity checks as the AOT and JIT consumers. They inspect bytes only:
+a match does not prove linking, execution, consumer compatibility, or release
+qualification. Keep the selected source revision and artifact byte hashes in
+the corresponding baseline receipt.
 
 ## Verified examples
 

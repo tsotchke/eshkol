@@ -23,6 +23,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/backend/debug_artifact.h>
 #include <eshkol/stdlib_identity.h>
+#include <eshkol/stdlib_identity_cli.h>
 #include <eshkol/strict_source_identity.h>
 #include <eshkol/strict_resource_contracts.h>
 #include <eshkol/pkg/subprocess.h>
@@ -1349,6 +1350,8 @@ static struct option long_options[] = {
     {"embed-stdlib-identity", required_argument, nullptr, 267},
     {"strict-resources", no_argument, nullptr, 268},
     {"types", required_argument, nullptr, 269},
+    {"stdlib-identity", no_argument, nullptr, 270},
+    {"check-stdlib-identity", required_argument, nullptr, 271},
     {0, 0, 0, 0}
 };
 
@@ -6441,6 +6444,8 @@ static void print_help(int x = 0)
         "\t    machine-parseable KEY=VALUE lines, then exit.\n"
         "\t--abi-fingerprint = Print the object-ABI fingerprint (ADR-0012)\n"
         "\t    this build was compiled against, as KEY=VALUE lines, then exit.\n"
+        "\t--stdlib-identity = Print this build\'s expected stdlib identity as KEY=VALUE lines.\n"
+        "\t--check-stdlib-identity FILE = Check an object or bitcode identity without loading it.\n"
         "\t--debug-info:[-g] = Emit DWARF debug info (enables lldb/gdb source-level debugging).\n"
         "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
         "\t--types=gradual|strict = Type-checking mode (default gradual: type mismatches warn).\n"
@@ -8768,6 +8773,10 @@ int main(int argc, char **argv)
         case 267:
             stdlib_identity_symbol = optarg;
             break;
+        case 270:
+            return eshkol::stdlib_identity::print_expected_identity(stdout) ? 0 : 1;
+        case 271:
+            return eshkol::stdlib_identity::check_file_identity(optarg, stdout, stderr);
         case 'f':
             /* Native AOT object emission is configured with Reloc::PIC_. */
             break;
