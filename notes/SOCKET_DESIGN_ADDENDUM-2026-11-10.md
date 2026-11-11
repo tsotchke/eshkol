@@ -1,7 +1,9 @@
 # Proposed decision: Unix-domain stream sockets
 
-**Status:** Local draft; scaffold amendments proposed. **Date:** 2026-11-10.
+**Status:** Proposed design; scaffold amendments await owner review. **Date:** 2026-11-10.
 **Basis:** [IPC design](https://github.com/Gabriel-Kahen/eshkol/blob/93c02a9679b9476c58296bfeb6e229d251a21224/weeks/IPC_DESIGN-2026-11-02.md); [#916 at `da7005c7f`](https://github.com/tsotchke/eshkol/pull/916). Proposed behavior, not implementation evidence.
+
+**Companion review:** [#916 scaffold findings and proposed resolutions](SOCKET_DESIGN_REVIEW-2026-11-10.md) explain the contract gaps and acceptance-test issues behind this proposal.
 
 ## Context and decision
 
