@@ -1,0 +1,137 @@
+format = "eshkol-sblc-prng-qualification-v1"
+parent_revision = "14dd4d0fbb2714e6fc40e99f53eb91b18a7f68be"
+platform = "Linux aarch64"
+toolchain = "clang/LLVM 21.1.8"
+configuration = "Release CPU; agent FFI ON; GPU/XLA/BLAS/tensorcore/qLLM/quantum OFF"
+compiler_rebuilt = true
+engines = ["JIT", "executed AOT", "VM source", "emitted ESKB"]
+isolated_state_assertions_per_engine = 121
+sampled_sblc_run_tuples_per_engine = 120
+sampler_conditioning_api_panels_per_engine = 4
+complete_output_byte_identical = true
+vm_invalid_domain_refusals = 8
+bounded_ctest_passed = 4
+bounded_ctest_failed = 0
+region_subtype_checks_passed = 8
+region_subtype_checks_failed = 0
+physical_browser_wasm_qualified = false
+seed_and_bound_profile = "int64"
+shared_state_policy = "drand48-msb-v1"
+integer_mapping = "existing binary64 multiply/truncate"
+command = "bash scripts/run_sblc_rng_parity_gate.sh"
+
+[regression]
+command = "bash scripts/run_vm_parity.sh"
+full_run_passed = 432
+full_run_failed = 1
+full_run_infrastructure_failures = 0
+corpus_oos_fatal_checks_passed = 430
+corpus_oos_fatal_checks_failed = 0
+self_verdict_scan_passed = true
+full_run_failure = "Static manifest incorrectly classified six optional core.sblc exports as ambient VM builtins."
+correction = "Remove those six optional-module rows; module gate supplies runtime evidence. Four primitive binding rows remain vm-supported."
+affected_recheck_command = "bash scripts/run_vm_parity.sh --audit-only"
+affected_recheck_passed = 2
+affected_recheck_failed = 0
+full_reexecution_after_metadata_correction = false
+source_files_unchanged_during_full_run = 5301
+final_source_change_since_full_run = ["tests/vm_parity/PARITY.tsv"]
+runtime_artifact_hashes_unchanged_after_audit_correction = true
+
+[integration]
+module_revision = "320f4b9a3fe69e6d4fa4f18e71985cad8f0e84de"
+checkpoint_update_resume_jit_aot_byte_identical = true
+full_search_handle_vm_qualified = false
+boundary = "Existing symbol-case dispatch chooses the first arm; observed on new VM and preserved pre-change VM. Equivalent cond/eq? works."
+baseline_revision = "8789164ad4656b7e0e14e3b87edbb6e26afb1b95"
+witness = "(define (dispatch request) (case request ((receipt) 'receipt) ((checkpoint) 'checkpoint) (else 'other)))\n(write (list (dispatch 'receipt) (dispatch 'checkpoint) (dispatch 'work))) (newline)"
+expected = "(receipt checkpoint other)"
+observed_vm = "(receipt receipt receipt)"
+
+[[artifact]]
+name = "eshkol-run"
+sha256 = "faaf33b37c5c0bbd3c765542ed1f0e3a866e6ceed61ebaa246052ea63b370f80"
+
+[[artifact]]
+name = "eshkol-vm-standalone-test"
+sha256 = "f6712552f023ecfbb9d880a62ad1921b2b0aff8f7a6ccf0351f4ba3d428aa413"
+
+[[artifact]]
+name = "stdlib.bc"
+sha256 = "aab426416b27ab7b05293ddfa1ef7b4c3ed37471db360aa0d38c6bf545055d13"
+
+[[artifact]]
+name = "libeshkol-runtime.a"
+sha256 = "17ec9e98dd5048cc125e58e8fa5a2a620192819f1e902deca5108c586433bf2e"
+
+[[artifact]]
+name = "libeshkol-static.a"
+sha256 = "a5c823f20bb7508e3cf425d3527f4349a3a28c1c0bb7f986e7d99e52fa813659"
+
+[[input]]
+path = "inc/eshkol/core/prng_state.h"
+sha256 = "ec16b23dc96e55d6ab76a2e9a353d3a2109ce8745547d0e2efdf59d603f3f37b"
+
+[[input]]
+path = "lib/core/prng.cpp"
+sha256 = "9c27162285163c4234858d04e0bcac92939af5d10cfd92f8ae5e715097d7d245"
+
+[[input]]
+path = "lib/backend/vm_numeric.h"
+sha256 = "69680c44962867957bcd004329e5bb36401a1f7640749077459a59de068265f3"
+
+[[input]]
+path = "lib/backend/vm_core.c"
+sha256 = "702390c09f5ea204e708e89ad86dbc89d5166b03db92ea4a5228e1cacc83d96a"
+
+[[input]]
+path = "lib/backend/vm_native.c"
+sha256 = "5978118d54aece9f13fe7ed1010c695b900688de0784bcade68375b0b110ff17"
+
+[[input]]
+path = "lib/backend/vm_region_evac.c"
+sha256 = "c18a59d6e0be3dfa358e11fb656d2794831add1dfbd1db9e8e2d9c1bbe1d0c09"
+
+[[input]]
+path = "lib/backend/eshkol_vm.c"
+sha256 = "16b7950e7ce5398631f1e9a407d15a724a4130d78635baed63842ceaa96debb1"
+
+[[input]]
+path = "lib/backend/vm_prelude_cache.h"
+sha256 = "b339104468eb2e1932728cf984974143bfa0ee55956e0201b7e496e718fcc49a"
+
+[[input]]
+path = "tests/vm_parity/PARITY.tsv"
+sha256 = "96f4e27b0ccabf68ca93bf3bfd2e6a4c290609653c67b70733ed48eca76bab3b"
+
+[[input]]
+path = "tests/vm_parity/GAP_DISPOSITIONS.tsv"
+sha256 = "27e13a647a005c27f3eec5d21d90dfff687fc8ae83a5f8e994f0a558e3a05e47"
+
+[[input]]
+path = "tests/vm_parity/corpus/59_isolated_prng.esk"
+sha256 = "b4ca05d1f41f1a9ac235e91659dfa73c65af710aeb5fa9a888a8d6c827b99488"
+
+[[input]]
+path = "tests/stdlib/sblc_rng_parity_test.esk"
+sha256 = "a8245d9ff8122f803f8106048c2cafb9d6f635c568c7ad0bcd0666df606280c9"
+
+[[input]]
+path = "scripts/run_sblc_rng_parity_gate.sh"
+sha256 = "047dbc66b2e47d58c33cc4e8fababfded89dc75b35732902d09cdd9077ff4d6a"
+
+[[input]]
+path = "CMakeLists.txt"
+sha256 = "fc048ee1fca3998ea8fdbfdf2ca99876ad27cc67b3049f1ddd639e259e22704b"
+
+[[input]]
+path = "docs/reference/stdlib/sblc.md"
+sha256 = "2b6f26cbd048a66e4dcc67a40ca1ed4796a3558462daa328b06cb80032659274"
+
+[[input]]
+path = "docs/design/adr/0017-stochastic-binary-lambda-calculus.md"
+sha256 = "a99ada09108bccb288853322fd694abd033964e62bafbe855119976681c1c22d"
+
+[[input]]
+path = "lib/core/sblc.esk"
+sha256 = "a19ae694a84934a3f94dcd8a203e77aa1f3bfa8a5411ff54ab1e1a60141834ee"
