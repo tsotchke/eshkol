@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2949/6617 public symbols documented (44.6%), 3668 undocumented.
+**Coverage:** 2998/6731 public symbols documented (44.5%), 3733 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-427/870 symbols documented.
+428/915 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -25,7 +25,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 4 | 1 |
-| [`eshkol.h`](eshkol.md) | 380 | 218 |
+| [`eshkol.h`](eshkol.md) | 381 | 218 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -38,6 +38,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`platform_runtime.h`](platform_runtime.md) | 54 | 40 |
 | [`runtime_exports.h`](runtime_exports.md) | 48 | 29 |
 | [`stdlib_identity.h`](stdlib_identity.md) | 3 | 2 |
+| [`strict_resource_contracts.h`](strict_resource_contracts.md) | 44 | 1 |
 | [`strict_source_identity.h`](strict_source_identity.md) | 2 | 0 |
 | [`tensor_cross_entropy.h`](tensor_cross_entropy.md) | 5 | 0 |
 | [`tensor_validation.h`](tensor_validation.md) | 4 | 0 |
@@ -45,19 +46,19 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1350/3108 symbols documented.
+1357/3123 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 62 | 53 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 209 | 127 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 211 | 129 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 76 | 24 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 65 | 22 |
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
 | [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 6 | 6 |
-| [`backend/codegen_context.h`](backend/codegen_context.md) | 195 | 51 |
+| [`backend/codegen_context.h`](backend/codegen_context.md) | 199 | 53 |
 | [`backend/collection_codegen.h`](backend/collection_codegen.md) | 33 | 21 |
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 37 | 26 |
 | [`backend/control_flow_codegen.h`](backend/control_flow_codegen.md) | 32 | 12 |
@@ -87,7 +88,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 57 | 49 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 209 | 189 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 218 | 192 |
 | [`backend/tensor_shape_guard.h`](backend/tensor_shape_guard.md) | 2 | 0 |
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 61 | 48 |
@@ -129,7 +130,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-352/729 symbols documented.
+393/783 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -144,7 +145,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/eval_bridge.h`](core/eval_bridge.md) | 9 | 4 |
 | [`core/event_loop.h`](core/event_loop.md) | 25 | 23 |
 | [`core/execution_profile.h`](core/execution_profile.md) | 47 | 11 |
-| [`core/handle.h`](core/handle.md) | 13 | 7 |
+| [`core/handle.h`](core/handle.md) | 21 | 14 |
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |
@@ -156,6 +157,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
+| [`core/prng_state.h`](core/prng_state.md) | 3 | 0 |
 | [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
 | [`core/resource_lease.h`](core/resource_lease.md) | 25 | 22 |

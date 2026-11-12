@@ -8,24 +8,28 @@ will never have a GC.
 
 ## Scope of the no-GC commitment
 
-The commitment is precise, and the precision is what makes it useful. **It is a
-statement about Eshkol's own semantics.** Eshkol values are never traced, never
-reference-counted behind your back, and never reclaimed by a collector you did
-not invoke. No Eshkol program pauses for a collection, ever.
+**Eshkol does not run an independently scheduled heap collector or use implicit
+reference counting.** Reclamation is tied to region teardown. This does involve
+graph traversal: native escape promotion visits the escaping object graph, and
+the bytecode VM's region evacuator marks reachable objects from its roots before
+retiring the exiting region's unretained arena blocks. Region exit runs this
+work synchronously; its cost includes traversal and promotion, so it is not a
+constant-time or pause-free operation.
 
 It is *not* a statement that no collector may run anywhere in an Eshkol process.
 A garbage-collected guest language — Python, Common Lisp — can be **hosted** on
 regions: the guest heap is a region, the region supplies the arena, the byte
 ceiling and the bulk teardown, and the guest's own collector traces the guest's
-own object graph inside it. Eshkol traces nothing; the guest brings its collector
-and pays for it only inside its own region, on a declared budget.
+own object graph inside it. The guest supplies that collector and pays for it
+inside its own region, on a declared budget. Eshkol's own region-exit traversal
+remains separate from the guest's collection policy.
 
 | | Eshkol's own values | A hosted guest's values |
 |---|---|---|
-| Traced by Eshkol | Never | Never |
-| Traced at all | Never | By the guest's collector, inside the guest's region |
-| Reclaimed | At region exit, in bulk | By the guest, whenever the guest decides |
-| Pauses Eshkol code | Never | Never — only the guest pauses |
+| Traversed by Eshkol | Native escape promotion; VM root marking at region exit | Guest heap treated as a region; adapter hosting is Planned |
+| Independently scheduled collector | None | Guest-supplied, inside the guest's region (Planned) |
+| Reclaimed | At region exit; retained or pinned VM blocks are promoted | By the guest's policy within its region, then region teardown (Planned) |
+| Synchronous work | Region-exit traversal, promotion and reclamation | Guest collection plus region teardown (Planned) |
 | Cycles reclaimed mid-scope | No (see below) | Yes, by the guest |
 
 So the boundary is: **no GC for Eshkol, permanently; guest collectors welcome
@@ -76,6 +80,13 @@ exhaust the host — and it says so, through a heap-budget diagnostic. See
 [Substrate support](#substrate-support) below.
 
 ### What the VM port does differently, and what that costs
+
+This traversal is triggered when a VM `with-region` scope is torn down. In
+`lib/backend/vm_region_evac.c`, `vm_evac_mark_roots` starts from the VM's live
+roots and `vm_evac_trace` follows their reachable values. The sweep reclaims
+unretained blocks belonging to the exiting region; escaping objects, retained
+blocks and conservatively pinned regions survive in the parent. There is no
+separate allocation-triggered or background collection cycle.
 
 The VM evacuator matches the native engine's *semantics*, not its
 implementation. Native copies the escaping subgraph (Cheney-style, with a

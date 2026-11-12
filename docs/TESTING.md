@@ -68,6 +68,18 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target eshkol-run stdlib -j
 ```
 
+The native cross-entropy regression is
+`tests/ad/cross_entropy_gradient_test.py`. CTest registers JIT and AOT runs
+under both tensor AD lowerings, plus its deliberate-failure self-test. It
+checks analytical logit derivatives, all eight weights of a composed
+two-layer network against numerical slopes, constant indexed/probability
+labels, scalar loss composition, and explicit unsupported-loss refusals.
+The `native_cross_entropy_gradient_gate` readiness group requires all five
+entries together with `tensor_backward_dual_impl_gradcheck` and
+`qllm_bridge_gradcheck` (seven-member floor). Empty output, wrong verdicts,
+nonzero exits, reported errors hidden behind a success marker, and crashes
+masquerading as refusals are rejected by the harness self-test.
+
 ---
 
 ## The CTest gate

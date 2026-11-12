@@ -52,6 +52,7 @@
 #include "eshkol/eshkol.h"
 #include "eshkol/backend/tensor_backward.h"
 #include "eshkol/bridge/qllm_bridge.h"
+#include "eshkol/tensor_cross_entropy.h"
 
 #if !defined(_WIN32)
 #include <sys/wait.h>
@@ -79,10 +80,10 @@ void report(const char* name, bool ok, const char* detail = nullptr) {
     if (ok) ++g_passed; else ++g_failed;
 }
 
-unsigned long g_rng = 0xD1B54A32D192ED03UL;
+uint64_t g_rng = UINT64_C(0xD1B54A32D192ED03);
 double urand() { /* deterministic uniform in [-1, 1] */
     g_rng ^= g_rng << 13; g_rng ^= g_rng >> 7; g_rng ^= g_rng << 17;
-    return ((double)(g_rng >> 11) / (double)(1UL << 53)) * 2.0 - 1.0;
+    return ((double)(g_rng >> 11) / (double)(UINT64_C(1) << 53)) * 2.0 - 1.0;
 }
 
 double max_abs_diff(const double* a, const double* b, size_t n) {
@@ -748,6 +749,52 @@ void attention_check() {
 #endif
 }
 
+// A CE node is tensor-valued even though its output has one element. Its
+// cotangent must come from tensor_gradient, including when the scalar field
+// deliberately disagrees. Test both target forms against numerical slopes.
+void cross_entropy_upstream_check() {
+    const int64_t shape[2] = {2, 3};
+    const double original[6] = {0.2, -0.4, 0.7, 1.1, 0.3, -0.8};
+    const double probabilities[6] = {0.2, 0.3, 0.5, 0.0, 1.0, 0.0};
+    const double indices[2] = {2.0, 1.0};
+    const int64_t index_shape[1] = {2};
+    for (int indexed = 0; indexed < 2; ++indexed) {
+        const double* targets = indexed ? indices : probabilities;
+        const int64_t* target_shape = indexed ? index_shape : shape;
+        const size_t target_rank = indexed ? 1 : 2;
+        ad_tape_t* tape = arena_allocate_tape(get_global_arena(), 8);
+        ad_node_t* logits = var_node(original, shape, 2);
+        ad_node_t* labels = var_node(targets, target_shape, target_rank);
+        ad_node_t* node = ad_tensor_cross_entropy(tape, logits, labels);
+        bool ok = node != nullptr;
+        constexpr double upstream = -2.5;
+        if (node) {
+            node->gradient = 0.0;
+            node->tensor_gradient = zeros(1);
+            ((double*)node->tensor_gradient)[0] = upstream;
+            eshkol_tensor_backward_dispatch(node);
+            const double* actual = (const double*)logits->tensor_gradient;
+            ok = actual != nullptr;
+            for (size_t i = 0; ok && i < 6; ++i) {
+                double probe[6];
+                std::memcpy(probe, original, sizeof(probe));
+                double plus = 0.0, minus = 0.0;
+                probe[i] += 1e-6;
+                int sp = eshkol_cross_entropy_forward(probe, (const uint64_t*)shape, 2,
+                    targets, (const uint64_t*)target_shape, target_rank, 0, &plus);
+                probe[i] -= 2e-6;
+                int sm = eshkol_cross_entropy_forward(probe, (const uint64_t*)shape, 2,
+                    targets, (const uint64_t*)target_shape, target_rank, 0, &minus);
+                double expected = upstream * (plus - minus) / 2e-6;
+                ok = sp == ESHKOL_CROSS_ENTROPY_OK && sm == ESHKOL_CROSS_ENTROPY_OK &&
+                     std::abs(actual[i] - expected) < 1e-8;
+            }
+        }
+        report(indexed ? "cross entropy: indexed tensor cotangent"
+                       : "cross entropy: probability tensor cotangent", ok);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -758,6 +805,7 @@ int main() {
     transpose_check();
     sum_check();
     attention_check();
+    cross_entropy_upstream_check();
 
     std::printf("(embedding: bridge-vs-native comparison lives in "
                "tensor_embedding_backward_gradcheck_test.cpp, checks 1/2/9)\n");
