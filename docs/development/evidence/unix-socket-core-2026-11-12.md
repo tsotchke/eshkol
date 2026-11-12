@@ -2,7 +2,7 @@
 
 The initial core at `b4c26cde661f6995f9e055c04f084d476d065a1d` passed 65 selected Linux CTests, standalone shared/socket/PROCESS ASan/UBSan/leak checks, and a three-writer cold JIT cache check. The [historical manifest](unix-socket-core-2026-11-12.json) preserves source/artifact hashes and the original local-log hashes. Raw machine logs are retained locally and are not repository content. Summary commands use portable path placeholders.
 
-The [review decisions](../../../notes/SOCKET_DESIGN_ANSWERS-2026-11-12.md) and [addendum](../../../notes/SOCKET_DESIGN_ADDENDUM-2026-11-10.md) describe the revised contract. Current revision qualification is recorded separately; historical results do not establish acceptance of later source changes.
+The [review decisions](../../../notes/SOCKET_DESIGN_ANSWERS-2026-11-12.md) and [addendum](../../../notes/SOCKET_DESIGN_ADDENDUM-2026-11-10.md) describe the revised contract. Current revision qualification is in the [review revision record](unix-socket-review-revision-2026-11-12.md); historical results do not establish acceptance of later source changes.
 
 Initial public acceptance used the production compiler, runtime and agent archive. Its test DSO interposed `connect` for every case on both platforms, forwarding calls to the real syscall except the labelled Darwin private-path pending controls. The revision separates this: the observation DSO has no interposer, Linux acceptance uses the real syscall, and a separate Darwin control DSO is loaded only for the three pending cases and the native control self-test. Darwin controls establish injected EAGAIN behavior, not an OS-pending connection.
 
