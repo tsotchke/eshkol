@@ -19,13 +19,13 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def fixture(work, name, no_git=False):
+def fixture(work, name, no_git=False, release="1.4.0-fixture"):
     case = work / name
     source, artifacts = case / "source", case / "artifacts"
     source.mkdir(parents=True)
     artifacts.mkdir()
     files = {"CMakeLists.txt": "# fixture source\n", "exe/eshkol-run.cpp": "// fixture\n",
-             "inc/eshkol/eshkol.h": '#define ESHKOL_VERSION_STRING "1.4.0-fixture"\n',
+             "inc/eshkol/eshkol.h": '#define ESHKOL_VERSION_STRING "' + release + '"\n',
              "lib/stdlib.esk": "; fixture\n", "lib/math.esk": "; fixture\n",
              "cmake/StdlibIdentityInputs.cmake": (ROOT / "cmake/StdlibIdentityInputs.cmake").read_text()}
     for relative, value in files.items():
@@ -46,8 +46,9 @@ def fixture(work, name, no_git=False):
     material += "toolchain:c=fixture;cxx=fixture;llvm=fixture\n"
     (artifacts / "source-material.txt").write_text(material)
     fingerprint = sha(artifacts / "source-material.txt")
-    identity = dict(release="1.4.0-fixture", abi="object-abi-v2", source=fingerprint)
-    identity["symbol"] = "eshkol_stdlib_identity_release_1_4_0_fixture_abi_object_abi_v2_source_" + fingerprint
+    identity = dict(release=release, abi="object-abi-v2", source=fingerprint)
+    normalized = __import__('re').sub(r'[^A-Za-z0-9_]', '_', release)
+    identity["symbol"] = "eshkol_stdlib_identity_release_" + normalized + "_abi_object_abi_v2_source_" + fingerprint
     compiler = artifacts / "eshkol-run"
     compiler.write_text("#!" + sys.executable + "\nimport sys\nfrom pathlib import Path\n" +
         "identity = " + repr(dict(schema="eshkol.stdlib-identity/v1", **identity)) + "\n" +
@@ -98,6 +99,11 @@ def main():
         ("source-drift", "configured source namespace or bytes differ"),
         ("duplicate-identity", "invalid or duplicate compiler identity field"),
         ("missing-pin", "--expected-manifest-sha256"),
+        ("bound-matching", None),
+        ("bound-foreign-compiler", "effective consumer path mismatch: compiler"),
+        ("bound-foreign-stdlib", "effective consumer path mismatch: stdlib"),
+        ("bound-foreign-runtime", "effective consumer path mismatch: runtime"),
+        ("partial-binding", "invalid fields in effective consumer paths"),
     ]
     for name, reason in cases:
         case, source, artifacts, data = fixture(work, name, name == "source-archive-no-git")
@@ -162,6 +168,16 @@ def main():
                    "--source-root", source, "--artifact-root", artifacts]
         if name != "missing-pin":
             command += ["--expected-manifest-sha256", pin]
+        if name.startswith("bound-") or name == "partial-binding":
+            for kind in ("compiler", "stdlib", "runtime"):
+                if name == "partial-binding" and kind != "compiler":
+                    continue
+                selected = artifacts / data["artifacts"][kind]["path"]
+                if name == "bound-foreign-" + kind:
+                    substitute = case / ("same-bytes-" + kind)
+                    shutil.copy2(selected, substitute)
+                    selected = substitute
+                command += ["--" + kind + "-path", selected]
         result = subprocess.run(list(map(str, command)), capture_output=True, text=True, env=env, timeout=20)
         (case / "stdout.log").write_text(result.stdout)
         (case / "stderr.log").write_text(result.stderr)
@@ -195,7 +211,7 @@ def main():
             assert "requires explicit MANIFEST_SHA256" in result.stderr
         rows.append(dict(case=name, passed=True, returncode=result.returncode, expected_exit=expected))
     report = dict(status="PASS_CONSUMER_ADMISSION_FIXTURE_CONTROLS", controls=len(rows),
-                  accepted=2, refused=len(rows)-2, seconds=round(time.monotonic()-started, 3),
+                  accepted=3, refused=len(rows)-3, seconds=round(time.monotonic()-started, 3),
                   product_executions=0, product_builds=0, release_tuple_selected=False,
                   scope="Python metadata compiler fixtures and real Git/CMake admission; no Eshkol runtime qualification", cases=rows)
     (work / "RESULT.json").write_text(json.dumps(report, indent=2) + "\n")

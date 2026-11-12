@@ -58,6 +58,15 @@ file(WRITE "${CMAKE_BINARY_DIR}/consumer-admission.json"
     "${ESHKOL_CONSUMER_ADMISSION_JSON}")
 ```
 
+Consumers must also bind their effective build inputs: pass `COMPILER`, `STDLIB`
+and `RUNTIME` to the CMake function (or all three `--compiler-path`,
+`--stdlib-path`, `--runtime-path` CLI arguments). The checker requires each
+absolute path to equal the corresponding admitted path. Copies at other paths,
+including byte-identical substitutes, and partial bindings are refused. The
+manifest-only form is an inventory check; it does not bind a consumer build.
+Receipts distinguish these modes with `consumer_bound` and record the exact
+effective paths in `consumer_paths` when binding succeeds.
+
 Run the check before consuming the cohort. Source and artifacts must remain
 quiescent: repeated checks detect changes during admission but provide neither
 filesystem snapshot isolation nor protection against changes after return.

@@ -56,7 +56,9 @@ def revision(root):
     return head.strip()
 
 
-def verify(manifest, expected_manifest_sha256, source_root, artifact_root):
+def verify(manifest, expected_manifest_sha256, source_root, artifact_root, selected=None):
+    if selected is not None:
+        exact_fields(selected, ["compiler", "stdlib", "runtime"], "effective consumer paths")
     need(digest(expected_manifest_sha256), "manifest pin must be 64 lowercase hex characters")
     blob, manifest_stamp = stable_bytes(manifest)
     need(hashlib.sha256(blob).hexdigest() == expected_manifest_sha256,
@@ -96,6 +98,9 @@ def verify(manifest, expected_manifest_sha256, source_root, artifact_root):
         need(hashlib.sha256(value).hexdigest() == row["sha256"], "artifact digest mismatch: " + kind)
         paths[kind] = path
     need(os.access(paths["compiler"], os.X_OK), "compiler is not executable")
+    if selected is not None:
+        for kind, path in selected.items():
+            need(path.absolute() == paths[kind], "effective consumer path mismatch: " + kind)
     need(revision(source) == data["source_revision"], "source revision mismatch")
     source_report = verify_source(source, paths["source_material"], identity["source"])
     expected = dict(schema="eshkol.stdlib-identity/v1", **identity)
@@ -115,6 +120,8 @@ def verify(manifest, expected_manifest_sha256, source_root, artifact_root):
     after, stamp = stable_bytes(manifest)
     need(after == blob and stamp == manifest_stamp, "manifest changed during admission")
     return {"status": "PASS_CONSUMER_TOOLCHAIN_ADMISSION", "manifest_sha256": expected_manifest_sha256,
+            "consumer_bound": selected is not None,
+            "consumer_paths": {kind: str(path.absolute()) for kind,path in selected.items()} if selected else None,
             "source_revision": data["source_revision"], "identity": identity,
             "artifacts": artifacts, "source_inputs": source_report["input_count"],
             "scope": "pinned cohort and metadata admission; not runtime or release qualification"}
@@ -126,9 +133,14 @@ def main():
     parser.add_argument("--expected-manifest-sha256", required=True)
     parser.add_argument("--source-root", required=True, type=Path)
     parser.add_argument("--artifact-root", required=True, type=Path)
+    for kind in ("compiler", "stdlib", "runtime"):
+        parser.add_argument("--" + kind + "-path", type=Path)
     args = parser.parse_args()
     try:
-        result = verify(args.manifest, args.expected_manifest_sha256, args.source_root, args.artifact_root)
+        selected = {kind: getattr(args, kind + "_path") for kind in ("compiler", "stdlib", "runtime")
+                    if getattr(args, kind + "_path") is not None}
+        result = verify(args.manifest, args.expected_manifest_sha256, args.source_root,
+                        args.artifact_root, selected or None)
     except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as error:
         print(json.dumps({"status": "FAIL", "reason": str(error)}))
         return 1
