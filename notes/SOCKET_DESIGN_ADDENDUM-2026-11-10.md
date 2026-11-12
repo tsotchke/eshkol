@@ -1,6 +1,6 @@
 # Decision: Unix-domain stream sockets
 
-**Status:** Socket integration contract agreed; scaffold amendments and implementation pending. **Updated:** 2026-11-11.
+**Status:** Socket integration contract agreed; cleanup-completion interface proposed; implementation under review. **Updated:** 2026-11-12.
 **Basis:** [IPC design](https://github.com/Gabriel-Kahen/eshkol/blob/93c02a9679b9476c58296bfeb6e229d251a21224/weeks/IPC_DESIGN-2026-11-02.md); [#916 at `da7005c7f`](https://github.com/tsotchke/eshkol/pull/916). Agreed design behavior; runtime validation will accompany implementation.
 
 **Companion review:** [#916 scaffold findings and proposed resolutions](SOCKET_DESIGN_REVIEW-2026-11-10.md) explain the contract gaps and acceptance-test issues behind this decision.
@@ -29,6 +29,15 @@ Both backends are level-triggered: arm requested interests and remove temporary 
 Each listener/peer has one generation-checked SOCKET owner in the shared lease layer. Operations borrow exclusively; a second borrower gets busy. The caller supplies a loop; each listener/socket retains it through watch removal and socket teardown. Loop close refuses while resources retain it. Ordinary I/O and watch teardown run on the loop owner thread; cross-thread requests only update lifetime-safe state and signal that thread. Shared wait machinery must support that loop and preserve readiness for other resources, including PROCESS watches. Validate readiness identities across fd reuse. Runtime ownership prepares future compile-time linear handles; it does not implement them.
 
 Idempotent, lifetime-safe cross-thread cancellation remains set for the socket, wakes pending work and prevents further I/O; the caller still closes it. Close during a borrow is accepted: reject new uses immediately, wake the operation, and close the descriptor exactly once after release. The low-level registry's ordinary close can return busy for a borrow; the public socket lease uses shared close-after-release instead. A close request is not proof teardown finished. Use the shared lease layer; define observable watch-removal and path-cleanup outcomes before implementation, retaining safe ownership until cleanup resolves. Scoped `dynamic-wind` cleanup rejects re-entry. Checked/native acquisition and I/O require `network`; owned-resource cancel/close need neither renewed capability nor a clock. They still validate the numeric identity, kind, tag and generation. Scoped exception cleanup follows the same release path. Cancellation cannot retract bytes already transferred; an operation completed before the request may report its successful byte count.
+
+
+## Shared identities and close completion
+
+PROCESS, EVENT_LOOP and SOCKET public identities use one process-lifetime exact registry, with kind/tag checks. PROCESS shutdown releases only its records; it never destroys the shared registry. Preserve published platform kind values; PROCESS and cleanup tickets have distinct kinds.
+
+Proposed completion interface: `close-request! id` accepts close and returns a separately owned cleanup ticket. `cleanup-result ticket` returns `#(state stage os-error retryable?)`: state is `pending`, `complete` or `failed`; stage identifies watch removal, descriptor close, pathname removal or loop release. Querying on the owner thread drives queued teardown without reading a clock; foreign-thread queries only observe. Release outstanding borrows before expecting completion. `cleanup-retry!` retries recoverable watch/path failures after repair, while `cleanup-release!` releases a terminal result ticket. Descriptor close is never retried after an uncertain outcome. `close!` remains an accepted-close convenience; successful detached results are discarded, and failed ones are recoverable through `cleanup-ticket old-id`. The retired socket identity grants observation only through that recovery operation, never renewed I/O authority.
+
+Scoped listener/connection/accept helpers use the same close path on return, exception and continuation escape, and reject re-entry into a finished scope.
 
 ## Implementation ownership
 
