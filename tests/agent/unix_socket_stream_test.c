@@ -117,7 +117,14 @@ static void transfer(pair_t p, size_t size, int slow) {
 static int descriptor_count(void) {
     int count = eshkol_unix_socket_test_fd_count(); CHECK(count >= 0); return count;
 }
-static void scenario_connect_accept(void) { pair_t p = pair_open(); transfer(p, 257, 0); pair_close(p); }
+static void scenario_connect_accept(void) {
+    pair_t p = pair_open(); transfer(p, 257, 0);
+    unsigned char reply[] = {0, 'p', 'o', 'n', 'g'}, received[sizeof(reply)] = {0};
+    CHECK(eshkol_unix_stream_socket_write(p.peer, reply, sizeof(reply)) == (int64_t)sizeof(reply));
+    CHECK(eshkol_unix_stream_socket_read(p.client, received, sizeof(received)) == (int64_t)sizeof(reply));
+    CHECK(memcmp(reply, received, sizeof(reply)) == 0);
+    pair_close(p);
+}
 static void scenario_partial_slow_peer(void) { pair_t p = pair_open(); transfer(p, 2u * 1024u * 1024u, 1); pair_close(p); }
 static void scenario_nul_and_large_payload(void) { pair_t p = pair_open(); transfer(p, 16u * 1024u * 1024u + 37u, 1); pair_close(p); }
 static void scenario_deadline_accept(void) {
