@@ -64,7 +64,8 @@ set(CMAKE_C_COMPILER_ID FixtureC)
 set(CMAKE_C_COMPILER_VERSION 1.2.3)
 set(CMAKE_CXX_COMPILER_ID FixtureCXX)
 set(CMAKE_CXX_COMPILER_VERSION 4.5.6)
-set(LLVM_PACKAGE_VERSION 20.1.0)
+set(ESHKOL_LLVM_VERSION 21.1.8)
+unset(LLVM_PACKAGE_VERSION)
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 '''
     (project / "CMakeLists.txt").write_text(prefix + producer + '''
@@ -77,6 +78,28 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/fingerprint.txt" "${ESHKOL_STDLIB_SOURCE
     golden = (build / "generated/eshkol/stdlib_identity_source.txt").read_bytes()
     fingerprint = (build / "fingerprint.txt").read_text()
     need(hashlib.sha256(golden).hexdigest() == fingerprint, "CMake export/hash parity failed")
+    expected_toolchain = b"toolchain:c=FixtureC-1.2.3;cxx=FixtureCXX-4.5.6;llvm=21.1.8\n"
+    need(expected_toolchain and golden.endswith(expected_toolchain),
+         "canonical LLVM identity suffix is missing or incorrect")
+
+    # A package-advertised version can be stale after the selected LLVM has
+    # already been validated.  Configure a separate fixture to ensure it
+    # cannot replace the canonical ESHKOL_LLVM_VERSION identity input.
+    stale = work / "stale-package-variable"
+    shutil.copytree(project, stale / "source")
+    stale_cmake_path = stale / "source/CMakeLists.txt"
+    stale_cmake = stale_cmake_path.read_text().replace(
+        "unset(LLVM_PACKAGE_VERSION)", "set(LLVM_PACKAGE_VERSION 99.9.9)")
+    need(stale_cmake != stale_cmake_path.read_text(),
+         "stale package fixture was not injected")
+    stale_cmake_path.write_text(stale_cmake)
+    stale_configured = run([args.cmake, "-S", str(stale / "source"),
+                            "-B", str(stale / "build")], stale, "configure")
+    need(stale_configured.returncode == 0,
+         "stale package-variable configure failed: " + stale_configured.stderr[-1200:])
+    stale_golden = (stale / "build/generated/eshkol/stdlib_identity_source.txt").read_bytes()
+    need(stale_golden.endswith(expected_toolchain),
+         "stale LLVM package variable overrode canonical identity suffix")
 
     # Verify the refactor preserves the old collector's exact namespace, with
     # its native '*' and Scheme-only '*.esk' scopes and platform glob rules.
@@ -107,11 +130,12 @@ endif()
     need(result.returncode == 0, "legacy collector namespace parity failed")
 
     rows = []
-    def check(name, expected, mutation=None, mutate_material=None, expected_fp=None):
+    def check(name, expected, mutation=None, mutate_material=None, expected_fp=None,
+              source_template=project, material_template=golden):
         case = work / name
-        shutil.copytree(project, case / "source")
+        shutil.copytree(source_template, case / "source")
         material = case / "material.txt"
-        material.write_bytes(golden if mutate_material is None else mutate_material(golden))
+        material.write_bytes(material_template if mutate_material is None else mutate_material(material_template))
         if mutation:
             mutation(case / "source", case)
         pinned = hashlib.sha256(material.read_bytes()).hexdigest() if expected_fp == "rehash-control" else expected_fp or fingerprint
@@ -126,6 +150,8 @@ endif()
         return case
 
     check("unchanged", True)
+    check("stale-package-admission", True, expected_fp="rehash-control",
+          source_template=stale / "source", material_template=stale_golden)
     check("edited-native", False, lambda p, _: (p / "exe/eshkol-run.cpp").write_text("changed\n"))
     check("new-hidden", False, lambda p, _: (p / "inc/eshkol/.new-hidden").write_text("new\n"))
     check("new-nested-scheme", False, lambda p, _: (p / "lib/math/nested/new.esk").write_text("new\n"))

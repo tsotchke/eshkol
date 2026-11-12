@@ -3604,10 +3604,13 @@ foreach(_stdlib_input IN LISTS _stdlib_identity_inputs)
   string(APPEND _stdlib_identity_source_material
          "${_stdlib_input_relative}:${_stdlib_input_sha256}\n")
 endforeach()
+# The lite finder and Windows package adapter both publish the validated
+# selected version here; LLVM_PACKAGE_VERSION may be unset or stale and must
+# not override that canonical identity input.
 string(APPEND _stdlib_identity_source_material
        "toolchain:c=${CMAKE_C_COMPILER_ID}-${CMAKE_C_COMPILER_VERSION};"
        "cxx=${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION};"
-       "llvm=${LLVM_PACKAGE_VERSION}\n")
+       "llvm=${ESHKOL_LLVM_VERSION}\n")
 string(SHA256 ESHKOL_STDLIB_SOURCE_FINGERPRINT
        "${_stdlib_identity_source_material}")
 # Preserve the exact digest preimage for source/artifact tuple qualification.
