@@ -3206,6 +3206,18 @@
       "ctest": [],
       "key_output": [],
       "not_run_reason": "This generator was added after the historical release measurement recorded in this document. The mix_gate and mix_verify_gate CTest entries are its current checks, not receipts for that earlier release."
+    },
+    "examples/blc-corpus/probe.esk": {
+      "source_sha256": "55ba2f27a9805c49150750598eff64a4fe209ddf194b6aba0504cacd3dcfd41a",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "Runs only as a template completed by examples/blc-corpus/run.py with an appended (learner-probe ...) call; the committed form alone prints no program output to measure."
     }
   }
 }

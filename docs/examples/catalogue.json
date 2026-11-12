@@ -5327,6 +5327,37 @@
           "verification": "repository"
         }
       ]
+    },
+    {
+      "path": "examples/blc-corpus/probe.esk",
+      "source_sha256": "55ba2f27a9805c49150750598eff64a4fe209ddf194b6aba0504cacd3dcfd41a",
+      "title": "Standalone byte-level corpus probe for core.blc_bytes",
+      "kind": "example",
+      "purpose": "Give the blc-corpus harness (run.py) a minimal eshkol-side probe that decodes one packed classic-BLC program and runs it under explicit resource bounds, independent of the tromp-reference backend.",
+      "algorithm": "learner-probe decodes a bit list with blc-decode and evaluates it with blc-run-bytes under an explicit frame, work-step limit, heap-node capacity and output-byte limit, printing a START marker and the returned receipt; learner-read loads the input frame written by the harness from a side file.",
+      "domain": "Any of the corpus fixtures named in examples/blc-corpus/manifest.toml, as selected and parameterised by run.py at harness time; the file itself carries no fixed program.",
+      "arithmetic": "Exact finite bit/byte values only (BLC bit lists, bounded natural-number limits); no floating-point arithmetic.",
+      "validation": "The harness (run.py) appends a (learner-probe ...) call with a specific corpus case and compares the printed receipt against the independent Python tromp-style reference evaluator for the same packed program and input; this file supplies only the eshkol-side half of that cross-check.",
+      "limitations": "Not runnable standalone: learner-probe is defined but never invoked by this file alone, so it has no fixed key output on its own. Resource bounds (frame, work-limit, heap-capacity, output-limit) are supplied by the harness, not this file.",
+      "prerequisites": "Built eshkol-run and stdlib plus source-tree core.blc_bytes; invoked only through examples/blc-corpus/run.py.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 2,
+          "text": "(require core.blc_bytes)"
+        },
+        {
+          "line": 9,
+          "text": "  (let ((receipt (blc-run-bytes (blc-decode bits) frame work-limit heap-capacity output-limit)))"
+        }
+      ],
+      "literature_review": "The corpus manifest and its review/ receipts (examples/blc-corpus/REVIEW.md) record the per-program provenance this probe cross-checks; no separate literature claim is made by this file.",
+      "references": [],
+      "key_output": [
+        "^START ",
+        "^OBS "
+      ]
     }
   ],
   "runner_contract": {
