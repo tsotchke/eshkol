@@ -95,6 +95,14 @@
                     ((eq? status 'would-block) (poll! accepted 1 25)
                      (progress next-written received next-short next-blocked))
                     (else (error "read outcome" (unix-stream-socket-read-error r))))))))
+    (when (= size 257)
+      (let ((reply (make-bytevector 5 99)) (back (make-bytevector 5 0)))
+        (bytevector-u8-set! reply 0 0)
+        (check "reverse reply exact write"
+          (= (unix-stream-socket-write-count (unix-stream-socket-write! accepted reply 0 5)) 5))
+        (check "reverse reply exact read"
+          (= (unix-stream-socket-read-count (unix-stream-socket-read! client back 0 5)) 5))
+        (check "reverse reply bytes match" (same-bytes? reply back))))
     (close-pair p)))
 (define (run-case)
   (cond

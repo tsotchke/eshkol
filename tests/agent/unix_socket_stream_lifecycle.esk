@@ -100,6 +100,12 @@
                 (check "scoped pair reads exact byte count"
                   (= (unix-stream-socket-read-count (unix-stream-socket-read! peer received 0 2)) 2))
                 (check "scoped binary bytes match" (same-bytes? sent received))
+                (check "scoped reply writes exact byte count"
+                  (= (unix-stream-socket-write-count (unix-stream-socket-write! peer received 0 2)) 2))
+                (bytevector-u8-set! sent 1 0)
+                (check "scoped reply reads exact byte count"
+                  (= (unix-stream-socket-read-count (unix-stream-socket-read! client sent 0 2)) 2))
+                (check "scoped reply bytes match" (same-bytes? sent received))
                 (capability-install-policy! '())
                 'revoked-cleanup))))))))
 (check "scoped return survives revoked cleanup" (eq? returned 'revoked-cleanup))
