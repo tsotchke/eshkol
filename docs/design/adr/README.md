@@ -81,6 +81,7 @@ documentation hub lists the same records in
 | [0056](0056-linear-handle-typestate.md) | Linear handle typestate for the strict resource profile | Proposed | 2026-11-08 | `inc/eshkol/strict_resource_contracts.h`, the ownership checker in `exe/eshkol-run.cpp` (`--strict-resources`), borrow-scope cleanup frames in `lib/core/runtime_continuations.cpp`; corpus `tests/v1_4_resource_ownership/` |
 | [0057](0057-nested-differentiation-in-every-mode.md) | Nested differentiation in every mode | Proposed | 2026-11-08 | `esh_taylor_t::epoch`, `eshkol_ad_nested_seed` in `lib/core/runtime_taylor.c`; `emitForwardColumnGradient`, `emitPassLiveAt` in `lib/backend/autodiff_codegen.cpp`; `eshkol_ad_linear_record` in `lib/core/runtime_autodiff.cpp`; gate `tests/ad/nested_depth_matrix_test.esk` |
 | [0058](0058-exact-tensor-element-type.md) | The exact tensor element type: exact rationals in tensor storage, exact linear-algebra kernels, contagion by operand dtype | Proposed — implemented on native JIT and AOT; the bytecode VM refuses the dtype explicitly | 2026-11-08 | v1.4.0 |
+| [0060](0060-program-entry-and-physical-names.md) | One program-entry rule and Eshkol-owned physical names (implements ADR-0006 section 5) | Proposed | 2026-09-26 | v1.4.0 |
 
 ## Numbering
 
