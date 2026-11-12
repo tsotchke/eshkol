@@ -2,68 +2,81 @@
 #ifndef ESHKOL_CORE_UNIX_SOCKET_STREAM_H
 #define ESHKOL_CORE_UNIX_SOCKET_STREAM_H
 #include <stdint.h>
+#include "eshkol/core/resource_lease.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * Unix-domain stream sockets on the existing event loop. This header is the
- * paired-build scaffold described in
- * Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md ("Later Unix
- * streams" row) and the week's socket design addendum. Every entry point
- * below validates the arguments it can check without touching a socket, and
- * otherwise returns ESHKOL_UNIX_STREAM_SOCKET_PLANNED. No socket is created, bound,
- * connected, read, written, or closed by this file.
- *
- * The core implementation (listen/accept/connect/read/write/cancel/close over
- * epoll/kqueue, with a SOCKET-kind lease in the existing handle registry,
- * following the same acquire/borrow/release/close rules as the PROCESS
- * session in inc/eshkol/core/subprocess_stream.h) is owned by Gabe Kahen and
- * lands in a follow-on PR stacked on this scaffold branch.
- */
-
+/* Paired-build scaffold: these declarations are an agreed contract scaffold, not
+ * socket I/O. Gabe Kahen owns the common lease/wait extensions and follow-on core. Shared outcome aliases
+ * below use resource_lease.h; there is no second registry or outcome table. */
 enum {
-    ESHKOL_UNIX_STREAM_SOCKET_EINVAL = -1,
-    ESHKOL_UNIX_STREAM_SOCKET_WOULD_BLOCK = -2,
-    ESHKOL_UNIX_STREAM_SOCKET_ENOTSUP = -3,
-    ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM = -4,
-    ESHKOL_UNIX_STREAM_SOCKET_EBUSY = -5,
-    ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT = -6,
-    ESHKOL_UNIX_STREAM_SOCKET_EDENIED = -7,
-    ESHKOL_UNIX_STREAM_SOCKET_ECANCELED = -8,
-    /* A listen path that already exists and is not confirmed to have nothing listening on it. */
-    ESHKOL_UNIX_STREAM_SOCKET_EEXIST = -9,
-    /* Returned by every entry point below until the core implementation
-     * replaces this scaffold. Distinct from every other negative result so
-     * callers and tests can tell "planned" apart from a real failure. */
-    ESHKOL_UNIX_STREAM_SOCKET_PLANNED = -100
+    ESHKOL_UNIX_STREAM_SOCKET_EINVAL = ESHKOL_IO_INVALID,
+    ESHKOL_UNIX_STREAM_SOCKET_WOULD_BLOCK = ESHKOL_IO_TIMEOUT,
+    ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT = ESHKOL_IO_TIMEOUT,
+    ESHKOL_UNIX_STREAM_SOCKET_ENOTSUP = ESHKOL_IO_UNSUPPORTED,
+    ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM = ESHKOL_IO_SYSTEM,
+    ESHKOL_UNIX_STREAM_SOCKET_EBUSY = ESHKOL_IO_BUSY,
+    ESHKOL_UNIX_STREAM_SOCKET_ECANCELED = ESHKOL_IO_CANCELLED,
+    ESHKOL_UNIX_STREAM_SOCKET_ERESET = ESHKOL_IO_RESET,
+    ESHKOL_UNIX_STREAM_SOCKET_EREFUSED = ESHKOL_IO_REFUSED,
+    ESHKOL_UNIX_STREAM_SOCKET_PLANNED = -100,
+    ESHKOL_UNIX_STREAM_SOCKET_READABLE = 1,
+    ESHKOL_UNIX_STREAM_SOCKET_WRITABLE = 2
 };
 
-/* Bind and listen on a filesystem path on the given event loop. A listener
- * owns the path: close unlinks it. A pre-existing path that nothing is
- * listening on it must be refused, not silently unlinked and reused. */
+/* loop is an exact positive EVENT_LOOP handle; zero has no implicit meaning.
+ * Acquisition retains it; accepted peers inherit/retain it. Close releases
+ * the retain only after watch removal and descriptor teardown. Loop close
+ * refuses while retained. Use the shared lease adoption/borrow/release/close
+ * machinery and a common wait extension for explicit loops; never a private
+ * socket registry or polling implementation. That wait extension is a
+ * prerequisite for the core, not implemented by this scaffold.
+ *
+ * Paths must be absolute/NUL-free, fit sun_path in encoded bytes, and live
+ * in a verified owned private directory with mode 0700. Refuse every existing entry.
+ * Bind, set mode 0600, then listen/publish; undo unpublished setup on failure.
+ * Only remove the listener's recorded entry, never a replacement. */
 int64_t eshkol_unix_stream_socket_listen(int64_t loop, const char *path);
-/* Accept one connection within one bounded, monotonic deadline. Zero makes
- * one nonblocking pass; it never sleeps. */
 int64_t eshkol_unix_stream_socket_accept(int64_t listener, int32_t deadline_ms);
-/* Connect within one monotonic deadline shared across retries. */
-int64_t eshkol_unix_stream_socket_connect(int64_t loop, const char *path, int32_t deadline_ms);
-/* Byte-counted nonblocking read: a positive count, zero for EOF,
- * ESHKOL_UNIX_STREAM_SOCKET_WOULD_BLOCK, or another negative error. NUL bytes and
- * payloads over 16 MiB survive unmodified; reads may be partial. */
-int64_t eshkol_unix_stream_socket_read(int64_t id, void *buffer, int64_t capacity);
-/* Byte-counted nonblocking write, possibly partial. A closed peer is
- * reported as ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM; SIGPIPE is suppressed by the
- * write path itself, never left for the caller's process-wide disposition. */
-int64_t eshkol_unix_stream_socket_write(int64_t id, const void *buffer, int64_t count);
-/* Request cancellation of an outstanding accept, connect, read, or write on
- * this identity. Idempotent; never restarts a deadline. */
-int32_t eshkol_unix_stream_socket_cancel(int64_t id);
-/* Close a listener, an accepted peer, or an outbound connection exactly
- * once. A listener close unlinks the path it bound. A repeated or invalid
- * close returns ESHKOL_UNIX_STREAM_SOCKET_EINVAL rather than touching memory again. */
-int32_t eshkol_unix_stream_socket_close(int64_t id);
 
+/* begin captures one monotonic deadline and publishes a connecting owner
+ * before any readiness wait. Immediate errors roll back unpublished state.
+ * Zero budget never waits: return a connected owner or WOULD_BLOCK with
+ * complete rollback. finish returns 0 when connected or a shared error,
+ * waiting only within begin's remaining budget. A failed/cancelled published
+ * attempt remains owned until close. Read/write require connected state. */
+int64_t eshkol_unix_stream_socket_connect_begin(int64_t loop, const char *path,
+                                               int32_t deadline_ms);
+int32_t eshkol_unix_stream_socket_connect_finish(int64_t id);
+
+/* Nonblocking exact byte counts; positive request sizes only. Read0 is EOF;
+ * short counts are progress; WOULD_BLOCK is not EOF/error. SIGPIPE is
+ * suppressed per socket/send, without changing process signal disposition. */
+int64_t eshkol_unix_stream_socket_read(int64_t id, void *buffer, int64_t capacity);
+int64_t eshkol_unix_stream_socket_write(int64_t id, const void *buffer, int64_t count);
+
+/* Return a positive requested readiness mask, TIMEOUT, CANCELLED or another
+ * shared error. Zero timeout makes one nonblocking pass. While connecting,
+ * the stored acquisition deadline caps this wait. Connected I/O has its own
+ * poll budget. Preserve other PROCESS/SOCKET owners' readiness cookies. */
+int32_t eshkol_unix_stream_socket_poll(int64_t id, int32_t interests, int32_t timeout_ms);
+
+/* Sticky, idempotent cancellation: a lifetime-safe generation-checked request
+ * and shared wakeup may arrive from another thread; further I/O is cancelled.
+ * I/O and watch mutation stay owner-thread confined. Ownership remains. */
+int32_t eshkol_unix_stream_socket_cancel(int64_t id);
+/* Public close follows the shared lease's deferred-close contract: once
+ * accepted, invalidate the identity and wake its borrower; descriptor close
+ * runs once after release. Remove watches before committing teardown; if
+ * removal fails, retain ownership for retry. Never retry uncertain fd close.
+ * Cancel/close require neither renewed network capability nor a clock;
+ * runtime/kind/tag/generation checks remain mandatory. Acquisition and I/O
+ * require native and Scheme network admission. */
+int32_t eshkol_unix_stream_socket_close(int64_t id);
+/* Calling-thread OS detail for the last operation; read immediately after a
+ * shared negative outcome. Zero means no OS detail. The scaffold returns 0. */
+int32_t eshkol_unix_stream_socket_last_os_error(void);
 #ifdef __cplusplus
 }
 #endif

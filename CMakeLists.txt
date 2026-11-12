@@ -2608,6 +2608,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/threads.c
   lib/core/net.c
   lib/core/tls.c
+  lib/core/resource_lease.c
   lib/core/workspace.cpp
   lib/quantum/quantum_rng.c
   lib/quantum/quantum_rng_wrapper.c
@@ -8051,20 +8052,54 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     find_package(Threads REQUIRED)
     add_executable(eshkol-unix-stream-socket-stream-test
         tests/agent/unix_socket_stream_test.c
-        lib/agent/c/agent_unix_socket_stream.c)
-    target_compile_features(eshkol-unix-stream-socket-stream-test PRIVATE c_std_11)
+        lib/agent/c/agent_unix_socket_stream.c
+        lib/core/resource_lease.c lib/core/runtime_handle.cpp
+        lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_compile_features(eshkol-unix-stream-socket-stream-test PRIVATE c_std_11 cxx_std_17)
     target_compile_definitions(eshkol-unix-stream-socket-stream-test PRIVATE _GNU_SOURCE)
     target_include_directories(eshkol-unix-stream-socket-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE Threads::Threads)
 
+    # Observations only; no socket implementation or replacement FFI archive.
+    add_library(eshkol-unix-socket-fixture SHARED tests/agent/unix_socket_stream_fixture_support.c)
+    target_compile_features(eshkol-unix-socket-fixture PRIVATE c_std_11)
+    target_link_libraries(eshkol-unix-socket-fixture PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE eshkol-unix-socket-fixture)
+    find_program(ESHKOL_SOCKET_CHIBI_SCHEME NAMES chibi-scheme)
+    if(ESHKOL_SOCKET_CHIBI_SCHEME)
+        add_test(NAME agent-unix-stream-socket-wrapper-unit
+            COMMAND ${ESHKOL_SOCKET_CHIBI_SCHEME} -q
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/unix_socket_stream_wrapper_contract_test.scm
+                ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(agent-unix-stream-socket-wrapper-unit PROPERTIES
+            TIMEOUT 20 LABELS "resource;socket;wrapper-unit")
+    endif()
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME agent-unix-stream-socket-runner-oracle
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/unix_socket_stream_runner_contract_test.py
+                --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/qualification/socket-runner-oracle)
+        set_tests_properties(agent-unix-stream-socket-runner-oracle PROPERTIES
+            TIMEOUT 30 LABELS "resource;socket;metadata")
+    endif()
+    add_test(NAME agent-unix-stream-socket-peer-fixture
+        COMMAND eshkol-unix-stream-socket-stream-test --peer-fixture-selftest)
+    set_tests_properties(agent-unix-stream-socket-peer-fixture PROPERTIES
+        TIMEOUT 10 LABELS "resource;socket;fixture")
     set(ESHKOL_IPC_UNIX_PENDING_CASES
         connect_accept partial_slow_peer peer_close_epipe deadline_accept
         deadline_connect cancellation nul_and_large_payload descriptor_count_check
-        capability_denial path_lifecycle)
+        capability_denial path_lifecycle destination_errors connect_cancellation
+        capability_revocation loop_lifetime zero_budget)
     list(LENGTH ESHKOL_IPC_UNIX_PENDING_CASES ESHKOL_IPC_UNIX_PENDING_N)
-    # One native C fixture plus a JIT and an AOT .esk case per acceptance
-    # case, plus one VM-unsupported .esk case.
-    math(EXPR ESHKOL_IPC_UNIX_PENDING_TOTAL "${ESHKOL_IPC_UNIX_PENDING_N} * 3 + 1")
+    # Public cases each have native/JIT/AOT coverage. Direct native borrow
+    # manipulation has one C-only case; VM has one explicit refusal case.
+    math(EXPR ESHKOL_IPC_UNIX_PENDING_TOTAL "${ESHKOL_IPC_UNIX_PENDING_N} + 1")
+    if(ESHKOL_BUILD_AGENT_FFI AND TARGET eshkol-run)
+        math(EXPR ESHKOL_IPC_UNIX_PENDING_TOTAL "${ESHKOL_IPC_UNIX_PENDING_N} * 3 + 2")
+    endif()
 
     foreach(case_name ${ESHKOL_IPC_UNIX_PENDING_CASES})
         add_test(NAME ipc-unix-pending-${case_name}
@@ -8073,6 +8108,11 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
         set_tests_properties(ipc-unix-pending-${case_name} PROPERTIES
             LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 60)
     endforeach()
+
+    add_test(NAME ipc-unix-pending-borrowed_close
+        COMMAND eshkol-unix-stream-socket-stream-test borrowed_close)
+    set_tests_properties(ipc-unix-pending-borrowed_close PROPERTIES
+        LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 60)
 
     add_executable(eshkol-unix-stream-socket-stub-contract-test
         tests/agent/unix_socket_stream_stub_contract_test.c
@@ -13210,18 +13250,24 @@ if(ESHKOL_BUILD_AGENT_FFI)
             foreach(case_name ${ESHKOL_IPC_UNIX_PENDING_CASES})
                 foreach(mode jit aot)
                     add_test(NAME ipc-unix-pending-${case_name}-${mode}
-                        COMMAND bash ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.sh
-                            $<TARGET_FILE:eshkol-run> ${mode} ${case_name}
-                            ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch/${case_name}-${mode}
-                            ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_pending.esk)
+                        COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.py
+                            --runner $<TARGET_FILE:eshkol-run> --mode ${mode} --scenario ${case_name}
+                            --work-root ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch
+                            --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_pending.esk
+                            --peer $<TARGET_FILE:eshkol-unix-stream-socket-stream-test>
+                            --fixture-library $<TARGET_FILE:eshkol-unix-socket-fixture>
+                            --build-dir ${CMAKE_BINARY_DIR})
                     set_tests_properties(ipc-unix-pending-${case_name}-${mode} PROPERTIES
                         LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 60)
                 endforeach()
             endforeach()
             add_test(NAME ipc-unix-pending-vm-unsupported
-                COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm --emit-eskb
-                    ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch/vm-unsupported.eskb
-                    ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_vm_unsupported.esk)
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.py
+                    --runner $<TARGET_FILE:eshkol-run> --mode vm --scenario vm-unsupported
+                    --work-root ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch
+                    --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_vm_unsupported.esk)
             set_tests_properties(ipc-unix-pending-vm-unsupported PROPERTIES
                 LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 30)
         endif()
@@ -14440,14 +14486,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
 endif()
 
 # Standalone networking boundary: independent POSIX peers, no LLVM rebuild.
+# Sockets own their descriptors through the shared resource lease layer and
+# wait on the portable event loop, so every standalone test links that stack.
+set(ESHKOL_NET_LEASE_STACK_SRC
+    lib/core/resource_lease.c lib/core/runtime_handle.cpp
+    lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
 if(ESHKOL_BUILD_TESTS)
-    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c)
+    add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(net_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         find_package(Threads REQUIRED)
         target_link_libraries(net_runtime_test PRIVATE Threads::Threads)
     endif()
-    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c)
+    add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c lib/core/net.c
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_clock_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         target_link_libraries(net_clock_failure_test PRIVATE Threads::Threads)
@@ -14459,7 +14512,8 @@ if(ESHKOL_BUILD_TESTS)
     set_tests_properties(net_runtime_test PROPERTIES TIMEOUT 30)
 
     add_executable(tls_context_test
-        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c)
+        tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(tls_context_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(ESHKOL_TLS_OPENSSL_FOUND)
         set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
@@ -14473,6 +14527,28 @@ if(ESHKOL_BUILD_TESTS)
         find_package(Threads REQUIRED)
         target_link_libraries(tls_context_test PRIVATE Threads::Threads)
     endif()
+endif()
+
+# Local test PKI, generated under the build directory for every TLS lease test;
+# the trust anchors and leaves never leave the build tree and no test uses the
+# network beyond loopback.
+if(ESHKOL_BUILD_TESTS AND ESHKOL_TLS_OPENSSL_FOUND AND UNIX AND NOT EMSCRIPTEN)
+    set(ESHKOL_TLS_TEST_PKI "${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki")
+    add_executable(tls_test_ca tests/network/tls_test_ca.c)
+    target_link_libraries(tls_test_ca PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME tls_test_pki COMMAND $<TARGET_FILE:tls_test_ca> "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_test_pki PROPERTIES FIXTURES_SETUP tls_test_pki
+        PASS_REGULAR_EXPRESSION "PASS: test PKI written")
+    add_executable(tls_lease_test tests/network/tls_lease_test.c lib/core/net.c lib/core/tls.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(tls_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    set_source_files_properties(tests/network/tls_lease_test.c PROPERTIES
+        COMPILE_DEFINITIONS ESHKOL_TLS_AVAILABLE=${ESHKOL_TLS_AVAILABLE})
+    target_link_libraries(tls_lease_test PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    add_test(NAME tls_lease_test COMMAND tls_lease_test "${ESHKOL_TLS_TEST_PKI}")
+    set_tests_properties(tls_lease_test PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE
+        FIXTURES_REQUIRED tls_test_pki LABELS "network;tls;ownership"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
 # TLS acceptance is registered only for a build with the verified native
@@ -14608,12 +14684,64 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
+# Public core.net/core.tls lease surfaces on both native engines.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX AND NOT EMSCRIPTEN)
+    set(_net_core_cases net_core net_scope_continuation)
+    if(ESHKOL_TLS_OPENSSL_FOUND AND TARGET tls_test_ca)
+        list(APPEND _net_core_cases tls_net_core)
+    endif()
+    foreach(_case IN LISTS _net_core_cases)
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/${_case}_test.esk")
+        add_test(NAME ${_case}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_source}"
+            "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_case}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>"
+            "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_case}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE
+            LABELS "network;ownership"
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0;ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_TLS_TEST_PKI=${CMAKE_CURRENT_BINARY_DIR}/tls-test-pki"
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
+        if(_case STREQUAL "tls_net_core")
+            set_tests_properties(${_case}_jit ${_case}_aot PROPERTIES FIXTURES_REQUIRED tls_test_pki)
+        endif()
+    endforeach()
+endif()
+
+# The bytecode VM has no hosted socket leases: compiling core.net for it is
+# refused with an explicit message rather than producing a partial program.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME net_vm_refusal COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm
+        --emit-eskb "${CMAKE_CURRENT_BINARY_DIR}/net_vm_refusal.eskb"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/net_vm_refusal.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(net_vm_refusal PROPERTIES TIMEOUT 120 LABELS "network;vm"
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
+        PASS_REGULAR_EXPRESSION "core.net and core.tls are not supported by the bytecode VM")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
-    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c)
+    add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
+        lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(net_close_concurrency_test PRIVATE Threads::Threads)
     add_test(NAME net_close_concurrency_test COMMAND net_close_concurrency_test)
     set_tests_properties(net_close_concurrency_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+# Socket leases: partial writes, reset, deadlines, cancellation, shutdown,
+# truncation and a constant descriptor count across 1,000 cycles.
+if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_lease_test tests/network/net_lease_test.c lib/core/net.c
+        ${ESHKOL_NET_LEASE_STACK_SRC})
+    target_include_directories(net_lease_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_lease_test PRIVATE Threads::Threads)
+    add_test(NAME net_lease_test COMMAND net_lease_test)
+    set_tests_properties(net_lease_test PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+        LABELS "network;ownership"
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 

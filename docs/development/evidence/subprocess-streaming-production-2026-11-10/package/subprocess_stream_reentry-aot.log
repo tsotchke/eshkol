@@ -1,0 +1,2 @@
+REENTRY-ATTEMPT
+Unhandled exception: call-with-subprocess-streams: closed session re-entry

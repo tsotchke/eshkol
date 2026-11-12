@@ -44,7 +44,7 @@ jobs:
             os: ubuntu-latest
             sanitize: '1'
           - name: macOS kqueue
-            os: macos-14
+            os: macos-15
             sanitize: '0'
     steps:
       - uses: actions/checkout@v6

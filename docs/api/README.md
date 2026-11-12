@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2620/5698 public symbols documented (46.0%), 3078 undocumented.
+**Coverage:** 2661/5749 public symbols documented (46.3%), 3088 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -129,7 +129,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-324/637 symbols documented.
+365/688 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -142,7 +142,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/eval_bridge.h`](core/eval_bridge.md) | 9 | 4 |
 | [`core/event_loop.h`](core/event_loop.md) | 25 | 23 |
 | [`core/execution_profile.h`](core/execution_profile.md) | 36 | 8 |
-| [`core/handle.h`](core/handle.md) | 13 | 7 |
+| [`core/handle.h`](core/handle.md) | 21 | 14 |
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |
@@ -151,17 +151,18 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
 | [`core/linear_solve_portable.h`](core/linear_solve_portable.md) | 1 | 1 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
-| [`core/net.h`](core/net.md) | 10 | 10 |
+| [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
+| [`core/resource_lease.h`](core/resource_lease.md) | 25 | 22 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 67 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 73 | 56 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
 | [`core/tensor_inverse_checked.h`](core/tensor_inverse_checked.md) | 3 | 0 |
-| [`core/tls.h`](core/tls.md) | 12 | 11 |
+| [`core/tls.h`](core/tls.md) | 20 | 17 |
 | [`core/unicode.h`](core/unicode.md) | 5 | 0 |
 | [`core/workspace.h`](core/workspace.md) | 15 | 4 |
 

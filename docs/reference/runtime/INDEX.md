@@ -32,6 +32,10 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.5-evolve).
   pattern, and the AD-mode-flag limitation.
 - [JIT internals](jit-internals.md) — the run cache, the stdlib object cache, and
   the Large code model / arm64 Branch26 veneer.
+- [Resource leases](resource-leases.md) — the shared ownership contract for
+  hosted I/O resources: one acquire and one close site per kind, exclusive
+  borrows, one monotonic deadline, event-loop waits, cancellation and the
+  common byte-counted outcome codes.
 - [Event loop](event-loop.md) — the portable readiness multiplexer over
   kqueue / epoll / IOCP: `make-event-loop`, `event-loop-add-fd!`,
   `event-loop-remove-fd!`, `event-loop-poll`, `event-loop-close`, the Windows

@@ -1,0 +1,135 @@
+{
+  "schema": "eshkol.unix-socket-scaffold-handoff/v1",
+  "date": "2026-11-11",
+  "status": "REVIEW_HANDOFF_NOT_SOCKET_IMPLEMENTATION",
+  "code_commit": "4beb0d852fe9a536f82939476e60e800b04da30c",
+  "prerequisite_tree": "176f6dace8e3bc8eaed844f4fcc64b5caf0a1564",
+  "public_prerequisites": {
+    "917": "12d437bb6b9fedce0c6e822d15ecb2db473f560b",
+    "914": "f695be8a045dd2bd25061edc500a9a818021aad1",
+    "916": "da7005c7f23ee12f80e2f2fd07994b518d3f5532"
+  },
+  "contract": "https://github.com/Gabriel-Kahen/eshkol/blob/1e8d900b359128354b086ff334e7267a9a02561e/notes/SOCKET_DESIGN_ADDENDUM-2026-11-10.md",
+  "ownership": {
+    "scaffold": "declarations, wrappers, acceptance amendments",
+    "Gabe": "common lease/wait extensions, their tests, Unix socket core"
+  },
+  "owned_patch": {
+    "path": "unix-socket-scaffold-handoff-2026-11-11.patch",
+    "sha256": "24418af0baafad8294216b393e7afaded78d96a30de213762385e6193179720a",
+    "files": [
+      "CMakeLists.txt",
+      "docs/reference/agent/unix-sockets.md",
+      "inc/eshkol/core/unix_socket_stream.h",
+      "lib/agent/c/agent_unix_socket_stream.c",
+      "lib/agent/unix_stream_socket.esk",
+      "tests/agent/run_unix_socket_stream_pending.py",
+      "tests/agent/run_unix_socket_stream_pending.sh",
+      "tests/agent/unix_socket_stream_fixture_support.c",
+      "tests/agent/unix_socket_stream_fixture_support.h",
+      "tests/agent/unix_socket_stream_pending.esk",
+      "tests/agent/unix_socket_stream_runner_contract_test.py",
+      "tests/agent/unix_socket_stream_stub_contract_test.c",
+      "tests/agent/unix_socket_stream_test.c",
+      "tests/agent/unix_socket_stream_wrapper_contract_test.scm"
+    ],
+    "format": "zero-context exact-index patch; avoids whitespace-significant context lines in the repository artifact",
+    "apply": "git apply --index --unidiff-zero docs/development/evidence/unix-socket-scaffold-handoff-2026-11-11.patch"
+  },
+  "verification": {
+    "kind": "standalone components extracted from actual CMake registration; not full product configuration",
+    "platform": "macOS kqueue; Apple Clang16; C11/C++17",
+    "standalone_default_ctests_passed": 6,
+    "R7RS_wrapper_unit_checks": 23,
+    "runner_oracle_controls": 13,
+    "pending_native_cases_return_failure_against_stub": 16,
+    "pending_cases_agent_FFI_ON": 47,
+    "pending_cases_agent_FFI_OFF": 16,
+    "full_compiler_builds": 0,
+    "public_Eshkol_JIT_AOT_executions": 0,
+    "full_default_suite_executions": 0,
+    "normal_source_guard": "PASS unchanged default policy",
+    "normal_precommit": "PASS"
+  },
+  "fixture_scope": {
+    "Darwin_pending_connect": "labelled deterministic EAGAIN at one private pathname; not OS-pending evidence",
+    "Linux_pending_connect": "real listen backlog; Linux execution pending",
+    "other_connect_calls": "forwarded to real syscall; forwarding control passed",
+    "helper": "test-only syscall-error control and clock/fd/errno observation, not a socket core or replacement agent archive"
+  },
+  "source_bindings": {
+    "CMakeLists.txt": {
+      "sha256": "dd19c09c1a7f29e19de776a9fda2cecf266fb018e9f12529a4ee2b24da29865c",
+      "bytes": 850200
+    },
+    "docs/reference/agent/unix-sockets.md": {
+      "sha256": "e7b9b93eb41bb69c1bafd8e5c27b08873bef2f5cba3599d42a98ed2a87a2a5cb",
+      "bytes": 8473
+    },
+    "inc/eshkol/core/unix_socket_stream.h": {
+      "sha256": "d5c49c44a63beae7fa45cb9eecfb91746ff5f13fd8d8603c2d2d48862dfcd32e",
+      "bytes": 4706
+    },
+    "lib/agent/c/agent_unix_socket_stream.c": {
+      "sha256": "78ce0920e875765b2dc26af45191f2480e06ad2821b731bb352cf6d6cabd1071",
+      "bytes": 2339
+    },
+    "lib/agent/unix_stream_socket.esk": {
+      "sha256": "c81fe295dab481d5b11c2264a2ef803b8db42a35e26c34cf07dbe7c11bd0a78e",
+      "bytes": 8260
+    },
+    "tests/agent/run_unix_socket_stream_pending.py": {
+      "sha256": "98af4c6aa6aaa025cd29d39fc292392977cb84af0110fd1328ecf1d363d0cd76",
+      "bytes": 8246
+    },
+    "tests/agent/run_unix_socket_stream_pending.sh": {
+      "sha256": "0a2119fc162879a4b5205efa28445829130a3ddfc69e3867a93154d9ea2d255d",
+      "bytes": 425
+    },
+    "tests/agent/unix_socket_stream_fixture_support.c": {
+      "sha256": "0b16dfd985d47ea4e9b16eb64c9bcf7dc1008aa367b87e86e718bb3229b228d9",
+      "bytes": 3591
+    },
+    "tests/agent/unix_socket_stream_fixture_support.h": {
+      "sha256": "86885ac81d12108bb0d6f1be5d1217cbe4e6166aad2644803e7508c501ff09ba",
+      "bytes": 424
+    },
+    "tests/agent/unix_socket_stream_pending.esk": {
+      "sha256": "afc576637cf053d131ea55c3846286321b0852d299a0be5fd1cb803c4e71ba79",
+      "bytes": 11940
+    },
+    "tests/agent/unix_socket_stream_runner_contract_test.py": {
+      "sha256": "4dbe6bf826480ddbe737a11ff99ae6f2652ae5bef0a234b5d6ce27f4e5b43ab9",
+      "bytes": 5308
+    },
+    "tests/agent/unix_socket_stream_stub_contract_test.c": {
+      "sha256": "374b9e9ab6f487fb24949ebccb91b154595f4dcdfe6829334cd68c74b1ab8492",
+      "bytes": 5317
+    },
+    "tests/agent/unix_socket_stream_test.c": {
+      "sha256": "da2d21fed56cd08decf9c6d666ddd11d3ab6238474b774f2f1a060dc4e50badc",
+      "bytes": 19501
+    },
+    "tests/agent/unix_socket_stream_wrapper_contract_test.scm": {
+      "sha256": "4b7bfaf10a3dc672d0fa7c815388f9f962060c38018d24f496f65960d0d0e261",
+      "bytes": 5040
+    }
+  },
+  "integration_prerequisites": [
+    "Common wait extension must support caller-supplied loops and preserve PROCESS/SOCKET readiness",
+    "Unify PROCESS and shared resource identity domains before mixed-resource qualification; source-representative probe produced equal4294967297tokens with a socket lookup admitting the other-domain token, without actual subprocess/socket execution",
+    "Common-layer owner must specify observable watch-removal/path-cleanup completion after accepted deferred close",
+    "Scoped exception/re-entry acceptance and every supported platform still need corresponding implementation evidence",
+    "Enable corrected passing socket cases in default CI as capabilities land; disabled tests provide no acceptance credit"
+  ],
+  "Gabe_914_evidence_review": {
+    "published_log_hashes_verified": 23,
+    "recorded_source_hashes_verified": 14,
+    "minimal_record_unchanged": true,
+    "evidence_only_commit_verified": true,
+    "new_runtime_execution": false,
+    "independent_binary_qualification": false
+  },
+  "release_baseline_selected": false,
+  "release_ready": false
+}

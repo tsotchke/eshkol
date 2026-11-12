@@ -224,7 +224,8 @@ probe_tls_acceptance() {
     }
     for required in tls_context_native tls_public_scheme_jit tls_public_scheme_aot \
                     tls_public_python_jit tls_public_python_aot \
-                    tls_public_fatal_jit tls_public_fatal_aot; do
+                    tls_public_fatal_jit tls_public_fatal_aot \
+                    tls_test_pki tls_lease_test tls_net_core_jit tls_net_core_aot; do
         if ! printf '%s\n' "$test_list" | grep -Fq "$required"; then
             probe_unverified v14_tls_handshake_verified \
                 "required public TLS test is not registered: $required"
@@ -232,7 +233,7 @@ probe_tls_acceptance() {
         fi
     done
     probe_run v14_tls_handshake_verified \
-        'native TLS C/JIT/AOT and Python SSL peer acceptance suite' \
+        'native TLS C/JIT/AOT, leased-stream and Python SSL peer acceptance suite' \
         'ctest --test-dir "$BUILD_DIR_PATH" --output-on-failure -R "^tls_"' \
         '100% tests passed'
 }

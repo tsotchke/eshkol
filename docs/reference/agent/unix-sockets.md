@@ -1,83 +1,123 @@
-# `agent.unix_stream_socket` — Unix-Domain Stream Sockets (blueprint)
+# `agent.unix_stream_socket` — Unix-domain stream socket contract candidate
 
-**Status: Planned for v1.4.0.** This page is a skeleton for the paired build
-described in Selene `apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md`
-("Later Unix streams" row): a lane writes the acceptance tests and the API
-scaffolding below, and Gabe Kahen writes the socket core that makes them
-pass. Nothing on this page is implemented yet. `lib/agent/unix_socket.esk`
-currently raises `"Planned for v1.4.0"` from every operation, via the
-scaffold in `lib/agent/c/agent_unix_socket_stream.c`.
+**Status: agreed integration contract; declarations and core remain under
+review.** The [agreed addendum](https://github.com/Gabriel-Kahen/eshkol/blob/1e8d900b359128354b086ff334e7267a9a02561e/notes/SOCKET_DESIGN_ADDENDUM-2026-11-10.md)
+and [shared-layer decision](https://github.com/tsotchke/eshkol/pull/917#issuecomment-6806485060)
+record the ownership split: Gabe Kahen implements the common lease/wait
+extensions and Unix socket core; the scaffold lane amends declarations and
+acceptance tests. Well-formed operational calls still report `Planned for
+v1.4.0`; this scaffold implements no socket I/O.
 
 ```scheme
 (require agent.unix_stream_socket)
 ```
 
-Source: `lib/agent/unix_socket.esk`. C header: `inc/eshkol/core/unix_socket_stream.h`.
-C symbols: `eshkol_unix_stream_socket_*`.
+Source: `lib/agent/unix_stream_socket.esk`. Native declarations:
+`inc/eshkol/core/unix_socket_stream.h`. The common lease/outcome layer is
+[`resource_lease.h`](../../../inc/eshkol/core/resource_lease.h), from the
+shared network lease work. This candidate combines the public scaffold and
+shared-lease sources for review; it does not select a release baseline.
 
-## Surface (blueprint)
+## Surface
 
 | Operation | Contract |
 |---|---|
-| `unix-stream-socket-listen path` | Bind and listen on a filesystem path on the existing event loop. Owns the path: close unlinks it. Refuses a pre-existing path that nothing is listening on, rather than unlinking and reusing it. |
-| `unix-stream-socket-accept listener deadline-ms` | Accept one connection within one bounded, monotonic deadline. Zero makes one nonblocking pass and never sleeps. |
-| `unix-stream-socket-connect path deadline-ms` | Connect within one monotonic deadline shared across retries. |
-| `unix-stream-socket-read! id buffer start count` | Byte-counted nonblocking read into a caller bytevector. Returns a result vector distinguishing data, EOF, would-block, and an operation-labelled error. NUL bytes and payloads over 16 MiB survive unmodified; reads may be partial. |
-| `unix-stream-socket-write! id buffer start count` | Byte-counted nonblocking write, possibly partial. A closed peer reports an operation-labelled error; SIGPIPE is suppressed by the write path itself. |
-| `unix-stream-socket-cancel! id` | Request cancellation of an outstanding accept, connect, read, or write. |
-| `unix-stream-socket-close! id` | Close a listener, an accepted peer, or an outbound connection exactly once. A listener close unlinks the path it bound. |
+| `unix-stream-socket-listen loop path` | Require an explicit live loop; zero is invalid. Retain the loop, bind an owned private pathname and publish the listener. |
+| `unix-stream-socket-accept listener deadline-ms` | Accept within one monotonic budget; zero makes one nonblocking pass. The accepted peer inherits and retains the listener's loop. |
+| `unix-stream-socket-connect-begin loop path deadline-ms` | Capture one acquisition deadline and publish a connecting owner before any readiness wait. Zero returns an immediately connected owner or rolls back with would-block. |
+| `unix-stream-socket-connect-finish! id` | Complete using begin's remaining budget; do not renew it. The returned identity remains owned after timeout/cancellation until close. |
+| `unix-stream-socket-read! id buffer start count` | Positive checked range; exact partial count, would-block, EOF, or operation-labelled error. Requires connected state. |
+| `unix-stream-socket-write! id buffer start count` | Positive checked range and exact partial count. Preserve NULs and large payloads; suppress SIGPIPE per socket/send. |
+| `unix-stream-socket-poll id interests timeout-ms` | Interests1=read,2=write,3=both; result distinguishes readiness, timeout and error. Zero never waits. While connecting, begin's deadline caps the wait. Connected I/O has independent poll budgets. |
+| `unix-stream-socket-cancel! id` | Idempotent sticky cancellation plus shared wakeup. Further I/O observes cancellation; ownership remains. |
+| `unix-stream-socket-close! id` | Public deferred close through the common lease layer: after acceptance the identity is unusable; descriptor close runs once after active borrows release. |
 
-Result accessors: `unix-stream-socket-read-status`/`-count`/`-error` and
-`unix-stream-socket-write-status`/`-count`/`-error`, mirroring the subprocess stream
-contract in [subprocess](subprocess.md).
+Read/write result accessors are `-status`, `-count`, `-error`; poll has
+`-status`, `-interests`, `-error`. Error records expose `-error-operation`,
+`-error-code`, `-error-os-code`. Portable codes come from the common
+`ESHKOL_IO_*` table. Native `last_os_error()` is calling-thread metadata read
+immediately after the corresponding negative outcome. The planned sentinel
+is separate from every shared outcome and is never acceptance evidence.
 
-## Ownership rules (blueprint)
+## Loop, ownership and cleanup
 
-Following the same pattern as the `PROCESS` session in
-[subprocess](subprocess.md#ownership--cleanup-contract-94):
+- The caller supplies the loop. Every listener and peer retains it until
+  watch removal and descriptor teardown complete. Loop close refuses active
+  retains; releasing a socket's retain does not close the caller's loop.
+- Use common lease adoption, exclusive borrow/release, close and outcome
+  machinery. **The common wait facility still needs explicit-loop support**
+  that dispatches SOCKET and PROCESS readiness together with generation/cookie
+  validation. This is a core integration prerequisite, not a facility supplied
+  by these stubs. Do not add a private socket registry or polling loop.
+- A generation-validated, lifetime-safe cancellation request may arrive from
+  another thread. It sets sticky socket state and signals the shared wakeup;
+  I/O and watch mutation remain on the owner thread. The common layer's
+  consumable interrupt is the wake transport, not the socket's lifetime state.
+- Distinguish low-level registry close, which can report a busy borrow, from
+  public lease close, which retires the identity and defers teardown until
+  release. Acceptance is not completed teardown: the shared extension must
+  provide observable watch-removal and pathname-cleanup outcomes before core
+  implementation. That completion interface remains to be specified by the
+  common-layer owner; this scaffold does not invent another ownership table.
+  Watch-removal failure retains safe ownership for retry. Once descriptor
+  close is attempted, never retry an uncertain descriptor identity.
+- Acquisition and I/O require `network` in both native and Scheme paths.
+  Already-owned cancel/close do not reacquire that capability or consult a
+  clock. Runtime, kind, tag and generation checks remain mandatory after
+  revocation. Scoped cleanup must use the same cleanup path.
 
-- Each socket identity is a `SOCKET`-kind lease in the existing handle
-  registry (`inc/eshkol/core/handle.h`): acquire, exclusive borrow, release,
-  close — the same rules as the `PROCESS` kind, and the shape the v1.4.0
-  compile-time linear handles will consume.
-- A listener owns the filesystem path it bound; its close unlinks that path.
-  A path left on disk with nothing listening on it must be refused by a new
-  `unix-stream-socket-listen`, never silently unlinked and reused.
-- Close with an active borrow returns busy, the same as every other leased
-  resource; release the borrow before closing.
-- A closed peer on the write side is reported through the byte-counted
-  result (an operation-labelled error), never a raised `SIGPIPE`.
-- `network` is the capability that gates every operation above, reusing the
-  existing policy (`docs/reference/agent/capabilities.md`), the same gate
-  TCP/UDP sockets use in `lib/core/net.esk`.
-- The VM needs a matching adapter or must report an explicit unsupported
-  result; it must not silently admit the ABI.
+## Paths and platforms
 
-## Acceptance list (blueprint)
+Use absolute NUL-free paths fitting `sun_path` in encoded bytes, inside a
+verified owned private directory with mode 0700. Refuse all existing entries, including
+restart leftovers. Bind, set mode 0600, then listen/publish; roll back unpublished
+setup errors. Only remove the listener's recorded entry; preserve replacement
+entries and report cleanup errors. Never change the process umask.
 
-The scaffold registers one native C fixture plus JIT and AOT `.esk` cases per
-item below, under CTest label `ipc-unix-pending` (excluded from the default
-suite until the core implementation lands):
+Linux abstract namespace and descriptor passing are outside this slice.
+Windows requires a distinct AF_UNIX availability check and a readiness adapter;
+family availability alone is insufficient. The VM must explicitly reject the
+bridge before bytecode emission until an adapter exists. Linux and macOS need
+separate runtime evidence.
 
-1. connect/accept round trip
-2. partial reads/writes with a slow peer
-3. peer close mid-stream (an operation-labelled error, with `SIGPIPE`
-   suppressed)
-4. deadline expiry on accept and on connect
-5. cancellation
-6. NUL and >16 MiB payloads
-7. a descriptor-count check over 1,000 open/close cycles
-8. `network` capability denial
-9. socket-path lifecycle (unlink on close, refusal on an existing unlistened path)
-10. VM: an explicit unsupported result
+## Acceptance and integration
 
-A small check in the default suite (`agent-unix-stream-socket-stub-contract`)
-confirms these cases are registered and that every scaffold entry point
-still reports the planned result.
+The public list has 15 native/JIT/AOT case groups, plus a native-only direct
+borrow/deferred-close case and one explicit VM-refusal case: 47 pending cases
+when the agent FFI and runner are enabled,16 native cases with the FFI disabled.
+The groups cover round trips; real slow-peer partial transfers; default
+SIGPIPE peer closure; measured accept/original-connect deadlines; cancellation
+including a published pending connect; binary payloads beyond 16 MiB; measured
+1,000-cycle descriptor counts; native/Scheme capability denial; cleanup after
+revocation; pathname restart/replacement; loop lifetime; and zero budgets.
+Native cases also exercise direct active-borrow teardown. Scheme cases verify
+public errors by operation/code, never by an arbitrary exception.
 
-## Status
+The raw peer executable creates only controlled external backlogs/leftover
+paths; it does not implement the socket API. The helper DSO observes
+monotonic time, descriptor counts and platform errno constants. For Darwin's
+pending-connect controls it also injects EAGAIN at exactly the designated
+private fixture path; Darwin's real full-queue outcome is immediate refusal.
+Linux uses a real full backlog. The receipt distinguishes this deterministic
+syscall-error control from an OS-pending connection. All other connect calls
+reach the real syscall. The DSO supplies no socket core, registry or replacement
+agent archive. The public runner
+retains unique fixture/log directories, bounds execution and stops only its
+owned process groups. SIGPIPE uses the normal default disposition.
 
-Planned for v1.4.0 (ladder: v1.4.0-connection, v1.4.1, v1.4.2, v1.4.3,
-v1.4.4, v1.4.5-accelerate, v1.5.0). This page moves from blueprint to shipped
-text in the same change that moves the acceptance cases out of
-`ipc-unix-pending` and into the default suite.
+Pending cases remain explicitly disabled under `ipc-unix-pending`. Default
+checks cover argument/planned behavior, the actual controlled peer fixture,
+and registration counts. Neither those checks nor a passing metadata-only
+inventory qualifies the socket core. As each facility lands, replace its
+planned assertions with the corresponding enabled default-suite acceptance
+cases in the same change. Required acceptance failures then block integration.
+
+Before promotion, mixed PROCESS/SOCKET identity and readiness tests are also
+required. The subprocess stream source still has its own registry while the
+shared network layer has another. A source-representative allocation probe can
+produce the same integer in both domains. Main integration must reconcile
+those domains so a token from one cannot address an unrelated resource in the
+other. This candidate does not migrate Gabe's subprocess implementation.
+
+The scaffold does not certify compiler-enforced linearity, packaged consumers,
+portable release artifacts, or the complete v1.4.0 release.

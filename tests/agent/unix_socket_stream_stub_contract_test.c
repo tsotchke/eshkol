@@ -3,6 +3,11 @@
 #include <eshkol/core/unix_socket_stream.h>
 
 #include <stdio.h>
+#include <ctype.h>
+#include <errno.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -31,30 +36,65 @@ static void check(int ok, const char *expr, int line) {
 
 static void check_stub_contract(void) {
     char buf[4] = {0};
-    CHECK(eshkol_unix_stream_socket_listen(0, "/eshkol-scaffold/does-not-exist.sock")
-          == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    const char *path = "/tmp/eshkol-scaffold.sock";
+    CHECK(ESHKOL_UNIX_STREAM_SOCKET_EINVAL == ESHKOL_IO_INVALID);
+    CHECK(ESHKOL_UNIX_STREAM_SOCKET_ECANCELED == ESHKOL_IO_CANCELLED);
+    CHECK(eshkol_unix_stream_socket_listen(1, path) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_listen(0, path) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_listen(1, "relative") == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_listen(1, NULL) == ESHKOL_IO_INVALID);
     CHECK(eshkol_unix_stream_socket_accept(1, 0) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
-    CHECK(eshkol_unix_stream_socket_connect(0, "/eshkol-scaffold/does-not-exist.sock", 0)
-          == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_accept(1, -1) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_connect_begin(1, path, 0) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_connect_begin(0, path, 0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_connect_finish(1) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_connect_finish(0) == ESHKOL_IO_INVALID);
     CHECK(eshkol_unix_stream_socket_read(1, buf, sizeof(buf)) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
     CHECK(eshkol_unix_stream_socket_write(1, buf, sizeof(buf)) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_read(1, buf, 0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_write(1, buf, 0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_poll(1, 3, 0) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_poll(1, 0, 0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_poll(1, 4, 0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_poll(1, 1, -1) == ESHKOL_IO_INVALID);
     CHECK(eshkol_unix_stream_socket_cancel(1) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
     CHECK(eshkol_unix_stream_socket_close(1) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
+    CHECK(eshkol_unix_stream_socket_cancel(0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_close(0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_unix_stream_socket_last_os_error() == 0);
 }
 
+extern char **environ;
 static int count_pending_tests(const char *ctest_bin, const char *build_dir) {
-    char command[1024];
-    int n = snprintf(command, sizeof(command),
-        "%s --test-dir %s -L ipc-unix-pending -N 2>/dev/null", ctest_bin, build_dir);
-    if (n < 0 || (size_t)n >= sizeof(command)) return -1;
-    FILE *pipe = popen(command, "r");
-    if (!pipe) return -1;
+    int fds[2];
+    if (pipe(fds) != 0) return -1;
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) { close(fds[0]); close(fds[1]); return -1; }
+    int error = posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
+    if (!error) error = posix_spawn_file_actions_addclose(&actions, fds[0]);
+    if (!error) error = posix_spawn_file_actions_addclose(&actions, fds[1]);
+    char *const args[] = {(char *)ctest_bin, "--test-dir", (char *)build_dir,
+                         "-L", "ipc-unix-pending", "-N", NULL};
+    pid_t pid = -1;
+    if (!error) error = posix_spawn(&pid, ctest_bin, &actions, NULL, args, environ);
+    posix_spawn_file_actions_destroy(&actions); close(fds[1]);
+    if (error) { close(fds[0]); return -1; }
+    FILE *stream = fdopen(fds[0], "r");
     int count = 0;
-    char line[512];
-    while (fgets(line, sizeof(line), pipe)) {
-        if (strstr(line, "Test #")) ++count;
-    }
-    pclose(pipe);
+    if (stream) {
+        char line[1024];
+        while (fgets(line, sizeof(line), stream)) {
+            char *p = strstr(line, "Test");
+            if (!p) continue;
+            p += 4;
+            while (isspace((unsigned char)*p)) ++p;
+            if (*p == '#' && isdigit((unsigned char)p[1])) ++count;
+        }
+        fclose(stream);
+    } else close(fds[0]);
+    int status;
+    while (waitpid(pid, &status, 0) < 0) if (errno != EINTR) return -1;
+    if (!stream || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
     return count;
 }
 

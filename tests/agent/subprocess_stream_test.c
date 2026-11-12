@@ -412,7 +412,7 @@ static void pending_cleanup_test(void) {
     CHECK(next != id);
     CHECK(eshkol_process_stream_read(id, OUT, &data, 1) == ESHKOL_PROCESS_STREAM_EINVAL);
     finish(next, fresh);
-    pass("bounded teardown, retained owner across loop closure, terminal consumption and stale IDs");
+    pass("bounded teardown, retained owner across loop closure, terminal consumption and expired IDs");
 }
 
 static void registration_rollback_test(void) {

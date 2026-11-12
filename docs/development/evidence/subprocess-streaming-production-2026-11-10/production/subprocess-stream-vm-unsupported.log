@@ -1,0 +1,4 @@
+ERROR: unsupported or malformed VM extern declaration
+ERROR:   only the exact agent.sqlite and agent.crypto ABI signatures are admitted
+ERROR: refusing to emit bytecode for a program that failed to compile
+[1m[31m     ERROR:[0m ESKB emission failed for profile hosted-vm
