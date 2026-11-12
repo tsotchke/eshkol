@@ -38,6 +38,7 @@
 
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Support/Errc.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/SHA256.h>
 #include <llvm-c/Core.h>
 
@@ -8396,6 +8397,29 @@ static int eshkol_run_main(int argc, char **argv);
  */
 int main(int argc, char **argv)
 {
+    // LLVM reports an allocation it cannot satisfy through its own fatal-error
+    // path, which ends the process rather than raising. Routing it here makes
+    // running out of memory inside code generation the same ordinary,
+    // positioned diagnostic it is inside the reader.
+    llvm::install_bad_alloc_error_handler(
+        [](void*, const char* reason, bool) {
+            eshkol_error("out of memory generating code (%s): this program "
+                         "needs more memory than this process has. Nesting "
+                         "depth is bounded by memory, not by a limit; the "
+                         "input-size cap is configurable with "
+                         "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N",
+                         reason ? reason : "allocation failed");
+            std::exit(1);
+        },
+        nullptr);
+    llvm::install_fatal_error_handler(
+        [](void*, const char* reason, bool) {
+            eshkol_error("code generation could not continue: %s",
+                         reason ? reason : "no reason given");
+            std::exit(1);
+        },
+        nullptr);
+
     try {
         return eshkol_run_main(argc, argv);
     } catch (const std::bad_alloc&) {

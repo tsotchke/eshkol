@@ -699,6 +699,8 @@ static void deadStripWasmModule(llvm::Module& module) {
 #include <memory>
 #include <map>
 #include <unordered_map>
+#include <eshkol/core/stack_guard.h>
+#include <eshkol/core/reader_limits.h>
 #include <unordered_set>
 #include <set>
 #include <string>
@@ -9846,6 +9848,21 @@ private:
     }
 
     Value* codegenAST(const eshkol_ast_t* ast) {
+        // Code generation rides on heap continuation frames, so nesting costs
+        // no native stack — except where a caller re-enters it synchronously,
+        // as the call-result and quoted-data paths do. A CODE form nests as
+        // deeply as the reader could read it, and reading has no depth limit,
+        // so this driver asks for stack headroom and refuses in words rather
+        // than descending past its bound. Quoted DATA does not reach here
+        // deeply: its spine is flattened before anything is emitted.
+        if (!eshkol_stack_headroom_ok()) {
+            char message[320];
+            eshkol_reader_depth_message("generating code for a nested expression",
+                                        eshkol_reader_max_pass_depth(),
+                                        message, sizeof(message));
+            codegen_error_at(ast, "expression nesting too deep: %s", message);
+            return nullptr;
+        }
         return codegenASTTask(ast).run();
     }
 
