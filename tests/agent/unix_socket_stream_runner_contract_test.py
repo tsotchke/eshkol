@@ -41,13 +41,16 @@ if '-o' in sys.argv:
 if mode!='missing':print(marker)
 if mode=='duplicate':print(marker)
 if mode=='failure-marker':print('FAIL: unrelated failure')
+if mode=='jit-error':print('JIT session error: controlled missing symbol')
+if mode=='llvm-error':print('LLVM ERROR: controlled compiler failure')
 raise SystemExit(3 if mode=='nonzero' else 0)
 ''')
     fake.chmod(0o700)
     for control, mode, good in [
         ("success", "jit", True), ("missing", "jit", False),
         ("duplicate", "jit", False), ("failure-marker", "jit", False),
-        ("nonzero", "jit", False), ("success", "aot", True),
+        ("nonzero", "jit", False), ("jit-error", "jit", False),
+        ("llvm-error", "jit", False), ("success", "aot", True),
         ("vm-specific", "vm", True), ("vm-unrelated", "vm", False),
         ("vm-artifact", "vm", False),
     ]:

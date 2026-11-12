@@ -1,0 +1,109 @@
+;; Actual public lifecycle acceptance: tickets, scopes and revoked cleanup.
+(require stdlib)
+(require core.capabilities)
+(require agent.unix_stream_socket)
+(extern i32 -loop-close-code i64 :real eshkol_event_loop_close_handle)
+(define scratch (get-environment-variable "ESHKOL_UNIX_STREAM_SOCKET_SCRATCH"))
+(unless scratch (error "socket lifecycle fixture needs a private scratch directory"))
+(define loop (make-event-loop 64))
+(define checks 0)
+(define (check label value)
+  (set! checks (+ checks 1))
+  (unless value (display "FAIL: ") (display label) (newline) (error "socket lifecycle acceptance" label)))
+(define (same-bytes? left right)
+  (let ((n (bytevector-length left)))
+    (and (= n (bytevector-length right))
+         (let compare ((i 0))
+           (if (= i n) #t
+               (and (= (bytevector-u8-ref left i) (bytevector-u8-ref right i))
+                    (compare (+ i 1))))))))
+(define (path leaf) (string-append scratch "/" leaf ".sock"))
+(define (invalid? thunk operation)
+  (guard (e ((error-object? e)
+             (let ((args (error-object-irritants e)))
+               (and (equal? (error-object-message e) operation)
+                    (pair? args) (pair? (cdr args)) (= (cadr args) -4)))))
+    (thunk) #f))
+(capability-install-policy! '(network))
+
+;; A ticket owns its result independently of the retired socket identity.
+(define listener (unix-stream-socket-listen loop (path "ticket")))
+(capability-install-policy! '())
+(define ticket (unix-stream-socket-close-request! listener))
+(check "ticket is an exact positive identity" (and (integer? ticket) (exact? ticket) (> ticket 0)))
+(check "socket identity retired at acceptance"
+  (invalid? (lambda () (unix-stream-socket-close! listener)) "unix-stream-socket-close!"))
+(define completed (unix-stream-socket-cleanup-result ticket))
+(check "cleanup completes on owner thread" (eq? (unix-stream-socket-cleanup-state completed) 'complete))
+(check "complete cleanup has no OS error" (= (unix-stream-socket-cleanup-os-error completed) 0))
+(check "complete result cannot retry" (not (unix-stream-socket-cleanup-retryable? completed)))
+(check "ticket cleanup unlinked pathname" (not (file-exists? (path "ticket"))))
+(check "ticket release survives revocation" (= (unix-stream-socket-cleanup-release! ticket) 0))
+(check "released result identity rejected"
+  (invalid? (lambda () (unix-stream-socket-cleanup-result ticket)) "unix-stream-socket-cleanup-result"))
+(capability-install-policy! '(network))
+
+(define seen #f)
+(check "listener scope preserves return value"
+  (= (call-with-unix-stream-listener loop (path "return")
+       (lambda (id) (set! seen id) 37)) 37))
+(check "normal return removes pathname" (not (file-exists? (path "return"))))
+(check "normal return closes once"
+  (invalid? (lambda () (unix-stream-socket-close! seen)) "unix-stream-socket-close!"))
+(check "successful detached close retains no failure ticket"
+  (not (unix-stream-socket-cleanup-ticket seen)))
+
+(check "body exception is preserved"
+  (guard (e ((error-object? e) (equal? (error-object-message e) "expected lifecycle exception")))
+    (call-with-unix-stream-listener loop (path "exception")
+      (lambda (id) (set! seen id) (error "expected lifecycle exception")))
+    #f))
+(check "exception removes pathname" (not (file-exists? (path "exception"))))
+(check "exception retires owner"
+  (invalid? (lambda () (unix-stream-socket-close! seen)) "unix-stream-socket-close!"))
+
+(define escaped
+  (call/cc (lambda (escape)
+    (call-with-unix-stream-listener loop (path "escape")
+      (lambda (id) (set! seen id) (escape 'escaped))))))
+(check "continuation escape preserves target value" (eq? escaped 'escaped))
+(check "escape removes pathname" (not (file-exists? (path "escape"))))
+(check "escape retires owner"
+  (invalid? (lambda () (unix-stream-socket-close! seen)) "unix-stream-socket-close!"))
+
+(define reentry #f)
+(define passes 0)
+(define (probe-reentry)
+  (guard (e ((error-object? e)
+             (and (equal? (error-object-message e) "call-with-unix-stream-listener")
+                  (equal? (error-object-irritants e) '("closed socket scope re-entry" -4)))))
+    (let ((value (call-with-unix-stream-listener loop (path "reentry")
+                   (lambda (id) (call/cc (lambda (k) (set! reentry k) 'first))))))
+      (set! passes (+ passes 1))
+      (if (= passes 1) (reentry 'again) value))))
+(check "finished scope refuses reentry" (probe-reentry))
+(check "receiver did not run again" (= passes 1))
+(check "reentry cannot recreate path" (not (file-exists? (path "reentry"))))
+
+;; All three scoped acquire sites use the same release path.
+(define returned
+  (call-with-unix-stream-listener loop (path "pair")
+    (lambda (server)
+      (call-with-unix-stream-connection loop (path "pair") 1000
+        (lambda (client)
+          (call-with-unix-stream-accept server 1000
+            (lambda (peer)
+              (let ((sent (make-bytevector 2 19)) (received (make-bytevector 2 0)))
+                (bytevector-u8-set! sent 0 0)
+                (check "scoped pair writes exact byte count"
+                  (= (unix-stream-socket-write-count (unix-stream-socket-write! client sent 0 2)) 2))
+                (check "scoped pair reads exact byte count"
+                  (= (unix-stream-socket-read-count (unix-stream-socket-read! peer received 0 2)) 2))
+                (check "scoped binary bytes match" (same-bytes? sent received))
+                (capability-install-policy! '())
+                'revoked-cleanup))))))))
+(check "scoped return survives revoked cleanup" (eq? returned 'revoked-cleanup))
+(check "nested revoked cleanup removes path" (not (file-exists? (path "pair"))))
+(check "all socket retains released" (= (-loop-close-code loop) 0))
+(display "PASS: unix-socket lifecycle") (newline)
+(display "CHECKS: ") (display checks) (newline)

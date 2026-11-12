@@ -7,9 +7,8 @@
 extern "C" {
 #endif
 
-/* Paired-build scaffold: these declarations are an agreed contract scaffold, not
- * socket I/O. Gabe Kahen owns the common lease/wait extensions and follow-on core. Shared outcome aliases
- * below use resource_lease.h; there is no second registry or outcome table. */
+/* Unix stream sockets use the shared resource registry, wait facility and
+ * outcome table from resource_lease.h. */
 enum {
     ESHKOL_UNIX_STREAM_SOCKET_EINVAL = ESHKOL_IO_INVALID,
     ESHKOL_UNIX_STREAM_SOCKET_WOULD_BLOCK = ESHKOL_IO_TIMEOUT,
@@ -30,8 +29,7 @@ enum {
  * the retain only after watch removal and descriptor teardown. Loop close
  * refuses while retained. Use the shared lease adoption/borrow/release/close
  * machinery and a common wait extension for explicit loops; never a private
- * socket registry or polling implementation. That wait extension is a
- * prerequisite for the core, not implemented by this scaffold.
+ * socket registry or polling implementation.
  *
  * Paths must be absolute/NUL-free, fit sun_path in encoded bytes, and live
  * in a verified owned private directory with mode 0700. Refuse every existing entry.
@@ -74,8 +72,21 @@ int32_t eshkol_unix_stream_socket_cancel(int64_t id);
  * runtime/kind/tag/generation checks remain mandatory. Acquisition and I/O
  * require native and Scheme network admission. */
 int32_t eshkol_unix_stream_socket_close(int64_t id);
+/* Accept close and return a separately owned cleanup ticket. The socket
+ * identity is retired immediately. Inspect and release the ticket even when
+ * cleanup completes immediately; failed retryable cleanup retains ownership. */
+int64_t eshkol_unix_stream_socket_close_request(int64_t id);
+/* Scheme boundary: one coherent snapshot encoded as state bits0..1, stage
+ * bits2..4, retryable bit5 and nonnegative OS error bits6..36. Negative values
+ * are shared errors. The encoding stays exact in the generic numeric FFI. */
+int64_t eshkol_unix_stream_socket_cleanup_result_packed(int64_t ticket);
+int32_t eshkol_unix_stream_socket_cleanup_retry(int64_t ticket);
+int32_t eshkol_unix_stream_socket_cleanup_release(int64_t ticket);
+/* Recover a retained cleanup failure after convenience close; INVALID means
+ * no retained result is available for that retired socket identity. */
+int64_t eshkol_unix_stream_socket_cleanup_ticket(int64_t retired_id);
 /* Calling-thread OS detail for the last operation; read immediately after a
- * shared negative outcome. Zero means no OS detail. The scaffold returns 0. */
+ * shared negative outcome. Zero means no OS detail. */
 int32_t eshkol_unix_stream_socket_last_os_error(void);
 #ifdef __cplusplus
 }

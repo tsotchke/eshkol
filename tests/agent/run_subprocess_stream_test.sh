@@ -22,7 +22,7 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 runtime_objects=()
 for file in tests/agent/subprocess_stream_test.c lib/agent/c/agent_subprocess.c \
-            lib/core/event_loop.c "lib/core/event_loop_${backend}.c"; do
+            lib/core/resource_lease.c lib/core/event_loop.c "lib/core/event_loop_${backend}.c"; do
     object="$WORK/$(basename "$file").o"
     "$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} -c "$ROOT/$file" -o "$object"
     case "$file" in lib/*) runtime_objects+=("$object") ;; esac

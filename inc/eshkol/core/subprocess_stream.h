@@ -55,7 +55,8 @@ int32_t eshkol_process_cleanup_status(int64_t id);
 int32_t eshkol_process_cleanup_drain(int64_t loop, int32_t timeout_ms);
 /* Retire a terminal record; pending records return EBUSY. IDs never revive. */
 int32_t eshkol_process_cleanup_consume(int64_t id);
-/* EBUSY while any record remains; otherwise release the empty registry.
+/* EBUSY while any PROCESS record remains; otherwise release module state.
+ * The shared resource registry and unrelated owners remain alive.
  * Successful shutdown is terminal; subsequent opens return EBUSY. */
 int32_t eshkol_process_stream_runtime_shutdown(void);
 

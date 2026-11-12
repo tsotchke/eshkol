@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -109,6 +110,10 @@ def main():
             env["ESHKOL_LIB_DIR"] = str(build)
             env["LD_LIBRARY_PATH"] = str(library.parent)
             env["DYLD_LIBRARY_PATH"] = str(library.parent)
+            # -l supplies AOT link flags; the JIT resolves process-visible symbols.
+            # Load only this test observation/control DSO, never a socket core.
+            env["DYLD_INSERT_LIBRARIES" if sys.platform == "darwin" else "LD_PRELOAD"] = str(library)
+            result["fixture_loading"] = "process-visible observation/control DSO; production socket/agent implementation unchanged"
             if sys.platform == "darwin" and args.scenario in ["deadline_connect", "connect_cancellation", "zero_budget"]:
                 env["ESHKOL_UNIX_SOCKET_TEST_PENDING_PATH"] = str(sockets / "stream.sock")
                 env["DYLD_INSERT_LIBRARIES"] = str(library)
@@ -141,7 +146,7 @@ def main():
             result["commands"].append([str(x) for x in argv])
             code, text = run_owned(argv, work / "run.log", env)
             marker = "PASS: unix-socket " + args.scenario
-            if code != 0 or text.splitlines().count(marker) != 1 or "FAIL:" in text:
+            if code != 0 or text.splitlines().count(marker) != 1 or re.search(r"^FAIL:|JIT session error|LLVM ERROR:", text, re.M):
                 raise RuntimeError("public socket contract not met; see retained run.log")
         result["status"] = "PASS"
     except (OSError, RuntimeError) as error:

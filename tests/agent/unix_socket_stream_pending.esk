@@ -1,4 +1,4 @@
-;; Pending public acceptance. The helper observes clock/fd/errno and supplies
+;; Public implementation acceptance. The helper observes clock/fd/errno and supplies
 ;; the labelled Darwin private-path EAGAIN control. Socket ownership and I/O
 ;; use agent.unix_stream_socket and the product FFI.
 (require stdlib)
@@ -17,7 +17,15 @@
 (define owners '())
 (define checks 0)
 (define (check what ok)
-  (set! checks (+ checks 1)) (unless ok (error "Unix stream acceptance" what)))
+  (set! checks (+ checks 1))
+  (unless ok (display "FAIL: ") (display what) (newline) (error "Unix stream acceptance" what)))
+(define (same-bytes? left right)
+  (let ((n (bytevector-length left)))
+    (and (= n (bytevector-length right))
+         (let compare ((i 0))
+           (if (= i n) #t
+               (and (= (bytevector-u8-ref left i) (bytevector-u8-ref right i))
+                    (compare (+ i 1))))))))
 (define (remember id) (set! owners (cons id owners)) id)
 (define (close! id)
   (check "close accepted" (= (unix-stream-socket-close! id) 0))
@@ -62,7 +70,7 @@
       (check "finite transfer deadline" (< (-fixture-now) deadline))
       (if (= received size)
           (begin
-            (check "all sent bytes received" (and (= written size) (equal? sent got)))
+            (check "all sent bytes received" (and (= written size) (same-bytes? sent got)))
             (when slow? (check "observed partial progress" (> (+ short blocked) 0)))
             (display "MEASURE: bytes=") (display received)
             (display " short-writes=") (display short) (display " would-block=") (display blocked) (newline))

@@ -66,3 +66,35 @@ continuation escape, and re-entry into a finished scope raises before the
 receiver runs. See [core.net](../stdlib/net.md) and [core.tls](../stdlib/tls.md).
 These runtime guarantees are independent of the static checks in
 `eshkol-run --strict-resources`.
+
+
+## Explicit-loop owners and cleanup results
+
+Unix-domain sockets opt into `eshkol_resource_adopt_on_loop`, retaining a
+caller-supplied live EVENT_LOOP identity and enforcing owner-thread I/O.
+`eshkol_resource_wait_on_loop` uses the same event-loop backends, validates
+readiness cookies and preserves unrelated PROCESS/SOCKET registrations.
+Cancellation is sticky for these Unix owners; existing TCP/UDP/TLS operations
+keep their documented consumable requests and per-thread waits.
+
+PROCESS, EVENT_LOOP, SOCKET and CLEANUP public handles share the process-lifetime
+exact registry. Every operation checks kind and tag. PROCESS module shutdown
+never destroys this registry or another module's resources. Published platform
+kind values remain WINDOW4, AUDIO5 and MIDI6; PROCESS is7 and CLEANUP is8.
+
+`eshkol_resource_close_request` retires a managed owner's identity and returns a
+separate CLEANUP ticket. Ticket capacity is reserved before publishing the
+owner, so accepting close does not allocate. The registry close callback queues
+owner-thread work after outstanding borrows end. Loop maintenance and
+`eshkol_resource_cleanup_result` on the owner thread drive teardown without a
+clock. Foreign-thread result inspection only observes.
+
+A result records pending/complete/failed, the watch/descriptor/path/loop stage,
+OS detail and whether retry is safe. `eshkol_resource_cleanup_retry` explicitly
+retries recoverable failed teardown after repair; `eshkol_resource_cleanup_release`
+releases a terminal result. An uncertain descriptor close is never retried.
+The convenience `eshkol_resource_close` detaches this result: success is released
+automatically and a failed result is recoverable through
+`eshkol_resource_cleanup_ticket` using the retired owner identity. It grants no
+new I/O authority. See the [Unix socket surface](../agent/unix-sockets.md) for
+the Scheme ticket and scoped operations.

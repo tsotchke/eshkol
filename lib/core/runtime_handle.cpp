@@ -49,6 +49,7 @@ bool valid_kind(eshkol_handle_kind_t kind) {
            kind == ESHKOL_HANDLE_KIND_SOCKET ||
            kind == ESHKOL_HANDLE_KIND_EVENT_LOOP ||
            kind == ESHKOL_HANDLE_KIND_PROCESS ||
+           kind == ESHKOL_HANDLE_KIND_CLEANUP ||
            kind == ESHKOL_HANDLE_KIND_WINDOW ||
            kind == ESHKOL_HANDLE_KIND_AUDIO_DEVICE ||
            kind == ESHKOL_HANDLE_KIND_MIDI_PORT;
@@ -500,4 +501,11 @@ extern "C" int eshkol_handle_take_interrupt(eshkol_handle_registry_t *registry,
     const bool was = entry->interrupted;
     entry->interrupted = false;
     return was ? 1 : 0;
+}
+
+/* One process-lifetime exact public identity domain. Module shutdown must only
+ * retire its own resources; destroying this registry would invalidate others. */
+extern "C" eshkol_handle_registry_t *eshkol_resource_registry(void) {
+    static eshkol_handle_registry_t *shared = eshkol_handle_registry_create_exact();
+    return shared;
 }

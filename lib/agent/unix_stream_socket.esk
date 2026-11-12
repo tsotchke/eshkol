@@ -1,11 +1,15 @@
-;; Paired-build scaffold; operational native calls still report Planned.
 ;; Explicit loops, two-stage connect and shared resource_lease.h outcomes.
 (require stdlib)
 (require core.capabilities)
 (provide unix-stream-socket-listen unix-stream-socket-accept
          unix-stream-socket-connect-begin unix-stream-socket-connect-finish!
          unix-stream-socket-read! unix-stream-socket-write! unix-stream-socket-poll
-         unix-stream-socket-cancel! unix-stream-socket-close!
+         unix-stream-socket-cancel! unix-stream-socket-close! unix-stream-socket-close-request!
+         unix-stream-socket-cleanup-result unix-stream-socket-cleanup-state
+         unix-stream-socket-cleanup-stage unix-stream-socket-cleanup-os-error
+         unix-stream-socket-cleanup-retryable? unix-stream-socket-cleanup-retry!
+         unix-stream-socket-cleanup-release! unix-stream-socket-cleanup-ticket
+         call-with-unix-stream-listener call-with-unix-stream-connection call-with-unix-stream-accept
          unix-stream-socket-read-status unix-stream-socket-read-count unix-stream-socket-read-error
          unix-stream-socket-write-status unix-stream-socket-write-count unix-stream-socket-write-error
          unix-stream-socket-poll-status unix-stream-socket-poll-interests unix-stream-socket-poll-error
@@ -21,6 +25,11 @@
 (extern i32 -unix-stream-socket-poll-raw i64 i32 i32 :real eshkol_unix_stream_socket_poll)
 (extern i32 -unix-stream-socket-cancel-raw i64 :real eshkol_unix_stream_socket_cancel)
 (extern i32 -unix-stream-socket-close-raw i64 :real eshkol_unix_stream_socket_close)
+(extern i64 -unix-stream-socket-close-request-raw i64 :real eshkol_unix_stream_socket_close_request)
+(extern i64 -unix-stream-socket-cleanup-result-raw i64 :real eshkol_unix_stream_socket_cleanup_result_packed)
+(extern i32 -unix-stream-socket-cleanup-retry-raw i64 :real eshkol_unix_stream_socket_cleanup_retry)
+(extern i32 -unix-stream-socket-cleanup-release-raw i64 :real eshkol_unix_stream_socket_cleanup_release)
+(extern i64 -unix-stream-socket-cleanup-ticket-raw i64 :real eshkol_unix_stream_socket_cleanup_ticket)
 (extern i32 -unix-stream-socket-os-error-raw :real eshkol_unix_stream_socket_last_os_error)
 
 (define (unix-stream-socket-planned? n) (= n -100))
@@ -129,3 +138,62 @@
 (define (unix-stream-socket-close! id)
   (-unix-stream-socket-id! "unix-stream-socket-close!" id)
   (-unix-stream-socket-checked "unix-stream-socket-close!" (-unix-stream-socket-close-raw id)))
+
+(define (unix-stream-socket-close-request! id)
+  "Retire the socket and return an owned cleanup-result ticket."
+  (-unix-stream-socket-id! "unix-stream-socket-close-request!" id)
+  (-unix-stream-socket-checked "unix-stream-socket-close-request!" (-unix-stream-socket-close-request-raw id)))
+(define (unix-stream-socket-cleanup-result ticket)
+  "Inspect one cleanup snapshot; owner-thread inspection drives queued cleanup."
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-result" ticket)
+  (let* ((bits (-unix-stream-socket-checked "unix-stream-socket-cleanup-result"
+                 (-unix-stream-socket-cleanup-result-raw ticket)))
+         (state (modulo bits 4)) (stage (modulo (quotient bits 4) 8)))
+    (vector (cond ((= state 0) 'pending) ((= state 1) 'complete) (else 'failed))
+            (cond ((= stage 0) 'none) ((= stage 1) 'watch) ((= stage 2) 'descriptor)
+                  ((= stage 3) 'path) (else 'loop))
+            (quotient bits 64) (= (modulo (quotient bits 32) 2) 1))))
+(define (unix-stream-socket-cleanup-state result) (vector-ref result 0))
+(define (unix-stream-socket-cleanup-stage result) (vector-ref result 1))
+(define (unix-stream-socket-cleanup-os-error result) (vector-ref result 2))
+(define (unix-stream-socket-cleanup-retryable? result) (vector-ref result 3))
+(define (unix-stream-socket-cleanup-retry! ticket)
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-retry!" ticket)
+  (-unix-stream-socket-checked "unix-stream-socket-cleanup-retry!" (-unix-stream-socket-cleanup-retry-raw ticket)))
+(define (unix-stream-socket-cleanup-release! ticket)
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-release!" ticket)
+  (-unix-stream-socket-checked "unix-stream-socket-cleanup-release!" (-unix-stream-socket-cleanup-release-raw ticket)))
+(define (unix-stream-socket-cleanup-ticket retired-id)
+  "Recover a retained convenience-close failure ticket, or return #f."
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-ticket" retired-id)
+  (let ((ticket (-unix-stream-socket-cleanup-ticket-raw retired-id)))
+    (if (= ticket -4) #f
+        (-unix-stream-socket-checked "unix-stream-socket-cleanup-ticket" ticket))))
+
+;; Retire the owner once on every scope exit. Native cleanup does not reacquire
+;; a capability; using the raw result here preserves the body's exception or
+;; continuation value. A cleanup failure remains recoverable by the retired id.
+(define (-unix-stream-socket-scoped id who proc)
+  (let ((state 'fresh))
+    (dynamic-wind
+      (lambda ()
+        (if (eq? state 'fresh) (set! state 'open)
+            (error who "closed socket scope re-entry" -4)))
+      (lambda () (proc id))
+      (lambda ()
+        (when (eq? state 'open)
+          (set! state 'closed)
+          (-unix-stream-socket-close-raw id))))))
+(define (call-with-unix-stream-listener loop path proc)
+  "Call proc with a listener and close it on return, exception or escape."
+  (-unix-stream-socket-scoped (unix-stream-socket-listen loop path)
+    "call-with-unix-stream-listener" proc))
+(define (call-with-unix-stream-connection loop path timeout-ms proc)
+  "Finish a published connection inside its scope, then call proc."
+  (-unix-stream-socket-scoped (unix-stream-socket-connect-begin loop path timeout-ms)
+    "call-with-unix-stream-connection"
+    (lambda (id) (unix-stream-socket-connect-finish! id) (proc id))))
+(define (call-with-unix-stream-accept listener timeout-ms proc)
+  "Call proc with an accepted peer and close it on every exit."
+  (-unix-stream-socket-scoped (unix-stream-socket-accept listener timeout-ms)
+    "call-with-unix-stream-accept" proc))

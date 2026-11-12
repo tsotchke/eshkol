@@ -255,6 +255,15 @@ int eshkol_event_loop_close_handle(int64_t handle);
 int eshkol_event_loop_retain_handle(int64_t handle);
 int eshkol_event_loop_release_handle(int64_t handle);
 
+/* Owner-thread checks and registration admission for shared waits. */
+int eshkol_event_loop_is_owner(const eshkol_event_loop_t* loop);
+/* Wake may be called from another thread while the caller retains the loop.
+ * Maintenance runs on the owner before/after poll, outside backend waits. */
+int eshkol_event_loop_wake(eshkol_event_loop_t* loop);
+int eshkol_event_loop_set_maintenance(eshkol_event_loop_t* loop,
+                                    void (*callback)(void *), void *data);
+int eshkol_event_loop_registration_present(const eshkol_event_loop_t* loop, int fd);
+
 /* Validate a live resource registration without exposing descriptor authority. */
 int eshkol_event_loop_registration_matches(const eshkol_event_loop_t* loop,
     int fd, int events, uint64_t user_data);

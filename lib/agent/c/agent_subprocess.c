@@ -18,6 +18,7 @@
 
 #include "eshkol/core/event_loop.h"
 #include "eshkol/core/handle.h"
+#include "eshkol/core/resource_lease.h"
 #include "eshkol/core/subprocess_stream.h"
 
 #ifndef _WIN32
@@ -2668,7 +2669,10 @@ typedef struct process_stream_record {
     struct process_stream_record* next;
 } process_stream_record;
 
+/* PROCESS and socket owners share one public identity domain. This pointer
+ * borrows the process-wide registry; stream shutdown never destroys it. */
 static eshkol_handle_registry_t* stream_registry;
+#define PROCESS_STREAM_TAG UINT32_C(1)
 static process_stream_record* stream_records;
 static size_t stream_record_count;
 static pthread_mutex_t stream_owner_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -2701,8 +2705,18 @@ static int64_t stream_now(void) {
 
 static process_stream_record* stream_find(int64_t id) {
     if (id <= 0) return NULL;
-    for (process_stream_record* r = stream_records; r; r = r->next)
-        if (r->id == (uint64_t)id) return r;
+    for (process_stream_record* r = stream_records; r; r = r->next) {
+        if (r->id != (uint64_t)id) continue;
+        /* Terminal cleanup records outlive the retired registry identity. */
+        if (r->terminal) return r;
+        eshkol_handle_kind_t kind;
+        uint32_t tag;
+        if (!stream_registry || eshkol_handle_get_kind(stream_registry, r->id,
+                &kind, &tag) != ESHKOL_HANDLE_OK ||
+            kind != ESHKOL_HANDLE_KIND_PROCESS || tag != PROCESS_STREAM_TAG)
+            return NULL;
+        return r;
+    }
     return NULL;
 }
 
@@ -2837,7 +2851,10 @@ static int stream_managed_loop(int64_t handle, eshkol_event_loop_t* loop) {
             managed += r->out_registered + r->err_registered;
         }
     }
-    return eshkol_event_loop_count(loop) == managed;
+    /* Common socket waits also own registrations on a caller's loop. Validate
+     * those independently, while preserving rejection of unmanaged watches. */
+    int shared = eshkol_resource_managed_registration_count(handle);
+    return shared >= 0 && eshkol_event_loop_count(loop) == managed + shared;
 }
 
 static int stream_wait_step(eshkol_event_loop_t* loop, int64_t deadline) {
@@ -2862,7 +2879,7 @@ int64_t eshkol_process_stream_open(int64_t handle, const char* argv,
     if (!loop) return ESHKOL_PROCESS_STREAM_EINVAL;
     if (!stream_managed_loop(handle, loop)) return ESHKOL_PROCESS_STREAM_EBUSY;
     if (stream_record_count >= eshkol_spawn_limit()) return ESHKOL_PROCESS_STREAM_ELIMIT;
-    if (!stream_registry) stream_registry = eshkol_handle_registry_create();
+    if (!stream_registry) stream_registry = eshkol_resource_registry();
     if (!stream_registry) return ESHKOL_PROCESS_STREAM_ELIMIT;
     process_stream_record* r = (process_stream_record*)calloc(1, sizeof(*r));
     if (!r) return ESHKOL_PROCESS_STREAM_ELIMIT;
@@ -2870,12 +2887,13 @@ int64_t eshkol_process_stream_open(int64_t handle, const char* argv,
     r->exit_code = ESHKOL_PROCESS_STREAM_WOULD_BLOCK;
     if (eshkol_event_loop_retain_handle(handle) != 0) { free(r); return ESHKOL_PROCESS_STREAM_EINVAL; }
     r->loop_retained = 1;
-    rc = eshkol_handle_create(stream_registry, ESHKOL_HANDLE_KIND_PROCESS,
-        (uintptr_t)r, stream_owner_close, NULL, &r->id);
-    if (rc != 0) {
+    int64_t adopted = eshkol_resource_adopt(ESHKOL_HANDLE_KIND_PROCESS,
+        PROCESS_STREAM_TAG, (uintptr_t)r, stream_owner_close, NULL);
+    if (adopted <= 0) {
         eshkol_event_loop_release_handle(handle); free(r);
         return ESHKOL_PROCESS_STREAM_ELIMIT;
     }
+    r->id = (eshkol_handle_id_t)adopted;
     r->next = stream_records;
     stream_records = r;
     ++stream_record_count;
@@ -3090,11 +3108,9 @@ int32_t eshkol_process_stream_runtime_shutdown(void) {
     int rc = stream_thread();
     if (rc) return rc;
     if (stream_records) return ESHKOL_PROCESS_STREAM_EBUSY;
-    if (stream_registry) {
-        if (eshkol_handle_registry_destroy(stream_registry) != 0)
-            return ESHKOL_PROCESS_STREAM_ESYSTEM;
-        stream_registry = NULL;
-    }
+    /* The PROCESS list is empty, so only our module's borrowed registry pointer
+     * is released. SOCKET and other shared owners remain valid. */
+    stream_registry = NULL;
     stream_shutdown = 1;
     return 0;
 }

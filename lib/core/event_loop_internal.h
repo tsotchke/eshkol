@@ -42,9 +42,14 @@ typedef struct {
  * one backend is ever compiled in.
  */
 struct eshkol_event_loop {
+    int max_registrations;    /**< Public descriptor registration capacity. */
+    int wake_read, wake_write; /**< Internal wake pipe, outside public slots. */
+    void (*maintenance)(void *);
+    void *maintenance_data;
     int  max_events;          /**< Capacity for both registrations and results. */
     int  n_regs;              /**< Number of live entries in `regs`.            */
     int  last_os_error;       /**< errno / GetLastError from the last failure.  */
+    uintptr_t owner_thread; /**< Adopting thread token; no cross-thread I/O. */
     unsigned int retain_count; /**< Scoped resources keep the loop alive. */
 
     eshkol_event_reg_t* regs; /**< malloc'd, `max_events` entries.              */
