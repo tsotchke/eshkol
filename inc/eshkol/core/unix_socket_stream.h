@@ -34,7 +34,9 @@ enum {
  * Paths must be absolute/NUL-free, fit sun_path in encoded bytes, and live
  * in a verified owned private directory with mode 0700. Refuse every existing entry.
  * Bind, set mode 0600, then listen/publish; undo unpublished setup on failure.
- * Only remove the listener's recorded entry, never a replacement. */
+ * Only remove the listener's recorded entry, never a replacement. If unpublished
+ * rollback cannot remove that entry, last_path_error reports its OS error
+ * separately from the acquisition error; the supplied path needs explicit repair. */
 int64_t eshkol_unix_stream_socket_listen(int64_t loop, const char *path);
 int64_t eshkol_unix_stream_socket_accept(int64_t listener, int32_t deadline_ms);
 
@@ -67,7 +69,11 @@ int32_t eshkol_unix_stream_socket_cancel(int64_t id);
 /* Public close follows the shared lease's deferred-close contract: once
  * accepted, invalidate the identity and wake its borrower; descriptor close
  * runs once after release. Remove watches before committing teardown; if
- * removal fails, retain ownership for retry. Never retry uncertain fd close.
+ * removal fails, retain ownership for retry. A socket-path failure permits one
+ * explicit repair/retry; a second failure is terminal and surrenders the residual
+ * pathname, recording its PATH error while releasing the native record/loop retain.
+ * The callback owns terminality; the shared layer never times out a retry.
+ * Never retry uncertain fd close.
  * Cancel/close require neither renewed network capability nor a clock;
  * runtime/kind/tag/generation checks remain mandatory. Acquisition and I/O
  * require native and Scheme network admission. */
@@ -88,6 +94,11 @@ int64_t eshkol_unix_stream_socket_cleanup_ticket(int64_t retired_id);
 /* Calling-thread OS detail for the last operation; read immediately after a
  * shared negative outcome. Zero means no OS detail. */
 int32_t eshkol_unix_stream_socket_last_os_error(void);
+/* Calling-thread OS error for an unpublished listener rollback whose pathname
+ * could not be removed/verified. Read immediately after a failed acquisition.
+ * Nonzero means the supplied path needs explicit repair; it grants no authority
+ * to unlink a replacement entry. The next native operation clears this detail. */
+int32_t eshkol_unix_stream_socket_last_path_error(void);
 #ifdef __cplusplus
 }
 #endif

@@ -1,2 +1,0 @@
-SCRATCH: /tmp/eshkol-unix-fSLjqe
-PASS: unix_socket_stream_test borrowed_close (15 checks)

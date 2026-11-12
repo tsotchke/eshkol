@@ -11,6 +11,9 @@
  * Copyright (c) Eshkol Project — tsotchke. MIT License.
  */
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #include "event_loop_internal.h"
 #include "eshkol/core/handle.h"
 
@@ -21,6 +24,7 @@ int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
 }
 
 #include <stdlib.h>
+#include <errno.h>
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
 #include <errno.h>
 #include <fcntl.h>
@@ -70,16 +74,26 @@ eshkol_event_loop_t* eshkol_event_loop_create(int max_events) {
     }
 #if defined(EVENT_LOOP_HAS_WAKE_PIPE)
     int fds[2];
+#if defined(__linux__)
+    /* Atomic flags prevent a concurrent subprocess spawn from inheriting the pipe. */
+    if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+#else
     if (pipe(fds) != 0) {
+#endif
         eshkol_event_backend_close(loop); free(loop->regs); free(loop->out); free(loop); return NULL;
     }
     loop->wake_read = fds[0]; loop->wake_write = fds[1];
+#if !defined(__linux__)
     int read_flags = fcntl(fds[0], F_GETFL), write_flags = fcntl(fds[1], F_GETFL);
     if (read_flags < 0 || write_flags < 0 ||
         fcntl(fds[0], F_SETFL, read_flags | O_NONBLOCK) < 0 ||
         fcntl(fds[1], F_SETFL, write_flags | O_NONBLOCK) < 0 ||
-        fcntl(fds[0], F_SETFD, FD_CLOEXEC) < 0 || fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0 ||
-        eshkol_event_backend_add(loop, fds[0], ESHKOL_EVENT_READ, 0) != ESHKOL_EVENT_LOOP_OK) {
+        fcntl(fds[0], F_SETFD, FD_CLOEXEC) < 0 || fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0) {
+        close(fds[0]); close(fds[1]); eshkol_event_backend_close(loop);
+        free(loop->regs); free(loop->out); free(loop); return NULL;
+    }
+#endif
+    if (eshkol_event_backend_add(loop, fds[0], ESHKOL_EVENT_READ, 0) != ESHKOL_EVENT_LOOP_OK) {
         close(fds[0]); close(fds[1]); eshkol_event_backend_close(loop);
         free(loop->regs); free(loop->out); free(loop); return NULL;
     }
@@ -186,6 +200,10 @@ int eshkol_event_loop_add(eshkol_event_loop_t* loop, int fd, int events,
     return ESHKOL_EVENT_LOOP_OK;
 }
 
+#ifdef ESHKOL_RESOURCE_TESTING
+static int fail_remove_once;
+void eshkol_event_loop_test_fail_remove_once(void) { fail_remove_once = 1; }
+#endif
 int eshkol_event_loop_remove(eshkol_event_loop_t* loop, int fd) {
     if (!loop || fd < 0 || fd == loop->wake_read) return ESHKOL_EVENT_LOOP_EINVAL;
     if (!eshkol_event_loop_is_owner(loop)) return ESHKOL_EVENT_LOOP_EBUSY;
@@ -193,7 +211,14 @@ int eshkol_event_loop_remove(eshkol_event_loop_t* loop, int fd) {
     const int idx = reg_find(loop, fd);
     if (idx < 0) return ESHKOL_EVENT_LOOP_ENOENT;
 
-    const int rc = eshkol_event_backend_remove(loop, fd, loop->regs[idx].events);
+    int rc;
+#ifdef ESHKOL_RESOURCE_TESTING
+    if (fail_remove_once) {
+        fail_remove_once = 0; loop->last_os_error = EIO;
+        rc = ESHKOL_EVENT_LOOP_EOSERR;
+    } else
+#endif
+    rc = eshkol_event_backend_remove(loop, fd, loop->regs[idx].events);
 
     /* Keep the owner and watch on a genuine removal failure. Already-gone
      * descriptors are reported as success by the platform backend. */

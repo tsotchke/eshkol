@@ -1956,6 +1956,7 @@ private:
         std::string loop_name;
         uint64_t loop_binding_id = 0;
         std::map<uint64_t, ResourceState> entry_states;
+        std::map<uint64_t, ResourceKind> entry_kinds;
         std::map<uint64_t, size_t> entry_borrows;
         std::set<const eshkol_ast_t*> tail_calls;
     };
@@ -1977,6 +1978,7 @@ private:
 
     struct ParamPost {
         size_t index = 0;
+        ResourceKind resource_kind = ResourceKind::NONE;
         ResourceState resource_state = ResourceState::NONE;
         ResourceState moved_from_state = ResourceState::NONE;
         State state = State::UNOWNED;
@@ -2271,8 +2273,9 @@ private:
     void joinVariable(VariableInfo& joined, const VariableInfo& a, const VariableInfo& b) {
         joined.state = joinOwnershipState(a.state, b.state);
         joined.resource_state = joinResourceState(a.resource_state, b.resource_state);
-        if (a.resource_kind == b.resource_kind) {
-            joined.resource_kind = a.resource_kind;
+        const ResourceKind protocol_kind = sr::joinProtocolKind(a.resource_kind, b.resource_kind);
+        if (protocol_kind != ResourceKind::NONE) {
+            joined.resource_kind = protocol_kind;
         } else if (a.resource_kind != ResourceKind::NONE || b.resource_kind != ResourceKind::NONE) {
             joined.resource_kind = a.resource_kind != ResourceKind::NONE
                 ? a.resource_kind : b.resource_kind;
@@ -3639,6 +3642,14 @@ private:
             return ResourceKind::NONE;
         }
         allowed_resource_use_nodes_.insert(argument);
+        if (spec.retired) {
+            if (!(spec.accepts & sr::bit(info->resource_kind)) ||
+                info->resource_state != ResourceState::CLOSED) {
+                reportResourceError(operation + " requires an already-closed socket identity; "
+                    "recovery cannot grant I/O authority or duplicate a ticket owner");
+            }
+            return info->resource_kind;
+        }
         if (info->resource_state == ResourceState::CLOSED ||
             info->resource_state == ResourceState::CLOSED_OR_ERROR ||
             info->resource_state == ResourceState::MOVED ||
@@ -3673,7 +3684,8 @@ private:
      *  on, say — is the single close site from then on, so the caller's owner
      *  becomes moved-from and a later use or close of it is reported. A
      *  borrowed owner cannot be given away at all. */
-    void moveHandleOwner(const eshkol_ast_t* argument, const std::string& operation) {
+    void moveHandleOwner(const eshkol_ast_t* argument, const std::string& operation,
+                         bool retired = false) {
         const std::string name = getVarName(argument);
         VariableInfo* info = name.empty() ? nullptr : lookupVariable(name);
         if (!info || info->resource_kind == ResourceKind::NONE) return;
@@ -3682,8 +3694,9 @@ private:
                 ", which takes ownership of it");
             return;
         }
-        if (info->resource_state == ResourceState::LIVE) {
-            info->moved_from_state = ResourceState::LIVE;
+        if (info->resource_state == ResourceState::LIVE ||
+            (retired && info->resource_state == ResourceState::CLOSED)) {
+            info->moved_from_state = info->resource_state;
             info->resource_state = ResourceState::MOVED;
             info->state = State::MOVED;
         }
@@ -3890,6 +3903,7 @@ private:
                 if (v.resource_kind == ResourceKind::NONE) continue;
                 auto borrow = borrowed_counts_.find(v.binding_id);
                 key += std::to_string(v.binding_id) + ":" +
+                       std::to_string(static_cast<int>(v.resource_kind)) + ":" +
                        std::to_string(static_cast<int>(v.resource_state)) + ":" +
                        std::to_string(borrow == borrowed_counts_.end() ? 0 : borrow->second) +
                        (v.lent ? "l" : "") + ",";
@@ -3924,6 +3938,7 @@ private:
                 !sameMutable(a.env_post[i].second, b.env_post[i].second)) return false;
         for (size_t i = 0; i < a.param_post.size(); ++i)
             if (a.param_post[i].index != b.param_post[i].index ||
+                a.param_post[i].resource_kind != b.param_post[i].resource_kind ||
                 a.param_post[i].resource_state != b.param_post[i].resource_state ||
                 a.param_post[i].state != b.param_post[i].state) return false;
         return true;
@@ -4100,6 +4115,7 @@ private:
             if (it == currentScope().variables.end()) continue;
             ParamPost post;
             post.index = entry.first;
+            post.resource_kind = it->second.resource_kind;
             post.resource_state = it->second.resource_state;
             post.moved_from_state = it->second.moved_from_state;
             post.state = it->second.state;
@@ -4173,6 +4189,7 @@ private:
                 }
                 VariableInfo* target = findBindingById(handle.caller_id);
                 if (!target) continue;
+                target->resource_kind = post.resource_kind;
                 target->resource_state = post.resource_state;
                 target->moved_from_state = post.moved_from_state;
                 target->state = post.state;
@@ -4283,13 +4300,27 @@ private:
                 for (const auto& spec : contract.handle_args)
                     if (const eshkol_ast_t* handle = arg(spec.index)) {
                         useHandleArg(handle, spec, function_name);
-                        if (spec.consumed) moveHandleOwner(handle, function_name);
+                        if (spec.consumed) moveHandleOwner(handle, function_name, spec.retired);
                     }
                 if (contract.proc_args[0].index >= 0)
                     setupProcArgs(node, contract, ResourceKind::NONE, work);
                 if (returned) recordReturnedHandle(contract.produces, initialFactoryState(contract.produces));
                 return;
             }
+            case sr::Role::TRANSITION:
+                for (const auto& spec : contract.handle_args)
+                    if (const eshkol_ast_t* handle = arg(spec.index)) {
+                        useHandleArg(handle, spec, function_name);
+                        VariableInfo* info = lookupVariable(getVarName(handle));
+                        if (info && info->resource_state == ResourceState::LIVE &&
+                            (spec.accepts & sr::bit(info->resource_kind)))
+                            info->resource_kind = contract.produces;
+                    }
+                break;
+            case sr::Role::UNSUPPORTED:
+                reportResourceError(function_name +
+                    ": ownership of aggregate cleanup records is unsupported in this profile");
+                break;
             case sr::Role::CLOSE:
                 if (const eshkol_ast_t* handle = arg(contract.handle_args[0].index))
                     closeHandle(handle, contract, function_name);
@@ -4327,7 +4358,7 @@ private:
                         continue;
                     if (const eshkol_ast_t* handle = arg(spec.index)) {
                         useHandleArg(handle, spec, function_name);
-                        if (spec.consumed) moveHandleOwner(handle, function_name);
+                        if (spec.consumed) moveHandleOwner(handle, function_name, spec.retired);
                     }
                 }
                 if (contract.consumes_handle) {
@@ -4433,6 +4464,9 @@ private:
             std::string name;
             VariableInfo* info = findBindingById(entry.first, &name);
             if (!info) continue;
+            if (info->resource_kind != frame.entry_kinds.at(entry.first))
+                reportResourceError(what + " changes the protocol kind of handle '" + name +
+                    "' on its back edge; every iteration must leave a handle as it found it");
             if (info->resource_state != entry.second)
                 reportResourceError(what + " leaves handle '" + name + "' " +
                     stateText(info->resource_state) + " on its back edge, but it was " +
@@ -4463,8 +4497,10 @@ private:
         frame.loop_binding_id = binding_id;
         for (const auto& scope : scope_stack_)
             for (const auto& entry : scope.variables)
-                if (entry.second.resource_kind != ResourceKind::NONE)
+                if (entry.second.resource_kind != ResourceKind::NONE) {
                     frame.entry_states[entry.second.binding_id] = entry.second.resource_state;
+                    frame.entry_kinds[entry.second.binding_id] = entry.second.resource_kind;
+                }
         frame.entry_borrows = borrowed_counts_;
         return frame;
     }

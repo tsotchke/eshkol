@@ -64,6 +64,21 @@ int main(void) {
     CHECK(fcntl(reused,F_GETFD)>=0);CHECK(close(reused)==0);
     CHECK(access(path,F_OK)<0 && errno==ENOENT);
     CHECK(eshkol_resource_cleanup_release(ticket)==0);
-    CHECK(eshkol_event_loop_close_handle(loop)==0);CHECK(rmdir(directory)==0);
-    puts("PASS: socket borrowed/queued close and retryable path cleanup; descriptor reused safely");return 0;
+    /* A second failed attempt is terminal, so a residual pathname cannot pin
+     * its native record and loop forever. The caller receives the PATH error. */
+    listener=eshkol_unix_stream_socket_listen(loop,path);CHECK(listener>0);
+    CHECK(chmod(directory,0500)==0);
+    ticket=eshkol_unix_stream_socket_close_request(listener);CHECK(ticket>0);
+    CHECK(eshkol_resource_cleanup_result(ticket,&result)==0);
+    CHECK(result.state==ESHKOL_CLEANUP_FAILED && result.stage==ESHKOL_CLEANUP_PATH && result.retryable);
+    CHECK(eshkol_resource_cleanup_release(ticket)==ESHKOL_IO_BUSY);
+    CHECK(eshkol_event_loop_close_handle(loop)==ESHKOL_EVENT_LOOP_EBUSY);
+    CHECK(eshkol_resource_cleanup_retry(ticket)==0);
+    CHECK(eshkol_resource_cleanup_result(ticket,&result)==0);
+    CHECK(result.state==ESHKOL_CLEANUP_FAILED && result.stage==ESHKOL_CLEANUP_PATH && !result.retryable);
+    CHECK(result.os_error==EACCES || result.os_error==EPERM);
+    CHECK(eshkol_resource_cleanup_release(ticket)==0);
+    CHECK(eshkol_event_loop_close_handle(loop)==0);
+    CHECK(chmod(directory,0700)==0);CHECK(unlink(path)==0);CHECK(rmdir(directory)==0);
+    puts("PASS: borrowed/queued close; path repair and bounded terminal failure; safe descriptor reuse");return 0;
 }

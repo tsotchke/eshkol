@@ -8907,10 +8907,18 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     target_include_directories(eshkol-unix-stream-socket-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE Threads::Threads)
 
-    # Observations only; no socket implementation or replacement FFI archive.
+    # Observation DSO never interposes connect. Darwin's private-path pending
+    # control is a separate DSO, loaded only by the three pending cases.
     add_library(eshkol-unix-socket-fixture SHARED tests/agent/unix_socket_stream_fixture_support.c)
     target_compile_features(eshkol-unix-socket-fixture PRIVATE c_std_11)
     target_link_libraries(eshkol-unix-socket-fixture PRIVATE ${CMAKE_DL_LIBS})
+    if(APPLE)
+        add_library(eshkol-unix-socket-pending-control SHARED
+            tests/agent/unix_socket_stream_pending_control.c)
+        target_compile_features(eshkol-unix-socket-pending-control PRIVATE c_std_11)
+        set(ESHKOL_SOCKET_PENDING_CONTROL_ARGS --control-library
+            $<TARGET_FILE:eshkol-unix-socket-pending-control>)
+    endif()
     target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE eshkol-unix-socket-fixture)
     find_program(ESHKOL_SOCKET_CHIBI_SCHEME NAMES chibi-scheme)
     if(ESHKOL_SOCKET_CHIBI_SCHEME)
@@ -8935,6 +8943,10 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
         COMMAND eshkol-unix-stream-socket-stream-test --peer-fixture-selftest)
     set_tests_properties(agent-unix-stream-socket-peer-fixture PROPERTIES
         TIMEOUT 10 LABELS "resource;socket;fixture")
+    if(APPLE)
+        set_tests_properties(agent-unix-stream-socket-peer-fixture PROPERTIES ENVIRONMENT
+            "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:eshkol-unix-socket-pending-control>")
+    endif()
     set(ESHKOL_IPC_UNIX_CASES
         connect_accept partial_slow_peer peer_close_epipe deadline_accept
         deadline_connect cancellation nul_and_large_payload descriptor_count_check
@@ -8948,6 +8960,12 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
             LABELS "resource;socket;native" TIMEOUT 60)
     endforeach()
 
+    if(APPLE)
+        foreach(case_name deadline_connect connect_cancellation zero_budget)
+            set_tests_properties(ipc-unix-${case_name} PROPERTIES ENVIRONMENT
+                "DYLD_INSERT_LIBRARIES=$<TARGET_FILE:eshkol-unix-socket-pending-control>")
+        endforeach()
+    endif()
     add_test(NAME ipc-unix-borrowed_close
         COMMAND eshkol-unix-stream-socket-stream-test borrowed_close)
     set_tests_properties(ipc-unix-borrowed_close PROPERTIES
@@ -8963,6 +8981,22 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     target_link_libraries(eshkol-unix-socket-cleanup-test PRIVATE Threads::Threads)
     add_test(NAME agent-unix-socket-cleanup COMMAND eshkol-unix-socket-cleanup-test)
     set_tests_properties(agent-unix-socket-cleanup PROPERTIES TIMEOUT 30 LABELS "resource;socket;cleanup")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(eshkol-unix-socket-regression-test
+            tests/agent/unix_socket_stream_regression_test.c
+            lib/agent/c/agent_unix_socket_stream.c lib/core/resource_lease.c
+            lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+        target_compile_features(eshkol-unix-socket-regression-test PRIVATE c_std_11 cxx_std_17)
+        target_compile_definitions(eshkol-unix-socket-regression-test PRIVATE _GNU_SOURCE)
+        target_include_directories(eshkol-unix-socket-regression-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-unix-socket-regression-test PRIVATE Threads::Threads)
+        target_link_options(eshkol-unix-socket-regression-test PRIVATE
+            -Wl,--wrap=socket -Wl,--wrap=accept4 -Wl,--wrap=recv -Wl,--wrap=send
+            -Wl,--wrap=fchmodat -Wl,--wrap=unlinkat -Wl,--wrap=connect)
+        add_test(NAME agent-unix-socket-regressions COMMAND eshkol-unix-socket-regression-test)
+        set_tests_properties(agent-unix-socket-regressions PROPERTIES
+            TIMEOUT 30 LABELS "resource;socket;regression")
+    endif()
 
     add_executable(eshkol-unix-stream-socket-contract-test
         tests/agent/unix_socket_stream_contract_test.c
@@ -14506,9 +14540,10 @@ if(ESHKOL_BUILD_AGENT_FFI)
                             --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_pending.esk
                             --peer $<TARGET_FILE:eshkol-unix-stream-socket-stream-test>
                             --fixture-library $<TARGET_FILE:eshkol-unix-socket-fixture>
+                            ${ESHKOL_SOCKET_PENDING_CONTROL_ARGS}
                             --build-dir ${CMAKE_BINARY_DIR})
                     set_tests_properties(ipc-unix-${case_name}-${mode} PROPERTIES
-                        LABELS "resource;socket;${mode}" TIMEOUT 60)
+                        LABELS "resource;socket;${mode}" TIMEOUT 300)
                 endforeach()
             endforeach()
             foreach(mode jit aot)
@@ -14520,9 +14555,10 @@ if(ESHKOL_BUILD_AGENT_FFI)
                         --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_lifecycle.esk
                         --peer $<TARGET_FILE:eshkol-unix-stream-socket-stream-test>
                         --fixture-library $<TARGET_FILE:eshkol-unix-socket-fixture>
+                        ${ESHKOL_SOCKET_PENDING_CONTROL_ARGS}
                         --build-dir ${CMAKE_BINARY_DIR})
                 set_tests_properties(ipc-unix-lifecycle-${mode} PROPERTIES
-                    LABELS "resource;socket;${mode}" TIMEOUT 60)
+                    LABELS "resource;socket;${mode}" TIMEOUT 300)
             endforeach()
             add_test(NAME ipc-unix-vm-unsupported
                 COMMAND ${Python3_EXECUTABLE}

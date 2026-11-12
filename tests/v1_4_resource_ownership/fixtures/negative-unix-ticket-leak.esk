@@ -1,0 +1,8 @@
+(require agent.unix_stream_socket)
+(define loop (make-event-loop 8))
+(if loop
+    (begin
+      (define listener (unix-stream-socket-listen loop "/tmp/private/socket"))
+      (define ticket (unix-stream-socket-close-request! listener))
+      (event-loop-close loop))
+    #f)

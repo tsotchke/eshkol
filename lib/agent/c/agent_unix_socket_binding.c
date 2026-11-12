@@ -5,6 +5,14 @@
 #include "eshkol/core/unix_socket_stream.h"
 
 extern void eshkol_unix_stream_socket_clear_os_error(void);
+/* Scope-only recovery handoff; not part of the public resource ABI. */
+#include "../../core/resource_handle_internal.h"
+
+/* Align the private Scheme outcome names when shared native codes change. */
+_Static_assert(ESHKOL_IO_TIMEOUT == -2, "update Scheme Unix timeout outcome");
+_Static_assert(ESHKOL_IO_INVALID == -4, "update Scheme Unix invalid outcome");
+_Static_assert(ESHKOL_IO_CANCELLED == -6, "update Scheme Unix cancellation outcome");
+_Static_assert(ESHKOL_IO_RESET == -7, "update Scheme Unix reset outcome");
 
 /* Eshkol bytevector payloads contain an i64 length followed by their bytes.
  * These bindings only translate the bytevector boundary; they never touch a
@@ -59,4 +67,9 @@ int32_t eshkol_unix_stream_socket_cleanup_release(int64_t ticket) {
 int64_t eshkol_unix_stream_socket_cleanup_ticket(int64_t retired_id) {
     eshkol_unix_stream_socket_clear_os_error();
     return eshkol_resource_cleanup_ticket(retired_id);
+}
+
+int32_t eshkol_unix_stream_socket_cleanup_detach(int64_t ticket) {
+    eshkol_unix_stream_socket_clear_os_error();
+    return eshkol_resource_cleanup_detach(ticket);
 }

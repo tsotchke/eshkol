@@ -49,6 +49,12 @@ POSITIVE = (
     "positive-process",
     "positive-callee-closes-then-exits",
     "positive-constructor-closure-unused",
+    "positive-unix-listener",
+    "positive-unix-ticket",
+    "positive-unix-connect-cancel",
+    "positive-unix-scopes",
+    "positive-unix-recovery",
+    "positive-process-stream-scope",
 )
 NEGATIVE = (
     "negative-leak",
@@ -144,11 +150,36 @@ NEGATIVE = (
     "negative-constructor-closure-vector",
     "negative-constructor-closure-returned",
     "negative-constructor-closure-exported",
+    "negative-unix-ticket-leak",
+    "negative-unix-close-request-reuse",
+    "negative-unix-ticket-double-release",
+    "negative-unix-read-before-finish",
+    "negative-unix-read-after-cancel",
+    "negative-unix-cancel-not-closed",
+    "negative-unix-scoped-close",
+    "negative-unix-scoped-escape",
+    "negative-unix-recovery-twice",
+    "negative-unix-recovery-unrefined",
+    "negative-process-cleanup-aggregate",
+    "negative-unix-ticket-wrong-kind",
 )
 
 # Every handle-family falsifier must fail for its own reason, not for an
 # unrelated diagnostic: the expected text is part of the contract.
 EXPECTED_DIAGNOSTIC = {
+    "negative-unix-recovery-unrefined": "must be refined with a truth test",
+    'negative-unix-ticket-leak': "resource 'ticket' may still be live at scope exit",
+    'negative-unix-close-request-reuse': "duplicate close or use after close of resource 'listener'",
+    'negative-unix-ticket-double-release': "duplicate close of resource 'ticket'",
+    'negative-unix-read-before-finish': 'resource kind mismatch: unix-stream-socket-read! expects open Unix stream',
+    'negative-unix-read-after-cancel': 'resource kind mismatch: unix-stream-socket-read! expects open Unix stream',
+    'negative-unix-cancel-not-closed': "resource 'peer' may still be live at scope exit",
+    'negative-unix-scoped-close': "cannot close borrowed resource 'listener' inside its borrow scope",
+    'negative-unix-scoped-escape': "borrowed resource 'peer' escapes its borrow scope",
+    'negative-unix-recovery-twice': 'requires an already-closed socket identity',
+    'negative-process-cleanup-aggregate': 'ownership of aggregate cleanup records is unsupported',
+    'negative-unix-ticket-wrong-kind': 'resource kind mismatch: unix-stream-socket-cleanup-result expects cleanup ticket',
+
     "negative-file-unclosed": "resource 'in' may still be live at scope exit",
     "negative-file-one-branch-unclosed": "resource 'in' may still be live at scope exit",
     "negative-file-two-arm-if": "resource 'in' may still be live at scope exit",
@@ -224,7 +255,9 @@ def main():
         def compile_case(name):
             source = FIXTURES / f"{name}.esk"
             artifact = out_dir / f"{name}.o"
-            command = [runner, "--strict-resources", "-c", "-o", str(artifact), str(source), "-L", lib_dir]
+            # Ownership is a frontend contract. Use explicit O0 so the corpus
+            # does not also depend on whole-SDK O2 optimizer latency.
+            command = [runner, "--strict-resources", "-O0", "-c", "-o", str(artifact), str(source), "-L", lib_dir]
             completed = subprocess.run(command, env=env, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, timeout=180)
             is_negative = name in NEGATIVE

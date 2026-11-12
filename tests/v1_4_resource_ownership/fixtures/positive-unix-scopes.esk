@@ -1,0 +1,13 @@
+(require agent.unix_stream_socket)
+(define loop (make-event-loop 8))
+(if loop
+    (begin
+      (call-with-unix-stream-listener loop "/tmp/private/socket"
+        (lambda (listener)
+          (call-with-unix-stream-accept listener 0
+            (lambda (peer)
+              (unix-stream-socket-read! peer (make-bytevector 1 0) 0 1)))))
+      (call-with-unix-stream-connection loop "/tmp/private/socket" 100
+        (lambda (peer) (unix-stream-socket-poll peer 1 0)))
+      (event-loop-close loop))
+    #f)

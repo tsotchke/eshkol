@@ -1,10 +1,14 @@
 /* Shared lease and outcome layer for hosted I/O resources.
  * See inc/eshkol/core/resource_lease.h for the contract. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #if !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "eshkol/core/resource_lease.h"
 #include "eshkol/core/event_loop.h"
+#include "resource_handle_internal.h"
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
@@ -12,6 +16,7 @@
 #define RESOURCE_LAST_ID INT64_C(9007199254740991)
 
 static int managed_before_borrow(int64_t id);
+static void managed_release_pending(int64_t id);
 static int managed_has_id(int64_t id);
 static int managed_cancel(int64_t id);
 static int managed_close_detached(int64_t id, eshkol_handle_kind_t kind, uint32_t mask);
@@ -64,25 +69,30 @@ int64_t eshkol_resource_adopt(eshkol_handle_kind_t kind, uint32_t tag, uintptr_t
     return (int64_t)id;
 }
 
-static int resource_matches(eshkol_handle_registry_t *registry, int64_t id,
-                            eshkol_handle_kind_t kind, uint32_t tag_mask, uint32_t *out_tag) {
+static int resource_matches_info(eshkol_handle_registry_t *registry, int64_t id,
+    eshkol_handle_kind_t kind, uint32_t tag_mask, uint32_t *out_tag, uint32_t *out_flags) {
     eshkol_handle_kind_t actual = 0;
-    uint32_t tag = 0;
+    uint32_t tag = 0, flags = 0;
     if (id <= 0 || id > RESOURCE_LAST_ID ||
-        eshkol_handle_get_kind(registry, (eshkol_handle_id_t)id, &actual, &tag) != ESHKOL_HANDLE_OK ||
+        eshkol_handle_resource_info(registry, (eshkol_handle_id_t)id, &actual, &tag, &flags) != ESHKOL_HANDLE_OK ||
         actual != kind || tag >= 32 || (tag_mask && !(tag_mask & (UINT32_C(1) << tag))))
         return 0;
     if (out_tag) *out_tag = tag;
+    if (out_flags) *out_flags = flags;
     return 1;
+}
+static int resource_matches(eshkol_handle_registry_t *registry, int64_t id,
+    eshkol_handle_kind_t kind, uint32_t tag_mask, uint32_t *out_tag) {
+    return resource_matches_info(registry, id, kind, tag_mask, out_tag, NULL);
 }
 
 int eshkol_resource_borrow(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_mask,
                            eshkol_resource_lease_t *out) {
     eshkol_handle_registry_t *registry = eshkol_resource_registry();
-    uint32_t tag = 0;
-    if (!registry || !out || !resource_matches(registry, id, kind, tag_mask, &tag))
+    uint32_t tag = 0, flags = 0;
+    if (!registry || !out || !resource_matches_info(registry, id, kind, tag_mask, &tag, &flags))
         return ESHKOL_IO_INVALID;
-    int admission = managed_before_borrow(id);
+    int admission = (flags & ESHKOL_HANDLE_FLAG_MANAGED) ? managed_before_borrow(id) : 0;
     if (admission) return admission;
     uintptr_t native = 0;
     uint64_t lease = 0;
@@ -96,10 +106,12 @@ int eshkol_resource_borrow(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_m
 void eshkol_resource_release(eshkol_resource_lease_t *lease) {
     eshkol_handle_registry_t *registry = eshkol_resource_registry();
     if (!registry || !lease || !lease->lease) return;
-    (void)eshkol_handle_release(registry, (eshkol_handle_id_t)lease->id, lease->lease);
+    uint32_t flags = 0;
+    int rc = eshkol_handle_release_resource(registry, (eshkol_handle_id_t)lease->id,
+                                            lease->lease, &flags);
     lease->lease = 0;
     lease->native = 0;
-    (void)eshkol_resource_pump(0);
+    if (!rc && (flags & ESHKOL_HANDLE_FLAG_MANAGED)) managed_release_pending(lease->id);
 }
 
 int eshkol_resource_close(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_mask) {
@@ -122,10 +134,11 @@ int eshkol_resource_close(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_ma
          * A generic deferred close must not retire its discoverable owner. */
         return ESHKOL_IO_BUSY;
     }
-    if (managed_has_id(id)) return managed_close_detached(id, kind, tag_mask);
     eshkol_handle_registry_t *registry = eshkol_resource_registry();
-    if (!registry || !resource_matches(registry, id, kind, tag_mask, NULL))
+    uint32_t flags = 0;
+    if (!registry || !resource_matches_info(registry, id, kind, tag_mask, NULL, &flags))
         return ESHKOL_IO_INVALID;
+    if (flags & ESHKOL_HANDLE_FLAG_MANAGED) return managed_close_detached(id, kind, tag_mask);
     int status = eshkol_handle_close_after_release(registry, (eshkol_handle_id_t)id);
     /* ECLOSE still retires the identity: an uncertain OS close is never retried. */
     return status == ESHKOL_HANDLE_OK || status == ESHKOL_HANDLE_ECLOSE ? 0 : ESHKOL_IO_INVALID;
@@ -133,9 +146,10 @@ int eshkol_resource_close(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_ma
 
 int eshkol_resource_cancel(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_mask) {
     eshkol_handle_registry_t *registry = eshkol_resource_registry();
-    if (!registry || !resource_matches(registry, id, kind, tag_mask, NULL))
+    uint32_t flags = 0;
+    if (!registry || !resource_matches_info(registry, id, kind, tag_mask, NULL, &flags))
         return ESHKOL_IO_INVALID;
-    if (managed_has_id(id)) return managed_cancel(id);
+    if (flags & ESHKOL_HANDLE_FLAG_MANAGED) return managed_cancel(id);
     return eshkol_handle_interrupt(registry, (eshkol_handle_id_t)id) == ESHKOL_HANDLE_OK
                ? 0 : ESHKOL_IO_INVALID;
 }
@@ -185,12 +199,16 @@ static WaitContext *wait_context(void) {
     pthread_once(&wait_key_once, wait_key_create);
     if (!wait_key_ready) return NULL;
     WaitContext *context = (WaitContext *)pthread_getspecific(wait_key);
-    if (context) return context;
+    if (context) return context->loop ? context : NULL;
     context = (WaitContext *)calloc(1, sizeof(*context));
     if (!context) return NULL;
     int fds[2];
     context->wake_read = context->wake_write = -1;
+#if defined(__linux__)
+    if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) { free(context); return NULL; }
+#else
     if (pipe(fds) != 0) { free(context); return NULL; }
+#endif
     context->wake_read = fds[0]; context->wake_write = fds[1];
     context->loop = eshkol_event_loop_create(2);
     if (!set_pipe_flags(fds[0]) || !set_pipe_flags(fds[1]) || !context->loop ||
@@ -260,7 +278,22 @@ int eshkol_resource_wait(const eshkol_resource_lease_t *lease, int fd, int event
             if (ready) { result = 0; break; }
             if (!left) { result = ESHKOL_IO_TIMEOUT; break; }
         }
-        (void)eshkol_event_loop_remove(context->loop, fd);
+        int removed = eshkol_event_loop_remove(context->loop, fd);
+        if (removed != ESHKOL_EVENT_LOOP_OK && removed != ESHKOL_EVENT_LOOP_ENOENT) {
+            /* A private wait may discard its entire multiplexer on removal
+             * failure, but must first stop foreign interrupts using its waker.
+             * Backend close removes every watch without closing the borrowed fd. */
+            (void)eshkol_handle_set_waker(registry, id, lease->lease, NULL, NULL);
+            if (pthread_setspecific(wait_key, NULL) == 0) wait_context_free(context);
+            else {
+                /* Keep a poisoned TLS record for its destructor if clearing TLS
+                 * itself fails; never hand its retired backend to another wait. */
+                (void)eshkol_event_loop_close(context->loop); context->loop = NULL;
+                close(context->wake_read); close(context->wake_write);
+                context->wake_read = context->wake_write = -1;
+            }
+            return ESHKOL_IO_SYSTEM;
+        }
     }
     (void)eshkol_handle_set_waker(registry, id, lease->lease, NULL, NULL);
     return result;
@@ -281,34 +314,107 @@ typedef struct ManagedResource {
     int sticky, cancelled, closing, ready, running, detached, native_done;
     int wait_fd, wait_events;
     eshkol_resource_cleanup_result_t result;
-    struct ManagedResource *next;
+    struct ManagedResource *next, *previous, *pending_next;
+    int indexed, queued;
 } ManagedResource;
 static pthread_mutex_t managed_lock = PTHREAD_MUTEX_INITIALIZER;
-static ManagedResource *managed_resources;
+static ManagedResource *managed_resources, *managed_pending;
+/* Full identity keys retain old cleanup responsibility across registry slot
+ * reuse. Only adoption grows or rehashes this process-lifetime index. */
+typedef struct { uint64_t id; ManagedResource *resource; } ManagedIndexEntry;
+static ManagedIndexEntry *managed_index;
+static size_t managed_index_capacity, managed_index_count, managed_index_used;
+#define INDEX_REMOVED UINT64_MAX
+#ifdef ESHKOL_RESOURCE_TESTING
+static _Thread_local uint64_t managed_lock_count, managed_pump_count;
+uint64_t eshkol_resource_test_managed_lock_count(void) { return managed_lock_count; }
+uint64_t eshkol_resource_test_managed_pump_count(void) { return managed_pump_count; }
+#endif
+static void managed_lock_enter(void) {
+#ifdef ESHKOL_RESOURCE_TESTING
+    ++managed_lock_count;
+#endif
+    pthread_mutex_lock(&managed_lock);
+}
 #define CLEANUP_TAG 31u
 
-static ManagedResource *managed_find(int64_t id) {
-    for (ManagedResource *m = managed_resources; m; m = m->next)
-        if (m->id == id) return m;
+static size_t managed_hash(uint64_t id, size_t capacity) {
+    id ^= id >> 33; id *= UINT64_C(0xff51afd7ed558ccd);
+    id ^= id >> 33; id *= UINT64_C(0xc4ceb9fe1a85ec53);
+    id ^= id >> 33;
+    return (size_t)id & (capacity - 1);
+}
+static ManagedIndexEntry *managed_entry(uint64_t id) {
+    if (!id || !managed_index_capacity) return NULL;
+    size_t slot = managed_hash(id, managed_index_capacity);
+    for (size_t n = 0; n < managed_index_capacity; ++n) {
+        ManagedIndexEntry *entry = &managed_index[slot];
+        if (!entry->id) return NULL;
+        if (entry->id == id) return entry;
+        slot = (slot + 1) & (managed_index_capacity - 1);
+    }
     return NULL;
 }
+static void managed_insert(uint64_t id, ManagedResource *m) {
+    size_t slot = managed_hash(id, managed_index_capacity);
+    while (managed_index[slot].id && managed_index[slot].id != INDEX_REMOVED)
+        slot = (slot + 1) & (managed_index_capacity - 1);
+    if (!managed_index[slot].id) ++managed_index_used;
+    managed_index[slot] = (ManagedIndexEntry){id, m}; ++managed_index_count;
+}
+static int managed_reserve(void) {
+    if (managed_index_used + 2 < managed_index_capacity / 2) return 0;
+    size_t capacity = managed_index_capacity ? managed_index_capacity : 64;
+    if (managed_index_count + 2 >= capacity / 2) {
+        if (capacity > SIZE_MAX / (2 * sizeof(*managed_index))) return ESHKOL_IO_SYSTEM;
+        capacity *= 2;
+    }
+    ManagedIndexEntry *index = calloc(capacity, sizeof(*index));
+    if (!index) return ESHKOL_IO_SYSTEM;
+    ManagedIndexEntry *old = managed_index; size_t old_capacity = managed_index_capacity;
+    managed_index = index; managed_index_capacity = capacity;
+    managed_index_count = managed_index_used = 0;
+    for (size_t i = 0; i < old_capacity; ++i)
+        if (old[i].id && old[i].id != INDEX_REMOVED) managed_insert(old[i].id, old[i].resource);
+    free(old);
+    return 0;
+}
+static void managed_erase(uint64_t id) {
+    ManagedIndexEntry *entry = managed_entry(id);
+    if (entry) { entry->id = INDEX_REMOVED; entry->resource = NULL; --managed_index_count; }
+}
+static ManagedResource *managed_find(int64_t id) {
+    ManagedIndexEntry *entry = id > 0 ? managed_entry((uint64_t)id) : NULL;
+    return entry && entry->resource->id == id ? entry->resource : NULL;
+}
 static ManagedResource *ticket_find(int64_t ticket) {
-    for (ManagedResource *m = managed_resources; m; m = m->next)
-        if (m->ticket == ticket) return m;
-    return NULL;
+    ManagedIndexEntry *entry = ticket > 0 ? managed_entry((uint64_t)ticket) : NULL;
+    return entry && entry->resource->ticket == ticket ? entry->resource : NULL;
+}
+static void managed_enqueue(ManagedResource *m) {
+    if (!m->indexed || m->queued) return;
+    m->pending_next = managed_pending; managed_pending = m; m->queued = 1;
 }
 static int on_owner(const ManagedResource *m) { return pthread_equal(m->owner, pthread_self()); }
 static void managed_wake(ManagedResource *m) {
     (void)eshkol_event_loop_wake(m->loop_pointer);
 }
 static int managed_has_id(int64_t id) {
-    pthread_mutex_lock(&managed_lock);
-    int found = managed_find(id) != NULL;
+    uint32_t flags = 0;
+    return id > 0 && eshkol_handle_resource_flags(eshkol_resource_registry(),
+        (eshkol_handle_id_t)id, &flags) == ESHKOL_HANDLE_OK &&
+        (flags & ESHKOL_HANDLE_FLAG_MANAGED);
+}
+static void managed_release_pending(int64_t id) {
+    managed_lock_enter();
+    ManagedResource *m = managed_find(id);
+    int64_t loop = m && on_owner(m) && m->closing && m->ready && !m->running &&
+        m->result.state == ESHKOL_CLEANUP_PENDING ? m->loop : 0;
     pthread_mutex_unlock(&managed_lock);
-    return found;
+    if (loop) (void)eshkol_resource_pump(loop);
 }
 static int managed_before_borrow(int64_t id) {
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = managed_find(id);
     int rc = !m ? 0 : m->closing ? ESHKOL_IO_INVALID :
              !on_owner(m) ? ESHKOL_IO_BUSY : m->cancelled ? ESHKOL_IO_CANCELLED : 0;
@@ -317,7 +423,7 @@ static int managed_before_borrow(int64_t id) {
     return rc;
 }
 static int managed_cancel(int64_t id) {
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = managed_find(id);
     int rc = !m || m->closing ? ESHKOL_IO_INVALID : 0;
     if (!rc) { m->cancelled = 1; managed_wake(m); }
@@ -327,8 +433,9 @@ static int managed_cancel(int64_t id) {
 static int queued_close(eshkol_handle_kind_t kind, uintptr_t native, void *data) {
     (void)kind; (void)native;
     ManagedResource *m = data;
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     m->ready = 1;
+    managed_enqueue(m);
     managed_wake(m);
     pthread_mutex_unlock(&managed_lock);
     return 0;
@@ -357,7 +464,10 @@ int64_t eshkol_resource_adopt_on_loop(eshkol_handle_kind_t kind, uint32_t tag,
     }
     m->owner = pthread_self(); m->loop = loop; m->loop_pointer = target; m->native = native;
     m->cleanup = cleanup; m->data = data; m->sticky = sticky != 0;
-    m->id = eshkol_resource_adopt(kind, tag, native, queued_close, m);
+    eshkol_handle_id_t resource_id = 0;
+    int created = eshkol_handle_create_resource_tagged(eshkol_resource_registry(),
+        kind, tag, ESHKOL_HANDLE_FLAG_MANAGED, native, queued_close, m, &resource_id);
+    m->id = created ? ESHKOL_IO_SYSTEM : (int64_t)resource_id;
     if (m->id < 0) {
         (void)eshkol_event_loop_release_handle(loop);
         int64_t rc = m->id; free(m); return rc;
@@ -384,14 +494,28 @@ int64_t eshkol_resource_adopt_on_loop(eshkol_handle_kind_t kind, uint32_t tag,
         (void)eshkol_event_loop_release_handle(loop);
         free(m); return ESHKOL_IO_BUSY;
     }
-    pthread_mutex_lock(&managed_lock);
-    m->next = managed_resources; managed_resources = m;
+    managed_lock_enter();
+    int indexed = managed_reserve();
+    if (!indexed) {
+        managed_insert((uint64_t)m->id, m);
+        managed_insert((uint64_t)m->ticket, m);
+        m->indexed = 1;
+        m->next = managed_resources;
+        if (managed_resources) managed_resources->previous = m;
+        managed_resources = m;
+    }
     pthread_mutex_unlock(&managed_lock);
+    if (indexed) {
+        (void)eshkol_handle_close(eshkol_resource_registry(), (eshkol_handle_id_t)m->id);
+        (void)eshkol_handle_close(eshkol_resource_registry(), ticket);
+        (void)eshkol_event_loop_release_handle(loop);
+        free(m); return indexed;
+    }
     return m->id;
 }
 int eshkol_resource_check(const eshkol_resource_lease_t *lease) {
     if (!lease || !lease->lease) return ESHKOL_IO_INVALID;
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = managed_find(lease->id);
     int rc = !m ? 0 : !on_owner(m) ? ESHKOL_IO_BUSY :
              m->closing || m->cancelled ? ESHKOL_IO_CANCELLED : 0;
@@ -413,7 +537,7 @@ int eshkol_resource_wait_on_loop(const eshkol_resource_lease_t *lease,
     int fd, int events, int64_t deadline) {
     if (!lease || !lease->lease || fd < 0 ||
         !(events & (ESHKOL_RESOURCE_READ | ESHKOL_RESOURCE_WRITE))) return ESHKOL_IO_INVALID;
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = managed_find(lease->id);
     if (!m || !on_owner(m)) { pthread_mutex_unlock(&managed_lock); return m ? ESHKOL_IO_BUSY : ESHKOL_IO_INVALID; }
     int rc = m->closing || m->cancelled ? ESHKOL_IO_CANCELLED : 0;
@@ -438,6 +562,10 @@ int eshkol_resource_wait_on_loop(const eshkol_resource_lease_t *lease,
         const eshkol_event_t *fired; int count;
         if (eshkol_event_loop_poll(loop, left, &fired, &count)) { rc = ESHKOL_IO_SYSTEM; break; }
         int ready = 0;
+        /* Unrelated readiness is deliberately left unread. Both supported
+         * backends are level-triggered: the other owner's next poll must report
+         * it again until that owner drains the fd. Edge triggering would require
+         * a shared delivery queue instead of discarding these notifications. */
         for (int i = 0; i < count; ++i) {
             if (fired[i].fd == fd && fired[i].user_data == (uint64_t)m->id)
                 ready |= (fired[i].events & interest) | ((fired[i].events & ESHKOL_EVENT_ERROR) ? interest : 0);
@@ -449,14 +577,14 @@ int eshkol_resource_wait_on_loop(const eshkol_resource_lease_t *lease,
     }
     if (managed_unwatch(m)) rc = ESHKOL_IO_SYSTEM;
     if (rc == ESHKOL_IO_CANCELLED && !m->sticky) {
-        pthread_mutex_lock(&managed_lock); m->cancelled = 0; pthread_mutex_unlock(&managed_lock);
+        managed_lock_enter(); m->cancelled = 0; pthread_mutex_unlock(&managed_lock);
     }
     return rc;
 }
 int64_t eshkol_resource_close_request(int64_t id, eshkol_handle_kind_t kind, uint32_t mask) {
     eshkol_handle_registry_t *registry = eshkol_resource_registry();
     if (!resource_matches(registry, id, kind, mask, NULL)) return ESHKOL_IO_INVALID;
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = managed_find(id);
     if (!m || m->closing) { pthread_mutex_unlock(&managed_lock); return ESHKOL_IO_INVALID; }
     int64_t ticket = m->ticket;
@@ -473,21 +601,33 @@ int64_t eshkol_resource_close_request(int64_t id, eshkol_handle_kind_t kind, uin
 static int managed_close_detached(int64_t id, eshkol_handle_kind_t kind, uint32_t mask) {
     int64_t ticket = eshkol_resource_close_request(id, kind, mask);
     if (ticket < 0) return (int)ticket;
-    pthread_mutex_lock(&managed_lock);
+    return eshkol_resource_cleanup_detach(ticket);
+}
+int eshkol_resource_cleanup_detach(int64_t ticket) {
+    managed_lock_enter();
     ManagedResource *m = ticket_find(ticket);
     if (m) m->detached = 1;
     int complete = m && m->result.state == ESHKOL_CLEANUP_COMPLETE;
     pthread_mutex_unlock(&managed_lock);
+    if (!m) return ESHKOL_IO_INVALID;
+    /* Handoff is accepted even if owner maintenance wins the successful-release
+     * race. Failed/pending records remain owned by the detached recovery path. */
     if (complete) (void)eshkol_resource_cleanup_release(ticket);
     return 0;
 }
 int eshkol_resource_pump(int64_t loop_handle) {
+#ifdef ESHKOL_RESOURCE_TESTING
+    ++managed_pump_count;
+#endif
     for (;;) {
-        pthread_mutex_lock(&managed_lock);
-        ManagedResource *m = managed_resources;
-        while (m && (!m->closing || !m->ready || m->running || !on_owner(m) ||
-            (loop_handle && m->loop != loop_handle) || m->result.state != ESHKOL_CLEANUP_PENDING)) m = m->next;
+        managed_lock_enter();
+        ManagedResource **link = &managed_pending;
+        while (*link && (!on_owner(*link) || (loop_handle && (*link)->loop != loop_handle)))
+            link = &(*link)->pending_next;
+        ManagedResource *m = *link;
         if (!m) { pthread_mutex_unlock(&managed_lock); return 0; }
+        *link = m->pending_next;
+        m->pending_next = NULL; m->queued = 0;
         m->running = 1;
         pthread_mutex_unlock(&managed_lock);
         eshkol_resource_cleanup_result_t result = {ESHKOL_CLEANUP_COMPLETE, 0, 0, 0};
@@ -508,7 +648,7 @@ int eshkol_resource_pump(int64_t loop_handle) {
             if (release) result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_FAILED,
                 ESHKOL_CLEANUP_LOOP, 0, 1};
         }
-        pthread_mutex_lock(&managed_lock);
+        managed_lock_enter();
         m->result = result; m->running = 0;
         int64_t ticket = m->ticket;
         int detach = m->detached && result.state == ESHKOL_CLEANUP_COMPLETE;
@@ -520,38 +660,45 @@ int eshkol_resource_cleanup_result(int64_t ticket, eshkol_resource_cleanup_resul
     if (!out || !resource_matches(eshkol_resource_registry(), ticket, ESHKOL_HANDLE_KIND_CLEANUP,
                                   UINT32_C(1) << CLEANUP_TAG, NULL)) return ESHKOL_IO_INVALID;
     (void)eshkol_resource_pump(0);
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = ticket_find(ticket);
     if (m) *out = m->result;
     pthread_mutex_unlock(&managed_lock);
     return m ? 0 : ESHKOL_IO_INVALID;
 }
 int eshkol_resource_cleanup_retry(int64_t ticket) {
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = ticket_find(ticket);
     int rc = !m ? ESHKOL_IO_INVALID : !on_owner(m) ? ESHKOL_IO_BUSY :
         m->result.state != ESHKOL_CLEANUP_FAILED || !m->result.retryable ? ESHKOL_IO_INVALID : 0;
-    if (!rc) m->result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_PENDING, 0, 0, 0};
+    if (!rc) {
+        m->result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_PENDING, 0, 0, 0};
+        managed_enqueue(m);
+    }
     pthread_mutex_unlock(&managed_lock);
     if (!rc) (void)eshkol_resource_pump(0);
     return rc;
 }
 int eshkol_resource_cleanup_release(int64_t ticket) {
-    pthread_mutex_lock(&managed_lock);
-    ManagedResource **link = &managed_resources;
-    while (*link && (*link)->ticket != ticket) link = &(*link)->next;
-    ManagedResource *m = *link;
+    managed_lock_enter();
+    ManagedResource *m = ticket_find(ticket);
     if (!m || m->running || m->result.state == ESHKOL_CLEANUP_PENDING || m->result.retryable) {
         pthread_mutex_unlock(&managed_lock); return m ? ESHKOL_IO_BUSY : ESHKOL_IO_INVALID;
     }
     int rc = eshkol_handle_close(eshkol_resource_registry(), (eshkol_handle_id_t)ticket);
-    if (!rc) *link = m->next;
+    if (!rc) {
+        if (m->previous) m->previous->next = m->next;
+        else managed_resources = m->next;
+        if (m->next) m->next->previous = m->previous;
+        managed_erase((uint64_t)m->id);
+        managed_erase((uint64_t)m->ticket);
+    }
     pthread_mutex_unlock(&managed_lock);
     if (!rc) free(m);
     return rc ? ESHKOL_IO_INVALID : 0;
 }
 int64_t eshkol_resource_cleanup_ticket(int64_t retired_id) {
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     ManagedResource *m = managed_find(retired_id);
     int64_t ticket = m && m->closing && m->detached &&
         m->result.state == ESHKOL_CLEANUP_FAILED ? m->ticket : ESHKOL_IO_INVALID;
@@ -563,7 +710,7 @@ int eshkol_resource_managed_registration_count(int64_t handle) {
     eshkol_event_loop_t *loop = eshkol_event_loop_from_handle(handle);
     if (!loop || !eshkol_event_loop_is_owner(loop)) return -1;
     int count = 0;
-    pthread_mutex_lock(&managed_lock);
+    managed_lock_enter();
     for (ManagedResource *m = managed_resources; m; m = m->next) {
         if (m->loop != handle) continue;
         if (m->wait_fd >= 0) {
@@ -577,6 +724,7 @@ int eshkol_resource_managed_registration_count(int64_t handle) {
 #else
 static int managed_has_id(int64_t id) { (void)id; return 0; }
 static int managed_before_borrow(int64_t id) { (void)id; return 0; }
+static void managed_release_pending(int64_t id) { (void)id; }
 static int managed_cancel(int64_t id) { (void)id; return ESHKOL_IO_UNSUPPORTED; }
 static int managed_close_detached(int64_t id, eshkol_handle_kind_t kind, uint32_t mask) { (void)id; (void)kind; (void)mask; return ESHKOL_IO_UNSUPPORTED; }
 int64_t eshkol_resource_adopt_on_loop(eshkol_handle_kind_t kind, uint32_t tag, uintptr_t native, eshkol_resource_cleanup_fn cleanup, void *data, int64_t loop, int sticky) { (void)kind; (void)tag; (void)native; (void)cleanup; (void)data; (void)loop; (void)sticky; return ESHKOL_IO_UNSUPPORTED; }
@@ -586,6 +734,7 @@ int64_t eshkol_resource_close_request(int64_t id, eshkol_handle_kind_t kind, uin
 int eshkol_resource_cleanup_result(int64_t ticket, eshkol_resource_cleanup_result_t *out) { (void)ticket; (void)out; return ESHKOL_IO_UNSUPPORTED; }
 int eshkol_resource_cleanup_retry(int64_t ticket) { (void)ticket; return ESHKOL_IO_UNSUPPORTED; }
 int eshkol_resource_cleanup_release(int64_t ticket) { (void)ticket; return ESHKOL_IO_UNSUPPORTED; }
+int eshkol_resource_cleanup_detach(int64_t ticket) { (void)ticket; return ESHKOL_IO_UNSUPPORTED; }
 int64_t eshkol_resource_cleanup_ticket(int64_t id) { (void)id; return ESHKOL_IO_UNSUPPORTED; }
 int eshkol_resource_pump(int64_t loop) { (void)loop; return 0; }
 int eshkol_resource_managed_registration_count(int64_t loop) { (void)loop; return 0; }

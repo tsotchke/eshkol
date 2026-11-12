@@ -184,21 +184,21 @@ ESHKOL_EVENT_LOOP_OK, or a negative result code. In particular ESHKOL_EVENT_LOOP
 
 ### `eshkol_event_loop_remove`
 
-*Function* — line 165
+*Function* — line 171
 
 ```c
 int eshkol_event_loop_remove(eshkol_event_loop_t* loop, int fd);
 ```
 
-Stop watching `fd.`
+Stop watching `fd` on the owner thread.
 
 **Returns**
 
-ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_ENOENT if `fd` was never registered.
+OK after kernel removal (including an already-gone descriptor or filter), ENOENT when no table entry exists, or a negative backend error. A backend error preserves the registration and consumes its table slot. The caller must keep the descriptor and associated ownership alive, inspect last_os_error, repair the cause and retry removal; closing the descriptor behind the loop is not a substitute for releasing the registration. epoll and kqueue removal both treat ENOENT/EBADF as already removed. This differs from the earlier drop-on-error bookkeeping rule.
 
 ### `eshkol_event_loop_poll`
 
-*Function* — line 187
+*Function* — line 193
 
 ```c
 int eshkol_event_loop_poll(eshkol_event_loop_t* loop, int timeout_ms,
@@ -220,7 +220,7 @@ ESHKOL_EVENT_LOOP_OK, or a negative result code.
 
 ### `eshkol_event_loop_close`
 
-*Function* — line 199
+*Function* — line 205
 
 ```c
 int eshkol_event_loop_close(eshkol_event_loop_t* loop);
@@ -234,7 +234,7 @@ ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_EINVAL for a NULL loop.
 
 ### `eshkol_event_loop_count`
 
-*Function* — line 202
+*Function* — line 208
 
 ```c
 int eshkol_event_loop_count(const eshkol_event_loop_t* loop);
@@ -246,7 +246,7 @@ Number of descriptors currently registered, or -1 for a NULL loop.
 
 ### `eshkol_event_loop_last_os_error`
 
-*Function* — line 208
+*Function* — line 214
 
 ```c
 int eshkol_event_loop_last_os_error(const eshkol_event_loop_t* loop);
@@ -256,7 +256,7 @@ Host error detail (errno, or GetLastError/WSAGetLastError) for the most recent E
 
 ### `eshkol_event_loop_backend_name`
 
-*Function* — line 216
+*Function* — line 222
 
 ```c
 const char* eshkol_event_loop_backend_name(void);
@@ -266,7 +266,7 @@ Name of the compiled-in backend: "kqueue", "epoll", "iocp" or "none". Reported b
 
 ### `eshkol_event_loop_open_handle`
 
-*Function* — line 231
+*Function* — line 237
 
 ```c
 int64_t eshkol_event_loop_open_handle(int max_events);
@@ -280,7 +280,7 @@ A handle >= 1, or -1 on failure.
 
 ### `eshkol_event_loop_from_handle`
 
-*Function* — line 238
+*Function* — line 248
 
 ```c
 eshkol_event_loop_t* eshkol_event_loop_from_handle(int64_t handle);
@@ -290,11 +290,11 @@ Resolve a handle to its loop.
 
 **Returns**
 
-The loop, or NULL if the handle is malformed, already closed, or refers to a recycled slot.
+The loop, or NULL if the handle is malformed, already closed, or refers to a recycled slot, or belongs to another thread. All ordinary pointer/handle operations and Scheme event-loop builtins are owner-thread confined; only wake is a cross-thread request. Public loop integers now use the shared exact resource registry and remain opaque, generation-checked IDs; programs must not depend on their prior numeric value domain.
 
 ### `eshkol_event_loop_close_handle`
 
-*Function* — line 251
+*Function* — line 264
 
 ```c
 int eshkol_event_loop_close_handle(int64_t handle);
@@ -304,7 +304,7 @@ Close the loop a handle names and retire the handle. Idempotent-observable: clos
 
 **Returns**
 
-ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_EINVAL.
+OK on close, EBUSY for a live loop owned by another thread or retained by a resource, or EINVAL for an invalid/closed identity. EBUSY preserves both the identity and loop; perform close on its owner after outstanding resource cleanup resolves.
 
 ## Undocumented
 
@@ -312,10 +312,10 @@ ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_EINVAL.
 |---|---|---:|
 | `ESHKOL_EVENT_READ` | Macro | 83 |
 | `ESHKOL_EVENT_LOOP_OK` | Macro | 96 |
-| `eshkol_event_loop_retain_handle` | Function | 255 |
-| `eshkol_event_loop_release_handle` | Function | 256 |
-| `eshkol_event_loop_is_owner` | Function | 259 |
-| `eshkol_event_loop_wake` | Function | 262 |
-| `eshkol_event_loop_set_maintenance` | Function | 263 |
-| `eshkol_event_loop_registration_present` | Function | 265 |
-| `eshkol_event_loop_registration_matches` | Function | 268 |
+| `eshkol_event_loop_retain_handle` | Function | 268 |
+| `eshkol_event_loop_release_handle` | Function | 269 |
+| `eshkol_event_loop_is_owner` | Function | 272 |
+| `eshkol_event_loop_wake` | Function | 275 |
+| `eshkol_event_loop_set_maintenance` | Function | 276 |
+| `eshkol_event_loop_registration_present` | Function | 278 |
+| `eshkol_event_loop_registration_matches` | Function | 281 |

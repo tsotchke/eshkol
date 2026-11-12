@@ -65,12 +65,35 @@ raise SystemExit(3 if mode=='nonzero' else 0)
         assert r.returncode == (0 if good else 1), (mode, control, r.stdout, r.stderr)
         result = json.loads(r.stdout)
         assert (result["status"] == "PASS") == good
+        if good:
+            assert result["socket_directory_removed"]
+            assert not Path(result["socket_directory"]).exists()
         rows.append({"case": mode + ":" + control, "expected_pass": good, "status": result["status"]})
     # Exercise timeout cleanup directly with one owned, isolated child.
     sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location("socket_runner", driver)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    assert module.transfer_budget(2) == 45
+    assert module.transfer_budget(20) == 110
+    assert module.transfer_budget(100) == 180
+    rows.append({"case": "measured-compile-budget-bounded", "status": "PASS"})
+    preferred = work / "temp"
+    preferred.mkdir()
+    original_tempdir = module.tempfile.tempdir
+    try:
+        module.tempfile.tempdir = str(preferred)
+        scratch = module.socket_scratch()
+        expected = preferred if len(os.fsencode(preferred)) <= 55 else Path("/tmp")
+        assert scratch.parent == expected
+        scratch.rmdir()
+        module.tempfile.tempdir = "/tmp"
+        scratch = module.socket_scratch()
+        assert scratch.parent == Path("/tmp")
+        scratch.rmdir()
+    finally:
+        module.tempfile.tempdir = original_tempdir
+    rows.append({"case": "scratch-tempdir-path-budget", "status": "PASS"})
     original_killpg, original_run = module.os.killpg, module.subprocess.run
     def denied_probe(pid, sig):
         raise PermissionError("controlled visibility denial")

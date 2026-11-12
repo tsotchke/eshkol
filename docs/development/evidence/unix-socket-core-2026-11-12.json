@@ -67,11 +67,18 @@
     "tests": 65,
     "passed": 65,
     "failed": [],
-    "command": "ctest --test-dir /home/gabe/.codex/worktrees/unix-socket-core-20261112/build --output-on-failure --output-junit /home/gabe/.codex/worktrees/unix-socket-core-20261112/checks/qualification-junit.xml -j3 -R '^(ipc-unix-|agent-unix-|resource_explicit_loop_test$|agent-subprocess-stream($|-public$|-watch-failure$)|handle_lifecycle_test$|handle_c_api_test$|net_runtime_test$|net_clock_failure_test$|net_close_concurrency_test$|net_lease_test$|tls_test_pki$|tls_lease_test$)'"
+    "command": "ctest --test-dir <qualification-root>/build --output-on-failure --output-junit <qualification-root>/checks/qualification-junit.xml -j3 -R '^(ipc-unix-|agent-unix-|resource_explicit_loop_test$|agent-subprocess-stream($|-public$|-watch-failure$)|handle_lifecycle_test$|handle_c_api_test$|net_runtime_test$|net_clock_failure_test$|net_close_concurrency_test$|net_lease_test$|tls_test_pki$|tls_lease_test$)'"
   },
   "cold_cache_parallel_writers": 3,
   "public_scenario_receipts": 33,
-  "evidence_files_sha256": {
+  "scope": "Native Linux socket core, shared ownership, PROCESS integration, JIT/AOT public bridge, explicit VM refusal. No macOS/Windows or full-release acceptance claim.",
+  "known_limits": [
+    "Broader parallel all-target build failed in shared compiler-bootstrap generation; scoped eshkol-run/stdlib and qualification targets built and tested. See retained build logs.",
+    "Baseline surface-count prose checker reports six prose mismatches in five unchanged documents with 1067 instead of canonical 1069; generated/public API documentation checks pass.",
+    "macOS kqueue, Windows sockets/readiness, portable VM execution and full repository/release/package acceptance NOT RUN.",
+    "Cleanup-ticket API is a concrete review proposal; draft PR requires maintainer review."
+  ],
+  "historical_local_evidence_sha256": {
     "cold-cache/object-header.log": "3abf511e51d992937cfef098c7a74986bd22490bf7d4296d177eda4a5d38ebbe",
     "cold-cache/reproduce.py": "03280b37796e4fc5fb64e346224c8b09f5c80d50b2653ca45b0c39eca4444f33",
     "cold-cache/results.json": "80bd127a06f4c33ce90ed3e2dcd643804b67fac5d548959b742a7e6c8cf24118",
@@ -218,11 +225,5 @@
     "shared/results.json": "0b2b2a7a1f1c385a6343ef15b696f367f986eed3dc21f1c1fac561a8c46682e5",
     "shared/sanitized.log": "a69dd5225661f6f08ca60553e70fdbbd992fcbd700e912ec2edc15e2ffd95c69"
   },
-  "scope": "Native Linux socket core, shared ownership, PROCESS integration, JIT/AOT public bridge, explicit VM refusal. No macOS/Windows or full-release acceptance claim.",
-  "known_limits": [
-    "Broader parallel all-target build failed in shared compiler-bootstrap generation; scoped eshkol-run/stdlib and qualification targets built and tested. See retained build logs.",
-    "Baseline surface-count prose checker reports six prose mismatches in five unchanged documents with 1067 instead of canonical 1069; generated/public API documentation checks pass.",
-    "macOS kqueue, Windows sockets/readiness, portable VM execution and full repository/release/package acceptance NOT RUN.",
-    "Cleanup-ticket API is a concrete review proposal; draft PR requires maintainer review."
-  ]
+  "provenance": "Historical Linux run at the source commit below. Raw logs are retained locally, not shipped in the repository. Machine paths in commands are represented by placeholders; original raw-byte hashes are preserved."
 }

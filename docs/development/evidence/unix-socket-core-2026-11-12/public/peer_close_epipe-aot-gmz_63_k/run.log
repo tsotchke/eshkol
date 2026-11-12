@@ -1,2 +1,0 @@
-PASS: unix-socket peer_close_epipe
-CHECKS: 7

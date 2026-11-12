@@ -1,3 +1,0 @@
-SCRATCH: /tmp/eshkol-unix-rpuy97
-MEASURE: accept_150_ms_elapsed=150
-PASS: unix_socket_stream_test deadline_accept (11 checks)

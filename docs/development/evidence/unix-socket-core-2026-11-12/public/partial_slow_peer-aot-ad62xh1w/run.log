@@ -1,3 +1,0 @@
-MEASURE: bytes=2097152 short-writes=52 would-block=413
-PASS: unix-socket partial_slow_peer
-CHECKS: 1914

@@ -1,3 +1,0 @@
-SCRATCH: /tmp/eshkol-unix-I5mDYf
-MEASURE: bytes=16777253 short_writes=453 would_block=3589 core_peak_growth_kib=1024
-PASS: unix_socket_stream_test nul_and_large_payload (16356 checks)

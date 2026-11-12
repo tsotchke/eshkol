@@ -5,6 +5,8 @@
 
 **Companion review:** [#916 scaffold findings and proposed resolutions](SOCKET_DESIGN_REVIEW-2026-11-10.md) explain the contract gaps and acceptance-test issues behind this decision.
 
+**Review decisions:** [November 12 design answers](SOCKET_DESIGN_ANSWERS-2026-11-12.md), including capabilities, typestate and ticket tradeoffs.
+
 ## Context and decision
 
 Provide filesystem `AF_UNIX/SOCK_STREAM` sockets using existing epoll/kqueue and the shared resource-lease machinery proposed in [#917](https://github.com/tsotchke/eshkol/pull/917). Extend that shared machinery for caller-supplied loops and sticky cancellation; keep one lease implementation and coordinate with PROCESS watches. Datagrams, descriptor passing and SSE remain outside this slice.
@@ -35,7 +37,7 @@ Idempotent, lifetime-safe cross-thread cancellation remains set for the socket, 
 
 PROCESS, EVENT_LOOP and SOCKET public identities use one process-lifetime exact registry, with kind/tag checks. PROCESS shutdown releases only its records; it never destroys the shared registry. Preserve published platform kind values; PROCESS and cleanup tickets have distinct kinds.
 
-Proposed completion interface: `close-request! id` accepts close and returns a separately owned cleanup ticket. `cleanup-result ticket` returns `#(state stage os-error retryable?)`: state is `pending`, `complete` or `failed`; stage identifies watch removal, descriptor close, pathname removal or loop release. Querying on the owner thread drives queued teardown without reading a clock; foreign-thread queries only observe. Release outstanding borrows before expecting completion. `cleanup-retry!` retries recoverable watch/path failures after repair, while `cleanup-release!` releases a terminal result ticket. Descriptor close is never retried after an uncertain outcome. `close!` remains an accepted-close convenience; successful detached results are discarded, and failed ones are recoverable through `cleanup-ticket old-id`. The retired socket identity grants observation only through that recovery operation, never renewed I/O authority.
+Proposed completion interface: `close-request! id` accepts close and returns a separately owned cleanup ticket. `cleanup-result ticket` returns `#(state stage os-error retryable?)`: state is `pending`, `complete` or `failed`; stage identifies watch removal, descriptor close, pathname removal or loop release. Querying on the owner thread drives queued teardown without reading a clock; foreign-thread queries only observe. Release outstanding borrows before expecting completion. `cleanup-retry!` retries recoverable watch/path failures after repair, while `cleanup-release!` releases a terminal result ticket. The callback owns terminality; the shared layer never times out a retry. Unix pathname cleanup permits one explicit repair/retry after the initial failure; a second failed attempt becomes a terminal PATH result and releases the loop retain, leaving manual removal to the caller. Descriptor close is never retried after an uncertain outcome. `close!` remains an accepted-close convenience; successful detached results are discarded, and failed ones are recoverable through `cleanup-ticket old-id`. The retired socket identity grants observation only through that recovery operation, never renewed I/O authority.
 
 Scoped listener/connection/accept helpers use the same close path on return, exception and continuation escape, and reject re-entry into a finished scope.
 
@@ -47,7 +49,7 @@ Gabe owns the common lease/wait extensions and Unix socket core. The scaffold la
 
 Require an absolute, NUL-free path fitting `sun_path` in encoded bytes, inside a verified owned private 0700 directory. Bind, chmod 0600, then listen/publish; roll back setup errors without global umask changes. Refuse existing entries, including restart leftovers; require explicit owner removal. Only the listener unlinks its recorded entry during close/rollback, never replacements/client destinations. Report unlink errors for repair; never retry uncertain fd close.[1]
 
-**Abstract namespace: no**, preserving portable permissions/cleanup.[1] **Windows:** after Winsock initialization, probe `socket(AF_UNIX, SOCK_STREAM, 0)`, close it, and distinguish unsupported-family from other errors. This slice remains explicitly unsupported without a readiness adapter.[3] **VM:** explicitly reject the bridge until adapted.
+**Abstract namespace: no**, preserving portable permissions/cleanup.[1] **Windows/WASM/VM:** explicitly refuse this bridge until an ownership/readiness adapter exists. An AF_UNIX availability probe alone does not establish support.[3]
 
 ## Acceptance
 

@@ -1,2 +1,0 @@
-PASS: unix-socket connect_cancellation
-CHECKS: 5

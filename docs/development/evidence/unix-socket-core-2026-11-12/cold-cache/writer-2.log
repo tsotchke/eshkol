@@ -1,3 +1,0 @@
-[REPL] Discovered 1167 functions, 1446 globals, 31 variadic entries from stdlib.bc
-[REPL] Loaded stdlib from cached object: /tmp/eshkol-jit-cold-cache-5q5h715s/stdlib-jit-v4-58B21C918395D31C-x86_64-pc-linux-gnu-abi1h8s0a8.o
-PASS: concurrent cold stdlib cache

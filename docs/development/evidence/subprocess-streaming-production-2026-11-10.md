@@ -5,16 +5,12 @@ Linux runs performed on November 10, 2026 (America/New_York), at source revision
 `a1f00d30596b77df7a526c2e4444d23f5075bde4`. It was assembled from retained logs
 and artifacts on November 11. No new runtime run is claimed by this documentation
 update. The [earlier minimal-archive record](subprocess-streaming-2026-11-04.json)
-retains its original scope and bytes.
+retains its original scope and result hashes; machine paths in summary commands are now placeholders.
 
 Both the production build and staged-package driver completed 23 public checks
 in each of JIT and AOT, a large-output fixture with 17,825,829 bytes per stream
 and child exit 19, and expected closed-session re-entry rejection. The standalone
-VM explicitly refused the unsupported bridge before bytecode emission. The
-[production summary](subprocess-streaming-production-2026-11-10/production-summary.log)
-and [package summary](subprocess-streaming-production-2026-11-10/package-summary.log)
-link those outcomes to the retained raw per-fixture logs in the adjacent folders.
-The driver checks child exit codes as well as success/error markers before
+VM explicitly refused the unsupported bridge before bytecode emission. Original raw build and per-fixture logs are retained locally. Their original-byte hashes remain in the JSON; raw machine logs are not shipped in the repository. The driver checks child exit codes as well as success/error markers before
 printing each PASS and its final summary. Expected rejection logs therefore
 contain errors by design.
 
@@ -22,9 +18,7 @@ contain errors by design.
 
 Use the recorded source revision in a separate checkout, with sibling build,
 package, checks and toolchain directories. The compiler was Clang 22.1.8, LLVM
-21.1.8, CMake 4.3.3, Linux x86_64 epoll, object ABI v1. The retained
-[configure log](subprocess-streaming-production-2026-11-10/configure.log) records
-the toolchain and production dependency configuration. Configure arguments below
+21.1.8, CMake 4.3.3, Linux x86_64 epoll, object ABI v1. The JSON records the toolchain and production dependency configuration. Configure arguments below
 reproduce the retained CMake configuration; substitute your LLVM 21.1.8
 `llvm-config` path. The raw original configure argv was not separately retained.
 

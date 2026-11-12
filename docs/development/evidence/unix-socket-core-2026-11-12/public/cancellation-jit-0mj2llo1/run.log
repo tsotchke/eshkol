@@ -1,4 +1,0 @@
-[REPL] Discovered 1167 functions, 1446 globals, 31 variadic entries from stdlib.bc
-[REPL] Loaded stdlib from cached object: /home/gabe/.codex/worktrees/unix-socket-core-20261112/build/stdlib-jit-v4-58B21C918395D31C-x86_64-pc-linux-gnu-abi1h8s0a8.o
-PASS: unix-socket cancellation
-CHECKS: 4

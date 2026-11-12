@@ -267,6 +267,12 @@ static void scenario_path_lifecycle(void) {
     CHECK(result == 0 || result == ESHKOL_IO_SYSTEM);
     CHECK(lstat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_ino == inode);
     CHECK(eshkol_unix_stream_socket_close(id) == ESHKOL_IO_INVALID);
+    int64_t ticket = eshkol_resource_cleanup_ticket(id); CHECK(ticket > 0);
+    eshkol_resource_cleanup_result_t cleanup;
+    CHECK(eshkol_resource_cleanup_result(ticket, &cleanup) == 0);
+    CHECK(cleanup.state == ESHKOL_CLEANUP_FAILED && cleanup.stage == ESHKOL_CLEANUP_PATH && !cleanup.retryable);
+    CHECK(eshkol_resource_cleanup_release(ticket) == 0);
+    CHECK(unlink(path) == 0); /* This replacement was created by this fixture. */
 }
 static void scenario_loop_lifetime(void) {
     pair_t p = pair_open();
@@ -306,11 +312,27 @@ int main(int argc, char **argv) {
             struct sockaddr_un a; memset(&a, 0, sizeof(a)); a.sun_family = AF_UNIX; strcpy(a.sun_path, path);
             CHECK(bind(fd, (struct sockaddr *)&a, sizeof(a)) == 0); CHECK(close(fd) == 0);
         } else b = full_backlog(0);
-        char ready_path[128], stop_path[128];
+        char ready_path[128], ready_temporary[128], stop_path[128];
         CHECK(snprintf(ready_path, sizeof(ready_path), "%s/ready", argv[2]) < (int)sizeof(ready_path));
+        CHECK(snprintf(ready_temporary, sizeof(ready_temporary), "%s/ready.pending", argv[2]) < (int)sizeof(ready_temporary));
         CHECK(snprintf(stop_path, sizeof(stop_path), "%s/stop", argv[2]) < (int)sizeof(stop_path));
-        FILE *ready_file = fopen(ready_path, "wx"); CHECK(ready_file != NULL); CHECK(fclose(ready_file) == 0);
-        int64_t deadline = now_ms() + 30000;
+        /* The peer outlives bounded compilation plus execution under load.
+         * It still exits independently if an interrupted runner never stops it. */
+        long budget = 300000; const char *budget_text = getenv("ESHKOL_UNIX_SOCKET_PEER_BUDGET_MS");
+        if (budget_text) {
+            char *end; errno = 0; budget = strtol(budget_text, &end, 10);
+            CHECK(!errno && budget_text[0] && !*end && budget >= 1000 && budget <= 600000);
+        }
+        /* full_backlog has observed EAGAIN before readiness is published. A
+         * created pathname/listener alone is not proof that the queue is full. */
+        FILE *ready_file = fopen(ready_temporary, "wx"); CHECK(ready_file != NULL);
+#if defined(__APPLE__)
+        CHECK(fputs(leftover ? "leftover-ready\n" : "darwin-controlled-pending\n", ready_file) >= 0);
+#else
+        CHECK(fputs(leftover ? "leftover-ready\n" : "linux-backlog-saturated\n", ready_file) >= 0);
+#endif
+        CHECK(fclose(ready_file) == 0); CHECK(rename(ready_temporary, ready_path) == 0);
+        int64_t deadline = now_ms() + budget;
         while (access(stop_path, F_OK) != 0 && now_ms() < deadline) nap(10);
         if (leftover) CHECK(unlink(path) == 0); else backlog_close(b);
         fprintf(stderr, "PASS: bounded raw peer\n"); return 0;
@@ -326,7 +348,7 @@ int main(int argc, char **argv) {
         CHECK(connect(client, (struct sockaddr *)&address, sizeof(address)) == 0);
         int accepted = accept(server, NULL, NULL); CHECK(accepted >= 0);
         CHECK(close(accepted) == 0 && close(client) == 0 && close(server) == 0); CHECK(unlink(real_path) == 0);
-        finish_loop();
+        finish_loop(); CHECK(rmdir(directory) == 0);
         fprintf(stderr, "PASS: controlled pending-connect fixture (%u checks)\n", checks); return 0;
     }
     setup(); const char *name = argv[1];
@@ -338,5 +360,5 @@ int main(int argc, char **argv) {
     CASE(path_lifecycle) CASE(loop_lifetime) CASE(borrowed_close) CASE(zero_budget)
     { fprintf(stderr, "unknown scenario: %s\n", name); return 2; }
 #undef CASE
-    finish_loop(); fprintf(stderr, "PASS: unix_socket_stream_test %s (%u checks)\n", name, checks); return 0;
+    finish_loop(); CHECK(rmdir(directory) == 0); fprintf(stderr, "PASS: unix_socket_stream_test %s (%u checks)\n", name, checks); return 0;
 }

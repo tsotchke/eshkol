@@ -3,6 +3,10 @@
 (require core.capabilities)
 (require agent.unix_stream_socket)
 (extern i32 -loop-close-code i64 :real eshkol_event_loop_close_handle)
+;; Test-only permission controls call libc; they do not replace socket I/O.
+(extern i32 -scope-chmod ptr i32 :real chmod)
+(extern i32 -scope-unlink ptr :real unlink)
+(extern i32 -scope-uid :real geteuid)
 (define scratch (get-environment-variable "ESHKOL_UNIX_STREAM_SOCKET_SCRATCH"))
 (unless scratch (error "socket lifecycle fixture needs a private scratch directory"))
 (define loop (make-event-loop 64))
@@ -84,6 +88,56 @@
 (check "finished scope refuses reentry" (probe-reentry))
 (check "receiver did not run again" (= passes 1))
 (check "reentry cannot recreate path" (not (file-exists? (path "reentry"))))
+
+;; A scope owns and releases its internal ticket after the socket callback's
+;; bounded PATH retry. Failed normal cleanup is observable; an exception keeps
+;; its original object/control. Test in a non-root process so chmod causes real
+;; kernel permission failures (native child controls cover root test hosts).
+(if (= (-scope-uid) 0)
+    (begin (display "NOT RUN: scoped permission failure controls require non-root") (newline))
+    (dynamic-wind
+      (lambda () (check "permission fixture starts writable" (= (-scope-chmod scratch 448) 0)))
+      (lambda ()
+        (let ((fault-loop (make-event-loop 8)))
+          (check "normal scope reports path cleanup failure"
+            (guard (e ((error-object? e)
+                (let ((args (error-object-irritants e)))
+                  (and (equal? (error-object-message e) "call-with-unix-stream-listener")
+                       (equal? (car args) "socket cleanup failed")
+                       (equal? (cadr args) (path "scope-cleanup-return"))
+                       (eq? (unix-stream-socket-cleanup-state (cadddr args)) 'failed)
+                       (eq? (unix-stream-socket-cleanup-stage (cadddr args)) 'path)
+                       (not (unix-stream-socket-cleanup-retryable? (cadddr args)))))))
+              (call-with-unix-stream-listener fault-loop (path "scope-cleanup-return")
+                (lambda (id) (set! seen id) (-scope-chmod scratch 320) 'returned))
+              #f))
+          (check "normal cleanup failure leaves its recorded path"
+            (file-exists? (path "scope-cleanup-return")))
+          (check "normal failed cleanup releases loop retain" (= (-loop-close-code fault-loop) 0))
+          (check "normal failed cleanup releases terminal ticket"
+            (not (unix-stream-socket-cleanup-ticket seen)))
+          (check "restore parent after normal failure" (= (-scope-chmod scratch 448) 0))
+          (check "caller repairs surrendered normal path" (= (-scope-unlink (path "scope-cleanup-return")) 0)))
+        (let ((fault-loop (make-event-loop 8)))
+          (check "cleanup failure preserves body exception"
+            (guard (e ((error-object? e)
+                        (equal? (error-object-message e) "original permission failure exception")))
+              (call-with-unix-stream-listener fault-loop (path "scope-cleanup-exception")
+                (lambda (id)
+                  (set! seen id) (-scope-chmod scratch 320)
+                  (error "original permission failure exception")))
+              #f))
+          (check "exception cleanup failure leaves recorded path"
+            (file-exists? (path "scope-cleanup-exception")))
+          (check "exception failed cleanup releases loop retain" (= (-loop-close-code fault-loop) 0))
+          (check "exception failed cleanup releases terminal ticket"
+            (not (unix-stream-socket-cleanup-ticket seen)))
+          (check "restore parent after exception failure" (= (-scope-chmod scratch 448) 0))
+          (check "caller repairs surrendered exception path" (= (-scope-unlink (path "scope-cleanup-exception")) 0))))
+      (lambda ()
+        (-scope-chmod scratch 448)
+        (when (file-exists? (path "scope-cleanup-return")) (-scope-unlink (path "scope-cleanup-return")))
+        (when (file-exists? (path "scope-cleanup-exception")) (-scope-unlink (path "scope-cleanup-exception"))))))
 
 ;; All three scoped acquire sites use the same release path.
 (define returned

@@ -1,11 +1,16 @@
 #define _POSIX_C_SOURCE 200809L
 #include "eshkol/core/resource_lease.h"
 #include "eshkol/core/event_loop.h"
+#include "../../lib/core/event_loop_internal.h"
+#include "../../lib/core/resource_handle_internal.h"
+#include <fcntl.h>
+#include <sys/wait.h>
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -64,6 +69,8 @@ static void *request(void *value) {
 }
 static void *close_loop_other_thread(void *value) {
     int64_t loop = *(int64_t *)value;
+    assert(eshkol_event_loop_from_handle(loop) == NULL);
+    assert(eshkol_event_loop_close_handle(loop) == ESHKOL_EVENT_LOOP_EBUSY);
     assert(eshkol_resource_close(loop, ESHKOL_HANDLE_KIND_EVENT_LOOP, 0) == ESHKOL_IO_BUSY);
     return NULL;
 }
@@ -225,9 +232,149 @@ static void adoption_rollback(void) {
     assert(eshkol_event_loop_close_handle(loop) == 0); close(fds[0]); close(fds[1]);
 #endif
 }
-int main(void) {
+static int legacy_closed;
+static int legacy_dispose(eshkol_handle_kind_t kind, uintptr_t value, void *data) {
+    (void)kind; (void)value; (void)data; ++legacy_closed; return 0;
+}
+static void indexed_dispatch_and_retired_recovery(void) {
+#ifdef ESHKOL_RESOURCE_TESTING
+    extern uint64_t eshkol_resource_test_managed_lock_count(void);
+    extern uint64_t eshkol_resource_test_managed_pump_count(void);
+    enum { RESOURCES = 128 };
+    Native owners[RESOURCES]; int64_t ids[RESOURCES];
+    int64_t loop = eshkol_event_loop_open_handle(8);
+    /* Keep many managed owners alive while exercising the already-shipped path. */
+    for (int i = 0; i < RESOURCES; ++i) ids[i] = adopt(loop, &owners[i], -1);
+    uint64_t locks = eshkol_resource_test_managed_lock_count();
+    uint64_t pumps = eshkol_resource_test_managed_pump_count();
+    for (int i = 0; i < 256; ++i) {
+        int64_t id = eshkol_resource_adopt(ESHKOL_HANDLE_KIND_SOCKET, TAG, 0, legacy_dispose, NULL);
+        eshkol_resource_lease_t lease;
+        assert(id > 0 && eshkol_resource_borrow(id, ESHKOL_HANDLE_KIND_SOCKET, MASK, &lease) == 0);
+        assert(eshkol_resource_cancel(id, ESHKOL_HANDLE_KIND_SOCKET, MASK) == 0);
+        eshkol_resource_release(&lease);
+        assert(eshkol_resource_close(id, ESHKOL_HANDLE_KIND_SOCKET, MASK) == 0);
+    }
+    assert(legacy_closed == 256);
+    assert(eshkol_resource_test_managed_lock_count() == locks);
+    assert(eshkol_resource_test_managed_pump_count() == pumps);
+    /* A normal managed release has nothing to pump either. */
+    eshkol_resource_lease_t lease;
+    assert(eshkol_resource_borrow(ids[0], ESHKOL_HANDLE_KIND_SOCKET, MASK, &lease) == 0);
+    eshkol_resource_release(&lease);
+    assert(eshkol_resource_test_managed_pump_count() == pumps);
+    for (int i = 0; i < RESOURCES; ++i) {
+        owners[i].retry_path = 1;
+        assert(eshkol_resource_close(ids[i], ESHKOL_HANDLE_KIND_SOCKET, MASK) == 0);
+    }
+    /* The registry reuses retired slots while their failed tickets still live.
+     * Full identity keys must retain every old pathname responsibility. */
+    Native newer[RESOURCES]; int64_t fresh[RESOURCES];
+    for (int i = 0; i < RESOURCES; ++i) fresh[i] = adopt(loop, &newer[i], -1);
+    for (int i = 0; i < RESOURCES; ++i) {
+        int64_t ticket = eshkol_resource_cleanup_ticket(ids[i]); assert(ticket > 0);
+        assert(eshkol_resource_cleanup_retry(ticket) == 0); finish(ticket);
+        finish(eshkol_resource_close_request(fresh[i], ESHKOL_HANDLE_KIND_SOCKET, MASK));
+    }
+    assert(eshkol_event_loop_close_handle(loop) == 0);
+#endif
+}
+static void removal_retains_until_retry(void) {
+#ifdef ESHKOL_RESOURCE_TESTING
+    extern void eshkol_event_loop_test_fail_remove_once(void);
+    eshkol_event_loop_t *loop = eshkol_event_loop_create(1); assert(loop);
+    int fd[2]; assert(pipe(fd) == 0);
+    assert(eshkol_event_loop_add(loop, fd[0], ESHKOL_EVENT_READ, 999) == 0);
+    eshkol_event_loop_test_fail_remove_once();
+    assert(eshkol_event_loop_remove(loop, fd[0]) == ESHKOL_EVENT_LOOP_EOSERR);
+    assert(eshkol_event_loop_last_os_error(loop) == EIO);
+    assert(eshkol_event_loop_count(loop) == 1);
+    assert(eshkol_event_loop_registration_matches(loop, fd[0], ESHKOL_EVENT_READ, 999));
+    assert(write(fd[1], "r", 1) == 1);
+    const eshkol_event_t *events; int count;
+    assert(eshkol_event_loop_poll(loop, 0, &events, &count) == 0 && count == 1);
+    assert(events[0].fd == fd[0] && events[0].user_data == 999);
+    assert(eshkol_event_loop_remove(loop, fd[0]) == 0 && eshkol_event_loop_count(loop) == 0);
+    close(fd[0]); close(fd[1]);
+    assert(pipe(fd) == 0);
+    assert(eshkol_event_loop_add(loop, fd[0], ESHKOL_EVENT_READ, 1000) == 0);
+    close(fd[0]); /* Both native backends normalize an already-gone descriptor. */
+    assert(eshkol_event_loop_remove(loop, fd[0]) == 0 && eshkol_event_loop_count(loop) == 0);
+    close(fd[1]); assert(eshkol_event_loop_close(loop) == 0);
+#endif
+}
+static void explicit_ticket_detach_handoff(void) {
+    int64_t loop = eshkol_event_loop_open_handle(8); Native n;
+    int64_t id = adopt(loop, &n, -1); eshkol_resource_lease_t lease;
+    assert(eshkol_resource_borrow(id, ESHKOL_HANDLE_KIND_SOCKET, MASK, &lease) == 0);
+    int64_t ticket = eshkol_resource_close_request(id, ESHKOL_HANDLE_KIND_SOCKET, MASK);
+    assert(ticket > 0 && eshkol_resource_cleanup_detach(ticket) == 0);
+    eshkol_resource_release(&lease);
+    eshkol_resource_cleanup_result_t result;
+    assert(n.calls == 1 && eshkol_resource_cleanup_result(ticket, &result) == ESHKOL_IO_INVALID);
+    assert(eshkol_resource_cleanup_ticket(id) == ESHKOL_IO_INVALID);
+    id = adopt(loop, &n, -1); n.retry_path = 1;
+    ticket = eshkol_resource_close_request(id, ESHKOL_HANDLE_KIND_SOCKET, MASK);
+    assert(ticket > 0 && eshkol_resource_cleanup_detach(ticket) == 0);
+    assert(eshkol_resource_cleanup_ticket(id) == ticket);
+    assert(eshkol_resource_cleanup_retry(ticket) == 0); finish(ticket);
+    assert(n.calls == 2 && eshkol_resource_cleanup_detach(ticket) == ESHKOL_IO_INVALID);
+    assert(eshkol_event_loop_close_handle(loop) == 0);
+}
+static void legacy_removal_failure_recovers(void) {
+#ifdef ESHKOL_RESOURCE_TESTING
+    extern void eshkol_event_loop_test_fail_remove_once(void);
+    int fds[2]; assert(pipe(fds) == 0);
+    int64_t id = eshkol_resource_adopt(ESHKOL_HANDLE_KIND_SOCKET, TAG, 0, legacy_dispose, NULL);
+    eshkol_resource_lease_t lease;
+    assert(id > 0 && eshkol_resource_borrow(id, ESHKOL_HANDLE_KIND_SOCKET, MASK, &lease) == 0);
+    assert(write(fds[1], "l", 1) == 1);
+    eshkol_event_loop_test_fail_remove_once();
+    assert(eshkol_resource_wait(&lease, fds[0], ESHKOL_RESOURCE_READ,
+                              eshkol_resource_deadline(100)) == ESHKOL_IO_SYSTEM);
+    /* The borrowed descriptor is still owned and readable. A new private
+     * multiplexer, not the failed slot table, services the next wait. */
+    assert(fcntl(fds[0], F_GETFD) >= 0);
+    assert(eshkol_resource_wait(&lease, fds[0], ESHKOL_RESOURCE_READ,
+                              eshkol_resource_deadline(100)) == 0);
+    char byte; assert(read(fds[0], &byte, 1) == 1 && byte == 'l');
+    assert(eshkol_resource_cancel(id, ESHKOL_HANDLE_KIND_SOCKET, MASK) == 0);
+    assert(eshkol_resource_wait(&lease, fds[0], ESHKOL_RESOURCE_READ,
+                              eshkol_resource_deadline(100)) == ESHKOL_IO_CANCELLED);
+    eshkol_resource_release(&lease);
+    assert(eshkol_resource_close(id, ESHKOL_HANDLE_KIND_SOCKET, MASK) == 0);
+    close(fds[0]); close(fds[1]);
+#endif
+}
+static void wake_descriptor_flags(const char *self) {
+    eshkol_event_loop_t *loop = eshkol_event_loop_create(1); assert(loop);
+    assert((fcntl(loop->wake_read, F_GETFL) & O_NONBLOCK) != 0);
+    assert((fcntl(loop->wake_write, F_GETFL) & O_NONBLOCK) != 0);
+    assert((fcntl(loop->wake_read, F_GETFD) & FD_CLOEXEC) != 0);
+    assert((fcntl(loop->wake_write, F_GETFD) & FD_CLOEXEC) != 0);
+#if defined(__linux__)
+    char read_fd[24], write_fd[24];
+    snprintf(read_fd, sizeof(read_fd), "%d", loop->wake_read);
+    snprintf(write_fd, sizeof(write_fd), "%d", loop->wake_write);
+    pid_t child = fork(); assert(child >= 0);
+    if (!child) { execl(self, self, "--closed-wake-fds", read_fd, write_fd, (char *)NULL); _exit(127); }
+    int status; assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#else
+    (void)self;
+#endif
+    assert(eshkol_event_loop_close(loop) == 0);
+}
+int main(int argc, char **argv) {
+    if (argc == 4 && !strcmp(argv[1], "--closed-wake-fds")) {
+        assert(fcntl(atoi(argv[2]), F_GETFD) == -1 && errno == EBADF);
+        assert(fcntl(atoi(argv[3]), F_GETFD) == -1 && errno == EBADF);
+        return 0;
+    }
     identity_readiness(); cancellation(); deferred_close(); queued_and_retry(); nonsticky_admission();
-    idle_wakeup_and_capacity(); adoption_rollback();
+    idle_wakeup_and_capacity(); adoption_rollback(); indexed_dispatch_and_retired_recovery();
+    removal_retains_until_retry(); legacy_removal_failure_recovers(); explicit_ticket_detach_handoff();
+    wake_descriptor_flags(argv[0]);
     puts("PASS: explicit-loop leases, mixed readiness, sticky cancellation, deferred and retryable cleanup");
     return 0;
 }
