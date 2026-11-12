@@ -84,7 +84,7 @@
       "ESHKOL_BLAS_ENABLED": "OFF",
       "ESHKOL_PYTHON_BINDINGS": "OFF",
       "ESHKOL_REQUIRED_LLVM_MAJOR": "21",
-      "LLVM_CONFIG_EXECUTABLE": "/home/gabe/.codex/worktrees/ipc-streaming-20261104/toolchain/usr/bin/llvm-config-21"
+      "LLVM_CONFIG_EXECUTABLE": "<llvm-root>/bin/llvm-config-21"
     },
     "retained_configuration_sha256": "5fe6b55736ac5ea5c17557155d2aedfde57d91dc2b0878e88f14267a3718e041"
   },
@@ -99,7 +99,7 @@
       "-DCMAKE_BUILD_TYPE=Release",
       "-DCMAKE_C_COMPILER=clang",
       "-DCMAKE_CXX_COMPILER=clang++",
-      "-DLLVM_CONFIG_EXECUTABLE=/home/gabe/.codex/worktrees/ipc-streaming-20261104/toolchain/usr/bin/llvm-config-21",
+      "-DLLVM_CONFIG_EXECUTABLE=<llvm-root>/bin/llvm-config-21",
       "-DESHKOL_REQUIRED_LLVM_MAJOR=21",
       "-DESHKOL_BUILD_AGENT_FFI=ON",
       "-DESHKOL_BUILD_TESTS=ON",
@@ -1070,5 +1070,6 @@
     "No replacement minimal archive, support DSO, or LD_PRELOAD was used in these production/staged runs.",
     "VM execution of subprocess streaming is unsupported; only explicit refusal is validated.",
     "No claim that upstream workflow approval or final maintainer integration review has completed."
-  ]
+  ],
+  "repository_record_note": "Summary record; original raw-log byte hashes are preserved. Raw machine logs are retained locally. Machine paths in commands use placeholders."
 }

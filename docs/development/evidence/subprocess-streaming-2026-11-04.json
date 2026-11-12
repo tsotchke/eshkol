@@ -154,5 +154,6 @@
       "macos_jit_aot": "not run",
       "full_packaged_agent_build": "not validated"
     }
-  }
+  },
+  "repository_record_note": "Summary record; original raw-log byte hashes are preserved. Raw machine logs are retained locally. Machine paths in commands use placeholders."
 }

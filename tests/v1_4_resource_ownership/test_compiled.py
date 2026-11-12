@@ -49,6 +49,7 @@ POSITIVE = (
     "positive-process",
     "positive-callee-closes-then-exits",
     "positive-constructor-closure-unused",
+    "positive-process-stream-scope",
 )
 NEGATIVE = (
     "negative-leak",
@@ -144,11 +145,13 @@ NEGATIVE = (
     "negative-constructor-closure-vector",
     "negative-constructor-closure-returned",
     "negative-constructor-closure-exported",
+    "negative-process-cleanup-aggregate",
 )
 
 # Every handle-family falsifier must fail for its own reason, not for an
 # unrelated diagnostic: the expected text is part of the contract.
 EXPECTED_DIAGNOSTIC = {
+    "negative-process-cleanup-aggregate": "ownership of aggregate cleanup records is unsupported",
     "negative-file-unclosed": "resource 'in' may still be live at scope exit",
     "negative-file-one-branch-unclosed": "resource 'in' may still be live at scope exit",
     "negative-file-two-arm-if": "resource 'in' may still be live at scope exit",
