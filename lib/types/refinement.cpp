@@ -32,6 +32,7 @@
 #include "eshkol/types/type_checker.h"
 #include <eshkol/frontend/syntax_color.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
