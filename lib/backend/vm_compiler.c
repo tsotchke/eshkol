@@ -2180,8 +2180,17 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         for (int i = 0; i < n_forms; ++i) {
             Node* form = forms[i];
             const char* name = vm_define_bound_name(form);
-            if ((form->type == N_LIST && form->n_children > 0 && is_sym(form->children[0], "extern")) ||
-                (name && resolve_local(c, name) >= 0)) {
+            /* An extern this engine has no binding for is dropped rather than
+             * failing the bootstrap — core.net and core.tls declare sockets the
+             * bytecode VM does not carry, and the modules around them still
+             * load. One the typed table admits is kept and compiled below, so a
+             * module in the standard library reaches the runtime entry points it
+             * declares: that is what lets core.capabilities install a policy
+             * here as well as on the native engines. */
+            int droppable_extern = form->type == N_LIST && form->n_children > 0 &&
+                                   is_sym(form->children[0], "extern") &&
+                                   vm_typed_extern_spec(form) == NULL;
+            if (droppable_extern || (name && resolve_local(c, name) >= 0)) {
                 free_node(form);
             } else {
                 binding_ids[kept] = binding_ids[i];
