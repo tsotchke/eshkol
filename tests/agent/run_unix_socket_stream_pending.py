@@ -68,7 +68,8 @@ def socket_scratch():
     # Honour TMPDIR when it fits sun_path. A short /tmp fallback is necessary
     # on hosts whose normal temporary directory exceeds the Unix path limit.
     preferred = Path(tempfile.gettempdir())
-    parent = preferred if len(os.fsencode(preferred)) <= 55 else Path("/tmp")
+    # Leave room for the generated directory and the longest fixture leaf.
+    parent = preferred if len(os.fsencode(preferred)) <= 40 else Path("/tmp")
     return Path(tempfile.mkdtemp(prefix="eshkol-unix-", dir=parent))
 
 

@@ -84,13 +84,21 @@ raise SystemExit(3 if mode=='nonzero' else 0)
     try:
         module.tempfile.tempdir = str(preferred)
         scratch = module.socket_scratch()
-        expected = preferred if len(os.fsencode(preferred)) <= 55 else Path("/tmp")
+        expected = preferred if len(os.fsencode(preferred)) <= 40 else Path("/tmp")
         assert scratch.parent == expected
         scratch.rmdir()
         module.tempfile.tempdir = "/tmp"
         scratch = module.socket_scratch()
         assert scratch.parent == Path("/tmp")
+        assert len(os.fsencode(scratch / ("x" * 32))) < 104
         scratch.rmdir()
+        private_parent = Path(tempfile.mkdtemp(prefix="sktmp-", dir="/tmp"))
+        module.tempfile.tempdir = str(private_parent)
+        scratch = module.socket_scratch()
+        assert scratch.parent == private_parent
+        assert len(os.fsencode(scratch / ("x" * 32))) < 104
+        scratch.rmdir()
+        private_parent.rmdir()
     finally:
         module.tempfile.tempdir = original_tempdir
     rows.append({"case": "scratch-tempdir-path-budget", "status": "PASS"})
