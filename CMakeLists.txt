@@ -10594,7 +10594,8 @@ if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
     add_executable(cuda_runtime_link_args_test
         tests/toolchain/cuda_runtime_link_args_test.cpp
-        lib/core/platform_runtime.cpp)
+        lib/core/platform_runtime.cpp
+        lib/core/capability_policy.cpp)
     target_compile_features(cuda_runtime_link_args_test PRIVATE cxx_std_17)
     target_include_directories(cuda_runtime_link_args_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
@@ -15802,10 +15803,13 @@ endif()
 # wait on the portable event loop, so every standalone test links that stack.
 set(ESHKOL_NET_LEASE_STACK_SRC
     lib/core/resource_lease.c lib/core/runtime_handle.cpp
-    lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC}
+    # net.c consults the capability policy before it creates a socket, so every
+    # standalone executable that compiles it links the one policy store.
+    lib/core/capability_policy.cpp)
 if(ESHKOL_BUILD_TESTS)
     add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c
-        lib/core/capability_policy.cpp ${ESHKOL_NET_LEASE_STACK_SRC})
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(net_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         find_package(Threads REQUIRED)
@@ -15826,7 +15830,7 @@ if(ESHKOL_BUILD_TESTS)
 
     add_executable(tls_context_test
         tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c
-        lib/core/capability_policy.cpp ${ESHKOL_NET_LEASE_STACK_SRC})
+        ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(tls_context_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(ESHKOL_TLS_OPENSSL_FOUND)
         set_source_files_properties(tests/network/tls_context_test.c PROPERTIES
@@ -16037,7 +16041,8 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
     add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
-        lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+        lib/core/net.c lib/core/capability_policy.cpp
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(net_close_concurrency_test PRIVATE Threads::Threads)
     add_test(NAME net_close_concurrency_test COMMAND net_close_concurrency_test)
