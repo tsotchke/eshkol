@@ -1,0 +1,17 @@
+;;; Rows stay closed through the binding and control forms.
+;; expect-row: classify <>
+;; expect-row: count-down <>
+;; expect-row: pick <>
+;; expect-row: loud-cond <IO>
+;; expect-row: guarded <>
+(define (classify x) (cond ((< x 0) 'neg) ((= x 0) 'zero) (else 'pos)))
+(define (count-down n) (do ((i n (- i 1)) (acc '() (cons i acc))) ((= i 0) acc)))
+(define (pick k) (case k ((1) 'one) ((2 3) 'few) (else 'many)))
+(define (loud-cond x) (cond ((> x 0) (display x)) (else #f)))
+(define (guarded x) (guard (e ((string? e) 0) (else 1)) (when (> x 0) (raise "big")) x))
+(declare-effects classify Pure)
+(declare-effects count-down Pure)
+(declare-effects pick ())
+(declare-effects guarded Pure)
+(display (list (classify 1) (count-down 3) (pick 2) (guarded 1)))
+(loud-cond 1) (newline)

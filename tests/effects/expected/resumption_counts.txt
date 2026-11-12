@@ -1,0 +1,12 @@
+0: (() 0)
+1: ((heads) 1)
+2: ((heads tails) 2)
+3: ((heads tails heads) 3)
+combinations: ((1 a) (1 b) (2 a) (2 b))
+first: suspended
+resumed-later-1: (got 1)
+resumed-later-2: (got 2)
+pull: (0 1 4 9 done done)
+shallow: (deep-return (shallow (1 2)))
+shallow-loop: (33 13)
+depth-after: 0

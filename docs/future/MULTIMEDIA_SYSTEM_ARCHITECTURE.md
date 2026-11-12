@@ -2,6 +2,13 @@
 
 ## Technical Implementation Specification
 
+> **Implementation status (v1.8.0-platform):** the platform abstraction layer
+> of section 8 — windows with surfaces, the event system, real-time audio and
+> MIDI — ships as `inc/eshkol/platform/` and the `platform.window`,
+> `platform.audio` and `platform.midi` modules; see
+> [PLATFORM_LAYER.md](../platform/PLATFORM_LAYER.md) and ADR-0053. Handles in
+> that layer use the runtime's generation-checked handle registry.
+
 **Version:** 1.0
 **Date:** 2025-12-09
 **Status:** Implementation Specification

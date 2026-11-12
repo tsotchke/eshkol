@@ -1,0 +1,7 @@
+(require core.threads)
+;; The semaphore owns a mutex and a condition variable; without
+;; semaphore-destroy! both stay live at scope exit.
+(define sem (make-semaphore 1))
+(semaphore-acquire! sem)
+(semaphore-release! sem)
+(newline)

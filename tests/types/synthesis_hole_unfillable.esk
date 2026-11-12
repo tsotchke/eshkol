@@ -1,0 +1,4 @@
+;; No term of type char can be built from an integer parameter and the
+;; operator table, so this hole has no completion and compilation stops.
+(define (f (x : integer)) : char ??)
+(display (f 1))

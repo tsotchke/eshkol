@@ -62,7 +62,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
 - **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`). The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 72-opcode core bytecode VM
 - **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
-- **Mathematical rigor** - HoTT type foundations provide the language's dependent-type surface; no proof obligation is currently discharged by the compiler (no SMT solving, no Lean/proof-assistant export, `TypeEnvironment::areEquivalent` is identity-only) — "provable, not just tested" is the ADR-0000 Stage 14b / v2.0 target, not the present state. Corrected 2026-08-25, conformity audit item f4
+- **Mathematical rigor** - HoTT type foundations: a cubical type theory in the compiler checks proofs about identity types, univalence and higher inductive types at compile time and computes with them (ADR-0043, [HoTT guide](docs/guide/HOTT.md)); the gradual checker of ordinary code reaches "provable, not just tested" at the ADR-0000 Stage 14b / v2.0 target
 
 ---
 
@@ -223,7 +223,7 @@ The gradual type system, grounded in Homotopy Type Theory, enables compile-time 
 Eshkol is implemented as a **production compiler** written in C17/C++20, utilizing LLVM for native code generation. The implementation comprises:
 
 - **Parser driven by an explicit continuation stack** — a child parse suspends into a heap-allocated coroutine frame, so native stack consumption is independent of grammar nesting — with comprehensive macro expansion (syntax-rules)
-- **HoTT type checker** with bidirectional *inference* (synthesis today; the checking direction for lambdas is planned for v1.9.0 under ADR-0004 — at v1.3.6 `TypeChecker::checkLambdaTask` synthesizes the lambda's type without consulting its `expected` parameter, `lib/types/type_checker.cpp:4516-4520`) and dependent type support
+- **HoTT type checker** with bidirectional checking: synthesis, and the checking direction for lambdas, applications, `let`, `define`, declarations and `(the T e)`, judged tail by tail; dependent types (Pi, Sigma, universe levels, length-indexed vectors, `define-type` families) with definitional equality by normalization, enforced at compile time (ADR-0042)
 - **LLVM backend** with 39 code generation modules totalling 120,420 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,407 lines — measured at the v1.3.6-evolve source (`60f345def`)
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
@@ -294,7 +294,7 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
 - **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
-- **1,057 built-in functions** (1,470-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled against the generated language-surface manifest
+- **1,067 built-in functions** (1,470-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled against the generated language-surface manifest
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
@@ -556,6 +556,13 @@ Dependent types enable **compile-time verification** of array bounds, matrix dim
   (matmul A B))  ; k dimensions must match - verified statically
 ```
 
+Identity types, univalence and higher inductive types are checked and computed by the compiler's cubical kernel (ADR-0043). The fundamental group of the circle, by encode-decode, with the winding number computed at compile time:
+
+```scheme
+(hott (import circle))
+(display (hott-eval (winding (trans 0 S1 base base base loop loop))))  ; => (pos 2)
+```
+
 ---
 
 ## Installation and Quick Start
@@ -672,7 +679,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient` (or `eshkol-run -r 
 - **Model serialization**: `.eshkol-model` ESKB-extended binary format for round-tripping trained networks
 - **Stable C FFI**: pybind11 Python bindings with NumPy zero-copy interop
 - **Per-thread arenas**: Safe concurrent memory allocation; deep recursion (100K stack frames) on a 512 MB thread stack
-- **Image I/O**: PNG/JPEG/WebP/BMP read/write/resize for vision pipelines via native platform/system codecs
+- **Image I/O**: PNG/JPEG/WebP/BMP read/write/resize for vision pipelines through codecs built into the runtime (no external library on any platform)
 - **Plotting stdlib**: Inline matplotlib-style charts via PNG output
 - **Actionable error messages**: Compile errors point at the exact source line and column with caret underline
 - **JSON Schema validation**: Draft 7 subset for experiment-manifest / preregistration enforcement (`json-schema-valid?`, `json-schema-validate`)
@@ -1186,7 +1193,7 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding stan
 |---|---|
 | **[QUICKSTART](docs/QUICKSTART.md)** | 15-minute getting-started guide |
 | **[Tutorials](docs/tutorials/README.md)** | 27 step-by-step tutorials |
-| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,057-builtin canonical surface |
+| **[API Reference](docs/API_REFERENCE.md)** | Comprehensive function documentation over the 1,058-builtin canonical surface |
 | **[Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)** | Conceptual user guide |
 | **[Quick Reference](docs/ESHKOL_QUICK_REFERENCE.md)** | One-page cheat sheet |
 | **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)** | Arbitrary-order Taylor-tower AD walkthrough |

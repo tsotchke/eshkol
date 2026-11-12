@@ -5,7 +5,7 @@
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
 
 **Language surface count (canonical):** the declared language surface is
-**1,470** constructs. The generated manifest records 1,057 builtins,
+**1,470** constructs. The generated manifest records 1,067 builtins,
 116 special forms, 113 internal AST operations and 469 prelude records;
 the categories overlap, and the public count deduplicates names and excludes
 internal-only entries. See `tests/coverage/language_surface.json` and
@@ -273,6 +273,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | S-expression parser | Yes | Explicit continuation stack | Stack use independent of nesting depth; gated at 16,000 levels on an 8 MiB stack |
 | Macro system | Yes | Hygienic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
+| HoTT identity types, univalence, HITs | Yes | Cubical kernel (ADR-0043): path types, transp/hcomp, Glue, circle, suspension, truncations | `(hott ...)`, `(hott-eval ...)`; JIT, AOT, VM |
 | LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,548 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
@@ -487,7 +488,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,057 builtins across a 1,470-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,067 builtins across a 1,470-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -676,7 +677,7 @@ commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 | CSV | Yes | - | Read and write |
 | Base64 | Yes | - | Encode and decode |
 | MessagePack | Yes | Stable | `lib/core/msgpack.esk`; see `docs/reference/stdlib/msgpack.md` |
-| Protocol Buffers | Planned | - | Planned |
+| Protocol Buffers | Yes | v1.4.0 | proto3: `.proto` parser, schema compiler and generated encoders/decoders in `lib/core/protobuf.esk`; see `docs/reference/stdlib/protobuf.md` |
 | **Databases** |
 | SQLite | Yes | v1.2 | `agent.sqlite` FFI module; see `docs/reference/agent/sqlite.md` |
 | PostgreSQL | Planned | - | Planned |
@@ -788,8 +789,9 @@ gated on the locked interop-first sequence.
 > independently added making the same point.
 
 Advanced type-theory items (refinement types, effect types, higher-rank
-types, row polymorphism) did not ship in the v1.3 line; they remain staged
-at v1.9.0-types. PGO remains a build-time scaffold (workload selection is
+types, row polymorphism) did not ship in the v1.3 line; they are staged at
+v1.9.0-types, where refinement types are implemented with a built-in decision
+procedure (ADR-0044). PGO remains a build-time scaffold (workload selection is
 the open gap); whole-program optimization and polyhedral loop optimization
 are not yet scheduled to a specific release.
 
@@ -824,12 +826,22 @@ are not yet scheduled to a specific release.
 
 ### v1.7.0-synthesis (target: Q3-Q4 2027)
 
-- **Program Synthesis**: Type-directed holes, neural-guided search
-- **Advanced Neural**: Graph Neural Networks
+- **Program Synthesis**: Type-directed holes (`??`, completed by the native
+  compiler under JIT and AOT, [synthesis-holes.md](reference/language/synthesis-holes.md));
+  synthesis from input-output examples (`core.synthesis`: enumeration with
+  observational equivalence, FlashFill and map/filter deduction, 42/42
+  benchmark tasks verified on held-out examples,
+  [synthesis.md](reference/stdlib/synthesis.md)); neural-guided search: the
+  cost hook ships, the learned engines are in Noesis (ADR-0052)
+- **Advanced Neural**: Graph Neural Networks (`ml.gnn`: message passing,
+  sum/mean/max aggregation, GCN, GraphSAGE, graph attention, exact reverse-mode
+  gradients through `ml.autograd`, [gnn.md](reference/stdlib/gnn.md))
 
 ### v1.9.0 (per ADR-0004/ADR-0007, ADR-0000 Stage 12)
 
-- **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: Refinement types, effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
+- **Refinement types (ADR-0044)**: `(Refine T phi)` with verification conditions from contracts, branches, arithmetic and index bounds, decided by a built-in procedure (Omega test, exact simplex, congruence closure, DPLL(T)) with an optional z3 backend; counterexamples in diagnostics; native and VM engines. See [refinement types](reference/language/refinement-types.md).
+- **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
+- **Row polymorphism, higher-rank types, session types (ADR-0046)**: extensible records with principal row types and width subtyping (`core.records`), predicative arbitrary-rank polymorphism checked bidirectionally, binary session types with duality and exactly-once endpoints over local channels and TCP (`core.sessions`); compile-time errors on JIT, AOT and the bytecode VM — see [structural-types.md](reference/language/structural-types.md)
 - **Whole-Program Optimization + polyhedral loop optimization (BUILD ITEM, moved from v1.3-evolve, ADR-0007)**: no closed-world root analysis, no LTO/ThinLTO exists yet
 
 ### v2.0-starlight (target: Q4 2028)
@@ -850,7 +862,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,057 builtins — 1,470-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,067 builtins — 1,470-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)

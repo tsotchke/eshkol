@@ -9,7 +9,7 @@
 ;;   (hash-table->alist ht) -> alist
 ;;   (alist->hash-table alist) -> hash-table
 ;;
-;; JSON mapping:
+;; JSON mapping (json-parse, read direction):
 ;;   object  -> hash-table
 ;;   array   -> list
 ;;   string  -> string
@@ -17,6 +17,13 @@
 ;;   true    -> #t
 ;;   false   -> #f
 ;;   null    -> '()
+;;
+;; json-stringify (write direction) additionally accepts a vector as an
+;; array: '() always stringifies to "null" (it is JSON null's own image
+;; under json-parse, and Eshkol has no other way to spell "the empty
+;; list"), so a caller that needs to EMIT an empty JSON array -- as
+;; opposed to null -- must pass #() rather than '().  A non-empty list
+;; and a non-empty vector both stringify to the same array either way.
 ;;
 
 (provide json-parse json-try-parse json-parse-result?
@@ -533,6 +540,17 @@
     ;; List -> array (but not null which is also a list)
     ((pair? val)
      (json-stringify-arr val))
+
+    ;; Vector -> array, including the EMPTY vector.  This is the only way
+    ;; a caller can force an empty JSON array: '() is unavoidably
+    ;; ambiguous with JSON null (see the "Null/empty list" branch above
+    ;; and the module-level JSON mapping comment), but #() is a distinct
+    ;; Eshkol type that is never produced by json-parse's null handling,
+    ;; so routing it straight to json-stringify-arr (which checks
+    ;; null? on the underlying list, not on `val` itself) always emits
+    ;; "[]" rather than falling through to the ambiguous top-level check.
+    ((vector? val)
+     (json-stringify-arr (vector->list val)))
 
     ;; Unknown
     (else "null")))

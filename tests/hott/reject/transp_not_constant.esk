@@ -1,0 +1,3 @@
+;; expect-error: not constant
+(hott (import numbers)
+  (define bad : Int (transp (i) (sucPathInt i) i1 (pos 0))))

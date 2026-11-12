@@ -723,6 +723,9 @@ Noesis companion repository.
   — the weight-matrix backward pass and its public surface (§13).
 - `lib/backend/qllm_interpreter.c` — the `eshkol-qllm-run` tool that
   executes bytecode through a loaded QLMW file (§13).
+- `lib/core/sdnc_finetune.c` + `lib/core/sdnc_finetune.h` — exact-forward
+  control fine-tuning of the constructed weights (§14,
+  [ADR-0032](design/adr/0032-exact-forward-control-fine-tuning.md)).
 - `scripts/paper/` — the trace-dump, comparison, and
   table-generation pipeline.
 - `artifacts/paper/` — the reproducibility package and outputs.
@@ -801,3 +804,51 @@ the **`1e-6`** bar. Achieved on `master`: **SQUARE `3.7e-9`, gated
 reverse-mode backward pass the loop runs is built and certified by the
 gradient check above; the AdamW optimiser step and v4 checkpoint I/O that
 complete the loop are the next items on the build path.
+
+---
+
+## 14. Fine-tuning the control weights with an exact forward pass
+
+The construction margin that makes the forward pass exact (§9) also makes the
+exact derivative of every **control** weight identically zero. Every gate
+pre-activation sits at least `SCALE/2 = 150` from the clamp of
+`sdnc_sigmoidf`, so `s (1 - s) = 0`; the Layer-0 softmax is one-hot, so its
+Jacobian vanishes too. The gate thresholds, gate columns, `W_Q`, `W_K` and
+`b_Q` get a gradient of exactly zero, while the value weights keep exact,
+sparse gradients. Lowering `SCALE` is no way out: the interpreter is exact down
+to about 60 and stops running at 10.
+
+The repository fine-tunes the control weights anyway, with the forward pass
+left exact ([ADR-0032](design/adr/0032-exact-forward-control-fine-tuning.md)):
+
+1. **Backward smoothing as an argument.** `sdnc_backward_smoothed` takes
+   `{gate_beta, attn_beta}` and differentiates the gate as
+   `sigma(beta * pre)` — the expectation of a hard threshold under logistic
+   noise — and the softmax as `softmax(beta * logits)`; all other chain-rule
+   factors are the exact forward values. `sdnc_backward` is the `beta = 1`
+   case and stays bit-identical to `backward_through_weights`. The rule lives
+   once, in `inc/eshkol/core/saturating_vjp.h`, shared with
+   `qllm_backward.c`.
+2. **Tied construction gates.** Neurons with identical gate column and bias
+   are one threshold: 1102 tied gates over the gated layers. Neurons
+   come in `±M` pairs on one gate, so untied per-neuron gradients cancel.
+3. **Rank smoothed, accept exact.** The smoothed gradient of a Huber loss over
+   recorded transitions ranks tied gates; each of the top 16 is moved by one
+   construction unit (300) against its gradient; the exact forward pass
+   accepts the move that most reduces the number of transitions not
+   reproduced byte for byte. Then the same over single neurons.
+
+**Measured** (`ctest -R sdnc_control_finetune`, i.e.
+`weight_matrices --control-finetune`): the verifier battery records
+3316 transitions over 224 program runs. Switching
+off the 85 Layer-3 gate neurons of the ADD dispatch fails
+56 of 127 battery programs and changes 240
+transitions; the exact control gradient is identically zero.
+13 tied-gate moves and 5 neuron moves at
+`beta = 10/300` restore 127/127 programs and
+3316/3316 byte-identical transitions.
+
+From Eshkol, `core.sdnc` exposes the same repair (`sdnc-load-weights!`,
+`sdnc-mismatches`, `sdnc-repair!`) and the smoothing argument of
+`sdnc-weight-grad`; see [`docs/reference/stdlib/sdnc.md`](reference/stdlib/sdnc.md).
+The full gate, with ICC trace events, is `scripts/run_sdnc_finetune_gate.sh`.

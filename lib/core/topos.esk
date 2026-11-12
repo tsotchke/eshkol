@@ -1,0 +1,997 @@
+;;; core.topos -- the internal language of a (pre)sheaf topos on a finite site,
+;;; with Kripke-Joyal forcing and the Omega-valued interpretation, both
+;;; computed exactly.
+;;;
+;;; Usage: (require core.topos)   (builds on core.sheaf; no compiler changes)
+;;;
+;;; Sources: S. Mac Lane, I. Moerdijk, "Sheaves in Geometry and Logic" (1992),
+;;; I.4 and III.7 (the subobject classifier of presheaves and of sheaves: the
+;;; sieves, resp. the closed sieves), I.6 (exponentials), V.1 (Lawvere-Tierney
+;;; topologies, Theorem V.1.2), VI.5-VI.7 (the Mitchell-Benabou language and
+;;; Kripke-Joyal semantics: Theorem VI.6.1 for presheaves, Theorem VI.7.1 for
+;;; sheaves); P. T. Johnstone, "Sketches of an Elephant" (2002), D1.2-D1.3
+;;; (the internal language of a topos) and D4.4 (local operators and the
+;;; higher-order logic of sheaves); A. Joyal (Kripke-Joyal forcing, see
+;;; Osius, "A note on Kripke-Joyal semantics for the internal language of
+;;; topoi", 1975); S. Kripke, "Semantical analysis of intuitionistic logic I"
+;;; (1965); E. W. Beth, "Semantic construction of intuitionistic logic" (1956).
+;;;
+;;; A topos here is Sh(C, J) for a finite site (C, J) from core.sheaf; the
+;;; trivial topology gives the presheaf topos Set^{C^op}. Its objects (the
+;;; TYPES of the internal language) are finite presheaves in core.sheaf's
+;;; representation, each a J-sheaf:
+;;;
+;;;   base objects        any J-sheaf supplied by the caller
+;;;   1                   the terminal sheaf
+;;;   Omega               closed sieves (all sieves for the trivial topology)
+;;;   A x B               pointwise products
+;;;   B^A                 B^A(U) = Nat(y(U) x A, B), restriction by precomposition
+;;;   P(A) = Omega^A      the power object; membership x in S is S(x) = true
+;;;
+;;; A generalized element alpha : y(U) -> X is, by the Yoneda lemma, an
+;;; element of X(U); an environment at stage U assigns one to each free
+;;; variable. Formulas (s-expressions):
+;;;
+;;;   true  false  (= s t)  (and p ...)  (or p ...)  (implies p q)  (iff p q)
+;;;   (not p)  (forall (x A) p)  (exists (x A) p)  (in t s)  (holds t)
+;;;   (R t ...)              R a declared predicate (a map into Omega)
+;;   (locally p)            p holds on a cover of a modal topology J' given to
+;;                          the language (the Lawvere-Tierney modality j')
+;;;
+;;; Terms: variables, declared constants, (f t ...) for declared morphisms,
+;;; (pair s t) (fst t) (snd t) (app f t) (lambda (x A) t) (set (x A) p)
+;;; (truth p). Type expressions: a declared sort name, Omega, 1, (* A B),
+;;; (fun A B) for B^A, (P A), or a type object. Quantifiers range over any
+;;; type, including P(A), Omega and exponentials: the logic is higher order.
+;;;
+;;; Two semantics are computed, independently:
+;;;
+;;;   FORCING (Kripke-Joyal, Mac Lane-Moerdijk VI.7.1), by recursion on the
+;;;   formula over stages U and generalized elements alpha in X(U):
+;;;     U ||- s = t        iff s(alpha) = t(alpha) in X(U)
+;;;     U ||- false        iff the empty sieve covers U
+;;;     U ||- p and q      iff U ||- p and U ||- q
+;;;     U ||- p or q       iff there is a covering sieve S of U such that for
+;;;                            every f : V -> U in S, V ||- p(alpha f) or V ||- q(alpha f)
+;;;     U ||- p implies q  iff for every f : V -> U, V ||- p(alpha f) implies V ||- q(alpha f)
+;;;     U ||- not p        iff for every f : V -> U, V ||- p(alpha f) implies V ||- false
+;;;     U ||- exists y p   iff there is a covering sieve S of U such that for every
+;;;                            f : V -> U in S there is beta in Y(V) with V ||- p(alpha f, beta)
+;;;     U ||- forall y p   iff for every f : V -> U and every beta in Y(V), V ||- p(alpha f, beta)
+;;;     U ||- holds t      iff t(alpha) is the maximal sieve on U
+;;;   The covering sieves are enumerated literally; nothing is reduced to the
+;;;   identity cover by monotonicity.
+;;;
+;;;   OMEGA-VALUED ([[p]] : context -> Omega, a closed sieve at each stage),
+;;;   compositionally through the internal Heyting algebra of Omega_J:
+;;;     [[s = t]] = closure {f : X(f) s = X(f) t}, [[false]] = closure of the
+;;;     empty sieve, meet = intersection, join = closure of the union,
+;;;     implication = the largest closed R with R meet S <= T (found by
+;;;     enumerating Omega_J(U)), [[exists y p]] = closure of the union of the
+;;;     images f_!([[p]](alpha f, beta)), [[forall y p]] = the intersection of
+;;;     the right adjoints forall_f([[p]](alpha f, beta)) of pullback.
+;;;
+;;; The forcing theorem says U ||- p(alpha) iff [[p]]_U(alpha) is maximal, i.e.
+;;; iff alpha factors through the subobject [[p]]; (topos-cross-check F)
+;;; verifies it on every stage and every environment.
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+
+(provide make-topos presheaf-topos topos? topos-site topos-category
+         topos-object topos-terminal topos-omega topos-product topos-exponential topos-power
+         topos-morphisms topos-type? topos-type-kind topos-type-presheaf topos-type-size
+         topos-type-elements topos-type-element topos-type-index topos-type-restrict
+         topos-type-factors topos-exponential-apply
+         topos-closed-sieves topos-closure topos-closed? topos-omega-top topos-omega-bottom
+         topos-omega-meet topos-omega-join topos-omega-implies topos-omega-not topos-omega-boolean?
+         topos-lawvere-tierney topos-lawvere-tierney? topos-lawvere-tierney-site
+         topos-classifying-map topos-classified-subobject
+         topos-function topos-constant topos-predicate make-topos-language topos-language-topos topos-language-type
+         topos-formula topos-formula-context topos-forces? topos-truth topos-environments
+         topos-extension topos-valid? topos-counter-witness topos-cross-check
+         topos-monotone? topos-local? topos-forcing-report topos-instance-count)
+
+;; ---------------------------------------------------------------------------
+;; Private list utilities (prefixed tp-)
+;; ---------------------------------------------------------------------------
+(define (tp-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (tp-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (tp-all? pred (cdr xs))) (else #f)))
+(define (tp-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (tp-any? pred (cdr xs)))))
+(define (tp-subset? A B) (tp-all? (lambda (x) (memv x B)) A))
+(define (tp-cartesian lists)
+  (if (null? lists) (list '())
+      (let ((rest (tp-cartesian (cdr lists))))
+        (let loop ((xs (reverse (car lists))) (acc '()))
+          (if (null? xs) acc
+              (loop (cdr xs) (append (map (lambda (t) (cons (car xs) t)) rest) acc)))))))
+
+;; ---------------------------------------------------------------------------
+;; The topos of a finite site
+;; ---------------------------------------------------------------------------
+;; #(topos site C n into homs hompos comp covers closed closed-index maxidx
+;;         types counter ipos intov cover-masks closed-masks mask-index pbpos forall-table
+;;         closure-table implies-table)
+;;   into     vector c -> ascending list of arrows into c
+;;   homs     vector (V*n + U) -> vector of the arrows V -> U
+;;   hompos   vector arrow -> its position in its hom-set
+;;   comp     vector (g*narr + f) -> index of g o f, or #f
+;;   covers   vector c -> list of the minimal covering sieves of c (arrow lists)
+;;   closed   vector c -> vector of the closed sieves on c (Omega_J(c)), arrow lists
+;;   closed-index  vector c -> hash arrow list -> index
+;;   maxidx   vector c -> index of the maximal sieve in closed
+;;   types    hash key -> type (each type constructed once, so equal types are eq?)
+;; Truth values are computed on bit masks: bit i of a sieve on c is the i-th
+;; arrow of (into c) (ipos gives the bit of an arrow in the set of arrows into
+;; its target); the public procedures take and return ascending arrow lists.
+(define (tp-T-site T) (vector-ref T 1))
+(define (tp-T-C T) (vector-ref T 2))
+(define (tp-T-n T) (vector-ref T 3))
+(define (tp-into T c) (vector-ref (vector-ref T 4) c))
+(define (tp-hom T V U) (vector-ref (vector-ref T 5) (+ (* (tp-T-n T) V) U)))
+(define (tp-hompos T f) (vector-ref (vector-ref T 6) f))
+(define (tp-comp T g f) (vector-ref (vector-ref T 7) (+ (* (category-arrow-count (tp-T-C T)) g) f)))
+(define (tp-covers T c) (vector-ref (vector-ref T 8) c))
+(define (tp-closed T c) (vector-ref (vector-ref T 9) c))
+(define (tp-closed-index T c S) (hash-table-ref/default (vector-ref (vector-ref T 10) c) S #f))
+(define (tp-maxidx T c) (vector-ref (vector-ref T 11) c))
+(define (tp-types T) (vector-ref T 12))
+(define (tp-ipos T f) (vector-ref (vector-ref T 14) f))
+(define (tp-intov T c) (vector-ref (vector-ref T 15) c))
+(define (tp-closed-masks T c) (vector-ref (vector-ref T 17) c))
+(define (tp-mask-index T c m) (hash-table-ref/default (vector-ref (vector-ref T 18) c) m #f))
+(define (tp-src T f) (arrow-source (tp-T-C T) f))
+(define (tp-tgt T f) (arrow-target (tp-T-C T) f))
+(define (tp-id T c) (category-identity (tp-T-C T) c))
+
+;; masks
+(define (tp-bit? m i) (not (= 0 (bitwise-and m (arithmetic-shift 1 i)))))
+(define (tp-mask T c S) (let loop ((l S) (m 0)) (if (null? l) m (loop (cdr l) (bitwise-or m (arithmetic-shift 1 (tp-ipos T (car l))))))))
+(define (tp-unmask T c m)
+  (let ((v (tp-intov T c)))
+    (let loop ((i (- (vector-length v) 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (if (tp-bit? m i) (cons (vector-ref v i) acc) acc))))))
+(define (tp-top-mask T c) (- (arithmetic-shift 1 (vector-length (tp-intov T c))) 1))
+(define (tp-subset-mask? a b) (= 0 (bitwise-and a (- -1 b))))
+;; pbpos[f], for f : V -> U: vector over the arrows g into V (by bit) of the bit
+;; of f o g among the arrows into U
+(define (tp-pbpos T f) (vector-ref (vector-ref T 19) f))
+;; f^* S for f : V -> U: bit i (arrow g into V) set iff f o g is in S
+(define (tp-pullback-mask T f m)
+  (let ((v (tp-pbpos T f)))
+    (let loop ((i 0) (r 0))
+      (if (= i (vector-length v)) r
+          (loop (+ i 1) (if (tp-bit? m (vector-ref v i)) (bitwise-or r (arithmetic-shift 1 i)) r))))))
+;; f_!(S) = {f o g : g in S} for S a sieve on V = src f
+(define (tp-image-mask T f m)
+  (let ((v (tp-pbpos T f)))
+    (let loop ((i 0) (r 0))
+      (if (= i (vector-length v)) r
+          (loop (+ i 1) (if (tp-bit? m i) (bitwise-or r (arithmetic-shift 1 (vector-ref v i))) r))))))
+(define (tp-covering-mask? T c m) (hash-table-ref/default (vector-ref (vector-ref T 16) c) m #f))
+;; cl_U(S) = {f : V -> U | f^* S covers V}; tabulated over all masks for
+;; stages with at most 12 incoming arrows
+(define (tp-closure-mask T c m)
+  (let ((tab (vector-ref (vector-ref T 21) c)))
+    (if tab (vector-ref tab m) (tp-closure-compute T c m))))
+(define (tp-closure-compute T c m)
+  (let ((v (tp-intov T c)))
+    (let loop ((i 0) (r 0))
+      (if (= i (vector-length v)) r
+          (loop (+ i 1) (let ((f (vector-ref v i))) (if (tp-covering-mask? T (tp-src T f) (tp-pullback-mask T f m)) (bitwise-or r (arithmetic-shift 1 i)) r)))))))
+
+(define (make-topos site)
+  (let* ((C (site-category site)) (n (category-object-count C)) (narr (category-arrow-count C))
+         (objs (tp-range n))
+         (into (list->vector (map (lambda (c) (category-arrows-into C c)) objs)))
+         (homs (make-vector (* n n) #f)) (hompos (make-vector narr 0))
+         (comp (make-vector (* narr narr) #f)) (ipos (make-vector narr 0)))
+    (if (not (grothendieck-topology? site)) (error "make-topos: the covering sieves do not form a Grothendieck topology" (grothendieck-topology-violations site)))
+    (for-each (lambda (V) (for-each (lambda (U)
+                                      (let ((h (list->vector (category-hom C V U))))
+                                        (vector-set! homs (+ (* n V) U) h)
+                                        (let loop ((i 0)) (if (< i (vector-length h)) (begin (vector-set! hompos (vector-ref h i) i) (loop (+ i 1)))))))
+                                    objs))
+              objs)
+    (for-each (lambda (c) (let loop ((l (vector-ref into c)) (i 0)) (if (not (null? l)) (begin (vector-set! ipos (car l) i) (loop (cdr l) (+ i 1)))))) objs)
+    (for-each (lambda (g) (for-each (lambda (f) (vector-set! comp (+ (* narr g) f) (category-compose C g f))) (tp-range narr))) (tp-range narr))
+    ;; the forcing clauses for or and exists quantify over covering sieves; since
+    ;; J(c) is upward closed and the clause condition passes to subsieves, it is
+    ;; enough to range over the minimal covering sieves (an antichain generating J(c))
+    (let* ((all-covers (map (lambda (c) (site-covering-sieves site c)) objs))
+           (covers (list->vector
+                    (map (lambda (cs) (filter (lambda (S) (not (tp-any? (lambda (R) (and (not (equal? R S)) (tp-subset? R S))) cs))) cs))
+                         all-covers)))
+           (T0 (vector 'topos site C n into homs hompos comp covers #f #f #f (make-hash-table) (vector 0)
+                       ipos (list->vector (map list->vector (vector->list into))) #f #f #f #f #f (make-vector n #f) (make-vector n #f))))
+      (vector-set! T0 19 (list->vector (map (lambda (f) (list->vector (map (lambda (g) (vector-ref ipos (vector-ref comp (+ (* narr f) g))))
+                                                                          (vector-ref into (arrow-source C f)))))
+                                            (tp-range narr))))
+      ;; the right adjoint of pullback along f : V -> U is determined by, for each
+      ;; h into U, the set of arrows g into V with f o g = h o k for some k: h is
+      ;; in forall_f(S) iff all of them are in S
+      (vector-set! T0 20 (list->vector
+                          (map (lambda (f)
+                                 (let ((V (arrow-source C f)))
+                                   (list->vector
+                                    (map (lambda (h)
+                                           (let loop ((ks (vector-ref into (arrow-source C h))) (m 0))
+                                             (if (null? ks) m
+                                                 (let* ((k (car ks)) (hk (vector-ref comp (+ (* narr h) k))) (gs (vector-ref homs (+ (* n (arrow-source C k)) V))))
+                                                   (loop (cdr ks)
+                                                         (let gl ((j 0) (m m))
+                                                           (if (= j (vector-length gs)) m
+                                                               (gl (+ j 1) (if (eqv? hk (vector-ref comp (+ (* narr f) (vector-ref gs j))))
+                                                                               (bitwise-or m (arithmetic-shift 1 (vector-ref ipos (vector-ref gs j))))
+                                                                               m)))))))))
+                                         (vector-ref into (arrow-target C f))))))
+                               (tp-range narr))))
+      (vector-set! T0 16 (list->vector (map (lambda (c Sc) (let ((h (make-hash-table)))
+                                                             (for-each (lambda (S) (hash-table-set! h (tp-mask T0 c S) #t)) Sc)
+                                                             h))
+                                            objs all-covers)))
+      (let* ((closed (list->vector (map (lambda (c) (list->vector (filter (lambda (S) (let ((m (tp-mask T0 c S))) (= m (tp-closure-mask T0 c m)))) (sieves-on C c)))) objs)))
+             (index-of (lambda (vec key) (let ((h (make-hash-table)))
+                                           (let loop ((i 0)) (if (< i (vector-length vec)) (begin (hash-table-set! h (key (vector-ref vec i)) i) (loop (+ i 1)))))
+                                           h)))
+             (cmasks (list->vector (map (lambda (c) (list->vector (map (lambda (S) (tp-mask T0 c S)) (vector->list (vector-ref closed c))))) objs))))
+        (vector-set! T0 9 closed)
+        (vector-set! T0 10 (list->vector (map (lambda (c) (index-of (vector-ref closed c) (lambda (S) S))) objs)))
+        (vector-set! T0 17 cmasks)
+        (vector-set! T0 18 (list->vector (map (lambda (c) (index-of (vector-ref cmasks c) (lambda (m) m))) objs)))
+        (vector-set! T0 11 (list->vector (map (lambda (c) (tp-mask-index T0 c (tp-top-mask T0 c))) objs)))
+        (for-each (lambda (c)
+                    (let ((k (vector-length (vector-ref (vector-ref T0 15) c))))
+                      (if (<= k 12)
+                          (let ((tab (make-vector (arithmetic-shift 1 k) 0)))
+                            (let loop ((m 0)) (if (< m (vector-length tab)) (begin (vector-set! tab m (tp-closure-compute T0 c m)) (loop (+ m 1)))))
+                            (vector-set! (vector-ref T0 21) c tab)))))
+                  objs)
+        ;; Heyting implication on Omega_J(c), tabulated by closed-sieve index for |Omega_J(c)| <= 64
+        (for-each (lambda (c)
+                    (let* ((cms (vector-ref cmasks c)) (k (vector-length cms)))
+                      (if (<= k 64)
+                          (vector-set! (vector-ref T0 22) c
+                                       (list->vector (map (lambda (i) (list->vector (map (lambda (j) (tp-implies-compute T0 c (vector-ref cms i) (vector-ref cms j))) (tp-range k))))
+                                                          (tp-range k)))))))
+                  objs)
+        T0))))
+(define (presheaf-topos C) (make-topos (trivial-site C)))
+(define (topos? T) (and (vector? T) (= 23 (vector-length T)) (eq? (vector-ref T 0) 'topos)))
+(define (topos-site T) (tp-T-site T))
+(define (topos-category T) (tp-T-C T))
+
+(define (tp-covering? T c S) (tp-covering-mask? T c (tp-mask T c S)))
+(define (tp-pullback T f S) (tp-unmask T (tp-src T f) (tp-pullback-mask T f (tp-mask T (tp-tgt T f) S))))
+(define (topos-closure T c S) (tp-unmask T c (tp-closure-mask T c (tp-mask T c S))))
+(define (topos-closed? T c S) (let ((m (tp-mask T c S))) (= m (tp-closure-mask T c m))))
+(define (topos-closed-sieves T c) (vector->list (tp-closed T c)))
+
+;; ---------------------------------------------------------------------------
+;; The internal Heyting algebra Omega_J(c)
+;; ---------------------------------------------------------------------------
+(define (tp-meet-mask a b) (bitwise-and a b))
+(define (tp-join-mask T c a b) (tp-closure-mask T c (bitwise-or a b)))
+;; the largest closed R with R meet S <= Q, by enumeration of Omega_J(c)
+(define (tp-implies-mask T c s q)
+  (let ((tab (vector-ref (vector-ref T 22) c)) (i (tp-mask-index T c s)) (j (tp-mask-index T c q)))
+    (if (and tab i j) (vector-ref (vector-ref tab i) j) (tp-implies-compute T c s q))))
+(define (tp-implies-compute T c s q)
+  (let* ((cms (tp-closed-masks T c))
+         (best (let loop ((i 0) (b 0))
+                 (if (= i (vector-length cms)) b
+                     (loop (+ i 1) (let ((R (vector-ref cms i))) (if (tp-subset-mask? (bitwise-and R s) q) (bitwise-or b R) b)))))))
+    (if (not (and (tp-mask-index T c best) (tp-subset-mask? (bitwise-and best s) q)))
+        (error "topos-omega-implies: Omega_J(c) has no largest element below the bound" (list c s q)))
+    best))
+(define (topos-omega-top T c) (tp-into T c))
+(define (topos-omega-bottom T c) (topos-closure T c '()))
+(define (topos-omega-meet T c S R) (tp-unmask T c (tp-meet-mask (tp-mask T c S) (tp-mask T c R))))
+(define (topos-omega-join T c S R) (tp-unmask T c (tp-join-mask T c (tp-mask T c S) (tp-mask T c R))))
+(define (topos-omega-implies T c S Q) (tp-unmask T c (tp-implies-mask T c (tp-mask T c S) (tp-mask T c Q))))
+(define (topos-omega-not T c S) (topos-omega-implies T c S (topos-omega-bottom T c)))
+(define (topos-omega-boolean? T c)
+  (tp-all? (lambda (S) (equal? (topos-omega-join T c S (topos-omega-not T c S)) (tp-into T c)))
+           (vector->list (tp-closed T c))))
+
+;; ---------------------------------------------------------------------------
+;; Types: objects of the topos
+;; ---------------------------------------------------------------------------
+;; #(topos-type id kind elems index maps presheaf factors)
+;;   elems    vector c -> vector of element values
+;;   index    vector c -> hash value -> index
+;;   maps     vector arrow a : d -> c -> vector of indices X(c) -> X(d)
+;;   factors  () for base/terminal/omega; (A B) for products and B^A
+(define (topos-type? X) (and (vector? X) (= 8 (vector-length X)) (eq? (vector-ref X 0) 'topos-type)))
+(define (tp-ty-id X) (vector-ref X 1))
+(define (topos-type-kind X) (vector-ref X 2))
+(define (tp-elems X c) (vector-ref (vector-ref X 3) c))
+(define (topos-type-size X c) (vector-length (tp-elems X c)))
+(define (topos-type-elements X c) (vector->list (tp-elems X c)))
+(define (topos-type-element X c i) (vector-ref (tp-elems X c) i))
+(define (topos-type-index X c v) (hash-table-ref/default (vector-ref (vector-ref X 4) c) v #f))
+(define (tp-res X a i) (vector-ref (vector-ref (vector-ref X 5) a) i))
+(define (topos-type-restrict X a v)
+  (let* ((C (presheaf-category (vector-ref X 6))) (i (topos-type-index X (arrow-target C a) v)))
+    (if (not i) (error "topos-type-restrict: not an element at the target" v))
+    (topos-type-element X (arrow-source C a) (tp-res X a i))))
+(define (topos-type-presheaf X) (vector-ref X 6))
+(define (topos-type-factors X) (vector-ref X 7))
+
+(define (tp-new-type T kind sets maps factors)
+  (let* ((C (tp-T-C T)) (counter (vector-ref T 13)) (id (vector-ref counter 0))
+         (ev (list->vector (map (lambda (s) (if (vector? s) s (list->vector s))) sets)))
+         (iv (list->vector (map (lambda (v) (let ((h (make-hash-table)))
+                                              (let loop ((i 0)) (if (< i (vector-length v)) (begin (hash-table-set! h (vector-ref v i) i) (loop (+ i 1)))))
+                                              h))
+                                (vector->list ev))))
+         (mv (list->vector maps)))
+    (vector-set! counter 0 (+ id 1))
+    (vector 'topos-type id kind ev iv mv
+            (make-set-presheaf-from-indices C (map vector->list (vector->list ev)) mv)
+            factors)))
+(define (tp-memo-type T key build)
+  (let ((hit (hash-table-ref/default (tp-types T) key #f)))
+    (or hit (let ((X (build))) (hash-table-set! (tp-types T) key X) X))))
+
+;; a caller-supplied (pre)sheaf; it must satisfy the sheaf condition for J
+(define (topos-object T F)
+  (let ((viol (presheaf-sheaf-violations (tp-T-site T) F)) (C (tp-T-C T)))
+    (if (not (null? viol)) (error "topos-object: not a sheaf for the topology of the topos" viol))
+    (tp-new-type T 'base
+                 (map (lambda (c) (presheaf-elements F c)) (tp-range (tp-T-n T)))
+                 (map (lambda (a) (list->vector (map (lambda (i) (presheaf-restrict-index F a i)) (tp-range (presheaf-element-count F (arrow-target C a))))))
+                      (tp-range (category-arrow-count C)))
+                 '())))
+(define (topos-terminal T)
+  (tp-memo-type T 'terminal
+                (lambda () (tp-new-type T 'terminal (map (lambda (c) (list '())) (tp-range (tp-T-n T)))
+                                        (map (lambda (a) (vector 0)) (tp-range (category-arrow-count (tp-T-C T)))) '()))))
+;; Omega_J(c) = closed sieves on c; Omega(f)(S) = f^* S
+(define (topos-omega T)
+  (tp-memo-type T 'omega
+                (lambda ()
+                  (tp-new-type T 'omega (map (lambda (c) (tp-closed T c)) (tp-range (tp-T-n T)))
+                               (map (lambda (a) (list->vector (map (lambda (S) (tp-closed-index T (tp-src T a) (tp-pullback T a S)))
+                                                                   (vector->list (tp-closed T (tp-tgt T a))))))
+                                    (tp-range (category-arrow-count (tp-T-C T))))
+                               '()))))
+;; (A x B)(c) = A(c) x B(c); the pair (i, j) has index i |B(c)| + j
+(define (topos-product T A B)
+  (tp-memo-type T (list 'product (tp-ty-id A) (tp-ty-id B))
+                (lambda ()
+                  (tp-new-type T 'product
+                               (map (lambda (c) (tp-cartesian (list (topos-type-elements A c) (topos-type-elements B c)))) (tp-range (tp-T-n T)))
+                               (map (lambda (a)
+                                      (let* ((c (tp-tgt T a)) (d (tp-src T a)) (nb (topos-type-size B c)) (nbd (topos-type-size B d)))
+                                        (list->vector (map (lambda (k) (+ (* nbd (tp-res A a (quotient k nb))) (tp-res B a (remainder k nb))))
+                                                           (tp-range (* (topos-type-size A c) nb))))))
+                                    (tp-range (category-arrow-count (tp-T-C T))))
+                               (list A B)))))
+
+;; ---------------------------------------------------------------------------
+;; Natural transformations by backtracking with propagation
+;; ---------------------------------------------------------------------------
+;; Source: sizes (vector c -> count) and res (k i) -> index at src k of the
+;; restriction along k of element i at tgt k. Target: a type B. Returns the
+;; list of all natural families, each a vector c -> vector of B-indices.
+(define (tp-naturals T sizes res B)
+  (let* ((n (tp-T-n T))
+         (off (make-vector (+ n 1) 0))
+         (_ (let loop ((c 0)) (if (< c n) (begin (vector-set! off (+ c 1) (+ (vector-ref off c) (vector-ref sizes c))) (loop (+ c 1))))))
+         (N (vector-ref off n))
+         (stage (make-vector N 0)) (local (make-vector N 0))
+         (_2 (let loop ((c 0)) (if (< c n) (begin (let li ((i 0)) (if (< i (vector-ref sizes c)) (begin (vector-set! stage (+ (vector-ref off c) i) c) (vector-set! local (+ (vector-ref off c) i) i) (li (+ i 1))))) (loop (+ c 1))))))
+         ;; for each global element e: list of (k . global target) over the non-identity arrows k into its stage
+         (edges (list->vector
+                 (map (lambda (e)
+                        (let ((c (vector-ref stage e)) (i (vector-ref local e)))
+                          (filter (lambda (p) p)
+                                  (map (lambda (k) (if (= k (tp-id T c)) #f (cons k (+ (vector-ref off (tp-src T k)) (res k i)))))
+                                       (tp-into T c)))))
+                      (tp-range N))))
+         (val (make-vector N -1))
+         (results '()))
+    ;; assign e := b and everything it forces; return the trail, or #f (after
+    ;; undoing the partial assignment) on a conflict
+    (define (propagate e b)
+      (vector-set! val e b)
+      (let loop ((stack (list e)) (trail (list e)))
+        (if (null? stack) trail
+            (let ((vx (vector-ref val (car stack))))
+              (let inner ((es (vector-ref edges (car stack))) (stack (cdr stack)) (trail trail))
+                (if (null? es) (loop stack trail)
+                    (let* ((k (car (car es))) (t (cdr (car es))) (v (tp-res B k vx)))
+                      (cond ((= -1 (vector-ref val t)) (vector-set! val t v) (inner (cdr es) (cons t stack) (cons t trail)))
+                            ((= v (vector-ref val t)) (inner (cdr es) stack trail))
+                            (else (for-each (lambda (y) (vector-set! val y -1)) trail) #f)))))))))
+    (let search ((e 0))
+      (cond ((= e N)
+             (set! results
+                   (cons (list->vector (map (lambda (c) (let ((v (make-vector (vector-ref sizes c) 0)))
+                                                         (let loop ((i 0)) (if (< i (vector-ref sizes c)) (begin (vector-set! v i (vector-ref val (+ (vector-ref off c) i))) (loop (+ i 1)))))
+                                                         v))
+                                            (tp-range n)))
+                         results)))
+            ((not (= -1 (vector-ref val e))) (search (+ e 1)))
+            (else
+             (let ((c (vector-ref stage e)))
+               (let try ((b 0))
+                 (if (< b (topos-type-size B c))
+                     (let ((trail (propagate e b)))
+                       (if trail
+                           (begin (search (+ e 1)) (for-each (lambda (y) (vector-set! val y -1)) trail)))
+                       (try (+ b 1)))))))))
+    (reverse results)))
+
+;; all morphisms A -> B (natural transformations), as vectors c -> vector of indices
+(define (topos-morphisms T A B)
+  (tp-naturals T (list->vector (map (lambda (c) (topos-type-size A c)) (tp-range (tp-T-n T))))
+               (lambda (k i) (tp-res A k i)) B))
+
+;; B^A(U) = Nat(y(U) x A, B). An element theta is a vector V -> vector over
+;; the pairs (g : V -> U, a in A(V)), the pair at position pos(g) |A(V)| + a.
+(define (topos-exponential T A B)
+  (tp-memo-type T (list 'exponential (tp-ty-id A) (tp-ty-id B))
+                (lambda ()
+                  (let* ((n (tp-T-n T)) (objs (tp-range n))
+                         (elems (map (lambda (U)
+                                       (tp-naturals T
+                                                    (list->vector (map (lambda (V) (* (vector-length (tp-hom T V U)) (topos-type-size A V))) objs))
+                                                    (lambda (k i) ;; (g, a) at tgt k |-> (g o k, A(k) a) at src k
+                                                      (let* ((V (tp-tgt T k)) (W (tp-src T k)) (na (topos-type-size A V))
+                                                             (g (vector-ref (tp-hom T V U) (quotient i na))) (a (remainder i na)))
+                                                        (+ (* (tp-hompos T (tp-comp T g k)) (topos-type-size A W)) (tp-res A k a))))
+                                                    B))
+                                     objs))
+                         (ev (list->vector elems))
+                         (index (list->vector (map (lambda (U) (let ((h (make-hash-table)))
+                                                                 (let loop ((l (vector-ref ev U)) (i 0)) (if (not (null? l)) (begin (hash-table-set! h (car l) i) (loop (cdr l) (+ i 1)))))
+                                                                 h))
+                                                   objs)))
+                         (maps (map (lambda (f)   ;; f : U' -> U; theta |-> theta' with theta'(g, a) = theta(f o g, a)
+                                      (let ((U (tp-tgt T f)) (U2 (tp-src T f)))
+                                        (list->vector
+                                         (map (lambda (theta)
+                                                (let ((th2 (list->vector
+                                                            (map (lambda (V)
+                                                                   (let* ((na (topos-type-size A V)) (h2 (tp-hom T V U2))
+                                                                          (out (make-vector (* (vector-length h2) na) 0)))
+                                                                     (let loop ((p 0))
+                                                                       (if (< p (vector-length h2))
+                                                                           (let ((q (tp-hompos T (tp-comp T f (vector-ref h2 p)))))
+                                                                             (let la ((a 0)) (if (< a na) (begin (vector-set! out (+ (* p na) a) (vector-ref (vector-ref theta V) (+ (* q na) a))) (la (+ a 1)))))
+                                                                             (loop (+ p 1)))))
+                                                                     out))
+                                                                 objs))))
+                                                  (let ((j (hash-table-ref/default (vector-ref index U2) th2 #f)))
+                                                    (if (not j) (error "topos-exponential: restriction leaves B^A" (list f)))
+                                                    j)))
+                                              (vector-ref ev U)))))
+                                    (tp-range (category-arrow-count (tp-T-C T))))))
+                    (tp-new-type T 'exponential elems maps (list A B))))))
+(define (topos-power T A) (topos-exponential T A (topos-omega T)))
+;; evaluation B^A x A -> B at stage U: theta_U(id_U, a)
+(define (tp-apply-index T E U ti ai)
+  (let* ((A (car (topos-type-factors E))) (theta (topos-type-element E U ti)))
+    (vector-ref (vector-ref theta U) (+ (* (tp-hompos T (tp-id T U)) (topos-type-size A U)) ai))))
+(define (topos-exponential-apply T E U theta a)
+  (let* ((A (car (topos-type-factors E))) (B (cadr (topos-type-factors E)))
+         (ti (topos-type-index E U theta)) (ai (topos-type-index A U a)))
+    (if (not (and ti ai)) (error "topos-exponential-apply: arguments are not elements at the stage" U))
+    (topos-type-element B U (tp-apply-index T E U ti ai))))
+
+;; ---------------------------------------------------------------------------
+;; Subobjects and Lawvere-Tierney topologies
+;; ---------------------------------------------------------------------------
+;; A sub-presheaf A of X: vector (or list) c -> list of element indices of X(c),
+;; closed under restriction. Its classifying map X -> Omega_J sends x in X(c)
+;; to the closure of {f : X(f) x in A}; the J-closure of A is its pullback of true.
+(define (topos-classifying-map T X A)
+  (let ((Av (if (vector? A) A (list->vector A))) (Om (topos-omega T)))
+    (list->vector
+     (map (lambda (c)
+            (list->vector
+             (map (lambda (x) (tp-closed-index T c (topos-closure T c (filter (lambda (f) (memv (tp-res X f x) (vector-ref Av (tp-src T f)))) (tp-into T c)))))
+                  (tp-range (topos-type-size X c)))))
+          (tp-range (tp-T-n T))))))
+(define (topos-classified-subobject T X chi)
+  (map (lambda (c) (filter (lambda (x) (= (vector-ref (vector-ref chi c) x) (tp-maxidx T c))) (tp-range (topos-type-size X c))))
+       (tp-range (tp-T-n T))))
+;; The Lawvere-Tierney topology j : Omega -> Omega of the PRESHEAF topos on C
+;; induced by J: j_c(S) = {f : f^* S covers}. Returned as a vector c -> vector
+;; over (sieves-on C c) of indices into (sieves-on C c).
+(define (topos-lawvere-tierney T)
+  (let ((C (tp-T-C T)))
+    (list->vector
+     (map (lambda (c) (let ((sv (sieves-on C c)))
+                        (list->vector (map (lambda (S) (let loop ((l sv) (i 0)) (cond ((null? l) (error "topos-lawvere-tierney: closure is not a sieve" S)) ((equal? (car l) (topos-closure T c S)) i) (else (loop (cdr l) (+ i 1))))))
+                                           sv))))
+          (tp-range (tp-T-n T))))))
+;; the axioms on j : Omega -> Omega (presheaf Omega on C): natural, j true = true,
+;; j j = j, j preserves meets
+(define (topos-lawvere-tierney? C j)
+  (let* ((n (category-object-count C)) (objs (tp-range n))
+         (sv (list->vector (map (lambda (c) (sieves-on C c)) objs)))
+         (pos (lambda (c S) (let loop ((l (vector-ref sv c)) (i 0)) (cond ((null? l) #f) ((equal? (car l) S) i) (else (loop (cdr l) (+ i 1)))))))
+         (jj (lambda (c i) (vector-ref (vector-ref j c) i)))
+         (S-of (lambda (c i) (list-ref (vector-ref sv c) i))))
+    (and (tp-all? (lambda (a) (let ((c (arrow-target C a)) (d (arrow-source C a)))
+                                (tp-all? (lambda (i) (equal? (S-of d (jj d (pos d (sieve-pullback C a (S-of c i)))))
+                                                             (sieve-pullback C a (S-of c (jj c i)))))
+                                         (tp-range (length (vector-ref sv c))))))
+                  (tp-range (category-arrow-count C)))
+         (tp-all? (lambda (c) (let ((top (pos c (sieve-maximal C c)))) (= top (jj c top)))) objs)
+         (tp-all? (lambda (c) (tp-all? (lambda (i) (= (jj c i) (jj c (jj c i)))) (tp-range (length (vector-ref sv c))))) objs)
+         (tp-all? (lambda (c) (tp-all? (lambda (i) (tp-all? (lambda (k)
+                                                               (equal? (S-of c (jj c (pos c (sieve-intersection (S-of c i) (S-of c k)))))
+                                                                       (sieve-intersection (S-of c (jj c i)) (S-of c (jj c k)))))
+                                                             (tp-range (length (vector-ref sv c)))))
+                                       (tp-range (length (vector-ref sv c)))))
+                  objs))))
+;; the Grothendieck topology of a Lawvere-Tierney topology: S covers c iff j_c(S) is maximal
+(define (topos-lawvere-tierney-site C j)
+  (make-site C (lambda (c S)
+                 (let* ((sv (sieves-on C c))
+                        (i (let loop ((l sv) (i 0)) (cond ((null? l) #f) ((equal? (car l) S) i) (else (loop (cdr l) (+ i 1)))))))
+                   (and i (equal? (list-ref sv (vector-ref (vector-ref j c) i)) (sieve-maximal C c)))))))
+
+;; ---------------------------------------------------------------------------
+;; Languages: sorts, morphisms, constants and predicates
+;; ---------------------------------------------------------------------------
+;; (topos-function name arg-types result-type proc): proc maps (U x ...) with
+;; element VALUES at U to the result value at U. Naturality is checked when the
+;; language is built. (topos-constant name type proc): proc maps U to a value,
+;; a global element. (topos-predicate name arg-types pred): pred (U x ...) ->
+;; boolean must define a sub-presheaf of the product; it is used through its
+;; classifying map into Omega_J.
+(define (topos-function name args result proc) (vector 'function name args result proc))
+(define (topos-constant name type proc) (vector 'constant name type proc))
+(define (topos-predicate name args pred) (vector 'predicate name args pred))
+
+;; #(topos-language T sorts symbols modality)  symbols: hash name -> #(kind arg-types result table)
+;;   modality: #f, or the data of a modal topology J' for (locally p)
+;;   kind 'fun (table: hash (U . arg-indices) -> index), 'const (table: vector U -> index)
+(define (tp-L-T L) (vector-ref L 1))
+(define (tp-L-sorts L) (vector-ref L 2))
+(define (tp-L-symbol L name) (hash-table-ref/default (vector-ref L 3) name #f))
+(define (topos-language-topos L) (tp-L-T L))
+;; the type denoted by a type expression of the language (creating it if needed)
+(define (topos-language-type L e) (tp-type-expr L e))
+
+(define (tp-arg-tuples T types U) (tp-cartesian (map (lambda (A) (tp-range (topos-type-size A U))) types)))
+(define (make-topos-language T sorts decls . modal)
+  (let* ((L (vector 'topos-language T sorts (make-hash-table) (if (null? modal) #f (tp-modality T (car modal)))))
+         (n (tp-T-n T)) (C (tp-T-C T)) (narr (category-arrow-count C)))
+    (for-each
+     (lambda (d)
+       (let ((kind (vector-ref d 0)) (name (vector-ref d 1)))
+         (cond
+          ((eq? kind 'constant)
+           (let* ((A (tp-type-expr L (vector-ref d 2)))
+                  (tab (list->vector (map (lambda (U) (let ((i (topos-type-index A U ((vector-ref d 3) U))))
+                                                        (if (not i) (error "topos-constant: value is not an element" (list name U)))
+                                                        i))
+                                          (tp-range n)))))
+             (if (not (tp-all? (lambda (a) (= (vector-ref tab (tp-src T a)) (tp-res A a (vector-ref tab (tp-tgt T a))))) (tp-range narr)))
+                 (error "topos-constant: not a global element (not natural)" name))
+             (hash-table-set! (vector-ref L 3) name (vector 'const '() A tab))))
+          (else
+           (let* ((args (map (lambda (e) (tp-type-expr L e)) (vector-ref d 2)))
+                  (pred? (eq? kind 'predicate))
+                  (res (if pred? (topos-omega T) (tp-type-expr L (vector-ref d 3))))
+                  (proc (vector-ref d (if pred? 3 4)))
+                  (tab (make-hash-table)))
+             (if pred?
+                 ;; the sub-presheaf R, then its classifying map
+                 (let ((inR (make-hash-table)))
+                   (for-each (lambda (U) (for-each (lambda (t) (if (apply proc U (map (lambda (A i) (topos-type-element A U i)) args t)) (hash-table-set! inR (cons U t) #t)))
+                                                   (tp-arg-tuples T args U)))
+                             (tp-range n))
+                   (for-each (lambda (a) (for-each (lambda (t) (if (and (hash-table-ref/default inR (cons (tp-tgt T a) t) #f)
+                                                                        (not (hash-table-ref/default inR (cons (tp-src T a) (map (lambda (A i) (tp-res A a i)) args t)) #f)))
+                                                                   (error "topos-predicate: not closed under restriction" (list name a t))))
+                                                   (tp-arg-tuples T args (tp-tgt T a))))
+                             (tp-range narr))
+                   (for-each (lambda (U) (for-each (lambda (t)
+                                                     (hash-table-set! tab (cons U t)
+                                                                      (tp-closed-index T U (topos-closure T U (filter (lambda (f) (hash-table-ref/default inR (cons (tp-src T f) (map (lambda (A i) (tp-res A f i)) args t)) #f))
+                                                                                                                      (tp-into T U))))))
+                                                   (tp-arg-tuples T args U)))
+                             (tp-range n)))
+                 (for-each (lambda (U) (for-each (lambda (t)
+                                                   (let ((i (topos-type-index res U (apply proc U (map (lambda (A i) (topos-type-element A U i)) args t)))))
+                                                     (if (not i) (error "topos-function: value is not an element of the result type" (list name U t)))
+                                                     (hash-table-set! tab (cons U t) i)))
+                                                 (tp-arg-tuples T args U)))
+                           (tp-range n)))
+             (for-each (lambda (a) (for-each (lambda (t)
+                                               (if (not (= (hash-table-ref/default tab (cons (tp-src T a) (map (lambda (A i) (tp-res A a i)) args t)) -1)
+                                                           (tp-res res a (hash-table-ref/default tab (cons (tp-tgt T a) t) -1))))
+                                                   (error "topos-function: not natural" (list name a t))))
+                                             (tp-arg-tuples T args (tp-tgt T a))))
+                       (tp-range narr))
+             (hash-table-set! (vector-ref L 3) name (vector 'fun args res tab)))))))
+     decls)
+    L))
+
+;; A modal topology J' on the same category, for (locally p): its minimal
+;; covering sieves per object (arrow lists) and its covering masks.
+(define (tp-modality T site)
+  (let ((C (tp-T-C T)))
+    (if (not (eq? (site-category site) C)) (error "make-topos-language: the modal site must be on the category of the topos"))
+    (if (not (grothendieck-topology? site)) (error "make-topos-language: the modal covering sieves do not form a Grothendieck topology"))
+    (let* ((objs (tp-range (tp-T-n T)))
+           (all (map (lambda (c) (site-covering-sieves site c)) objs)))
+      (vector (list->vector (map (lambda (cs) (filter (lambda (S) (not (tp-any? (lambda (R) (and (not (equal? R S)) (tp-subset? R S))) cs))) cs)) all))
+              (list->vector (map (lambda (c cs) (let ((h (make-hash-table))) (for-each (lambda (S) (hash-table-set! h (tp-mask T c S) #t)) cs) h)) objs all))))))
+(define (tp-modal-closure-mask T md c m)
+  (let ((v (tp-intov T c)) (covers (vector-ref md 1)))
+    (let loop ((i 0) (r 0))
+      (if (= i (vector-length v)) r
+          (loop (+ i 1) (let ((f (vector-ref v i)))
+                          (if (hash-table-ref/default (vector-ref covers (tp-src T f)) (tp-pullback-mask T f m) #f) (bitwise-or r (arithmetic-shift 1 i)) r)))))))
+;; type expressions
+(define (tp-type-expr L e)
+  (let ((TT (tp-L-T L)))
+    (cond ((topos-type? e) e)
+          ((eq? e 'Omega) (topos-omega TT))
+          ((or (eqv? e 1) (eq? e 'One)) (topos-terminal TT))
+          ((symbol? e) (let ((s (assq e (tp-L-sorts L)))) (if s (cdr s) (error "unknown sort" e))))
+          ((and (pair? e) (eq? (car e) '*)) (topos-product TT (tp-type-expr L (cadr e)) (tp-type-expr L (caddr e))))
+          ((and (pair? e) (eq? (car e) 'fun)) (topos-exponential TT (tp-type-expr L (cadr e)) (tp-type-expr L (caddr e))))
+          ((and (pair? e) (eq? (car e) 'P)) (topos-power TT (tp-type-expr L (cadr e))))
+          (else (error "bad type expression" e)))))
+
+
+;; ---------------------------------------------------------------------------
+;; Compilation of formulas and terms
+;; ---------------------------------------------------------------------------
+;; ctx: list of (name . type), innermost first; environments are lists of
+;; element indices in the same order. Compiled formulas are immutable: the
+;; memo tables of a query live in a per-query context, so a compiled formula
+;; can be queried inside and outside regions alike. Nodes:
+;;   formula  #(f kind id ctx-types a b)     id: 0 .. size-1 within the formula
+;;   term     #(t kind type a b c)
+(define (tp-fnode ids kind ctx a b)
+  (let ((id (vector-ref ids 0)))
+    (vector-set! ids 0 (+ id 1))
+    (vector 'f kind id (map cdr ctx) a b)))
+(define (tp-f-kind p) (vector-ref p 1))
+(define (tp-f-id p) (vector-ref p 2))
+(define (tp-f-ctx p) (vector-ref p 3))
+(define (tp-f-a p) (vector-ref p 4))
+(define (tp-f-b p) (vector-ref p 5))
+(define (tp-t-kind t) (vector-ref t 1))
+(define (tp-t-type t) (vector-ref t 2))
+(define (tp-t-a t) (vector-ref t 3))
+(define (tp-t-b t) (vector-ref t 4))
+(define (tp-t-c t) (vector-ref t 5))
+
+(define (tp-binder L x)          ;; (name type-expr) -> (name . type)
+  (cons (car x) (tp-type-expr L (cadr x))))
+(define (tp-same-type! A B what)
+  (if (not (eq? A B)) (error "type mismatch" what)))
+
+(define (tp-compile-formula L ids ctx p)
+  (cond
+   ((or (eq? p 'true) (eq? p #t)) (tp-fnode ids 'true ctx #f #f))
+   ((or (eq? p 'false) (eq? p #f)) (tp-fnode ids 'false ctx #f #f))
+   ((not (pair? p)) (error "bad formula" p))
+   (else
+    (let ((h (car p)))
+      (cond
+       ((eq? h '=) (let ((s (tp-compile-term L ids ctx (cadr p))) (t (tp-compile-term L ids ctx (caddr p))))
+                     (tp-same-type! (tp-t-type s) (tp-t-type t) p)
+                     (tp-fnode ids 'eq ctx s t)))
+       ((eq? h 'and) (if (null? (cdr p)) (tp-compile-formula L ids ctx 'true)
+                         (tp-fnode ids 'and ctx (map (lambda (q) (tp-compile-formula L ids ctx q)) (cdr p)) #f)))
+       ((eq? h 'or) (if (null? (cdr p)) (tp-compile-formula L ids ctx 'false)
+                        (tp-fnode ids 'or ctx (map (lambda (q) (tp-compile-formula L ids ctx q)) (cdr p)) #f)))
+       ((eq? h 'implies) (tp-fnode ids 'implies ctx (tp-compile-formula L ids ctx (cadr p)) (tp-compile-formula L ids ctx (caddr p))))
+       ((eq? h 'iff) (tp-compile-formula L ids ctx (list 'and (list 'implies (cadr p) (caddr p)) (list 'implies (caddr p) (cadr p)))))
+       ((eq? h 'not) (tp-fnode ids 'implies ctx (tp-compile-formula L ids ctx (cadr p)) (tp-compile-formula L ids ctx 'false)))
+       ((or (eq? h 'forall) (eq? h 'exists))
+        (let ((bs (cadr p)))
+          (if (and (pair? bs) (pair? (car bs)))            ;; several binders
+              (if (null? (cdr bs)) (tp-compile-formula L ids ctx (list h (car bs) (caddr p)))
+                  (tp-compile-formula L ids ctx (list h (car bs) (list h (cdr bs) (caddr p)))))
+              (let ((b (tp-binder L bs)))
+                (tp-fnode ids h ctx (cdr b) (tp-compile-formula L ids (cons b ctx) (caddr p)))))))
+       ((eq? h 'in) (tp-compile-formula L ids ctx (list 'holds (list 'app (caddr p) (cadr p)))))
+       ((eq? h 'locally)
+        (if (not (vector-ref L 4)) (error "locally: the language has no modal topology" p))
+        (tp-fnode ids 'locally ctx (vector-ref L 4) (tp-compile-formula L ids ctx (cadr p))))
+       ((eq? h 'holds) (let ((t (tp-compile-term L ids ctx (cadr p))))
+                         (tp-same-type! (tp-t-type t) (topos-omega (tp-L-T L)) p)
+                         (tp-fnode ids 'holds ctx t #f)))
+       (else (let ((sym (tp-L-symbol L h)))
+               (if (and sym (eq? (vector-ref sym 2) (topos-omega (tp-L-T L))))
+                   (tp-compile-formula L ids ctx (list 'holds p))
+                   (error "unknown formula head" h)))))))))
+
+(define (tp-var-index ctx x)
+  (let loop ((l ctx) (i 0)) (cond ((null? l) #f) ((eq? (car (car l)) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (tp-compile-term L ids ctx t)
+  (let ((T (tp-L-T L)))
+    (cond
+     ((symbol? t)
+      (let ((k (tp-var-index ctx t)))
+        (if k (vector 't 'var (cdr (list-ref ctx k)) k #f #f)
+            (let ((sym (tp-L-symbol L t)))
+              (if (and sym (eq? (vector-ref sym 0) 'const)) (vector 't 'const (vector-ref sym 2) (vector-ref sym 3) #f #f)
+                  (error "unbound variable or constant" t))))))
+     ((not (pair? t)) (error "bad term" t))
+     ((eq? (car t) 'pair) (let ((a (tp-compile-term L ids ctx (cadr t))) (b (tp-compile-term L ids ctx (caddr t))))
+                            (vector 't 'pair (topos-product T (tp-t-type a) (tp-t-type b)) a b #f)))
+     ((or (eq? (car t) 'fst) (eq? (car t) 'snd))
+      (let* ((a (tp-compile-term L ids ctx (cadr t))) (A (tp-t-type a)))
+        (if (not (eq? (topos-type-kind A) 'product)) (error "projection of a non-product" t))
+        (vector 't (car t) (if (eq? (car t) 'fst) (car (topos-type-factors A)) (cadr (topos-type-factors A))) a #f #f)))
+     ((eq? (car t) 'app)
+      (let* ((f (tp-compile-term L ids ctx (cadr t))) (a (tp-compile-term L ids ctx (caddr t))) (E (tp-t-type f)))
+        (if (not (eq? (topos-type-kind E) 'exponential)) (error "application of a non-function" t))
+        (tp-same-type! (car (topos-type-factors E)) (tp-t-type a) t)
+        (vector 't 'app (cadr (topos-type-factors E)) f a #f)))
+     ((eq? (car t) 'lambda)
+      (let* ((b (tp-binder L (cadr t))) (body (tp-compile-term L ids (cons b ctx) (caddr t))))
+        (vector 't 'lambda (topos-exponential T (cdr b) (tp-t-type body)) (cdr b) body (map cdr ctx))))
+     ((eq? (car t) 'set)
+      (let* ((b (tp-binder L (cadr t))) (body (tp-compile-formula L ids (cons b ctx) (caddr t))))
+        (vector 't 'set (topos-power T (cdr b)) (cdr b) body (map cdr ctx))))
+     ((eq? (car t) 'truth)
+      (vector 't 'truth (topos-omega T) (tp-compile-formula L ids ctx (cadr t)) #f (map cdr ctx)))
+     (else
+      (let ((sym (tp-L-symbol L (car t))))
+        (if (not (and sym (eq? (vector-ref sym 0) 'fun))) (error "unknown function symbol" (car t)))
+        (let ((args (map (lambda (s) (tp-compile-term L ids ctx s)) (cdr t))))
+          (if (not (= (length args) (length (vector-ref sym 1)))) (error "argument count does not match the declaration" t))
+          (for-each (lambda (a A) (tp-same-type! (tp-t-type a) A t)) args (vector-ref sym 1))
+          (vector 't 'fun (vector-ref sym 2) (vector-ref sym 3) args #f)))))))
+
+;; ---------------------------------------------------------------------------
+;; Query contexts: #(T force-memo omega-memo), each a vector over formula node
+;; ids of hash tables (U . env) -> result, created when first used
+;; ---------------------------------------------------------------------------
+(define (tp-context T size) (vector T (make-vector size #f) (make-vector size #f)))
+(define (tp-memo-table M which p)
+  (let* ((v (vector-ref M which)) (h (vector-ref v (tp-f-id p))))
+    (or h (let ((h2 (make-hash-table))) (vector-set! v (tp-f-id p) h2) h2))))
+
+;; ---------------------------------------------------------------------------
+;; Evaluation of terms (sem is 'force or 'omega; it selects the semantics used
+;; by the formula-valued subterms set and truth)
+;; ---------------------------------------------------------------------------
+(define (tp-restrict-env types env f)
+  (map (lambda (A i) (tp-res A f i)) types env))
+(define (tp-eval M t U env sem)
+  (let ((T (vector-ref M 0)) (k (tp-t-kind t)))
+    (cond
+     ((eq? k 'var) (list-ref env (tp-t-a t)))
+     ((eq? k 'const) (vector-ref (tp-t-a t) U))
+     ((eq? k 'pair) (+ (* (topos-type-size (tp-t-type (tp-t-b t)) U) (tp-eval M (tp-t-a t) U env sem)) (tp-eval M (tp-t-b t) U env sem)))
+     ((eq? k 'fst) (quotient (tp-eval M (tp-t-a t) U env sem) (topos-type-size (cadr (topos-type-factors (tp-t-type (tp-t-a t)))) U)))
+     ((eq? k 'snd) (remainder (tp-eval M (tp-t-a t) U env sem) (topos-type-size (cadr (topos-type-factors (tp-t-type (tp-t-a t)))) U)))
+     ((eq? k 'app) (tp-apply-index T (tp-t-type (tp-t-a t)) U (tp-eval M (tp-t-a t) U env sem) (tp-eval M (tp-t-b t) U env sem)))
+     ((eq? k 'fun) (hash-table-ref/default (tp-t-a t) (cons U (map (lambda (s) (tp-eval M s U env sem)) (tp-t-b t))) #f))
+     ((or (eq? k 'lambda) (eq? k 'set))
+      ;; theta(g : V -> U, a) = the body at V in the environment (a, env g)
+      (let* ((A (tp-t-a t)) (E (tp-t-type t)) (types (tp-t-c t))
+             (theta (list->vector
+                     (map (lambda (V)
+                            (let* ((h (tp-hom T V U)) (na (topos-type-size A V)) (out (make-vector (* (vector-length h) na) 0)))
+                              (let loop ((p 0))
+                                (if (< p (vector-length h))
+                                    (let ((env2 (tp-restrict-env types env (vector-ref h p))))
+                                      (let la ((a 0))
+                                        (if (< a na)
+                                            (begin
+                                              (vector-set! out (+ (* p na) a)
+                                                           (if (eq? k 'lambda)
+                                                               (tp-eval M (tp-t-b t) V (cons a env2) sem)
+                                                               (tp-truth-index M (tp-t-b t) V (cons a env2) sem)))
+                                              (la (+ a 1)))))
+                                      (loop (+ p 1)))))
+                              out))
+                          (tp-range (tp-T-n T)))))
+             (i (topos-type-index E U theta)))
+        (if (not i) (error "term does not denote an element of its type (not natural or not closed)" (topos-type-kind E)))
+        i))
+     ((eq? k 'truth) (tp-truth-index M (tp-t-a t) U env sem))
+     (else (error "bad compiled term" k)))))
+
+;; the truth value of p at (U, env) as an index into Omega_J(U), by either semantics
+(define (tp-truth-index M p U env sem)
+  (let* ((T (vector-ref M 0))
+         (m (if (eq? sem 'omega)
+                (tp-omega M p U env)
+                (let ((v (tp-intov T U)))
+                  (let loop ((i 0) (r 0))
+                    (if (= i (vector-length v)) r
+                        (loop (+ i 1) (let ((g (vector-ref v i)))
+                                        (if (tp-force M p (tp-src T g) (tp-restrict-env (tp-f-ctx p) env g)) (bitwise-or r (arithmetic-shift 1 i)) r))))))))
+         (i (tp-mask-index T U m)))
+    (if (not i) (error "truth value is not a closed sieve" (list U (tp-unmask T U m))))
+    i))
+
+;; ---------------------------------------------------------------------------
+;; Kripke-Joyal forcing
+;; ---------------------------------------------------------------------------
+(define (tp-force M p U env)
+  (let* ((memo (tp-memo-table M 1 p)) (key (cons U env)) (hit (hash-table-ref/default memo key 'none)))
+    (if (not (eq? hit 'none)) hit
+        (let ((r (tp-force-compute M p U env)))
+          (hash-table-set! memo key r)
+          r))))
+(define (tp-force-compute M p U env)
+  (let ((T (vector-ref M 0)) (k (tp-f-kind p)) (types (tp-f-ctx p)))
+    (cond
+     ((eq? k 'true) #t)
+     ((eq? k 'false) (tp-covering? T U '()))
+     ((eq? k 'eq) (= (tp-eval M (tp-f-a p) U env 'force) (tp-eval M (tp-f-b p) U env 'force)))
+     ((eq? k 'and) (tp-all? (lambda (q) (tp-force M q U env)) (tp-f-a p)))
+     ((eq? k 'or)          ;; a (minimal) covering sieve all of whose members force a disjunct
+      (tp-any? (lambda (S)
+                 (tp-all? (lambda (f) (let ((env2 (tp-restrict-env types env f)))
+                                        (tp-any? (lambda (q) (tp-force M q (tp-src T f) env2)) (tp-f-a p))))
+                          S))
+               (tp-covers T U)))
+     ((eq? k 'implies)     ;; every f : V -> U
+      (tp-all? (lambda (f) (let ((env2 (tp-restrict-env types env f)) (V (tp-src T f)))
+                             (or (not (tp-force M (tp-f-a p) V env2)) (tp-force M (tp-f-b p) V env2))))
+               (tp-into T U)))
+     ((eq? k 'forall)      ;; every f : V -> U and every beta in A(V)
+      (let ((A (tp-f-a p)))
+        (tp-all? (lambda (f) (let ((env2 (tp-restrict-env types env f)) (V (tp-src T f)))
+                               (tp-all? (lambda (b) (tp-force M (tp-f-b p) V (cons b env2))) (tp-range (topos-type-size A V)))))
+                 (tp-into T U))))
+     ((eq? k 'exists)      ;; a covering sieve with a witness at every member
+      (let ((A (tp-f-a p)))
+        (tp-any? (lambda (S)
+                   (tp-all? (lambda (f) (let ((env2 (tp-restrict-env types env f)) (V (tp-src T f)))
+                                          (tp-any? (lambda (b) (tp-force M (tp-f-b p) V (cons b env2))) (tp-range (topos-type-size A V)))))
+                            S))
+                 (tp-covers T U))))
+     ((eq? k 'holds) (= (tp-eval M (tp-f-a p) U env 'force) (tp-maxidx T U)))
+     ((eq? k 'locally)     ;; a (minimal) covering sieve of the modal topology all of whose members force p
+      (tp-any? (lambda (S)
+                 (tp-all? (lambda (f) (tp-force M (tp-f-b p) (tp-src T f) (tp-restrict-env types env f))) S))
+               (vector-ref (vector-ref (tp-f-a p) 0) U)))
+     (else (error "bad compiled formula" k)))))
+
+;; ---------------------------------------------------------------------------
+;; The Omega-valued interpretation (truth values as sieve masks)
+;; ---------------------------------------------------------------------------
+(define (tp-omega M p U env)
+  (let* ((memo (tp-memo-table M 2 p)) (key (cons U env)) (hit (hash-table-ref/default memo key #f)))
+    (or hit
+        (let ((r (tp-omega-compute M p U env)))
+          (hash-table-set! memo key r)
+          r))))
+;; forall_f(S) for f : V -> U and S a sieve on V: the largest sieve R on U with
+;; f^* R <= S, i.e. h in R iff g in S whenever f o g = h o k
+(define (tp-forall-mask T f m)
+  (let ((v (vector-ref (vector-ref T 20) f)))
+    (let loop ((i 0) (r 0))
+      (if (= i (vector-length v)) r
+          (loop (+ i 1) (if (tp-subset-mask? (vector-ref v i) m) (bitwise-or r (arithmetic-shift 1 i)) r))))))
+(define (tp-omega-compute M p U env)
+  (let ((T (vector-ref M 0)) (k (tp-f-kind p)) (types (tp-f-ctx p)))
+    (cond
+     ((eq? k 'true) (tp-top-mask T U))
+     ((eq? k 'false) (tp-closure-mask T U 0))
+     ((eq? k 'eq)
+      (let* ((A (tp-t-type (tp-f-a p))) (s (tp-eval M (tp-f-a p) U env 'omega)) (t (tp-eval M (tp-f-b p) U env 'omega))
+             (v (tp-intov T U)))
+        (tp-closure-mask T U (let loop ((i 0) (r 0))
+                               (if (= i (vector-length v)) r
+                                   (loop (+ i 1) (let ((f (vector-ref v i))) (if (= (tp-res A f s) (tp-res A f t)) (bitwise-or r (arithmetic-shift 1 i)) r))))))))
+     ((eq? k 'and) (let loop ((qs (tp-f-a p)) (m (tp-top-mask T U)))
+                     (if (null? qs) m (loop (cdr qs) (tp-meet-mask m (tp-omega M (car qs) U env))))))
+     ((eq? k 'or) (let loop ((qs (tp-f-a p)) (m (tp-closure-mask T U 0)))
+                    (if (null? qs) m (loop (cdr qs) (tp-join-mask T U m (tp-omega M (car qs) U env))))))
+     ((eq? k 'implies) (tp-implies-mask T U (tp-omega M (tp-f-a p) U env) (tp-omega M (tp-f-b p) U env)))
+     ((eq? k 'exists)      ;; closure of the union of the images f_!([[p]](alpha f, beta))
+      (let ((A (tp-f-a p)))
+        (tp-closure-mask T U
+                         (let loop ((fs (tp-into T U)) (acc 0))
+                           (if (or (null? fs) (= acc (tp-top-mask T U))) acc
+                               (let* ((f (car fs)) (V (tp-src T f)) (env2 (tp-restrict-env types env f)))
+                                 (loop (cdr fs)
+                                       (let lb ((b 0) (acc acc))
+                                         (if (= b (topos-type-size A V)) acc
+                                             (lb (+ b 1) (bitwise-or acc (tp-image-mask T f (tp-omega M (tp-f-b p) V (cons b env2))))))))))))))
+     ((eq? k 'forall)      ;; intersection of the right adjoints forall_f([[p]](alpha f, beta))
+      (let ((A (tp-f-a p)))
+        (let loop ((fs (tp-into T U)) (R (tp-top-mask T U)))
+          (if (or (null? fs) (= R 0)) R
+              (let* ((f (car fs)) (V (tp-src T f)) (env2 (tp-restrict-env types env f)))
+                (loop (cdr fs)
+                      (let lb ((b 0) (R R))
+                        (if (= b (topos-type-size A V)) R
+                            (lb (+ b 1) (bitwise-and R (tp-forall-mask T f (tp-omega M (tp-f-b p) V (cons b env2)))))))))))))
+     ((eq? k 'holds) (vector-ref (tp-closed-masks T U) (tp-eval M (tp-f-a p) U env 'omega)))
+     ((eq? k 'locally) (tp-closure-mask T U (tp-modal-closure-mask T (tp-f-a p) U (tp-omega M (tp-f-b p) U env))))
+     (else (error "bad compiled formula" k)))))
+
+;; ---------------------------------------------------------------------------
+;; Public queries on compiled formulas
+;; ---------------------------------------------------------------------------
+;; #(topos-formula L ctx node size caller-ctx): ctx innermost first; environments
+;; passed to the queries are lists of element VALUES in the caller's order.
+;; Every query builds its own memo context, so its allocation is released with
+;; the region that encloses the call.
+(define (topos-formula L ctx-exprs p)
+  (let* ((ctx (map (lambda (b) (tp-binder L b)) ctx-exprs)) (ids (vector 0))
+         (node (tp-compile-formula L ids (reverse ctx) p)))
+    (vector 'topos-formula L (reverse ctx) node (vector-ref ids 0) ctx)))
+(define (tp-F-T F) (tp-L-T (vector-ref F 1)))
+(define (tp-F-node F) (vector-ref F 3))
+(define (tp-F-ctx F) (vector-ref F 5))          ;; caller order
+(define (tp-F-context F) (tp-context (tp-F-T F) (vector-ref F 4)))
+(define (topos-formula-context F) (map (lambda (b) (cons (car b) (cdr b))) (tp-F-ctx F)))
+(define (tp-env-indices F U values)
+  (if (not (= (length values) (length (tp-F-ctx F)))) (error "environment length does not match the context" values))
+  (reverse (map (lambda (b v) (let ((i (topos-type-index (cdr b) U v)))
+                                (if (not i) (error "not a generalized element at this stage" (list (car b) U v)))
+                                i))
+                (tp-F-ctx F) values)))
+(define (tp-env-values F U env)
+  (map (lambda (b i) (topos-type-element (cdr b) U i)) (tp-F-ctx F) (reverse env)))
+(define (topos-forces? F U . env)
+  (tp-force (tp-F-context F) (tp-F-node F) U (tp-env-indices F U (if (null? env) '() (car env)))))
+(define (topos-truth F U . env)
+  (tp-unmask (tp-F-T F) U (tp-omega (tp-F-context F) (tp-F-node F) U (tp-env-indices F U (if (null? env) '() (car env))))))
+;; every environment (generalized elements of the free variables) at stage U
+(define (tp-envs F U) (map reverse (tp-cartesian (map (lambda (b) (tp-range (topos-type-size (cdr b) U))) (tp-F-ctx F)))))
+(define (topos-environments F U) (map (lambda (e) (tp-env-values F U e)) (tp-envs F U)))
+(define (tp-stages F) (tp-range (tp-T-n (tp-F-T F))))
+(define (topos-instance-count F) (apply + (map (lambda (U) (length (tp-envs F U))) (tp-stages F))))
+;; the extension [[p]]: for each stage, the list of environments that force p
+(define (topos-extension F)
+  (let ((M (tp-F-context F)))
+    (map (lambda (U) (map (lambda (e) (tp-env-values F U e))
+                          (filter (lambda (e) (tp-force M (tp-F-node F) U e)) (tp-envs F U))))
+         (tp-stages F))))
+(define (topos-counter-witness F)
+  (let ((M (tp-F-context F)))
+    (let loop ((Us (tp-stages F)))
+      (if (null? Us) #f
+          (let ((bad (filter (lambda (e) (not (tp-force M (tp-F-node F) (car Us) e))) (tp-envs F (car Us)))))
+            (if (null? bad) (loop (cdr Us)) (list (car Us) (tp-env-values F (car Us) (car bad)))))))))
+(define (topos-valid? F) (not (topos-counter-witness F)))
+;; The forcing theorem on every stage and environment: U ||- p(alpha) iff
+;; [[p]]_U(alpha) is the maximal sieve, and every [[p]]_U(alpha) is a closed
+;; sieve. Returns (instances #t) or (instances #f stage env forced truth).
+(define (topos-cross-check F) (tp-cross-check F (tp-F-context F)))
+(define (tp-cross-check F M)
+  (let ((T (tp-F-T F)) (p (tp-F-node F)))
+    (let loop ((Us (tp-stages F)) (count 0))
+      (if (null? Us) (list count #t)
+          (let inner ((es (tp-envs F (car Us))) (count count))
+            (if (null? es) (loop (cdr Us) count)
+                (let* ((U (car Us)) (e (car es)) (forced (tp-force M p U e)) (S (tp-omega M p U e)))
+                  (if (and (tp-mask-index T U S) (eq? forced (= S (tp-top-mask T U))))
+                      (inner (cdr es) (+ count 1))
+                      (list count #f U (tp-env-values F U e) forced (tp-unmask T U S))))))))))
+;; monotonicity: U ||- p(alpha) implies V ||- p(alpha f) for every f : V -> U
+(define (topos-monotone? F) (tp-monotone? F (tp-F-context F)))
+(define (tp-monotone? F M)
+  (let ((T (tp-F-T F)) (p (tp-F-node F)) (types (tp-f-ctx (tp-F-node F))))
+    (tp-all? (lambda (U) (tp-all? (lambda (e) (or (not (tp-force M p U e))
+                                                  (tp-all? (lambda (f) (tp-force M p (tp-src T f) (tp-restrict-env types e f))) (tp-into T U))))
+                                  (tp-envs F U)))
+             (tp-stages F))))
+;; local character: if the sieve {f : V ||- p(alpha f)} covers U, then U ||- p(alpha)
+(define (topos-local? F) (tp-local? F (tp-F-context F)))
+(define (tp-local? F M)
+  (let ((T (tp-F-T F)) (p (tp-F-node F)) (types (tp-f-ctx (tp-F-node F))))
+    (tp-all? (lambda (U) (tp-all? (lambda (e) (or (tp-force M p U e)
+                                                  (not (tp-covering? T U (filter (lambda (f) (tp-force M p (tp-src T f) (tp-restrict-env types e f))) (tp-into T U))))))
+                                  (tp-envs F U)))
+             (tp-stages F))))
+;; the three checks above on one memo context: (instances forcing-theorem?
+;; monotone? local?)
+(define (topos-forcing-report F)
+  (let* ((M (tp-F-context F)) (r (tp-cross-check F M)))
+    (list (car r) (cadr r) (tp-monotone? F M) (tp-local? F M))))

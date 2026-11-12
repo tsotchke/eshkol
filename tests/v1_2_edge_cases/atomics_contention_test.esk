@@ -1,0 +1,96 @@
+;; atomics_contention_test.esk — the atomic-* surface under real thread
+;; contention.
+;;
+;; K workers, started together on the thread pool and lined up on a
+;; barrier so they genuinely overlap, each perform N increments of one
+;; shared 64-bit cell:
+;;   phase 1  atomic-fetch-add!            total must be exactly K*N
+;;   phase 2  atomic-compare-exchange! in  total must be exactly 2*K*N
+;;            a load/CAS retry loop
+;;   phase 3  atomic-fetch-sub!            total must return to exactly K*N
+;; A lost update in any phase leaves the total short.  Between phases the
+;; barrier's serial party records the cell while every other worker is
+;; parked, so each phase is checked on its own.  The CAS retry count is
+;; reported as evidence of contention; it is not asserted, because how
+;; often the workers collide depends on the machine.
+;;
+;; The cell is the runtime's FFI probe word (the same one
+;; tests/ffi/low_level_memory_surface_test.esk uses sequentially).
+
+(require stdlib)
+(require core.threads)
+
+(extern-var i64 ffi-probe :extern-symbol eshkol_runtime_ffi_surface_probe)
+
+(define cell (addr-of ffi-probe))
+(define workers (max 2 (min 8 (thread-pool-size))))
+(define per-worker 20000)
+(define expected (* workers per-worker))
+
+(define passed 0)
+(define failed 0)
+(define (check label want got)
+  (if (equal? want got)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (write want)
+             (display ", got ") (write got) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+(define (cas-increment!)
+  ;; Returns the number of failed CAS attempts before this increment landed.
+  (let retry ((misses 0))
+    (let* ((seen (atomic-load i64 cell acquire))
+           (observed (atomic-compare-exchange! i64 cell seen (+ seen 1)
+                                               acq-rel acquire)))
+      (if (= observed seen) misses (retry (+ misses 1))))))
+
+(atomic-store! i64 cell 0 seq-cst)
+
+(define gate (make-barrier workers))
+(define marks (vector #f #f))           ; cell after phase 1, after phase 2
+
+(define (worker id)
+  (barrier-wait! gate)
+  (let add ((i 0))
+    (if (< i per-worker)
+        (begin (atomic-fetch-add! i64 cell 1 acq-rel) (add (+ i 1)))))
+  (if (barrier-wait! gate)
+      (vector-set! marks 0 (atomic-load i64 cell seq-cst)))
+  (barrier-wait! gate)
+  (let ((misses (let cas ((i 0) (m 0))
+                  (if (< i per-worker)
+                      (cas (+ i 1) (+ m (cas-increment!)))
+                      m))))
+    (if (barrier-wait! gate)
+        (vector-set! marks 1 (atomic-load i64 cell seq-cst)))
+    (barrier-wait! gate)
+    (let sub ((i 0))
+      (if (< i per-worker)
+          (begin (atomic-fetch-sub! i64 cell 1 acq-rel) (sub (+ i 1)))))
+    misses))
+
+(define handles
+  (let start ((id 0) (acc '()))
+    (if (< id workers)
+        (start (+ id 1) (cons (make-thread (lambda () (worker id))) acc))
+        acc)))
+(define cas-misses (apply + (map thread-join handles)))
+(define final (atomic-load i64 cell seq-cst))
+
+(display "workers: ") (display workers)
+(display "  increments per worker: ") (display per-worker)
+(display "  CAS retries: ") (display cas-misses) (newline)
+(check "atomic-fetch-add! from K threads totals K*N" expected (vector-ref marks 0))
+(check "CAS retry loop from K threads adds exactly K*N" (* 2 expected) (vector-ref marks 1))
+(check "atomic-fetch-sub! from K threads removes exactly K*N" expected final)
+(check "barrier completed five generations" 5 (barrier-generation gate))
+(barrier-destroy! gate)
+(atomic-store! i64 cell 0 seq-cst)
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "PASS: atomics_contention_test") (newline) (exit 0))
+    (begin (display "FAIL: atomics_contention_test") (newline) (exit 1)))

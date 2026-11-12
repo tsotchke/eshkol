@@ -1,0 +1,4 @@
+;; call-with-port consumes its owner: using the owner afterwards is use after close.
+(define in (open-input-file "strict-cwp.txt"))
+(call-with-port in (lambda (p) (read-line p)))
+(read-line in)

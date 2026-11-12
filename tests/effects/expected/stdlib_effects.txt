@@ -1,0 +1,17 @@
+store: 42
+run-store: (done . 10)
+reader+store: 40
+writer: (3 a b)
+throw: (caught oops)
+throw->result: ((ok . 5) (thrown . x))
+triples: ((3 4 5) (5 12 13) (6 8 10))
+first-choice: 3
+first-choice-none: none
+store-outside-choice: (1 1)
+store-inside-choice: ((1 . 1) (10 . 1))
+generator->list: (1 2 3 4 5)
+generator-fold: 5050
+1 2 3 
+make-generator: (1 2 3 #t)
+async: (A B (a1 a2 b1 b2))
+async-io: (wrote readable)

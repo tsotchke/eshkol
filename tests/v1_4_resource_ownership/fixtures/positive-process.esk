@@ -1,0 +1,7 @@
+(require agent.subprocess)
+;; A process handle is #f on spawn failure; on success it is waited on and destroyed.
+(define proc (process-spawn-argv (list "true") #f))
+(if proc
+    (begin (process-wait proc 5000) (process-destroy proc))
+    (display "spawn failed"))
+(newline)

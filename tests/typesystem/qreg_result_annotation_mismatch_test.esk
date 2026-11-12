@@ -1,0 +1,10 @@
+;; Type System Test: a body whose register dimension differs from the declared result is rejected
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: the result of 'grow' is declared qreg<3> but is qreg<2>
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define (grow (r : qreg<2>)) : qreg<3>
+  (qh r 0))

@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2661/5749 public symbols documented (46.3%), 3088 undocumented.
+**Coverage:** 2949/6617 public symbols documented (44.6%), 3668 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-422/864 symbols documented.
+427/870 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -25,7 +25,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 4 | 1 |
-| [`eshkol.h`](eshkol.md) | 374 | 213 |
+| [`eshkol.h`](eshkol.md) | 380 | 218 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -45,7 +45,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1317/3063 symbols documented.
+1350/3108 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -80,10 +80,10 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/mutation_observation.h`](backend/mutation_observation.md) | 8 | 0 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 62 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
-| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 87 | 26 |
+| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 115 | 50 |
 | [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 75 | 57 |
-| [`backend/system_codegen.h`](backend/system_codegen.md) | 280 | 266 |
+| [`backend/system_codegen.h`](backend/system_codegen.md) | 289 | 275 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 57 | 49 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
@@ -92,7 +92,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 61 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 77 | 21 |
-| [`backend/vm.h`](backend/vm.md) | 47 | 1 |
+| [`backend/vm.h`](backend/vm.md) | 55 | 1 |
 | [`backend/vm_limits.h`](backend/vm_limits.md) | 25 | 0 |
 | [`backend/work_stealing_deque.h`](backend/work_stealing_deque.md) | 76 | 37 |
 
@@ -120,16 +120,16 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `bridge/`
 
-34/34 symbols documented.
+35/35 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`bridge/qllm_bridge.h`](bridge/qllm_bridge.md) | 25 | 25 |
+| [`bridge/qllm_bridge.h`](bridge/qllm_bridge.md) | 26 | 26 |
 | [`bridge/space_form.h`](bridge/space_form.md) | 9 | 9 |
 
 ### `core/`
 
-365/688 symbols documented.
+352/729 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -138,11 +138,13 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/bignum.h`](core/bignum.md) | 45 | 27 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 62 | 19 |
+| [`core/coroutine.h`](core/coroutine.md) | 33 | 11 |
+| [`core/curvature_runtime.h`](core/curvature_runtime.md) | 24 | 4 |
 | [`core/dtoa_shortest.h`](core/dtoa_shortest.md) | 1 | 1 |
 | [`core/eval_bridge.h`](core/eval_bridge.md) | 9 | 4 |
 | [`core/event_loop.h`](core/event_loop.md) | 25 | 23 |
-| [`core/execution_profile.h`](core/execution_profile.md) | 36 | 8 |
-| [`core/handle.h`](core/handle.md) | 21 | 14 |
+| [`core/execution_profile.h`](core/execution_profile.md) | 47 | 11 |
+| [`core/handle.h`](core/handle.md) | 13 | 7 |
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |
@@ -154,10 +156,12 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
+| [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
 | [`core/resource_lease.h`](core/resource_lease.md) | 25 | 22 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 67 | 40 |
 | [`core/runtime.h`](core/runtime.md) | 73 | 56 |
+| [`core/saturating_vjp.h`](core/saturating_vjp.md) | 2 | 1 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
@@ -168,7 +172,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-84/338 symbols documented.
+92/373 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -176,6 +180,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`frontend/binding_forms.h`](frontend/binding_forms.md) | 3 | 0 |
 | [`frontend/diagnostic.h`](frontend/diagnostic.md) | 8 | 0 |
 | [`frontend/differentiation_graph.h`](frontend/differentiation_graph.md) | 37 | 0 |
+| [`frontend/effect_syntax_core.h`](frontend/effect_syntax_core.md) | 35 | 8 |
 | [`frontend/incrementalize.h`](frontend/incrementalize.md) | 12 | 0 |
 | [`frontend/macro_expander.h`](frontend/macro_expander.md) | 48 | 21 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
@@ -197,16 +202,38 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 |---|---:|---:|
 | [`pkg/subprocess.h`](pkg/subprocess.md) | 5 | 5 |
 
+### `platform/`
+
+58/148 symbols documented.
+
+| Header | Symbols | Documented |
+|---|---:|---:|
+| [`platform/audio.h`](platform/audio.md) | 28 | 12 |
+| [`platform/event.h`](platform/event.md) | 35 | 0 |
+| [`platform/midi.h`](platform/midi.md) | 26 | 13 |
+| [`platform/platform.h`](platform/platform.md) | 16 | 15 |
+| [`platform/window.h`](platform/window.md) | 43 | 18 |
+
 ### `types/`
 
-232/422 symbols documented.
+428/1014 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`types/dependent.h`](types/dependent.md) | 63 | 29 |
-| [`types/hott_types.h`](types/hott_types.md) | 128 | 74 |
-| [`types/type_checker.h`](types/type_checker.md) | 201 | 113 |
-| [`types/type_relation.h`](types/type_relation.md) | 30 | 16 |
+| [`types/effect_check.h`](types/effect_check.md) | 2 | 1 |
+| [`types/hole_synthesis.h`](types/hole_synthesis.md) | 19 | 4 |
+| [`types/hott_cubical.h`](types/hott_cubical.md) | 32 | 8 |
+| [`types/hott_forms.h`](types/hott_forms.md) | 9 | 3 |
+| [`types/hott_types.h`](types/hott_types.md) | 149 | 85 |
+| [`types/quantum_types.h`](types/quantum_types.md) | 59 | 23 |
+| [`types/refinement.h`](types/refinement.md) | 15 | 4 |
+| [`types/smt.h`](types/smt.md) | 165 | 30 |
+| [`types/structural_checker.h`](types/structural_checker.md) | 10 | 3 |
+| [`types/structural_types.h`](types/structural_types.md) | 95 | 27 |
+| [`types/type_checker.h`](types/type_checker.md) | 300 | 171 |
+| [`types/type_relation.h`](types/type_relation.md) | 32 | 16 |
+| [`types/type_term.h`](types/type_term.md) | 64 | 24 |
 
 ### `util/`
 

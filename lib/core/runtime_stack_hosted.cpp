@@ -8,6 +8,7 @@
 
 #include <eshkol/eshkol.h>
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/core/coroutine.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +32,24 @@
 
 namespace {
 
+/* The stack the running execution context is on, when that is a coroutine
+ * stack rather than the thread's own: [t_ctx_stack_low, t_ctx_stack_high).
+ * Both 0 on the thread's own stack. Loaded on every coroutine switch
+ * (eshkol_stack_context_load), and read by the two things that need to know
+ * which stack they are measuring: continuation capture (via the stack-base
+ * probe below) and the overflow guard. */
+thread_local uintptr_t t_ctx_stack_low = 0;
+thread_local uintptr_t t_ctx_stack_high = 0;
+
+/* Guard margin on a coroutine stack. Coroutine stacks are small reservations,
+ * so the 256 KiB margin the thread stack keeps would swallow most of one; the
+ * diagnostic path needs only a few KiB, and the margin absorbs one function's
+ * frame overshoot between checks. */
+constexpr uint64_t kCoroutineStackGuardMargin = 32ULL * 1024ULL;
+/* PROT_NONE bytes mapped below every coroutine stack
+ * (lib/core/runtime_coroutines_hosted.cpp). */
+constexpr uint64_t kCoroutineGuardRegion = 64ULL * 1024ULL;
+
 /**
  * @brief Highest address of the calling thread's stack, or 0 if unknown.
  *
@@ -39,6 +58,7 @@ namespace {
  * for that capture instead of copying a stack region we cannot bound.
  */
 static uintptr_t eshkol_hosted_stack_base(void) {
+    if (t_ctx_stack_high) return t_ctx_stack_high;   /* running on a coroutine stack */
 #if defined(_WIN32)
     ULONG_PTR low = 0, high = 0;
     GetCurrentThreadStackLimits(&low, &high);
@@ -446,7 +466,34 @@ extern "C" void eshkol_init_stack_size(void) {
 }
 
 /** @copydoc eshkol_stack_guard_check */
+extern "C" void eshkol_stack_context_load(const eshkol_exec_context_t* ctx) {
+    t_ctx_stack_low = ctx ? ctx->stack_low : 0;
+    t_ctx_stack_high = ctx ? ctx->stack_high : 0;
+}
+
+/** @brief Report exhaustion of a coroutine stack and terminate (see
+ *  stack_overflow_fatal for why this is fatal rather than a condition). */
+[[noreturn]] static void coroutine_stack_overflow_fatal(void) {
+    std::fflush(stdout);
+    std::fprintf(stderr,
+                 "eshkol: stack overflow: recursion depth exceeded the "
+                 "%llu MiB coroutine stack (ESHKOL_FIBER_STACK_BYTES); use "
+                 "tail recursion, or raise ESHKOL_FIBER_STACK_BYTES to allow "
+                 "deeper recursion inside fibers and coroutines\n",
+                 (unsigned long long)as_mib((uint64_t)(t_ctx_stack_high - t_ctx_stack_low)));
+    std::fflush(stderr);
+    _Exit(ESHKOL_EXIT_LIMIT_STACK);
+}
+
 extern "C" void eshkol_stack_guard_check(void) {
+    if (t_ctx_stack_high) {
+        const uintptr_t sp = current_frame_address();
+        if (sp >= t_ctx_stack_low - kCoroutineGuardRegion && sp < t_ctx_stack_high &&
+            sp <= t_ctx_stack_low + kCoroutineStackGuardMargin) {
+            coroutine_stack_overflow_fatal();
+        }
+        return;
+    }
     if (t_stack_guard_state == 0) {
         stack_guard_init_thread();
     }
@@ -467,7 +514,14 @@ extern "C" void eshkol_stack_guard_check(void) {
  * I/O, or other work that could recurse on an exhausted stack.
  */
 extern "C" bool eshkol_stack_guard_fault_in_region(const void* fault_address) {
-    if (t_stack_guard_state != 1 || fault_address == nullptr) {
+    if (fault_address == nullptr) {
+        return false;
+    }
+    if (t_ctx_stack_high) {
+        const uintptr_t a = (uintptr_t)fault_address;
+        return a >= t_ctx_stack_low - kCoroutineGuardRegion && a < t_ctx_stack_low;
+    }
+    if (t_stack_guard_state != 1) {
         return false;
     }
     uintptr_t address = (uintptr_t)fault_address;
@@ -477,6 +531,12 @@ extern "C" bool eshkol_stack_guard_fault_in_region(const void* fault_address) {
 
 /** @copydoc eshkol_stack_guard_headroom */
 extern "C" uint64_t eshkol_stack_guard_headroom(void) {
+    if (t_ctx_stack_high) {
+        const uintptr_t sp = current_frame_address();
+        const uintptr_t floor = t_ctx_stack_low + kCoroutineStackGuardMargin;
+        if (sp < t_ctx_stack_low || sp >= t_ctx_stack_high) return 0;
+        return sp > floor ? (uint64_t)(sp - floor) : 0;
+    }
     if (t_stack_guard_state == 0) {
         stack_guard_init_thread();
     }

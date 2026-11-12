@@ -505,32 +505,31 @@ llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_coeffs_list", &ctx.module());
 }
-/** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, tower_depth i64, out tagged*) -> i32 route (ADR-0027). */
+/** ADR-0057: arm (or, with a null tape, disarm) the forward-column retry of an outermost reverse pass; returns the previously armed tape. */
+llvm::Value* emitRetryArm(CodegenContext& ctx, llvm::Value* tape_or_null) {
+    llvm::FunctionCallee f = ctx.module().getOrInsertFunction("eshkol_ad_retry_arm",
+        llvm::FunctionType::get(ctx.ptrType(), {ctx.ptrType()}, false));
+    return ctx.builder().CreateCall(f, {tape_or_null});
+}
+/** @brief Get or declare `eshkol_ad_nested_seed` (arena*, point tagged*, order i32, level i64, tower_pass i32, tower_depth i64, out tagged*) -> i64 route (ADR-0027, ADR-0057). */
 llvm::Function* getAdNestedSeedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_seed")) return f;
     llvm::Type* p = ctx.ptrType();
-    auto* ft = llvm::FunctionType::get(ctx.int32Type(),
+    auto* ft = llvm::FunctionType::get(ctx.int64Type(),
         {p /*arena*/, p /*point*/, ctx.int32Type() /*order*/, ctx.int64Type() /*level*/,
          ctx.int32Type() /*tower_pass*/, ctx.int64Type() /*tower_depth*/, p /*out*/}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_ad_nested_seed", &ctx.module());
 }
-/** @brief Get or declare `eshkol_ad_nested_extract` (arena*, result tagged*, route i32, order i32, want_list i32, out tagged*) -> void (ADR-0027). */
+/** @brief Get or declare `eshkol_ad_nested_extract` (arena*, result tagged*, route i64, order i32, want_list i32, out tagged*) -> void (ADR-0027, ADR-0057). */
 llvm::Function* getAdNestedExtractFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_ad_nested_extract")) return f;
     llvm::Type* p = ctx.ptrType();
     auto* ft = llvm::FunctionType::get(ctx.voidType(),
-        {p /*arena*/, p /*result*/, ctx.int32Type() /*route*/, ctx.int32Type() /*order*/,
+        {p /*arena*/, p /*result*/, ctx.int64Type() /*route*/, ctx.int32Type() /*order*/,
          ctx.int32Type() /*want_list*/, p /*out*/}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_ad_nested_extract", &ctx.module());
-}
-/** @brief Get or declare `eshkol_ad_nested_unsupported` (order i32) -> void, the LOUD diagnostic for a nesting neither carrier can represent (ESH-0402). */
-llvm::Function* getAdNestedUnsupportedFunc(CodegenContext& ctx) {
-    if (auto* f = ctx.module().getFunction("eshkol_ad_nested_unsupported")) return f;
-    auto* ft = llvm::FunctionType::get(ctx.voidType(), {ctx.int32Type()}, false);
-    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                  "eshkol_ad_nested_unsupported", &ctx.module());
 }
 } // namespace
 
@@ -557,7 +556,7 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     if (out_level) *out_level = level;
     llvm::IRBuilder<> entry(&fn->getEntryBlock(), fn->getEntryBlock().begin());
     auto* result = entry.CreateAlloca(ctx_.taggedValueType(), nullptr, "complex_seed_result");
-    auto* route = entry.CreateAlloca(ctx_.int32Type(), nullptr, "complex_seed_route");
+    auto* route = entry.CreateAlloca(ctx_.int64Type(), nullptr, "complex_seed_route");
     auto* complex_bb = llvm::BasicBlock::Create(ctx_.context(), "seed_complex", fn);
     auto* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "seed_scalar", fn);
     auto* done = llvm::BasicBlock::Create(ctx_.context(), "seed_join", fn);
@@ -571,7 +570,7 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     // dz=1: seed only the real coordinate. The imaginary coordinate is a
     // constant for this pass, retaining any enclosing carrier it already has.
     auto* seeded_real = seedForwardAndPushPlain(real, nullptr);
-    b.CreateStore(b.CreateLoad(ctx_.int32Type(), nestedRouteSlot_), route);
+    b.CreateStore(b.CreateLoad(ctx_.int64Type(), nestedRouteSlot_), route);
     auto* carrier = complex.packCarrierComplex(
         adPointToDouble(real, "complex derivative real coordinate"),
         adPointToDouble(imag, "complex derivative imaginary coordinate"), seeded_real, imag);
@@ -580,7 +579,7 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
 
     b.SetInsertPoint(scalar_bb);
     auto* seeded_scalar = seedForwardAndPushPlain(point_tagged, nullptr);
-    b.CreateStore(b.CreateLoad(ctx_.int32Type(), nestedRouteSlot_), route);
+    b.CreateStore(b.CreateLoad(ctx_.int64Type(), nestedRouteSlot_), route);
     b.CreateStore(seeded_scalar, result);
     b.CreateBr(done);
     b.SetInsertPoint(done);
@@ -618,7 +617,7 @@ llvm::Value* AutodiffCodegen::seedForwardAndPushPlain(llvm::Value* point_tagged,
         llvm::IRBuilder<> eb(&nfn->getEntryBlock(), nfn->getEntryBlock().begin());
         np_slot     = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_point");
         nout_slot   = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_seed_out");
-        nroute_slot = eb.CreateAlloca(ctx_.int32Type(), nullptr, "nest_route");
+        nroute_slot = eb.CreateAlloca(ctx_.int64Type(), nullptr, "nest_route");
         nseed_slot  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_seeded");
     }
     b.CreateStore(point_tagged, np_slot);
@@ -637,22 +636,10 @@ llvm::Value* AutodiffCodegen::seedForwardAndPushPlain(llvm::Value* point_tagged,
     b.CreateStore(route, nroute_slot);
     nestedRouteSlot_ = nroute_slot;
 
-    // ESH_AD_NEST_UNSUPPORTED: both passes want order >= 2, which one value
-    // series plus one first-order companion cannot represent. Raise rather than
-    // answer the zero this replaces.
-    llvm::BasicBlock* unsup_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_unsupported", nfn);
-    llvm::BasicBlock* ok_bb    = llvm::BasicBlock::Create(ctx_.context(), "nest_ok", nfn);
-    b.CreateCondBr(b.CreateICmpEQ(route, llvm::ConstantInt::get(ctx_.int32Type(), -1)),
-                   unsup_bb, ok_bb);
-    b.SetInsertPoint(unsup_bb);
-    b.CreateCall(getAdNestedUnsupportedFunc(ctx_), {nest_order});
-    b.CreateBr(ok_bb);   // eshkol_raise does not return; keeps the CFG well-formed
-
-    b.SetInsertPoint(ok_bb);
     llvm::BasicBlock* nest_bb  = llvm::BasicBlock::Create(ctx_.context(), "nest_seed", nfn);
     llvm::BasicBlock* plain_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_plain", nfn);
     llvm::BasicBlock* seed_done = llvm::BasicBlock::Create(ctx_.context(), "nest_seed_done", nfn);
-    b.CreateCondBr(b.CreateICmpNE(route, llvm::ConstantInt::get(ctx_.int32Type(), 0)),
+    b.CreateCondBr(b.CreateICmpNE(route, llvm::ConstantInt::get(ctx_.int64Type(), ESH_AD_NEST_NONE)),
                    nest_bb, plain_bb);
 
     // Nested: the runtime already seeded this pass's LEVEL. The tower context
@@ -852,10 +839,9 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardPlain(llvm::Value* result_tagg
             xin_slot  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_ex_in");
             xout_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "nest_ex_out");
         }
-        llvm::Value* route = b.CreateLoad(ctx_.int32Type(), route_slot, "nest_route_ld");
-        llvm::Value* route_lo = b.CreateAnd(route, llvm::ConstantInt::get(ctx_.int32Type(), 0xFF));
-        llvm::Value* needs_nested = b.CreateICmpSGE(route_lo,
-            llvm::ConstantInt::get(ctx_.int32Type(), ESH_AD_NEST_LEVEL));
+        llvm::Value* route = b.CreateLoad(ctx_.int64Type(), route_slot, "nest_route_ld");
+        llvm::Value* needs_nested = b.CreateICmpNE(route,
+            llvm::ConstantInt::get(ctx_.int64Type(), ESH_AD_NEST_NONE));
 
         llvm::BasicBlock* xnest_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_extract", xfn);
         llvm::BasicBlock* xcore_bb = llvm::BasicBlock::Create(ctx_.context(), "nest_ex_core", xfn);
@@ -1078,16 +1064,52 @@ llvm::Value* AutodiffCodegen::popAndExtractForwardCorePlain(llvm::Value* result_
     llvm::BasicBlock* nd_scalar = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_scalar", fn);
     b.CreateCondBr(nd_is_heap, nd_check, nd_scalar);
 
-    // Is the heap object a scheme vector (subtype VECTOR)?
+    // Is the heap object a collection this pass can differentiate component by
+    // component? A scheme vector is read where it lies. A tensor is first read
+    // out as a scheme vector of its elements, because ADR-0058 gives a tensor
+    // three tagged element types — a jet tensor among them — and `gradient`
+    // answers with one of those at a vector point. Without this a pass nested
+    // in another pass met its inner answer as a tensor, fell to the scalar
+    // extraction, and the point coercion refused the collection by name.
+    llvm::AllocaInst* nd_vec_ptr_slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        nd_vec_ptr_slot = eb.CreateAlloca(ctx_.ptrType(), nullptr, "fwd_ex_nd_vec_ptr");
+    }
+    llvm::BasicBlock* nd_tensor = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_tensor", fn);
+
     b.SetInsertPoint(nd_check);
-    llvm::Value* nd_ptr = tagged_.unpackPtr(result_tagged);
     llvm::Value* nd_is_vec = tagged_.checkHeapSubtype(
         result_tagged, HEAP_SUBTYPE_VECTOR);
-    b.CreateCondBr(nd_is_vec, nd_vec, nd_scalar);
+    llvm::Value* nd_is_tensor = tagged_.checkHeapSubtype(
+        result_tagged, HEAP_SUBTYPE_TENSOR);
+    b.CreateStore(tagged_.unpackPtr(result_tagged), nd_vec_ptr_slot);
+    b.CreateCondBr(nd_is_vec, nd_vec, nd_tensor);
+
+    // Tensor result: read its elements out as a scheme vector, keeping each
+    // element's own tag so a jet element arrives as a jet. A result the helper
+    // declines (no tensor, or no arena) takes the scalar extraction, which
+    // reports it rather than reading it as a number.
+    b.SetInsertPoint(nd_tensor);
+    {
+        llvm::Value* nd_tensor_arena = getArenaPtr();
+        llvm::FunctionCallee to_svec = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_to_svec",
+            llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+        llvm::Value* nd_svec = b.CreateCall(to_svec, {nd_tensor_arena, nd_taylor_in},
+                                            "fwd_ex_tensor_svec");
+        b.CreateStore(nd_svec, nd_vec_ptr_slot);
+        llvm::Value* nd_svec_ok = b.CreateAnd(
+            nd_is_tensor,
+            b.CreateICmpNE(nd_svec, llvm::ConstantPointerNull::get(
+                llvm::cast<llvm::PointerType>(ctx_.ptrType()))));
+        b.CreateCondBr(nd_svec_ok, nd_vec, nd_scalar);
+    }
 
     // Vector path: build a scheme vector of per-component derivatives.
     b.SetInsertPoint(nd_vec);
     {
+        llvm::Value* nd_ptr = b.CreateLoad(ctx_.ptrType(), nd_vec_ptr_slot, "fwd_ex_nd_ptr");
         llvm::Value* nd_is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
         llvm::Value* nd_is_l1 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 1));
         llvm::Value* nd_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
@@ -4007,7 +4029,7 @@ static bool adAstUsesTensorOps(
                 ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                 ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                 ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                 ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                 ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                 ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
@@ -4033,12 +4055,14 @@ static bool adAstUsesTensorOps(
         )) {
         case AstRoute::Call: {
             const eshkol_ast_t* f = op->call_op.func;
-            // Moonlab's VQE primitive consumes the reverse-mode AD-node tensor
-            // produced for vector inputs. Mark it as tensor-flowing so
+            // Moonlab's VQE primitive (and core.quantum.moonlab's circuit
+            // expectation, the same primitive on a program handle) consumes
+            // the reverse-mode AD-node tensor produced for vector inputs. Mark it as tensor-flowing so
             // (gradient (lambda (p) (vqe-energy ham p)) (vector ...)) takes
             // the reverse path rather than the forward dual-vector path.
             if (f && f->type == ESHKOL_VAR && f->variable.id &&
                 (std::strcmp(f->variable.id, "vqe-energy") == 0 ||
+                 std::strcmp(f->variable.id, "moonlab-expectation") == 0 ||
                  std::strcmp(f->variable.id, "vqe-energy-primitive") == 0)) return true;
             if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id) &&
                 !(kernels_only && adIsTensorRepresentationMove(f->variable.id))) return true;
@@ -4138,7 +4162,7 @@ static bool adAstRoutesThroughCons(
                 ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                 ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                 ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                 ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                 ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                 ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
@@ -4250,7 +4274,7 @@ static bool adNameFlowsWholeThroughArith(
                 ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                 ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                 ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                 ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                 ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                 ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
@@ -4900,6 +4924,27 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 BasicBlock* grad_rt_done = BasicBlock::Create(
                     ctx_.context(), "grad_rt_done", current_func);
 
+                // ADR-0057: a whole-point closure at a collection point inside a
+                // live pass (or at a point carrying a carrier) is forward
+                // columns, exactly like the statically resolved gradient.
+                {
+                    BasicBlock* rt_fc_bb = BasicBlock::Create(
+                        ctx_.context(), "grad_rt_fwd_columns", current_func);
+                    BasicBlock* rt_fc_skip = BasicBlock::Create(
+                        ctx_.context(), "grad_rt_not_live", current_func);
+                    Value* rt_fc_live = ctx_.builder().CreateAnd(
+                        ctx_.builder().CreateAnd(emitPassLiveAt(point_val),
+                                                 ctx_.builder().CreateNot(rt_point_is_scalar)),
+                        clo_arity_le1);
+                    ctx_.builder().CreateCondBr(rt_fc_live, rt_fc_bb, rt_fc_skip);
+                    ctx_.builder().SetInsertPoint(rt_fc_bb);
+                    Value* rt_fc_res = emitForwardColumnGradient(nullptr, closure_val, nullptr,
+                                                                 /*arity=*/1, point_val);
+                    ctx_.builder().CreateStore(rt_fc_res, rt_result_slot);
+                    ctx_.builder().CreateBr(grad_rt_done);
+                    ctx_.builder().SetInsertPoint(rt_fc_skip);
+                }
+
                 // ESH-0212 (defect 1): first-class tensor gradient. A runtime
                 // function value — one bound to a variable, passed as a
                 // parameter, or reached through a wrapper — arrives here with no
@@ -4991,9 +5036,37 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     Value* rvt_vsrc_ptr = b.CreateGEP(ctx_.taggedValueType(), rvt_vsrc, rvt_vidx);
                     Value* rvt_vsrc_val = b.CreateLoad(ctx_.taggedValueType(), rvt_vsrc_ptr);
                     // ESH-0393: classify the point element by its runtime tag
-                    // (an exact rational/bignum element is HEAP-tagged).
+                    // (an exact rational/bignum element is HEAP-tagged). An
+                    // element that is an enclosing reverse pass's tape node --
+                    // a point COMPUTED from that pass's variables, e.g.
+                    // `(g (vector (* 2.0 (vref v 0))))` -- is kept as the node
+                    // pointer, the same element encoding a tensor of tape nodes
+                    // uses, so the composition probe below sees it.
+                    Value* rvt_vbase = tagged_.getBaseType(tagged_.getType(rvt_vsrc_val));
+                    Value* rvt_vis_callable = b.CreateICmpEQ(rvt_vbase,
+                        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+                    BasicBlock* rvt_vnode_chk = BasicBlock::Create(ctx_.context(), "rvt_vconv_node_check", current_func);
+                    BasicBlock* rvt_vnode = BasicBlock::Create(ctx_.context(), "rvt_vconv_node", current_func);
+                    BasicBlock* rvt_vnum = BasicBlock::Create(ctx_.context(), "rvt_vconv_number", current_func);
+                    BasicBlock* rvt_vstore = BasicBlock::Create(ctx_.context(), "rvt_vconv_store", current_func);
+                    b.CreateCondBr(rvt_vis_callable, rvt_vnode_chk, rvt_vnum);
+                    b.SetInsertPoint(rvt_vnode_chk);
+                    Value* rvt_vis_node = tagged_.checkCallableSubtype(rvt_vsrc_val, CALLABLE_SUBTYPE_AD_NODE);
+                    b.CreateCondBr(rvt_vis_node, rvt_vnode, rvt_vnum);
+                    b.SetInsertPoint(rvt_vnode);
+                    Value* rvt_vnode_bits = tagged_.unpackInt64(rvt_vsrc_val);
+                    BasicBlock* rvt_vnode_exit = b.GetInsertBlock();
+                    b.CreateBr(rvt_vstore);
+                    b.SetInsertPoint(rvt_vnum);
                     Value* rvt_vdbl = adPointToDouble(rvt_vsrc_val, "gradient");
-                    b.CreateStore(b.CreateBitCast(rvt_vdbl, ctx_.int64Type()),
+                    Value* rvt_vnum_bits = b.CreateBitCast(rvt_vdbl, ctx_.int64Type());
+                    BasicBlock* rvt_vnum_exit = b.GetInsertBlock();
+                    b.CreateBr(rvt_vstore);
+                    b.SetInsertPoint(rvt_vstore);
+                    PHINode* rvt_vbits = b.CreatePHI(ctx_.int64Type(), 2, "rvt_vconv_bits");
+                    rvt_vbits->addIncoming(rvt_vnode_bits, rvt_vnode_exit);
+                    rvt_vbits->addIncoming(rvt_vnum_bits, rvt_vnum_exit);
+                    b.CreateStore(rvt_vbits,
                         b.CreateGEP(ctx_.int64Type(), rvt_vdst, rvt_vidx));
                     b.CreateStore(b.CreateAdd(rvt_vidx, ConstantInt::get(ctx_.int64Type(), 1)), rvt_vi);
                     b.CreateBr(rvt_vcc);
@@ -5011,50 +5084,33 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     Value* rvt_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 2));
                     Value* rvt_n = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(rvt_tt, rvt_ptr, 3));
 
-                    // ── ESH-0096 (ledger SW-05): which composition is this? ──
+                    // ── ADR-0057: which composition is this? ──────────
                     // A tensor element slot holds either an f64 bit pattern or
                     // an `ad_node_t*`, and the ranges overlap, so the residency
-                    // probe (never a raw dereference) decides. Two facts are
-                    // read in ONE pass over the point:
-                    //   nested — some component is a live tape node, i.e. an
-                    //            ENCLOSING reverse pass handed us its variables
-                    //            (`(jacobian (gradient f) v)`, the curried
-                    //            Hessian). Reverse-over-reverse is not
-                    //            representable on this tape (ad_node_t::value
-                    //            is one double), so the inner pass must run
-                    //            FORWARD — the rvt_fov arm below.
-                    //   seeded — one of those components IS the enclosing
-                    //            pass's published active seed
-                    //            (eshkol_ad_seed_flag). Only then can the
-                    //            composition be written back onto the outer
-                    //            tape. Nested WITHOUT a seed among our own
-                    //            components (the outer pass differentiates
-                    //            through intermediate nodes, or published no
-                    //            seed at all) still raises: loud, never a
-                    //            silent zero.
-                    // Non-nested points skip both and take the unchanged
-                    // single-pass reverse arm.
-                    FunctionCallee rvt_seed_flag_fn = ctx_.module().getOrInsertFunction(
-                        "eshkol_ad_seed_flag",
-                        FunctionType::get(ctx_.doubleType(), {ctx_.ptrType()}, false));
-                    Value* rvt_flag_zero = ConstantFP::get(ctx_.doubleType(), 0.0);
+                    // probe (never a raw dereference) decides whether some
+                    // component is a live tape node, i.e. an ENCLOSING reverse
+                    // pass handed us its variables or values computed from them
+                    // (`(jacobian (gradient f) v)`, the curried Hessian,
+                    // `(g (vector (* 2.0 (vref v 0))))`). Reverse-over-reverse
+                    // is not representable on this tape (ad_node_t::value is one
+                    // double), so the inner pass runs FORWARD -- the rvt_fov arm
+                    // below -- and writes its exact local linearisation back
+                    // onto the outer tape, against the components themselves.
+                    // A point with no tape node takes the unchanged single-pass
+                    // reverse arm.
                     llvm::AllocaInst* rvt_nested_slot;
-                    llvm::AllocaInst* rvt_seeded_slot;
                     llvm::AllocaInst* rvt_pi;
                     {
                         llvm::IRBuilder<> eb(&current_func->getEntryBlock(),
                                              current_func->getEntryBlock().begin());
                         rvt_nested_slot = eb.CreateAlloca(ctx_.int1Type(), nullptr, "rvt_nested");
-                        rvt_seeded_slot = eb.CreateAlloca(ctx_.int1Type(), nullptr, "rvt_seeded");
                         rvt_pi = eb.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_pi");
                     }
                     b.CreateStore(ConstantInt::get(ctx_.int1Type(), 0), rvt_nested_slot);
-                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 0), rvt_seeded_slot);
                     b.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), rvt_pi);
                     BasicBlock* rvt_pc = BasicBlock::Create(ctx_.context(), "rvt_probe_cond", current_func);
                     BasicBlock* rvt_pb = BasicBlock::Create(ctx_.context(), "rvt_probe_body", current_func);
                     BasicBlock* rvt_pm = BasicBlock::Create(ctx_.context(), "rvt_probe_node", current_func);
-                    BasicBlock* rvt_ps = BasicBlock::Create(ctx_.context(), "rvt_probe_seed", current_func);
                     BasicBlock* rvt_pn = BasicBlock::Create(ctx_.context(), "rvt_probe_next", current_func);
                     BasicBlock* rvt_pe = BasicBlock::Create(ctx_.context(), "rvt_probe_end", current_func);
                     b.CreateBr(rvt_pc);
@@ -5067,33 +5123,14 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     b.CreateCondBr(emitAdNodeProbe(rvt_pbits, /*any type=*/-1), rvt_pm, rvt_pn);
                     b.SetInsertPoint(rvt_pm);
                     b.CreateStore(ConstantInt::get(ctx_.int1Type(), 1), rvt_nested_slot);
-                    // seed_flag only COMPARES the pointer (no dereference), and
-                    // this candidate is arena-resident anyway.
-                    Value* rvt_pflag = b.CreateCall(rvt_seed_flag_fn,
-                        {b.CreateIntToPtr(rvt_pbits, ctx_.ptrType())});
-                    b.CreateCondBr(b.CreateFCmpONE(rvt_pflag, rvt_flag_zero), rvt_ps, rvt_pn);
-                    b.SetInsertPoint(rvt_ps);
-                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 1), rvt_seeded_slot);
                     b.CreateBr(rvt_pn);
                     b.SetInsertPoint(rvt_pn);
                     b.CreateStore(b.CreateAdd(rvt_pv, ConstantInt::get(ctx_.int64Type(), 1)), rvt_pi);
                     b.CreateBr(rvt_pc);
                     b.SetInsertPoint(rvt_pe);
-                    BasicBlock* rvt_nested_bb = BasicBlock::Create(ctx_.context(), "rvt_nested_route", current_func);
                     BasicBlock* rvt_fov       = BasicBlock::Create(ctx_.context(), "rvt_fwd_over_rev", current_func);
-                    BasicBlock* rvt_unsup     = BasicBlock::Create(ctx_.context(), "rvt_nested_unsup", current_func);
                     BasicBlock* rvt_plain     = BasicBlock::Create(ctx_.context(), "rvt_plain_reverse", current_func);
-                    b.CreateCondBr(b.CreateLoad(ctx_.int1Type(), rvt_nested_slot), rvt_nested_bb, rvt_plain);
-                    b.SetInsertPoint(rvt_nested_bb);
-                    b.CreateCondBr(b.CreateLoad(ctx_.int1Type(), rvt_seeded_slot), rvt_fov, rvt_unsup);
-                    b.SetInsertPoint(rvt_unsup);
-                    {
-                        FunctionCallee rvt_raise = ctx_.module().getOrInsertFunction(
-                            "eshkol_ad_curried_gradient_unsupported",
-                            FunctionType::get(ctx_.voidType(), {}, false));
-                        b.CreateCall(rvt_raise, {});
-                        b.CreateBr(rvt_plain);   // eshkol_raise does not return
-                    }
+                    b.CreateCondBr(b.CreateLoad(ctx_.int1Type(), rvt_nested_slot), rvt_fov, rvt_plain);
                     b.SetInsertPoint(rvt_plain);
                     // The result is allocated outside the tape region so that
                     // releasing the tape cannot reclaim the published tensor.
@@ -5108,6 +5145,10 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         {arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
                     Value* rvt_saved_tape = current_tape_ptr_;
                     current_tape_ptr_ = rvt_tape;
+                    // Whether any reverse pass encloses this one (ADR-0057).
+                    Value* rvt_outermost = b.CreateICmpEQ(
+                        b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape()),
+                        ConstantPointerNull::get(ctx_.ptrType()), "rvt_outermost_reverse");
                     pushTapeContext(rvt_tape);
 
                     // The pointer array and synthetic AD tensor are private to
@@ -5161,7 +5202,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     // as a raw double, which is correct ONLY when the component
                     // really is one. The pre-scan above has already routed every
                     // point carrying an enclosing pass's `ad_node_t*` away from
-                    // this block (to rvt_fov, or to the loud raise), so no tape
+                    // this block (to rvt_fov), so no tape
                     // pointer can reach the cast and become a subnormal ~1e-310.
                     Value* rvt_edbl = b.CreateBitCast(rvt_ebits, ctx_.doubleType());
                     Value* rvt_node = createADVariable(rvt_edbl, 0);
@@ -5173,6 +5214,13 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     b.SetInsertPoint(rvt_se);
 
                     // Call the closure in AD mode with the AD-node tensor.
+                    FunctionCallee rvt_mixed_count_fn = ctx_.module().getOrInsertFunction(
+                        "eshkol_ad_mixed_record_count",
+                        FunctionType::get(ctx_.int64Type(), {}, false));
+                    Value* rvt_mixed_before = b.CreateCall(rvt_mixed_count_fn, {}, "rvt_mixed_before");
+                    // ADR-0057: this primal may be retried as forward columns.
+                    Value* rvt_retry_saved = emitRetryArm(ctx_, b.CreateSelect(rvt_outermost,
+                        rvt_tape, ConstantPointerNull::get(ctx_.ptrType())));
                     b.CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
                     Value* rvt_ad_tagged = tagged_.packPtr(
                         b.CreatePtrToInt(rvt_ad, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
@@ -5180,6 +5228,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         std::vector<Value*>{rvt_ad_tagged}, "autodiff", callback_context_);
                     b.CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
                     popTapeContext();
+                    emitRetryArm(ctx_, rvt_retry_saved);
 
                     if (!rvt_out) {
                         eshkol_error("gradient: failed to call runtime tensor function");
@@ -5314,42 +5363,59 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     // have escaped from the differentiated function.
                     ctx_.builder().CreateCall(mem_.getArenaTapeRelease(), {rvt_tape});
                     current_tape_ptr_ = rvt_saved_tape;
+                    // ADR-0057: an inner forward pass ran during the primal, so
+                    // its captures may be values computed from this pass's
+                    // variables, which this one-pass sweep cannot link back.
+                    // With no enclosing reverse pass, take the gradient as
+                    // forward columns (each component a forward pass, the inner
+                    // pass a level of it) instead of the sweep.
+                    {
+                        Value* rvt_moved = ctx_.builder().CreateICmpNE(
+                            ctx_.builder().CreateCall(rvt_mixed_count_fn, {}, "rvt_mixed_after"),
+                            rvt_mixed_before);
+                        BasicBlock* rvt_cols = BasicBlock::Create(ctx_.context(), "grad_rt_mixed_fwd_columns", current_func);
+                        BasicBlock* rvt_keep = BasicBlock::Create(ctx_.context(), "grad_rt_sweep_result", current_func);
+                        ctx_.builder().CreateCondBr(ctx_.builder().CreateAnd(rvt_moved, rvt_outermost),
+                                                    rvt_cols, rvt_keep);
+                        ctx_.builder().SetInsertPoint(rvt_cols);
+                        Value* rvt_cols_res = emitForwardColumnGradient(nullptr, closure_val, nullptr,
+                                                                        /*arity=*/1, point_val);
+                        ctx_.builder().CreateStore(rvt_cols_res, rt_result_slot);
+                        ctx_.builder().CreateBr(grad_rt_done);
+                        ctx_.builder().SetInsertPoint(rvt_keep);
+                    }
                     ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
                     ctx_.builder().CreateBr(grad_rt_done);
 
-                    // ── ESH-0096 / ledger SW-05: forward-over-reverse ────────
+                    // ── ADR-0057: forward-over-reverse ─────────────────────
                     //
-                    // The point's components are the ENCLOSING reverse pass's
-                    // tape nodes, one of which is its published active seed.
-                    // The inner gradient therefore runs FORWARD — the exact
-                    // composition `(hessian f point)` already performs — so
-                    // that `(jacobian (gradient f) v)` answers the same matrix
-                    // as `(hessian f v)` instead of the zero matrix SW-05
-                    // recorded.
+                    // Some of the point's components are the ENCLOSING reverse
+                    // pass's tape nodes: its variables, or values it computed
+                    // from them. The inner gradient therefore runs FORWARD --
+                    // the exact composition `(hessian f point)` performs -- and
+                    // records, for each output component i, its exact local
+                    // linearisation against those nodes:
                     //
-                    // For output component i, component k of the argument is
-                    // the 8-jet
+                    //     grad_i  ~  g_i + sum_k H[i][k] (x_k - value_k)
                     //
-                    //     { value_k, e1 = (k == i), 0, 0,
-                    //       ep = eshkol_ad_seed_flag(node_k), 0, 0, 0 }
+                    // over every component k that is a tape node. For the pair
+                    // (i, k), component m of the argument is the 8-jet
                     //
-                    // i.e. x_k = value_k + [k==i]·e1 + [k is seed]·ep. The e1
-                    // slot selects the output component, so f's returned jet's
-                    // e1 coefficient (field 1) is exactly grad_i; the ep slot is
-                    // an INDEPENDENT jet dimension (ESH-0117) that carries the
-                    // dependence on the outer seed, so the surviving e1·ep
-                    // coefficient (field 5) is exactly d(grad_i)/d(seed) =
-                    // H[i][seed]. Those are the same two fields
-                    // popAndExtractForwardCore reads at level 0, handed to the
-                    // same hook: eshkol_ad_mixed_record writes the exact local
-                    // linearization onto the OUTER tape and returns the node the
-                    // enclosing backward pass will traverse.
+                    //     x_m = value_m + [m==i]·e1 + [m==k]·ep
                     //
-                    // Cost: n forward evaluations of f per enclosing pass (one
-                    // per output component), matching the direct Hessian's
-                    // forward-over-forward sweep. No second reverse tape is
-                    // built, so this does NOT depend on the dense resident tape
-                    // spine.
+                    // so f's returned jet has e1 coefficient (field 1) g_i and
+                    // e1·ep coefficient (field 5) H[i][k]; ep is an independent
+                    // jet dimension. eshkol_ad_linear_record writes
+                    // the linearisation onto the OUTER tape, with one edge per
+                    // tape-node component, and the enclosing backward pass
+                    // carries each edge on through whatever computed that
+                    // component. Nothing depends on which variable the enclosing
+                    // pass is seeding, so a point computed from its variables
+                    // answers exactly like a point made of them.
+                    //
+                    // Cost: one forward evaluation of f per (output, tape-node
+                    // component) pair -- the direct Hessian's forward-over-
+                    // forward sweep. No second reverse tape is built.
                     {
                         auto& fb = ctx_.builder();
                         fb.SetInsertPoint(rvt_fov);
@@ -5404,11 +5470,28 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         Value* fov_saved_mode  = fb.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
                         Value* fov_zero_d = ConstantFP::get(ctx_.doubleType(), 0.0);
                         Value* fov_one_d  = ConstantFP::get(ctx_.doubleType(), 1.0);
-                        FunctionCallee fov_mixed = ctx_.module().getOrInsertFunction(
-                            "eshkol_ad_mixed_record",
+                        FunctionCallee fov_linear = ctx_.module().getOrInsertFunction(
+                            "eshkol_ad_linear_record",
                             FunctionType::get(ctx_.ptrType(),
-                                {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.doubleType()},
+                                {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(),
+                                 ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()},
                                 false));
+                        // Per output component: the tape-node components and
+                        // H[i][k] against each (at most n of them).
+                        Value* fov_nodes = fb.CreateCall(mem_.getArenaAllocate(),
+                            {arena_ptr, fb.CreateMul(rvt_n, ConstantInt::get(ctx_.int64Type(), sizeof(void*)))});
+                        Value* fov_parts = fb.CreateCall(mem_.getArenaAllocate(),
+                            {arena_ptr, fb.CreateMul(rvt_n, ConstantInt::get(ctx_.int64Type(), sizeof(double)))});
+                        llvm::AllocaInst* fov_m;
+                        llvm::AllocaInst* fov_cnt;
+                        llvm::AllocaInst* fov_g;
+                        {
+                            llvm::IRBuilder<> eb(&current_func->getEntryBlock(),
+                                                 current_func->getEntryBlock().begin());
+                            fov_m   = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fov_m");
+                            fov_cnt = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fov_cnt");
+                            fov_g   = eb.CreateAlloca(ctx_.doubleType(), nullptr, "fov_g");
+                        }
 
                         // ── output-component loop: i ──
                         fb.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), fov_i);
@@ -5420,6 +5503,25 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         Value* fov_iv = fb.CreateLoad(ctx_.int64Type(), fov_i);
                         fb.CreateCondBr(fb.CreateICmpULT(fov_iv, rvt_n), fov_ib, fov_ie);
                         fb.SetInsertPoint(fov_ib);
+                        fb.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), fov_cnt);
+                        fb.CreateStore(fov_zero_d, fov_g);
+                        fb.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), fov_m);
+
+                        // ── tape-node component loop: m (the ep direction) ──
+                        BasicBlock* fov_mc = BasicBlock::Create(ctx_.context(), "fov_m_cond", current_func);
+                        BasicBlock* fov_mb = BasicBlock::Create(ctx_.context(), "fov_m_body", current_func);
+                        BasicBlock* fov_mev = BasicBlock::Create(ctx_.context(), "fov_m_eval", current_func);
+                        BasicBlock* fov_mn = BasicBlock::Create(ctx_.context(), "fov_m_next", current_func);
+                        BasicBlock* fov_me = BasicBlock::Create(ctx_.context(), "fov_m_end", current_func);
+                        fb.CreateBr(fov_mc);
+                        fb.SetInsertPoint(fov_mc);
+                        Value* fov_mv = fb.CreateLoad(ctx_.int64Type(), fov_m);
+                        fb.CreateCondBr(fb.CreateICmpULT(fov_mv, rvt_n), fov_mb, fov_me);
+                        fb.SetInsertPoint(fov_mb);
+                        Value* fov_mbits = fb.CreateLoad(ctx_.int64Type(),
+                            fb.CreateGEP(ctx_.int64Type(), rvt_elems, fov_mv));
+                        fb.CreateCondBr(emitAdNodeProbe(fov_mbits, /*any type=*/-1), fov_mev, fov_mn);
+                        fb.SetInsertPoint(fov_mev);
 
                         // Scheme vector of n seeded jets — subtype VECTOR, so
                         // f's `vector-ref` hands the tagged dual straight to the
@@ -5451,17 +5553,14 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         Value* fov_is_node = emitAdNodeProbe(fov_bits, /*any type=*/-1);
                         fb.CreateCondBr(fov_is_node, fov_kn, fov_kr);
 
-                        // Tape node: its value is the real coordinate, and its
-                        // ep seed is 1.0 exactly when it IS the enclosing pass's
-                        // active seed variable.
+                        // Tape node: its value is the real coordinate.
                         fb.SetInsertPoint(fov_kn);
                         Value* fov_np   = fb.CreateIntToPtr(fov_bits, ctx_.ptrType());
                         Value* fov_nval = loadNodeValue(fov_np);
-                        Value* fov_nflg = fb.CreateCall(rvt_seed_flag_fn, {fov_np});
                         BasicBlock* fov_kn_exit = fb.GetInsertBlock();
                         fb.CreateBr(fov_km);
 
-                        // Ordinary coordinate: a plain double, no seed edge.
+                        // Ordinary coordinate: a plain double.
                         fb.SetInsertPoint(fov_kr);
                         Value* fov_rval = fb.CreateBitCast(fov_bits, ctx_.doubleType());
                         BasicBlock* fov_kr_exit = fb.GetInsertBlock();
@@ -5471,14 +5570,13 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                         PHINode* fov_val = fb.CreatePHI(ctx_.doubleType(), 2, "fov_kval");
                         fov_val->addIncoming(fov_nval, fov_kn_exit);
                         fov_val->addIncoming(fov_rval, fov_kr_exit);
-                        PHINode* fov_flg = fb.CreatePHI(ctx_.doubleType(), 2, "fov_kseed");
-                        fov_flg->addIncoming(fov_nflg, fov_kn_exit);
-                        fov_flg->addIncoming(fov_zero_d, fov_kr_exit);
                         Value* fov_e1 = fb.CreateSelect(fb.CreateICmpEQ(fov_kv, fov_iv),
+                            fov_one_d, fov_zero_d);
+                        Value* fov_ep = fb.CreateSelect(fb.CreateICmpEQ(fov_kv, fov_mv),
                             fov_one_d, fov_zero_d);
                         Value* fov_jet = packDualToTagged(makeDual8(ctx_,
                             fov_val, fov_e1, fov_zero_d, fov_zero_d,
-                            fov_flg, fov_zero_d, fov_zero_d, fov_zero_d));
+                            fov_ep, fov_zero_d, fov_zero_d, fov_zero_d));
                         fb.CreateStore(fov_jet,
                             fb.CreateGEP(ctx_.taggedValueType(), fov_vec_elems, fov_kv));
                         fb.CreateStore(fb.CreateAdd(fov_kv, ConstantInt::get(ctx_.int64Type(), 1)), fov_k);
@@ -5504,16 +5602,31 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
 
                         auto& fb2 = ctx_.builder();
                         Value* fov_rd = safeUnpackDualFromTagged(fov_out);
-                        Value* fov_gi = dualField(ctx_, fov_rd, 1);   // grad_i
-                        Value* fov_ds = dualField(ctx_, fov_rd, 5);   // d(grad_i)/d(seed)
-                        // Exact local linearization on the OUTER tape. Returns
-                        // null when there is nothing to record (no tape, no
-                        // seed, or dseed == 0, i.e. this component genuinely
-                        // does not depend on the seed) — the plain gradient
+                        fb2.CreateStore(dualField(ctx_, fov_rd, 1), fov_g);   // g_i
+                        Value* fov_cv = fb2.CreateLoad(ctx_.int64Type(), fov_cnt);
+                        fb2.CreateStore(fb2.CreateIntToPtr(fov_mbits, ctx_.ptrType()),
+                            fb2.CreateGEP(ctx_.ptrType(), fov_nodes, fov_cv));
+                        fb2.CreateStore(dualField(ctx_, fov_rd, 5),           // H[i][m]
+                            fb2.CreateGEP(ctx_.doubleType(), fov_parts, fov_cv));
+                        fb2.CreateStore(fb2.CreateAdd(fov_cv, ConstantInt::get(ctx_.int64Type(), 1)), fov_cnt);
+                        fb2.CreateBr(fov_mn);
+
+                        fb2.SetInsertPoint(fov_mn);
+                        fb2.CreateStore(fb2.CreateAdd(fb2.CreateLoad(ctx_.int64Type(), fov_m),
+                                                      ConstantInt::get(ctx_.int64Type(), 1)), fov_m);
+                        fb2.CreateBr(fov_mc);
+
+                        // Exact local linearisation on the OUTER tape. Returns
+                        // null when there is nothing to record (no tape, or every
+                        // H[i][k] is 0, i.e. this component genuinely does not
+                        // depend on the enclosing pass) -- the plain gradient
                         // double is then stored and the enclosing pass reads a
                         // true zero partial, not a dropped edge.
-                        Value* fov_node = fb2.CreateCall(fov_mixed,
-                            {arena_ptr, fov_outer_tape, fov_gi, fov_ds});
+                        fb2.SetInsertPoint(fov_me);
+                        Value* fov_gi = fb2.CreateLoad(ctx_.doubleType(), fov_g);
+                        Value* fov_node = fb2.CreateCall(fov_linear,
+                            {arena_ptr, fov_outer_tape, fov_gi, fov_nodes, fov_parts,
+                             fb2.CreateLoad(ctx_.int64Type(), fov_cnt)});
                         Value* fov_node_ok = fb2.CreateICmpNE(fov_node,
                             ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())));
                         Value* fov_store = fb2.CreateSelect(fov_node_ok,
@@ -6176,6 +6289,43 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         vector_val = tagged_.packInt64(vector_val_raw, true); // Pack other types
     }
 
+    // Every route below that produces the gradient early stores it here and
+    // branches to grad_unified_exit, where it is given the point's shape.
+    Function* grad_entry_fn = ctx_.builder().GetInsertBlock()->getParent();
+    AllocaInst* grad_result_slot;
+    {
+        IRBuilder<> eb(&grad_entry_fn->getEntryBlock(), grad_entry_fn->getEntryBlock().begin());
+        grad_result_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_fwd_result");
+    }
+    BasicBlock* grad_unified_exit = BasicBlock::Create(ctx_.context(), "grad_unified_exit", grad_entry_fn);
+
+    // Whether any reverse pass encloses this one; decides the forward-column
+    // retry below (ADR-0057).
+    Value* grad_outermost_rev = ctx_.builder().CreateICmpEQ(
+        ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.currentAdTape()),
+        ConstantPointerNull::get(ctx_.ptrType()), "grad_outermost_reverse");
+
+    // ── ADR-0057: a vector-point gradient inside a live pass ──────────────
+    // The reverse tape stores one raw double per node, so neither an enclosing
+    // forward perturbation nor a carrier inside the point has anywhere to live
+    // on it. While a pass is live, or when the point carries a carrier, the
+    // gradient is forward columns -- one pass per coordinate, each a level of
+    // the enclosing passes -- the route jacobian and the nested hessian take.
+    // A scalar point keeps the forward jet path below, which nests already.
+    {
+        BasicBlock* fc_bb = BasicBlock::Create(ctx_.context(), "grad_fwd_columns", grad_entry_fn);
+        BasicBlock* fc_skip = BasicBlock::Create(ctx_.context(), "grad_not_live", grad_entry_fn);
+        Value* fc_live = ctx_.builder().CreateAnd(emitPassLiveAt(vector_val),
+            ctx_.builder().CreateNot(adPointIsScalar(vector_val)));
+        ctx_.builder().CreateCondBr(fc_live, fc_bb, fc_skip);
+        ctx_.builder().SetInsertPoint(fc_bb);
+        Value* fc_res = emitForwardColumnGradient(func_ptr, nullptr, op->gradient_op.function,
+                                                  adResolveValueArity(func_ptr, 0), vector_val);
+        ctx_.builder().CreateStore(fc_res, grad_result_slot);
+        ctx_.builder().CreateBr(grad_unified_exit);
+        ctx_.builder().SetInsertPoint(fc_skip);
+    }
+
     // Tensor-point reverse gradients cannot nest under a live reverse tape:
     // the inner f64 adjoints would silently erase the outer dependency. A
     // forward perturbation without a reverse tape is also unsupported here.
@@ -6225,7 +6375,41 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
                                     guard_has_outer_tape));
         ctx_.builder().CreateCondBr(guard_unsupported,
             guard_refuse, guard_continue);
+        // ADR-0057: inside the first primal of an outermost reverse pass that
+        // armed its forward-column retry, a tensor-point reverse pass over its
+        // tape defers instead: it answers a zero placeholder, which that pass
+        // discards when it recomputes its derivative as forward columns.
         ctx_.builder().SetInsertPoint(guard_refuse);
+        BasicBlock* guard_defer = BasicBlock::Create(ctx_.context(),
+            "gradient_defer_to_forward_columns", guard_fn);
+        BasicBlock* guard_refuse_now = BasicBlock::Create(ctx_.context(),
+            "gradient_refuse_nested_reverse", guard_fn);
+        Value* guard_armed = ctx_.builder().CreateICmpNE(
+            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction("eshkol_ad_retry_armed",
+                FunctionType::get(ctx_.int32Type(), {}, false)), {}),
+            ConstantInt::get(ctx_.int32Type(), 0));
+        ctx_.builder().CreateCondBr(ctx_.builder().CreateAnd(guard_has_outer_tape, guard_armed),
+                                    guard_defer, guard_refuse_now);
+        ctx_.builder().SetInsertPoint(guard_defer);
+        {
+            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+                "eshkol_ad_defer_to_forward_columns", FunctionType::get(ctx_.voidType(), {}, false)), {});
+            AllocaInst* defer_pt;
+            AllocaInst* defer_out;
+            {
+                IRBuilder<> eb(&guard_fn->getEntryBlock(), guard_fn->getEntryBlock().begin());
+                defer_pt = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "defer_point");
+                defer_out = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "defer_result");
+            }
+            ctx_.builder().CreateStore(vector_val, defer_pt);
+            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction("eshkol_ad_zero_gradient",
+                FunctionType::get(ctx_.voidType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)),
+                {getArenaPtr(), defer_pt, defer_out});
+            ctx_.builder().CreateStore(ctx_.builder().CreateLoad(ctx_.taggedValueType(), defer_out),
+                                       grad_result_slot);
+            ctx_.builder().CreateBr(grad_unified_exit);
+        }
+        ctx_.builder().SetInsertPoint(guard_refuse_now);
         FunctionCallee refuse = ctx_.module().getOrInsertFunction(
             "eshkol_ad_refuse_perturbed_operand",
             FunctionType::get(ctx_.voidType(), {ctx_.ptrType()}, false));
@@ -6258,8 +6442,6 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     // bare-variable point ((gradient log x) vs (gradient f vec)) is handled
     // correctly either way.
     // ════════════════════════════════════════════════════════════════════
-    BasicBlock* grad_unified_exit = nullptr;
-    AllocaInst* grad_result_slot = nullptr;
     {
         uint64_t fwd_arity = 0;
         std::string fwd_key = func_ptr->getName().str();
@@ -6305,10 +6487,8 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
         }
         if (fwd_arity == 1 && !fn_uses_tensors) {
             Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
-            grad_result_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_fwd_result");
             BasicBlock* grad_fwd_jet = BasicBlock::Create(ctx_.context(), "grad_fwd_jet", cur_fn);
             BasicBlock* grad_reverse_entry = BasicBlock::Create(ctx_.context(), "grad_reverse_entry", cur_fn);
-            grad_unified_exit = BasicBlock::Create(ctx_.context(), "grad_unified_exit", cur_fn);
 
             // Use forward mode when the point is a scalar (DOUBLE/INT64), an
             // existing dual, or an enclosing Taylor carrier. The last case is
@@ -7642,6 +7822,12 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
     pushTapeContext(partial_tape);
+    // ADR-0057: the first primal of an outermost pass may be retried as
+    // forward columns, so an inner reverse pass that meets this tape defers.
+    Value* grad_retry_saved = emitRetryArm(ctx_, ctx_.builder().CreateSelect(
+        ctx_.builder().CreateAnd(grad_outermost_rev,
+            ctx_.builder().CreateICmpEQ(i, ConstantInt::get(ctx_.int64Type(), 0))),
+        partial_tape, ConstantPointerNull::get(ctx_.ptrType())));
 
     // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
@@ -7664,6 +7850,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
     popTapeContext();
+    emitRetryArm(ctx_, grad_retry_saved);
 
     // NESTED GRADIENT FIX: Restore ctx_.outerAdNodeStorage() after function returns
     ctx_.builder().CreateStore(saved_outer_ad_node_scalar, ctx_.outerAdNodeStorage());
@@ -7737,6 +7924,12 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Push tape context (saves outer gradient's tape if any)
     pushTapeContext(partial_tape);
+    // ADR-0057: the first primal of an outermost pass may be retried as
+    // forward columns, so an inner reverse pass that meets this tape defers.
+    Value* grad_retry_saved_v = emitRetryArm(ctx_, ctx_.builder().CreateSelect(
+        ctx_.builder().CreateAnd(grad_outermost_rev,
+            ctx_.builder().CreateICmpEQ(i, ConstantInt::get(ctx_.int64Type(), 0))),
+        partial_tape, ConstantPointerNull::get(ctx_.ptrType())));
 
     // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
@@ -7759,6 +7952,7 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // NESTED GRADIENT FIX: Pop tape context (restores outer gradient's tape if any)
     popTapeContext();
+    emitRetryArm(ctx_, grad_retry_saved_v);
 
     // NESTED GRADIENT FIX: Restore ctx_.outerAdNodeStorage() after function returns
     ctx_.builder().CreateStore(saved_outer_ad_node_vector, ctx_.outerAdNodeStorage());
@@ -8005,6 +8199,28 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
 
     // Restore previous tape
     current_tape_ptr_ = saved_tape;
+
+    // ADR-0057: an inner forward pass ran during the first primal (the
+    // mixed-record counter moved). Its captures may be values this pass
+    // computed from its variables, which the reverse tape can link back only
+    // through the published seed itself. When no reverse pass encloses this
+    // one, the gradient is therefore taken as forward columns instead of
+    // per-component replay: each component is a forward pass, and the inner
+    // pass nests in it as a level, so every capture carries its dependence.
+    {
+        Value* to_columns = ctx_.builder().CreateAnd(
+            ctx_.builder().CreateAnd(is_first_comp, ctx_.builder().CreateNot(mixed_unchanged)),
+            grad_outermost_rev);
+        BasicBlock* columns_bb = BasicBlock::Create(ctx_.context(), "grad_mixed_fwd_columns", current_func);
+        BasicBlock* advance_bb = BasicBlock::Create(ctx_.context(), "grad_advance", current_func);
+        ctx_.builder().CreateCondBr(to_columns, columns_bb, advance_bb);
+        ctx_.builder().SetInsertPoint(columns_bb);
+        Value* columns = emitForwardColumnGradient(func_ptr, nullptr, op->gradient_op.function,
+                                                   adResolveValueArity(func_ptr, 0), vector_val);
+        ctx_.builder().CreateStore(columns, grad_result_slot);
+        ctx_.builder().CreateBr(grad_unified_exit);
+        ctx_.builder().SetInsertPoint(advance_bb);
+    }
 
     // Advance: the fast path already produced every component, so jump the
     // counter to n (loop exits); otherwise step to the next component.
@@ -8254,18 +8470,14 @@ llvm::Value* AutodiffCodegen::gradientJetPath(const eshkol_operations_t* op) {
     final_phi->addIncoming(scalar_result, scalar_extract_exit);
     final_phi->addIncoming(result_phi, grad_done);
 
-    // ESH-0070: if the forward-mode jet fast path was set up, merge the two
-    // paths (forward scalar result vs reverse-mode vector result) here.
-    if (grad_unified_exit) {
-        ctx_.builder().CreateStore(final_phi, grad_result_slot);
-        ctx_.builder().CreateBr(grad_unified_exit);
-        ctx_.builder().SetInsertPoint(grad_unified_exit);
-        return gradientInPointShape(
-            ctx_.builder().CreateLoad(ctx_.taggedValueType(), grad_result_slot),
-            vector_val);
-    }
-
-    return gradientInPointShape(final_phi, vector_val);
+    // Merge the early routes (forward columns, the forward jet fast path)
+    // with the reverse-mode vector result here.
+    ctx_.builder().CreateStore(final_phi, grad_result_slot);
+    ctx_.builder().CreateBr(grad_unified_exit);
+    ctx_.builder().SetInsertPoint(grad_unified_exit);
+    return gradientInPointShape(
+        ctx_.builder().CreateLoad(ctx_.taggedValueType(), grad_result_slot),
+        vector_val);
 }
 
 
@@ -8583,6 +8795,15 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         jac_fwd_exit = fb.GetInsertBlock();
         fb.SetInsertPoint(jac_rev_bb);
     }
+    // ADR-0057: what the reverse arm needs to decide, after its first entry,
+    // whether an inner forward pass ran (the mixed-record counter moved) while
+    // no other reverse pass encloses this one.
+    FunctionCallee jac_mixed_count_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_mixed_record_count", FunctionType::get(ctx_.int64Type(), {}, false));
+    Value* jac_mixed_entry = ctx_.builder().CreateCall(jac_mixed_count_fn, {}, "jac_mixed_entry");
+    Value* jac_outermost = ctx_.builder().CreateICmpEQ(
+        ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.currentAdTape()),
+        ConstantPointerNull::get(ctx_.ptrType()), "jac_outermost_reverse");
 
     Value* input_type = tagged_.getType(vector_val);
     Value* input_base_type = tagged_.getBaseType(input_type);
@@ -9145,6 +9366,13 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
         "eshkol_ad_seed_swap",
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* jac_saved_seed = ctx_.builder().CreateCall(jac_seed_swap, {jac_seed_node});
+    // ADR-0057: the first entry of an outermost Jacobian may be retried as
+    // forward columns, so an inner reverse pass that meets this tape defers.
+    Value* jac_retry_saved = emitRetryArm(ctx_, ctx_.builder().CreateSelect(
+        ctx_.builder().CreateAnd(jac_outermost, ctx_.builder().CreateAnd(
+            ctx_.builder().CreateICmpEQ(i_out, ConstantInt::get(ctx_.int64Type(), 0)),
+            ctx_.builder().CreateICmpEQ(j_in, ConstantInt::get(ctx_.int64Type(), 0)))),
+        jac_tape, ConstantPointerNull::get(ctx_.ptrType())));
 
     Value* jac_output_tagged;
     if (func_ptr) {
@@ -9174,6 +9402,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 
     // ESH-0120: restore the previously active seed node.
     ctx_.builder().CreateCall(jac_seed_swap, {jac_saved_seed});
+    emitRetryArm(ctx_, jac_retry_saved);
 
     // PHASE 1 FIX: Set AD mode flag back to false after lambda call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
@@ -9323,7 +9552,24 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     
     // CRITICAL FIX: Clear global tape pointer (like gradient does)
     ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
-    
+
+    // ADR-0057: an inner forward pass ran during the first entry, so its
+    // captures may be values computed from this pass's variables, which the
+    // seeded reverse sweep links back only through the seed itself. With no
+    // enclosing reverse pass, the Jacobian is forward columns instead.
+    {
+        Value* jac_first = ctx_.builder().CreateAnd(
+            ctx_.builder().CreateICmpEQ(i_out, ConstantInt::get(ctx_.int64Type(), 0)),
+            ctx_.builder().CreateICmpEQ(j_in, ConstantInt::get(ctx_.int64Type(), 0)));
+        Value* jac_moved = ctx_.builder().CreateICmpNE(
+            ctx_.builder().CreateCall(jac_mixed_count_fn, {}, "jac_mixed_now"), jac_mixed_entry);
+        BasicBlock* jac_next_bb = BasicBlock::Create(ctx_.context(), "jac_inner_advance", current_func);
+        ctx_.builder().CreateCondBr(
+            ctx_.builder().CreateAnd(ctx_.builder().CreateAnd(jac_first, jac_moved), jac_outermost),
+            jac_fwd_bb, jac_next_bb);
+        ctx_.builder().SetInsertPoint(jac_next_bb);
+    }
+
     Value* next_j_in = ctx_.builder().CreateAdd(j_in, ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(next_j_in, in_idx);
     ctx_.builder().CreateBr(inner_cond);
@@ -10274,7 +10520,7 @@ static bool adBodyMayEscapeNumber(
                 ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_OP, ESHKOL_EXTERN_VAR_OP,
                 ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP, ESHKOL_WHEN_OP,
                 ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP,
-                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_IMPORT_OP,
+                ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP,
                 ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP, ESHKOL_OWNED_OP,
                 ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP, ESHKOL_WEAK_REF_OP,
                 ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_DERIVATIVE_OP, ESHKOL_GRADIENT_OP,
@@ -10937,6 +11183,107 @@ llvm::Value* AutodiffCodegen::emitNestedHessian(llvm::Function* func_ptr, llvm::
     b.CreateBr(ic);
     b.SetInsertPoint(done);
     return b.CreateLoad(ctx_.taggedValueType(), h, "hn_result");
+}
+
+
+/**
+ * @brief ADR-0057: is a differentiation pass live here, or does the point
+ *        carry a carrier of one?
+ *
+ * The one predicate every vector-point operator consults before it chooses the
+ * reverse tape: the tape stores a raw double per node, so it can represent
+ * neither an enclosing forward perturbation nor a carrier inside the point.
+ */
+llvm::Value* AutodiffCodegen::emitPassLiveAt(llvm::Value* point_tagged) {
+    using namespace llvm;
+    auto& b = ctx_.builder();
+    Function* fn = b.GetInsertBlock()->getParent();
+    AllocaInst* slot;
+    {
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "live_point");
+    }
+    b.CreateStore(point_tagged, slot);
+    Value* live = b.CreateICmpNE(b.CreateCall(ctx_.module().getOrInsertFunction(
+            "eshkol_ad_point_has_carrier",
+            FunctionType::get(ctx_.int32Type(), {ctx_.ptrType()}, false)), {slot}),
+        ConstantInt::get(ctx_.int32Type(), 0));
+    if (GlobalVariable* gp = ctx_.adPertLevel())
+        live = b.CreateOr(live, b.CreateICmpSGT(b.CreateLoad(ctx_.int64Type(), gp),
+                                                ConstantInt::get(ctx_.int64Type(), 0)));
+    if (GlobalVariable* gt = ctx_.adTowerActive())
+        live = b.CreateOr(live, b.CreateICmpSGT(b.CreateLoad(ctx_.int64Type(), gt),
+                                                ConstantInt::get(ctx_.int64Type(), 0)));
+    return live;
+}
+
+/**
+ * @brief ADR-0057: the gradient of a scalar field at a collection point,
+ *        computed as forward columns.
+ *
+ * Component j is one forward pass on coordinate j of the point, seeded and
+ * extracted through the shared protocol (seedForwardAndPush /
+ * popAndExtractForward), so it runs as a level of every enclosing pass and the
+ * component keeps their perturbations. This is the route `jacobian` and the
+ * nested `hessian` already take; `gradient` takes it whenever emitPassLiveAt
+ * holds, because the reverse tape cannot carry what an enclosing pass needs.
+ * The result is a rank-1 tensor of tagged numbers.
+ */
+llvm::Value* AutodiffCodegen::emitForwardColumnGradient(llvm::Function* func_ptr,
+                                                        llvm::Value* closure_val,
+                                                        const eshkol_ast* fn_ast,
+                                                        uint64_t arity,
+                                                        llvm::Value* point_tagged) {
+    using namespace llvm;
+    auto& b = ctx_.builder();
+    Function* fn = b.GetInsertBlock()->getParent();
+    AllocaInst *pt, *p1, *el, *col, *g, *jv;
+    {
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        pt  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fc_point");
+        p1  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fc_seeded_point");
+        el  = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fc_elem");
+        col = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fc_component");
+        g   = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fc_gradient");
+        jv  = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fc_j");
+    }
+    FunctionCallee elem_fn = ctx_.module().getOrInsertFunction("eshkol_ad_point_element",
+        FunctionType::get(ctx_.voidType(), {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType()}, false));
+    FunctionCallee with_fn = ctx_.module().getOrInsertFunction("eshkol_ad_point_with",
+        FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(), ctx_.ptrType()}, false));
+    FunctionCallee store_fn = ctx_.module().getOrInsertFunction("eshkol_ad_gradient_store_component",
+        FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type(), ctx_.int64Type(), ctx_.ptrType()}, false));
+    b.CreateStore(point_tagged, pt);
+    Value* n = b.CreateCall(ctx_.module().getOrInsertFunction("eshkol_ad_point_length",
+        FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false)), {pt});
+    b.CreateStore(tagged_.packNull(), g);
+    b.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), jv);
+    BasicBlock* cond = BasicBlock::Create(ctx_.context(), "fc_cond", fn);
+    BasicBlock* body = BasicBlock::Create(ctx_.context(), "fc_body", fn);
+    BasicBlock* done = BasicBlock::Create(ctx_.context(), "fc_done", fn);
+    b.CreateBr(cond);
+    b.SetInsertPoint(cond);
+    b.CreateCondBr(b.CreateICmpSLT(b.CreateLoad(ctx_.int64Type(), jv), n), body, done);
+    b.SetInsertPoint(body);
+    {
+        Value* j = b.CreateLoad(ctx_.int64Type(), jv);
+        b.CreateCall(elem_fn, {pt, j, el});
+        Value* level = nullptr;
+        Value* seeded = seedForwardAndPush(b.CreateLoad(ctx_.taggedValueType(), el), &level);
+        b.CreateStore(seeded, el);
+        b.CreateCall(with_fn, {getArenaPtr(), pt, j, el, p1});
+        Value* out = emitNestedFieldCall(func_ptr, closure_val, fn_ast, arity, p1,
+                                         "gradient-forward-columns");
+        b.CreateStore(popAndExtractForward(out, level), col);
+        b.CreateCall(store_fn, {getArenaPtr(), g, n, b.CreateLoad(ctx_.int64Type(), jv), col});
+        b.CreateStore(b.CreateAdd(b.CreateLoad(ctx_.int64Type(), jv),
+                                  ConstantInt::get(ctx_.int64Type(), 1)), jv);
+        b.CreateBr(cond);
+    }
+    b.SetInsertPoint(done);
+    return b.CreateLoad(ctx_.taggedValueType(), g, "fc_result");
 }
 
 llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {

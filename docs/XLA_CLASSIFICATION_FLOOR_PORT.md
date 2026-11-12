@@ -1,3 +1,14 @@
+---
+kind: project
+status: current
+owner-area: gpu
+since: v1.4.0-connection
+sources:
+  - lib/backend/xla/builtin_classification.yaml
+  - scripts/gen_builtin_classification.py
+  - scripts/check_builtin_classification.py
+---
+
 # XLA classification and floor plan port status
 
 This checkout is an isolated clone of canonical connection-port/source at

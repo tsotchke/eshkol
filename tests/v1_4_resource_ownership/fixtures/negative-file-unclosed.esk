@@ -1,0 +1,3 @@
+;; An input port that is never closed: an unclosed handle at scope exit.
+(define in (open-input-file "strict-unclosed.txt"))
+(display (read-line in))

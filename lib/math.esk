@@ -22,10 +22,11 @@
 (define (mat-ref M cols row col)
   (vref M (+ (* row cols) col)))
 
-;; Create a mutable copy of a tensor as a vector
+;; Create a mutable copy of a tensor as a vector. Every slot is overwritten,
+;; so the placeholder fill is the exact 0 (it never reaches a result).
 (define (tensor-copy T)
   (let* ((total (vector-length T))
-         (V (make-vector total 0.0)))
+         (V (make-vector total 0)))
     (letrec ((copy-loop (lambda (i)
       (if (< i total)
           (begin
@@ -35,17 +36,42 @@
       (copy-loop 0))))
 
 ;;; ============================================================
+;;; Exactness of the elimination seeds
+;;; ============================================================
+;;
+;; det / inv / solve follow R7RS contagion: when every entry of the input is
+;; exact (an integer or a rational, in a Scheme vector or an exact tensor), the
+;; elimination stays on the exact tower and the answer is exact; when any entry
+;; is inexact, the answer is inexact. The seeds below (the running product,
+;; the sign, the identity of the inverse) are therefore exact; a seed only
+;; joins an inexact computation through an inexact entry. A pivot is decided
+;; zero exactly when it is exact, and by the `epsilon` tolerance only when it
+;; is inexact.
+
+;; True when every one of the first `count` entries of M is exact.
+(define (math-all-exact? M count)
+  (let loop ((i 0))
+    (cond ((>= i count) #t)
+          ((exact? (vref M i)) (loop (+ i 1)))
+          (else #f))))
+
+;; A pivot that cannot be divided by: exactly 0 for an exact pivot, below
+;; `epsilon` in magnitude for an inexact one.
+(define (math-pivot-zero? p)
+  (if (exact? p) (= p 0) (< (abs p) epsilon)))
+
+;;; ============================================================
 ;;; Determinant via LU Decomposition
 ;;; ============================================================
 
 ;; det: Compute determinant of n×n matrix using Gaussian elimination
-;; with partial pivoting. O(n³) complexity.
+;; with partial pivoting. O(n³) complexity. Exact for an exact matrix.
 ;; Note: Uses mutable state for sign and result tracking
 (define (det M n)
   (let* ((A (tensor-copy M))
-         (state (make-vector 2 0.0)))  ;; state[0] = sign, state[1] = result
-    (vector-set! state 0 1.0)  ;; sign = 1.0
-    (vector-set! state 1 1.0)  ;; result = 1.0
+         (state (make-vector 2 1)))  ;; state[0] = sign, state[1] = result
+    (vector-set! state 0 1)  ;; sign = 1
+    (vector-set! state 1 1)  ;; result = 1
     (letrec
       ((find-pivot (lambda (k i max-idx max-val)
          (if (< i n)
@@ -84,14 +110,14 @@
                ;; Swap rows if needed
                (if (not (= max-idx k))
                    (begin
-                     (vector-set! state 0 (- 0.0 (vref state 0)))  ;; Flip sign
+                     (vector-set! state 0 (- 0 (vref state 0)))  ;; Flip sign
                      (swap-cols k max-idx 0)))
                ;; Get pivot and update result
                (let ((pivot (vref A (+ (* k n) k))))
                  (vector-set! state 1 (* (vref state 1) pivot))
-                 ;; Check for singular
-                 (if (< (abs pivot) epsilon)
-                     0.0  ;; Singular matrix
+                 ;; Check for singular: an exact 0 for an exact pivot
+                 (if (math-pivot-zero? pivot)
+                     (if (exact? pivot) 0 0.0)  ;; Singular matrix
                      (begin
                        (elim-row k pivot (+ k 1))
                        (eliminate (+ k 1))))))))))
@@ -102,11 +128,21 @@
 ;;; Matrix Inverse via Gauss-Jordan Elimination
 ;;; ============================================================
 
+;; The n×n identity as a mutable vector: exact 1 and 0 for an exact input,
+;; 1.0 and 0.0 when contagion makes the inverse inexact.
+(define (math-identity n exact)
+  (let ((I (make-vector (* n n) (if exact 0 0.0))))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! I (+ (* i n) i) (if exact 1 1.0))
+                 (loop (+ i 1)))
+          I))))
+
 ;; inv: Compute inverse of n×n matrix using Gauss-Jordan elimination
-;; Returns #f if matrix is singular
+;; Returns #f if matrix is singular. Exact for an exact matrix.
 (define (inv M n)
   (let ((A (tensor-copy M))
-        (I (tensor-copy (eye n))))
+        (I (math-identity n (math-all-exact? M (* n n)))))
 
     (letrec
       ((find-pivot (lambda (k i max-idx max-val)
@@ -161,7 +197,7 @@
          (if (>= k n)
              #t
              (let ((max-idx (find-pivot k (+ k 1) k (abs (vref A (+ (* k n) k))))))
-               (if (< (abs (vref A (+ (* max-idx n) k))) epsilon)
+               (if (math-pivot-zero? (vref A (+ (* max-idx n) k)))
                    #f  ;; Singular
                    (begin
                      (if (not (= max-idx k))
@@ -181,7 +217,7 @@
 
 ;; solve: Solve Ax = b for x using LU decomposition with partial pivoting
 ;; A is n×n matrix, b is n-vector
-;; Returns solution vector x, or #f if singular
+;; Returns solution vector x, or #f if singular. Exact when A and b are.
 (define (solve A b n)
   (let ((M (tensor-copy A))
         (x (tensor-copy b)))
@@ -222,7 +258,7 @@
          (if (>= k n)
              #t
              (let ((max-idx (find-pivot k (+ k 1) k (abs (vref M (+ (* k n) k))))))
-               (if (< (abs (vref M (+ (* max-idx n) k))) epsilon)
+               (if (math-pivot-zero? (vref M (+ (* max-idx n) k)))
                    #f
                    (begin
                      (if (not (= max-idx k))
@@ -244,7 +280,7 @@
              #t
              (begin
                (vector-set! x k
-                 (/ (- (vref x k) (sum-row k (+ k 1) 0.0))
+                 (/ (- (vref x k) (sum-row k (+ k 1) 0))
                     (vref M (+ (* k n) k))))
                (back-sub (- k 1)))))))
 

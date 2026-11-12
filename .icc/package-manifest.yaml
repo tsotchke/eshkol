@@ -18,7 +18,7 @@
 # checks — this manifest does not duplicate them):
 #   - Linux shared-library runtime dependencies staged under
 #     lib/eshkol/runtime-deps/ (scripts/stage_linux_runtime_dependencies.py
-#     and the LINUX_REQUIRED_CODEC_ALIASES check in verify_release_package.py)
+#     and the forbidden image-codec family check in verify_release_package.py)
   #   - macOS OpenSSL TLS and LLVM runtime closure under
   #     lib/eshkol/runtime-deps/ (the staged checksum/provenance manifest and Mach-O relocation checks in
   #     verify_release_package.py)

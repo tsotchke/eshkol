@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Mathematics now runs on finite structures that decide their own claims.** Add `core.sheaf`
+  (sites, sieves, Grothendieck topologies, sheaf cohomology by Cech descent), `core.topos`
+  (presheaf toposes with Kripke–Joyal forcing cross-checked against the subobject classifier),
+  `core.ring` (rings as a functor-of-points value: one program, many carriers — integers,
+  rationals, IEEE binary64, modular arithmetic, Taylor jets, polynomial rings, group rings),
+  `core.category` (finite category theory, adjunctions through comma categories, Kan
+  extensions), and `core.simplicial` / `core.homological` (simplicial sets, chain complexes,
+  homology with torsion). Measured against nLab: 141 claims across 51 pages, decided and
+  reported in `docs/reports/NLAB_CONFORMANCE.md`. Reader's guide:
+  `docs/guide/MATHEMATICS.md`. Lawvere theories, Gröbner bases and monoidal categories with
+  the ZX calculus follow in v1.4.x.
+- **Recurrent cells, stop-gradient and gradient estimators (v1.5.0, ADR-0049).**
+  `core.ml.recurrent` provides LSTM and GRU cells over a flat parameter vector,
+  trained by reverse-mode backpropagation through time with no hand-written
+  backward pass. The new builtin `stop-gradient` returns a number's primal on
+  the native backend, the VM and the browser lane, and
+  `core.ml.gradient_estimators` adds straight-through, Gumbel-Softmax,
+  straight-through Gumbel, Bernoulli and score-function estimators that
+  compose with `gradient`. Reverse mode through a named-let loop that keeps AD
+  nodes only inside a list now records each iteration's own node.
+- **One chart for every sign of the curvature (ADR-0018).** Every
+  constant-curvature op evaluates the kappa-stereographic chart in the
+  canonical-flat gauge `alpha = 1`: the ball of radius `2/sqrt(-K)`, Euclidean
+  space at `K = 0`, and the sphere of radius `1/sqrt(K)` minus its pole, with
+  one set of formulas that is real-analytic through `K = 0`. Curvature jets
+  (value, `d/dK`, `d2/dK2`) are defined at zero, adaptive curvature steps may
+  change sign, geodesic attention scores are `-d^2/(2t)` with no curvature
+  scale, and serialized geometry carries a convention id. The new
+  `core.curvature` module exposes the shared core to JIT and AOT programs, and
+  an independent binary128 reference checks it at every finite binade of `K`
+  of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
+  (`migrate-legacy-ball-point`); distances are unchanged by the migration.
 - **Sockets and TLS sessions are resource leases.** TCP and UDP sockets are
   owned through the shared runtime handle registry: one operation per handle,
   one monotonic deadline per operation, waits on the event loop, cancellation
@@ -17,6 +49,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continuation escape. TLS sessions start on owned TCP streams in either role,
   hold the stream's lease, verify peers by default and report untrusted and
   mismatched certificates separately (ADR-0055, Proposed).
+- **Linear handles with compile-time tracking, and the borrow pattern.** Under
+  `--strict-resources`, every native handle family (sockets, TLS, file ports,
+  the event loop, threads, mutexes, condition variables, subprocesses) moves
+  through `open -> borrowed -> open -> closed`, checked across branches, loops,
+  function calls, closures, `guard`, `dynamic-wind` and `call/cc`. An unclosed
+  handle, a double close, a use after close, a close while borrowed and an
+  escaping loan are compile errors. `call-with-port`, `call-with-input-file`
+  and `call-with-output-file` close their port on a raise or a continuation
+  escape as well as on return. One contract table describes every handle
+  operation (ADR-0056, `docs/reference/language/linear-handles.md`).
+- **Differentiation nests to any depth in every mode.** Every pass is a level
+  with a 64-bit perturbation tag that is never reused, so nesting holds however
+  many passes a program has run. A vector-point `gradient` inside a live pass
+  is computed as forward columns, an outermost reverse pass over an inner
+  forward pass that captures a computed value is taken as forward columns, and
+  a curried `gradient` under a reverse pass linearises against each component
+  of its point. Forward over reverse, reverse over forward and reverse over
+  reverse over reverse answer exactly to depth 4 and beyond, with exact inputs
+  exact through every level, on the JIT, AOT and the VM
+  (`tests/ad/nested_depth_matrix_test.esk`, ADR-0057).
+- **Image I/O needs no codec library on any platform.** PNG (every colour
+  type, bit depth and interlacing), JPEG (baseline, extended and progressive
+  Huffman decode; baseline encode), BMP and WebP (VP8 lossy and VP8L lossless
+  decode with alpha and the extended container; lossless encode) are decoded
+  and encoded by codecs built into the runtime, with the same output on every
+  platform. Files written as PNG or JPEG keep the bytes the previous system
+  libpng/libjpeg path produced, decoded pixels match the previous
+  libpng/libjpeg/libwebp path, and `image-write` with `"webp"` now writes
+  lossless WebP. Builds, CI images and release packages no longer carry
+  libpng, libjpeg or libwebp.
+- **Region runtime in four units.** The region lifecycle, escape and
+  evacuation, user region handles and resident owners are separate
+  translation units behind a hidden-visibility internal header; function
+  bodies and exported symbols are unchanged.
+- **Doc-truth ratchet, phase 1.** `scripts/doc_truth_ratchet.py` ranks every
+  typed claim in `docs/` by verification status and records a per-document
+  quota (`docs/reports/doc_truth/quota.json`, summary in
+  `docs/reports/DOC_TRUTH_RANKING.md`). The `doc_truth_ratchet_phase1` CTest
+  recomputes the ranking into the build directory and reports against the
+  quota; `ESHKOL_DOC_TRUTH_ENFORCE=ON` is the phase-2 switch that makes it
+  release-blocking.
 
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix

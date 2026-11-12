@@ -1,0 +1,4 @@
+;; A closure over the port is stored in a list; the checker cannot see when it runs.
+(define in (open-input-file "strict-closure.txt"))
+(define thunks (list (lambda () (read-line in))))
+(close-port in)

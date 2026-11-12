@@ -1,0 +1,5 @@
+;;; A procedure declared Pure that prints.
+;; expect-error: 'noisy' is declared Pure but may perform IO
+(declare-effects noisy Pure)
+(define (noisy x) (display x) x)
+(display (noisy 1))

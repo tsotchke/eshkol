@@ -742,16 +742,144 @@ Ordered. These are v1.3.5-line items, not v1.4 features:
 **Focus:** A resource-sound systems profile — connect to the outside world
 under the same discipline that made `Qubit` linear.
 
-- [ ] Signed-curvature stereographic geometry (ADR-0018): one κ-stereographic
+- [x] Signed-curvature stereographic geometry (ADR-0018): one κ-stereographic
       chart for all curvature signs in the canonical-flat `alpha = 1` gauge,
       analytic through `K = 0` with curvature jets, squared-distance geodesic
       attention, versioned coordinate migration (`x_v2 = 2 x_v1`), and the
       binary128 reference-grid gates across every `K` binade
-- [ ] Stochastic Binary Lambda Calculus, first slice (ADR-0017): `core.sblc`
+- [x] Stochastic Binary Lambda Calculus, first slice (ADR-0017): `core.sblc`
       with the four-form `sblc-v1` prefix code, fair choice, seeded sampling,
       exact rational distribution semantics under a step bound, the exact
       `2^-length` prior, bounded enumeration and conditioning, and the SBLC gate
       (codec oracle, exact mass conservation, coin-trace oracle, JIT/AOT parity)
+- [x] Sheaf theory as a library (ADR-0033): `core.sheaf` provides finite
+      sites with Grothendieck topologies given by covering sieves and checked
+      against the three axioms, finite spaces, presheaves of sets and of
+      Z-modules / Q-vector spaces, the sheaf condition as gluing that returns
+      the global section or the overlaps where it fails (also for data split
+      over shards, devices or time windows), sheafification by the plus
+      construction, and Cech and derived cohomology with torsion and cocycle
+      generators, over `core.integer_linalg` (Smith normal form). The
+      finite-site and finite-space sheaf examples run on it
+- [x] Kripke-Joyal semantics as a library (ADR-0035): `core.topos` gives the
+      topos of a finite site its internal language (higher-order: Omega,
+      products, exponentials, power objects, comprehension) and decides
+      formulas by Kripke-Joyal forcing and, independently, by the
+      Omega-valued interpretation, with the forcing theorem checked on an
+      enumerated corpus over five sites, the Kripke and Beth reductions, the
+      Lawvere-Tierney bijection, the `locally` modality as the j-translation,
+      and the internally local structure sheaf of Spec(Z/n). The presheaf-topos
+      example runs on it. Language adoption is staged in ADR-0035 (v1.4.1 to v1.5.0)
+- [x] Content-addressed transcripts of certified quantities: `core.transcript`
+      records a determinant, Smith normal form, rank mod p or polynomial gcd
+      together with the exact inputs that produced it, as one fnv1a-64-hashed
+      JSON claim (reusing `core.merkle`'s hash), off by default and never
+      changing a program's output. `scripts/math_crosscheck/replay_check.py`
+      independently recomputes every known claim kind from a pure-Python
+      implementation (CTest-runnable, no third-party package);
+      `crosscheck_pari_sympy.py`, for a host with PARI/GP and SymPy
+      installed, additionally checks against PARI/GP and SymPy. Wired
+      into `mathematics_group_cohomology_order_eight`,
+      `mathematics_cohomology_rings_cup_products`,
+      `mathematics_fermat_hodge_classes_sweep` and `multimodular_test`
+- [x] Simplicial and homological algebra as libraries (ADR-0037):
+      `core.simplicial` gives simplicial sets in Eilenberg-Zilber normal
+      form with products, joins, cones and suspensions, nerves of finite
+      categories, posets, groups (BG) and crossed modules, McCord finite
+      models, the Kan and quasi-category conditions over every compatible
+      horn, Kan's homotopy groups and mapping spaces `Map(X, Y)`;
+      `core.homological` gives complexes over `core.ring` carriers (Z with
+      torsion through `core.integer_linalg`, Q, F_p), cones and long exact
+      sequences, Ext and Tor over Z, spectral sequences of filtered and double
+      complexes checked page by page and in the limit, cup and cup-i products,
+      Steenrod squares and group cohomology with twisted coefficients. Eight
+      algebraic-topology examples run on them
+- [x] Finite category theory as a library (ADR-0036): `core.category` gives
+      functors and natural transformations checked by their laws, functor,
+      comma and slice categories, limits, colimits, ends and coends, the
+      Yoneda lemma, categories of elements and Grothendieck constructions,
+      Kan extensions by the pointwise and the (co)end formulas with
+      Lan -| F^* -| Ran, adjunctions with both triangle identities and
+      adjoints found through comma categories, monads, nerves, derived
+      limits, and descent and sheafification as category theory (a -| i, the
+      sheafification monad, Cech descent, cohomological descent through
+      Grothendieck constructions), all on core.sheaf's finite categories.
+      The finite-categories, sheafification and homotopy-colimit examples run
+      on it, and the S6.2 suite reproduces the numbers of the sheaf and
+      descent examples categorically
+- [x] Simplicial and homological algebra as libraries (ADR-0037):
+      `core.simplicial` gives simplicial sets in Eilenberg-Zilber normal
+      form with products, joins, cones and suspensions, nerves of finite
+      categories, posets, groups (BG) and crossed modules, McCord finite
+      models, the Kan and quasi-category conditions over every compatible
+      horn, Kan's homotopy groups and mapping spaces `Map(X, Y)`;
+      `core.homological` gives complexes over `core.ring` carriers (Z with
+      torsion through `core.integer_linalg`, Q, F_p), cones and long exact
+      sequences, Ext and Tor over Z, spectral sequences of filtered and double
+      complexes checked page by page and in the limit, cup and cup-i products,
+      Steenrod squares and group cohomology with twisted coefficients. Eight
+      algebraic-topology examples run on them
+- [x] Monoidal categories, string diagrams and the ZX-calculus as a library
+      (ADR-0041): `core.monoidal` gives monoidal, braided, symmetric, compact
+      closed and dagger structure and monoidal functors as data, with the
+      pentagon, triangle, hexagons, snake equations and functor coherence
+      checked exactly on core.category's finite categories (including the
+      skeletal categories of 3-cocycles) and on FinVect over Z, Q and
+      Q(zeta_n); string diagrams evaluated compositionally and as tensor
+      networks, with a normal form deciding equality in the free symmetric
+      compact closed setting; and the ZX-calculus evaluated exactly over
+      Q(zeta_8), with every rewrite rule sound on every instance over the
+      phases k pi/4, Clifford+T circuits, graph-like simplification, and a
+      cross-check against Moonlab's simulator in quantum builds
+- [x] Algebraic theories as data (ADR-0039): `core.theory` gives signatures,
+      terms, equational theories and their models, with the catalogue of
+      semigroups, monoids, groups, abelian groups, rings, commutative rings,
+      R-modules, lattices, Boolean and Heyting algebras; laws checked
+      exhaustively on finite models and on seeded samples otherwise;
+      homomorphisms, products, congruences and quotients; free models with the
+      word problem decided for every catalogue theory; and the Lawvere theory
+      as a category with finite products. `core.ring` carriers are models of
+      the theory of commutative rings, and `core.topos`'s truth values are
+      Heyting algebras. Theories in the type system are Planned for v1.5.0
+- [ ] Infinite categories (ADR-0054): `core.category.effective` gives
+      effectively given categories (objects and hom-sets produced on demand,
+      finite categories as a special case), functors, transformations and
+      adjunctions with exact checks on generators; `core.category.presented`
+      decides finitely presented categories, monoids and groups by
+      Knuth-Bendix completion under a budget ('undecided' rather than a
+      guess); `core.category.standard` gives (N, <=), (Z, <=), (Q, <=),
+      (N, +), Delta, FinOrd, FinSet and Mat_R with their computable
+      (co)limits and named refusals; `core.category.effective_kan` gives Kan
+      extensions with finite comma categories, skeleta and coskeleta.
+      Newman's lemma and rewriting soundness are checked in Rocq
+- [x] Effective homology as a library (ADR-0038): `core.effective` gives
+      reductions and the basic perturbation lemma with every identity and
+      the nilpotency hypothesis checked on the cells a computation uses,
+      reductions from discrete vector fields (Eilenberg-Zilber, twisted
+      Eilenberg-Zilber, K(Z,1), W-bar G onto the bar construction), K(Z,n)
+      and K(Z/m,n) with effective homology, the Whitehead tower computing
+      pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2 and
+      pi_6(S^3) = Z/12, and hypercovers of finite spaces restoring descent
+      where the Cech nerve does not (stage S6.3)
+- [x] Differentiable optimization: blackbox solvers, perturbed optimizers,
+      Fenchel-Young losses, implicit differentiation (ADR-0031):
+      `core.ml.diffopt` puts each rule on the reverse-mode tape as one
+      pullback — blackbox ranking and shortest-path solvers, Gumbel/Normal
+      perturbed argmax and top-k with a seeded Monte Carlo Jacobian,
+      perturbed/softmax/sparsemax Fenchel-Young losses, and implicit
+      root/fixed-point/argmin layers whose adjoint system is solved exactly on
+      exact data — gated on JIT and AOT by `tests/ml/diffopt_test.esk`
+- [x] Manifolds glued from charts (ADR-0018 amendment): `core.manifold.atlas`
+      represents atlases as gluing data on `core.sheaf` — charts, transition
+      maps, the cocycle condition on triple overlaps and the chain rule of
+      transition Jacobians (forward-mode AD) checked exactly on exact atlases
+      and to a stated tolerance on float ones, with core.sheaf obstructions
+      as witnesses; the stereographic sphere atlas and the ball/half-space
+      atlas, of which the ADR-0018 chart is one chart, with the `K = 0`
+      contract preserved; transport of points, vectors, covectors and
+      metrics; and the nerve of the cover as a finite space, with `w1`
+      (orientation-reversing loops as witnesses) and Cech and derived
+      cohomology with constant and orientation coefficients
 - [x] TCP/UDP sockets with linear resource types (guaranteed close) - SHIPPED in
       v1.4.0-connection on Linux and macOS (native JIT and AOT): SOCKET-kind
       resource leases with one acquire and one close site per kind, byte-counted
@@ -766,8 +894,15 @@ under the same discipline that made `Qubit` linear.
 - [x] Non-blocking I/O with event loop (kqueue / epoll / IOCP) - SHIPPED in v1.3.4-evolve
 - [ ] Unix domain sockets for local IPC
 - [ ] HTTP client/server and WebSocket, on the shipped event loop
-- [ ] Linear types for all handles: `open → borrowed → closed` with compile-time tracking
-- [ ] Borrow pattern for temporary resource access
+- [x] Linear types for all handles: `open → borrowed → closed` with compile-time tracking -
+      SHIPPED in v1.4.0-connection under `--strict-resources` (ADR-0056): sockets, TLS, file
+      ports, the event loop, threads, mutexes, condition variables and processes, tracked
+      across branches, loops, calls, closures, `guard`, `dynamic-wind` and `call/cc`;
+      Unix-domain socket handles join the contract table with the local IPC core
+- [x] Borrow pattern for temporary resource access - SHIPPED in v1.4.0-connection:
+      `borrow`, `call-with-input-file`, `call-with-output-file`, `call-with-port` and
+      `with-mutex` lend a handle that cannot be closed or escape; the `call-with-*` scopes
+      close their port on return, on a raise and on a continuation escape
 - [ ] Agent runtime unblocked: SSE streaming, subprocess pipe contract,
       durable session persistence
 - [ ] WebGPU backend for the WASM target (#562), inside the ordinary GPU
@@ -776,42 +911,88 @@ under the same discipline that made `Qubit` linear.
 - [ ] The self-hosted mesh becomes the primary CI executor (#529):
       `ESHKOL_MESH_PRIMARY` routes the Linux contexts to self-hosted runners,
       with the hosted lanes as the declared fallback
-- [ ] Nested-differentiation carrier rewrite (ledger SW-154). The v1.3.5
+- [x] Nested-differentiation carrier rewrite. The v1.3.5
       carrier holds exactly one first-order companion, so two enclosing
       differentiation levels over an order-2 inner pass raise a diagnostic
       rather than answer; the rewrite is what lifts that restriction and
-      retires the guard
+      retires the guard. Shipped in v1.4.0-connection: every pass is a level
+      with a 64-bit perturbation tag, forward and reverse passes nest to any
+      depth in every combination, and the guard is retired (ADR-0027,
+      ADR-0057; `tests/ad/nested_depth_matrix_test.esk` on JIT, AOT and VM)
 - [ ] W5 interop wave 2: exactness across the Python/NumPy boundary and a
       silent-demotion CI gate; the definition-of-done rule (external-oracle
       case + Python one-liner per new AD/quantum feature) goes live
 - [ ] qLLM backward completion: `input2` wiring for conv2d/batchnorm/
       layernorm/attention tape nodes
-- [ ] Symbolic multivariate polynomial and truncated-series values (sparse
+- [x] SDNC control fine-tuning with an exact forward pass (ADR-0032): the
+      constructed interpreter's gate thresholds are fine-tuned while every
+      forward step stays exact — a smoothed backward (logistic-perturbed gate,
+      one shared rule with `qllm_backward.c`) ranks one-unit threshold moves
+      over tied construction gates, the exact forward accepts them; `core.sdnc`
+      gains `sdnc-load-weights!`, `sdnc-mismatches`, `sdnc-repair!` and a
+      smoothing argument to `sdnc-weight-grad`; a switched-off ADD dispatch is
+      repaired to 127/127 battery programs with every recorded transition
+      byte-identical (`ctest -R sdnc_control_finetune`)
+- [x] Symbolic multivariate polynomial and truncated-series values (sparse
       ring over `Q` and `GF(p)`, series values carrying a coefficient norm),
       and polynomial-valued duals — the AD operators applied to a symbolic
       ansatz so a residual comes back as a graded value whose coefficients can
-      be collected and solved, rather than as a number. **Partially SHIPPED in
-      v1.3.5-evolve:** `core.symbolic` provides polynomials and truncated power
-      series over the exact rationals, consumed by the `core.pde.ns-residual`
-      oracle. Remaining: `GF(p)`, the coefficient norm on series values, and
-      polynomial-valued duals
-- [ ] Exact linear algebra, remainder: an exact tensor element type.
-      **Partially SHIPPED in v1.3.5-evolve:** `core.exact_linalg` provides
-      matrix multiply, transpose, fraction-free determinant, solve, inverse,
-      rank, nullspace and torus averaging over the scalar exact tower, staying
-      exact under R7RS numeric contagion whenever every input does. Still open:
-      `lib/math.esk`'s `det`/`inv` seed inexact constants,
-      `lib/core/linear_solve.cpp` and the BLAS entry points are f64-only, and
-      tensors are f64-backed, so an exact system over tensor storage must still
-      be written out on Scheme vectors. Both items are used step by step in
+      be collected and solved, rather than as a number. `core.symbolic`
+      polynomials and truncated power series over the exact rationals shipped
+      in v1.3.5-evolve. **SHIPPED in v1.4.0-connection:** a coefficient field
+      on every value (`coefficient-field-gf`, `poly->field`, `series->field`;
+      GF(p) on the exact integer tower with a deterministic primality check),
+      the B_rho weighted l1 norm `series-norm`, and polynomial-valued duals:
+      `series-of` applies a procedure that uses the built-in AD operators to a
+      symbolic point and returns the graded value, which `poly-collect` /
+      `series-collect` group by a grading variable and `poly-solve-linear`
+      solves over Q or GF(p). Taylor-tower nesting depth is one process-wide
+      counter, so a pass opened in the precompiled stdlib and a pass opened in
+      user code nest as levels of one carrier. Gated JIT and AOT by
+      `scripts/run_symbolic_fields_gate.sh`
+- [x] Exact linear algebra: an exact tensor element type - SHIPPED in
+      v1.4.0-connection (ADR-0058). Tensors of dtype `exact` carry exact
+      rationals of the scalar tower in tensor storage (`(tensor-cast X 'exact)`,
+      `(make-tensor shape fill :dtype 'exact)`); element access, elementwise
+      arithmetic, `matmul`, `transpose`, `tensor-sum`, `tensor-det`,
+      `tensor-inverse`, `tensor-solve` and `linear-solve` stay exact when every
+      operand is exact (fraction-free elimination; singularity decided exactly),
+      mixed exact/inexact operands follow R7RS contagion by operand dtype, and
+      the f64 kernels (BLAS, the f64 LU family, `linear_solve.cpp`) are never
+      handed an exact tensor: linear algebra dispatches it to the exact path and
+      every other f64-only kernel refuses it by name. `lib/math.esk`'s `det`/`inv`/`solve`
+      seed exact constants, and `core.exact_linalg` (v1.3.5) accepts exact
+      tensors and cross-checks the native kernels. The Navier-Stokes steps of
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
-- [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane, SymPy
-      oracle pilot on the exact-AD surface
+      that solve exact systems run on exact tensors. Exact tensors on the
+      bytecode VM are planned for v1.4.1 (the VM refuses the dtype explicitly)
+- [ ] Ring carriers, the functor-of-points evaluation model (ADR-0034,
+      Proposed): one ring-carrier protocol, registered once per engine, for
+      the numeric tower, the forward-mode and Taylor AD carriers, modular,
+      symbolic and Z-set arithmetic, with multimodular computation over
+      Spec Z (fibres F_p, CRT, rational reconstruction under a proven bound).
+      In v1.4.0-connection: the record and the evidence program
+      `examples/mathematics_functor_of_points.esk` (29 checks, CTest
+      `rings_functor_of_points` JIT and AOT, no compiler change). Planned for v1.4.1 (library `core.ring`,
+      `core.multimodular`) through v1.5.0 (carriers in the type system), one
+      stage per rung as the record lists
+- [ ] Assurance: ADR-0010 v1.4 set (A10-A13), TSan-required lane
+- [x] Assurance: SymPy oracle pilot on the exact-AD surface. **SHIPPED in
+      v1.4.0-connection:** `scripts/sympy_exact_ad_oracle.py` runs a fixed
+      corpus (`tests/sympy_oracle/exact_ad_corpus.json`) of `derivative-n`,
+      `taylor`, `derivative`, `gradient`, `hessian` and `jacobian` cases on
+      exact inputs under JIT and AOT, compares each with SymPy (exact
+      equality where the documented contract promises an exact result, f64
+      rounding where it promises a double), and emits one ICC trace per case
+      plus `sympy_exact_ad_oracle_pilot`. CTest `sympy_exact_ad_oracle`
 - [ ] Performance: benchmarks wave 2 (Ozaki CRT vs. cuBLAS/Accelerate,
       accuracy and throughput, pinned hardware)
-- [ ] Codebase: native image I/O dependency removal; decompose
+- [x] Codebase: native image I/O dependency removal; decompose
       `runtime_regions.cpp`; doc-truth ratchet phase 1 (rank + quota, not
-      yet release-blocking)
+      yet release-blocking). Image I/O uses built-in PNG/JPEG/BMP/WebP
+      codecs on every platform; the region runtime is
+      four translation units; `doc_truth_ratchet_phase1` ranks `docs/`
+      claims against `docs/reports/doc_truth/quota.json`
 - [ ] W6 interface spike: compile and execute one StableHLO module through
       the PJRT CPU plugin, with a recorded trace. This does not claim device
       execution or TPU readiness. XLA multi-device single-host is also in the
@@ -822,6 +1003,11 @@ under the same discipline that made `Qubit` linear.
 
 ## v1.4.1 — the ABI release (target: 2026-11-06) - PLANNED
 
+- [ ] Higher-order differentiation through tensor operations on the VM: the VM tensor carrier
+      holds first-order tangents only, so the VM refuses a higher-order derivative that passes
+      through a tensor operation (by name), while JIT and AOT answer it (ADR-0057). Planned for v1.4.1:
+      a VM tensor carrier with nested levels, the tensor-point nesting tests on the VM, and the
+      browser VM rebuilt with 64-bit epochs
 - [ ] OALR ABI v2 Phase B: migrate the allocator, codegen sites and runtime
       consumers to the 32-byte header (layout descriptors, escape ledgers,
       transfer capsules). Phase A — the header definition, both layouts
@@ -844,6 +1030,46 @@ under the same discipline that made `Qubit` linear.
       at the v1.3.5 cut)
 - [ ] PGO: canonical training workload + one-shot `llvm-profdata` merge
 - [ ] Codebase: decompose `bignum.cpp`; shell-hardening epic wave 1
+- [x] Ring carriers as a library (ADR-0034, library rung): `core.ring` gives
+      versioned carrier descriptors with stable family ids for Z, Q, the IEEE
+      binary64 tier, the native tower, Z/m, K[e]/e^n, K[x], Z[G] over
+      `core.dbsp` Z-sets and (through `core.algebraic_domain`) Q(alpha) and its
+      exact AD lifts; generic operations, the coercion lattice with explicit
+      admission and named refusals, ring maps and elimination over a carrier.
+      `core.multimodular` computes exact determinants, solves over Q and gcds
+      in Z[x] in fibres F_p below 2^31 with CRT and rational reconstruction
+      under Hadamard and Mignotte bounds. Gates: the ring-law gate, the IEEE
+      specification check with a pinned bit-pattern digest, and the
+      multimodular cross-checks, each in JIT and AOT; the functor-of-points
+      example runs on the libraries
+- [ ] `core.symbolic` coefficient fields and `core.dbsp` weights taking a
+      `core.ring` carrier (ADR-0034, library rung)
+- [x] nLab conformance suite: `tests/nlab/` quotes claims from nLab pages and
+      decides each one exactly on `core.sheaf`, `core.topos`, `core.ring`,
+      `core.multimodular`, `core.integer_linalg`, `core.category`,
+      `core.simplicial` and `core.homological` (132 claims on 50 pages, JIT and
+      AOT, `scripts/run_nlab_conformance.sh`);
+      [docs/reports/NLAB_CONFORMANCE.md](docs/reports/NLAB_CONFORMANCE.md) lists
+      the coverage page by page and 9 further claims with what each one needs
+      (the Zariski site and localization carrier for v1.4.1, schemes glued from
+      affine charts for v1.4.2)
+- [x] Machine-checked theorems behind the nLab conformance claims: Agda
+      (`--safe`) proofs of Lan/Ran along C -> * and by the coend/end formulas,
+      sieves, the Heyting algebra Omega and Kripke-Joyal forcing, and the
+      simplicial identities of the nerve; Rocq proofs of what Smith normal form
+      determines, with the six suite matrices and H_*(RP^2; Z) certified
+      (`scripts/run_formal_agda_gate.sh`,
+      [docs/reference/math/formal-crosschecks.md](docs/reference/math/formal-crosschecks.md))
+- [x] Groebner bases on ring carriers (ADR-0040): `core.ring` gains
+      K[x1..xn] under lex, grlex, grevlex, block, elimination and weight
+      orders; `core.groebner` gives division, Buchberger with the
+      Gebauer-Moeller criteria, reduced bases over Q, F_p and other field
+      carriers, the multimodular method over Q with an exact check over Q,
+      membership, elimination, intersection, quotient, saturation, radical
+      membership, dimension, Hilbert polynomials and zero-dimensional
+      triangular form and solutions. Gates: `groebner_jit`/`groebner_aot`
+      and the 180-case SymPy cross-check (criterion `v14_groebner`).
+      Planned for v1.4.1: F4-style reduction, FGLM, triangular decomposition
 
 ---
 
@@ -908,29 +1134,47 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 **Flagship:** `core.dbsp` GA (W1) + native-product PGO in the release
 workflow (ADR-0007 Phase 1).
 
-- [ ] Symbol embeddings (learnable vector representations of KB symbols)
-- [ ] Soft unification (differentiable similarity — gradients flow through matching)
-- [ ] LSTM and GRU cells (standard recurrent neural architectures)
-- [ ] Differentiable logic programs (gradients flow through rule application)
-- [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
-- [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through)
-- [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors
-- [ ] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
+- [ ] Symbol embeddings (learnable vector representations of KB symbols) —
+      delivered by Noesis (term embeddings); upstreaming per ADR-0049
+- [ ] Soft unification (differentiable similarity — gradients flow through matching) —
+      delivered by Noesis (soft unification with gradients); upstreaming per ADR-0049
+- [x] LSTM and GRU cells (standard recurrent neural architectures) —
+      `core.ml.recurrent`, BPTT by the built-in reverse mode (ADR-0049)
+- [ ] Differentiable logic programs (gradients flow through rule application) —
+      delivered by Noesis (differentiable belief propagation); upstreaming per ADR-0049
+- [ ] Attention over knowledge base (neural query mechanism over symbolic facts) —
+      delivered by Noesis (attention unification); upstreaming per ADR-0049
+- [x] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through) —
+      `stop-gradient` builtin; Gumbel-Softmax, straight-through, score-function
+      estimators with their bias/variance properties tested (ADR-0049)
+- [ ] Noesis M2 surface: HNSW, BPE, sparse tensors, int/complex tensors —
+      HNSW (`core.ml.hnsw`), BPE (`core.ml.bpe`) and CSR sparse matrices
+      (`core.ml.sparse`) delivered; int/complex tensor storage planned for
+      v1.5.0 (ADR-0049)
+- [x] Periodic (torus) averaging as a builtin: `T1`/`T2`-valued fields, Haar and
       angular means, evaluation at a phase map with full chain-rule
       propagation, support-disjointness bookkeeping, and the inverse of a
-      directional derivative on the zero-mean subspace
-- [ ] Directed-rounding interval arithmetic becomes the default under
+      directional derivative on the zero-mean subspace. `core.torus`
+      (ADR-0050): exact on trigonometric polynomials, enclosure-bounded
+      means for other fields; see
+      [rigorous numerics](docs/reference/stdlib/rigorous_numerics.md)
+- [x] Directed-rounding interval arithmetic becomes the default under
       `core.ad.interval`. **Partially SHIPPED in v1.3.5-evolve:** `fl-next-up`
       and `fl-next-down` carry `nextafter` into both engines, and
       `core.ad.rigorous_interval` / `core.ad.rigorous_taylor_models` are sound
-      by construction behind an explicit `rigorous?` flag. Remaining: make that
-      the default path, retiring the outward relative-epsilon widening the
-      validated modules still use
-- [ ] Rigorous compact-set bounds: supremum/infimum over a parameter box with
+      by construction behind an explicit `rigorous?` flag. In v1.5.0 (ADR-0050)
+      that is the default path: every `core.ad.interval` operation is
+      directed-rounding with no flag (the `rigorous?` argument is accepted and
+      has no further effect), the relative-epsilon widening is retired, and
+      `taylor-model` rounds its remainder upward from exact arithmetic
+- [x] Rigorous compact-set bounds: supremum/infimum over a parameter box with
       adaptive subdivision on top of directed rounding and the Taylor models, so
       a compactness constant is produced rather than asserted. All three items
       are used step by step in
-      [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+      [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md).
+      `core.ad.compact_bounds` (ADR-0050): `box-sup`, `box-inf`,
+      `box-certify-bound` by branch and bound with mean-value enclosures and
+      monotonicity pruning from interval gradients
 - [ ] Assurance: A6 + A8 full race matrix; SymPy oracle becomes a release
       gate; machine-checked-invariants ramp begins (Taylor-tower semantics
       proof sketch)
@@ -941,7 +1185,7 @@ workflow (ADR-0007 Phase 1).
 v1.5.0 cannot publish before v1.4.5. Its former Dec 5, 2026 target is subject
 to joint rebaseline with the former Q1 2027 v1.4.5 window; the v1.5.0 date
 slides if v1.4.5 device gates are incomplete. ADR-0017 assigns the first
-SBLC slice to v1.4.0; this release line does not claim its gate is implemented.
+SBLC slice to v1.4.0; `scripts/run_sblc_gate.sh` is its gate.
 
 Note: the arbitrary-order AD substrate this section used to stage here
 (P5/P7/P9/P10) shipped complete in v1.3.0-evolve, ahead of this plan — see
@@ -962,11 +1206,11 @@ below.
 
 **Focus:** Make the logic engine production-grade.
 
-- [ ] Backward chaining inference (Prolog-style goal-directed proof search with backtracking)
-- [ ] Forward chaining inference (production rules with fixed-point derivation)
-- [ ] Constraint solving (finite domain constraints, SAT solver integration)
-- [ ] Knowledge graphs (RDF-style triple store with SPO/POS/OSP indexing)
-- [ ] Knowledge graph embeddings (entity-relation-entity triples as learnable vectors)
+- [x] Backward chaining inference (Prolog-style goal-directed proof search with backtracking): `core.reasoning.prolog`, SLD resolution with cut, negation as failure and linear tabling (ADR-0051)
+- [x] Forward chaining inference (production rules with fixed-point derivation): `core.reasoning.datalog`, stratified Datalog on recursive DBSP circuits
+- [x] Constraint solving (finite domain constraints, SAT solver integration): `core.reasoning.fd` and the CDCL solver `core.reasoning.sat` with DRAT proofs
+- [x] Knowledge graphs (RDF-style triple store with SPO/POS/OSP indexing): `core.reasoning.kg`
+- [x] Knowledge graph embeddings (entity-relation-entity triples as learnable vectors): `core.reasoning.kge` (TransE, DistMult, ComplEx, RotatE)
 - [ ] Staged AD ABI (ADR-0002 Phase G, ADR-0016 grafts): the dense primitive registry as a
       real table, cotangent-layout and error ABI first-class, strict-mode
       kernel flag
@@ -975,8 +1219,11 @@ below.
 - [ ] Interval and Taylor-model tensor element types differentiable by the same
       operators (composing the shipped tensor towers with the shipped Taylor
       models), plus graded coefficient classes whose product and derivative
-      rules hold by construction
-- [ ] Incremental knowledge-base evaluation for search over ansatz families:
+      rules hold by construction. **Element types built ahead of this rung
+      (ADR-0050):** `core.ad.interval_tensor` tensors with interval, interval-jet
+      and Taylor-model entries, differentiated by the native AD operators and
+      by interval jets. Graded coefficient classes are planned for v1.6.0
+- [x] Incremental knowledge-base evaluation for search over ansatz families (`core.reasoning.ansatz`):
       an ansatz family as a query whose answer updates incrementally as
       constraints are added, on the DBSP spine. Both items are used step by
       step in
@@ -999,11 +1246,19 @@ complete in v1.3.0-evolve.
 
 **Focus:** Programs that write and improve programs.
 
-- [ ] Neural-guided program search (beam search with neural scoring for candidate ranking)
-- [ ] Type-directed synthesis holes (`??` syntax — compiler searches for well-typed completions)
-- [ ] Graph Neural Networks (message passing, neighborhood aggregation, graph attention)
-- [ ] Synthesis from input-output examples (inductive programming)
-- [ ] Neural theorem provers (neural heuristic guides symbolic proof search, using v1.5 embeddings + v1.6 chaining)
+- [ ] Neural-guided program search (beam search with neural scoring for candidate ranking).
+      Substrate shipped: cost-ordered enumeration in `core.synthesis` whose
+      component costs are the hook for a learned scorer; the learned search
+      engines are in Noesis and their upstreaming is proposed in ADR-0052
+- [x] Type-directed synthesis holes (`??` syntax — compiler searches for well-typed completions;
+      [synthesis-holes.md](docs/reference/language/synthesis-holes.md), ADR-0052)
+- [x] Graph Neural Networks (message passing, neighborhood aggregation, graph attention;
+      `ml.gnn` on `ml.autograd`, exact reverse-mode gradients, [gnn.md](docs/reference/stdlib/gnn.md))
+- [x] Synthesis from input-output examples (inductive programming; `core.synthesis`: enumeration
+      with observational equivalence, FlashFill and map/filter deduction, 42/42 benchmark tasks
+      verified on held-out examples, [synthesis.md](docs/reference/stdlib/synthesis.md))
+- [ ] Neural theorem provers (neural heuristic guides symbolic proof search, using v1.5 embeddings + v1.6 chaining).
+      The learned prover is in Noesis; its upstreaming onto the v1.6 chainer is proposed in ADR-0052
 - [ ] Recursive IVM; staged optimizer; program-capsule foundations (ADR-0005)
 - [ ] Certificate emission and an independent checker (W2): a certified step
       emits its witnesses, interval endpoints, rounding direction and
@@ -1011,6 +1266,20 @@ complete in v1.3.0-evolve.
       certificate without trusting the compiler — the transferable-trust
       endpoint for
       [docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md](docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md)
+  - [x] Certificates and the independent checker (ADR-0047): `core.certificate`
+        emits fourteen kinds of certificate (rank, determinant, Smith normal
+        form, linear solution and solve enclosure, PSD, integer and Q[x] gcd,
+        polynomial identity, Pratt primality, polynomial and Taylor-model
+        ranges with exact interval endpoints and the rounding direction,
+        cocycle, cohomology class) as `eshkol.certificate.v1` claims extending
+        `core.transcript`; `tools/certcheck/eshkol_certcheck.py` re-verifies
+        each from its witness with the Python standard library alone and a
+        stated trusted base; a tamper suite shows every resealed false claim
+        rejected; `(certify (f ...))` emits a certificate at run time on the
+        native and VM paths
+  - [ ] Derivation chains linking certificates by id, and a validated
+        Taylor-model remainder in place of the sampled-bound premise (Planned
+        for v1.7.0)
 
 ---
 
@@ -1020,12 +1289,12 @@ complete in v1.3.0-evolve.
 
 Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md).
 
-- [ ] Cross-platform windowing (X11/Wayland, Cocoa, Win32)
-- [ ] Event system (keyboard, mouse, touch, window events)
-- [ ] Real-time audio (CoreAudio, ALSA, WASAPI with callback-based I/O)
-- [ ] MIDI input/output for instrument control
-- [ ] Vulkan Compute for cross-platform GPU (beyond Metal/CUDA)
-- [ ] Embedded cross-compilation (ARM bare-metal, RISC-V)
+- [x] Cross-platform windowing: X11, Cocoa and offscreen backends with pixel surfaces ([PLATFORM_LAYER.md](docs/platform/PLATFORM_LAYER.md), ADR-0053); Wayland and Win32 Planned for v1.8.1
+- [x] Event system (keyboard, mouse, touch, window events): per-window thread-safe queues, platform-independent key codes
+- [x] Real-time audio with callback-based I/O: CoreAudio, ALSA and a null real-time clock; lock-free queue mode, underrun/overrun/latency counters; WASAPI Planned for v1.8.1
+- [x] MIDI input/output: CoreMIDI, ALSA sequencer and in-process loopback
+- [x] Vulkan compute inside the ordinary GPU dispatch, cross-checked bit for bit against the CPU path ([VULKAN_COMPUTE.md](docs/platform/VULKAN_COMPUTE.md))
+- [x] Embedded cross-compilation: Cortex-M4, AArch64, RV32IMAC and RV64GC bare metal with a freestanding runtime subset ([EMBEDDED_TARGETS.md](docs/platform/EMBEDDED_TARGETS.md))
 - [ ] `core.memory` as a Z-set; resident recurrent AD
 
 Multi-GPU / multi-node dispatch is no longer gated behind "demonstrated
@@ -1048,14 +1317,21 @@ single-machine platform surface.
 
 **Focus:** The type system becomes a proof system.
 
-- [ ] Full dependent type enforcement (compile-time errors, not just warnings)
-- [ ] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration)
-- [ ] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level)
-- [ ] Algebraic effects and handlers (structured side-effect management)
-- [ ] Row polymorphism for records (structural subtyping)
-- [ ] Higher-rank types (rank-2 polymorphism for combinators)
-- [ ] Session types for communication protocols
+- [x] Full dependent type enforcement (compile-time errors, not just warnings) — ADR-0042:
+      the checking direction of bidirectional checking (lambdas, applications, `let`, `define`,
+      `(: name type)` declarations, `the`), Pi and Sigma types, universe levels, length-indexed
+      vectors and `define-type` families, definitional equality by normalization; a failed
+      dependent obligation is a compile-time error in every mode, `--types=strict` makes every
+      type error one; the bytecode VM refuses the same programs. Runtime checks of indices not
+      known statically: Planned for v1.9.1
+- [x] Refinement types (`(Refine Integer (> x 0))` with SMT solver integration): built-in decision procedure (Omega test, exact simplex, congruence closure) and optional z3 backend, ADR-0044
+- [x] Effect types (tracking `Pure`, `IO`, `State`, `Exception` at the type level) — inferred effect rows with effect polymorphism, `declare-effects` enforced under `--strict-types` (ADR-0045)
+- [x] Algebraic effects and handlers (structured side-effect management) — `define-effect`, deep and shallow `handle`, multi-shot resumptions, `core.effects` (state, reader, writer, exceptions, choice, generators, async) on native JIT, AOT and the VM (ADR-0045)
+- [x] Row polymorphism for records (structural subtyping) (ADR-0046)
+- [x] Higher-rank types (rank-2 polymorphism for combinators) (ADR-0046)
+- [x] Session types for communication protocols (ADR-0046)
 - [ ] `IncrementalizePass` (DBSP incrementalization as a compiler pass)
+- [x] HoTT identity types, univalence and higher inductive types: a cubical kernel with path induction, transport, function extensionality, computing univalence, the circle, suspensions and truncations; the fundamental group of the circle computed by encode-decode (ADR-0043, `(hott ...)` / `(hott-eval ...)`, all engines)
 
 ---
 
@@ -1117,19 +1393,34 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       inference and is what ADR-0004's **place-keyed** PlaceId/FlowEnv closes,
       for linear types and ownership `move` alike (ADR-0004, ADR-0000
       Stage 12).
-- [ ] Quantum register types `qreg<n>` with compile-time dimension
-- [ ] `define-quantum-region` scoping for qubit allocation and deallocation
-- [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9
+- [x] Quantum register types `qreg<n>` with compile-time dimension - BUILT for
+      v2.0-starlight (ADR-0048, `core.quantum`): `qreg<e>` / `qidx<e>` with linear
+      index expressions unified at every call, value-dependent sizes
+      (`(qalloc qr 3) : qreg<3>`), linear on the `Qubit` judgment (no-cloning,
+      no-discard, measurement consumes); mismatches fatal on both engines
+- [x] `define-quantum-region` scoping for qubit allocation and deallocation -
+      BUILT for v2.0-starlight (ADR-0048): region capability `qregion`, compile-time
+      unconsumed-qubit, discard and escape checks, run-time guards for untyped code
+- [ ] Quantum region compilation, QAOA — on the quantitative types from v1.9.
+      BUILT for v2.0-starlight on today's linear judgment (ADR-0048): regions
+      compile (optimise, route) each block before measuring; QAOA in
+      `core.quantum.qaoa`. Moving the register rules onto the v1.9
+      quantitative type theory follows ADR-0048's interface section
 
 ### Quantum Operations
 - [x] Gate primitives: H, CNOT, Rz, T, S, SWAP, Toffoli, arbitrary unitaries - SHIPPED in v1.3.3-evolve
 - [x] Measurement with classical outcome - SHIPPED in v1.3.3-evolve
-- [ ] Circuit compilation and optimization (gate fusion, qubit mapping)
+- [x] Circuit compilation and optimization (gate fusion, qubit mapping) - BUILT
+      for v2.0-starlight (ADR-0048): fusion, commutation cancellation, phase
+      folding, ZX resynthesis through `core.monoidal.zx`, SABRE routing, exact
+      equivalence over Q(zeta_m), lowering to Moonlab
 - [x] AD integration for variational algorithms - SHIPPED in v1.3.3-evolve (custom-VJP tape nodes carry Moonlab's exact adjoint)
 
 ### Hybrid Classical-Quantum
 - [x] Variational Quantum Eigensolver (VQE) - SHIPPED in v1.3.3-evolve
-- [ ] Quantum Approximate Optimization Algorithm (QAOA)
+- [x] Quantum Approximate Optimization Algorithm (QAOA) - BUILT for
+      v2.0-starlight (ADR-0048): MaxCut and weighted MaxCut, exact AD gradients,
+      p=1 closed forms, Moonlab evaluation with Moonlab's exact adjoint gradient
 - [x] Quantum machine learning (parameterized circuits with AD) - SHIPPED in v1.3.3-evolve
 - [x] Integration with Moonlab quantum simulator - SHIPPED in v1.3.3-evolve; pinned to Moonlab v1.2.0 in v1.3.4-evolve
 
@@ -1148,6 +1439,11 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
       the Lean kernel export re-checks the compiler on the normative
       corpus, and "HoTT-inspired" is retired as a claim in favor of this
       concrete, checkable one (ADR-0004)
+  - [x] First stage on the data side (ADR-0047): the decidable finite facts
+        of certificates (determinants, ranks, Smith forms with unimodular
+        transforms, Bezout gcds, Pratt trees, cocycle and coboundary
+        identities) export to Lean 4 theorems proved by `decide` in the
+        kernel, on Lean core alone
 - [ ] Quantitative type theory for unified linear/quantum resource tracking
 - [ ] Lean-certified formal verification of the validated-AD Taylor models
       (P8) already shipped in v1.3.0-evolve (`taylor-model`, `tm-range`,

@@ -26,6 +26,7 @@ tensor-backward internals see
 | `divergence` | ℝⁿ → ℝⁿ | `(divergence f point)` | scalar `∇·F` |
 | `curl` | ℝ³ → ℝ³ | `(curl f point)` | vector `∇×F` |
 | `diff` | AST → AST | `(diff f 'x)` | symbolic derivative (compile time) |
+| `stop-gradient` | any | `(stop-gradient x)` | `x`'s value, a constant to every enclosing pass |
 
 `f` is a one-argument function (an inline `lambda`, a named `define`, or a
 variable bound to a lambda). `vref` is the tensor/vector element accessor and
@@ -334,6 +335,30 @@ field is taken to have `F₃ = 0` and no `z` dependence, so
 
 ---
 
+## `stop-gradient` — a value every enclosing pass treats as a constant
+
+`(stop-gradient x)` returns the value of `x` with every derivative carrier
+removed: the primal of a forward jet (`derivative`), of a Taylor tower or
+nested level (`derivative-n`, `taylor`) and of a reverse-mode node
+(`gradient`, `jacobian`). It reads the primal exactly as the comparisons do,
+so an exact point stays exact. A value that is not a carrier (a plain number,
+a symbol, a list) is returned unchanged. Native backend, bytecode VM and
+browser lane agree.
+
+```scheme
+(derivative (lambda (x) (* x (stop-gradient x))) 3.0)          ;; => 3
+(derivative (lambda (x) (* x (stop-gradient x))) 1/3)          ;; => 1/3
+(derivative-n (lambda (x) (* x x (stop-gradient x))) 2.0 2)    ;; => 4
+(gradient (lambda (v) (* (vref v 0) (stop-gradient (vref v 0)))) #(3.0))  ;; => #(3)
+```
+
+The straight-through identity `s + (stop-gradient (- h s))` has the value `h`
+and the derivative of `s`; the estimators in
+[`core.ml.gradient_estimators`](../stdlib/ml_gradient_estimators.md) are built
+on it. Design: [ADR-0049](../../design/adr/0049-neuro-symbolic-bridge.md).
+
+---
+
 ## `diff` — symbolic differentiation (compile time)
 
 `diff` rewrites the function AST at compile time using 12 rules (constant,
@@ -518,9 +543,16 @@ first-order operators:
 > ```
 >
 > The *curried* route — `(define g (gradient f))` then `(jacobian g point)` —
-> is the one spelling that still refuses, loudly, with `unsupported nested
-> differentiation` (ESH-0096). Use `(hessian f point)`, which is exact. See
-> [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md).
+> answers the Hessian too, including at a point computed from the enclosing
+> pass's variables:
+>
+> ```scheme
+> (define g3 (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0)))))
+> (jacobian (lambda (v) (g3 (vector (* 2.0 (vref v 0))))) (vector 1.0))  ;; => #((24.0))
+> ```
+>
+> Nesting has no depth limit in any mode; see
+> [architecture.md](architecture.md#reverse-passes-inside-and-around-forward-passes).
 
 ---
 
@@ -673,7 +705,8 @@ See `tests/ad/complex_carrier_math_test.esk`,
 | `gradient` of `gradient`, **scalar** point | Yes | e.g. `L''` returns correct value |
 | `gradient` of `gradient`, **vector** point | Yes | returns the true second derivative — `#(12)` for the 1-D case, `#(8 6)` for the 2-D one (formerly **ESH-0096**) |
 | `gradient` of a **named** inner function | Yes | returns `18`, matching the inline-lambda form (formerly **ESH-0078**) |
-| `gradient`/`jacobian` of a **curried** `gradient` closure — `(define g (gradient f))` then `(jacobian g pt)` | Refuses | raises `unsupported nested differentiation` rather than answering. A loud refusal, not a silent zero. Use `(hessian f pt)`, which is exact on the same build (**ESH-0096**) |
+| `gradient`/`jacobian` of a **curried** `gradient` closure — `(define g (gradient f))` then `(jacobian g pt)` | Yes | the Hessian, entry for entry equal to `(hessian f pt)`, also at a point computed from the enclosing pass's variables. Gated by [tests/ad/nested_depth_matrix_test.esk](../../../tests/ad/nested_depth_matrix_test.esk) |
+| `derivative`/`gradient`/`hessian`/`jacobian` nested in any order to **depth 4 and beyond** — forward over reverse, reverse over forward, reverse over reverse over reverse | Yes | exact; exact inputs stay exact through every level. Gated by [tests/ad/nested_depth_matrix_test.esk](../../../tests/ad/nested_depth_matrix_test.esk) on JIT, AOT and the VM |
 | AD inside a bounded loop (reuse) | Yes | stable over 1000+ iterations |
 
 Mixed reverse-over-forward means an outer vector `gradient` differentiates an

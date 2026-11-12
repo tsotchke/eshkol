@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/window.esk
+  - tests/stdlib/dbsp_window_test.esk
+---
+
 # Explicit event-time windows
 
 `(require core.dbsp.window)` maintains an event-time view over signed Z-set

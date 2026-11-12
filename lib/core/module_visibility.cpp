@@ -389,6 +389,9 @@ static void rename_ast(eshkol_ast_t* ast, const RenameMap& names,
         case ESHKOL_THE_OP:
             rename_ast(ast->operation.the_op.expr, names, bound);
             return;
+        case ESHKOL_HOTT_OP:
+            // kernel syntax: its names live in the HoTT kernel, not in modules
+            return;
         case ESHKOL_MAKE_PARAMETER_OP:
             rename_call_operands(ast, names, bound);
             return;

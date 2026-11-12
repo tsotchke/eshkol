@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Shared launcher for immutable P11 and P6 AD evidence profiles.
+# Shared launcher for immutable P11, P6 and nested AD evidence profiles.
 set -euo pipefail
 export LC_ALL=C LC_CTYPE=C LANG=C
 PROFILE="${1:-p11}"
 case "$PROFILE" in
   p11) FIXTURE="tests/ad/taylor_numerics_test.esk"; EXPECTED='^(taylor_numerics_runtime_smoke|taylor_numerics_aot_smoke)$'; HARNESS=run_ad_numerics_gate; TRACE_NAME=ad_numerics_gate.jsonl; CACHE_SUBDIR=jit-cache ;;
   p6) FIXTURE="tests/ad/exact_taylor_test.esk"; EXPECTED='^(exact_taylor_runtime_smoke|exact_taylor_aot_smoke|exact_taylor_vm_runtime_smoke)$'; HARNESS=run_ad_p6_gate; TRACE_NAME=ad_exact_coefficients_gate.jsonl; CACHE_SUBDIR=orc-cache ;;
+  nested) FIXTURE="tests/ad/nested_depth_matrix_test.esk"; EXPECTED='^(nested_depth_matrix_jit|nested_depth_matrix_aot|nested_depth_matrix_vm)$'; HARNESS=run_ad_nested_gate; TRACE_NAME=ad_nested_gate.jsonl; CACHE_SUBDIR=orc-cache ;;
   *) echo "unknown AD evidence profile: $PROFILE" >&2; exit 2 ;;
 esac
 
@@ -48,7 +49,8 @@ emit_outcome() {
 import json, os, sys, time
 trace, value, message, receipt, profile = sys.argv[1:]
 kind, name = {"p11":("ad_numerics","ad_taylor_p11_v14_user_numerics"),
-              "p6":("ad_exact","ad_taylor_p6_exact_coefficients")}[profile]
+              "p6":("ad_exact","ad_taylor_p6_exact_coefficients"),
+              "nested":("ad_exact","ad_nested_every_mode")}[profile]
 event = {"kind":kind, "name":name,
          "value":value, "snippet":message, "confidence":1.0,
          "receipt_path":receipt, "recorded_epoch":int(time.time())}
@@ -79,7 +81,7 @@ if ! python3 "$REPO_ROOT/scripts/lib/ad_numerics_gate.py" --profile "$PROFILE" -
   fail_infra "build configuration is absent or belongs to another source checkout"
 fi
 eshkol_emit_build_fingerprint_event "$RUN_DIR" "$HARNESS" "$BUILD_PATH" eshkol-run
-if [ "$PROFILE" = p6 ]; then
+if [ "$PROFILE" = p6 ] || [ "$PROFILE" = nested ]; then
   eshkol_emit_build_fingerprint_event "$RUN_DIR" "$HARNESS" "$BUILD_PATH" eshkol-vm-standalone-test
 fi
 
@@ -98,7 +100,7 @@ CTEST_STATUS=$?
 set -e
 
 eshkol_emit_build_fingerprint_event "$RUN_DIR" "$HARNESS" "$BUILD_PATH" eshkol-run
-if [ "$PROFILE" = p6 ]; then
+if [ "$PROFILE" = p6 ] || [ "$PROFILE" = nested ]; then
   eshkol_emit_build_fingerprint_event "$RUN_DIR" "$HARNESS" "$BUILD_PATH" eshkol-vm-standalone-test
 fi
 if [ "$CTEST_STATUS" -ne 0 ]; then
@@ -116,6 +118,7 @@ trace, receipt, digest, profile = sys.argv[1:]
 profiles = {
   "p11": ("ad_numerics", "ad_taylor_p11_v14_user_numerics", "Taylor-series ODE/root/inversion: source/build-bound JIT+AOT CTests, 41/41 checks each."),
   "p6": ("ad_exact", "ad_taylor_p6_exact_coefficients", "Exact rational/bignum Taylor coefficient oracle: source/build-bound JIT+AOT+direct VM CTests, 192/192 checks each; uncached JIT."),
+  "nested": ("ad_exact", "ad_nested_every_mode", "Nested differentiation to depth 4 in every mode: source/build-bound JIT+AOT+direct VM CTests, 64/64 checks each; uncached JIT."),
 }
 kind, name, snippet = profiles[profile]
 event = {"kind":kind, "name":name, "value":"PASS", "snippet":snippet,

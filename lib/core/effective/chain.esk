@@ -1,0 +1,255 @@
+;;; core.effective.chain -- linear combinations, locally effective chain
+;;; complexes, reductions (strong chain equivalences) and their identities.
+;;;
+;;; Usage: (require core.effective.chain)   or   (require core.effective)
+;;;
+;;; Sources: F. Sergeraert, J. Rubio, "Constructive algebraic topology",
+;;; Bull. Sci. Math. 126 (2002) (locally effective and effective complexes,
+;;; reductions); J. Rubio, F. Sergeraert, "Genova lecture notes" (2006),
+;;; Sections 2-4; A. Romero, F. Sergeraert, "Discrete vector fields and
+;;; fundamental algebraic topology", arXiv:1005.5685 (2010), Definition 11.
+;;;
+;;; Representation (public and stable; the other core.effective modules build
+;;; on it):
+;;;
+;;;   linear combination   a list of (cell . coefficient) pairs with integer
+;;;       coefficients, no zero coefficient and no repeated cell; cells are
+;;;       any values compared with equal?. The order is the order in which
+;;;       the cells first appeared, so every computation is deterministic.
+;;;   effective complex    #(effective-complex name basis d memo)
+;;;       `basis` is a procedure n -> the list of cells of degree n, or #f
+;;;       when degree n is not enumerated (a locally effective complex, for
+;;;       example the chains of K(Z,1)); `d` is a procedure (n cell) -> the
+;;;       boundary of a cell of degree n, a linear combination of degree n-1.
+;;;       Boundaries are memoized per cell.
+;;;   reduction            #(reduction big small f g h memos)
+;;;       f : big -> small and g : small -> big are chain maps, h : big -> big
+;;;       has degree +1, and f g = 1, g f + d h + h d = 1, f h = 0, h g = 0,
+;;;       h h = 0. The maps are procedures (n cell) -> linear combination,
+;;;       extended linearly and memoized per cell; `reduction-violations`
+;;;       checks the five identities and the chain-map conditions exactly on
+;;;       given cells.
+
+(require stdlib)
+(require core.ring)
+(require core.homological.complex)
+
+(provide lc-zero lc-term lc-coefficient lc-cells lc-zero? lc-scale lc-negate lc-add lc-sub lc-sum
+         lc-combination lc-apply lc-filter lc-relabel lc-equal? lc-max-by lc-size
+         make-effective-complex effective-complex? effective-complex-name effective-complex-enumerated?
+         effective-complex-basis effective-complex-rank effective-complex-d effective-complex-d-cell
+         effective-complex-matrix effective-complex-chain-complex effective-complex-homology
+         effective-complex-d-squared-violations effective-complex-cycle? effective-complex-index
+         effective-complex-vector effective-complex-combination
+         make-reduction reduction? reduction-big reduction-small reduction-f reduction-g reduction-h
+         reduction-f-cell reduction-g-cell reduction-h-cell identity-reduction compose-reductions
+         reduction-violations reduction-small-violations)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix ec-)
+;; ---------------------------------------------------------------------------
+(define (ec-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ec-memoize proc)                        ;; (n cell) -> value, one table per procedure
+  (let ((table (make-hash-table)))
+    (lambda (n cell)
+      (let* ((key (cons n cell)) (hit (hash-table-ref/default table key #f)))
+        (or hit (let ((v (proc n cell))) (hash-table-set! table key v) v))))))
+(define (ec-distinct xs)                         ;; first occurrences, in order
+  (let ((seen (make-hash-table)))
+    (let loop ((l xs) (acc '()))
+      (cond ((null? l) (reverse acc))
+            ((hash-table-ref/default seen (car l) #f) (loop (cdr l) acc))
+            (else (hash-table-set! seen (car l) #t) (loop (cdr l) (cons (car l) acc)))))))
+
+;; ---------------------------------------------------------------------------
+;; Linear combinations
+;; ---------------------------------------------------------------------------
+;; An accumulator: #(table cells-in-reverse-first-seen-order)
+(define (ec-acc) (vector (make-hash-table) '()))
+(define (ec-acc-add! A cell c)
+  (if (not (= c 0))
+      (let* ((t (vector-ref A 0)) (old (hash-table-ref/default t cell #f)))
+        (if old
+            (hash-table-set! t cell (+ old c))
+            (begin (hash-table-set! t cell c) (vector-set! A 1 (cons cell (vector-ref A 1))))))))
+(define (ec-acc-add-lc! A lc s)
+  (if (not (= s 0))
+      (let loop ((l lc)) (if (pair? l) (begin (ec-acc-add! A (car (car l)) (* s (cdr (car l)))) (loop (cdr l)))))))
+(define (ec-acc-result A)
+  (let ((t (vector-ref A 0)))
+    (let loop ((cs (vector-ref A 1)) (acc '()))
+      (if (null? cs) acc
+          (let ((c (hash-table-ref/default t (car cs) 0)))
+            (loop (cdr cs) (if (= c 0) acc (cons (cons (car cs) c) acc))))))))
+
+(define (lc-zero) '())
+(define (lc-term cell c) (if (= c 0) '() (list (cons cell c))))
+(define (lc-zero? lc) (null? lc))
+(define (lc-size lc) (length lc))
+(define (lc-cells lc) (map car lc))
+(define (lc-coefficient lc cell) (let ((p (assoc cell lc))) (if p (cdr p) 0)))
+(define (lc-scale lc s) (if (= s 0) '() (map (lambda (p) (cons (car p) (* s (cdr p)))) lc)))
+(define (lc-negate lc) (lc-scale lc -1))
+;; sum of (coefficient . combination) pairs
+(define (lc-combination terms)
+  (let ((A (ec-acc))) (for-each (lambda (t) (ec-acc-add-lc! A (cdr t) (car t))) terms) (ec-acc-result A)))
+(define (lc-add a b) (cond ((null? a) b) ((null? b) a) (else (lc-combination (list (cons 1 a) (cons 1 b))))))
+(define (lc-sub a b) (if (null? b) a (lc-combination (list (cons 1 a) (cons -1 b)))))
+(define (lc-sum lcs) (lc-combination (map (lambda (l) (cons 1 l)) lcs)))
+;; linear extension of proc : cell -> combination
+(define (lc-apply proc lc)
+  (cond ((null? lc) '())
+        ((and (null? (cdr lc)) (= 1 (cdr (car lc)))) (proc (car (car lc))))
+        (else (let ((A (ec-acc)))
+                (for-each (lambda (p) (ec-acc-add-lc! A (proc (car p)) (cdr p))) lc)
+                (ec-acc-result A)))))
+(define (lc-filter pred lc) (filter (lambda (p) (pred (car p))) lc))
+;; an injective relabelling of the cells
+(define (lc-relabel f lc) (map (lambda (p) (cons (f (car p)) (cdr p))) lc))
+(define (lc-equal? a b)
+  (and (= (length a) (length b))
+       (let loop ((l a)) (cond ((null? l) #t) ((= (cdr (car l)) (lc-coefficient b (car (car l)))) (loop (cdr l))) (else #f)))))
+;; the largest value of key over the cells (or #f for the zero combination)
+(define (lc-max-by key lc)
+  (let loop ((l lc) (m #f)) (if (null? l) m (loop (cdr l) (let ((k (key (car (car l))))) (if (or (not m) (> k m)) k m))))))
+
+;; ---------------------------------------------------------------------------
+;; Effective and locally effective complexes
+;; ---------------------------------------------------------------------------
+(define (make-effective-complex name basis d)
+  (vector 'effective-complex name basis (ec-memoize d) (make-hash-table)))
+(define (effective-complex? C) (and (vector? C) (= 5 (vector-length C)) (eq? (vector-ref C 0) 'effective-complex)))
+(define (effective-complex-name C) (vector-ref C 1))
+(define (ec-basis-raw C n)
+  (if (< n 0) '()
+      (let ((cache (vector-ref C 4)))
+        (let ((hit (hash-table-ref/default cache n 'none)))
+          (if (not (eq? hit 'none)) hit
+              (let ((b (if (vector-ref C 2) ((vector-ref C 2) n) #f)))
+                (hash-table-set! cache n b)
+                b))))))
+(define (effective-complex-enumerated? C n) (if (ec-basis-raw C n) #t #f))
+(define (effective-complex-basis C n)
+  (or (ec-basis-raw C n)
+      (error "effective-complex-basis: the complex is only locally effective in this degree" (effective-complex-name C) n)))
+(define (effective-complex-rank C n) (length (effective-complex-basis C n)))
+(define (effective-complex-d-cell C n cell) (if (<= n 0) '() ((vector-ref C 3) n cell)))
+(define (effective-complex-d C n lc) (lc-apply (lambda (c) (effective-complex-d-cell C n c)) lc))
+;; position of a cell in the basis of degree n (a table built once per degree)
+(define (effective-complex-index C n)
+  (let* ((key (cons 'index n)) (cache (vector-ref C 4)) (hit (hash-table-ref/default cache key #f)))
+    (or hit
+        (let ((t (make-hash-table)))
+          (let loop ((l (effective-complex-basis C n)) (i 0))
+            (if (pair? l) (begin (hash-table-set! t (car l) i) (loop (cdr l) (+ i 1)))))
+          (hash-table-set! cache key t)
+          t))))
+;; coordinates of a combination of degree n in the basis
+(define (effective-complex-vector C n lc)
+  (let* ((t (effective-complex-index C n)) (v (make-vector (effective-complex-rank C n) 0)))
+    (for-each (lambda (p)
+                (let ((i (hash-table-ref/default t (car p) #f)))
+                  (if (not i) (error "effective-complex-vector: a cell outside the basis" (effective-complex-name C) n (car p)))
+                  (vector-set! v i (+ (vector-ref v i) (cdr p)))))
+              lc)
+    v))
+(define (effective-complex-combination C n v)
+  (let loop ((l (effective-complex-basis C n)) (i 0) (acc '()))
+    (if (null? l) (reverse acc)
+        (loop (cdr l) (+ i 1) (if (= 0 (vector-ref v i)) acc (cons (cons (car l) (vector-ref v i)) acc))))))
+;; the matrix of d_n : C_n -> C_{n-1} (rows indexed by C_{n-1})
+(define (effective-complex-matrix C n)
+  (let* ((src (effective-complex-basis C n)) (rows (if (<= n 0) 0 (effective-complex-rank C (- n 1))))
+         (M (make-vector rows 0)))
+    (let loop ((i 0)) (if (< i rows) (begin (vector-set! M i (make-vector (length src) 0)) (loop (+ i 1)))))
+    (if (> n 0)
+        (let ((t (effective-complex-index C (- n 1))))
+          (let loop ((l src) (j 0))
+            (if (pair? l)
+                (begin
+                  (for-each (lambda (p)
+                              (let ((i (hash-table-ref/default t (car p) #f)))
+                                (if (not i) (error "effective-complex-matrix: a boundary leaves the basis" (effective-complex-name C) n (car l) (car p)))
+                                (vector-set! (vector-ref M i) j (+ (vector-ref (vector-ref M i) j) (cdr p)))))
+                            (effective-complex-d-cell C n (car l)))
+                  (loop (cdr l) (+ j 1)))))))
+    M))
+;; the core.homological chain complex over Z of degrees 0 .. nmax, carrying
+;; d_{nmax+1} so that H_nmax is exact
+(define (effective-complex-chain-complex C nmax)
+  (make-chain-complex integers
+                      (map (lambda (k) (effective-complex-rank C k)) (ec-range (+ nmax 1)))
+                      (map (lambda (k) (effective-complex-matrix C k)) (cdr (ec-range (+ nmax 2))))))
+;; ((k betti torsion) ...) for k = 0 .. nmax
+(define (effective-complex-homology C nmax) (homology (effective-complex-chain-complex C nmax)))
+;; cells of degree n on which d d is not zero
+(define (effective-complex-d-squared-violations C n cells)
+  (filter (lambda (c) (not (lc-zero? (effective-complex-d C (- n 1) (effective-complex-d-cell C n c))))) cells))
+(define (effective-complex-cycle? C n lc) (lc-zero? (effective-complex-d C n lc)))
+
+;; ---------------------------------------------------------------------------
+;; Reductions
+;; ---------------------------------------------------------------------------
+(define (make-reduction big small f g h)
+  (vector 'reduction big small (ec-memoize f) (ec-memoize g) (ec-memoize h)))
+(define (reduction? r) (and (vector? r) (= 6 (vector-length r)) (eq? (vector-ref r 0) 'reduction)))
+(define (reduction-big r) (vector-ref r 1))
+(define (reduction-small r) (vector-ref r 2))
+(define (reduction-f-cell r n c) ((vector-ref r 3) n c))
+(define (reduction-g-cell r n c) ((vector-ref r 4) n c))
+(define (reduction-h-cell r n c) ((vector-ref r 5) n c))
+(define (reduction-f r n lc) (lc-apply (lambda (c) (reduction-f-cell r n c)) lc))
+(define (reduction-g r n lc) (lc-apply (lambda (c) (reduction-g-cell r n c)) lc))
+(define (reduction-h r n lc) (lc-apply (lambda (c) (reduction-h-cell r n c)) lc))
+
+(define (identity-reduction C)
+  (make-reduction C C (lambda (n c) (lc-term c 1)) (lambda (n c) (lc-term c 1)) (lambda (n c) '())))
+;; r1 : A => B followed by r2 : B => C gives A => C with f = f2 f1, g = g1 g2,
+;; h = h1 + g1 h2 f1
+(define (compose-reductions r1 r2)
+  (make-reduction (reduction-big r1) (reduction-small r2)
+                  (lambda (n c) (reduction-f r2 n (reduction-f-cell r1 n c)))
+                  (lambda (n c) (reduction-g r1 n (reduction-g-cell r2 n c)))
+                  (lambda (n c) (lc-add (reduction-h-cell r1 n c)
+                                        (reduction-g r1 (+ n 1) (reduction-h r2 n (reduction-f-cell r1 n c)))))))
+
+;; Exact check of the reduction identities on the given big cells of degree
+;; n and small cells of degree n. Returns a list of (identity n cell).
+(define (reduction-violations r n big-cells small-cells)
+  (let* ((B (reduction-big r)) (S (reduction-small r)) (out '())
+         (fail! (lambda (what c) (set! out (cons (list what n c) out)))))
+    (for-each
+     (lambda (c)
+       (let* ((x (lc-term c 1)) (fx (reduction-f r n x)) (hx (reduction-h r n x)))
+         (if (not (lc-equal? (lc-sum (list (reduction-g r n fx) (effective-complex-d B (+ n 1) hx)
+                                           (reduction-h r (- n 1) (effective-complex-d B n x))))
+                             x))
+             (fail! "g f + d h + h d = 1" c))
+         (if (not (lc-zero? (reduction-f r (+ n 1) hx))) (fail! "f h = 0" c))
+         (if (not (lc-zero? (reduction-h r (+ n 1) hx))) (fail! "h h = 0" c))
+         (if (not (lc-equal? (effective-complex-d S n fx) (reduction-f r (- n 1) (effective-complex-d B n x))))
+             (fail! "d f = f d" c))))
+     big-cells)
+    (for-each
+     (lambda (e)
+       (let* ((y (lc-term e 1)) (gy (reduction-g r n y)))
+         (if (not (lc-equal? (reduction-f r n gy) y)) (fail! "f g = 1" e))
+         (if (not (lc-zero? (reduction-h r n gy))) (fail! "h g = 0" e))
+         (if (not (lc-equal? (effective-complex-d B n gy) (reduction-g r (- n 1) (effective-complex-d S n y))))
+             (fail! "d g = g d" e))))
+     small-cells)
+    (reverse out)))
+;; the checks that involve only the small complex's basis in degrees 0 .. nmax
+;; (f g = 1, h g = 0, d g = g d, d d = 0 on the small side) together with the
+;; big-side identities on every cell of every g(e): the part of the identities
+;; that is exactly checkable when the big complex is only locally effective
+(define (reduction-small-violations r nmax)
+  (let ((S (reduction-small r)))
+    (let loop ((n 0) (acc '()))
+      (if (> n nmax) acc
+          (let* ((es (effective-complex-basis S n))
+                 (bigs (ec-distinct (apply append (map (lambda (e) (lc-cells (reduction-g-cell r n e))) es)))))
+            (loop (+ n 1)
+                  (append acc
+                          (map (lambda (c) (list "d d = 0" n c)) (effective-complex-d-squared-violations S n es))
+                          (reduction-violations r n bigs es))))))))

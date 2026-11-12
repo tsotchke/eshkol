@@ -133,6 +133,29 @@ figures that older documents quote: 541/541 and 198/198, each measured on an
 earlier commit; and 183/183, superseded by 190/190 for the v1.3.4-evolve cut
 (remeasured on 2026-08-25 against `4bf871a0`).
 
+### Library AOT suites: one verdict contract
+
+Every `<suite>_aot` CTest entry runs `scripts/run_stdlib_aot.cmake`, which
+compiles the suite (natively, or to bytecode for the VM when `ESHKOL_VM` is
+given), runs it, and accepts it only when all of these hold:
+
+- the compile exits 0 and prints no failure marker;
+- for a native compile, the build tree's own `stdlib.o` and `stdlib.bc` are
+  present in `ESHKOL_LINK_DIR` (`scripts/require_local_stdlib.cmake`), so a
+  suite never links an installed standard library;
+- the program exits 0 and prints no `FAIL:`, `RESULT: FAIL` or fatal signal;
+- the program prints its verdict line on a line of its own.
+
+The verdict line is selected with `ESHKOL_VERDICT`, which takes exactly two
+values: `PASS` (the default, `RESULT: PASS`) and `ALL PASS`
+(`RESULT: ALL PASS`, for suites that report a catalogue, such as the DBSP
+acceptance programs and `signed_curvature_test`). Any other value stops the
+test, so a registration can choose a verdict but never widen what counts as
+one. `ESHKOL_COMPILE_TIMEOUT` and `ESHKOL_RUN_TIMEOUT` (defaults 720 and 120
+seconds) give long suites their time. `tests/toolchain/test_stdlib_aot_runner.py`
+checks each rule with a fake compiler, including the refusal of a mismatched
+or unknown verdict and of a missing local standard library.
+
 ### ABI semantic inventory dependency
 
 The `abi_header_inventory_semantic_ratchet` check runs
@@ -162,6 +185,26 @@ The gate fails on any real failure, any stale XFAIL that now XPASSes, or any
 missing full-book system probe. Trace: `scripts/icc_traces/sicp_smoke.jsonl`.
 To add a probe, drop a self-checking `.esk` file in `tests/sicp/` and register
 it in the script's coverage manifest.
+
+---
+
+## nLab conformance
+
+`tests/nlab/` decides claims quoted from nLab pages exactly on the mathematics
+libraries (`core.sheaf`, `core.topos`, `core.ring`, `core.multimodular`,
+`core.integer_linalg`, `core.category`, `core.simplicial`, `core.homological`),
+one `PASS: [page#k] ... => value` line per claim, in five suites registered as
+`nlab_{topos,space,ring,category,simplicial}_{jit,aot}`.
+`scripts/run_nlab_conformance.sh` runs them and checks every claim line against
+the manifest `tests/nlab/claims.tsv` and the coverage line of
+[the nLab conformance report](reports/NLAB_CONFORMANCE.md).
+
+```bash
+BUILD_DIR=build scripts/run_nlab_conformance.sh
+# => nLab conformance gate: PASS (ctest 10/10; claims PASS jit 132/132, aot 132/132; coverage pages=51 computed-pages=50 computed=132 planned=9)
+```
+
+Trace: `scripts/icc_traces/v14_nlab_conformance.jsonl`.
 
 ---
 
@@ -624,6 +667,24 @@ each gate CAN fail before it reports that nothing failed.
   which carrier computed it.
 
 ### Release evidence and documentation gates
+
+- **Documentation claims are ranked and held to a quota** (v1.4.0, phase 1).
+  `scripts/doc_truth_ratchet.py` ranks every claim `icc doc-typed-claims`
+  extracts from `docs/` as verified, unverified, table-contradicted or
+  contradicted, per document. `doc_truth_ratchet_phase1` re-indexes the tree
+  in a private ICC state inside the build directory, writes
+  `<build>/doc_truth/ranking.json` and `comparison.json`, and reports each
+  document against `docs/reports/doc_truth/quota.json` without failing;
+  `doc_truth_ratchet_unit` pins the ranking order, the comparison and the
+  phase-2 `--enforce` behaviour. The generated summary and the phase-2 plan
+  are in [reports/DOC_TRUTH_RANKING.md](reports/DOC_TRUTH_RANKING.md).
+- **Image codecs keep the bytes and pixels of the previous system codecs.**
+  `image_codecs_test` decodes the fixtures in `tests/core/image_fixtures` and
+  encodes deterministic images, comparing against goldens recorded from
+  libpng/libjpeg-turbo/libwebp before the codecs moved into the runtime, then
+  round-trips PNG/JPEG/BMP/WebP at 1, 3 and 4 channels, the zlib
+  encoder/decoder pair and a mutation pass. `image_io_language_test`
+  runs `tests/v1_2_edge_cases/image_io_test.esk` through `eshkol-run -r`.
 
 - **Evidence paths are absolute before first use** (#695).
   `scripts/lib/evidence_paths.sh` fixes the meaning of a relative evidence

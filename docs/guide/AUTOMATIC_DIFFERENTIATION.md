@@ -53,7 +53,8 @@ behind all of this live in
 9. [Differentiable control flow](#9-differentiable-control-flow)
 10. [Tower numerics — ODEs, roots, inversion](#10-tower-numerics--odes-roots-inversion)
 11. [Perturbation safety & how it works](#11-perturbation-safety--how-it-works)
-12. [API quick reference](#12-api-quick-reference)
+12. [Differentiating through optimization and discrete solvers](#12-differentiating-through-optimization-and-discrete-solvers)
+13. [API quick reference](#13-api-quick-reference)
 
 ---
 
@@ -815,11 +816,42 @@ an exact answer while every operation is exactness-preserving.
 2
 ```
 
+Forward and reverse passes nest in every combination too. A vector-point
+`gradient`, `jacobian` or `hessian` inside a live pass is computed as forward
+columns, each a level of the enclosing passes, and an inner pass that meets an
+enclosing reverse pass's values records its exact linearisation against them
+([ADR-0057](../design/adr/0057-nested-differentiation-in-every-mode.md)):
+
+```scheme
+(define (w4 w) (* (vref w 0) (vref w 0) (vref w 0) (vref w 0)))
+;; reverse over reverse over reverse: d3/dw3 w^4 = 24 w at w = 2
+(display (vref (gradient (lambda (u) (vref (gradient (lambda (v) (vref (gradient w4 v) 0)) u) 0))
+               (vector 2.0)) 0)) (newline)
+;; forward over forward over reverse: d/ds d/dt [2 s t v] at v = 3
+(display (derivative (lambda (s)
+           (derivative (lambda (t)
+             (vref (gradient (lambda (v) (* s t (vref v 0) (vref v 0))) (vector 3.0)) 0)) 2.0)) 1.0)) (newline)
+;; reverse over forward, the inner pass capturing a value the outer pass computed
+(display (gradient (lambda (v) (let ((p (* 2.0 (vref v 0))))
+                                 (derivative (lambda (x) (* p x x)) 2.0)))
+                   #(3.0))) (newline)
+```
+```
+48.0
+6.0
+#(8.0)
+```
+
+Perturbation tags are 64-bit and never reused, so these hold however many
+passes a program has already run.
+
 Gated by `tests/ad/nested_towers_matrix_test.esk` (every operator and order
 pairing, the depth-3 order sweep, nesting through the point, exact seeds, and
 the perturbation-confusion controls), `tests/ad/nested_operator_matrix_test.esk`
-(the captured-variable matrix) and `tests/ad/ad_carrier_nesting_test.esk`, on
-the JIT and AOT lanes. The table, with the verified output of every row, is in
+(the captured-variable matrix), `tests/ad/ad_carrier_nesting_test.esk`, and
+`tests/ad/nested_depth_matrix_test.esk` (depth 4 in every mode, exact Taylor
+coefficients, and more than 65536 passes in one process, on JIT, AOT and the
+VM). The table, with the verified output of every row, is in
 [the AD support matrix](../reference/ad/support-matrix.md#nesting).
 
 
@@ -844,7 +876,65 @@ tensor coefficient layouts, and the Taylor-model remainder arithmetic — see
 
 ---
 
-## 12. API quick reference
+## 12. Differentiating through optimization and discrete solvers
+
+Some layers return the *solution* of an optimization problem: a ranking, a
+shortest path, a top-k set, a ridge fit, a fixed point, a projection onto the
+simplex. Differentiating the solver's instructions gives zero almost everywhere
+for a combinatorial solver and an unrolled, unstable chain for an iterative
+one. [`core.ml.diffopt`](../reference/stdlib/ml_diffopt.md) instead installs the
+pullback the *problem* defines, as one custom op on the
+[reverse-mode tape](../reference/stdlib/ad_tape.md) per rule
+([ADR-0031](../design/adr/0031-differentiable-optimization.md)):
+
+| Rule | Pullback of `g = dL/dy` | Layer |
+|---|---|---|
+| Blackbox solver, `y = argmin_{y in Y} <w, y>` | `-(y(w) - y(w + λg)) / λ` | `blackbox-solve` |
+| Perturbed optimizer, `y_ε = E[argmax <y, θ + εZ>]` | `(1/ε) E[<y*(θ+εZ), g> ∇ν(Z)]` | `perturbed-solve`, `perturbed-argmax`, `perturbed-top-k` |
+| Fenchel-Young loss | `g (ŷ − y)` | `perturbed-fenchel-young`, `fenchel-young-softmax`, `fenchel-young-sparsemax` |
+| Implicit function theorem, `F(x*, θ) = 0` | `−(∂_θF)ᵀ u`, `(∂_xF)ᵀ u = g` | `implicit-root`, `implicit-fixed-point`, `implicit-argmin` |
+| Simplex projection | `softmax-vjp`, `sparsemax-vjp` | `tape-softmax`, `tape-sparsemax` |
+
+The implicit rule solves its adjoint system with `exact-solve` when every entry
+is exact, so a ridge least-squares sensitivity comes back as an exact rational:
+
+```scheme
+(require core.exact_linalg)
+(require core.ml.diffopt)
+;; d_w F = X^T X + lambda I and d_lambda F = w* for ridge least squares
+;; with X = ((1 2) (3 -1) (0 1/2)), y = (1 2/3 -1), lambda = 1/3
+(define A (vector (vector 31/3 -1) (vector -1 67/12)))
+(define w* (exact-solve A (vector 3 5/6)))
+(display w*) (newline)
+(display (implicit-root-vjp A (vector (vector (vector-ref w* 0)) (vector (vector-ref w* 1)))
+                            (vector 2 -3/7)))
+(newline)
+```
+
+Output:
+
+```
+#(633/2041 418/2041)
+#(-1457082/29159767)
+```
+
+That is `gᵀ dw*/dλ = −gᵀ (XᵀX + λI)⁻¹ w*` exactly. Passing no partial
+Jacobians makes `implicit-root` take them from the compiled `jacobian`
+(and `implicit-argmin` from `hessian` and the Jacobian of `gradient`), in f64.
+Perturbed optimizers draw their noise once, from a seeded generator, and use
+the same draws in the forward value and the pullback; with Gumbel noise the
+perturbed argmax is `softmax(θ/ε)` in expectation, which the tests check
+together with its Jacobian. No pullback in the module evaluates a finite
+difference.
+
+**When to use:** training through a combinatorial solver (blackbox or
+perturbed), a structured-prediction loss (Fenchel-Young), or a layer defined by
+an equation or an inner optimization (implicit), without unrolling the solver.
+The reference page has a runnable example for every rule.
+
+---
+
+## 13. API quick reference
 
 ### Built-in operators (no `require`)
 
@@ -860,6 +950,7 @@ tensor coefficient layouts, and the Taylor-model remainder arithmetic — see
 | `curl` | ℝ³→ℝ³ | `(curl F pt)` | ∇×F |
 | `laplacian` | ℝⁿ→ℝ | `(laplacian f pt)` | ∇²f |
 | `directional-derivative` | ℝⁿ→ℝ | `(directional-derivative f pt dir)` | ∇f·dir |
+| `stop-gradient` | any | `(stop-gradient x)` | `x`'s value as a constant to every enclosing pass (ADR-0049) |
 
 Points are vectors (`#(…)` or `(vector …)`). Exact seeds (integer/rational)
 yield exact `derivative-n`/`taylor` results for polynomial/rational functions,
@@ -961,6 +1052,7 @@ for the arity-recovery mechanism.
 | `core.ad.taylor_numerics` | `taylor-ode-solve`, `taylor-root`, `taylor-inverse-series`, `taylor-eval` | series-based ODE / root / inversion |
 | `core.ad.tape` | `make-tape`, `tape-input`, `tape-mul`/`-add`/…, `tape-gradient`, `tape-node-count`, … | explicit reverse-mode tape (Scheme level) |
 | `core.ad.algebraic_reverse` | `algebraic-value-and-pullback`, `algebraic-hvp`, `algebraic-reverse-*` | exact reverse-mode pullbacks and Hessian-vector products over algebraic coefficient domains |
+| `core.ml.diffopt` | `blackbox-solve`, `perturbed-solve`, `perturbed-fenchel-young`, `implicit-root`, `implicit-argmin`, `sparsemax`, … | differentiating through optimization and discrete solvers (§12) |
 
 Example: [`algebraic_reverse.esk`](../../examples/algebraic_reverse.esk) checks the exact value, gradient, and HVP against closed-form formulas.
 

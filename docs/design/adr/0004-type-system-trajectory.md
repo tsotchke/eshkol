@@ -1,6 +1,6 @@
 # ADR 0004: One quantitative dependent type system for Eshkol
 
-- Status: Accepted — partially implemented: the `NodeId`-keyed type identity substrate (`NominalTypeId`, `TypeRef` and typed metadata in `inc/eshkol/frontend/semantic_identity.h`, ADR-0000 Stage 2) and the single gradual relation of ADR-0013 (`TypeRelation` in `lib/types/type_relation.cpp`) are in v1.3.5-evolve; remaining stages Proposed
+- Status: Accepted — partially implemented: the `NodeId`-keyed type identity substrate (`NominalTypeId`, `TypeRef` and typed metadata in `inc/eshkol/frontend/semantic_identity.h`, ADR-0000 Stage 2) and the single gradual relation of ADR-0013 (`TypeRelation` in `lib/types/type_relation.cpp`) are in v1.3.5-evolve; the v1.9.0 rung's checking direction, Pi/Sigma types, universe levels, dependent families, definitional equality by normalization and enforcement mode are [ADR 0042](0042-dependent-type-enforcement.md); remaining stages Proposed
 - Date: 2026-07-09
 - Decision owners: language, frontend, runtime, and LLVM backend
 - Scope: v1.3.2 through v2.0
@@ -1024,8 +1024,10 @@ negative dynamic/FFI cases.
   they claim ownership, lifetime, purity, session, or quantum guarantees. They
   can remain untyped or cross an explicit checked/unsafe boundary, but cannot
   retain a false static guarantee.
-- Full HoTT features such as univalence are deferred. “HoTT-inspired” will no
-  longer be used to imply capabilities absent from the kernel.
+- Full HoTT features are built by ADR-0043 in a separate cubical kernel:
+  identity types, path induction, univalence and higher inductive types, all
+  computing. This kernel stays the small predicative core of the systems
+  types; the two share universes and the proposition reading of ADR-0035.
 
 ## Rejected alternatives
 

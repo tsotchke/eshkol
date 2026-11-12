@@ -15,12 +15,15 @@
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/rational.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
 extern "C" {
 
 extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+extern void eshkol_enforce_tensor_elements(int64_t num_elements);
+extern void* eshkol_tensor_cast_alloc(void* arena, void* tensor_ptr, int64_t dtype);
 
 /* ESH-0393: the AD seed/point coercion authority (lib/core/runtime_taylor.c).
  * Converts any numeric tagged value — int64, double, bignum, rational, jet,
@@ -142,6 +145,55 @@ void* eshkol_list_to_svec(arena_t* arena, const eshkol_tagged_value_t* head_tv) 
         }
         elems[i++] = e;
         cur = cell->cdr;
+    }
+    return vec;
+}
+
+// Read a tensor out as a Scheme vector (HEAP_SUBTYPE_VECTOR) of its elements,
+// each copied verbatim, tag and all.
+//
+// This is the tensor-side counterpart of eshkol_list_to_svec_raw below, and it
+// preserves tags for the same reason: ADR-0058 gives a tensor three tagged
+// element types, and one of them carries a forward-mode jet. A pass nested in
+// another pass meets its inner answer as such a tensor, and reading it as a
+// vector of tagged elements is what keeps each element's perturbation
+// reachable by the extraction that follows. An f64 carrier's elements are
+// int64 bit patterns of doubles, so those are repacked as doubles.
+//
+// Returns the vector DATA pointer (length at offset 0, 16-byte tagged elements
+// at offset 8; header with HEAP_SUBTYPE_VECTOR at -8), or nullptr when the
+// value is not a tensor, which leaves the caller's own refusal in charge. The
+// value is passed by pointer (ABI-safe: avoids 16-byte struct-by-value across
+// the C boundary).
+void* eshkol_tensor_to_svec(arena_t* arena, const eshkol_tagged_value_t* tensor_tv) {
+    if (!arena || !tensor_tv) return nullptr;
+    if ((tensor_tv->type & 0x0F) != ESHKOL_VALUE_HEAP_PTR || !tensor_tv->data.ptr_val)
+        return nullptr;
+    void* ptr = (void*)(uintptr_t)tensor_tv->data.ptr_val;
+    if (ESHKOL_GET_SUBTYPE(ptr) != HEAP_SUBTYPE_TENSOR) return nullptr;
+    const eshkol_tensor_t* tensor = (const eshkol_tensor_t*)ptr;
+    if (!tensor->elements) return nullptr;
+    const uint64_t total = tensor->total_elements;
+    if (total > (uint64_t)INT64_MAX) return nullptr;
+    eshkol_enforce_tensor_elements((int64_t)total);
+    void* vec = arena_allocate_vector_with_header(arena, (size_t)total);
+    if (!vec) return nullptr;
+    *(int64_t*)vec = (int64_t)total;
+    eshkol_tagged_value_t* out =
+        (eshkol_tagged_value_t*)((char*)vec + sizeof(int64_t));
+    if (eshkol_tensor_dtype_is_tagged(tensor->dtype)) {
+        const eshkol_tagged_value_t* src =
+            (const eshkol_tagged_value_t*)tensor->elements;
+        for (uint64_t i = 0; i < total; ++i) out[i] = src[i];
+    } else {
+        for (uint64_t i = 0; i < total; ++i) {
+            double value;
+            std::memcpy(&value, &tensor->elements[i], sizeof(double));
+            out[i].type = ESHKOL_VALUE_DOUBLE;
+            out[i].flags = 0;
+            out[i].reserved = 0;
+            out[i].data.double_val = value;
+        }
     }
     return vec;
 }
@@ -278,9 +330,43 @@ static void coll_raise(const char* message) {
  * primal or as its pointer bits. Anything else is not a number and raises. */
 static void coll_store_leaf(eshkol_tensor_t* t, uint64_t pos,
                             const eshkol_tagged_value_t* e) {
+    // An exact tensor under construction is the explicit conversion
+    // `(tensor-cast X 'exact)` asked for (ADR-0058): an exact leaf is kept as
+    // it is and a finite double becomes the exact rational it denotes, as
+    // `exact` gives it. Anything else has no exact value and raises.
+    if (t->dtype == ESHKOL_TENSOR_DTYPE_EXACT) {
+        eshkol_tagged_value_t leaf = *e;
+        if ((leaf.type & 0x0F) == ESHKOL_VALUE_DOUBLE) {
+            if (!std::isfinite(leaf.data.double_val)) {
+                coll_raise("tensor-cast: an infinite or NaN element has no exact value");
+                return;
+            }
+            eshkol_double_to_exact_tagged(get_global_arena(), leaf.data.double_val, &leaf);
+        }
+        if (eshkol_tensor_slot_store(t, (int64_t)pos, &leaf) != ESHKOL_SLOT_STORE_OK) {
+            coll_raise("tensor-cast: element is not a real number, so it has no exact value");
+        }
+        return;
+    }
     if (eshkol_tensor_slot_store(t, (int64_t)pos, e) != ESHKOL_SLOT_STORE_OK) {
         coll_raise("tensor: element is not a number");
     }
+}
+
+/* Allocate a rank-`ndim` tensor of `total` slots for the walker: f64 slots, or
+ * tagged slots when `exact` (ADR-0058). Dimensions are left for the caller. */
+static eshkol_tensor_t* coll_allocate(arena_t* arena, uint64_t ndim, uint64_t total,
+                                      bool exact) {
+    if (!exact) return arena_allocate_tensor_full(arena, ndim, total);
+    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, ndim, 0);
+    if (!t) return nullptr;
+    eshkol_enforce_tensor_elements((int64_t)total);
+    t->elements = (int64_t*)arena_allocate(
+        arena, (size_t)(total ? total : 1) * sizeof(eshkol_tagged_value_t));
+    if (!t->elements) return nullptr;
+    t->total_elements = total;
+    t->dtype = ESHKOL_TENSOR_DTYPE_EXACT;
+    return t;
 }
 
 /**
@@ -431,18 +517,20 @@ static bool coll_fill(const eshkol_tagged_value_t* node,
 // (garbage), and (tensor (list (list 1 2) (list 3 4))) made a rank-1 tensor of
 // zeros. Returns the tensor pointer, or nullptr on allocation failure; a
 // non-rectangular nest raises a catchable error and does not return.
-void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
+static void* tensor_from_collection_impl(arena_t* arena, const eshkol_tagged_value_t* input,
+                                         bool exact) {
     if (!arena || !input) return nullptr;
 
     const coll_kind_t kind = coll_classify(input);
 
     if (kind == COLL_TENSOR) {
-        return (void*)(uintptr_t)input->data.ptr_val;  // already a tensor
+        void* t = (void*)(uintptr_t)input->data.ptr_val;  // already a tensor
+        return exact ? eshkol_tensor_cast_alloc(arena, t, ESHKOL_TENSOR_DTYPE_EXACT) : t;
     }
 
     if (kind == COLL_LEAF) {
         // Scalar -> 1-element tensor.
-        eshkol_tensor_t* t = arena_allocate_tensor_full(arena, 1, 1);
+        eshkol_tensor_t* t = coll_allocate(arena, 1, 1, exact);
         if (!t) return nullptr;
         if (t->dimensions) t->dimensions[0] = 1;
         coll_store_leaf(t, 0, input);
@@ -472,7 +560,7 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
         total *= dims[i];
     }
 
-    eshkol_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)ndim, total);
+    eshkol_tensor_t* t = coll_allocate(arena, (uint64_t)ndim, total, exact);
     if (!t) return nullptr;
     if (t->dimensions) {
         for (int i = 0; i < ndim; i++) t->dimensions[i] = dims[i];
@@ -483,6 +571,18 @@ void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t*
         return nullptr;  // coll_fill already raised
     }
     return t;
+}
+
+void* eshkol_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
+    return tensor_from_collection_impl(arena, input, false);
+}
+
+/* (tensor-cast X 'exact) for a list, a vector, a nest of them, a scalar or a
+ * tensor: the same walker and shape rules as `(tensor X)`, building an exact
+ * tensor (ADR-0058). Exact leaves are kept whole; a finite double becomes the
+ * exact rational it denotes. */
+void* eshkol_exact_tensor_from_collection(arena_t* arena, const eshkol_tagged_value_t* input) {
+    return tensor_from_collection_impl(arena, input, true);
 }
 
 /**
@@ -651,6 +751,26 @@ int64_t eshkol_check_recursion_depth(void) {
 
     eshkol_limit_poll_interrupt();
     return __eshkol_recursion_depth;
+}
+
+/**
+ * @brief Save / restore the calling thread's recursion depth around a
+ *        longjmp target.
+ *
+ * The counter is incremented at every guarded entry and decremented on the
+ * matching return. A non-local exit (a `raise` caught by `guard` or
+ * `with-exception-handler`, a continuation invoked from deeper or shallower
+ * code) skips those returns, so codegen stores the depth into a frame slot
+ * before each setjmp and restores it first thing on the path the longjmp
+ * arrives by. The slot lives in the frame that installed the target, so a
+ * re-entered continuation finds the depth it was captured at.
+ */
+void eshkol_save_recursion_depth(void* slot) {
+    if (slot) *static_cast<int64_t*>(slot) = __eshkol_recursion_depth;
+}
+
+void eshkol_restore_recursion_depth(const void* slot) {
+    if (slot) __eshkol_recursion_depth = *static_cast<const int64_t*>(slot);
 }
 
 /** @brief Decrement the calling thread's recursion-depth counter on return from a guarded call (no-op if already 0). */

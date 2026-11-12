@@ -390,5 +390,9 @@
     "memory_ptr",
     "i32",
     "byte_count"
+  ],
+  "eshkol_stop_gradient_tagged": [
+    "tagged_ptr",
+    "tagged_out_ptr"
   ]
 }

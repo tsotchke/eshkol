@@ -1,0 +1,39 @@
+// Deterministic chunked f64 reduction for the Vulkan compute backend.
+//
+// Invocation g folds elements [g*chunk, min((g+1)*chunk, n)) in index order,
+// starting from `init`, with the same expressions as the CPU reference in
+// eshkol_gpu_reduce_f64. The host applies this kernel repeatedly (partials of
+// partials) with a chunk size that depends only on n, so the summation tree is
+// fixed: the result is reproducible run to run and across devices.
+// Op codes are EshkolReduceOp (MEAN is reduced as SUM; the host divides).
+#version 450
+layout(local_size_x = 64) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer In { double v[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Unused { double unused[]; };
+layout(std430, set = 0, binding = 2) writeonly buffer Out { double o[]; };
+
+layout(push_constant) uniform Params {
+    double init;
+    uint n;
+    uint op;
+    uint chunk;
+} p;
+
+void main() {
+    uint g = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * 64u
+           + gl_LocalInvocationID.x;
+    uint groups = (p.n + p.chunk - 1u) / p.chunk;
+    if (g >= groups) return;
+    uint begin = g * p.chunk;
+    uint end = min(begin + p.chunk, p.n);
+    precise double r = p.init;
+    for (uint i = begin; i < end; ++i) {
+        double x = v[i];
+        if (p.op == 0u || p.op == 4u)      r = r + x;               // SUM, MEAN
+        else if (p.op == 1u)               r = r * x;               // PROD
+        else if (p.op == 2u)               r = (x < r) ? x : r;     // MIN
+        else                               r = (x > r) ? x : r;     // MAX
+    }
+    o[g] = r;
+}

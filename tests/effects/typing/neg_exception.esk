@@ -1,0 +1,5 @@
+;;; raise escapes a guard without a catch-all clause.
+;; expect-error: 'risky' is declared Pure but may perform Exception
+(declare-effects risky Pure)
+(define (risky x) (guard (e ((symbol? e) 0)) (if (> x 0) (raise "big") x)))
+(display (risky 1))

@@ -609,14 +609,54 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
  */
 static Node* parse_sexp_impl(void);
 
+/* Algebraic-effect forms (ADR-0045). `define-effect`, `handle`,
+ * `handle-shallow` and `declare-effects` are rewritten by the one lowering the
+ * native compiler also uses (effect_syntax_core.h), once per complete
+ * top-level datum, so every consumer of the reader sees ordinary Scheme.
+ * Quoted data is left as written. */
+#include "eshkol/frontend/effect_syntax_core.h"
+
+static int g_vm_parse_depth = 0;
+
+static Node* vm_effect_lower_tree(Node* n) {
+    if (!n || n->type != N_LIST || n->n_children == 0) return n;
+    Node* head = n->children[0];
+    if (head->type == N_SYMBOL &&
+        (eshkol_syntax_base_is(head->symbol, "quote") ||
+         eshkol_syntax_base_is(head->symbol, "quasiquote")))
+        return n;
+    if (head->type == N_SYMBOL && eshkol_effect_keyword(head->symbol)) {
+        eshkol_syn* syn = vm_macro_to_syn(n);
+        if (!syn) { vm_compile_error("out of memory reading an effect form", head->symbol); return n; }
+        if (eshkol_effect_form_of(syn) != ESHKOL_EFFECT_FORM_NONE) {
+            char message[256];
+            eshkol_syn* lowered = eshkol_effect_lower(syn, message, sizeof(message));
+            eshkol_syn_free(syn);
+            if (!lowered) { vm_compile_error(message, head->symbol); return n; }
+            Node* result = vm_macro_from_syn(lowered);
+            eshkol_syn_free(lowered);
+            if (!result) { vm_compile_error("out of memory lowering an effect form", NULL); return n; }
+            free_node(n);
+            return vm_effect_lower_tree(result);
+        }
+        eshkol_syn_free(syn);
+    }
+    for (int i = 0; i < n->n_children; ++i)
+        n->children[i] = vm_effect_lower_tree(n->children[i]);
+    return n;
+}
+
 /* EOF between complete datums is normal. Failure after a datum starts must
  * poison the entire compilation, rather than execute or emit a valid prefix. */
 static Node* parse_sexp(void) {
     skip_ws();
     if (!*src_ptr) return NULL;
+    g_vm_parse_depth++;
     Node* datum = parse_sexp_impl();
+    g_vm_parse_depth--;
     if (!datum && !vm_compile_failed())
         vm_compile_error("invalid or incomplete Scheme datum", NULL);
+    if (datum && g_vm_parse_depth == 0) datum = vm_effect_lower_tree(datum);
     return datum;
 }
 

@@ -1,0 +1,14 @@
+;;; Rows through the standard effects library.
+;; expect-row: count-store <>
+;; expect-row: uses-store <Store>
+;; expect-row: triples <>
+;; expect-row: gen-sum <>
+(require core.effects)
+(define (uses-store) (put (+ (get) 1)) (get))
+(define (count-store) (with-store 0 uses-store))
+(define (triples) (all-choices (lambda () (let ((a (choose-range 1 5))) (if (even? a) a (fail))))))
+(define (gen-sum) (generator-fold + 0 (lambda () (yield 1) (yield 2))))
+(declare-effects count-store Pure)
+(declare-effects triples ())
+(display (list (count-store) (triples) (gen-sum)))
+(newline)
