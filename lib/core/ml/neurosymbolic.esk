@@ -18,7 +18,7 @@
 
 (require core.ad.tape)
 
-(provide make-embedding-table emb-dim embed!
+(provide make-embedding-table emb-dim embed! emb-known?
          vdot soft-unify soft-unify-loss soft-unify-train!
          kb-attention kb-retrieve)
 
@@ -67,6 +67,9 @@
             (vector-set! v i (- (/ (exact->inexact (modulo s2 2000)) 1000.0) 1.0))
             (loop (+ i 1) s2))))
     v))
+
+;; does `sym` already have an embedding? (no side effect: never creates one)
+(define (emb-known? tbl sym) (if (ns-assq sym (vector-ref tbl 1)) #t #f))
 
 ;; ensure `sym` has an embedding; return its (mutable) vector
 (define (embed! tbl sym)

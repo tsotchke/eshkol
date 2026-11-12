@@ -511,23 +511,65 @@ All kernels use 256 threads/block with grid-stride loops, grid capped at 65535.
 - **Normalize** (`gpu_cuda_kernels.cu:364`): Layer normalization (mean, variance,
   scale+shift).
 
+### Vulkan compute (`gpu_vulkan.c`)
+
+On Linux the GPU dispatch also carries a Vulkan compute backend
+(`ESHKOL_GPU_VULKAN`). It is built into every Linux build that has
+`ESHKOL_GPU_ENABLED=ON` (`-DESHKOL_VULKAN_COMPUTE=OFF` leaves it out) and opens
+the Vulkan loader (`libvulkan.so.1`) at run time, so neither the build host nor
+the produced binaries depend on Vulkan being installed.
+
+- **Selection.** In a CUDA build, `eshkol_gpu_init()` tries CUDA first and opens
+  a Vulkan device when no CUDA device initialises. In a build without CUDA,
+  Vulkan is the device backend of `gpu_memory_stub.cpp`. Automatic selection
+  takes GPU-type devices only (discrete, then integrated, then virtual), so a
+  software implementation never replaces the CPU path by accident;
+  `ESHKOL_GPU_BACKEND=vulkan` also accepts CPU-type devices such as Mesa
+  lavapipe. A device needs a compute queue and `shaderFloat64`.
+- **Kernels.** GLSL compute shaders in `lib/backend/gpu/vulkan/`, embedded as
+  SPIR-V (`lib/backend/gpu/vulkan_spirv.h`, regenerated and checked by
+  `scripts/gen_vulkan_spirv.sh`): elementwise f64 (add, sub, mul, div, neg,
+  abs, relu, sqrt, reciprocal), full reductions (sum, prod, min, max, mean),
+  and matmul in f64 and f32. Every expression mirrors the CPU reference and
+  is compiled without contraction, so results are bit-identical to the CPU on
+  IEEE-754 devices. Reductions use a fixed chunk tree (256 elements per
+  invocation, partials of partials), so a sum is reproducible run to run and
+  across devices. GLSL.std.450 defines exp/log/sin/cos/tanh only for 16- and
+  32-bit floats; those f64 operations, sigmoid, axis reductions, softmax,
+  transpose, normalize and the backward kernels continue on the CPU with the
+  same buffers.
+- **Admission.** When a device opens, every kernel runs a bitwise probe
+  against the host (edge values including signed zeros, subnormals,
+  infinities and NaN, plus random data; a three-pass reduction; odd matmul
+  shapes). A kernel that differs is not used on that device and its calls take
+  the CPU path. The admitted set is reported by `eshkol_vk_status()` and by the
+  `GPU initialized: Vulkan compute (...)` log line.
+- **Memory.** Each buffer has a host-visible coherent staging allocation;
+  when the device has separate device-local memory a device-local twin holds
+  the kernel operands and command-buffer copies move data between them.
+  Wrapped host memory keeps `host_ptr` equal to the caller's pointer; every
+  operation reads its inputs from it and writes results back before returning.
+
+Details, verification commands and the Vulkan items still planned are in
+[docs/platform/VULKAN_COMPUTE.md](../platform/VULKAN_COMPUTE.md).
+
 ---
 
 ## 6. Supported Operations
 
-| Operation | Metal Kernel | CUDA Kernel | Complexity |
-|-----------|-------------|-------------|------------|
-| Matmul (f64) | `matmul_sf64`, `matmul_sf64_v2` | `cublasDgemm` | O(MKN) |
-| Matmul (df64) | `matmul_df64`, `matmul_df64_pure` | -- | O(MKN) |
-| Matmul (f32) | `matmul_f32_simd`, `matmul_f32_simd_128` | `cublasSgemm` | O(MKN) |
-| Matmul (fp24/fp53) | `matmul_fp24`, `matmul_fp53` | -- | O(MKN) |
-| Matmul (Ozaki-II) | `matmul_ozaki_gemm` | INT8-Ozaki `cublasGemmEx` (opt-in) | O(T^2*MKN) |
-| Elementwise | `elementwise_sf64` | `elementwise_f64_kernel` | O(N) |
-| Reduce (full/axis) | `reduce_sf64`, `reduce_axis_sf64` | `reduce_f64_kernel` | O(N) |
-| Softmax | `softmax_sf64` | `softmax_f64_kernel` | O(N) |
-| Transpose | `transpose_sf64` | `transpose_f64_kernel` | O(N) |
-| Normalize | `normalize_sf64` | `normalize_f64_kernel` | O(N) |
-| Convert f64<->f32/df64 | `convert_*` pipelines | -- | O(N) |
+| Operation | Metal Kernel | CUDA Kernel | Vulkan Kernel | Complexity |
+|-----------|-------------|-------------|---------------|------------|
+| Matmul (f64) | `matmul_sf64`, `matmul_sf64_v2` | `cublasDgemm` | `matmul_f64.comp` | O(MKN) |
+| Matmul (df64) | `matmul_df64`, `matmul_df64_pure` | -- | -- | O(MKN) |
+| Matmul (f32) | `matmul_f32_simd`, `matmul_f32_simd_128` | `cublasSgemm` | `matmul_f32.comp` | O(MKN) |
+| Matmul (fp24/fp53) | `matmul_fp24`, `matmul_fp53` | -- | -- | O(MKN) |
+| Matmul (Ozaki-II) | `matmul_ozaki_gemm` | INT8-Ozaki `cublasGemmEx` (opt-in) | -- | O(T^2*MKN) |
+| Elementwise | `elementwise_sf64` | `elementwise_f64_kernel` | `elementwise_f64.comp` (add, sub, mul, div, neg, abs, relu, sqrt, reciprocal; the rest on the CPU path) | O(N) |
+| Reduce (full/axis) | `reduce_sf64`, `reduce_axis_sf64` | `reduce_f64_kernel` | `reduce_f64.comp` (full); axis on the CPU path | O(N) |
+| Softmax | `softmax_sf64` | `softmax_f64_kernel` | CPU path | O(N) |
+| Transpose | `transpose_sf64` | `transpose_f64_kernel` | CPU path | O(N) |
+| Normalize | `normalize_sf64` | `normalize_f64_kernel` | CPU path | O(N) |
+| Convert f64<->f32/df64 | `convert_*` pipelines | -- | -- | O(N) |
 
 **Precision tiers** (Metal, via `ESHKOL_GPU_PRECISION`): exact=SF64 (52-bit
 mantissa), high=DF64 (~100-bit), fast=f32 (23-bit). Specialized: FP24
@@ -598,6 +640,9 @@ and `scripts/verify_gpu_backend.py` checks the configured list against it.
 | `ESHKOL_GPU_MATMUL_THRESHOLD` | 1,000,000,000 | `blas_backend.cpp` |
 | `ESHKOL_BLAS_THRESHOLD` | 64 | `blas_backend.cpp` |
 | `ESHKOL_FORCE_GPU=1` | -- | Force GPU for all ops |
+| `ESHKOL_GPU_BACKEND` | `auto` | `cpu`/`none`, `cuda`, `vulkan` or `auto`; device backend chosen by `eshkol_gpu_init()` (Linux CUDA and non-CUDA builds) |
+| `ESHKOL_VULKAN_DEVICE` | -- | Vulkan physical-device index to open (any device type) |
+| `ESHKOL_VULKAN_LIBRARY` | `libvulkan.so.1` | Path of the Vulkan loader to open |
 | `ESHKOL_FORCE_CPU=1` | -- | Disable GPU |
 | `ESHKOL_GPU_PRECISION` | "exact" | "exact"/"high"/"fast" (`blas_backend.cpp`) |
 

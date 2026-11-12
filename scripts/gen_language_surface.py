@@ -267,9 +267,18 @@ def extract_special_forms():
         "delay-force": "ESHKOL_CALL_OP",
         "make-promise": "ESHKOL_CALL_OP",
         "force": "ESHKOL_CALL_OP",
+        "certify": "ESHKOL_CALL_OP",                  # (certify (f ...)) -> certify-call (ADR-0047)
         "let-match": "ESHKOL_MATCH_OP",
         "define-values": "ESHKOL_DEFINE_OP",
         "named-let": "ESHKOL_LET_OP",                 # (let name (bindings) body)
+        "hott": "ESHKOL_HOTT_OP",                     # HoTT kernel declarations (ADR-0043)
+        "hott-eval": "ESHKOL_HOTT_OP",                # HoTT kernel normal form (ADR-0043)
+        # Algebraic effects (ADR-0045): lowered by effect_syntax_core.h before
+        # the keyword grammar runs, on both engines.
+        "define-effect": "ESHKOL_SEQUENCE_OP",        # (begin (define ...) ...)
+        "handle": "ESHKOL_CALL_OP",                   # (%effect-handle ...)
+        "handle-shallow": "ESHKOL_CALL_OP",
+        "declare-effects": "ESHKOL_CALL_OP",          # (%effect-declare ...)
     }
     for k, v in extra.items():
         forms.setdefault(k, v)
@@ -892,6 +901,11 @@ def categorize(name):
     # below: descriptor plumbing over a kernel multiplexer.
     if n == "make-event-loop" or n.startswith("event-loop-"):
         return "ffi_system"
+    # Stackful coroutines: control transfer between stacks, the substrate of
+    # core.fibers — the same family as call/cc and dynamic-wind.
+    if (n in {"make-coroutine", "current-coroutine"}
+            or n.startswith("coroutine-") or n == "coroutine?"):
+        return "control_flow"
     # gpu compute
     if n.startswith("gpu-"):
         return "tensor_ad"
@@ -946,12 +960,13 @@ def categorize(name):
              "dynamic-wind", "values", "call-with-values", "let-values",
              "let*-values", "delay", "delay-force", "force", "make-promise",
              "match", "let-match", "when", "not", "with-exception-handler",
-             "raise-continuable"}:
+             "raise-continuable", "handle", "handle-shallow"}:
         return "control_flow"
     # binding forms
     if n in {"define", "lambda", "let", "let*", "letrec", "letrec*", "set!",
              "named-let", "define-values", "define-record-type", "case-lambda",
-             "parameterize", "make-parameter", "define-type"}:
+             "parameterize", "make-parameter", "define-type",
+             "define-effect", "declare-effects"}:
         return "binding_form"
     # module / library
     if n in {"import", "require", "provide", "load", "include", "include-ci",
@@ -973,7 +988,7 @@ def categorize(name):
             "make-tensor", "reshape", "transpose", "flatten", "matmul", "conv2d",
             "softmax", "relu", "sigmoid", "dropout", "zeros", "ones", "arange",
             "linspace", "eye", "matrix", "gradient", "jacobian", "hessian",
-            "derivative", "derivative-n", "taylor", "divergence", "curl",
+            "derivative", "derivative-n", "taylor", "divergence", "curl", "stop-gradient",
             "laplacian", "directional-derivative", "diff", "differentiate", "D",
             "make-dual", "dual?", "mse-loss", "cross-entropy-loss", "batch-norm",
             "layer-norm", "scaled-dot-attention", "tensor-matmul", "tensor-scale",

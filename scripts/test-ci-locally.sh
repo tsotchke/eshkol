@@ -92,10 +92,7 @@ RUN apt-get install -y \
     file \
     pkg-config \
     libssl-dev \
-    libncurses-dev \
-    libpng-dev \
-    libjpeg-dev \
-    libwebp-dev
+    libncurses-dev
 
 WORKDIR /app
 COPY . .
@@ -175,7 +172,6 @@ RUN apt-get install -y \\
     llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev \\
     libreadline-dev pkg-config \\
     libssl-dev libncurses-dev \\
-    libpng-dev libjpeg-dev libwebp-dev \\
     git python3
 
 WORKDIR /app
@@ -348,7 +344,7 @@ RUN apt-get update && apt-get install -y wget gnupg software-properties-common \
     && apt-get update
 
 RUN apt-get install -y \\
-    cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev g++ file pkg-config libssl-dev libncurses-dev libpng-dev libjpeg-dev libwebp-dev git python3
+    cmake ninja-build llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev libreadline-dev g++ file pkg-config libssl-dev libncurses-dev git python3
 
 WORKDIR /app
 COPY . .

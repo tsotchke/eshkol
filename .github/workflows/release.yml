@@ -175,7 +175,6 @@ jobs:
             libreadline-dev pkg-config patchelf
             libssl-dev libncurses-dev
             libpcre2-dev libsqlite3-dev
-            libpng-dev libjpeg-dev libwebp-dev
             git python3
           )
           if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then

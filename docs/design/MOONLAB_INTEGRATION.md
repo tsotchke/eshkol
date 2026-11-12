@@ -10,6 +10,15 @@ Ha shift from the earlier PES). Differentiable quantum-chemistry examples and an
 arbitrary-order-AD H2 vibrational-frequency example ship with the release. The RFC
 text below is retained for the design rationale.
 
+Since ADR-0048 (v2.0-starlight), `core.quantum.moonlab` runs `core.quantum`
+circuits on Moonlab: quantum regions can use Moonlab as their backend
+(circuits lowered to {H X Y Z CNOT RX RY RZ}), and a circuit-expectation
+program (a parametric circuit and a Pauli-sum observable) shares the handle
+space of the Stage S2 Hamiltonians, so `vqe-energy-primitive` evaluates it
+with `moonlab_diff_forward` and differentiates it inside `gradient` through
+`moonlab_diff_backward_pauli_sum` (the same custom-VJP node, exact, no finite
+differences). QAOA uses it through `qaoa-moonlab-program`.
+
 Target Eshkol version: v1.3.5-evolve (`inc/eshkol/eshkol.h`)
 Scope: wire the Moonlab quantum simulator into Eshkol as quantum-computing
 builtins, and replace Eshkol's placeholder `quantum-random` with a real,

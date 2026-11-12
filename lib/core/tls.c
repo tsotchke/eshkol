@@ -5,6 +5,7 @@
  * handles. No socket descriptors cross this boundary. */
 #include "eshkol/core/tls.h"
 #include "eshkol/core/net.h"
+#include "eshkol/core/resource_lease.h"
 #include <limits.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -68,6 +69,8 @@ typedef struct TlsSession {
     SSL *ssl;
     TlsContext *context;
     int64_t net_handle;
+    /* Exclusive borrow of the TCP stream, held for the session's lifetime. */
+    eshkol_resource_lease_t lease;
     int refs;
     int closed;
     int net_closed;
@@ -91,12 +94,8 @@ static pthread_once_t bio_once = PTHREAD_ONCE_INIT;
 static BIO_METHOD *net_bio_method;
 static int bio_method_ready;
 
-static int64_t now_ms(void) {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return -1;
-    if (ts.tv_sec > INT64_MAX / 1000) return -1;
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
+/* The same monotonic clock as every other leased resource deadline. */
+static int64_t now_ms(void) { return eshkol_resource_now_ms(); }
 static int64_t deadline_after(int32_t timeout_ms) {
     int64_t now = now_ms();
     if (now < 0 || timeout_ms < 0 || now > INT64_MAX - timeout_ms) return -1;
@@ -191,9 +190,9 @@ static int bio_read(BIO *bio, char *buffer, int length) {
     if (!data || !data->session || !buffer || length <= 0) return 0;
     TlsSession *session = data->session;
     BIO_clear_retry_flags(bio);
-    int32_t timeout = remaining_ms(session->deadline_ms);
-    if (timeout < 0) { session->io_error = -1; return -1; }
-    int32_t result = eshkol_net_read(session->net_handle, buffer, length, timeout);
+    if (remaining_ms(session->deadline_ms) < 0) { session->io_error = -1; return -1; }
+    int32_t result = eshkol_net_leased_io(&session->lease, buffer, length,
+                                          session->deadline_ms, 0);
     if (result >= 0) return result;
     session->io_error = result;
     if (result == -2) BIO_set_retry_read(bio);
@@ -204,9 +203,9 @@ static int bio_write(BIO *bio, const char *buffer, int length) {
     if (!data || !data->session || !buffer || length <= 0) return 0;
     TlsSession *session = data->session;
     BIO_clear_retry_flags(bio);
-    int32_t timeout = remaining_ms(session->deadline_ms);
-    if (timeout < 0) { session->io_error = -1; return -1; }
-    int32_t result = eshkol_net_write(session->net_handle, buffer, length, timeout);
+    if (remaining_ms(session->deadline_ms) < 0) { session->io_error = -1; return -1; }
+    int32_t result = eshkol_net_leased_io(&session->lease, (void *)buffer, length,
+                                          session->deadline_ms, 1);
     if (result > 0) return result;
     if (result == 0) { session->io_error = -1; return -1; }
     session->io_error = result;
@@ -289,36 +288,58 @@ static int handshake(TlsSession *session, int server) {
         if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE) {
             if (ssl_error == SSL_ERROR_SSL || ssl_error == SSL_ERROR_SYSCALL)
                 session->fatal_tls_error = 1;
-            return session->io_error == -2 ? -2 : -1;
+            if (session->io_error == ESHKOL_IO_TIMEOUT || session->io_error == ESHKOL_IO_CANCELLED ||
+                session->io_error == ESHKOL_IO_RESET)
+                return session->io_error;
+            if (!server) {
+                long verify = SSL_get_verify_result(session->ssl);
+                if (verify == X509_V_ERR_HOSTNAME_MISMATCH ||
+                    verify == X509_V_ERR_IP_ADDRESS_MISMATCH ||
+                    verify == X509_V_ERR_EMAIL_MISMATCH)
+                    return ESHKOL_IO_IDENTITY;
+                if (verify != X509_V_OK) return ESHKOL_IO_UNTRUSTED;
+            }
+            return -1;
         }
         int32_t left = remaining_ms(session->deadline_ms);
         if (left < 0) return -1;
         if (!left) return -2;
     }
 }
+/* Ownership of the TCP stream moves to the session once it is borrowed; a
+ * later failure closes it. A borrow failure leaves it with the caller. */
+static void session_drop_net(TlsSession *session) {
+    (void)eshkol_net_close(session->net_handle);
+    eshkol_resource_release(&session->lease);
+}
 static TlsSession *session_new(TlsContext *context, int64_t net_handle,
                                const char *server_name, int64_t deadline,
                                int server, int32_t *error) {
     if (error) *error = -1;
     TlsSession *session = (TlsSession *)calloc(1, sizeof(*session));
-    if (!session) { eshkol_net_close(net_handle); context_release(context); return NULL; }
+    if (!session) { context_release(context); return NULL; }
+    int32_t borrowed = eshkol_net_borrow_stream(net_handle, &session->lease);
+    if (borrowed) {
+        if (error) *error = borrowed;
+        context_release(context); free(session); return NULL;
+    }
     session->context = context;
     session->net_handle = net_handle;
     session->deadline_ms = deadline;
     if (deadline < 0 || pthread_mutex_init(&session->operation_lock, NULL)) {
-        eshkol_net_close(net_handle); context_release(context); free(session); return NULL;
+        session_drop_net(session); context_release(context); free(session); return NULL;
     }
     session->ssl = SSL_new(context->ctx);
     if (!session->ssl || (!server && !set_peer_identity(session->ssl, server_name)) ||
         !tls_attach_bios(session)) {
-        SSL_free(session->ssl); eshkol_net_close(net_handle); context_release(context);
+        SSL_free(session->ssl); session_drop_net(session); context_release(context);
         pthread_mutex_destroy(&session->operation_lock); free(session); return NULL;
     }
     int result = handshake(session, server);
     session->deadline_ms = -1;
     if (result) {
         if (error) *error = result;
-        SSL_free(session->ssl); eshkol_net_close(net_handle); context_release(context);
+        SSL_free(session->ssl); session_drop_net(session); context_release(context);
         pthread_mutex_destroy(&session->operation_lock); free(session); return NULL;
     }
     if (error) *error = 0;
@@ -336,7 +357,7 @@ static int64_t register_session(TlsSession *session) {
     }
     pthread_mutex_unlock(&registry_lock);
     if (result < 0) {
-        SSL_free(session->ssl); eshkol_net_close(session->net_handle);
+        SSL_free(session->ssl); session_drop_net(session);
         context_release(session->context); pthread_mutex_destroy(&session->operation_lock);
         free(session);
     }
@@ -353,17 +374,17 @@ static TlsSession *session_acquire(int64_t id) {
     return found;
 }
 static void session_destroy(TlsSession *session) {
-    if (!session->net_closed) {
-        if (!session->failed && !session->fatal_tls_error) {
-            int64_t deadline = deadline_after(10);
-            if (deadline >= 0) {
-                session->deadline_ms = deadline;
-                ERR_clear_error();
-                (void)SSL_shutdown(session->ssl);
-            }
+    if (!session->net_closed && !session->failed && !session->fatal_tls_error) {
+        int64_t deadline = deadline_after(10);
+        if (deadline >= 0) {
+            session->deadline_ms = deadline;
+            ERR_clear_error();
+            (void)SSL_shutdown(session->ssl);
         }
-        eshkol_net_close(session->net_handle);
     }
+    /* Closing a handle this session borrows schedules the close; releasing
+     * the borrow performs it, exactly once. */
+    session_drop_net(session);
     SSL_free(session->ssl);
     context_release(session->context);
     pthread_mutex_destroy(&session->operation_lock);
@@ -408,7 +429,9 @@ static int32_t ssl_error_code(TlsSession *session, int ssl_error, int writing) {
     if (ssl_error == SSL_ERROR_SSL || ssl_error == SSL_ERROR_SYSCALL)
         session->fatal_tls_error = 1;
     if (ssl_error == SSL_ERROR_ZERO_RETURN) return writing ? -1 : 0;
-    if (session->io_error == -2) return -2;
+    if (session->io_error == ESHKOL_IO_TIMEOUT || session->io_error == ESHKOL_IO_CANCELLED ||
+        session->io_error == ESHKOL_IO_RESET)
+        return session->io_error;
     return -1;
 }
 /* The API has no password argument. Never let PEM loading fall back to an
@@ -420,11 +443,16 @@ static int refuse_pem_password(char *buffer, int size, int writing, void *userda
 
 int32_t eshkol_tls_available(void) { return 1; }
 int64_t eshkol_tls_client_context(const char *ca_file) {
-    if (!valid_tls_path(ca_file, 1)) return -4;
+    return eshkol_tls_client_context_options(ca_file, 0);
+}
+int64_t eshkol_tls_client_context_options(const char *ca_file, int32_t flags) {
+    if (!valid_tls_path(ca_file, 1) || (flags & ~ESHKOL_TLS_INSECURE_NO_VERIFY)) return -4;
     SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
     if (!ctx) return -1;
     int ok = SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) == 1;
-    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+    /* Verification is on unless the caller explicitly asks otherwise. */
+    SSL_CTX_set_verify(ctx, (flags & ESHKOL_TLS_INSECURE_NO_VERIFY) ? SSL_VERIFY_NONE
+                                                                     : SSL_VERIFY_PEER, NULL);
     if (ok && ca_file && ca_file[0]) {
         ok = SSL_CTX_load_verify_locations(ctx, ca_file, NULL) == 1;
     } else if (ok) {
@@ -527,8 +555,37 @@ int64_t eshkol_tls_accept(int64_t id, int32_t timeout_ms) {
     if (net_handle < 0) { context_release(context); return net_handle; }
     int32_t error = -1;
     TlsSession *session = session_new(context, net_handle, NULL, deadline, 1, &error);
+    if (!session) {
+        if (error == ESHKOL_IO_INVALID || error == ESHKOL_IO_BUSY) (void)eshkol_net_close(net_handle);
+        return error;
+    }
+    return register_session(session);
+}
+/* Handshake on a TCP stream the caller already owns. The stream moves into
+ * the session (and is closed if the handshake fails) unless it cannot be
+ * borrowed, in which case it stays with the caller. */
+static int64_t tls_start(int64_t id, int64_t net_handle, const char *server_name,
+                         int32_t timeout_ms, int server) {
+    if (!valid_tls_id(id) || !valid_tls_id(net_handle) || timeout_ms < 0 ||
+        (!server && !valid_tls_identity(server_name))) return -4;
+    int64_t deadline = deadline_after(timeout_ms);
+    if (deadline < 0) return -1;
+    TlsContext *context = context_acquire(id);
+    if (!context) return -4;
+    if (context->role != (server ? TLS_ROLE_SERVER : TLS_ROLE_CLIENT)) {
+        context_release(context); return -4;
+    }
+    int32_t error = -1;
+    TlsSession *session = session_new(context, net_handle, server_name, deadline, server, &error);
     if (!session) return error;
     return register_session(session);
+}
+int64_t eshkol_tls_client_start(int64_t context, int64_t net_handle, const char *server_name,
+                                int32_t timeout_ms) {
+    return tls_start(context, net_handle, server_name, timeout_ms, 0);
+}
+int64_t eshkol_tls_server_start(int64_t context, int64_t net_handle, int32_t timeout_ms) {
+    return tls_start(context, net_handle, NULL, timeout_ms, 1);
 }
 int64_t eshkol_tls_connect(int64_t id, const char *address, int32_t port,
                            const char *server_name, int32_t timeout_ms) {
@@ -545,7 +602,10 @@ int64_t eshkol_tls_connect(int64_t id, const char *address, int32_t port,
     if (net_handle < 0) { context_release(context); return net_handle; }
     int32_t error = -1;
     TlsSession *session = session_new(context, net_handle, server_name, deadline, 0, &error);
-    if (!session) return error;
+    if (!session) {
+        if (error == ESHKOL_IO_INVALID || error == ESHKOL_IO_BUSY) (void)eshkol_net_close(net_handle);
+        return error;
+    }
     return register_session(session);
 }
 static int32_t transfer(int64_t id, void *buffer, int32_t length,
@@ -611,7 +671,8 @@ static int32_t transfer(int64_t id, void *buffer, int32_t length,
     }
     if (!writing && result == 0) session->read_eof = 1;
     if (writing && result < 0) session->failed = 1;
-    if (!writing && result == -1) session->failed = 1;
+    if (!writing && (result == -1 || result == ESHKOL_IO_CANCELLED || result == ESHKOL_IO_RESET))
+        session->failed = 1;
     session->deadline_ms = -1;
     pthread_mutex_unlock(&session->operation_lock);
     session_release(session);
@@ -622,6 +683,46 @@ int32_t eshkol_tls_read(int64_t id, void *buffer, int32_t capacity, int32_t time
 }
 int32_t eshkol_tls_write(int64_t id, const void *buffer, int32_t length, int32_t timeout_ms) {
     return transfer(id, (void *)buffer, length, timeout_ms, 1);
+}
+int32_t eshkol_tls_read_bytes(int64_t id, void *bytevector, int64_t start, int64_t count,
+                              int32_t timeout_ms) {
+    uint8_t *bytes;
+    if (count <= 0 || count > TLS_MAX_BYTES ||
+        eshkol_resource_bytes(bytevector, start, count, &bytes)) return -4;
+    return transfer(id, bytes, (int32_t)count, timeout_ms, 0);
+}
+int32_t eshkol_tls_write_bytes(int64_t id, const void *bytevector, int64_t start, int64_t count,
+                               int32_t timeout_ms) {
+    uint8_t *bytes;
+    if (count < 0 || count > TLS_MAX_BYTES ||
+        eshkol_resource_bytes(bytevector, start, count, &bytes)) return -4;
+    return transfer(id, bytes, (int32_t)count, timeout_ms, 1);
+}
+int64_t eshkol_tls_write_all_bytes(int64_t id, const void *bytevector, int64_t start,
+                                   int64_t count, int32_t timeout_ms) {
+    uint8_t *bytes;
+    if (count < 0 || timeout_ms < 0 || eshkol_resource_bytes(bytevector, start, count, &bytes))
+        return -4;
+    int64_t deadline = deadline_after(timeout_ms);
+    if (deadline < 0) return -1;
+    int64_t done = 0;
+    do {
+        int32_t left = remaining_ms(deadline);
+        if (left < 0) return -1;
+        int64_t chunk = count - done > TLS_MAX_BYTES ? TLS_MAX_BYTES : count - done;
+        int32_t sent = transfer(id, bytes + done, (int32_t)chunk, left, 1);
+        if (sent < 0) return sent;
+        done += sent;
+    } while (done < count);
+    return done;
+}
+int32_t eshkol_tls_cancel(int64_t id) {
+    if (!valid_tls_id(id)) return -4;
+    TlsSession *session = session_acquire(id);
+    if (!session) return -4;
+    int32_t result = eshkol_net_cancel(session->net_handle) == 0 ? 0 : -4;
+    session_release(session);
+    return result;
 }
 int32_t eshkol_tls_session_close(int64_t id) {
     if (!valid_tls_id(id)) return -4;
@@ -663,10 +764,39 @@ int32_t eshkol_tls_listener_close(int64_t id) {
     return 0;
 }
 #else
+/* TLS is not linked on this build or platform (Windows Schannel support is
+ * Planned for v1.4.1): every operation refuses with -3, never plaintext. */
 int32_t eshkol_tls_available(void) { return 0; }
 int64_t eshkol_tls_client_context(const char *ca_file) {
     return valid_tls_path(ca_file, 1) ? -3 : -4;
 }
+int64_t eshkol_tls_client_context_options(const char *ca_file, int32_t flags) {
+    return valid_tls_path(ca_file, 1) && !(flags & ~ESHKOL_TLS_INSECURE_NO_VERIFY) ? -3 : -4;
+}
+int64_t eshkol_tls_client_start(int64_t context, int64_t net_handle, const char *server_name,
+                                int32_t timeout_ms) {
+    return valid_tls_id(context) && valid_tls_id(net_handle) && valid_tls_identity(server_name) &&
+        timeout_ms >= 0 ? -3 : -4;
+}
+int64_t eshkol_tls_server_start(int64_t context, int64_t net_handle, int32_t timeout_ms) {
+    return valid_tls_id(context) && valid_tls_id(net_handle) && timeout_ms >= 0 ? -3 : -4;
+}
+int32_t eshkol_tls_read_bytes(int64_t session, void *bytevector, int64_t start, int64_t count,
+                              int32_t timeout_ms) {
+    (void)bytevector; (void)start; (void)count;
+    return valid_tls_id(session) && timeout_ms >= 0 ? -3 : -4;
+}
+int32_t eshkol_tls_write_bytes(int64_t session, const void *bytevector, int64_t start,
+                               int64_t count, int32_t timeout_ms) {
+    (void)bytevector; (void)start; (void)count;
+    return valid_tls_id(session) && timeout_ms >= 0 ? -3 : -4;
+}
+int64_t eshkol_tls_write_all_bytes(int64_t session, const void *bytevector, int64_t start,
+                                   int64_t count, int32_t timeout_ms) {
+    (void)bytevector; (void)start; (void)count;
+    return valid_tls_id(session) && timeout_ms >= 0 ? -3 : -4;
+}
+int32_t eshkol_tls_cancel(int64_t session) { return valid_tls_id(session) ? -3 : -4; }
 int64_t eshkol_tls_server_context(const char *certificate_file, const char *private_key_file) {
     return valid_tls_path(certificate_file, 0) && valid_tls_path(private_key_file, 0)
         ? -3 : -4;

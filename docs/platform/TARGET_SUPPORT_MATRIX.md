@@ -63,20 +63,34 @@ Current validation:
 ### AArch64 QEMU virt
 
 - intended role: second kernel-class reference target
-- initial status: Tier 3
-- target state by `v1.8`: Tier 2 candidate
+- status at `v1.8.0`: Tier 2 (`aarch64-unknown-none`)
+- validation: `embedded_targets_objects` (compile, link, ELF inspection) and
+  `embedded_targets_qemu` (boot on `-M virt -cpu cortex-a53`, console line,
+  exit status) — see [EMBEDDED_TARGETS.md](EMBEDDED_TARGETS.md)
 
 ### RISC-V QEMU virt
 
 - intended role: third kernel-class or embedded-adjacent reference target
-- initial status: Tier 3
-- target state by `v1.8`: Tier 2 candidate
+- status at `v1.8.0`: Tier 2 (`riscv32imac-unknown-none-elf` ilp32,
+  `riscv64gc-unknown-none-elf` lp64d)
+- validation: `embedded_targets_objects` and `embedded_targets_qemu` on
+  `-M virt -bios none` (32- and 64-bit)
 
 ## MCU-class targets
 
 Recommended first family:
 
 - ARM Cortex-M or RISC-V MCU
+
+Status at `v1.8.0`:
+
+- ARM Cortex-M4 (`thumbv7em-none-eabi`, `thumbv7em-none-eabihf`): Tier 2,
+  validated by `embedded_targets_objects` (ARMv7E-M build attributes,
+  soft/hard float ABI flags) and `embedded_targets_qemu` on the MPS2+ AN386
+  model
+- RV32IMAC (`riscv32imac-unknown-none-elf`): Tier 2, same tests on QEMU virt
+- the freestanding runtime subset and reference boards live in
+  `lib/platform/embedded`; see [EMBEDDED_TARGETS.md](EMBEDDED_TARGETS.md)
 
 Initial status:
 

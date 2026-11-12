@@ -1,3 +1,5 @@
 (require core.net)
 (define make tcp-listen)
 (define deferred (lambda (host port) (make host port)))
+;; The closure is checked where it is called: the listener it returns is dropped.
+(deferred "127.0.0.1" 0)

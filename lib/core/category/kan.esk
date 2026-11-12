@@ -1,0 +1,283 @@
+;;; core.category.kan -- left and right Kan extensions of Set-valued functors
+;;; along functors of finite categories, by the pointwise (comma-category)
+;;; formula and by the (co)end formula, with the comparison isomorphisms,
+;;; the units and counits of Lan -| F^* -| Ran and their four triangle
+;;; identities, and descent as a right Kan extension on thin sites.
+;;;
+;;; Usage: (require core.category.kan)   or   (require core.category)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), X.3 (Lan_F G(d) = colim_{(F | d)} G P and Ran_F G(d) =
+;;; lim_{(d | F)} G Q, Theorem X.3.1), X.4 (the coend formula
+;;; Lan_F G = int^c D(Fc, -) x G(c)); E. Riehl, "Category Theory in Context"
+;;; (2016), 6.1-6.2; G. M. Kelly, "Basic Concepts of Enriched Category
+;;; Theory" (1982, TAC Reprints 10, 2005), 4.1-4.2; S. Mac Lane, I. Moerdijk,
+;;; "Sheaves in Geometry and Logic" (1992), III.4 (matching families); nLab:
+;;; "Kan extension", "pointwise Kan extension", "end", "descent".
+;;;
+;;; Representation: the Set-valued functors, transformations, limits and
+;;; colimits of core.category.set. An element of Lan_F G(d) is the class
+;;; representative (c u x), u : F c -> d, x in G(c); an element of
+;;; Ran_F G(d) is the list of the elements x_(c,u) of G(c) over the objects
+;;; (0 c u), u : d -> F c, of (d | F).
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.category.finite)
+(require core.category.functor)
+(require core.category.set)
+
+(provide set-lan set-ran set-lan-coend set-ran-end set-lan-comparison set-ran-comparison
+         set-lan-unit set-lan-counit set-lan-map set-ran-unit set-ran-counit set-ran-map set-restrict-map
+         set-lan-adjunction-violations set-ran-adjunction-violations
+         presheaf-ran-along-inclusion)
+
+(define (ck-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ck-objects C) (ck-range (category-object-count C)))
+(define (ck-arrows C) (ck-range (category-arrow-count C)))
+(define (ck-position item items)
+  (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+(define (ck-label-table K)
+  (let ((t (make-hash-table)))
+    (for-each (lambda (o) (hash-table-set! t (category-object-label K o) o)) (ck-objects K))
+    t))
+(define (ck-diag C c) (+ (* c (category-object-count C)) c))
+(define (ck-functions m k)
+  (if (= m 0) (list '())
+      (let ((rest (ck-functions (- m 1) k))) (apply append (map (lambda (v) (map (lambda (r) (cons v r)) rest)) (ck-range k))))))
+
+;; ---------------------------------------------------------------------------
+;; Kan extensions along F : C -> D, pointwise (Mac Lane X.3)
+;; ---------------------------------------------------------------------------
+;; per d: (K labels co) with K = (F | d), co the colimit of G P over K
+(define (ck-lan-data F G)
+  (let ((D (functor-target F)))
+    (list->vector
+     (map (lambda (d)
+            (let* ((K (comma-category F (object-functor D d))) (GP (set-functor-restrict G (comma-domain-projection F K))))
+              (list K (ck-label-table K) (set-colimit GP))))
+          (ck-objects D)))))
+;; Lan_F G: elements of Lan(d) are class representatives (c u x), u : F c -> d
+(define (ck-lan-from-data F G data)
+  (let ((D (functor-target F)))
+    (make-set-functor-from-indices
+     D
+     (map (lambda (d) (let ((K (car (vector-ref data d))) (co (caddr (vector-ref data d))))
+                        (map (lambda (r) (let ((lab (category-object-label K (car r))))
+                                           (list (car lab) (caddr lab) (list-ref (set-functor-elements G (car lab)) (cdr r)))))
+                             (set-colimit-representatives co))))
+          (ck-objects D))
+     (map (lambda (v)
+            (let* ((d (arrow-source D v)) (K (car (vector-ref data d))) (co (caddr (vector-ref data d)))
+                   (tab2 (cadr (vector-ref data (arrow-target D v)))) (co2 (caddr (vector-ref data (arrow-target D v)))))
+              (list->vector (map (lambda (r) (let ((lab (category-object-label K (car r))))
+                                               (set-colimit-class co2 (hash-table-ref/default tab2 (list (car lab) 0 (category-compose D v (caddr lab))) #f) (cdr r))))
+                                 (set-colimit-representatives co)))))
+          (ck-arrows D)))))
+(define (set-lan F G) (ck-lan-from-data F G (ck-lan-data F G)))
+;; per d: (K labels fams) with K = (d | F), fams the limit of G Q over K
+(define (ck-ran-data F G)
+  (let ((D (functor-target F)))
+    (list->vector
+     (map (lambda (d)
+            (let* ((K (comma-category (object-functor D d) F)) (GQ (set-functor-restrict G (comma-codomain-projection F K))))
+              (list K (ck-label-table K) (set-limit GQ))))
+          (ck-objects D)))))
+;; Ran_F G: elements of Ran(d) are families, listed as the elements x_(c,u) of
+;; G(c) in the order of the objects (0 c u), u : d -> F c, of (d | F)
+(define (ck-ran-from-data F G data)
+  (let ((D (functor-target F)))
+    (make-set-functor-from-indices
+     D
+     (map (lambda (d) (let ((K (car (vector-ref data d))))
+                        (map (lambda (fam) (map (lambda (k) (list-ref (set-functor-elements G (cadr (category-object-label K k))) (vector-ref fam k)))
+                                                (ck-objects K)))
+                             (caddr (vector-ref data d)))))
+          (ck-objects D))
+     (map (lambda (v)
+            (let* ((d (arrow-source D v)) (d2 (arrow-target D v)) (tab (cadr (vector-ref data d)))
+                   (K2 (car (vector-ref data d2))) (fams2 (caddr (vector-ref data d2))))
+              (list->vector
+               (map (lambda (fam)
+                      (ck-position (list->vector (map (lambda (k2) (let ((lab (category-object-label K2 k2)))
+                                                                     (vector-ref fam (hash-table-ref/default tab (list 0 (cadr lab) (category-compose D (caddr lab) v)) #f))))
+                                                      (ck-objects K2)))
+                                   fams2))
+                    (caddr (vector-ref data d))))))
+          (ck-arrows D)))))
+(define (set-ran F G) (ck-ran-from-data F G (ck-ran-data F G)))
+
+;; F^* on transformations: (F^* psi)_c = psi_{F c}
+(define (set-restrict-map F psi) (list->vector (map (lambda (c) (vector-ref psi (functor-object F c))) (ck-objects (functor-source F)))))
+;; unit G => F^* Lan_F G: x in G(c) |-> the class of ((c 0 id_{Fc}), x)
+(define (set-lan-unit F G)
+  (let ((data (ck-lan-data F G)) (D (functor-target F)))
+    (list->vector (map (lambda (c) (let* ((dd (vector-ref data (functor-object F c)))
+                                          (k (hash-table-ref/default (cadr dd) (list c 0 (category-identity D (functor-object F c))) #f)))
+                                     (list->vector (map (lambda (i) (set-colimit-class (caddr dd) k i)) (ck-range (set-functor-element-count G c))))))
+                       (ck-objects (functor-source F))))))
+;; counit Lan_F F^* Y => Y: the class of ((c 0 u), y) |-> Y(u)(y)
+(define (set-lan-counit F Y)
+  (let* ((FY (set-functor-restrict Y F)) (data (ck-lan-data F FY)))
+    (list->vector (map (lambda (d) (let* ((dd (vector-ref data d)) (K (car dd)))
+                                     (list->vector (map (lambda (r) (set-functor-apply-index Y (caddr (category-object-label K (car r))) (cdr r)))
+                                                        (set-colimit-representatives (caddr dd))))))
+                       (ck-objects (functor-target F))))))
+;; Lan_F(phi) : Lan_F G => Lan_F G' for phi : G => G'
+(define (set-lan-map F phi G G2)
+  (let ((data (ck-lan-data F G)) (data2 (ck-lan-data F G2)))
+    (list->vector (map (lambda (d) (let ((K (car (vector-ref data d))) (co2 (caddr (vector-ref data2 d))))
+                                     (list->vector (map (lambda (r) (set-colimit-class co2 (car r) (vector-ref (vector-ref phi (car (category-object-label K (car r)))) (cdr r))))
+                                                        (set-colimit-representatives (caddr (vector-ref data d)))))))
+                       (ck-objects (functor-target F))))))
+;; unit Y => Ran_F F^* Y: y |-> (Y(u)(y)) over (0 c u) in (d | F)
+(define (set-ran-unit F Y)
+  (let* ((FY (set-functor-restrict Y F)) (data (ck-ran-data F FY)))
+    (list->vector (map (lambda (d) (let* ((dd (vector-ref data d)) (K (car dd)))
+                                     (list->vector (map (lambda (i) (ck-position (list->vector (map (lambda (k) (set-functor-apply-index Y (caddr (category-object-label K k)) i)) (ck-objects K)))
+                                                                                 (caddr dd)))
+                                                        (ck-range (set-functor-element-count Y d))))))
+                       (ck-objects (functor-target F))))))
+;; counit F^* Ran_F G => G: a family on (F c | F) |-> its value at (0 c id)
+(define (set-ran-counit F G)
+  (let ((data (ck-ran-data F G)) (D (functor-target F)))
+    (list->vector (map (lambda (c) (let* ((dd (vector-ref data (functor-object F c)))
+                                          (k (hash-table-ref/default (cadr dd) (list 0 c (category-identity D (functor-object F c))) #f)))
+                                     (list->vector (map (lambda (fam) (vector-ref fam k)) (caddr dd)))))
+                       (ck-objects (functor-source F))))))
+;; Ran_F(phi) : Ran_F G => Ran_F G'
+(define (set-ran-map F phi G G2)
+  (let ((data (ck-ran-data F G)) (data2 (ck-ran-data F G2)))
+    (list->vector (map (lambda (d) (let ((K (car (vector-ref data d))))
+                                     (list->vector (map (lambda (fam) (ck-position (list->vector (map (lambda (k) (vector-ref (vector-ref phi (cadr (category-object-label K k))) (vector-ref fam k))) (ck-objects K)))
+                                                                                   (caddr (vector-ref data2 d))))
+                                                        (caddr (vector-ref data d))))))
+                       (ck-objects (functor-target F))))))
+;; Lan -| F^*: (unit-natural) (counit-natural) (triangle-lan d) when
+;; eps_{Lan G} o Lan(eta_G) /= id, (triangle-restrict c) when
+;; F^*(eps_Y) o eta_{F^* Y} /= id
+(define (set-lan-adjunction-violations F G Y)
+  (let* ((L (set-lan F G)) (FY (set-functor-restrict Y F)) (out '())
+         (eta (set-lan-unit F G)) (epsY (set-lan-counit F Y)))
+    (if (not (set-natural? G (set-functor-restrict L F) eta)) (set! out (cons (list 'unit-natural) out)))
+    (if (not (set-natural? (set-lan F FY) Y epsY)) (set! out (cons (list 'counit-natural) out)))
+    (let ((t1 (set-transformation-compose (set-lan-counit F L) (set-lan-map F eta G (set-functor-restrict L F)))))
+      (for-each (lambda (d) (if (not (set-transformation-identity? (vector (vector-ref t1 d)))) (set! out (cons (list 'triangle-lan d) out))))
+                (ck-objects (functor-target F))))
+    (let ((t2 (set-transformation-compose (set-restrict-map F epsY) (set-lan-unit F FY))))
+      (for-each (lambda (c) (if (not (set-transformation-identity? (vector (vector-ref t2 c)))) (set! out (cons (list 'triangle-restrict c) out))))
+                (ck-objects (functor-source F))))
+    (reverse out)))
+;; F^* -| Ran: (triangle-restrict c) when eps_{F^* Y} o F^*(eta_Y) /= id,
+;; (triangle-ran d) when Ran(eps_G) o eta_{Ran G} /= id
+(define (set-ran-adjunction-violations F Y G)
+  (let* ((R (set-ran F G)) (FY (set-functor-restrict Y F)) (out '())
+         (etaY (set-ran-unit F Y)) (epsG (set-ran-counit F G)))
+    (if (not (set-natural? Y (set-ran F FY) etaY)) (set! out (cons (list 'unit-natural) out)))
+    (if (not (set-natural? (set-functor-restrict R F) G epsG)) (set! out (cons (list 'counit-natural) out)))
+    (let ((t1 (set-transformation-compose (set-ran-counit F FY) (set-restrict-map F etaY))))
+      (for-each (lambda (c) (if (not (set-transformation-identity? (vector (vector-ref t1 c)))) (set! out (cons (list 'triangle-restrict c) out))))
+                (ck-objects (functor-source F))))
+    (let ((t2 (set-transformation-compose (set-ran-map F epsG (set-functor-restrict R F) G) (set-ran-unit F R))))
+      (for-each (lambda (d) (if (not (set-transformation-identity? (vector (vector-ref t2 d)))) (set! out (cons (list 'triangle-ran d) out))))
+                (ck-objects (functor-target F))))
+    (reverse out)))
+
+;; ---------------------------------------------------------------------------
+;; Kan extensions by the (co)end formulas (Mac Lane X.4, Kelly 4.1-4.2)
+;; ---------------------------------------------------------------------------
+;; Lan_F G(d) = int^c D(F c, d) x G(c): elements of H_d(c', c) are (u x)
+(define (ck-lan-coend-at F G P d)
+  (let* ((C (functor-source F)) (D (functor-target F)) (n (category-object-count C))
+         (H (make-set-functor P
+                              (map (lambda (o) (apply append (map (lambda (u) (map (lambda (x) (list u x)) (set-functor-elements G (remainder o n))))
+                                                                  (category-hom D (functor-object F (quotient o n)) d))))
+                                   (ck-objects P))
+                              (lambda (k ux) (let ((f (car (arrow-name P k))) (g (cadr (arrow-name P k))))
+                                               (list (category-compose D (car ux) (functor-arrow F f)) (set-functor-apply G g (cadr ux))))))))
+    (cons H (set-coend C H))))
+(define (set-lan-coend F G)
+  (let* ((C (functor-source F)) (D (functor-target F)) (P (category-product (category-opposite C) C))
+         (data (list->vector (map (lambda (d) (ck-lan-coend-at F G P d)) (ck-objects D)))))
+    (make-set-functor-from-indices
+     D
+     (map (lambda (d) (let ((H (car (vector-ref data d))))
+                        (map (lambda (r) (cons (car r) (list-ref (set-functor-elements H (ck-diag C (car r))) (cdr r))))
+                             (set-colimit-representatives (cdr (vector-ref data d))))))
+          (ck-objects D))
+     (map (lambda (v)
+            (let* ((d (arrow-source D v)) (H (car (vector-ref data d))) (co (cdr (vector-ref data d)))
+                   (H2 (car (vector-ref data (arrow-target D v)))) (co2 (cdr (vector-ref data (arrow-target D v)))))
+              (list->vector (map (lambda (r) (let ((ux (list-ref (set-functor-elements H (ck-diag C (car r))) (cdr r))))
+                                               (set-colimit-class co2 (car r) (set-functor-element-index H2 (ck-diag C (car r)) (list (category-compose D v (car ux)) (cadr ux))))))
+                                 (set-colimit-representatives co)))))
+          (ck-arrows D)))))
+;; Ran_F G(d) = int_c G(c)^D(d, F c): elements of H_d(c', c) are lists of
+;; elements of G(c) indexed by D(d, F c') in category-hom order
+(define (ck-ran-end-at F G P d)
+  (let* ((C (functor-source F)) (D (functor-target F)) (n (category-object-count C))
+         (H (make-set-functor P
+                              (map (lambda (o) (let ((hs (category-hom D d (functor-object F (quotient o n)))) (xs (set-functor-elements G (remainder o n))))
+                                                 (map (lambda (idx) (map (lambda (j) (list-ref xs j)) idx)) (ck-functions (length hs) (length xs)))))
+                                   (ck-objects P))
+                              (lambda (k phi) (let* ((f (car (arrow-name P k))) (g (cadr (arrow-name P k)))
+                                                     (hs1 (category-hom D d (functor-object F (arrow-target C f)))) ;; f : c'2 -> c'1 in C
+                                                     (hs2 (category-hom D d (functor-object F (arrow-source C f)))))
+                                                (map (lambda (w) (set-functor-apply G g (list-ref phi (ck-position (category-compose D (functor-arrow F f) w) hs1)))) hs2))))))
+    (cons H (set-end C H))))
+(define (set-ran-end F G)
+  (let* ((C (functor-source F)) (D (functor-target F)) (P (category-product (category-opposite C) C))
+         (data (list->vector (map (lambda (d) (ck-ran-end-at F G P d)) (ck-objects D))))
+         (value (lambda (d fam) (let ((H (car (vector-ref data d))))
+                                  (map (lambda (c) (list-ref (set-functor-elements H (ck-diag C c)) (vector-ref fam c))) (ck-objects C))))))
+    (make-set-functor-from-indices
+     D
+     (map (lambda (d) (map (lambda (fam) (value d fam)) (cdr (vector-ref data d)))) (ck-objects D))
+     (map (lambda (v)
+            (let* ((d (arrow-source D v)) (d2 (arrow-target D v)))
+              (list->vector
+               (map (lambda (fam)
+                      (let ((phis (value d fam)))
+                        (ck-position (map (lambda (c phi) (let ((hs (category-hom D d (functor-object F c))))
+                                                            (map (lambda (w) (list-ref phi (ck-position (category-compose D w v) hs)))
+                                                                 (category-hom D d2 (functor-object F c)))))
+                                          (ck-objects C) phis)
+                                     (map (lambda (fam2) (value d2 fam2)) (cdr (vector-ref data d2))))))
+                    (cdr (vector-ref data d))))))
+          (ck-arrows D)))))
+;; the comparison Lan_F G => set-lan-coend: the class of ((c 0 u), x) |-> the
+;; class of (u x) in H(c, c); the coend's elements are listed in class order,
+;; so the class index is the element index. A natural isomorphism (checked
+;; by the caller with set-natural-isomorphism?).
+(define (set-lan-comparison F G)
+  (let* ((L (set-lan F G)) (C (functor-source F)) (D (functor-target F)) (P (category-product (category-opposite C) C)))
+    (list->vector
+     (map (lambda (d)
+            (let* ((hc (ck-lan-coend-at F G P d)) (H (car hc)) (co (cdr hc)))
+              (list->vector (map (lambda (e) (set-coend-class co (car e) (set-functor-element-index H (ck-diag C (car e)) (list (cadr e) (caddr e)))))
+                                 (set-functor-elements L d)))))
+          (ck-objects D)))))
+;; the comparison Ran_F G => set-ran-end: the family (x_(c,u)) |-> (u |-> x_(c,u))_c
+(define (set-ran-comparison F G)
+  (let* ((R (set-ran F G)) (Re (set-ran-end F G)) (C (functor-source F)) (D (functor-target F)))
+    (list->vector
+     (map (lambda (d)
+            (let ((K (comma-category (object-functor D d) F)))
+              (list->vector
+               (map (lambda (xs)
+                      (ck-position (map (lambda (c) (map (lambda (u) (list-ref xs (category-object-of-label K (list 0 c u)))) (category-hom D d (functor-object F c))))
+                                        (ck-objects C))
+                                   (set-functor-elements Re d)))
+                    (set-functor-elements R d)))))
+          (ck-objects D)))))
+
+;; ---------------------------------------------------------------------------
+;; Descent as a right Kan extension on a thin site
+;; ---------------------------------------------------------------------------
+;; Ran along j^op of F restricted to the full subcategory on objs, as a
+;; set-functor on C^op; its value at c is Match on the sieve generated by
+;; objs when C is thin
+(define (presheaf-ran-along-inclusion F objs)
+  (let* ((C (presheaf-category F)) (inc (inclusion-functor C objs)) (jop (functor-opposite (cdr inc))))
+    (set-ran jop (set-functor-restrict (presheaf->set-functor F) jop))))

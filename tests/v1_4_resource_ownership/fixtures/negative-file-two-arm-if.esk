@@ -1,0 +1,4 @@
+;; A one-armed if closes on the taken branch only; the other path keeps it open.
+(define in (open-input-file "strict-one-arm.txt"))
+(if (eof-object? (peek-char in))
+    (close-port in))

@@ -96,15 +96,6 @@
    },
    {
     "path_patterns": [
-     "lib/core/runtime_regions.cpp"
-    ],
-    "status": "temporary_legacy_boundary",
-    "task_id": "adr-0011-guest-collector-adapter",
-    "reason": "runtime_regions.cpp is a temporary boundary held stable while docs/design/adr/0011-guest-collector-adapter.md decides the guest-collector adapter split: eshkol_current_arena() (the one allocation seam every guest collector must route through) and eshkol_region_unwind_to() (the one teardown path shared by lexical exit, explicit close, raise, and call/cc escape) are both cited from this file by exact line. The ADR is still deciding the guest-collector adapter boundary that would determine where a split, if any, belongs.",
-    "mitigation": "No split ahead of ADR-0011's adapter-boundary decision. Once the guest-collector adapter contract is fixed, extract the adapter-facing seam (arena accessor, unwind path, handle protocol) behind that contract rather than splitting by line count first."
-   },
-   {
-    "path_patterns": [
      "inc/eshkol/backend/riemannian_core.h"
     ],
     "status": "temporary_legacy_boundary",

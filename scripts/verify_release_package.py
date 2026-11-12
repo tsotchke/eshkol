@@ -52,20 +52,12 @@ COMMON_LICENSE_FILES = (
     "tree-sitter-bash-LICENSE.txt",
     "yoga-LICENSE.txt",
 )
-LINUX_CODEC_LICENSE_FILES = (
-    "linux-libpng-copyright.txt",
-    "linux-libjpeg-copyright.txt",
-    "linux-libwebp-copyright.txt",
-    "linux-zlib-copyright.txt",
-)
+# Image I/O is built into the runtime: Linux packages redistribute no codec
+# objects, so no codec licenses or link aliases are required.
+LINUX_CODEC_LICENSE_FILES: tuple[str, ...] = ()
 LINUX_RUNTIME_SUBDIR = Path("lib/eshkol/runtime-deps")
-LINUX_REQUIRED_CODEC_ALIASES = (
-    "libpng.so",
-    "libpng16.so",
-    "libjpeg.so",
-    "libwebp.so",
-    "libz.so",
-)
+LINUX_REQUIRED_CODEC_ALIASES: tuple[str, ...] = ()
+LINUX_FORBIDDEN_CODEC_FAMILIES = ("libpng", "libjpeg", "libwebp", "libsharpyuv")
 MACOS_TLS_RUNTIME_SUBDIR = Path("lib/eshkol/runtime-deps")
 MACOS_TLS_DYLIBS = ("libssl.3.dylib", "libcrypto.3.dylib", "libLLVM.dylib", "libzstd.1.dylib")
 MACOS_TLS_ARCHIVES = ("libssl.a", "libcrypto.a")
@@ -165,11 +157,11 @@ def verify_linux_runtime_dependencies(
     if manifest.get("runtime_subdir") != LINUX_RUNTIME_SUBDIR.as_posix():
         fail("packaged Linux runtime dependency manifest records the wrong directory")
     files = manifest.get("files")
-    if not isinstance(files, dict) or not files:
-        fail("packaged Linux runtime dependency manifest has no files")
+    if not isinstance(files, dict):
+        fail("packaged Linux runtime dependency manifest has no file table")
     manifest_licenses = manifest.get("licenses")
-    if not isinstance(manifest_licenses, dict) or not manifest_licenses:
-        fail("packaged Linux runtime dependency manifest has no licenses")
+    if not isinstance(manifest_licenses, dict):
+        fail("packaged Linux runtime dependency manifest has no license table")
 
     for name, metadata in files.items():
         if not isinstance(name, str) or Path(name).name != name:
@@ -208,7 +200,7 @@ def verify_linux_runtime_dependencies(
             fail(f"required Linux image-codec link alias is absent: {alias}")
 
     codec_pattern = re.compile(r"^(libpng(?:16)?|libjpeg|libwebp|libsharpyuv|libz)\.so")
-    required_families = {"libpng", "libjpeg", "libwebp", "libz"}
+    required_families: set[str] = set()
     dependency_root = dependency_dir.resolve()
     for binary in binaries:
         result = run_checked(
@@ -233,6 +225,14 @@ def verify_linux_runtime_dependencies(
             family = family_match.group(1)
             if family.startswith("libpng"):
                 family = "libpng"
+            if family in LINUX_FORBIDDEN_CODEC_FAMILIES:
+                fail(
+                    f"{binary.name} links {soname}, but image I/O is built into the runtime",
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
+            if family not in required_families:
+                continue
             resolved = Path(resolved_text).resolve()
             if not resolved.is_relative_to(dependency_root):
                 fail(

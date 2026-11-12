@@ -1,0 +1,231 @@
+;; coroutine_primitives_test.esk — stackful coroutines, checked by behaviour.
+;;
+;; The coroutine is the substrate core.fibers schedules, so every property the
+;; fiber scheduler relies on is pinned here directly: values cross a switch in
+;; both directions, each coroutine has its own dynamic extent (no dynamic-wind
+;; thunk runs because of a switch), a raise in a body reaches the resumer with
+;; its original object, raising INTO a suspended coroutine unwinds it with its
+;; after thunks run exactly once, continuations captured inside a coroutine
+;; re-enter on that coroutine, and a finished coroutine gives its stack back.
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ─── Values cross the switch in both directions ────────────────────
+
+(define gen
+  (make-coroutine
+   (lambda ()
+     (let loop ((i 0) (acc '()))
+       (if (= i 3)
+           (reverse acc)
+           (loop (+ i 1) (cons (coroutine-yield (* i 10)) acc)))))))
+
+(check "a fresh coroutine is suspended" (eq? (coroutine-status gen) 'suspended))
+(check "first resume runs to the first yield" (= (coroutine-resume gen) 0))
+(check "the resume value is the yield's result"
+       (= (coroutine-resume gen 'a) 10))
+(check "second yield" (= (coroutine-resume gen 'b) 20))
+(check "the procedure's value is the last resume's value"
+       (equal? (coroutine-resume gen 'c) '(a b c)))
+(check "a returned coroutine is done" (eq? (coroutine-status gen) 'done))
+(check "resuming a finished coroutine raises"
+       (guard (e (#t #t)) (coroutine-resume gen) #f))
+(check "coroutine? holds until release" (coroutine? gen))
+(check "coroutine-release! frees a finished coroutine" (coroutine-release! gen))
+(check "a released handle is no longer a coroutine" (not (coroutine? gen)))
+(check "releasing twice is observable, not fatal" (not (coroutine-release! gen)))
+(check "using a released handle raises"
+       (guard (e (#t #t)) (coroutine-status gen) #f))
+
+;; ─── current-coroutine and the running / normal states ─────────────
+
+(check "no coroutine runs at top level" (not (current-coroutine)))
+
+(define outer #f)
+(define inner
+  (make-coroutine
+   (lambda ()
+     (coroutine-yield (list (eqv? (current-coroutine) inner)
+                            (coroutine-status inner)
+                            (coroutine-status outer))))))
+(set! outer
+  (make-coroutine
+   (lambda () (coroutine-resume inner))))
+(define seen (coroutine-resume outer))
+(check "current-coroutine names the running coroutine" (car seen))
+(check "the running coroutine reports running" (eq? (cadr seen) 'running))
+(check "a coroutine that resumed another reports normal" (eq? (caddr seen) 'normal))
+
+;; ─── A switch runs no dynamic-wind thunk ───────────────────────────
+
+(define wind-log '())
+(define (note x) (set! wind-log (cons x wind-log)))
+(define winder
+  (make-coroutine
+   (lambda ()
+     (dynamic-wind
+      (lambda () (note 'before))
+      (lambda () (coroutine-yield 'inside) (coroutine-yield 'still-inside) 'body-done)
+      (lambda () (note 'after))))))
+(coroutine-resume winder)
+(coroutine-resume winder)
+(check "suspending inside dynamic-wind runs no after thunk"
+       (equal? wind-log '(before)))
+(check "the body's value comes back through the extent"
+       (eq? (coroutine-resume winder) 'body-done))
+(check "the after thunk ran exactly once, when the body left"
+       (equal? (reverse wind-log) '(before after)))
+
+;; ─── parameterize belongs to the coroutine that made it ────────────
+
+(define level (make-parameter 'base))
+(define (param-reader tag)
+  (make-coroutine
+   (lambda ()
+     (parameterize ((level tag))
+       (coroutine-yield (level))
+       (coroutine-yield (level))
+       (level)))))
+(define pa (param-reader 'a))
+(define pb (param-reader 'b))
+(define param-seen
+  (list (coroutine-resume pa) (level) (coroutine-resume pb) (level)
+        (coroutine-resume pa) (coroutine-resume pb)
+        (coroutine-resume pa) (coroutine-resume pb) (level)))
+(check "each coroutine sees only its own parameterize binding"
+       (equal? param-seen '(a base b base a b a b base)))
+
+;; ─── A raise in a body reaches the resumer with its original object ─
+
+(define thrower (make-coroutine (lambda () (coroutine-yield 1) (raise 'boom))))
+(coroutine-resume thrower)
+(check "the raised object crosses to the resumer unchanged"
+       (eq? (guard (e (#t e)) (coroutine-resume thrower) 'no-raise) 'boom))
+(check "a coroutine whose body raised is failed"
+       (eq? (coroutine-status thrower) 'failed))
+(check "a guard in the body handles its own raise"
+       (equal? (coroutine-resume
+                (make-coroutine (lambda () (guard (e (#t (list 'caught e))) (raise 'x)))))
+               '(caught x)))
+
+;; ─── Raising into a suspended coroutine (cancellation) ─────────────
+
+(define after-count 0)
+(define victim
+  (make-coroutine
+   (lambda ()
+     (dynamic-wind
+      (lambda () #t)
+      (lambda () (let loop () (coroutine-yield 'tick) (loop)))
+      (lambda () (set! after-count (+ after-count 1)))))))
+(coroutine-resume victim)
+(coroutine-resume victim)
+(check "coroutine-raise delivers its object to the resumer when unhandled"
+       (eq? (guard (e (#t e)) (coroutine-raise victim 'cancel) 'no-raise) 'cancel))
+(check "the unwound coroutine ran its after thunk exactly once" (= after-count 1))
+(check "the unwound coroutine is failed" (eq? (coroutine-status victim) 'failed))
+
+(define intercepting
+  (make-coroutine
+   (lambda ()
+     (guard (e ((eq? e 'stop) 'stopped-cleanly))
+       (coroutine-yield 'waiting)
+       'never))))
+(coroutine-resume intercepting)
+(check "a body may intercept a raise delivered into it"
+       (eq? (coroutine-raise intercepting 'stop) 'stopped-cleanly))
+
+(define never-started (make-coroutine (lambda () (set! after-count 100) 'ran)))
+(check "raising into a never-started coroutine raises at once in the caller"
+       (eq? (guard (e (#t e)) (coroutine-raise never-started 'early) 'no-raise) 'early))
+(check "its body never ran" (= after-count 1))
+
+(check "a suspended coroutine with live frames cannot be released"
+       (let ((c (make-coroutine (lambda () (coroutine-yield 1) 2))))
+         (coroutine-resume c)
+         (guard (e (#t #t)) (coroutine-release! c) #f)))
+
+;; ─── Yield outside, re-entry, foreign threads ──────────────────────
+
+(check "coroutine-yield outside a coroutine raises"
+       (guard (e (#t #t)) (coroutine-yield 1) #f))
+(check "a coroutine cannot resume itself"
+       (let ((self #f))
+         (set! self (make-coroutine
+                     (lambda () (guard (e (#t 'refused)) (coroutine-resume self)))))
+         (eq? (coroutine-resume self) 'refused)))
+(check "make-coroutine refuses a non-procedure"
+       (guard (e (#t #t)) (make-coroutine 42) #f))
+
+;; ─── Continuations inside a coroutine ──────────────────────────────
+;; A capture on a coroutine copies only that coroutine's stack, and re-entry
+;; happens on the same coroutine after it was suspended and resumed.
+
+(define k-saved #f)
+(define k-count 0)
+(define re-entrant
+  (make-coroutine
+   (lambda ()
+     (let ((n (call/cc (lambda (k) (set! k-saved k) 0))))
+       (set! k-count (+ k-count 1))
+       (coroutine-yield n)
+       (if (< n 3) (k-saved (+ n 1)) 'finished)))))
+(define re-entry-values
+  (let loop ((acc '()))
+    (let ((v (coroutine-resume re-entrant)))
+      (if (eq? (coroutine-status re-entrant) 'done)
+          (reverse (cons v acc))
+          (loop (cons v acc))))))
+(check "a continuation re-enters its own coroutine across suspensions"
+       (equal? re-entry-values '(0 1 2 3 finished)))
+(check "the re-entered body ran once per entry" (= k-count 4))
+
+(define escape-result
+  (coroutine-resume
+   (make-coroutine
+    (lambda () (+ 1 (call/cc (lambda (k) (coroutine-yield 'unused) (k 41))))))))
+(check "an escape continuation inside a coroutine survives a suspension"
+       (eq? escape-result 'unused))
+
+(define foreign-k #f)
+(define capturer
+  (make-coroutine
+   (lambda () (call/cc (lambda (k) (set! foreign-k k))) (coroutine-yield 'captured) 'end)))
+(coroutine-resume capturer)
+(check "a continuation captured on another coroutine is refused, catchably"
+       (eq? (coroutine-resume
+             (make-coroutine (lambda () (guard (e (#t 'refused)) (foreign-k 1) 'jumped))))
+            'refused))
+(coroutine-resume capturer)
+
+;; ─── Many coroutines; stacks come back ─────────────────────────────
+
+(define (stat key) (cdr (assq key (coroutine-stats))))
+(define live-before (stat 'live))
+(define (churn n)
+  (if (> n 0)
+      (let ((c (make-coroutine (lambda () (coroutine-yield n) (* n 2)))))
+        (coroutine-resume c)
+        (coroutine-resume c)
+        (coroutine-release! c)
+        (churn (- n 1)))
+      #t))
+(churn 2000)
+(check "2000 finished coroutines hold no stack" (= (stat 'live) live-before))
+(check "finished stacks are reused rather than mapped again"
+       (< (stat 'stacks-mapped) 200))
+
+;; ─── Summary ───────────────────────────────────────────────────────
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: coroutine_primitives_test") (newline))
+    (begin (display "FAIL: coroutine_primitives_test") (newline) (exit 1)))

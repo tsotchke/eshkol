@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/dbsp/ordered.esk
+  - tests/stdlib/dbsp_ordered_test.esk
+---
+
 # `core.dbsp.ordered`
 
 `(require core.dbsp.ordered)` maintains exact weighted ranks, nearest-rank quantiles

@@ -16,9 +16,16 @@
  * may re-enter while destruction is in progress.
  *
  * Failure outputs are left untouched. A successful state query may report
- * CLOSED until its slot is reused; stale IDs after reuse are invalid. Lease
+ * CLOSED until its slot is reused; expired IDs after reuse are invalid. Lease
  * values are never recycled; exhaustion makes future borrows fail. Slots at
  * the maximum generation are retired instead of wrapping to an old ID.
+ *
+ * Interruption and close-after-release let one thread end another thread's
+ * wait without invalidating its borrow: interrupt marks the identity and wakes
+ * the borrower's registered waker; close-after-release additionally makes the
+ * identity unusable at once and runs the close callback exactly once when the
+ * active borrower releases. Exact registries keep every identity at or below
+ * 2^53 - 1 so it survives binary64 numeric boundaries unchanged.
  */
 #ifndef ESHKOL_CORE_HANDLE_H
 #define ESHKOL_CORE_HANDLE_H
@@ -35,7 +42,11 @@ enum {
     ESHKOL_HANDLE_KIND_FILE = 1,
     ESHKOL_HANDLE_KIND_SOCKET = 2,
     ESHKOL_HANDLE_KIND_EVENT_LOOP = 3,
-    ESHKOL_HANDLE_KIND_PROCESS = 4
+    /* Platform layer objects (inc/eshkol/platform/, ADR-0053). */
+    ESHKOL_HANDLE_KIND_WINDOW = 4,
+    ESHKOL_HANDLE_KIND_AUDIO_DEVICE = 5,
+    ESHKOL_HANDLE_KIND_MIDI_PORT = 6,
+    ESHKOL_HANDLE_KIND_PROCESS = 7
 };
 
 typedef enum {
@@ -54,13 +65,23 @@ typedef enum {
     ESHKOL_HANDLE_ESTATE = -4,
     ESHKOL_HANDLE_EBUSY = -5,
     ESHKOL_HANDLE_ECLOSE = -6,
-    ESHKOL_HANDLE_EEXHAUSTED = -7
+    ESHKOL_HANDLE_EEXHAUSTED = -7,
+    ESHKOL_HANDLE_EINTERRUPTED = -8
 } eshkol_handle_status_t;
+/* Called under the registry lock by interrupt and close-after-release. It must
+ * only signal (for example write one byte to a nonblocking pipe) and must not
+ * call back into the registry. */
+typedef void (*eshkol_handle_wake_fn)(void *context);
 /* Zero means success; nonzero is reported as ECLOSE. */
 typedef int (*eshkol_handle_close_fn)(eshkol_handle_kind_t kind,
                                       uintptr_t native_value, void *user_data);
 /** @brief Create an empty hosted registry, or return NULL on allocation failure. */
 eshkol_handle_registry_t *eshkol_handle_registry_create(void);
+/**
+ * @brief Create a registry whose identities never exceed 2^53 - 1.
+ * Slots retire after 2^21 - 1 generations instead of after 2^32 - 1.
+ */
+eshkol_handle_registry_t *eshkol_handle_registry_create_exact(void);
 /**
  * @brief Close all remaining owners and free a registry without allocating.
  * @return OK or ECLOSE after freeing; EBUSY leaves the registry alive when a
@@ -78,6 +99,19 @@ int eshkol_handle_registry_destroy(eshkol_handle_registry_t *registry);
 int eshkol_handle_create(eshkol_handle_registry_t *registry,
     eshkol_handle_kind_t kind, uintptr_t native_value,
     eshkol_handle_close_fn close_fn, void *user_data, eshkol_handle_id_t *out_id);
+/**
+ * @brief Adopt a resource as eshkol_handle_create does, with an immutable
+ * resource-defined subtype tag (for example a TCP listener versus a stream).
+ */
+int eshkol_handle_create_tagged(eshkol_handle_registry_t *registry,
+    eshkol_handle_kind_t kind, uint32_t tag, uintptr_t native_value,
+    eshkol_handle_close_fn close_fn, void *user_data, eshkol_handle_id_t *out_id);
+/**
+ * @brief Report the kind and tag of a live identity without borrowing it.
+ * @return OK, or ENOENT for unknown, retired, closed or close-requested IDs.
+ */
+int eshkol_handle_get_kind(eshkol_handle_registry_t *registry,
+    eshkol_handle_id_t id, eshkol_handle_kind_t *out_kind, uint32_t *out_tag);
 /**
  * @brief Exclusively borrow an open owner until its matching lease is released.
  * @param out_native_value Native resource, usable only during this borrow.
@@ -100,6 +134,33 @@ int eshkol_handle_release(eshkol_handle_registry_t *registry,
  * outstanding borrower/closer intact. Invalid or previously closed IDs are ENOENT.
  */
 int eshkol_handle_close(eshkol_handle_registry_t *registry, eshkol_handle_id_t id);
+/**
+ * @brief Close now when open; when borrowed, refuse new use at once, interrupt
+ * the borrower, and run the close callback exactly once on its release.
+ * @return OK (closed now or close scheduled), ECLOSE when an immediate close
+ * callback failed, EBUSY while another close runs, ENOENT when retired.
+ */
+int eshkol_handle_close_after_release(eshkol_handle_registry_t *registry,
+    eshkol_handle_id_t id);
+/**
+ * @brief Mark a live identity interrupted and wake its borrower, if any.
+ * The mark persists until the next borrower consumes it.
+ * @return OK, or ENOENT for unknown, retired or closed IDs.
+ */
+int eshkol_handle_interrupt(eshkol_handle_registry_t *registry, eshkol_handle_id_t id);
+/**
+ * @brief Install (or clear with NULL) the active borrower's waker.
+ * @return OK, EINTERRUPTED when an interrupt is already pending (the waker is
+ * still installed), or ESTATE when the lease is not the active borrow.
+ */
+int eshkol_handle_set_waker(eshkol_handle_registry_t *registry,
+    eshkol_handle_id_t id, uint64_t lease, eshkol_handle_wake_fn wake_fn, void *context);
+/**
+ * @brief Consume a pending interrupt for the active borrow.
+ * @return 1 when one was pending, 0 when none, or a negative status.
+ */
+int eshkol_handle_take_interrupt(eshkol_handle_registry_t *registry,
+    eshkol_handle_id_t id, uint64_t lease);
 /**
  * @brief Query state without borrowing or exposing the native resource.
  * @return OK for a known identity, including CLOSED before slot reuse. Invalid

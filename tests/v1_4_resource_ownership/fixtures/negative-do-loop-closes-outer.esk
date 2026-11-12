@@ -1,0 +1,5 @@
+;; The do body closes an outer port and then iterates again.
+(define out (open-output-file "strict-do-close.txt"))
+(do ((i 0 (+ i 1)))
+    ((= i 2) #t)
+  (close-port out))

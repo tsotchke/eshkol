@@ -1,0 +1,14 @@
+;; Type System Test: a register whose size is only known at run time is still linear and accepted
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type error
+;; EXPECT-NO-STDERR: dimension mismatch
+
+(require core.quantum)
+
+(define-quantum-region qr (all-ones n)
+  (let loop ((i 0) (r (qalloc qr n)))
+    (if (= i n) (qmeasure r) (loop (+ i 1) (qx r i)))))
+
+(display (all-ones 3))
+(newline)

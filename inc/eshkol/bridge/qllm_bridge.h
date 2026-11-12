@@ -246,9 +246,11 @@ ad_node_t* ad_tensor_embedding(
  ******************************************************************************/
 
 /**
- * @brief Hyperbolic distance in the shared Poincare-ball implementation.
+ * @brief Hyperbolic distance on the ADR-0018 chart (K < 0).
  *
- * d(x, y) = acosh(1 + 2 * ||x-y||^2 / ((1-||x||^2)(1-||y||^2)))
+ * With B = -K/4 (the ball of radius 2/sqrt(-K)):
+ * d(x, y) = acosh(1 + 2B ||x-y||^2 / ((1-B||x||^2)(1-B||y||^2))) / sqrt(-K) * 2,
+ * evaluated in the stable asinh form of backend/riemannian_core.h.
  *
  * NOT DIFFERENTIABLE AT x == y. Like the Euclidean |x - y|, the Riemannian
  * distance has a cone point at coincidence: the one-sided slopes disagree in
@@ -259,7 +261,7 @@ ad_node_t* ad_tensor_embedding(
  * ball. The forward is the shared f64 implementation in
  * backend/riemannian_core.h, also used by the VM geometry opcodes.
  * Away from coincidence the gradient is exact, and its Euclidean magnitude is
- * the conformal factor at each argument (|grad_x d| = 2/(1-c||x||^2)).
+ * the conformal factor at each argument (|grad_x d| = 1/(1-B||x||^2)).
  */
 ad_node_t* ad_hyperbolic_distance(
     ad_tape_t* tape,
@@ -297,39 +299,30 @@ ad_node_t* ad_poincare_log_map(
 );
 
 /**
- * @brief Geodesic attention with curvature-adaptive scaling.
+ * @brief Squared-distance geodesic attention (ADR-0018).
  *
- * Replaces dot-product with the shared f64 geodesic distance primitive from
- * backend/riemannian_core.h in attention scores:
- * s_ij = -d(Q_i, K_j) / (m(K) * sqrt(head_dim)), then softmax over j and a
- * value-weighted sum, where m(K) is sqrt(-K) for K < 0 and 1 otherwise. The
- * VM and bridge forwards use the same shared-core distance/map implementation;
- * this bridge retains the softmax weights on the node so
- * the backward reads the same numbers the forward produced rather than
- * recomputing the max-shift and the mask.
+ * Replaces the dot product with the shared f64 squared geodesic distance of
+ * backend/riemannian_core.h:
  *
- * CONSEQUENCE OF DISTANCE SCORING, worth knowing before you wire it up: because
- * the geodesic distance has no derivative at coincident points, this op is not
- * differentiable whenever a query row equals a key row exactly — which is the
- * ordinary case when Q and K are the same tensor. The backward refuses there
- * and names the (batch, head, i, j) it refused on. Dot-product attention
- * (ad_tensor_attention) has no such point and is differentiable everywhere.
+ *     s_ij = -d^2(Q_i, K_j) / (2 t),  then softmax over j and a value-weighted
+ *     sum,
  *
- * DOMAIN. For K < 0, every Q and K HEAD-SLICE is a point of the Poincare ball
- * and must lie strictly inside the ball of radius 1/sqrt(-K). For K > 0, every
- * slice must lie on the sphere of radius 1/sqrt(K); for K = 0, every coordinate
- * must be finite. If any required row is invalid, the op returns NULL after a
- * diagnostic naming the (batch, position, head) and measured scaled norm. It
- * does not project, and it does not score an off-manifold slice as infinitely
- * distant: doing that dropped the key from the softmax and returned a complete,
- * finite attention output with no indication that a row had been discarded
- * (SW-76).
+ * with t = sqrt(head_dim). The temperature is in squared-distance units and
+ * there is no curvature-dependent scale: the logits and weights are continuous
+ * in K through K = 0 at fixed chart inputs. The VM, the native module and this
+ * bridge run the same row kernel (eshkol_rm_attention_row); the node retains
+ * the softmax weights so the backward reads the numbers the forward produced.
  *
- * CURVATURE. `curvature` is the SECTIONAL CURVATURE K. The score uses the same
- * Euclidean (K = 0), Poincare (K < 0), and spherical (K > 0) distance branches
- * as the VM's shared Riemannian core, and its reverse rule uses the matching
- * branch. This attention operation therefore accepts all finite K, unlike the
- * three Poincare-only bridge entry points above.
+ * DIFFERENTIABLE AT q == k. The squared distance is smooth on the diagonal:
+ * its coordinate gradient is -2 lambda_x^2 log_x(y), exactly zero at
+ * coincidence. Self-attention (Q and K the same tensor) is therefore an
+ * ordinary differentiable input.
+ *
+ * DOMAIN. Every Q and K HEAD-SLICE is a point of the ADR-0018 chart of
+ * curvature K: strictly inside the ball of radius 2/sqrt(-K) for K < 0, any
+ * finite point for K >= 0 (a positive-chart point at the pole and an antipodal
+ * query/key pair are refused). A refused row returns NULL after a diagnostic;
+ * the op never projects and never drops a key from the softmax.
  */
 ad_node_t* ad_geodesic_attention(
     ad_tape_t* tape,
@@ -338,6 +331,21 @@ ad_node_t* ad_geodesic_attention(
     ad_node_t* v,
     int num_heads,
     double curvature,
+    bool causal
+);
+
+/**
+ * @brief ad_geodesic_attention with an explicit finite temperature @p
+ *        temperature > 0 in squared-distance units: s_ij = -d^2/(2 t).
+ */
+ad_node_t* ad_geodesic_attention_tempered(
+    ad_tape_t* tape,
+    ad_node_t* q,
+    ad_node_t* k,
+    ad_node_t* v,
+    int num_heads,
+    double curvature,
+    double temperature,
     bool causal
 );
 
@@ -363,7 +371,7 @@ ad_node_t* ad_geodesic_attention(
  *
  * @param tape       AD tape (NULL for forward-only)
  * @param points     Points node [n_points, dim]; every point must lie strictly
- *                   inside the ball of radius 1/sqrt(-curvature)
+ *                   inside the ball of radius 2/sqrt(-curvature)
  * @param weights    Weight node [n_points], non-negative with positive sum.
  *                   NULL means uniform weights, and then no dL/dw is produced.
  * @param curvature  Sectional curvature K <= 0. K = 0 is the Euclidean case,

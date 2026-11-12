@@ -1,0 +1,454 @@
+;;; core.category.set -- Set-valued functors on finite categories: natural
+;;; transformations, limits and colimits, ends and coends, the Yoneda lemma,
+;;; and categories of elements.
+;;;
+;;; Usage: (require core.category.set)   or   (require core.category)
+;;; (Kan extensions are core.category.kan, built on this module.)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), III.3-III.4 (limits and colimits in Set), IX.4-IX.6 (ends and
+;;; coends; natural transformations as an end, IX.5), X.3-X.4 (Kan
+;;; extensions: Lan_F G(d) = colim_{(F | d)} G P, Ran_F G(d) = lim_{(d | F)}
+;;; G Q, Theorem X.3.1; the coend formula Lan_F G = int^c D(Fc, -) x Gc,
+;;; X.4); E. Riehl, "Category Theory in Context" (2016), 2.2 (the Yoneda
+;;; lemma), 2.4 (categories of elements), 3.3-3.4, 6.1-6.2; G. M. Kelly,
+;;; "Basic Concepts of Enriched Category Theory" (1982, TAC Reprints 10,
+;;; 2005), 2.1-2.2 and 4.1-4.2 (ends, coends, Kan extensions as weighted
+;;; (co)limits); nLab: "presheaf", "limit", "colimit", "end", "coend",
+;;; "Yoneda lemma", "category of elements", "Kan extension", "pointwise Kan
+;;; extension".
+;;;
+;;; Representation (public):
+;;;   set-functor   #(set-functor C sets maps): sets a vector, object c ->
+;;;                 list of the elements of X(c) (compared with equal?);
+;;;                 maps a vector, arrow a : x -> y -> vector of indices,
+;;;                 entry i the index in X(y) of X(a)(the i-th element of
+;;;                 X(x)). X is covariant: X(g o f) = X(g) X(f).
+;;;   presheaves    a core.sheaf set-presheaf F on C is the set-functor on
+;;;                 C^op with the same sets and maps (presheaf->set-functor,
+;;;                 set-functor->presheaf); no data is copied.
+;;;   transformation  a vector, object c -> vector of indices X(c) -> Y(c)
+;;;                 (the convention of core.sheaf's presheaf-natural?).
+;;;   limit         a list of families, each a vector c -> index in X(c).
+;;;   colimit       #(set-colimit sizes offsets classes representatives):
+;;;                 the class of element i of X(c) is (set-colimit-class co c i).
+;;;   bifunctor     a set-functor H on P = (category-product (category-opposite C) C);
+;;;                 H(c', c) is contravariant in c' and covariant in c.
+;;;
+;;; Natural transformations X => Y are the limit of Y o pi over the category
+;;; of elements of X (Mac Lane IX.5, Riehl 3.4.?): they are found by one
+;;; propagating search over the elements of X, never by enumerating products
+;;; of function spaces.
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.sheaf.presheaf)
+(require core.category.finite)
+(require core.category.functor)
+
+(provide make-set-functor make-set-functor-from-indices make-set-functor-from-names set-functor? set-functor-category
+         set-functor-elements set-functor-element-count set-functor-element-index set-functor-sizes
+         set-functor-apply set-functor-apply-index
+         set-functor-functoriality-violations set-functor-functorial?
+         presheaf->set-functor set-functor->presheaf set-functor-restrict
+         constant-set-functor corepresentable-set-functor hom-set-functor set-functor-product
+         set-natural? set-natural-transformations set-natural-transformation-count
+         set-identity-transformation set-transformation-compose set-transformation-identity?
+         set-transformation-bijective? set-natural-isomorphism?
+         set-limit set-limit-size set-limit-element-values set-cone-count
+         set-colimit set-colimit-size set-colimit-class set-colimit-representatives
+         set-end set-coend set-coend-class set-natural-transformations-end
+         yoneda-element yoneda-transformation yoneda-violations presheaf-yoneda-violations
+         elements-category elements-projection presheaf-elements-category presheaf-elements-projection
+         discrete-opfibration? discrete-fibration?)
+
+(define (cs-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (cs-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (cs-all? pred (cdr xs))) (else #f)))
+(define (cs-vec x) (if (vector? x) x (list->vector x)))
+(define (cs-position item items)
+  (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+(define (cs-objects C) (cs-range (category-object-count C)))
+(define (cs-arrows C) (cs-range (category-arrow-count C)))
+(define (cs-label-table K)
+  (let ((t (make-hash-table)))
+    (for-each (lambda (o) (hash-table-set! t (category-object-label K o) o)) (cs-objects K))
+    t))
+
+;; ---------------------------------------------------------------------------
+;; Set-valued functors
+;; ---------------------------------------------------------------------------
+(define (make-set-functor-from-indices C sets maps)
+  (vector 'set-functor C (cs-vec sets) (list->vector (map cs-vec (if (vector? maps) (vector->list maps) maps)))))
+;; sets: list/vector over objects of element lists; act: (a x) -> X(a)(x);
+;; identities are filled in
+(define (make-set-functor C sets act)
+  (let ((sv (cs-vec sets)))
+    (make-set-functor-from-indices
+     C sv
+     (map (lambda (a)
+            (let ((x (arrow-source C a)) (y (arrow-target C a)))
+              (list->vector
+               (map (lambda (e)
+                      (if (= a (category-identity C x)) (cs-position e (vector-ref sv x))
+                          (let ((i (cs-position (act a e) (vector-ref sv y))))
+                            (if (not i) (error "make-set-functor: the image leaves the target set" (list a e)))
+                            i)))
+                    (vector-ref sv x)))))
+          (cs-arrows C)))))
+;; maps given by arrow name: alist name -> index vector; identities filled
+;; in, every other arrow must be named in the alist (a functor on a
+;; presented category is determined by these images; functoriality is the
+;; caller's to check with set-functor-functoriality-violations)
+(define (make-set-functor-from-names C sets alist)
+  (let ((sv (cs-vec sets)))
+    (make-set-functor-from-indices
+     C sv
+     (map (lambda (a)
+            (if (= a (category-identity C (arrow-source C a)))
+                (list->vector (cs-range (length (vector-ref sv (arrow-source C a)))))
+                (let ((e (assoc (arrow-name C a) alist)))
+                  (if (not e) (error "make-set-functor-from-names: no map for arrow" (arrow-name C a)))
+                  (cdr e))))
+          (cs-arrows C)))))
+(define (set-functor? X) (and (vector? X) (= 4 (vector-length X)) (eq? (vector-ref X 0) 'set-functor)))
+(define (set-functor-category X) (vector-ref X 1))
+(define (set-functor-elements X c) (vector-ref (vector-ref X 2) c))
+(define (set-functor-element-count X c) (length (vector-ref (vector-ref X 2) c)))
+(define (set-functor-sizes X) (map (lambda (c) (set-functor-element-count X c)) (cs-objects (set-functor-category X))))
+(define (set-functor-element-index X c e) (cs-position e (set-functor-elements X c)))
+(define (set-functor-apply-index X a i) (vector-ref (vector-ref (vector-ref X 3) a) i))
+(define (set-functor-apply X a e)
+  (let* ((C (set-functor-category X)) (i (set-functor-element-index X (arrow-source C a) e)))
+    (if (not i) (error "set-functor-apply: not an element of X(source a)" e))
+    (list-ref (set-functor-elements X (arrow-target C a)) (set-functor-apply-index X a i))))
+(define (set-functor-functoriality-violations X)
+  (let ((C (set-functor-category X)) (out '()))
+    (for-each (lambda (c) (if (not (cs-all? (lambda (i) (= i (set-functor-apply-index X (category-identity C c) i))) (cs-range (set-functor-element-count X c))))
+                              (set! out (cons (list 'identity c) out))))
+              (cs-objects C))
+    (for-each (lambda (g)
+                (for-each (lambda (f)
+                            (if (and (category-composable? C g f)
+                                     (not (cs-all? (lambda (i) (= (set-functor-apply-index X (category-compose C g f) i)
+                                                                  (set-functor-apply-index X g (set-functor-apply-index X f i))))
+                                                   (cs-range (set-functor-element-count X (arrow-source C f))))))
+                                (set! out (cons (list 'composite g f) out))))
+                          (cs-arrows C)))
+              (cs-arrows C))
+    (reverse out)))
+(define (set-functor-functorial? X) (null? (set-functor-functoriality-violations X)))
+;; a presheaf on C is a set-functor on C^op (same sets and maps)
+(define (presheaf->set-functor F)
+  (vector 'set-functor (category-opposite (presheaf-category F)) (vector-ref F 2) (vector-ref F 3)))
+;; X a set-functor on C^op, returned as a presheaf on C
+(define (set-functor->presheaf X C) (make-set-presheaf-from-indices C (vector-ref X 2) (vector-ref X 3)))
+;; X o F for F : B -> C
+(define (set-functor-restrict X F)
+  (let ((B (functor-source F)))
+    (vector 'set-functor B
+            (list->vector (map (lambda (b) (set-functor-elements X (functor-object F b))) (cs-objects B)))
+            (list->vector (map (lambda (a) (vector-ref (vector-ref X 3) (functor-arrow F a))) (cs-arrows B))))))
+(define (constant-set-functor C elems) (make-set-functor C (map (lambda (c) elems) (cs-objects C)) (lambda (a x) x)))
+;; C(c, -): elements arrow indices, acting by postcomposition
+(define (corepresentable-set-functor C c)
+  (make-set-functor C (map (lambda (d) (category-hom C c d)) (cs-objects C)) (lambda (a u) (category-compose C a u))))
+;; C(-, -) on P = C^op x C: H(c', c) = C(c', c), (f, g) acts by u |-> g o u o f
+(define (hom-set-functor C P)
+  (let ((n (category-object-count C)))
+    (make-set-functor P (map (lambda (o) (category-hom C (quotient o n) (remainder o n))) (cs-objects P))
+                      (lambda (k u) (let ((fg (arrow-name P k))) (category-compose C (cadr fg) (category-compose C u (car fg))))))))
+(define (set-functor-product X Y)
+  (let ((C (set-functor-category X)))
+    (make-set-functor C (map (lambda (c) (apply append (map (lambda (x) (map (lambda (y) (list x y)) (set-functor-elements Y c))) (set-functor-elements X c))))
+                             (cs-objects C))
+                      (lambda (a p) (list (set-functor-apply X a (car p)) (set-functor-apply Y a (cadr p)))))))
+
+;; ---------------------------------------------------------------------------
+;; A propagating search: variables with finite domains and functional
+;; constraints v[y] = map[v[x]] along edges (x y map). Used for limits and
+;; for natural transformations (a limit over the category of elements).
+;; ---------------------------------------------------------------------------
+(define (cs-propagate! a out x)
+  (let loop ((work (list x)) (ok #t))
+    (if (or (not ok) (null? work)) ok
+        (let ((v (car work)))
+          (let edges ((es (vector-ref out v)) (work (cdr work)) (ok #t))
+            (if (or (not ok) (null? es)) (loop work ok)
+                (let* ((e (car es)) (y (car e)) (val (vector-ref (cdr e) (vector-ref a v))))
+                  (cond ((not (vector-ref a y)) (vector-set! a y val) (edges (cdr es) (cons y work) #t))
+                        ((= val (vector-ref a y)) (edges (cdr es) work #t))
+                        (else (edges (cdr es) work #f))))))))))
+;; Solutions as fresh vectors (count-only when collect? is #f): returns a list
+;; or a count. out: vector var -> list of (y . map).
+(define (cs-solve sizes out collect?)
+  (let ((n (vector-length sizes)) (acc '()) (count 0))
+    (let search ((p 0) (a (make-vector n #f)))
+      (cond ((= p n) (if collect? (set! acc (cons a acc)) (set! count (+ count 1))))
+            ((vector-ref a p) (search (+ p 1) a))
+            (else
+             (let try ((v 0))
+               (if (< v (vector-ref sizes p))
+                   (let ((b (vector-copy a)))
+                     (vector-set! b p v)
+                     (if (cs-propagate! b out p) (search (+ p 1) b))
+                     (try (+ v 1))))))))
+    (if collect? (reverse acc) count)))
+;; constraint graph of X over its category: one variable per object
+(define (cs-diagram-graph X)
+  (let* ((C (set-functor-category X)) (out (make-vector (category-object-count C) '())))
+    (for-each (lambda (a) (if (not (= a (category-identity C (arrow-source C a))))
+                              (vector-set! out (arrow-source C a) (cons (cons (arrow-target C a) (vector-ref (vector-ref X 3) a)) (vector-ref out (arrow-source C a))))))
+              (cs-arrows C))
+    out))
+
+;; ---------------------------------------------------------------------------
+;; Limits and colimits in Set
+;; ---------------------------------------------------------------------------
+;; lim X = the compatible families: vectors c -> index with X(a)(v_x) = v_y
+(define (set-limit X) (cs-solve (list->vector (set-functor-sizes X)) (cs-diagram-graph X) #t))
+(define (set-limit-size X) (cs-solve (list->vector (set-functor-sizes X)) (cs-diagram-graph X) #f))
+(define (set-limit-element-values X fam)
+  (map (lambda (c) (list-ref (set-functor-elements X c) (vector-ref fam c))) (cs-objects (set-functor-category X))))
+;; cones from a k-element set: k-tuples of families, counted on the k-fold
+;; disjoint union of the diagram (the universal property says |lim X|^k)
+(define (set-cone-count X k)
+  (let* ((C (set-functor-category X)) (n (category-object-count C)) (sizes (make-vector (* n k) 0)) (out (make-vector (* n k) '())))
+    (for-each (lambda (t)
+                (for-each (lambda (c) (vector-set! sizes (+ (* t n) c) (set-functor-element-count X c))) (cs-objects C))
+                (for-each (lambda (a) (if (not (= a (category-identity C (arrow-source C a))))
+                                          (let ((x (+ (* t n) (arrow-source C a))))
+                                            (vector-set! out x (cons (cons (+ (* t n) (arrow-target C a)) (vector-ref (vector-ref X 3) a)) (vector-ref out x))))))
+                          (cs-arrows C)))
+              (cs-range k))
+    (cs-solve sizes out #f)))
+;; union-find over the disjoint union of sets of the given sizes; pairs is a
+;; list of ((x . i) . (y . j)) to identify
+(define (cs-quotient sizes pairs)
+  (let* ((n (vector-length sizes))
+         (offsets (let ((o (make-vector (+ n 1) 0))) (let loop ((x 0)) (if (< x n) (begin (vector-set! o (+ x 1) (+ (vector-ref o x) (vector-ref sizes x))) (loop (+ x 1))))) o))
+         (total (vector-ref offsets n)) (parent (make-vector total 0)))
+    (let init ((i 0)) (if (< i total) (begin (vector-set! parent i i) (init (+ i 1)))))
+    (let ((root (lambda (i) (let loop ((i i)) (let ((p (vector-ref parent i))) (if (= p i) i (begin (vector-set! parent i (vector-ref parent p)) (loop p))))))))
+      (for-each (lambda (pr)
+                  (let ((p (root (+ (vector-ref offsets (car (car pr))) (cdr (car pr)))))
+                        (q (root (+ (vector-ref offsets (car (cdr pr))) (cdr (cdr pr))))))
+                    (if (not (= p q)) (vector-set! parent (max p q) (min p q)))))
+                pairs)
+      (let ((class-of-root (make-vector total #f)) (table (make-vector total 0)) (reps '()) (k 0))
+        (let loop ((x 0))
+          (if (< x n)
+              (begin
+                (let inner ((i 0))
+                  (if (< i (vector-ref sizes x))
+                      (let ((r (root (+ (vector-ref offsets x) i))))
+                        (if (not (vector-ref class-of-root r))
+                            (begin (vector-set! class-of-root r k) (set! reps (cons (cons x i) reps)) (set! k (+ k 1))))
+                        (vector-set! table (+ (vector-ref offsets x) i) (vector-ref class-of-root r))
+                        (inner (+ i 1)))))
+                (loop (+ x 1)))))
+        (vector 'set-colimit sizes offsets table (reverse reps))))))
+;; colim X = the disjoint union of the X(c) modulo (x, i) ~ (y, X(a) i)
+(define (set-colimit X)
+  (let ((C (set-functor-category X)))
+    (cs-quotient (list->vector (set-functor-sizes X))
+                 (apply append
+                        (map (lambda (a)
+                               (map (lambda (i) (cons (cons (arrow-source C a) i) (cons (arrow-target C a) (set-functor-apply-index X a i))))
+                                    (cs-range (set-functor-element-count X (arrow-source C a)))))
+                             (cs-arrows C))))))
+(define (set-colimit-size co) (length (vector-ref co 4)))
+(define (set-colimit-class co c i) (vector-ref (vector-ref co 3) (+ (vector-ref (vector-ref co 2) c) i)))
+;; one (c . i) per class, in class order
+(define (set-colimit-representatives co) (vector-ref co 4))
+
+;; ---------------------------------------------------------------------------
+;; Ends and coends of bifunctors H : C^op x C -> Set
+;; ---------------------------------------------------------------------------
+(define (cs-diag C c) (+ (* c (category-object-count C)) c))
+(define (cs-parr C f g) (+ (* f (category-arrow-count C)) g))
+;; families (x_c in H(c, c)) with H(c, f)(x_c) = H(f, c')(x_c') in H(c, c')
+;; for every f : c -> c'
+(define (set-end C H)
+  (let* ((n (category-object-count C)) (sizes (list->vector (map (lambda (c) (set-functor-element-count H (cs-diag C c))) (cs-objects C))))
+         (nonid (filter (lambda (f) (not (= f (category-identity C (arrow-source C f))))) (cs-arrows C)))
+         (acc '()))
+    (let search ((p 0) (a (make-vector n #f)))
+      (if (= p n) (set! acc (cons (vector-copy a) acc))
+          (let try ((v 0))
+            (if (< v (vector-ref sizes p))
+                (begin
+                  (vector-set! a p v)
+                  (if (cs-all? (lambda (f)
+                                 (let ((c (arrow-source C f)) (c2 (arrow-target C f)))
+                                   (or (> c p) (> c2 p)
+                                       (= (set-functor-apply-index H (cs-parr C (category-identity C c) f) (vector-ref a c))
+                                          (set-functor-apply-index H (cs-parr C f (category-identity C c2)) (vector-ref a c2))))))
+                               nonid)
+                      (search (+ p 1) a))
+                  (vector-set! a p #f)
+                  (try (+ v 1)))))))
+    (reverse acc)))
+;; the disjoint union of the H(c, c) modulo H(f, c)(y) ~ H(c', f)(y) for
+;; f : c -> c' and y in H(c', c); a set-colimit record over the objects of C
+(define (set-coend C H)
+  (cs-quotient (list->vector (map (lambda (c) (set-functor-element-count H (cs-diag C c))) (cs-objects C)))
+               (apply append
+                      (map (lambda (f)
+                             (let ((c (arrow-source C f)) (c2 (arrow-target C f)))
+                               (map (lambda (y) (cons (cons c (set-functor-apply-index H (cs-parr C f (category-identity C c)) y))
+                                                      (cons c2 (set-functor-apply-index H (cs-parr C (category-identity C c2) f) y))))
+                                    (cs-range (set-functor-element-count H (+ (* c2 (category-object-count C)) c))))))
+                           (cs-arrows C)))))
+(define (set-coend-class co c i) (set-colimit-class co c i))
+;; Nat(X, Y) = int_c Y(c)^X(c): the bifunctor of functions X(c') -> Y(c) as
+;; index vectors, and its end, returned as transformations (Mac Lane IX.5)
+(define (cs-functions m k)
+  (if (= m 0) (list '())
+      (let ((rest (cs-functions (- m 1) k))) (apply append (map (lambda (v) (map (lambda (r) (cons v r)) rest)) (cs-range k))))))
+(define (set-natural-transformations-end X Y)
+  (let* ((C (set-functor-category X)) (n (category-object-count C)) (P (category-product (category-opposite C) C))
+         (H (make-set-functor P
+                              (map (lambda (o) (cs-functions (set-functor-element-count X (quotient o n)) (set-functor-element-count Y (remainder o n)))) (cs-objects P))
+                              (lambda (k phi)
+                                (let ((f (car (arrow-name P k))) (g (cadr (arrow-name P k))))
+                                  (map (lambda (i) (set-functor-apply-index Y g (list-ref phi (set-functor-apply-index X f i))))
+                                       (cs-range (set-functor-element-count X (arrow-source C f)))))))))
+    (map (lambda (fam) (list->vector (map (lambda (c) (list->vector (list-ref (set-functor-elements H (cs-diag C c)) (vector-ref fam c)))) (cs-objects C))))
+         (set-end C H))))
+
+;; ---------------------------------------------------------------------------
+;; Natural transformations
+;; ---------------------------------------------------------------------------
+(define (set-natural? X Y eta)
+  (let ((C (set-functor-category X)))
+    (cs-all? (lambda (a)
+               (let ((x (arrow-source C a)) (y (arrow-target C a)))
+                 (cs-all? (lambda (i) (= (vector-ref (vector-ref eta y) (set-functor-apply-index X a i))
+                                         (set-functor-apply-index Y a (vector-ref (vector-ref eta x) i))))
+                          (cs-range (set-functor-element-count X x)))))
+             (cs-arrows C))))
+;; variables: the elements (c, i) of X, domain Y(c); an arrow a : c -> c'
+;; forces eta(c', X(a) i) = Y(a)(eta(c, i))
+(define (cs-nat-problem X Y)
+  (let* ((C (set-functor-category X)) (n (category-object-count C))
+         (offs (let ((o (make-vector (+ n 1) 0))) (let loop ((c 0)) (if (< c n) (begin (vector-set! o (+ c 1) (+ (vector-ref o c) (set-functor-element-count X c))) (loop (+ c 1))))) o))
+         (total (vector-ref offs n)) (sizes (make-vector total 0)) (out (make-vector total '())))
+    (for-each (lambda (c) (for-each (lambda (i) (vector-set! sizes (+ (vector-ref offs c) i) (set-functor-element-count Y c))) (cs-range (set-functor-element-count X c))))
+              (cs-objects C))
+    (for-each (lambda (a)
+                (let ((c (arrow-source C a)) (c2 (arrow-target C a)))
+                  (if (not (= a (category-identity C c)))
+                      (for-each (lambda (i)
+                                  (let ((v (+ (vector-ref offs c) i)))
+                                    (vector-set! out v (cons (cons (+ (vector-ref offs c2) (set-functor-apply-index X a i)) (vector-ref (vector-ref Y 3) a))
+                                                             (vector-ref out v)))))
+                                (cs-range (set-functor-element-count X c))))))
+              (cs-arrows C))
+    (list offs sizes out)))
+(define (set-natural-transformations X Y)
+  (let* ((C (set-functor-category X)) (pr (cs-nat-problem X Y)) (offs (car pr)))
+    (map (lambda (sol) (list->vector (map (lambda (c) (list->vector (map (lambda (i) (vector-ref sol (+ (vector-ref offs c) i))) (cs-range (set-functor-element-count X c)))))
+                                          (cs-objects C))))
+         (cs-solve (cadr pr) (caddr pr) #t))))
+(define (set-natural-transformation-count X Y) (let ((pr (cs-nat-problem X Y))) (cs-solve (cadr pr) (caddr pr) #f)))
+(define (set-identity-transformation X)
+  (list->vector (map (lambda (c) (list->vector (cs-range (set-functor-element-count X c)))) (cs-objects (set-functor-category X)))))
+;; theta . eta (first eta, then theta)
+(define (set-transformation-compose theta eta)
+  (list->vector (map (lambda (c) (let ((e (vector-ref eta c)) (t (vector-ref theta c)))
+                                   (list->vector (map (lambda (i) (vector-ref t (vector-ref e i))) (cs-range (vector-length e))))))
+                     (cs-range (vector-length eta)))))
+(define (set-transformation-identity? eta)
+  (cs-all? (lambda (c) (let ((e (vector-ref eta c))) (cs-all? (lambda (i) (eqv? i (vector-ref e i))) (cs-range (vector-length e)))))
+           (cs-range (vector-length eta))))
+(define (set-transformation-bijective? X Y eta)
+  (cs-all? (lambda (c) (let ((e (vector->list (vector-ref eta c))) (m (set-functor-element-count Y c)))
+                         (and (= m (length e))
+                              (cs-all? (lambda (j) (memv j e)) (cs-range m)))))
+           (cs-objects (set-functor-category X))))
+(define (set-natural-isomorphism? X Y eta) (and (set-natural? X Y eta) (set-transformation-bijective? X Y eta)))
+
+;; ---------------------------------------------------------------------------
+;; The Yoneda lemma: Nat(C(c, -), X) ~ X(c), theta |-> theta_c(id_c)
+;; ---------------------------------------------------------------------------
+(define (yoneda-element X c theta)
+  (let ((C (set-functor-category X)))
+    (vector-ref (vector-ref theta c) (cs-position (category-identity C c) (category-hom C c c)))))
+;; the transformation C(c, -) => X with u |-> X(u)(x_i)
+(define (yoneda-transformation X c i)
+  (let ((C (set-functor-category X)))
+    (list->vector (map (lambda (d) (list->vector (map (lambda (u) (set-functor-apply-index X u i)) (category-hom C c d)))) (cs-objects C)))))
+;; (count n m) when |Nat(C(c,-), X)| /= |X(c)|, (not-natural i), (round-trip i),
+;; (not-surjective theta): the bijection checked by counting and explicitly
+(define (yoneda-violations X c)
+  (let* ((C (set-functor-category X)) (h (corepresentable-set-functor C c))
+         (nats (set-natural-transformations h X)) (out '()))
+    (if (not (= (length nats) (set-functor-element-count X c))) (set! out (cons (list 'count (length nats) (set-functor-element-count X c)) out)))
+    (for-each (lambda (i)
+                (let ((theta (yoneda-transformation X c i)))
+                  (if (not (set-natural? h X theta)) (set! out (cons (list 'not-natural i) out))
+                      (if (not (= i (yoneda-element X c theta))) (set! out (cons (list 'round-trip i) out))))))
+              (cs-range (set-functor-element-count X c)))
+    (for-each (lambda (theta) (if (not (equal? theta (yoneda-transformation X c (yoneda-element X c theta))))
+                                  (set! out (cons (list 'not-surjective theta) out))))
+              nats)
+    (reverse out)))
+;; Nat(y(c), F) ~ F(c) for a presheaf F: y(c) = C(-, c) is C^op(c, -)
+(define (presheaf-yoneda-violations F c) (yoneda-violations (presheaf->set-functor F) c))
+
+;; ---------------------------------------------------------------------------
+;; Categories of elements
+;; ---------------------------------------------------------------------------
+;; int X for X : C -> Set: objects (c i), arrows (a i) : (c i) -> (c', X(a) i)
+(define (elements-category X)
+  (let* ((C (set-functor-category X))
+         (objs (apply append (map (lambda (c) (map (lambda (i) (list c i)) (cs-range (set-functor-element-count X c)))) (cs-objects C))))
+         (oidx (let ((t (make-hash-table))) (let loop ((l objs) (k 0)) (if (null? l) t (begin (hash-table-set! t (car l) k) (loop (cdr l) (+ k 1)))))))
+         (arrows (apply append (map (lambda (a) (map (lambda (i) (vector (hash-table-ref/default oidx (list (arrow-source C a) i) #f)
+                                                                          (hash-table-ref/default oidx (list (arrow-target C a) (set-functor-apply-index X a i)) #f)
+                                                                          (list a i)))
+                                                       (cs-range (set-functor-element-count X (arrow-source C a)))))
+                                    (cs-arrows C))))
+         (av (list->vector arrows))
+         (aidx (let ((t (make-hash-table))) (let loop ((k 0)) (if (< k (vector-length av)) (begin (hash-table-set! t (vector-ref (vector-ref av k) 2) k) (loop (+ k 1))))) t)))
+    (make-finite-category (length objs) arrows
+                          (lambda (k2 k1) (let ((n1 (vector-ref (vector-ref av k1) 2)) (n2 (vector-ref (vector-ref av k2) 2)))
+                                            (hash-table-ref/default aidx (list (category-compose C (car n2) (car n1)) (cadr n1)) #f)))
+                          (map (lambda (o) (hash-table-ref/default aidx (list (category-identity C (car o)) (cadr o)) #f)) objs)
+                          objs)))
+(define (elements-projection X E)
+  (make-functor E (set-functor-category X) (map (lambda (o) (car (category-object-label E o))) (cs-objects E))
+                (map (lambda (k) (car (arrow-name E k))) (cs-arrows E))))
+;; int F for a presheaf F on C: objects (c i), arrows (a i) : (d F(a) i) -> (c i)
+(define (presheaf-elements-category F)
+  (let* ((C (presheaf-category F))
+         (objs (apply append (map (lambda (c) (map (lambda (i) (list c i)) (cs-range (presheaf-element-count F c)))) (cs-objects C))))
+         (oidx (let ((t (make-hash-table))) (let loop ((l objs) (k 0)) (if (null? l) t (begin (hash-table-set! t (car l) k) (loop (cdr l) (+ k 1)))))))
+         (arrows (apply append (map (lambda (a) (map (lambda (i) (vector (hash-table-ref/default oidx (list (arrow-source C a) (presheaf-restrict-index F a i)) #f)
+                                                                          (hash-table-ref/default oidx (list (arrow-target C a) i) #f)
+                                                                          (list a i)))
+                                                       (cs-range (presheaf-element-count F (arrow-target C a)))))
+                                    (cs-arrows C))))
+         (av (list->vector arrows))
+         (aidx (let ((t (make-hash-table))) (let loop ((k 0)) (if (< k (vector-length av)) (begin (hash-table-set! t (vector-ref (vector-ref av k) 2) k) (loop (+ k 1))))) t)))
+    (make-finite-category (length objs) arrows
+                          (lambda (k2 k1) (let ((n1 (vector-ref (vector-ref av k1) 2)) (n2 (vector-ref (vector-ref av k2) 2)))
+                                            (hash-table-ref/default aidx (list (category-compose C (car n2) (car n1)) (cadr n2)) #f)))
+                          (map (lambda (o) (hash-table-ref/default aidx (list (category-identity C (car o)) (cadr o)) #f)) objs)
+                          objs)))
+(define (presheaf-elements-projection F E)
+  (make-functor E (presheaf-category F) (map (lambda (o) (car (category-object-label E o))) (cs-objects E))
+                (map (lambda (k) (car (arrow-name E k))) (cs-arrows E))))
+;; P : E -> C is a discrete opfibration when every arrow out of P(e) has
+;; exactly one lift out of e (a discrete fibration: every arrow into P(e)
+;; has exactly one lift into e)
+(define (discrete-opfibration? P)
+  (let ((E (functor-source P)) (C (functor-target P)))
+    (cs-all? (lambda (e) (cs-all? (lambda (a) (= 1 (length (filter (lambda (k) (= a (functor-arrow P k))) (category-arrows-from E e)))))
+                                  (category-arrows-from C (functor-object P e))))
+             (cs-objects E))))
+(define (discrete-fibration? P)
+  (let ((E (functor-source P)) (C (functor-target P)))
+    (cs-all? (lambda (e) (cs-all? (lambda (a) (= 1 (length (filter (lambda (k) (= a (functor-arrow P k))) (category-arrows-into E e)))))
+                                  (category-arrows-into C (functor-object P e))))
+             (cs-objects E))))

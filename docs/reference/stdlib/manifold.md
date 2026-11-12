@@ -4,12 +4,21 @@
 **Require**: `(require core.manifold)` — auto-loaded via `(require stdlib)` (it is listed in `lib/stdlib.esk`), but the examples below `(require core.manifold)` explicitly so they stand alone.
 
 Constructors and operations for three constant-curvature Riemannian spaces:
-Euclidean (flat, K=0), Hyperbolic Poincaré ball (K=−1), and Spherical (K=+1,
-stereographic). It provides the geometric-ML primitives (exponential/logarithmic
+Euclidean (flat, K=0), Hyperbolic ball (K=−1), and Spherical (K=+1,
+stereographic), all in **one chart**: the ADR-0018 κ-stereographic chart in the
+`α = 1` gauge, with metric `I/(1 + K‖x‖²/4)²` — the same chart as the VM
+[geometry ops](geometry.md) and [`core.curvature`](curvature.md). The hyperbolic
+ball has radius 2; the spherical chart covers the sphere except its pole. It provides the geometric-ML primitives (exponential/logarithmic
 maps, geodesic distance, parallel transport) plus a full closed-form differential-
 geometry surface (metric, inverse metric, Christoffel symbols, sectional/scalar
 curvature, Ricci and Riemann tensors). Pure Scheme over the core math builtins, so
 it runs identically under REPL/JIT and AOT.
+
+A space that needs more than one chart — the whole sphere, hyperbolic space
+in two models, a triangulated surface — is an **atlas** glued from charts:
+see [Atlases](#atlases-manifolds-glued-from-charts-coremanifoldatlas)
+(`core.manifold.atlas`), where the chart of this module is one chart of the
+sphere atlas.
 
 ## Data model
 
@@ -27,8 +36,10 @@ it runs identically under REPL/JIT and AOT.
 ## Functions
 
 ### `(make-euclidean-manifold dim)` / `(make-hyperbolic-manifold dim)` / `(make-spherical-manifold dim)`
-Construct a manifold of the given integer dimension. Hyperbolic is the Poincaré ball
-model (K=−1); spherical is the stereographic model (K=+1); Euclidean is flat (K=0).
+Construct a manifold of the given integer dimension. Hyperbolic is the ball of
+radius 2 (K=−1); spherical is the stereographic chart (K=+1); Euclidean is flat
+(K=0). For a curvature other than ±1, or for curvature derivatives, use
+[`core.curvature`](curvature.md).
 Returns the `#(type dim)` object.
 
 ```scheme
@@ -60,15 +71,15 @@ spherical, `0.0` euclidean.
 (display (manifold-curvature (make-spherical-manifold 3)))  (newline)
 ```
 ```
--1
-0
-1
+-1.0
+0.0
+1.0
 ```
 
 ### `(manifold-distance m a b)`
-Geodesic distance between points `a` and `b`. Hyperbolic uses the Poincaré `arccosh`
-formula; spherical uses `acos` of the normalized dot product (clamped to [−1,1]);
-Euclidean is the L2 norm of `a−b`.
+Geodesic distance between points `a` and `b`: `artan_B(‖(−a) ⊕_B b‖)` with
+`B = −K/4`, where `artan_B` is `artanh(√B r)/√B` on the ball and `atan(√−B r)/√−B` on
+the sphere chart; Euclidean is the L2 norm of `a−b`.
 
 ```scheme
 (require core.manifold)
@@ -79,20 +90,18 @@ Euclidean is the L2 norm of `a−b`.
 (display (manifold-distance (make-spherical-manifold 3)  a b)) (newline)
 ```
 ```
-0.7613421083415903
+0.3654157126323245
 0.36055512754639896
-1.4288992721907328
+0.3557995806927712
 ```
 
-Edge case: `(manifold-distance m x x)` returns `0.0` (and for spherical, points with
-tiny norm are guarded by `mf-eps`). Passing lists instead of vectors does not crash but
-returns a wrong value — see [Known issues](#known-issues).
+Edge case: `(manifold-distance m x x)` returns `0.0`. Points are vectors; see
+[Points are vectors](#points-are-vectors).
 
 ### `(manifold-exp-map m base v)`
 Exponential map: move from point `base` along tangent vector `v`, returning the endpoint
-point. Hyperbolic uses Möbius addition with the `tanh` scaling; spherical uses the
-great-circle `cos/sin` formula; Euclidean is `base + v`. A near-zero tangent returns
-`base` unchanged.
+point: `base ⊕_B tan_B(λ‖v‖)·v/‖v‖` (`tanh` on the ball, `tan` on the sphere
+chart); Euclidean is `base + v`. A near-zero tangent returns `base` unchanged.
 
 ```scheme
 (require core.manifold)
@@ -102,7 +111,7 @@ great-circle `cos/sin` formula; Euclidean is `base + v`. A near-zero tangent ret
 (display (vector-ref (manifold-exp-map H a v) 0)) (newline)
 ```
 ```
-0.15042424407613583
+0.1501046611543684
 ```
 
 ### `(manifold-log-map m base p)`
@@ -119,15 +128,14 @@ with `base`.
 (display (vector-ref (manifold-log-map H a (manifold-exp-map H a v)) 0)) (newline)
 ```
 ```
-0.049999999999999975
+0.049999999999999885
 ```
 
 ### `(manifold-parallel-transport m base-a base-b v)`
 Transport tangent vector `v` from `base-a` to `base-b`. Euclidean is the identity;
-hyperbolic uses `(λ_a/λ_b)·gyr[base-b,−base-a]v` with the linear closed form for
-gyration; spherical removes the component of `v` along `base-b` (projection). The
-hyperbolic result is the exact constant-curvature gyrovector transport for this
-chart, not a first-order rescaling.
+hyperbolic and spherical use `(λ_a/λ_b)·gyr[base-b,−base-a]v` with the linear
+closed form for gyration — the exact constant-curvature gyrovector transport for
+this chart, not a first-order rescaling.
 
 ```scheme
 (require core.manifold)
@@ -138,7 +146,7 @@ chart, not a first-order rescaling.
 (display (vector-ref (manifold-parallel-transport H a b v) 0)) (newline)
 ```
 ```
-0.050896286401282395
+0.050375696202531635
 ```
 
 ### `(manifold-sectional-curvature m)`
@@ -150,7 +158,7 @@ Takes only the manifold (constant across all points/planes).
 (display (manifold-sectional-curvature (make-hyperbolic-manifold 3))) (newline)
 ```
 ```
--1
+-1.0
 ```
 
 ### `(manifold-scalar-curvature m)`
@@ -163,15 +171,15 @@ Scalar curvature R = K·n·(n−1), where n is the dimension. Takes only the man
 (display (manifold-scalar-curvature (make-spherical-manifold 3)))  (newline)
 ```
 ```
--6
-0
-6
+-6.0
+0.0
+6.0
 ```
 
 ### `(metric-component m x i j)`
 Single metric-tensor entry g_ij at point `x`. All three spaces are conformally flat:
-g_ij = λ(x)²·δ_ij, where λ = 1 (euclidean), 2/(1−‖x‖²) (hyperbolic), 2/(1+‖x‖²)
-(spherical). Off-diagonal entries are 0.
+g_ij = λ(x)²·δ_ij, where λ = 1/(1 + K‖x‖²/4): 1 (euclidean), 1/(1−‖x‖²/4)
+(hyperbolic), 1/(1+‖x‖²/4) (spherical). Off-diagonal entries are 0.
 
 ```scheme
 (require core.manifold)
@@ -179,7 +187,7 @@ g_ij = λ(x)²·δ_ij, where λ = 1 (euclidean), 2/(1−‖x‖²) (hyperbolic),
 (display (metric-component H #(0.1 0.2 0.0) 0 0)) (newline)
 ```
 ```
-4.432132963988919
+1.0254766864284566
 ```
 
 ### `(manifold-metric m x)`
@@ -192,7 +200,7 @@ materialized in parallel via `parallel-map`.
 (display (vector-ref (vector-ref (manifold-metric H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
-4.432132963988919
+1.0254766864284566
 ```
 
 ### `(manifold-metric-inverse m x)`
@@ -205,7 +213,7 @@ layout.
 (display (vector-ref (vector-ref (manifold-metric-inverse H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
-0.22562500000000002
+0.9751562500000004
 ```
 
 ### `(christoffel-symbol m x i j k)`
@@ -221,8 +229,8 @@ Symmetric in the lower indices i,j. Zero everywhere for Euclidean. Argument orde
 (display (christoffel-symbol (make-euclidean-manifold 3) #(0.1 0.2 0.0) 0 1 0)) (newline)
 ```
 ```
-0.21052631578947367
-0
+0.050632911392405056
+0.0
 ```
 
 ### `(manifold-christoffel m x)`
@@ -247,7 +255,7 @@ Single Ricci-tensor entry. Einstein form for constant curvature: Ric_ij = K·(n�
 (display (ricci-component H #(0.1 0.2 0.0) 0 0)) (newline)  ; -1*2*g_00
 ```
 ```
--8.864265927977838
+-2.050953372856913
 ```
 
 ### `(manifold-ricci m x)`
@@ -259,7 +267,7 @@ Full n×n Ricci tensor at `x` as a vector of row-vectors.
 (display (vector-ref (vector-ref (manifold-ricci H #(0.1 0.2 0.0)) 0) 0)) (newline)
 ```
 ```
--8.864265927977838
+-2.050953372856913
 ```
 
 ### `(riemann-component m x i j k l)`
@@ -272,38 +280,304 @@ R_ijkl = K·(g_ik·g_jl − g_il·g_jk). Takes four lower indices i,j,k,l.
 (display (riemann-component H #(0.1 0.2 0.0) 0 1 0 1)) (newline)  ; = -λ⁴
 ```
 ```
--19.643802610477202
+-1.051602434408287
 ```
 
-## Known issues
+## Atlases: manifolds glued from charts (`core.manifold.atlas`)
 
-### Points must be vectors, not lists (silently wrong, cross-ref ESH-0069)
+**Source**: [`lib/core/manifold/atlas.esk`](../../../lib/core/manifold/atlas.esk)
+**Require**: `(require core.manifold.atlas)` (not part of `(require stdlib)`; it
+loads `core.sheaf.glue` and `core.sheaf.cohomology`, whose gluing results it
+returns). Design: [ADR-0018, amendment "Charts as gluing data"](../../design/adr/0018-signed-curvature-stereographic-geometry.md#amendment-v140-connection-charts-as-gluing-data).
 
-All operations index points with `vector-ref` / `vector-length`. Passing a plain `list`
-does not crash but produces a **wrong** result:
+The functions above work in **one** chart. A manifold is the colimit of its
+charts: an atlas is the gluing data — chart domains `φ_i(U_i) ⊂ Rⁿ`,
+transition maps `g_{i→j} = φ_j ∘ φ_i⁻¹` on overlaps, and the cocycle condition
+
+```
+g_{j→k} ∘ g_{i→j} = g_{i→k}   on φ_i(U_i ∩ U_j ∩ U_k),      g_{i→i} = id
+```
+
+which is exactly what makes "`x ~ g_{i→j}(x)`" an equivalence relation. This
+module checks that condition, glues points, tangent vectors, covectors,
+bilinear forms, functions and vector fields along it, and computes the
+topology of the gluing on the nerve of the cover with
+[`core.sheaf`](sheaf.md).
+
+### Data model
+
+| Value | Constructor | Meaning |
+|---|---|---|
+| chart | `(make-chart name dim domain? [metric])` | `domain?` decides membership in `φ(U)`; `metric` (optional) maps a point to an `n × n` matrix |
+| transition | `(make-transition from to map overlap?)` | `map` sends `from`-coordinates to `to`-coordinates; `overlap?` decides `φ_from(U_from ∩ U_to)` |
+| atlas | `(make-atlas dim carrier charts transitions samples)` | `samples`: alist chart name → list of points (the sample net) |
+| point of the glued space | `(atlas-point atlas chart x)` | a chart representative |
+
+Points are vectors built with `vector` (not `#(...)` literals, which are f64
+tensors). Give both directions of every transition the gluing uses.
+
+**Carriers.** `'exact`: coordinates are exact rationals, every check is an
+equality, and a transition that leaves the exact numbers is reported.
+`(list 'float tol)`: two points (or Jacobians, or metrics) agree when every
+entry satisfies `|a_i − b_i| ≤ tol · max(1, max|a_j|, max|b_j|)`;
+`(atlas-default-tolerance)` is `2⁻⁴⁰`.
+
+**What is checked.** Every check runs over the sample net: for each sample
+`x` of chart `i` and all charts `j, k`, the cocycle and inverse identities,
+domain consistency (`g_{i→j} x ∈ U_j ∩ U_k` exactly when `x ∈ U_i ∩ U_k`),
+the chain rule `g'_{j→k}(g_{i→j} x) · g'_{i→j}(x) = g'_{i→k}(x)` with
+Jacobians from forward-mode AD (`derivative` along each axis — exact at exact
+points), and, when the charts carry metrics, that every transition is an
+isometry `g'ᵀ G_j(g x) g' = G_i(x)`. Each visit to a sample runs in its own
+`with-region`, so long checks stay flat in memory.
+
+**Results.** Every check returns a `core.sheaf` gluing result,
+`#(gluing glued value)` or `#(gluing obstructed (obstruction ...))`:
+
+| Obstruction | Meaning |
+|---|---|
+| `(cocycle (i j k) x via-j direct)` | `g_{j→k} g_{i→j} x ≠ g_{i→k} x` |
+| `(identity i x image)` | an explicit `g_{i→i}` moves `x` |
+| `(domain (i j k) x)` | the overlaps disagree about `x` (`k = j`: `g_{i→j} x` is outside chart `j`) |
+| `(outside i x)` | a sample of chart `i` is not in its domain |
+| `(inexact (i j) x value)` | an exact atlas produced an inexact value |
+| `(jacobian-cocycle (i j k) x lhs rhs)` | the chain rule fails |
+| `(metric (i j) x pulled-back metric)` | `g_{i→j}` is not an isometry |
+| `(orientation-varies (i j) x y)` | `det g'_{i→j}` changes sign on the overlap |
+| `(degenerate (i j) x)` | `det g'_{i→j}(x) = 0` |
+| `(monodromy loop)` | a closed path of charts along which the orientation reverses |
+| `(disagree i j overlap vi vj)` | (from `core.sheaf`) local data differ on an overlap |
+
+### Space forms: the ADR-0018 chart as one chart of an atlas
+
+`(sphere-atlas n K)` is the sphere of curvature `K > 0` with the `2(n+1)`
+stereographic charts from the poles `±R e_k` (`R = 1/√K`), named `e<k>-` and
+`e<k>+`. Chart `e<n>-` (pole `−R e_n`) is the chart of `core.manifold` and
+[`core.curvature`](curvature.md); every chart carries the metric
+`I/(1 + K|x|²/4)²`. The atlas is exact when `K` is the square of a rational
+and `(float 2⁻⁴⁰)` otherwise; an optional third argument is the list of
+coordinate values of the sample grid.
 
 ```scheme
-(require core.manifold)
-(define H (make-hyperbolic-manifold 3))
-;; list form — WRONG
-(display (manifold-distance H (list 0.1 0.2 0.0) (list 0.3 -0.1 0.0))) (newline)
-;; vector form — correct
-(display (manifold-distance H (vector 0.1 0.2 0.0) (vector 0.3 -0.1 0.0))) (newline)
+(require core.manifold.atlas)
+(require core.sheaf.glue)
+(define S2 (sphere-atlas 2 1))
+(display (atlas-chart-names S2)) (newline)
+(display (atlas-carrier S2)) (newline)
+(display (glued-value (atlas-check S2))) (newline)
+(display (atlas-transition-map S2 'e2- 'e2+ (vector 1/2 1/3))) (newline)
+(display (glued-value (atlas-orientation S2))) (newline)
 ```
 ```
-0.2513143891844848            ;; the list form: a different number on every run
-0.7613421083415903            ;; the vector form: the correct distance
+(e0- e0+ e1- e1+ e2- e2+)
+exact
+((charts . 6) (cocycle-checks . 3588) (jacobian-checks . 3588) (metric-checks . 732))
+#(72/13 48/13)
+((e0- . 1) (e0+ . -1) (e1- . -1) (e1+ . 1) (e2- . 1) (e2+ . -1))
 ```
 
-The correct distance is `0.7613421083415903`. The list form reinterprets a cons
-chain through the vector layout, so what it returns is **whatever the adjacent
-heap words happen to hold** — it is not a stable wrong number, and re-running
-the same program prints a different one, so the first line above is one
-observed run and not a value to compare against. This is
-the same "no type error on non-vector/non-tensor geometric input" class tracked by
-ESH-0069 (*"Tensor ops SIGSEGV on non-tensor
-(vector) input instead of raising a type error"* — here it is silent-wrong rather than a
-crash). Always pass `#(...)`, `(vector ...)`, or `(make-vector n x)` points.
+The antipodal charts differ by the inversion `x ↦ 4x/(K|x|²)` (here
+`(1/2, 1/3) ↦ (72/13, 48/13)`). The orientation is the choice of sign per
+chart that makes every transition orientation-preserving.
+
+Tangent vectors move by the Jacobian of the transition (exact here), covectors
+by its inverse transpose, bilinear forms by `J⁻ᵀ B J⁻¹`:
+
+```scheme
+(require core.manifold.atlas)
+(define S2 (sphere-atlas 2 1))
+(define x (vector 1/2 1/3))
+(define v (vector 3 -5))
+(define w (atlas-transport-vector S2 'e2- 'e0+ x v))
+(display w) (newline)
+(display (atlas-transport-vector S2 'e0+ 'e2- (atlas-transition-map S2 'e2- 'e0+ x) w)) (newline)
+(display (atlas-jacobian S2 'e2- 'e2+ x)) (newline)
+```
+```
+#(-79776/7225 118368/7225)
+#(3 -5)
+#(#(-720/169 -1728/169) #(-1728/169 720/169))
+```
+
+`(space-form-atlas n K)` covers every sign: the sphere atlas for `K > 0`; one
+chart `euclidean` with the identity metric for `K = 0`; for `K < 0` the
+ADR-0018 ball of radius `2/√(−K)` (chart `ball`) glued to the upper
+half-space (chart `half-space`, metric `I/(−K z_n²)`) by an inversion, which
+reverses orientation. `(space-form-conformal-factor K x)` is the one
+expression `1/(1 + K|x|²/4)` the core chart uses for every sign, so `K = 0`
+is the Euclidean chart exactly:
+
+```scheme
+(require core.manifold.atlas)
+(require core.sheaf.glue)
+(define x (vector 1/3 -1/5))
+(display (map (lambda (K) (space-form-conformal-factor K x)) (list 1 1/4 0 -1/4 -1))) (newline)
+(display (atlas-chart-names (space-form-atlas 2 0))) (newline)
+(display (atlas-metric (space-form-atlas 2 0) 'euclidean x)) (newline)
+(define H2 (space-form-atlas 2 -1))
+(display (atlas-chart-names H2)) (newline)
+(display (atlas-transition-map H2 'ball 'half-space (vector 0 0))) (newline)
+(display (glued-value (atlas-orientation-signs H2))) (newline)
+(display (glued? (atlas-check H2))) (newline)
+```
+```
+(450/467 1800/1817 1 1800/1783 450/433)
+(euclidean)
+#(#(1 0) #(0 1))
+(ball half-space)
+#(0 1)
+(((ball half-space) . -1))
+#t
+```
+
+`(sphere-atlas->ambient K chart x)` and `(sphere-atlas<-ambient K chart p)`
+convert between chart coordinates and the embedded sphere `|p|² = 1/K` (the
+pole of a chart is refused).
+
+### Points, functions and vector fields on the glued space
+
+```scheme
+(require core.manifold.atlas)
+(require core.sheaf.glue)
+(define S2 (sphere-atlas 2 1))
+;; the height p_2 of the embedded sphere, written in each chart
+(define (height name) (lambda (x) (vector-ref (sphere-atlas->ambient 1 name x) 2)))
+(define r (atlas-glue-functions S2 (map (lambda (n) (cons n (height n))) (atlas-chart-names S2))))
+(display (glued? r)) (newline)
+(define f (glued-value r))
+(display (f (atlas-point S2 'e0+ (vector 1/2 1/3)))) (newline)
+(define p (atlas-point S2 'e2+ (vector 0 0)))
+(display (atlas-point-charts S2 p)) (newline)
+(display (atlas-point=? S2 p (atlas-point S2 'e0- (vector 0 -2)))) (newline)
+```
+```
+#t
+48/157
+(e0- e0+ e1- e1+ e2+)
+#t
+```
+
+`atlas-glue-functions` and `atlas-glue-vector-fields` build a `core.sheaf`
+cover whose overlaps are the samples of each pairwise overlap and call
+`glue-cover`: local data that agree glue to a procedure on atlas points, and
+data that do not are reported with `disagree` obstructions naming the charts.
+`(atlas-recoordinatize atlas chart h h-inv)` changes one chart's coordinates
+(a Cech coboundary): the result glues to the same space, with the chart's
+metric pushed forward.
+
+### Building an atlas, and an inconsistent one
+
+```scheme
+(require core.manifold.atlas)
+(require core.sheaf.glue)
+;; the real line from two charts, L = (-inf, 1) and R = (0, inf)
+(define (ident x) x)
+(define (line shift)
+  (make-atlas 1 'exact
+              (list (make-chart 'L 1 (lambda (x) (< (vector-ref x 0) 1)))
+                    (make-chart 'R 1 (lambda (x) (> (vector-ref x 0) 0))))
+              (list (make-transition 'L 'R (lambda (x) (vector (+ (vector-ref x 0) shift))) (lambda (x) (> (vector-ref x 0) 0)))
+                    (make-transition 'R 'L ident (lambda (x) (< (vector-ref x 0) 1))))
+              (list (cons 'L (list (vector -1) (vector 1/2)))
+                    (cons 'R (list (vector 1/2) (vector 2))))))
+(display (atlas-check-cocycle (line 0))) (newline)
+(display (atlas-check-cocycle (line 1/10))) (newline)
+```
+```
+#(gluing glued (cocycle-checks 2))
+#(gluing obstructed ((cocycle (L R L) #(1/2) #(3/5) #(1/2)) (cocycle (R L R) #(1/2) #(3/5) #(1/2))))
+```
+
+With the shift, `g_{R→L} ∘ g_{L→R}` is not the identity: the witness names
+the triple `(L R L)`, the point, and the two values.
+
+### The nerve, orientation and cohomology
+
+The nerve of the cover is the set of chart index sets whose common overlap
+holds a sample; `(atlas-nerve atlas)` lists each simplex with its witness
+`(chart-index . point)`. `(atlas-nerve-space atlas)` is the nerve as a
+`core.sheaf` finite space (its points are the overlaps `U_J`, ordered by
+inclusion). The orientation sheaf is the rank-one local system whose
+restrictions are the signs of `det g'_{i→j}`:
+
+- `(atlas-orientation-signs atlas)` — the sign on every nerve edge;
+- `(atlas-w1 atlas)` — `(w1 cochain trivial? evidence)`: the Z/2 cochain, and
+  either the orientation that trivializes it or a loop of charts on which it
+  is 1;
+- `(atlas-orientation atlas)` / `(atlas-orientable? atlas)` — the global
+  section of the orientation sheaf, or the `monodromy` loop;
+- `(atlas-cech-cohomology atlas kmax coefficients)` with coefficients `'Z` or
+  `'orientation` — Cech cohomology of the cover, `((k betti torsion) ...)`;
+  `(atlas-cech-complex ...)` is the complex itself (for
+  `cohomology-generators`);
+- `(atlas-nerve-cohomology atlas kmax coefficients)` — derived cohomology of
+  the local system on the nerve space, an independent path to the same
+  groups;
+- `(atlas-mod2-betti atlas kmax)` — dimensions of `H^k(N; Z/2)` from the
+  integral groups (universal coefficients).
+
+For a good cover these are the groups of the manifold. The vertex-star atlas
+of a triangulated surface is one: `(simplicial-surface-atlas triangles)`
+maps the open star of each vertex piecewise linearly onto a fan of exact
+rational points, the transitions are affine on each triangle, and the nerve
+is the triangulation itself. The 6-vertex projective plane:
+
+```scheme
+(require core.manifold.atlas)
+(require core.sheaf.glue)
+(define rp2 (simplicial-surface-atlas
+             (list (list 1 2 3) (list 1 3 4) (list 1 4 5) (list 1 5 6) (list 1 6 2)
+                   (list 2 3 5) (list 3 4 6) (list 4 5 2) (list 5 6 3) (list 6 2 4))))
+(display (glued? (atlas-check rp2))) (newline)
+(display (gluing-obstructions (atlas-orientation rp2))) (newline)
+(display (atlas-cech-cohomology rp2 2 'Z)) (newline)
+(display (atlas-cech-cohomology rp2 2 'orientation)) (newline)
+(display (atlas-nerve-cohomology rp2 2 'orientation)) (newline)
+(display (atlas-mod2-betti rp2 2)) (newline)
+```
+```
+#t
+((monodromy (1 2 4 1)))
+((0 1 ()) (1 0 ()) (2 0 (2)))
+((0 0 ()) (1 0 (2)) (2 1 ()))
+((0 0 ()) (1 0 (2)) (2 1 ()))
+(1 1 1)
+```
+
+`RP²` is not orientable: the loop `1 → 2 → 4 → 1` reverses orientation.
+`H*(RP²; Z) = Z, 0, Z/2`; with orientation coefficients `0, Z/2, Z` (twisted
+Poincaré duality); with Z/2 coefficients `1, 1, 1`.
+
+### Function table
+
+| Function | Returns |
+|---|---|
+| `chart?` `chart-name` `chart-dimension` `chart-domain?` `chart-metric` | chart accessors |
+| `transition?` `transition-from` `transition-to` `transition-map` `transition-overlap?` | transition accessors |
+| `atlas?` `atlas-dimension` `atlas-carrier` `atlas-chart-names` `atlas-chart-count` `atlas-chart` `atlas-chart-index` `atlas-samples` `atlas-transition` | atlas accessors |
+| `(atlas-overlap? A from to x)` / `(atlas-transition-map A from to x)` | overlap membership / `g_{from→to}(x)` (refused outside the overlap) |
+| `(atlas-same-point? A x y)` | equality under the atlas carrier |
+| `(atlas-check A)` | all checks; glued value: the counts of checks made |
+| `(atlas-check-cocycle A)` / `(atlas-cocycle-violations A)` | the cocycle, identity and domain checks |
+| `(atlas-jacobian A from to x)` / `(atlas-jacobian-violations A)` | the Jacobian of a transition / chain-rule failures |
+| `(atlas-metric A chart x)` / `(atlas-metric-violations A)` | a chart metric / isometry failures |
+| `atlas-point` `atlas-point?` `atlas-point-chart` `atlas-point-local` `atlas-point-coordinates` `atlas-point-charts` `atlas-point-normalize` `atlas-point=?` | points of the glued space |
+| `atlas-transport-vector` `atlas-transport-covector` `atlas-transport-bilinear` | `(A from to x value)`: tensors moved to chart `to` |
+| `atlas-glue-functions` `atlas-glue-vector-fields` `atlas-recoordinatize` | gluing local data; changing one chart |
+| `atlas-nerve` `atlas-nerve-space` `atlas-orientation-signs` `atlas-w1` `atlas-orientation` `atlas-orientable?` `atlas-local-system` `atlas-cech-complex` `atlas-cech-cohomology` `atlas-nerve-cohomology` `atlas-mod2-betti` | the nerve and its cohomology |
+| `sphere-atlas` `sphere-atlas-core-chart` `sphere-atlas-chart-name` `sphere-atlas->ambient` `sphere-atlas<-ambient` `space-form-atlas` `space-form-conformal-factor` `simplicial-surface-atlas` | constructors |
+
+Checks run over the sample net, not over every point of an overlap. Turning
+a sample check of a rational transition of bounded degree into a proof on
+the whole overlap is Planned for v1.4.1. The suite is
+[`tests/manifold/manifold_atlas_test.esk`](../../../tests/manifold/manifold_atlas_test.esk)
+(CTest `manifold_atlas_jit`, `manifold_atlas_aot`).
+
+## Points are vectors
+
+All operations index points with `vector-ref` / `vector-length`. Pass `#(...)`,
+`(vector ...)`, or `(make-vector n x)`; a list argument raises a catchable type error
+(`vector-length: expected vector or tensor, got pair`).
 
 ## Notes
 

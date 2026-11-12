@@ -1,3 +1,14 @@
+---
+kind: report
+status: historical
+owner-area: build
+since: v1.4.0-connection
+sources:
+  - scripts/gen_language_surface.py
+  - scripts/check_builtin_classification.py
+  - tests/core/check_constructor_allocation_ir.py
+---
+
 # Production surface retirement inventory
 
 Source snapshot: `7b8fb16dc319340ebfc8339c289faedee36e909d` (detached).

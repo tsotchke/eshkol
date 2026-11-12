@@ -1,0 +1,472 @@
+;;; core.quantum.circuit -- the quantum circuit IR shared by the register
+;;; runtime, the optimiser, the router, QAOA and the Moonlab lowering: gate
+;;; records on wires 0 .. n-1, gate metadata (arity, inverse, diagonality,
+;;; Clifford+T membership), a binary64 state-vector simulator over Eshkol's
+;;; complex numbers (differentiable by Eshkol AD: every gate angle may be an
+;;; AD value), and unitary-equivalence checks -- exact over the cyclotomic
+;;; field Q(zeta_m) through core.monoidal.zx, by ZX-calculus rewriting to the
+;;; identity, or in binary64 up to a tolerance.
+;;;
+;;; Usage: (require core.quantum.circuit)   or   (require core.quantum)
+;;;
+;;; Representation (public):
+;;;   circuit  #(qcircuit n gates), gates a list applied left to right
+;;;   gate     a list (NAME wire ... [angle]):
+;;;     (H q) (X q) (Y q) (Z q) (S q) (Sdg q) (T q) (Tdg q)
+;;;     (P q p)    diag(1, e^{i pi p}), p a real (exact rational for exact checks)
+;;;     (XP q p)   H P(p) H
+;;;     (RX q th) (RY q th) (RZ q th)   e^{-i th G/2}, G = X, Y, Z, th in radians
+;;;     (CNOT c t) (CZ a b) (SWAP a b)
+;;;     (RZZ a b th)  e^{-i th Z(x)Z/2}
+;;;     (CCX a b t) (CCZ a b c)
+;;   angle    a real number, or a parameter reference #(qparam k c) standing
+;;            for c * theta_k; (qcircuit-bind c thetas) substitutes a vector
+;;            of parameter values, so one parametric circuit serves the
+;;            simulator, AD and the Moonlab lowering
+;;;   The first eleven gate names and their meaning are those of
+;;;   core.monoidal.zx (ADR-0041), so a Clifford+T circuit is also a circuit
+;;;   of that library. Wire 0 is the first tensor factor (the most
+;;;   significant bit of a basis index).
+;;;   state    a vector of 2^n complex amplitudes, basis index with wire 0
+;;;            most significant
+;;;
+;;; Sources: M. A. Nielsen, I. L. Chuang, "Quantum Computation and Quantum
+;;; Information" (2010), ch. 4; B. Coecke, A. Kissinger, "Picturing Quantum
+;;; Processes" (2017), ch. 9-10; ADR-0041 (core.monoidal.zx); ADR-0048.
+
+(require stdlib)
+(require core.monoidal.zx)
+
+(provide make-qcircuit qcircuit? qcircuit-width qcircuit-gates qcircuit-append qcircuit-concat
+         qcircuit-inverse qcircuit-remap qcircuit-gate-count qcircuit-two-qubit-count
+         qcircuit-t-count qcircuit-depth qcircuit-stats qcircuit-validate
+         qgate-name qgate-wires qgate-angle qgate-arity qgate-parametric? qgate-known?
+         qgate-inverse qgate-diagonal? qgate-clifford+t? qgate-exact? qgate-self-inverse?
+         qgate-phase-turns qgate-make
+         qstate-zero qstate-basis qstate-apply qstate-run qcircuit-run qcircuit-unitary
+         qstate-norm2 qstate-probabilities qstate-inner qstate-fidelity
+         qstate-pauli-expectation qstate-diagonal-expectation qstate-bit
+         qcircuit-exact? qcircuit->exact-gates qcircuit-exact-scalars qcircuit-exact-unitary
+         qcircuit-equivalent-exact? qcircuit-equal-exact? qcircuit-equivalent-float?
+         qcircuit-zx-identity? qcircuit-equivalent? qcircuit-permutation-gates
+         qcircuit-equivalent-up-to-permutation?
+         qparam qparam? qparam-index qparam-coefficient qcircuit-parametric? qcircuit-parameter-count
+         qcircuit-bind qcircuit-decompose-multiqubit qcircuit-lower qgate-lower)
+
+;; ---------------------------------------------------------------------------
+;; Gates
+;; ---------------------------------------------------------------------------
+
+;; name -> (wires angles)
+(define qg-table
+  '((H 1 0) (X 1 0) (Y 1 0) (Z 1 0) (S 1 0) (Sdg 1 0) (T 1 0) (Tdg 1 0)
+    (P 1 1) (XP 1 1) (RX 1 1) (RY 1 1) (RZ 1 1)
+    (CNOT 2 0) (CZ 2 0) (SWAP 2 0) (RZZ 2 1)
+    (CCX 3 0) (CCZ 3 0)))
+
+(define (qg-entry name)
+  (let ((e (assq name qg-table)))
+    (if e e (error "core.quantum.circuit: unknown gate" name))))
+(define (qgate-known? g) (and (pair? g) (symbol? (car g)) (assq (car g) qg-table) #t))
+(define (qgate-name g) (car g))
+(define (qgate-arity g) (cadr (qg-entry (car g))))
+(define (qgate-parametric? g) (= 1 (caddr (qg-entry (car g)))))
+(define (qc-take xs k) (if (or (= k 0) (null? xs)) '() (cons (car xs) (qc-take (cdr xs) (- k 1)))))
+(define (qgate-wires g) (qc-take (cdr g) (qgate-arity g)))
+(define (qgate-angle g)
+  (if (qgate-parametric? g) (list-ref g (+ 1 (qgate-arity g))) #f))
+(define (qgate-make name wires . angle)
+  (append (list name) wires angle))
+
+(define (qc-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (qc-distinct? xs)
+  (or (null? xs) (and (not (memv (car xs) (cdr xs))) (qc-distinct? (cdr xs)))))
+
+;; parameter references: the angle c * theta_k
+(define (qparam k . c) (vector 'qparam k (if (pair? c) (car c) 1)))
+(define (qparam? a) (and (vector? a) (= 3 (vector-length a)) (eq? (vector-ref a 0) 'qparam)))
+(define (qparam-index a) (vector-ref a 1))
+(define (qparam-coefficient a) (vector-ref a 2))
+
+;; #t, or an error naming the rule gate g on n wires breaks
+(define (qgate-check g n)
+  (if (not (qgate-known? g)) (error "core.quantum.circuit: unknown gate" g))
+  (let ((k (qgate-arity g)) (a (caddr (qg-entry (car g)))))
+    (if (not (= (length g) (+ 1 k a))) (error "core.quantum.circuit: the operand count differs from the gate's" g))
+    (for-each (lambda (w)
+                (if (not (and (integer? w) (exact? w) (>= w 0) (< w n)))
+                    (error "core.quantum.circuit: wire out of range" g n)))
+              (qgate-wires g))
+    (if (not (qc-distinct? (qgate-wires g)))
+        (error "core.quantum.circuit: a gate acts on distinct wires" g))
+    (if (= a 1)
+        (let ((x (qgate-angle g)))
+          ;; a real, a qparam, or an AD value standing for a real (inside
+          ;; gradient / derivative); data of any other kind is refused
+          (if (or (symbol? x) (string? x) (pair? x) (null? x) (boolean? x) (char? x)
+                  (and (vector? x) (not (and (qparam? x) (integer? (qparam-index x)) (exact? (qparam-index x))
+                                             (>= (qparam-index x) 0) (real? (qparam-coefficient x)))))
+                  (and (number? x) (not (real? x))))
+              (error "core.quantum.circuit: an angle is a real number or a qparam" g))))
+    #t))
+
+;; the exact phase of a diagonal one-qubit phase gate as a fraction of pi
+;; (Z = 1, S = 1/2, T = 1/4, P p = p), or #f
+(define (qgate-phase-turns g)
+  (case (car g)
+    ((Z) 1) ((S) (/ 1 2)) ((Sdg) (/ -1 2)) ((T) (/ 1 4)) ((Tdg) (/ -1 4)) ((P) (caddr g))
+    (else #f)))
+
+(define (qc-neg-angle a) (if (qparam? a) (qparam (qparam-index a) (- (qparam-coefficient a))) (- a)))
+(define (qgate-self-inverse? g) (and (memq (car g) '(H X Y Z CNOT CZ SWAP CCX CCZ)) #t))
+
+(define (qgate-inverse g)
+  (case (car g)
+    ((H X Y Z CNOT CZ SWAP CCX CCZ) g)
+    ((S) (list 'Sdg (cadr g)))
+    ((Sdg) (list 'S (cadr g)))
+    ((T) (list 'Tdg (cadr g)))
+    ((Tdg) (list 'T (cadr g)))
+    ((P XP RX RY RZ) (list (car g) (cadr g) (qc-neg-angle (caddr g))))
+    ((RZZ) (list 'RZZ (cadr g) (caddr g) (qc-neg-angle (cadddr g))))
+    (else (error "core.quantum.circuit: unknown gate" g))))
+
+;; diagonal in the computational basis
+(define (qgate-diagonal? g) (and (memq (car g) '(Z S Sdg T Tdg P RZ CZ RZZ CCZ)) #t))
+
+(define (qgate-clifford+t? g)
+  (case (car g)
+    ((H X Y Z S Sdg T Tdg CNOT CZ SWAP CCX CCZ) #t)
+    ((P XP) (let ((p (caddr g))) (and (real? p) (exact? p) (integer? (* 4 p)))))
+    (else #f)))
+
+;; expressible exactly over a cyclotomic field: rational phases of pi
+(define (qgate-exact? g)
+  (case (car g)
+    ((H X Y Z S Sdg T Tdg CNOT CZ SWAP CCX CCZ) #t)
+    ((P XP) (let ((p (caddr g))) (and (real? p) (exact? p))))
+    (else #f)))
+
+;; ---------------------------------------------------------------------------
+;; Circuits
+;; ---------------------------------------------------------------------------
+
+(define (make-qcircuit n gates)
+  (if (not (and (integer? n) (exact? n) (>= n 0)))
+      (error "core.quantum.circuit: width is a natural number" n))
+  (for-each (lambda (g) (qgate-check g n)) gates)
+  (vector 'qcircuit n gates))
+(define (qcircuit? c) (and (vector? c) (= 3 (vector-length c)) (eq? (vector-ref c 0) 'qcircuit)))
+(define (qcircuit-width c) (vector-ref c 1))
+(define (qcircuit-gates c) (vector-ref c 2))
+(define (qcircuit-validate c) (for-each (lambda (g) (qgate-check g (qcircuit-width c))) (qcircuit-gates c)) #t)
+(define (qcircuit-append c gates) (make-qcircuit (qcircuit-width c) (append (qcircuit-gates c) gates)))
+(define (qcircuit-concat c d)
+  (if (not (= (qcircuit-width c) (qcircuit-width d)))
+      (error "core.quantum.circuit: concatenated circuits have equal width" (qcircuit-width c) (qcircuit-width d)))
+  (make-qcircuit (qcircuit-width c) (append (qcircuit-gates c) (qcircuit-gates d))))
+(define (qcircuit-inverse c) (make-qcircuit (qcircuit-width c) (reverse (map qgate-inverse (qcircuit-gates c)))))
+
+;; rename wires through f (a procedure or a vector) onto a circuit of width m
+(define (qcircuit-remap c f m)
+  (let ((ff (if (vector? f) (lambda (w) (vector-ref f w)) f)))
+    (make-qcircuit m (map (lambda (g)
+                            (let ((k (qgate-arity g)))
+                              (append (list (car g)) (map ff (qgate-wires g)) (list-tail (cdr g) k))))
+                          (qcircuit-gates c)))))
+
+(define (qcircuit-gate-count c) (length (qcircuit-gates c)))
+(define (qcircuit-two-qubit-count c) (length (filter (lambda (g) (>= (qgate-arity g) 2)) (qcircuit-gates c))))
+;; T-count: T, Tdg and P with an odd multiple of pi/4; CCX and CCZ count 7
+(define (qcircuit-t-count c)
+  (let loop ((gs (qcircuit-gates c)) (k 0))
+    (if (null? gs) k
+        (let ((g (car gs)))
+          (loop (cdr gs)
+                (+ k (case (car g)
+                       ((T Tdg) 1)
+                       ((CCX CCZ) 7)
+                       ((P XP) (let ((p (caddr g))) (if (and (real? p) (exact? p) (integer? (* 4 p)) (not (integer? (* 2 p)))) 1 0)))
+                       (else 0))))))))
+;; depth: the longest chain of gates sharing wires
+(define (qcircuit-depth c)
+  (let ((level (make-vector (max 1 (qcircuit-width c)) 0)))
+    (for-each (lambda (g)
+                (let* ((ws (qgate-wires g))
+                       (d (+ 1 (apply max (map (lambda (w) (vector-ref level w)) ws)))))
+                  (for-each (lambda (w) (vector-set! level w d)) ws)))
+              (qcircuit-gates c))
+    (if (= 0 (qcircuit-width c)) 0 (apply max (vector->list level)))))
+(define (qcircuit-stats c)
+  (list (cons 'gates (qcircuit-gate-count c)) (cons 'two-qubit (qcircuit-two-qubit-count c))
+        (cons 't-count (qcircuit-t-count c)) (cons 'depth (qcircuit-depth c))))
+
+;; ---------------------------------------------------------------------------
+;; Binary64 state vectors (complex amplitudes; AD flows through every angle)
+;; ---------------------------------------------------------------------------
+
+(define qc-pi 3.141592653589793)
+(define (qc-cis a) (make-rectangular (cos a) (sin a)))
+(define (qc-bitval n q) (expt 2 (- n 1 q)))
+(define (qstate-bit n x q) (remainder (quotient x (qc-bitval n q)) 2))
+
+(define (qstate-zero n)
+  (let ((v (make-vector (expt 2 n) (make-rectangular 0.0 0.0))))
+    (vector-set! v 0 (make-rectangular 1.0 0.0))
+    v))
+(define (qstate-basis n index)
+  (let ((v (make-vector (expt 2 n) (make-rectangular 0.0 0.0))))
+    (vector-set! v index (make-rectangular 1.0 0.0))
+    v))
+
+(define (qs-one-qubit n st q m00 m01 m10 m11)
+  (let* ((N (vector-length st)) (b (qc-bitval n q)) (out (make-vector N 0)))
+    (do ((x 0 (+ x 1))) ((= x N) out)
+      (if (= 0 (remainder (quotient x b) 2))
+          (let ((a0 (vector-ref st x)) (a1 (vector-ref st (+ x b))))
+            (vector-set! out x (+ (* m00 a0) (* m01 a1)))
+            (vector-set! out (+ x b) (+ (* m10 a0) (* m11 a1))))))))
+(define (qs-diagonal st f)
+  (let* ((N (vector-length st)) (out (make-vector N 0)))
+    (do ((x 0 (+ x 1))) ((= x N) out)
+      (vector-set! out x (* (f x) (vector-ref st x))))))
+(define (qs-permute st f)
+  (let* ((N (vector-length st)) (out (make-vector N 0)))
+    (do ((x 0 (+ x 1))) ((= x N) out)
+      (vector-set! out (f x) (vector-ref st x)))))
+
+;; apply one gate to a state of n wires; returns a new vector
+(define (qstate-apply n st g)
+  (let ((on? (lambda (x q) (= 1 (qstate-bit n x q))))
+        (c0 (make-rectangular 0.0 0.0)) (c1 (make-rectangular 1.0 0.0))
+        (ci (make-rectangular 0.0 1.0)) (h (make-rectangular (/ 1.0 (sqrt 2.0)) 0.0)))
+    (case (car g)
+      ((H) (qs-one-qubit n st (cadr g) h h h (- h)))
+      ((X) (qs-one-qubit n st (cadr g) c0 c1 c1 c0))
+      ((Y) (qs-one-qubit n st (cadr g) c0 (- ci) ci c0))
+      ((Z S Sdg T Tdg P)
+       (let ((w (qc-cis (* qc-pi (qgate-phase-turns g)))) (q (cadr g)))
+         (qs-diagonal st (lambda (x) (if (on? x q) w c1)))))
+      ((XP) (let* ((w (qc-cis (* qc-pi (caddr g)))) (p (* 0.5 (+ 1 w))) (m (* 0.5 (- 1 w))))
+              (qs-one-qubit n st (cadr g) p m m p)))
+      ((RX) (let* ((th (caddr g)) (c (make-rectangular (cos (* 0.5 th)) 0.0)) (s (make-rectangular 0.0 (- (sin (* 0.5 th))))))
+              (qs-one-qubit n st (cadr g) c s s c)))
+      ((RY) (let* ((th (caddr g)) (c (make-rectangular (cos (* 0.5 th)) 0.0)) (s (make-rectangular (sin (* 0.5 th)) 0.0)))
+              (qs-one-qubit n st (cadr g) c (- s) s c)))
+      ((RZ) (let* ((th (caddr g)) (a (qc-cis (* -0.5 th))) (b (qc-cis (* 0.5 th))) (q (cadr g)))
+              (qs-diagonal st (lambda (x) (if (on? x q) b a)))))
+      ((CNOT) (let ((c (cadr g)) (t (caddr g)) (bt (qc-bitval n (caddr g))))
+                (qs-permute st (lambda (x) (if (on? x c) (if (on? x t) (- x bt) (+ x bt)) x)))))
+      ((CZ) (let ((a (cadr g)) (b (caddr g)))
+              (qs-diagonal st (lambda (x) (if (and (on? x a) (on? x b)) (- c1) c1)))))
+      ((SWAP) (let* ((a (cadr g)) (b (caddr g)) (ba (qc-bitval n a)) (bb (qc-bitval n b)))
+                (qs-permute st (lambda (x) (if (eq? (on? x a) (on? x b)) x
+                                               (if (on? x a) (+ (- x ba) bb) (+ (- x bb) ba)))))))
+      ((RZZ) (let* ((a (cadr g)) (b (caddr g)) (th (cadddr g)) (same (qc-cis (* -0.5 th))) (diff (qc-cis (* 0.5 th))))
+               (qs-diagonal st (lambda (x) (if (eq? (on? x a) (on? x b)) same diff)))))
+      ((CCX) (let ((a (cadr g)) (b (caddr g)) (t (cadddr g)) (bt (qc-bitval n (cadddr g))))
+               (qs-permute st (lambda (x) (if (and (on? x a) (on? x b)) (if (on? x t) (- x bt) (+ x bt)) x)))))
+      ((CCZ) (let ((a (cadr g)) (b (caddr g)) (c (cadddr g)))
+               (qs-diagonal st (lambda (x) (if (and (on? x a) (on? x b) (on? x c)) (- c1) c1)))))
+      (else (error "core.quantum.circuit: unknown gate" g)))))
+
+(define (qstate-run n gates st)
+  (let loop ((gs gates) (st st)) (if (null? gs) st (loop (cdr gs) (qstate-apply n st (car gs))))))
+;; the final state of c from |0..0>, or from `initial`
+(define (qcircuit-run c . initial)
+  (let ((n (qcircuit-width c)))
+    (qstate-run n (qcircuit-gates c) (if (pair? initial) (car initial) (qstate-zero n)))))
+;; the unitary as a vector of columns
+(define (qcircuit-unitary c)
+  (let ((n (qcircuit-width c)))
+    (list->vector (map (lambda (col) (qstate-run n (qcircuit-gates c) (qstate-basis n col)))
+                       (qc-range (expt 2 n))))))
+
+(define (qc-abs2 z) (+ (* (real-part z) (real-part z)) (* (imag-part z) (imag-part z))))
+(define (qstate-norm2 st)
+  (let loop ((i 0) (acc 0.0)) (if (= i (vector-length st)) acc (loop (+ i 1) (+ acc (qc-abs2 (vector-ref st i)))))))
+(define (qstate-probabilities st) (vector-map qc-abs2 st))
+(define (qc-conj z) (make-rectangular (real-part z) (- (imag-part z))))
+;; <a|b>
+(define (qstate-inner a b)
+  (let loop ((i 0) (acc (make-rectangular 0.0 0.0)))
+    (if (= i (vector-length a)) acc (loop (+ i 1) (+ acc (* (qc-conj (vector-ref a i)) (vector-ref b i)))))))
+(define (qstate-fidelity a b) (qc-abs2 (qstate-inner a b)))
+;; <psi|P|psi> for a Pauli string, a list of I X Y Z per wire (a real number)
+(define (qstate-pauli-expectation n st paulis)
+  (let ((phi (qstate-run n (apply append (map (lambda (p q)
+                                                 (case p ((I) '()) ((X) (list (list 'X q))) ((Y) (list (list 'Y q)))
+                                                       ((Z) (list (list 'Z q)))
+                                                       (else (error "core.quantum.circuit: Pauli letter is I, X, Y or Z" p))))
+                                               paulis (qc-range n)))
+                         st)))
+    (real-part (qstate-inner st phi))))
+;; sum_x |psi_x|^2 f(x) for a diagonal observable given by its values f(x)
+(define (qstate-diagonal-expectation st f)
+  (let loop ((x 0) (acc 0.0))
+    (if (= x (vector-length st)) acc (loop (+ x 1) (+ acc (* (qc-abs2 (vector-ref st x)) (f x)))))))
+
+;; ---------------------------------------------------------------------------
+;; Exact semantics through core.monoidal.zx
+;; ---------------------------------------------------------------------------
+
+(define (qcircuit-exact? c)
+  (let loop ((gs (qcircuit-gates c))) (or (null? gs) (and (qgate-exact? (car gs)) (loop (cdr gs))))))
+
+;; CCX and CCZ as Clifford+T (Nielsen-Chuang figure 4.9); the other exact
+;; gates are already gates of core.monoidal.zx, with S, T, Sdg, Tdg, Z, P
+;; carrying their phase as P q p
+(define (qc-ccz a b c)
+  (list (list 'CNOT b c) (list 'Tdg c) (list 'CNOT a c) (list 'T c) (list 'CNOT b c) (list 'Tdg c)
+        (list 'CNOT a c) (list 'T b) (list 'T c) (list 'CNOT a b) (list 'T a) (list 'Tdg b) (list 'CNOT a b)))
+(define (qcircuit->exact-gates c)
+  (apply append
+         (map (lambda (g)
+                (if (not (qgate-exact? g)) (error "core.quantum.circuit: not an exact gate (rational phases of pi only)" g))
+                (case (car g)
+                  ((Sdg) (list (list 'P (cadr g) (/ 3 2))))
+                  ((Tdg) (list (list 'P (cadr g) (/ 7 4))))
+                  ((P XP) (list (list (car g) (cadr g) (let ((p (caddr g))) (- p (* 2 (floor (/ p 2))))))))
+                  ((CCZ) (qc-ccz (cadr g) (caddr g) (cadddr g)))
+                  ((CCX) (let ((t (cadddr g))) (append (list (list 'H t)) (qc-ccz (cadr g) (caddr g) t) (list (list 'H t)))))
+                  (else (list g))))
+              (qcircuit-gates c))))
+;; the cyclotomic field Q(zeta_m) holding every phase of c (and sqrt 2)
+(define (qcircuit-exact-scalars . cs)
+  (let loop ((gs (apply append (map qcircuit-gates cs))) (m 8))
+    (if (null? gs) (cyclotomic-scalars m)
+        (let ((g (car gs)))
+          (loop (cdr gs)
+                (if (memq (car g) '(P XP)) (lcm m (* 2 (denominator (caddr g)))) m))))))
+(define (qcircuit-exact-unitary c . S)
+  (let ((K (if (pair? S) (car S) (qcircuit-exact-scalars c))))
+    (circuit->unitary K (qcircuit-width c) (qcircuit->exact-gates c))))
+;; exact equality of the unitaries up to a global phase / exactly
+(define (qcircuit-equivalent-exact? c d)
+  (let ((K (qcircuit-exact-scalars c d)))
+    (and (= (qcircuit-width c) (qcircuit-width d))
+         (if (linear-map-proportional (qcircuit-exact-unitary c K) (qcircuit-exact-unitary d K)) #t #f))))
+(define (qcircuit-equal-exact? c d)
+  (let ((K (qcircuit-exact-scalars c d)))
+    (and (= (qcircuit-width c) (qcircuit-width d))
+         (linear-map-equal? (qcircuit-exact-unitary c K) (qcircuit-exact-unitary d K)))))
+
+;; ZX-calculus certificate: c ; d^-1 simplifies (core.monoidal.zx, scalar
+;; tracked exactly) to n bare wires joining input i to output i. #t is a
+;; proof that c and d are equal up to a global scalar; #f means the
+;; simplifier did not reach the identity (it is not a disproof).
+(define (qcircuit-zx-identity? c)
+  (let* ((n (qcircuit-width c))
+         (r (circuit->zx n (qcircuit->exact-gates c)))
+         (s (zx-simplify (car r)))
+         (g (car s)))
+    (and (= 0 (zx-spider-count g))
+         (= n (zx-edge-count g))
+         (let loop ((ins (zx-inputs g)) (outs (zx-outputs g)))
+           (or (null? ins)
+               (let ((es (zx-edges-between g (car ins) (car outs))))
+                 (and (= 1 (length es)) (eq? 'plain (vector-ref (car es) 3))
+                      (loop (cdr ins) (cdr outs)))))))))
+
+;; binary64 equality up to a global phase, entry by entry within tol
+(define (qcircuit-equivalent-float? c d . tol)
+  (let ((eps (if (pair? tol) (car tol) 1e-9)))
+    (and (= (qcircuit-width c) (qcircuit-width d))
+         (let* ((U (qcircuit-unitary c)) (V (qcircuit-unitary d)) (N (vector-length U)))
+           ;; the global phase from the largest entry of V
+           (let find ((col 0) (row 0) (best 0.0) (br 0) (bc 0))
+             (cond ((= col N)
+                    (let* ((v (vector-ref (vector-ref V bc) br)) (u (vector-ref (vector-ref U bc) br)))
+                      (and (> best 1e-12)
+                           (let ((ph (/ u v)))
+                             (and (< (abs (- (magnitude ph) 1.0)) eps)
+                                  (let check ((k 0))
+                                    (or (= k (* N N))
+                                        (let ((cc (quotient k N)) (rr (remainder k N)))
+                                          (and (< (magnitude (- (vector-ref (vector-ref U cc) rr)
+                                                                (* ph (vector-ref (vector-ref V cc) rr))))
+                                                  eps)
+                                               (check (+ k 1)))))))))))
+                   ((= row N) (find (+ col 1) 0 best br bc))
+                   (else (let ((m (qc-abs2 (vector-ref (vector-ref V col) row))))
+                           (if (> m best) (find col (+ row 1) m row col) (find col (+ row 1) best br bc))))))))))
+
+;; the strongest check that applies: exact for exact circuits, binary64 otherwise
+(define (qcircuit-equivalent? c d)
+  (if (and (qcircuit-exact? c) (qcircuit-exact? d))
+      (qcircuit-equivalent-exact? c d)
+      (qcircuit-equivalent-float? c d)))
+
+;; ---------------------------------------------------------------------------
+;; Parametric circuits and decomposition
+;; ---------------------------------------------------------------------------
+
+(define (qcircuit-parametric? c)
+  (let loop ((gs (qcircuit-gates c)))
+    (and (pair? gs) (or (and (qgate-parametric? (car gs)) (qparam? (qgate-angle (car gs)))) (loop (cdr gs))))))
+(define (qcircuit-parameter-count c)
+  (let loop ((gs (qcircuit-gates c)) (k 0))
+    (if (null? gs) k
+        (let ((a (and (qgate-parametric? (car gs)) (qgate-angle (car gs)))))
+          (loop (cdr gs) (if (qparam? a) (max k (+ 1 (qparam-index a))) k))))))
+;; substitute theta (a vector) into every qparam angle; AD values pass through
+(define (qcircuit-bind c thetas)
+  (make-qcircuit (qcircuit-width c)
+                 (map (lambda (g)
+                        (if (and (qgate-parametric? g) (qparam? (qgate-angle g)))
+                            (let ((k (qgate-arity g)) (a (qgate-angle g)))
+                              (append (list (car g)) (qgate-wires g)
+                                      (list (* (qparam-coefficient a) (vector-ref thetas (qparam-index a))))))
+                            g))
+                      (qcircuit-gates c))))
+;; CCX and CCZ as one- and two-qubit Clifford+T gates (exact); other gates unchanged
+(define (qcircuit-decompose-multiqubit c)
+  (make-qcircuit (qcircuit-width c)
+                 (apply append
+                        (map (lambda (g)
+                               (case (car g)
+                                 ((CCZ) (qc-ccz (cadr g) (caddr g) (cadddr g)))
+                                 ((CCX) (let ((t (cadddr g))) (append (list (list 'H t)) (qc-ccz (cadr g) (caddr g) t) (list (list 'H t)))))
+                                 (else (list g))))
+                             (qcircuit-gates c)))))
+
+;; Lowering to the gate set of Moonlab's state-vector and differentiable
+;; circuits {H X Y Z CNOT RX RY RZ}, exactly up to a global phase:
+;; P(p) = e^{i p pi/2} RZ(p pi), so S, Sdg, T, Tdg, Z-phases become RZ; XP is
+;; H RZ H; CZ is H CNOT H on the target; SWAP is three CNOTs; RZZ is
+;; CNOT RZ CNOT; CCX/CCZ go through their Clifford+T decomposition first.
+(define (qgate-lower g)
+  (let ((rz (lambda (q turns) (list 'RZ q (if (qparam? turns) (qparam (qparam-index turns) (* qc-pi (qparam-coefficient turns))) (* qc-pi turns))))))
+    (case (car g)
+      ((H X Y Z CNOT RX RY RZ) (list g))
+      ((S Sdg T Tdg) (list (rz (cadr g) (qgate-phase-turns g))))
+      ((P) (list (rz (cadr g) (caddr g))))
+      ((XP) (list (list 'H (cadr g)) (rz (cadr g) (caddr g)) (list 'H (cadr g))))
+      ((CZ) (list (list 'H (caddr g)) (list 'CNOT (cadr g) (caddr g)) (list 'H (caddr g))))
+      ((SWAP) (let ((a (cadr g)) (b (caddr g))) (list (list 'CNOT a b) (list 'CNOT b a) (list 'CNOT a b))))
+      ((RZZ) (let ((a (cadr g)) (b (caddr g))) (list (list 'CNOT a b) (list 'RZ b (cadddr g)) (list 'CNOT a b))))
+      ((CCX CCZ) (apply append (map qgate-lower (qcircuit-gates (qcircuit-decompose-multiqubit (make-qcircuit (+ 1 (apply max (qgate-wires g))) (list g)))))))
+      (else (error "core.quantum.circuit: no lowering for gate" g)))))
+(define (qcircuit-lower c)
+  (make-qcircuit (qcircuit-width c) (apply append (map qgate-lower (qcircuit-gates c)))))
+
+;; SWAP gates realising the wire permutation perm (a vector: the state on
+;; wire i moves to wire perm[i]), by selection sort
+(define (qcircuit-permutation-gates perm)
+  (let* ((n (vector-length perm)) (where (make-vector n 0)) (at (make-vector n 0)))
+    ;; at[w] = which original wire's state currently sits on w
+    (do ((i 0 (+ i 1))) ((= i n)) (vector-set! at i i) (vector-set! where i i))
+    (let loop ((i 0) (acc '()))
+      (if (= i n) (reverse acc)
+          ;; bring the state that must end on wire perm[j] = i ... find j with perm[j] = i
+          (let find ((j 0))
+            (if (not (= (vector-ref perm j) i)) (find (+ j 1))
+                (let ((w (vector-ref where j)))
+                  (if (= w i) (loop (+ i 1) acc)
+                      (let ((other (vector-ref at i)))
+                        (vector-set! at w other) (vector-set! where other w)
+                        (vector-set! at i j) (vector-set! where j i)
+                        (loop (+ i 1) (cons (list 'SWAP i w) acc)))))))))))
+;; c equals d followed by moving the state of wire i to perm[i]
+(define (qcircuit-equivalent-up-to-permutation? c d perm)
+  (qcircuit-equivalent? (qcircuit-append c (qcircuit-permutation-gates perm)) d))

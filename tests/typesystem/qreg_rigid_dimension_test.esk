@@ -1,0 +1,10 @@
+;; Type System Test: a procedure generic in n cannot pass its qreg<n> where qreg<3> is required
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: quantum register dimension mismatch in argument 1 of 'needs-three': expected qreg<3>, got qreg<n>
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define (needs-three (r : qreg<3>)) : qreg<3> (qh r 2))
+(define (generic (r : qreg<n>)) : qreg<n> (needs-three r))

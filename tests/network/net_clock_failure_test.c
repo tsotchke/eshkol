@@ -9,26 +9,40 @@ int main(void) { puts("PASS: clock failure test has no supported socket backend"
 #include <time.h>
 #include <errno.h>
 #include <stdio.h>
+static int clock_fails;
 static int injected_clock(clockid_t which, struct timespec *value) {
-    (void)which; value->tv_sec = 100; value->tv_nsec = 0; errno = EIO; return -1;
+    if (!clock_fails) return clock_gettime(which, value);
+    value->tv_sec = 100; value->tv_nsec = 0; errno = EIO; return -1;
 }
 #define clock_gettime injected_clock
-#include "../../lib/core/net.c"
+#include "../../lib/core/resource_lease.c"
 #undef clock_gettime
+#include "eshkol/core/net.h"
+#include <sys/socket.h>
 int main(void) {
-    if (now_ms() != -1) { puts("FAIL: failed clock became a timestamp"); return 1; }
-    if (wait_fd(-1, POLLIN, 1000) != -1) { puts("FAIL: failed clock became a timeout"); return 1; }
-    int64_t deadline = 0;
-    /* A live synthetic slot reaches acquire's clock path without sockets. */
-    slots[0] = (Net){-1, 2, 0, 0, 0, 1};
-    if (acquire(1, 2, 20, &deadline) || deadline != -1 || slots[0].refs) {
-        puts("FAIL: clock refusal acquired a reference or hid its system error"); return 1;
+    clock_fails = 1;
+    if (eshkol_resource_now_ms() != -1) { puts("FAIL: failed clock became a timestamp"); return 1; }
+    if (eshkol_resource_deadline(1000) != -1 || eshkol_resource_remaining(5000) != -1) {
+        puts("FAIL: failed clock became a deadline"); return 1;
     }
-    char buf[8];
-    if (eshkol_net_read(1, buf, sizeof(buf), 20) != -1 || slots[0].refs) {
-        puts("FAIL: read did not propagate clock system failure"); return 1;
+    if (eshkol_net_open("127.0.0.1", 0, 2, 20) != -1) {
+        puts("FAIL: connect without a clock did not refuse"); return 1;
     }
-    memset(&slots[0], 0, sizeof(slots[0]));
-    puts("PASS: networking clock failure refuses without leaked references"); return 0;
+    clock_fails = 0;
+    int64_t udp = eshkol_net_open("127.0.0.1", 0, 3, 0);
+    if (udp <= 0) { puts("FAIL: open datagram socket"); return 1; }
+    clock_fails = 1;
+    char buf[8], peer[64];
+    if (eshkol_net_recvfrom(udp, buf, sizeof(buf), peer, sizeof(peer), 20) != -1) {
+        puts("FAIL: receive did not propagate clock system failure"); return 1;
+    }
+    eshkol_handle_state_t state = ESHKOL_HANDLE_STATE_INVALID;
+    if (eshkol_handle_get_state(eshkol_resource_registry(), (eshkol_handle_id_t)udp, &state) !=
+            ESHKOL_HANDLE_OK || state != ESHKOL_HANDLE_STATE_OPEN) {
+        puts("FAIL: clock refusal kept the lease"); return 1;
+    }
+    clock_fails = 0;
+    if (eshkol_net_close(udp) != 0) { puts("FAIL: close after clock refusal"); return 1; }
+    puts("PASS: networking clock failure refuses without retained leases"); return 0;
 }
 #endif

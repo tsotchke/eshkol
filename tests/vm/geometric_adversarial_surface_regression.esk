@@ -7,30 +7,33 @@
   (let ((t (make-tensor '(2) 0.0)))
     (tensor-set! t 0 a) (tensor-set! t 1 b) t))
 
-;; A radial spherical gradient is exactly zero. The old scaled dot product
-;; underflowed before the projection and returned the radial input unchanged.
+;; On the positive chart (ADR-0018) the Riemannian gradient is g (1 + K|x|^2/4)^2
+;; for every vector: at K = 1e-300 and |x| = 1e150 the factor is 1.25^2, formed
+;; without the 1e300 square overflowing or the 1e-300 product underflowing.
 (define radial
   (riemannian-grad (vec2 1e-24 0.0) (vec2 1e150 0.0) 1e-300))
-(report (near? (tensor-ref radial 0) 0.0 1e-30)
-        "spherical radial gradient projects to zero")
+(report (near? (tensor-ref radial 0) (* 1e-24 1.5625) 1e-38)
+        "positive-chart riemannian-grad scales by (1 + K|x|^2/4)^2 at extreme scales")
 
 ;; This point is strictly inside the unit ball in exact arithmetic even though
 ;; direct rounded sum-of-squares loses the positive denominator.
 (define boundary-distance
   (guard (e (#t 'refused))
     (geodesic-distance (vec2 0.70183641524540785 0.71233815441507509)
-                       (vec2 0.0 0.0) -1.0)))
+                       (vec2 0.0 0.0) -4.0)))   ; the K = -4 ball has radius 1
 (report (and (not (eq? boundary-distance 'refused))
              (> boundary-distance 0.0))
         "valid near-boundary point is not falsely rejected")
 
-;; The sphere tangent predicate must reject a nonzero wholly radial vector even
-;; when both its dot product and the absolute threshold underflow.
+;; Every finite vector is tangent to the positive chart: a radial step at
+;; K = 1e308 is answered and stays on the axis it started on.
 (define radial-exp
   (guard (e (#t 'refused))
     (hyperbolic-exp-map (vec2 1e-154 0.0) (vec2 1e-170 0.0) 1e308)))
-(report (eq? radial-exp 'refused)
-        "sphere exponential rejects a radial tangent")
+(report (and (not (eq? radial-exp 'refused))
+             (finite? (tensor-ref radial-exp 0))
+             (= (tensor-ref radial-exp 1) 0.0))
+        "positive-chart exponential follows a radial tangent")
 
 ;; The chart distance remains finite when K*|y|^2 is representable although
 ;; |y|^2 itself is near the overflow boundary.
@@ -88,12 +91,13 @@
 ;; At the positive true-minimum curvature the radius is huge but finite.  The
 ;; fused VM forward and the differentiable bridge must share this spherical
 ;; distance domain, including its normalized residual arithmetic.
-(define sphere-r 4.4989137945431964e161)
+;; Fixed chart inputs at K = DBL_TRUE_MIN: the squared distances are representable.
+(define sphere-r 1.0)
 (define sphere-q (let ((t (make-tensor '(2 2) 0.0)))
                    (tensor-set! t 0 sphere-r)
                    (tensor-set! t 3 sphere-r)
                    t))
-(define sphere-h 3.181212452095196e161)
+(define sphere-h 0.7071067811865476)
 (define sphere-k (let ((t (make-tensor '(2 2) 0.0)))
                    (tensor-set! t 0 sphere-h)
                    (tensor-set! t 1 sphere-h)

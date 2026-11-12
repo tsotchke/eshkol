@@ -815,7 +815,120 @@ static int compile_depth = 0;
  *         bumps/checks compile_depth (erroring past 1000 nested
  *         expressions) around the actual compilation call. */
 static void vm_compile_error(const char* message, const char* detail);
+
+/* A let-family binding may carry a type annotation, `(name : type init)`, as
+ * the native reader accepts. Types (refinements included, ADR-0044) are checked
+ * by the front-end bridge before this compiler runs, so here the annotation is
+ * dropped once, in place, and every let form below sees `(name init)`. */
+static void vm_strip_binding_annotations(Node* node) {
+    if (!node || node->type != N_LIST || node->n_children < 3) return;
+    Node* head = node->children[0];
+    if (!head || head->type != N_SYMBOL) return;
+    if (!eshkol_syntax_base_is(head->symbol, "let") && !eshkol_syntax_base_is(head->symbol, "let*") &&
+        !eshkol_syntax_base_is(head->symbol, "letrec") && !eshkol_syntax_base_is(head->symbol, "letrec*"))
+        return;
+    Node* bindings = node->children[1];
+    if (bindings && bindings->type == N_SYMBOL && node->n_children >= 4) bindings = node->children[2];
+    if (!bindings || bindings->type != N_LIST || bindings->is_vector) return;
+    for (int i = 0; i < bindings->n_children; ++i) {
+        Node* b = bindings->children[i];
+        if (!b || b->type != N_LIST || b->n_children != 4) continue;
+        Node* colon = b->children[1];
+        if (!colon || colon->type != N_SYMBOL || !eshkol_syntax_base_is(colon->symbol, ":")) continue;
+        b->children[1] = b->children[3];
+        b->n_children = 2;
+    }
+}
+
+/* ── HoTT forms (ADR-0043) ─────────────────────────────────────────────── */
+
+static EshkolHottFormFn g_vm_hott_form = NULL;
+
+void eshkol_vm_install_hott_form(EshkolHottFormFn fn) { g_vm_hott_form = fn; }
+
+/* A new compilation unit: a fresh kernel, so declarations never carry over between programs. */
+static void vm_hott_begin_unit(void) {
+    if (!g_vm_hott_form) return;
+    int ok = 1;
+    char* r = g_vm_hott_form(NULL, &ok);
+    free(r);
+}
+
+/* Print a HoTT form back to text (kernel syntax: symbols, naturals, lists).
+ * Returns 0 on success, -1 for a datum outside the kernel syntax. */
+typedef struct { char* p; size_t len, cap; } VmHottText;
+
+static int vm_hott_append(VmHottText* t, const char* s) {
+    size_t n = strlen(s);
+    if (t->len + n + 1 > t->cap) {
+        size_t cap = t->cap ? t->cap * 2 : 256;
+        while (cap < t->len + n + 1) cap *= 2;
+        char* p = (char*)realloc(t->p, cap);
+        if (!p) return -1;
+        t->p = p;
+        t->cap = cap;
+    }
+    memcpy(t->p + t->len, s, n + 1);
+    t->len += n;
+    return 0;
+}
+
+static int vm_hott_print(const Node* n, VmHottText* t) {
+    if (n->type == N_SYMBOL) return vm_hott_append(t, n->symbol);
+    if (n->type == N_NUMBER && n->is_int && n->ival >= 0) {
+        char tmp[32];
+        snprintf(tmp, sizeof tmp, "%lld", (long long)n->ival);
+        return vm_hott_append(t, tmp);
+    }
+    if (n->type == N_LIST && !n->is_vector && !n->is_quote_sugar) {
+        if (vm_hott_append(t, "(") < 0) return -1;
+        for (int i = 0; i < n->n_children; i++) {
+            if (i && vm_hott_append(t, " ") < 0) return -1;
+            if (vm_hott_print(n->children[i], t) < 0) return -1;
+        }
+        return vm_hott_append(t, ")");
+    }
+    return -1;
+}
+
+/* (hott decl...): checked, no code. (hott-eval term): the normal form, as a quoted datum. */
+static void compile_hott_form(FuncChunk* c, Node* node) {
+    int is_eval = is_sym(node->children[0], "hott-eval");
+    if (!g_vm_hott_form) {
+        vm_compile_error("this build cannot check HoTT forms",
+                         "no HoTT kernel is installed; link a driver that calls "
+                         "eshkol_vm_install_hott_form()");
+        return;
+    }
+    VmHottText text = {NULL, 0, 0};
+    if (vm_hott_print(node, &text) < 0) {
+        free(text.p);
+        vm_compile_error("HoTT form contains a datum outside the kernel syntax", NULL);
+        return;
+    }
+    int ok = 1;
+    char* result = g_vm_hott_form(text.p, &ok);
+    free(text.p);
+    if (!ok || !result) {
+        vm_compile_error("HoTT: form rejected by the cubical kernel", result);
+        free(result);
+        return;
+    }
+    if (is_eval) {
+        Node* datum = parse_sexp_from_string(result);
+        if (!datum) {
+            vm_compile_error("HoTT: the normal form could not be read back", result);
+        } else {
+            compile_quote(c, datum);
+        }
+    } else {
+        chunk_emit(c, OP_VOID, 0);  /* a declaration is an expression with no value */
+    }
+    free(result);
+}
+
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
+    vm_strip_binding_annotations(node);
     compile_depth++;
     if (compile_depth > 1000) {
         /* Fail closed: the subexpression emits no code, so the compilation
@@ -947,7 +1060,7 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
 
 /** @brief Compile a `(case key-expr ((datum...) body...)... [(else
  *         body...)])` special form: evaluates the key once, then for each
- *         clause tests it (via OP_EQ against each quoted datum) and
+ *         clause tests it (via the existing eqv? native against each quoted datum) and
  *         branches to the matching clause's body, with `else` always
  *         taken as a fallback. */
 static void compile_form_case(FuncChunk* c, Node* node, int tail) {
@@ -969,12 +1082,12 @@ static void compile_form_case(FuncChunk* c, Node* node, int tail) {
         /* ((val1 val2 ...) body ...) */
         Node* vals = clause->children[0];
         if (vals->type != N_LIST) continue;
-        /* Test key against each val: DUP, EQ, if true → jump to body */
+        /* case uses eqv?, not numeric =: OP_EQ coerces symbols to zero. */
         int body_patches[16]; int n_bp = 0;
         for (int v = 0; v < vals->n_children; v++) {
             chunk_emit(c, OP_DUP, 0);
             compile_quote(c, vals->children[v]);
-            chunk_emit(c, OP_EQ, 0);
+            chunk_emit(c, OP_NATIVE_CALL, 133); /* eqv? */
             /* If true, jump to body */
             if (n_bp < 16) body_patches[n_bp++] = c->code_len;
             chunk_emit(c, OP_JUMP_IF_FALSE, 0); /* placeholder: if false, continue */
@@ -1833,8 +1946,23 @@ static const VmTypedExternSpec* vm_typed_extern_spec(const Node* form) {
     return NULL;
 }
 
+/* Native sockets own kernel descriptors through the hosted resource lease
+ * registry, which the bytecode VM does not carry; report that explicitly. */
+static int vm_extern_is_socket_lease(const Node* form) {
+    if (!form || form->type != N_LIST || form->n_children < 2) return 0;
+    Node* real_name = form->children[form->n_children - 1];
+    return real_name && real_name->type == N_SYMBOL &&
+           (strncmp(real_name->symbol, "eshkol_net_", 11) == 0 ||
+            strncmp(real_name->symbol, "eshkol_tls_", 11) == 0);
+}
+
 static int vm_compile_typed_extern_binding(FuncChunk* c, Node* form) {
     const VmTypedExternSpec* spec = vm_typed_extern_spec(form);
+    if (!spec && vm_extern_is_socket_lease(form)) {
+        vm_compile_error("core.net and core.tls are not supported by the bytecode VM",
+                         "TCP/UDP/TLS sockets run on the native JIT and AOT engines");
+        return 0;
+    }
     if (!spec) {
         vm_compile_error("unsupported or malformed VM extern declaration",
                          "only the exact agent.sqlite and agent.crypto ABI signatures are admitted");
@@ -5229,7 +5357,15 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (node->symbol[0] == '?') {
+        if (strcmp(node->symbol, "??") == 0) {
+            /* An unbound `??` is a synthesis hole (ADR-0052). Holes are
+             * completed by the native compiler's type checker; this compiler
+             * has none, so it names the hole instead of reading it as data. */
+            vm_compile_error("synthesis hole ?? is completed by the native compiler "
+                             "(eshkol-run -r or a native build); the bytecode compiler does not complete holes",
+                             node->symbol);
+            chunk_emit(c, OP_NIL, 0);
+        } else if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
         } else if (vm_private_import_matches_unqualified(node->symbol)) {
             vm_compile_error("module-private binding is not visible to this importer",
@@ -6191,6 +6327,38 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* ADR-0047: (certify (f arg ...)) → (certify-call "f" f (list arg ...)),
+     * the same rewrite the native parser performs. The synthetic nodes
+     * borrow f and the arguments from the source tree. */
+    if (is_sym(head, "certify")) {
+        Node* call = node->n_children == 2 ? node->children[1] : NULL;
+        if (!call || call->type != N_LIST || call->is_vector || call->n_children < 1 ||
+            call->children[0]->type != N_SYMBOL || call->children[0]->is_verbatim) {
+            vm_compile_error("certify expects one call (f arg ...) whose operator is a name", NULL);
+            return;
+        }
+        VmCaseBuilder b = {0};
+        Node* outer = vm_case_new_node(&b, N_LIST);
+        Node* lst = vm_case_new_node(&b, N_LIST);
+        Node* name = make_string_node(call->children[0]->symbol);
+        if (!outer || !lst || !name) {
+            free_node(name);
+            vm_case_free_builder(&b);
+            vm_compile_error("unable to allocate the certify expansion", NULL);
+            return;
+        }
+        add_child(outer, vm_case_symbol(&b, "certify-call"));
+        add_child(outer, name);
+        add_child(outer, call->children[0]);
+        add_child(lst, vm_case_symbol(&b, "list"));
+        for (int i = 1; i < call->n_children; ++i) add_child(lst, call->children[i]);
+        add_child(outer, lst);
+        compile_expr(c, outer, tail);
+        free_node(name);
+        vm_case_free_builder(&b);
+        return;
+    }
+
     /* (force promise) → force a promise (evaluate thunk if not yet forced) */
     if (is_sym(head, "force") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0); /* push promise */
@@ -6816,8 +6984,30 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* -- define-type (type alias: compile-time only, no runtime effect) -- */
-    if (is_sym(head, "define-type")) { return; }
+    /* -- define-type (type alias: compile-time only, no runtime effect). It
+     *    is not a definition of a variable, so like every expression it
+     *    leaves one value -- the unspecified value -- for its context to
+     *    consume, and the enclosing sequence's pop stays balanced. -- */
+    if (is_sym(head, "define-type")) { chunk_emit(c, OP_VOID, 0); return; }
+
+    /* -- (: name type) declarations and (the type expr) ascriptions
+     *    (ADR-0042, ADR-0044): types are compile-time only, checked before
+     *    compilation (the gradual and dependent checkers, and refinements,
+     *    through the front-end bridge). A declaration is the unspecified
+     *    value; an ascription is its expression, exactly the code the native
+     *    engine emits for it. A user binding of either name is an ordinary
+     *    call. -- */
+    if (is_sym(head, ":") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
+        chunk_emit(c, OP_VOID, 0);
+        return;
+    }
+    if (is_sym(head, "the") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
+        compile_expr(c, node->children[2], tail);
+        return;
+    }
+
+    /* -- HoTT forms (ADR-0043): the cubical kernel, through the driver's hook -- */
+    if (is_sym(head, "hott") || is_sym(head, "hott-eval")) { compile_hott_form(c, node); return; }
 
 
     if (is_sym(head, "vref") && node->n_children == 3) {

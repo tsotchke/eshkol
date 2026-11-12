@@ -1,0 +1,24 @@
+;; Dependent function types (ADR-0042): the result type of replicate
+;; mentions its first parameter, so a call's result type is the codomain
+;; with the argument substituted: (replicate 3 1.5) : (vector real 3).
+;; The declaration (: v ...) is checked against that type.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define (replicate (n : integer) (x : real)) : (vector real n)
+  (make-vector n x))
+
+(: v (vector real 3))
+(define v (replicate 3 1.5))
+(display v)
+(newline)
+
+;; A Pi type written out: the same signature, by declaration.
+(: replicate2 (Pi ((n : integer) (x : real)) (vector real n)))
+(define (replicate2 n x) (make-vector n x))
+(: w (vector real 2))
+(define w (replicate2 2 0.5))
+(display (vector-length w))
+(newline)

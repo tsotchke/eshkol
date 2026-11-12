@@ -1,0 +1,230 @@
+;; fibers_test.esk — core.fibers scheduling, checked by behaviour.
+;;
+;; Ordering and fairness are checked against exact interleaving traces; the
+;; I/O path blocks a fiber on a real pipe through the event loop while another
+;; fiber writes it; cancellation is checked by counting dynamic-wind after
+;; thunks; exceptions are checked by identity after crossing fibers.
+
+(require stdlib)
+(require core.fibers)
+(require core.channels)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(define trace '())
+(define (log! x) (set! trace (cons x trace)))
+(define (take-trace!) (let ((t (reverse trace))) (set! trace '()) t))
+
+;; ─── Ordering: spawn order, FIFO run queue ─────────────────────────
+
+(spawn (lambda () (log! 'a)))
+(spawn (lambda () (log! 'b)))
+(spawn (lambda () (log! 'c)))
+(check "spawned fibers have not run before the scheduler runs" (null? trace))
+(run-fibers)
+(check "fibers run in spawn order" (equal? (take-trace!) '(a b c)))
+
+;; ─── Fairness: yield is round-robin ────────────────────────────────
+
+(define (worker name n)
+  (lambda ()
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (log! (list name i)) (fiber-yield) (loop (+ i 1)))))))
+(spawn (worker 'x 3))
+(spawn (worker 'y 3))
+(spawn (worker 'z 2))
+(run-fibers)
+(check "every ready fiber runs once before any runs twice"
+       (equal? (take-trace!)
+               '((x 0) (y 0) (z 0) (x 1) (y 1) (z 1) (x 2) (y 2))))
+
+;; ─── Values, join, and join from inside a fiber ────────────────────
+
+(define sq (spawn (lambda () (fiber-yield) (* 7 7))))
+(check "fiber-join from top level drives the scheduler and returns the value"
+       (= (fiber-join sq) 49))
+(check "a finished fiber is done" (eq? (fiber-status sq) 'done))
+(check "joining a finished fiber again returns the same value" (= (fiber-join sq) 49))
+
+(define producer (spawn (lambda () (fiber-sleep 20) 'produced)))
+(define consumer (spawn (lambda () (list 'got (fiber-join producer)))))
+(check "a fiber joining a sleeping fiber parks until it finishes"
+       (equal? (fiber-join consumer) '(got produced)))
+
+;; ─── Sleep ordering ────────────────────────────────────────────────
+
+(spawn (lambda () (fiber-sleep 60) (log! 'slow)))
+(spawn (lambda () (fiber-sleep 10) (log! 'fast)))
+(spawn (lambda () (fiber-sleep 30) (log! 'middle)))
+(define t0 (current-time-ms))
+(run-fibers)
+(define elapsed (- (current-time-ms) t0))
+(check "sleepers wake in deadline order" (equal? (take-trace!) '(fast middle slow)))
+(check "sleepers overlap rather than add up" (and (>= elapsed 55) (< elapsed 1000)))
+
+;; ─── Exceptions cross fibers with their identity ───────────────────
+
+(define bad (spawn (lambda () (fiber-yield) (raise 'kaput))))
+(check "joining a failed fiber re-raises its object"
+       (eq? (guard (e (#t e)) (fiber-join bad) 'no-raise) 'kaput))
+(check "the fiber is failed" (eq? (fiber-status bad) 'failed))
+(define err-fiber (spawn (lambda () (error "fiber error" 1 2))))
+(check "an error object crosses with its message"
+       (equal? (guard (e ((error-object? e) (error-object-message e))) (fiber-join err-fiber) #f)
+               "fiber error"))
+(define relay
+  (spawn (lambda () (guard (e (#t (list 'relayed e))) (fiber-join bad)))))
+(check "a fiber joining a failed fiber sees the raise and can handle it"
+       (equal? (fiber-join relay) '(relayed kaput)))
+(check "one fiber's failure does not disturb the others"
+       (let ((ok (spawn (lambda () 'fine))))
+         (spawn (lambda () (raise 'ignored)))
+         (eq? (fiber-join ok) 'fine)))
+(run-fibers)
+
+;; ─── Cancellation runs after thunks exactly once ───────────────────
+
+(define afters 0)
+(define (guarded-body park)
+  (lambda ()
+    (dynamic-wind
+     (lambda () #t)
+     park
+     (lambda () (set! afters (+ afters 1))))))
+
+(define sleeper (spawn (guarded-body (lambda () (fiber-sleep 100000)))))
+(define yielder (spawn (guarded-body (lambda () (let loop () (fiber-yield) (loop))))))
+(define waiter (spawn (guarded-body (lambda () (fiber-wait-until (lambda () #f))))))
+(define unstarted (spawn (guarded-body (lambda () 'never))))
+(fiber-cancel! unstarted)
+(fiber-yield)                                     ; outside a fiber: no-op
+(define round-robin (spawn (lambda () (fiber-yield) 'ok)))
+(fiber-join round-robin)                          ; let the three park
+(check "cancel of a parked fiber returns #t" (fiber-cancel! sleeper))
+(fiber-cancel! yielder)
+(fiber-cancel! waiter)
+(define t1 (current-time-ms))
+(run-fibers)
+(check "cancelled fibers end without waiting out their sleep"
+       (< (- (current-time-ms) t1) 5000))
+(check "each cancelled fiber ran its after thunk exactly once (3 started, 1 never ran)"
+       (= afters 3))
+(check "cancelled fibers report cancelled"
+       (and (eq? (fiber-status sleeper) 'cancelled)
+            (eq? (fiber-status yielder) 'cancelled)
+            (eq? (fiber-status waiter) 'cancelled)
+            (eq? (fiber-status unstarted) 'cancelled)))
+(check "joining a cancelled fiber raises its fiber-cancelled condition"
+       (let ((c (guard (e (#t e)) (fiber-join sleeper) #f)))
+         (and (fiber-cancelled? c) (eq? (fiber-cancelled-fiber c) sleeper))))
+(check "cancelling a finished fiber returns #f" (not (fiber-cancel! sleeper)))
+(define stubborn
+  (spawn (lambda ()
+           (guard (e ((fiber-cancelled? e) 'cleaned-up))
+             (fiber-sleep 100000)))))
+(fiber-yield)
+(define kick (spawn (lambda () (fiber-cancel! stubborn))))
+(check "a body may intercept its cancellation" (eq? (fiber-join stubborn) 'cleaned-up))
+(define self-cancel (spawn (lambda () (fiber-cancel! (current-fiber)) 'not-reached)))
+(run-fibers)
+(check "a fiber cancelling itself ends cancelled" (eq? (fiber-status self-cancel) 'cancelled))
+
+;; ─── I/O readiness through the event loop ──────────────────────────
+
+(define p (make-pipe))
+(define rfd (car p))
+(define wfd (cdr p))
+(define reader
+  (spawn (lambda ()
+           (log! 'reader-waits)
+           (let ((bits (fiber-await-readable rfd)))
+             (log! 'reader-ready)
+             bits))))
+(define writer
+  (spawn (lambda ()
+           (fiber-sleep 30)
+           (log! 'writer-writes)
+           (fd-write wfd "x"))))
+(define ready-bits (fiber-join reader))
+(check "a fiber parked on a pipe wakes only after the write"
+       (equal? (take-trace!) '(reader-waits writer-writes reader-ready)))
+(check "the wake reports the readable bit" (= 1 (bitwise-and ready-bits 1)))
+(run-fibers)
+(fd-close rfd)
+(fd-close wfd)
+(define p2 (make-pipe))
+(set! rfd (car p2))
+(set! wfd (cdr p2))
+(define parked-io (spawn (lambda () (fiber-await-readable rfd) 'unreachable)))
+(fiber-yield)
+(define cancel-io (spawn (lambda () (fiber-sleep 5) (fiber-cancel! parked-io))))
+(run-fibers)
+(check "a fiber parked on a descriptor can be cancelled"
+       (eq? (fiber-status parked-io) 'cancelled))
+(check "no descriptor stays registered after the scheduler drains"
+       (= 0 (cdr (assq 'io-waiting (fiber-scheduler-stats)))))
+(fd-close rfd)
+(fd-close wfd)
+
+;; ─── Channels park fibers, not the thread ──────────────────────────
+
+(define ch (make-channel 1))
+(define pinger
+  (spawn (lambda ()
+           (let loop ((i 0))
+             (if (< i 50)
+                 (begin (channel-send! ch i) (loop (+ i 1)))
+                 (channel-close! ch))))))
+(define ponger
+  (spawn (lambda ()
+           (let loop ((sum 0))
+             (let ((v (channel-recv! ch)))
+               (if (eq? v (channel-closed-sentinel)) sum (loop (+ sum v))))))))
+(check "a capacity-1 channel carries 50 items between two fibers"
+       (= (fiber-join ponger) 1225))
+
+;; ─── Awaiting a future without blocking other fibers ───────────────
+
+(define fut (future (lambda () (let spin ((i 0) (acc 0)) (if (< i 200000) (spin (+ i 1) (+ acc i)) acc)))))
+(define ticks 0)
+(define ticker (spawn (lambda () (let loop () (if (not (future-ready? fut)) (begin (set! ticks (+ ticks 1)) (fiber-yield) (loop)))))))
+(define awaiting (spawn (lambda () (fiber-await fut))))
+(check "fiber-await returns the future's value" (= (fiber-join awaiting) 19999900000))
+(run-fibers)
+
+;; ─── Errors at the edges ───────────────────────────────────────────
+
+(check "fiber-await-readable outside a fiber raises"
+       (guard (e (#t #t)) (fiber-await-readable 0) #f))
+(check "a fiber cannot join itself"
+       (let ((f #f))
+         (set! f (spawn (lambda () (guard (e (#t 'refused)) (fiber-join f)))))
+         (eq? (fiber-join f) 'refused)))
+(check "joining a fiber that waits on its joiner is reported"
+       (let ((x #f) (y #f))
+         (set! x (spawn (lambda () (fiber-join y))))
+         (set! y (spawn (lambda () (fiber-join x))))
+         (let ((r (guard (e (#t 'reported)) (fiber-join x))))
+           (fiber-cancel! x)
+           (fiber-cancel! y)
+           (run-fibers)
+           (eq? r 'reported))))
+
+(check "the scheduler is idle at the end"
+       (equal? (map cdr (fiber-scheduler-stats)) '(0 0 0 0 0)))
+
+;; ─── Summary ───────────────────────────────────────────────────────
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: fibers_test") (newline))
+    (begin (display "FAIL: fibers_test") (newline) (exit 1)))

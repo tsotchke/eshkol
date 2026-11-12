@@ -61,7 +61,13 @@ class StdlibAotRunnerTest(unittest.TestCase):
 
     def test_unrecognized_verdict_cannot_relax_acceptance(self):
         self.assertNotEqual(self.invoke("anything", verdict=".*").returncode, 0)
+        self.assertNotEqual(self.invoke("RESULT: PASS", verdict=".*").returncode, 0)
 
+    def test_all_pass_contract_mismatch_and_failure_are_rejected(self):
+        result = self.invoke("PASS: fixture\nRESULT: ALL PASS", verdict="ALL PASS")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotEqual(self.invoke("RESULT: PASS", verdict="ALL PASS").returncode, 0)
+        self.assertNotEqual(self.invoke("FAIL: fixture\nRESULT: ALL PASS", verdict="ALL PASS").returncode, 0)
 
     def test_missing_local_stdlib_object_fails_before_compiler(self):
         result = self.invoke("RESULT: PASS", missing_artifact="stdlib.o")
