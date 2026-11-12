@@ -45,6 +45,9 @@ static double vm_prng_next(void) {
 /* Shared capability guard (inc/eshkol/runtime_exports.h), declared here so
  * this C TU stays free of the C++ export header. */
 extern int eshkol_capability_require(const char* capability);
+extern void eshkol_capability_runtime_clear(void);
+extern void eshkol_capability_runtime_begin_install(void);
+extern void eshkol_capability_runtime_allow(const char* capability);
 /* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
  * rather than included: this translation unit is C and does not pull in the
  * hosted arena header, but the handle table, its generation-tagged validation
@@ -16548,6 +16551,23 @@ tensor_inverse_done:
     }
     case 2251: { /* VM-local counterpart of eshkol_logic_registry_reset. */
         vm_logic_var_reset();
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
+    case 2253: { /* capability-runtime-clear-raw: deactivate the policy */
+        eshkol_capability_runtime_clear();
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
+    case 2254: { /* capability-runtime-begin-install-raw: activate it, empty */
+        eshkol_capability_runtime_begin_install();
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
+    case 2255: { /* capability-runtime-allow-raw(name): grant one capability */
+        Value name_val = vm_pop(vm);
+        VmString* name = vm_value_as_string(vm, name_val);
+        if (name && name->data) eshkol_capability_runtime_allow(name->data);
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
