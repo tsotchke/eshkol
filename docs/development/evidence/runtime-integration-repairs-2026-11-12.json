@@ -1,0 +1,49 @@
+{
+  "source_commit": "a24882f215f77171b43ba329fe9b2b06e81cd3f1",
+  "base_commit": "e2c83bd48159909751130fbc0c595629738c0832",
+  "created_utc": "2026-11-12T21:25:52.183086+00:00",
+  "scope": "Fresh Linux Clang22.1.8/LLVM21.1.8 Release compiler and stdlib; agent FFI disabled for this isolated repair build.",
+  "source_sha256": {
+    "lib/core/runtime_regions_internal.h": "68da781e8d61954c57c746d21f878e8857c7b28a95685460f43b31c6909d2ccc",
+    "lib/core/runtime_regions_resident.cpp": "7c0464240e18e2c62c4bcc6d9dd35003c312117e657b00643f898c9d142b6e07",
+    "lib/core/runtime_taylor.c": "1cce99e38da58bbfd6eb359b90ca29992449682722f40204bf80d7027fd2ca71",
+    "lib/repl/repl_jit.cpp": "477f38849bc70ff48f2f1f16e15b142888798e42c6b6eccf7a8e15ed385299bf",
+    "lib/types/refinement.cpp": "294e7ba6da6feb040c10d892c77cebee6e8bf6ec8402df795d25f4568cefdbac"
+  },
+  "build": {
+    "status": "PASS",
+    "targets": [
+      "eshkol-run",
+      "stdlib"
+    ]
+  },
+  "ctest": {
+    "passed": 5,
+    "failed": 0,
+    "tests": [
+      "exact_taylor_runtime_smoke",
+      "exact_taylor_aot_smoke",
+      "refinement_types_gate",
+      "dbsp_resident_jit",
+      "dbsp_resident_aot"
+    ]
+  },
+  "cold_cache": {
+    "status": "PASS",
+    "concurrent_writers": 3,
+    "published_objects": 1,
+    "temporary_files_remaining": [],
+    "object_sha256": "e298264f98c4ce00ca4567e90520e014514234380557d92cfaa6dcbd303bebe4"
+  },
+  "local_log_sha256": {
+    "eshkol-repairs-build.log": "ef194129f46c915caeafd367a3f136f8c0929c56949d05c8c530efd413505286",
+    "eshkol-repairs-tests.log": "386339b138c4f651dd18894b60d947d8b000ef07583d36c99599e38909b5f746",
+    "eshkol-repairs-cold-cache.log": "f0e2ef257152d3b5e7570c0348f80d2b9c573f9f95dee9ffe794353c9eaf1729"
+  },
+  "evidence_note": "Original raw logs are retained locally; repository record contains only portable summary metadata and original-byte hashes.",
+  "not_run": [
+    "macOS",
+    "full repository suite",
+    "release/package qualification"
+  ]
+}
