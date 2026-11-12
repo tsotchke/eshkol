@@ -4463,6 +4463,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
 
+# Scoped hawkes-forecast consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-forecast/CTest.cmake")
+
 # core.sheaf: finite sites, sieves, presheaves, gluing, sheafification and
 # cohomology (ADR-0033), with core.integer_linalg. The suite cross-checks
 # against core.exact_linalg and between independent cohomology paths; the
@@ -5160,6 +5163,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         endif()
     endforeach()
 endif()
+
+# Scoped hawkes-live consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-live/CTest.cmake")
 
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
@@ -12992,6 +12998,9 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/too
     endif()
 endif()
 
+# Scoped sdnc-holes consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/sdnc-holes/CTest.cmake")
+
 # ===== SDNC Paper Artifact: weight_matrices ============================# The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
 # transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
@@ -16710,6 +16719,65 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
     set_tests_properties(sblc_resource_gate_readiness PROPERTIES TIMEOUT 45)
 endif()
 
+# Complete finite-class Busy Beaver proof replay (follow-up source donation).
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME bb_maximality_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/run_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>
+                --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(bb_maximality_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME bb_maximality_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/self_test.py")
+    set_tests_properties(bb_maximality_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Standalone source-bound cost proof: require clean JIT/AOT exits and a red control.
+if(UNIX AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND Python3_Interpreter_FOUND)
+    add_test(NAME busy_beaver_certificates
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/run_gate.py"
+            --eshkol-bin "$<TARGET_FILE:eshkol-run>"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME busy_beaver_certificates_self_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/self_test.py")
+    set_tests_properties(busy_beaver_certificates busy_beaver_certificates_self_test
+        PROPERTIES TIMEOUT 480 LABELS "stdlib;exact")
+endif()
+
+# Selected finite-field source donation: exact independent native oracle.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME extension_field_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_extension_field_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(extension_field_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME extension_field_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extension_field_gate_self_test.py")
+    set_tests_properties(extension_field_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Exact observable-space compiler and independent source replay.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME observable_closure_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_observable_closure_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(observable_closure_gate PROPERTIES TIMEOUT 1000)
+    endif()
+    add_test(NAME observable_closure_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/observable_closure_gate_self_test.py")
+    set_tests_properties(observable_closure_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
 
 # Platform layer tests (ADR-0053).
 set(ESHKOL_PLATFORM_STAGE tests)

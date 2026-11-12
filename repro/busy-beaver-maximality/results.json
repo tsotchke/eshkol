@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "jit_executable_cache": "disabled",
+  "engines": [
+    "jit",
+    "aot-O2"
+  ],
+  "checks_per_engine": 16,
+  "two_state_independent": {
+    "machines": 20736,
+    "halts": 9784,
+    "nonhalts": 10952,
+    "time": 6,
+    "marks": 4
+  },
+  "three_state_machines": 16777216,
+  "three_state_halts": 7571840,
+  "three_state_nonhalts": 9205376,
+  "three_state_unknown": 0,
+  "time": 21,
+  "marks": 6,
+  "partition_nodes": 115409,
+  "regular_certificates": 512,
+  "ngram_certificates": 216,
+  "withdrawn_unknown": 1,
+  "withdrawn_upper_bounds": [
+    "unknown",
+    "unknown"
+  ],
+  "stdout_sha256": "5ed02f9558b6f825125a92aa10657b9f3efc80b6ef1dbddd4422b85f30efec65",
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "files_sha256": {
+    "checker.esk": "fc910abc466a7d0ccc0c0de34b9742413d35bbf2940771ab6d6e3aa738a779ad",
+    "maximality_test.esk": "ecd0818bdd9fe7fb85fa99cd25b60503136d44f7ef0d803722ecfc44b758b253",
+    "bb2-cover.sexp": "388b902e8dba34b5114687a2049fdc85160192be750da28e2bff5fbcf9f070aa",
+    "bb3-cover.sexp": "cc32e2158a8f8c6fb485b5cfe7c6ed5c78483521b4dc498d9f85182a4bbcc892",
+    "reference.py": "65fb36df33b45494131c52d16cd577ae54323f568cb9fa31b8da3b268f928dad",
+    "run_gate.py": "6cda5ad2d072560b4b89adfa67b2c3eef0f60bef35ae4a131b9dfc69d387d340"
+  }
+}
