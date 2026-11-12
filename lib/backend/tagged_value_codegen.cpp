@@ -405,57 +405,25 @@ bool TaggedValueCodegen::storeConsSlot(llvm::Value* cell, bool is_cdr, llvm::Val
     return true;
 }
 
-/** @brief Build the NULL tagged value (via an entry alloca + field stores, then a load). */
+/**
+ * @brief Build the NULL tagged value.
+ *
+ * Built with insertvalue, in SSA, so it costs no stack slot. It used to be an
+ * entry alloca, field stores and a load; the entry alloca is per CALL, so a
+ * function that built a long or deeply nested quoted datum grew a frame
+ * proportional to the datum — a million-level datum asked for sixteen
+ * megabytes of stack before it ran a single instruction. The value produced
+ * is bit-for-bit the same.
+ */
 llvm::Value* TaggedValueCodegen::packNull() {
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_null");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int64Type(), 0), data_ptr);
-
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValue(ESHKOL_VALUE_NULL, 0,
+                            llvm::ConstantInt::get(ctx_.int64Type(), 0));
 }
 
+/** @brief Build the UNSPECIFIED tagged value, in SSA; see packNull(). */
 llvm::Value* TaggedValueCodegen::packUnspecified() {
-    llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_unspecified");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_UNSPECIFIED), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int64Type(), 0), data_ptr);
-
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    return buildTaggedValue(ESHKOL_VALUE_UNSPECIFIED, 0,
+                            llvm::ConstantInt::get(ctx_.int64Type(), 0));
 }
 
 /**
@@ -466,27 +434,7 @@ llvm::Value* TaggedValueCodegen::packUnspecified() {
  * warning for any other type.
  */
 llvm::Value* TaggedValueCodegen::packChar(llvm::Value* char_val) {
-    llvm::Value* tagged_val_ptr = createEntryAlloca("char_tagged");
-
-    llvm::Value* type_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 0);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CHAR), type_ptr);
-
-    llvm::Value* flags_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 1);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int8Type(), 0), flags_ptr);
-
-    llvm::Value* reserved_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 2);
-    ctx_.builder().CreateStore(
-        llvm::ConstantInt::get(ctx_.int16Type(), 0), reserved_ptr);
-
-    llvm::Value* data_ptr = ctx_.builder().CreateStructGEP(
-        ctx_.taggedValueType(), tagged_val_ptr, 4);
-
-    // Ensure char_val is i64
+    // Ensure the codepoint is an i64.
     llvm::Value* char_as_i64;
     if (char_val->getType()->isIntegerTy(64)) {
         char_as_i64 = char_val;
@@ -501,9 +449,8 @@ llvm::Value* TaggedValueCodegen::packChar(llvm::Value* char_val) {
         eshkol_warn("packChar: unexpected type, attempting pointer cast");
         char_as_i64 = ctx_.builder().CreatePtrToInt(char_val, ctx_.int64Type());
     }
-    ctx_.builder().CreateStore(char_as_i64, data_ptr);
-
-    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
+    // Built in SSA, so it costs no stack slot; see packNull().
+    return buildTaggedValue(ESHKOL_VALUE_CHAR, 0, char_as_i64);
 }
 
 // === Unpack Functions ===
