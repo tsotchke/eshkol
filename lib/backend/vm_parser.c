@@ -1750,13 +1750,49 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
     return 0;
 }
 
+/**
+ * @brief Whether a form contains a `set!` anywhere below it.
+ *
+ * A pure structural question with no scope state, so it is asked with an
+ * explicit pending set rather than native recursion: this runs over whole
+ * top-level forms, quoted data included, and a datum nests as deeply as the
+ * reader could read it. If the pending set cannot grow, the answer is the
+ * conservative yes — the caller boxes a binding it might not have needed to,
+ * which is always safe.
+ */
 static int node_contains_set(Node* node) {
     if (!node || node->type != N_LIST) return 0;
-    if (node->n_children >= 1 && node->children[0]->type == N_SYMBOL &&
-        eshkol_syntax_base_is(node->children[0]->symbol, "set!")) return 1;
-    for (int i = 0; i < node->n_children; ++i)
-        if (node_contains_set(node->children[i])) return 1;
-    return 0;
+    Node** pending = NULL;
+    size_t n_pending = 0, cap_pending = 0;
+    int answer = 0;
+    Node* here = node;
+    for (;;) {
+        if (here && here->type == N_LIST) {
+            if (here->n_children >= 1 && here->children[0] &&
+                here->children[0]->type == N_SYMBOL &&
+                eshkol_syntax_base_is(here->children[0]->symbol, "set!")) {
+                answer = 1;
+                break;
+            }
+            for (int i = 0; i < here->n_children; ++i) {
+                Node* child = here->children[i];
+                if (!child || child->type != N_LIST) continue;
+                if (n_pending == cap_pending) {
+                    size_t next = cap_pending ? cap_pending * 2 : 32;
+                    Node** grown = (Node**)realloc(pending, next * sizeof(Node*));
+                    if (!grown) { answer = 1; goto done; }
+                    pending = grown;
+                    cap_pending = next;
+                }
+                pending[n_pending++] = child;
+            }
+        }
+        if (n_pending == 0) break;
+        here = pending[--n_pending];
+    }
+done:
+    free(pending);
+    return answer;
 }
 
 static int scan_for_set(Node* node, const char* name) {
