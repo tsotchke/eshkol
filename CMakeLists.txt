@@ -15083,6 +15083,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
 endif()
 
 include(cmake/AllocationHardeningTests.cmake)
+include(cmake/QuantumCircuitTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
     set(_program_entry_vm_args)
@@ -16013,6 +16014,13 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_deadline_ready_test tests/network/net_deadline_ready_test.c
+        lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_include_directories(net_deadline_ready_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_deadline_ready_test PRIVATE Threads::Threads)
+    add_test(NAME net_deadline_ready_test COMMAND net_deadline_ready_test)
+    set_tests_properties(net_deadline_ready_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
     add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
         lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -16717,3 +16725,19 @@ foreach(ESHKOL_REGISTERED_TEST IN LISTS ESHKOL_REGISTERED_TESTS)
     set_property(TEST "${ESHKOL_REGISTERED_TEST}" APPEND PROPERTY
                  ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 endforeach()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    add_test(NAME mix_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mix_gate.sh")
+    set_tests_properties(mix_gate PROPERTIES TIMEOUT 3600 LABELS "stdlib;compiler;parity")
+    add_test(NAME mix_verify_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mix_verify_gate.sh")
+    set_tests_properties(mix_verify_gate PROPERTIES TIMEOUT 600 LABELS "stdlib;compiler;parity")
+endif()
+include(repro/quantum-qec/CTest.cmake)
+include(repro/nonlinear-observability/CTest.cmake)
+include(repro/sparse-solves/CTest.cmake)
+include(repro/sat-proof-admission/CTest.cmake)

@@ -1,0 +1,9 @@
+{
+  "scope": "Standalone registration project; readiness test executed; native gate independently qualified; full upstream CTest not run",
+  "registered_tests": [
+    "quantum-qec_native",
+    "quantum-qec_readiness"
+  ],
+  "readiness_returncode": 0,
+  "ctest_cmake_sha256": "741bc289e02d0e8a0b567e3bf9714eec2c572720dd8dec3d252196804eb987d2"
+}

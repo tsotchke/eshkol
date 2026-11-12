@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "engines": [
+    "jit",
+    "aot-O0"
+  ],
+  "jit_executable_cache": "disabled",
+  "admission_checks_per_engine": 49,
+  "independent_truth_cases": 352,
+  "independent_pigeonhole_proofs": [
+    [
+      4,
+      3
+    ],
+    [
+      5,
+      4
+    ]
+  ],
+  "non_RUP_RAT_steps": 2,
+  "solver_free_checks_per_engine": 10,
+  "disabled_producers": [
+    "cnf-pigeonhole",
+    "cnf-queens",
+    "cnf-random-ksat",
+    "sat-brute-force",
+    "sat-luby",
+    "sat-solve"
+  ],
+  "existing_suite_stdout_sha256": "dfdf9749d0c39779cf5df2d0617e9440d72fb5aaf827cde58e5d02ebc141ea02",
+  "case_stdout_sha256": "10f136f68342944182feffe3541e5d5dcfb8606dba9561e920649b5daff0a25b",
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "files_sha256": {
+    "lib/core/reasoning/sat.esk": "9286f4efb8fb963c53301b6a9ef90f1d094942cf090151f77108f5b707611075",
+    "tests/stdlib/reasoning_sat_test.esk": "87a4b08cd46829cdba915a922fab558a4710a64de7032993a17256e02ff6f6b1",
+    "tests/stdlib/reasoning_sat_admission_test.esk": "e7873081c153854f5ea848cb2a8dbca4427faf5d3da29eef1943a460ce5ef209",
+    "scripts/run_sat_proof_gate.py": "5770d4a5861641d3320144c9a4a030b4b571f115f5bdda10e4f06a80b362eea8",
+    "scripts/sat_proof_gate_self_test.py": "b84402668d2c4628bfff58293909bcd3888f776e5b95003411543dd5ce8079ec",
+    "repro/sat-proof-admission/SOURCE.toml": "e8608a5343109e4ec6a8e1990274b8015aa860f1556e8e85f711b82f139906a4"
+  }
+}

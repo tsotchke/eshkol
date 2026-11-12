@@ -4979,6 +4979,51 @@
       ]
     },
     {
+      "path": "examples/quantum/bell_openqasm3.esk",
+      "source_sha256": "306d5ed031fcd6db88fac83a63cbab0c88a170ca14b60f9cf58ed3ecb7e9a760",
+      "title": "Bell circuit OpenQASM 3 export",
+      "kind": "example",
+      "purpose": "Construct a two-qubit Bell circuit description and print a validated OpenQASM 3 program.",
+      "algorithm": "Apply Hadamard then controlled X, followed by two measurements; the exporter inserts explicit all-zero initialization.",
+      "domain": "Two qubits and two classical bits; gate and measurement indices are zero-based.",
+      "arithmetic": "Exact integer register indices; this circuit has no rotation parameters or quantum numerical calculation.",
+      "validation": "Prints OpenQASM text without a self-verdict; tests/quantum/circuit_export_test.esk asserts this exact text, and the optional independent oracle checks the Bell state and measurement probabilities.",
+      "limitations": "Exports a static description only. It does not run a quantum simulator, connect to hardware, or establish quantum advantage.",
+      "prerequisites": "Native eshkol-run and lib/core/quantum/circuit.esk; compile with --no-stdlib -L ./lib. No Moonlab or quantum hardware is required.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 2,
+          "text": "(require core.quantum.circuit)"
+        },
+        {
+          "line": 3,
+          "text": "(define bell (make-quantum-circuit 2 2"
+        },
+        {
+          "line": 4,
+          "text": "  '((h 0) (cx 0 1) (measure 0 0) (measure 1 1))))"
+        },
+        {
+          "line": 5,
+          "text": "(display (quantum-circuit->openqasm3 bell))"
+        }
+      ],
+      "literature_review": "An interoperability example using the OpenQASM 3 standard gate library; no novel physical result is claimed.",
+      "references": [
+        {
+          "citation": "OpenQASM live specification, standard gate library.",
+          "verification": "checked",
+          "link": "https://openqasm.com/language/standard_library.html"
+        },
+        {
+          "citation": "Eshkol static circuit reference, docs/reference/stdlib/quantum_circuit.md.",
+          "verification": "repository"
+        }
+      ]
+    },
+    {
       "path": "examples/streaming_least_squares.esk",
       "source_sha256": "2004d9d76affaf8011d591e0bb7ea9911989bd5ffd5fa5a525c7b756119f65dd",
       "title": "Maintained grouped AD loss and gradients",
@@ -5245,6 +5290,42 @@
       "key_output": [
         "^// ad-grid-max-errors",
         "^AD_MODEL_PASS"
+      ]
+    },
+    {
+      "path": "examples/mix/generate.esk",
+      "source_sha256": "8c5f7369e3872a9ae588d9a17971ffc32a52fa6160757e1de28c3f08aa4d58af",
+      "title": "Generate a standalone specialized program",
+      "kind": "example",
+      "purpose": "Specialize a self-representing source program and print ordinary Eshkol source for the result.",
+      "algorithm": "Run the self-interpreter specialization and its normalizer as object-language Mix programs, then emit the residual program as Eshkol forms.",
+      "domain": "Two integer-entry programs: mix-generated(x) = x*x+4 and mix-erased(x) = 0, the second with its input read erased.",
+      "arithmetic": "Exact integer arithmetic under explicit specialization bounds (profile 4096/512, limits 20000000/4096/2000000/300000).",
+      "validation": "Prints generated source without a self-verdict; scripts/run_mix_gate.sh performs the generation, compiles the residual program, checks the answer independently and exercises the integer-entry contract on JIT and AOT.",
+      "limitations": "Emits source for the two programs above only. It is a generator, not a benchmark, and claims no speed result.",
+      "prerequisites": "Native eshkol-run and lib/core/compiler/mix.esk; run with --no-stdlib -I lib -L lib -O0. Redirect the output to a file to compile it.",
+      "review_status": "source-inspected",
+      "registrations": [],
+      "source_anchors": [
+        {
+          "line": 3,
+          "text": "(require core.compiler.mix)"
+        },
+        {
+          "line": 6,
+          "text": "(define r (mix-compile source (mix-options 4096 512) (mix-limits 20000000 4096 2000000 300000)))"
+        },
+        {
+          "line": 9,
+          "text": "(define emitted (mix-emit-eshkol r 'mix-generated))"
+        }
+      ],
+      "literature_review": "A partial-evaluation generator in the Futamura tradition; no novel result is claimed. See docs/reference/stdlib/mix.md.",
+      "references": [
+        {
+          "citation": "Eshkol Mix workbench reference, docs/reference/stdlib/mix.md.",
+          "verification": "repository"
+        }
       ]
     }
   ],

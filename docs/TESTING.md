@@ -102,8 +102,8 @@ To gate a new pillar: give it CTest entries with a shared name prefix, add one
 ### Oracle binding gate
 
 `scripts/check_oracle_bindings.py` is the source-level companion to the CTest
-gate. It extracts registered test names and labels from `CMakeLists.txt` and
-`tests/**/CMakeLists.txt`, then fails if an oracle action's `ctest -R` or
+gate. It extracts registered test names and labels from `CMakeLists.txt`,
+`cmake/**/*.cmake` and `tests/**/CMakeLists.txt`, then fails if an oracle action's `ctest -R` or
 `ctest -L` selector matches nothing. It also checks that script paths named by
 oracle actions exist; directly invoked scripts must be executable.
 
@@ -155,6 +155,25 @@ one. `ESHKOL_COMPILE_TIMEOUT` and `ESHKOL_RUN_TIMEOUT` (defaults 720 and 120
 seconds) give long suites their time. `tests/toolchain/test_stdlib_aot_runner.py`
 checks each rule with a fake compiler, including the refusal of a mismatched
 or unknown verdict and of a missing local standard library.
+### Static quantum circuit export
+
+`cmake/QuantumCircuitTests.cmake` registers `quantum_circuit_export_aot` and
+`quantum_circuit_export_driver_selftest` when tests and the native compiler
+target are enabled. The `quantum_circuit_contract_gate` CTest evidence group
+requires both members, so removing either test cannot leave its readiness
+criterion green. The AOT lane checks 50 assertions, including cycle rejection
+at construction and after mutation, and compiles the Bell export example.
+The compiler-free driver self-test rejects eight deliberately invalid results.
+
+The independent `quantum_circuit_export_qiskit_oracle` lane is enabled by
+`ESHKOL_QUANTUM_CIRCUIT_QISKIT_ORACLE=ON`. It requires the documented Python
+extras and fails if they are missing. It covers 25 gate kinds and 134 exports,
+including 100 deterministic generated circuits, with parser, operator,
+statevector and measurement/reset checks. Its separate
+`quantum-circuit-interoperability` oracle consumes the executed CTest event;
+it is not a dependency of default compiler readiness. The
+[static circuit reference](reference/stdlib/quantum_circuit.md) gives commands,
+tolerances and scope. Neither lane executes quantum hardware.
 
 ### ABI semantic inventory dependency
 

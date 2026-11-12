@@ -154,6 +154,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with temporary-looking names survive successful and failed links. (#836)
 - Preserve R7RS inexactness when finite integral doubles, including positive
   zero, round-trip through `number->string` and `string->number`.
+- **Static quantum circuits export a validated OpenQASM 3 subset.**
+  Add opt-in `core.quantum.circuit` with 25 standard gate kinds, measurement,
+  reset, barriers, explicit zero-state initialization and logical resource
+  counts. A portable AOT contract gate and optional independent OpenQASM/Qiskit
+  oracle cover all gate kinds and 100 deterministic generated circuits.
+  This module exports descriptions; it does not simulate or submit hardware jobs. (#872)
 
 ## [1.3.6-evolve] - 2026-10-15
 

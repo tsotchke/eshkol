@@ -728,6 +728,13 @@ oracles:
         action: ./scripts/run_ctest_gate.sh
       - runtime_event:
           event_kinds: [ctest]
+          event_names: ["quantum_circuit_contract_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Static quantum circuit descriptions reject invalid bounds, arities, angles and cyclic lists before export; AOT contract and deliberate-failure driver self-test both pass. The CTest group requires both members and does not require optional Qiskit dependencies.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
           event_names: ["exact_input_ad_identity_gate"]
           event_values: ["PASS"]
         severity: high
@@ -4655,3 +4662,14 @@ oracles:
         severity: high
         label: 'core.certificate (ADR-0047): fourteen certificate kinds (rank, determinant with P A = L U, Smith form with unimodular transforms and their inverses, unique linear solution, solve enclosure, PSD factor or negative direction, integer and Q[x] gcd with Bezout data, polynomial identity, primality with Pratt trees and Miller-Rabin or factor witnesses, polynomial range, Taylor-model range with its remainder premise, cocycle, cohomology class) emitted as eshkol.certificate.v1 claims extending core.transcript; tools/certcheck/eshkol_certcheck.py (Python standard library only) accepts every emitted claim, tamper_suite.py shows every resealed false claim rejected, lean_export.py writes Lean 4 theorems proved by decide; the (certify (f ...)) form on native and VM; certificate_jit/aot, certificate_roundtrip_jit/aot, certificate_check_fixtures, certificate_tamper_fixtures, certificate_lean_export_current and the owning library suites all pass'
         action: ./scripts/run_certificate_gate.sh
+  # Optional interoperability evidence, separate from the default native gate.
+  - name: quantum-circuit-interoperability
+    aliases: [quantum-circuit-oracle]
+    requires:
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["quantum_circuit_export_qiskit_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'OpenQASM parser and independent Qiskit matrix/state/probability checks pass for all 25 supported gate kinds and 100 deterministic generated circuits; missing Python extras fail explicitly.'
+        action: cmake -S . -B build -DESHKOL_QUANTUM_CIRCUIT_QISKIT_ORACLE=ON && ./scripts/run_ctest_gate.sh

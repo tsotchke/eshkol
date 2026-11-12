@@ -1,0 +1,23 @@
+format = "eshkol-net-deadline-qualification-v2"
+# Qualification of the deadline property on the socket lease layer: the wait
+# inside lib/core/resource_lease.c consults the event loop only while deadline
+# budget remains, so readiness that persists across a nonblocking system call
+# answering EAGAIN cannot extend the deadline. Cancellation still takes
+# precedence over an exhausted budget.
+compiler_flags = ["-std=c11", "-O2", "-Wall", "-Wextra", "-pthread", "-I", "inc"]
+tests = ["net_deadline_ready_test", "net_lease_test", "net_clock_failure_test", "net_runtime_test"]
+scoped_native_c_tests_only = true
+macos_windows_qualified = false
+clock_and_event_loop_poll_injected = true
+
+[[input]]
+path = "lib/core/resource_lease.c"
+sha256 = "5e15752d3a471fac4e975c90c37e2b2455377820f39b91ba05d9a0f5bc8d44e0"
+
+[[input]]
+path = "tests/network/net_deadline_ready_test.c"
+sha256 = "ac510816577c0bcdc8ce78f89fc8963ad02407960b495fc1eb43952bdda26186"
+
+[[input]]
+path = "CMakeLists.txt"
+sha256 = "10265fc67f8f177629b500cd77c8f161d236db08e01e40ae3c69947af2721177"
