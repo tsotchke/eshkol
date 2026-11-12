@@ -1,0 +1,21 @@
+;;; A tensor-point reverse gradient inside a tensor-point reverse gradient.
+;;; The outer pass's first primal defers the inner pass, and the outer
+;;; derivative is recomputed as forward columns, in which the inner gradient is
+;;; a level (ADR-0057).
+;;; Inner: grad_x [sum x^2 + w0 x0] at x = (1, 2) has component 0 = 2 + w0,
+;;; so the outer gradient over w is (1, 0).
+(define g
+  (gradient
+   (lambda (w)
+     (vector-ref
+      (gradient
+       (lambda (x)
+         (+ (tensor-sum (tensor-mul x x))
+            (* (vector-ref w 0) (vector-ref x 0))))
+       #(1 2))
+      0))
+   #(3 4)))
+(display g) (newline)
+(if (and (= (vref g 0) 1.0) (= (vref g 1) 0.0))
+    (begin (display "PASS: nested reverse tensor-tensor") (newline))
+    (begin (display "FAIL: nested reverse tensor-tensor") (newline)))

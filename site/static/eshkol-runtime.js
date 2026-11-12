@@ -1380,6 +1380,23 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         eshkol_ad_point_is_scalar: p => numeric(p) || [3, 4, 6].includes(baseType(p)) ? 1 : 0,
         eshkol_ad_point_is_exact_scalar: p => baseType(p) === 8 && numeric(p) ? 1 : 0,
         eshkol_ad_point_is_exact_number: p => numeric(p) && baseType(p) !== 2 ? 1 : 0,
+        // stop-gradient (ADR-0049): the primal of a forward jet (tag 6) or of
+        // a reverse-mode node (tag 9, subtype 2; exact payload kept exact);
+        // every other value is copied through unchanged.
+        eshkol_stop_gradient_tagged: (p, out) => {
+            if (!out) return;
+            const t = baseType(p);
+            if (t === 6) return output(out, () => ({ double: view().getFloat64(span(pointer(p), 8, 8), true) }));
+            if (t === 9 && pointer(p) && subtype(pointer(p)) === 2) {
+                const node = pointer(p);
+                span(node, 144, 8);
+                const ex = view().getUint32(node + 136, true);
+                if (ex && numeric(ex)) return output(out, () => read(ex));
+                return output(out, () => ({ double: view().getFloat64(node + 8, true) }));
+            }
+            span(p, 16, 8); span(out, 16, 8);
+            new Uint8Array(mem().buffer).copyWithin(Number(out), Number(p), Number(p) + 16);
+        },
     };
     for (const [name, op] of [['floor', 0], ['ceil', 1], ['truncate', 2], ['round', 3]]) {
         imports[`eshkol_rational_${name}`] = p => {
@@ -2047,6 +2064,11 @@ class EshkolRuntime {
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,  // returns i32 (size_t)
                 eshkol_decrement_recursion_depth: () => {},
+                eshkol_save_recursion_depth: () => {},
+                eshkol_restore_recursion_depth: () => {},
+                // algebraic-effect handler context (16-byte tagged value), kept JS-side
+                eshkol_effect_context_get: (p) => { if (rt._effectContext) new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).set(rt._effectContext); },
+                eshkol_effect_context_set: (p) => { rt._effectContext = new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).slice(); },
                 eshkol_make_exception_with_header: () => 0,
                 eshkol_raise: (exc) => { console.error('Eshkol exception raised'); },
                 // R7RS `write` (write/write-shared/write-simple): same
@@ -2319,6 +2341,11 @@ class EshkolRuntime {
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,
                 eshkol_decrement_recursion_depth: () => {},
+                eshkol_save_recursion_depth: () => {},
+                eshkol_restore_recursion_depth: () => {},
+                // algebraic-effect handler context (16-byte tagged value), kept JS-side
+                eshkol_effect_context_get: (p) => { if (rt._effectContext) new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).set(rt._effectContext); },
+                eshkol_effect_context_set: (p) => { rt._effectContext = new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).slice(); },
                 eshkol_runtime_current_output_fp: () => 0,
                 hash_table_set: () => false,
                 hash_table_get: () => false,
@@ -2453,13 +2480,13 @@ class EshkolRuntime {
                 eshkol_taylor_lift_ad_node:     () => {},
                 eshkol_taylor_project_forward_tangent: () => 0,
                 // ADR-0027 nested levels (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i64, tagged*)
-                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, i32, tagged*)
+                //   i64  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i64, tagged*)
+                //   void eshkol_ad_nested_extract(arena*, tagged*, i64, i32, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
-                eshkol_ad_nested_seed:          () => 0,
+                eshkol_ad_nested_seed:          () => 0n,
                 // BEGIN GENERATED EXACT IMPORTS
                 eshkol_ad_point_is_exact_number: exact.imports.eshkol_ad_point_is_exact_number,
                 eshkol_ad_point_is_exact_scalar: exact.imports.eshkol_ad_point_is_exact_scalar,
@@ -2549,6 +2576,7 @@ class EshkolRuntime {
                 memset: exact.imports.memset,
                 eshkol_write_value: exact.imports.eshkol_write_value,
                 eshkol_write_value_to_port: exact.imports.eshkol_write_value_to_port,
+                eshkol_stop_gradient_tagged: exact.imports.eshkol_stop_gradient_tagged,
                 // END GENERATED EXACT IMPORTS
 
                 // BEGIN GENERATED FLAT-AD IMPORTS
@@ -2621,12 +2649,27 @@ class EshkolRuntime {
                 eshkol_builtin_event_loop_close:      (out) => rt.writeFalse(out),
                 eshkol_builtin_event_loop_backend:    (out) => rt.writeFalse(out),
 
+                // Stackful coroutines need a second machine stack, which the
+                // browser sandbox does not provide; the coroutine surface fails
+                // closed with #f, like the event loop above. Native builds run
+                // lib/core/runtime_coroutines_hosted.cpp.
+                eshkol_builtin_make_coroutine: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_resume: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_raise: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_yield: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_status: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_release: (out) => rt.writeFalse(out),
+                eshkol_builtin_current_coroutine: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_p: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_stats: (out) => rt.writeFalse(out),
+
                 eshkol_capability_runtime_begin_install: () => {},
                 eshkol_capability_runtime_allow:   () => {},
                 eshkol_capability_runtime_clear:   () => {},
 
                 // Lazy futures — no browser worker backing for this WASM glue.
                 eshkol_lazy_future_is_ready: () => 1,
+                eshkol_lazy_future_result_available: () => 1,
                 eshkol_lazy_future_is_async: () => 0,
                 eshkol_lazy_future_join_async: () => {},
                 eshkol_lazy_future_get_thunk_ptr: () => 0,

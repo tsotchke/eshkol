@@ -24,9 +24,6 @@ RUN apt-get install -y \
     libreadline-dev \
     libopenblas-dev \
     pkg-config \
-    libpng-dev \
-    libjpeg-dev \
-    libwebp-dev \
     dpkg-dev \
     file \
     gdb \

@@ -1,0 +1,5 @@
+;; The helper ends the process; the caller's local port is still open then.
+(define (quit-now) (exit 0))
+(let ((in (open-input-file "strict-quit.txt")))
+  (quit-now)
+  (close-port in))

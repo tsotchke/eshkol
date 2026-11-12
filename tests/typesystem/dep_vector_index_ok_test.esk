@@ -1,0 +1,20 @@
+;; Dependent types (ADR-0042): length-indexed vectors and an implicit index.
+;; dot takes two vectors of one length n; every call below passes vectors
+;; whose lengths agree, so the program is well typed and runs.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define (dot (u : (vector real n)) (v : (vector real n))) : real
+  (let loop ((i 0) (acc 0.0))
+    (if (= i (vector-length u))
+        acc
+        (loop (+ i 1) (+ acc (* (vector-ref u i) (vector-ref v i)))))))
+
+(display (dot (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0)))
+(newline)
+(define a (vector 1.0 0.0))
+(define b (vector 0.0 1.0))
+(display (dot a b))
+(newline)

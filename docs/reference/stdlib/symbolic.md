@@ -1,4 +1,4 @@
-# `core.symbolic` — symbolic polynomials and truncated power series over the exact tower
+# `core.symbolic` — symbolic polynomials and truncated power series over Q and GF(p)
 
 **Source**: [`lib/core/symbolic.esk`](../../../lib/core/symbolic.esk)
 **Require**: auto-loaded via `(require stdlib)`; or individually `(require core.symbolic)`
@@ -10,6 +10,13 @@ any algebraic expression) AS a value: a sparse multivariate polynomial
 or a truncated multivariate power series that can be added, multiplied,
 differentiated, integrated, composed and queried to an arbitrary order,
 instead of only sampled at a point.
+
+Coefficients live in a field: the rationals Q (the default, with the
+exact tower's contagion rules) or a prime field GF(p). Series values
+carry the weighted l1 coefficient norm of the analytic space B_rho, and
+`series-of` turns an ordinary procedure — one that uses the built-in AD
+operators internally — into a polynomial-valued value whose coefficients
+can be collected and solved.
 
 ## Representation
 
@@ -23,12 +30,17 @@ ordered by ascending total degree then lexicographically on the
 exponent vector — a total order, so `poly=?` is a normal-form check, not
 a symbolic-equivalence search.
 
+A polynomial over GF(p) appends the prime: `(eshkol-poly vars terms p)`,
+and stores every coefficient as its canonical representative, an exact
+integer in `[0, p)`. A Q polynomial keeps the 3-element shape above.
+
 A **truncated power series** is `(eshkol-series vars terms order)`,
 structurally the same except an `expvec` entry MAY be negative (a
 Laurent / principal-part term — see below), and `order` records a
 truncation bound: terms are dropped once the sum of their NONNEGATIVE
 exponent parts exceeds the bound (so a Laurent term is never truncated
-away by an upper bound on the *regular* part).
+away by an upper bound on the *regular* part). A series over GF(p) is
+`(eshkol-series vars terms order p)`.
 
 **Build exponent data with plain lists** — every public constructor
 takes exponents as a Scheme list (`(list 1 0 2)`), never a `#(...)`
@@ -77,6 +89,100 @@ OWN argument's constant term must be zero.
 (define onepx (series-exp log1px)) ; = 1+x again, exactly
 (display (series-coeff onepx (list (cons 'x 1)))) (newline) ; 1
 (display (series-coeff onepx (list (cons 'x 2)))) (newline) ; 0
+```
+
+## Coefficient fields: Q and GF(p)
+
+`(coefficient-field-gf p)` names the prime field GF(p);
+`(coefficient-field-q)` names Q. `poly->field` and `series->field` move a
+value into a field: Q to GF(p) reduces each exact rational `n/d` to
+`n * d^-1 mod p` (raising when `p` divides `d`), GF(p) to Q lifts the
+canonical representatives, and a value already in the target field is
+returned unchanged. Every operation then stays in the operands' field;
+mixing fields in one operation raises instead of converting implicitly.
+
+GF(p) arithmetic is the exact integer tower followed by `modulo p`
+(int64 promotes to bignum, so large primes work), and division multiplies
+by the Fermat inverse `a^(p-2)`. The modulus is proved prime with the
+deterministic Miller-Rabin bases 2 through 41, exact for every `p` below
+`3317044064679887385961981`; a larger modulus is refused. Series
+transcendentals over GF(p) reduce their rational Taylor coefficients into
+the field, so they are defined up to the order where a denominator such
+as `k!` becomes divisible by `p`, and raise beyond it.
+
+```scheme
+(require stdlib)
+(define F7 (coefficient-field-gf 7))
+(define x (poly->field (poly-var 'x) F7))
+(define one (poly->field (poly-const 1) F7))
+;; Frobenius: (x + 1)^7 = x^7 + 1 in characteristic 7
+(display (poly=? (poly-expt (poly+ x one) 7) (poly+ (poly-expt x 7) one))) (newline) ;; => #t
+;; 1/2 is 4 in GF(7)
+(display (poly-coeff (poly->field (poly-const 1/2) F7) '())) (newline)          ;; => 4
+(display (coefficient-field-characteristic (poly-field x))) (newline)          ;; => 7
+```
+
+## Coefficient norm on series values
+
+`(series-norm s rho)` is the weighted l1 norm `sum |c_a| rho^a` of the
+analytic space B_rho. `rho` is one positive weight applied to the total
+degree, or an alist `((var . weight) ...)` with one weight per variable;
+a Laurent term `tau^-k` contributes `rho^-k`. The norm is
+submultiplicative, `|f g| <= |f| |g|` (truncation only drops terms),
+which is the property a contraction argument on B_rho needs. Exact
+coefficients and an exact weight give an exact norm. The norm is defined
+over Q; a GF(p) value raises.
+
+```scheme
+(require stdlib)
+;; 1 - 2x + 3/4 x y, known to total degree 6
+(define f (series (list 'x 'y) (list (cons (list 0 0) 1) (cons (list 1 0) -2) (cons (list 1 1) 3/4)) 6))
+(display (series-norm f 1/2)) (newline)                                  ;; => 35/16
+(display (series-norm f (list (cons 'x 1/2) (cons 'y 3)))) (newline)     ;; => 25/8
+(display (<= (series-norm (series* f f) 1/2) (* (series-norm f 1/2) (series-norm f 1/2)))) (newline) ;; => #t
+```
+
+## Polynomial-valued duals: `series-of`, collect, solve
+
+`(series-of f vars point order)` applies an ordinary procedure to a
+symbolic point and returns the truncated series of `f` in the
+displacements of `vars` from `point`, with coefficient
+`(d^a f)(point) / a!`. `f` is written with the generic arithmetic and may
+use the built-in AD operators itself: each coefficient is computed by
+nested passes of `taylor` and `derivative-n`, and the passes inside `f`
+nest under them as levels of the recursive Taylor carrier
+([ADR-0027](../../design/adr/0027-recursive-taylor-level-carrier.md)). At
+an exact point the coefficients are exact; a transcendental inside `f`
+demotes only the coefficients it touches. When `f` is a polynomial of
+total degree at most `order` in `vars`, the result is that polynomial
+exactly, and `series->poly` converts it. A vector-valued `f` gives a
+vector of series, one per component.
+
+The graded value is then **collected** and **solved**:
+`(poly-collect p vars)` and `(series-collect s vars)` group terms by the
+exponents of the given variables (a symbol or a list), returning an
+ascending list of `(exponents . coefficient)`, the coefficient a
+polynomial (or series) in the remaining variables; Laurent exponents of
+a grading parameter are allowed in `series-collect`.
+`(poly-linear-system equations unknowns)` reads each equation as `= 0`,
+requires it to be affine in `unknowns` and free of every other variable,
+and returns `(cons A b)` in `core.exact_linalg`'s row-vector format.
+`(poly-solve-linear equations unknowns)` returns every solution as
+`(particular . basis)`, alists from unknowns to values, raising on an
+inconsistent system; over Q it is `exact-affine-solve`, over GF(p) the
+same elimination in the field.
+
+```scheme
+(require stdlib)
+;; ansatz u(x) = a x^2 + b x, residual u'' + u' - (2 + 2x)
+(define (ansatz a b) (lambda (x) (+ (* a x x) (* b x))))
+(define (residual a b x)
+  (let ((u (ansatz a b)))
+    (- (+ (derivative-n u x 2) (derivative-n u x 1)) (+ 2 (* 2 x)))))
+(define r (series->poly (series-of residual (list 'a 'b 'x) (list 0 0 0) 3)))
+(display (poly->string r)) (newline)              ;; => 2*a*x + 2*a + b - 2*x - 2
+(define eqs (map cdr (poly-collect r 'x)))        ; coefficients of x^0 and x^1
+(display (car (poly-solve-linear eqs (list 'a 'b)))) (newline)  ;; => ((a . 1) (b . 0))
 ```
 
 ## AD interoperation
@@ -204,7 +310,8 @@ supported).
 #### `(series-deriv s var)` / `(series-integrate s var)`
 Partial derivative / antiderivative (zero integration constant) with
 respect to `var`. `series-integrate` raises on a `var^-1` term (its
-antiderivative is a logarithm, not a Laurent series term).
+antiderivative is a logarithm, not a Laurent series term), and over
+GF(p) on a term whose new exponent is divisible by `p`.
 
 #### `(series-inverse s)`
 `1/s` for a single-variable series `s` with nonzero constant term `c0`,
@@ -246,6 +353,51 @@ principal part with respect to `var`.
 (display (series-lowest-order lau 'tau)) (newline)                            ; -1
 (display (series-coeff (series-singular-part lau 'tau) (list (cons 'tau -1)))) (newline) ; 1
 ```
+
+### Coefficient fields
+
+#### `(coefficient-field-q)` / `(coefficient-field-gf p)`
+The field descriptors for Q and GF(p). `coefficient-field-gf` raises
+unless `p` is an exact prime below `3317044064679887385961981`.
+
+#### `(coefficient-field? x)` / `(coefficient-field-characteristic field)`
+Recognizes a field descriptor; the characteristic is `0` for Q and `p`
+for GF(p).
+
+#### `(poly-field p)` / `(series-field s)`
+The coefficient field of a polynomial or series.
+
+#### `(poly->field p field)` / `(series->field s field)`
+The same value over `field`: Q to GF(p) reduces, GF(p) to Q lifts the
+canonical representatives, the same field is the identity, and two
+different prime fields raise.
+
+### Coefficient norm
+
+#### `(series-norm s rho)`
+The weighted l1 norm of a series or polynomial over Q, with one weight
+`rho` or an alist of per-variable weights; see "Coefficient norm on
+series values" above.
+
+### Polynomial-valued duals
+
+#### `(series-of f vars point order)`
+The truncated series of `f` about `point` in the variables `vars` (a list
+of distinct symbols, one per argument of `f`), to total order `order`,
+computed with the built-in AD operators; a vector of series for a
+vector-valued `f`.
+
+#### `(poly-collect p vars)` / `(series-collect s vars)`
+Terms grouped by the exponents of `vars`, as an ascending list of
+`(exponents . coefficient)`.
+
+#### `(poly-linear-system equations unknowns)`
+`(cons A b)` for equations (polynomials, or series without Laurent
+terms) affine in `unknowns`.
+
+#### `(poly-solve-linear equations unknowns)`
+`(particular . basis)`: a particular solution and a basis of the
+homogeneous solutions, each an alist over `unknowns`.
 
 ### AD interoperation
 

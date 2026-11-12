@@ -1,0 +1,6 @@
+;; Inside a guard, read-line may raise while the local port is open; the
+;; handler would lose it. call-with-input-file closes on every exit instead.
+(guard (e (#t #f))
+  (let ((in (open-input-file "strict-guard-local.txt")))
+    (display (read-line in))
+    (close-port in)))

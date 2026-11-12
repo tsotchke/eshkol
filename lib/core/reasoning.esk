@@ -1,0 +1,26 @@
+;;; core.reasoning -- the reasoning library as one require.
+;;;
+;;; Usage: (require core.reasoning)
+;;;
+;;; Loads every part (each can also be required alone):
+;;;   core.reasoning.prolog   goal-directed proof search: SLD resolution with
+;;;                           cut, negation as failure, tabling, KB bridge
+;;;   core.reasoning.datalog  forward chaining: stratified Datalog compiled to
+;;;                           incremental DBSP circuits
+;;;   core.reasoning.fd       finite-domain constraints: propagation,
+;;;                           all-different, search, optimization
+;;;   core.reasoning.sat      CDCL SAT solving with DRAT proofs and a checker
+;;;   core.reasoning.kg       triple store with SPO/POS/OSP indexes and queries
+;;;   core.reasoning.kge      knowledge-graph embeddings trained with AD
+;;;   core.reasoning.ansatz   incremental search over ansatz families on DBSP
+;;;
+;;; Reference: docs/reference/stdlib/reasoning.md; design: ADR-0051
+;;; (docs/design/adr/0051-reasoning.md).
+
+(require core.reasoning.prolog)
+(require core.reasoning.datalog)
+(require core.reasoning.sat)
+(require core.reasoning.fd)
+(require core.reasoning.kg)
+(require core.reasoning.kge)
+(require core.reasoning.ansatz)

@@ -1,0 +1,2172 @@
+{
+ "schema_version": 1,
+ "kind": "eshkol_doc_truth_quota",
+ "phase": 1,
+ "claim_source": {
+  "tool": "icc doc-typed-claims",
+  "icc_revision": "4c9ef7835ba1",
+  "icc_schema_version": "1.0",
+  "path_prefix": "docs/"
+ },
+ "release_critical": [
+  "docs/QUICKSTART.md",
+  "docs/FAQ.md",
+  "docs/API_REFERENCE.md",
+  "docs/ESHKOL_LANGUAGE_GUIDE.md",
+  "docs/ESHKOL_QUICK_REFERENCE.md",
+  "docs/COMPLETE_LANGUAGE_SPECIFICATION.md",
+  "docs/FEATURE_MATRIX.md",
+  "docs/KNOWN_ISSUES.md",
+  "docs/BUILD_INTEGRATION.md",
+  "docs/UPGRADING.md",
+  "docs/reference/*",
+  "docs/guide/*"
+ ],
+ "totals": {
+  "claims": 18769,
+  "contradicted_total": 98,
+  "unsupported": 18033
+ },
+ "documents": {
+  "docs/AD_CAMPAIGN.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/AI_MATHEMATICS_EXAMPLES.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/API_REFERENCE.md": {
+   "contradicted_total": 0,
+   "unsupported": 984
+  },
+  "docs/BUILD_INTEGRATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 13
+  },
+  "docs/COMPILER_ROADMAP.md": {
+   "contradicted_total": 0,
+   "unsupported": 54
+  },
+  "docs/COMPLETE_LANGUAGE_SPECIFICATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 453
+  },
+  "docs/DEPTH_COVERAGE_MATRIX.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/DESIGN.md": {
+   "contradicted_total": 1,
+   "unsupported": 32
+  },
+  "docs/DOCUMENTATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/ESHKOL_LANGUAGE_GUIDE.md": {
+   "contradicted_total": 0,
+   "unsupported": 538
+  },
+  "docs/ESHKOL_QUICK_REFERENCE.md": {
+   "contradicted_total": 0,
+   "unsupported": 386
+  },
+  "docs/ESHKOL_V1_ARCHITECTURE.md": {
+   "contradicted_total": 11,
+   "unsupported": 191
+  },
+  "docs/EXAMPLES.md": {
+   "contradicted_total": 0,
+   "unsupported": 55
+  },
+  "docs/FAQ.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/FEATURE_MATRIX.md": {
+   "contradicted_total": 1,
+   "unsupported": 57
+  },
+  "docs/GLOSSARY.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/HARDENING.md": {
+   "contradicted_total": 0,
+   "unsupported": 13
+  },
+  "docs/KNOWN_ISSUES.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/LONG_RUNNING_LOOPS.md": {
+   "contradicted_total": 0,
+   "unsupported": 33
+  },
+  "docs/MATHEMATICS_EXAMPLES.md": {
+   "contradicted_total": 0,
+   "unsupported": 57
+  },
+  "docs/NAVIER_STOKES_EXAMPLES.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/NOESIS_TRAJECTORY.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/PARALLEL_MAP_PERFORMANCE_ANALYSIS.md": {
+   "contradicted_total": 0,
+   "unsupported": 27
+  },
+  "docs/QUICKSTART.md": {
+   "contradicted_total": 0,
+   "unsupported": 448
+  },
+  "docs/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 15
+  },
+  "docs/RELEASE_LADDER.md": {
+   "contradicted_total": 0,
+   "unsupported": 59
+  },
+  "docs/SDNC.md": {
+   "contradicted_total": 0,
+   "unsupported": 18
+  },
+  "docs/STDLIB_ARTIFACT_IDENTITY.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/STDLIB_V1_2_API.md": {
+   "contradicted_total": 0,
+   "unsupported": 437
+  },
+  "docs/TESTING.md": {
+   "contradicted_total": 0,
+   "unsupported": 18
+  },
+  "docs/TEST_COVERAGE.md": {
+   "contradicted_total": 0,
+   "unsupported": 16
+  },
+  "docs/TROUBLESHOOTING.md": {
+   "contradicted_total": 0,
+   "unsupported": 17
+  },
+  "docs/UPGRADING.md": {
+   "contradicted_total": 0,
+   "unsupported": 77
+  },
+  "docs/V1.1_SCOPE.md": {
+   "contradicted_total": 4,
+   "unsupported": 30
+  },
+  "docs/V14_BRANCH_PORTFOLIO.md": {
+   "contradicted_total": 0,
+   "unsupported": 24
+  },
+  "docs/V1_3_TO_V1_5_DEPENDENCY_PLAN_2026-06-28.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/VM_PARITY.md": {
+   "contradicted_total": 0,
+   "unsupported": 28
+  },
+  "docs/XLA_CLASSIFICATION_FLOOR_PORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/allocation-hardening-followup.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/api/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/api/abi_fingerprint.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/agent_capabilities.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/api/agent_http.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/agent_platform.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/arithmetic_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/autodiff_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/binding_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/blas_backend.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/builtin_declarations.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/call_apply_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/cblas_compat.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/closure_capture_scope.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/codegen_context.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/api/backend/collection_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/complex_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/control_flow_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/cpu_features.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/debug_artifact.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/differential_form_core.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/frechet_mean_core.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/function_cache.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/function_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/gpu/gpu_memory.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/hash_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/homoiconic_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/ir_builder.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/libm_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/link_probe.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/llvm_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/llvm_compat.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/logic_workspace_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/map_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/memory_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/mutation_observation.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/parallel_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/qllm_backward.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/riemannian_core.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/api/backend/static_callee_binding.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/string_io_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/api/backend/system_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/tagged_value_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/tail_call_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/tensor_backward.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/api/backend/tensor_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 10
+  },
+  "docs/api/backend/tensor_shape_guard.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/tensorcore_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/thread_pool.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/type_system.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/api/backend/vm.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/vm_limits.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/work_stealing_deque.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/xla/pjrt_client.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/xla/stablehlo_emitter.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/xla/xla_codegen.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/xla/xla_compiler.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/xla/xla_memory.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/xla/xla_runtime.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/backend/xla/xla_types.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/bridge/qllm_bridge.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/bridge/space_form.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/builtin_libraries.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/arity_contract.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/ast_routing.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/bignum.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/complex_math.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/config.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/dtoa_shortest.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/api/core/eval_bridge.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/event_loop.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/execution_profile.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/handle.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/i128.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/i128_runtime.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/image_io.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/inference.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/api/core/introspection.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/linear_solve.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/linear_solve_portable.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/logic.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/net.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/number_syntax.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/object_limits.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/rational.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/resource_limits.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/api/core/runtime.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/sexp_to_ast.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/string_escape.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/symbol_syntax.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/api/core/tensor_inverse_checked.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/tls.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/unicode.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/core/workspace.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/eshkol.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/api/eshkol_ffi.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/api/exhaustive_dispatch.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/ast_strings.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/api/frontend/binding_forms.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/diagnostic.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/differentiation_graph.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/incrementalize.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/macro_expander.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/node_identity.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/scalar_lowering.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/semantic_identity.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/shadowable_ops.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/source_paths.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/syntax_color.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/syntax_datum.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/syntax_rules.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/syntax_rules_core.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/frontend/workspace.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/http_request_utils.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/llvm_backend.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/logger.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/memory_abi_v2.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/api/model_io.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/module_resolver.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/module_visibility.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/pkg/subprocess.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/platform_runtime.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/public_surface.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/api/public_surface.tsv": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/api/runtime_exports.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/stdlib_identity.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/strict_source_identity.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/tensor_cross_entropy.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/tensor_validation.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/tensorcore_adapter.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/types/dependent.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/types/hott_types.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/types/type_checker.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/api/types/type_relation.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/api/util/continuation_task.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/architecture/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/architecture/qllm-private-abi.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/architecture/tensorcore-adapter.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/breakdown/AGENT_FFI.md": {
+   "contradicted_total": 0,
+   "unsupported": 101
+  },
+  "docs/breakdown/AUTODIFF.md": {
+   "contradicted_total": 0,
+   "unsupported": 118
+  },
+  "docs/breakdown/BENCHMARKING.md": {
+   "contradicted_total": 0,
+   "unsupported": 19
+  },
+  "docs/breakdown/BYTECODE_VM.md": {
+   "contradicted_total": 1,
+   "unsupported": 11
+  },
+  "docs/breakdown/CI_CD.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/breakdown/COMMAND_LINE_REFERENCE.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/breakdown/COMPILATION_GUIDE.md": {
+   "contradicted_total": 0,
+   "unsupported": 23
+  },
+  "docs/breakdown/COMPILER_ARCHITECTURE.md": {
+   "contradicted_total": 5,
+   "unsupported": 71
+  },
+  "docs/breakdown/COMPUTABLE_TRANSFORMER.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/breakdown/CONSCIOUSNESS_ENGINE.md": {
+   "contradicted_total": 0,
+   "unsupported": 83
+  },
+  "docs/breakdown/CONTINUATIONS.md": {
+   "contradicted_total": 0,
+   "unsupported": 75
+  },
+  "docs/breakdown/DEVELOPER_TOOLS.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/breakdown/DOCKER.md": {
+   "contradicted_total": 0,
+   "unsupported": 16
+  },
+  "docs/breakdown/EXACT_ARITHMETIC.md": {
+   "contradicted_total": 0,
+   "unsupported": 12
+  },
+  "docs/breakdown/FUNCTION_COMPOSITION.md": {
+   "contradicted_total": 0,
+   "unsupported": 89
+  },
+  "docs/breakdown/GETTING_STARTED.md": {
+   "contradicted_total": 0,
+   "unsupported": 81
+  },
+  "docs/breakdown/GPU_ACCELERATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 69
+  },
+  "docs/breakdown/MACHINE_LEARNING.md": {
+   "contradicted_total": 0,
+   "unsupported": 128
+  },
+  "docs/breakdown/MATH_STDLIB.md": {
+   "contradicted_total": 0,
+   "unsupported": 209
+  },
+  "docs/breakdown/MEMORY_MANAGEMENT.md": {
+   "contradicted_total": 0,
+   "unsupported": 176
+  },
+  "docs/breakdown/MODULE_SYSTEM.md": {
+   "contradicted_total": 0,
+   "unsupported": 66
+  },
+  "docs/breakdown/OVERVIEW.md": {
+   "contradicted_total": 3,
+   "unsupported": 47
+  },
+  "docs/breakdown/PACKAGE_MANAGER.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/breakdown/PARALLEL_COMPUTING.md": {
+   "contradicted_total": 0,
+   "unsupported": 56
+  },
+  "docs/breakdown/QUANTUM_RNG.md": {
+   "contradicted_total": 0,
+   "unsupported": 54
+  },
+  "docs/breakdown/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 10
+  },
+  "docs/breakdown/REPL_JIT.md": {
+   "contradicted_total": 1,
+   "unsupported": 41
+  },
+  "docs/breakdown/ROADMAP.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/breakdown/RUNTIME_CONFIGURATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 20
+  },
+  "docs/breakdown/SCHEME_COMPATIBILITY.md": {
+   "contradicted_total": 3,
+   "unsupported": 465
+  },
+  "docs/breakdown/SIGNAL_PROCESSING.md": {
+   "contradicted_total": 0,
+   "unsupported": 134
+  },
+  "docs/breakdown/TYPE_SYSTEM.md": {
+   "contradicted_total": 0,
+   "unsupported": 187
+  },
+  "docs/breakdown/VECTOR_OPERATIONS.md": {
+   "contradicted_total": 0,
+   "unsupported": 86
+  },
+  "docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md": {
+   "contradicted_total": 0,
+   "unsupported": 30
+  },
+  "docs/breakdown/VSCODE_EXTENSION.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/breakdown/WEB_PLATFORM.md": {
+   "contradicted_total": 0,
+   "unsupported": 377
+  },
+  "docs/breakdown/XLA_BACKEND.md": {
+   "contradicted_total": 2,
+   "unsupported": 45
+  },
+  "docs/components/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/design/ABI_V2_MIGRATION_INVENTORY.md": {
+   "contradicted_total": 0,
+   "unsupported": 14
+  },
+  "docs/design/AD_STAGED_KERNEL_HANDOFF.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/design/AD_TAYLOR_TOWER.md": {
+   "contradicted_total": 0,
+   "unsupported": 35
+  },
+  "docs/design/ATOMIC_CHECKPOINT_SAVES.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/design/AUDIT_2026_08_25_RESOLUTION.md": {
+   "contradicted_total": 1,
+   "unsupported": 38
+  },
+  "docs/design/ESKM_V1_VM_MATERIALIZATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/design/ESKM_V2_FORMAT_DECISION.md": {
+   "contradicted_total": 0,
+   "unsupported": 20
+  },
+  "docs/design/FLAW_DETECTION_ROADMAP.md": {
+   "contradicted_total": 0,
+   "unsupported": 62
+  },
+  "docs/design/IPM_LOCAL_EXPANSION_LEDGER.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/design/MOONLAB_INTEGRATION.md": {
+   "contradicted_total": 57,
+   "unsupported": 65
+  },
+  "docs/design/MUTUAL_TAIL_CALLS.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/design/NAVIER_STOKES_EVIDENCE_LEDGER.md": {
+   "contradicted_total": 0,
+   "unsupported": 52
+  },
+  "docs/design/NAVIER_STOKES_RESIDUAL_MECHANIZATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 144
+  },
+  "docs/design/PILLAR_CI_INVENTORY.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/design/TENSOR_APPLY_CALLABLE_DISPATCH.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/design/V1_4_CONNECTION_START_2026_10_19.md": {
+   "contradicted_total": 0,
+   "unsupported": 10
+  },
+  "docs/design/abi/header-site-inventory.txt": {
+   "contradicted_total": 0,
+   "unsupported": 49
+  },
+  "docs/design/adr/0000-unified-trajectory.md": {
+   "contradicted_total": 0,
+   "unsupported": 120
+  },
+  "docs/design/adr/0001-oalr-concurrent-resident.md": {
+   "contradicted_total": 3,
+   "unsupported": 8
+  },
+  "docs/design/adr/0002-ad-staged-dense-kernels.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/design/adr/0003-codegen-vm-parity.md": {
+   "contradicted_total": 0,
+   "unsupported": 17
+  },
+  "docs/design/adr/0004-type-system-trajectory.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/design/adr/0005-lambda-foundations-programs-to-weights.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/design/adr/0006-language-conformance-modules.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/design/adr/0007-performance-pgo-wpo.md": {
+   "contradicted_total": 0,
+   "unsupported": 9
+  },
+  "docs/design/adr/0008-dev-experience-tooling.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/design/adr/0009-incremental-dataflow-dbsp.md": {
+   "contradicted_total": 1,
+   "unsupported": 29
+  },
+  "docs/design/adr/0010-closed-loop-assurance.md": {
+   "contradicted_total": 0,
+   "unsupported": 15
+  },
+  "docs/design/adr/0011-guest-collector-adapter.md": {
+   "contradicted_total": 0,
+   "unsupported": 21
+  },
+  "docs/design/adr/0012-object-abi-staged-migration.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/design/adr/0013-gradual-type-relation.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0014-release-invariant-contracts.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0015-static-callee-binding-identity.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0016-ad-alt-architect.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/design/adr/0017-stochastic-binary-lambda-calculus.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/design/adr/0018-signed-curvature-stereographic-geometry.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0019-evergreen-documentation-architecture.md": {
+   "contradicted_total": 0,
+   "unsupported": 10
+  },
+  "docs/design/adr/0020-container-slot-store-boundary.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/design/adr/0021-ast-string-owner.md": {
+   "contradicted_total": 0,
+   "unsupported": 18
+  },
+  "docs/design/adr/0022-ad-value-boundaries.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/design/adr/0023-dense-tensor-node-as-operand.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0024-unspecified-value.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0025-complex-values-carry-derivatives.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0026-syntax-rules-one-engine-one-renaming-rule.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0027-recursive-taylor-level-carrier.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/design/adr/0028-one-number-syntax-recognizer.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/design/adr/0029-browser-vm-webgpu-dispatch.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/design/adr/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 14
+  },
+  "docs/development/ESKM_HANDOFF.md": {
+   "contradicted_total": 0,
+   "unsupported": 16
+  },
+  "docs/development/GABE_KAHAN_ROADMAP.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/development/PRODUCTION_SURFACE_RETIREMENT_INVENTORY.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/development/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/development/evidence/eskm-baseline-run1.csv": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/development/evidence/eskm-baseline-run2.csv": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/development/strict_resource_ownership.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/future/MULTIMEDIA_SYSTEM_ARCHITECTURE.md": {
+   "contradicted_total": 0,
+   "unsupported": 362
+  },
+  "docs/future/NEURO_SYMBOLIC_COMPLETE_ARCHITECTURE.md": {
+   "contradicted_total": 3,
+   "unsupported": 450
+  },
+  "docs/guide/AUTOMATIC_DIFFERENTIATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 296
+  },
+  "docs/guide/BINARY_LAMBDA_CALCULUS.md": {
+   "contradicted_total": 0,
+   "unsupported": 54
+  },
+  "docs/guide/GRADUAL_TYPING.md": {
+   "contradicted_total": 0,
+   "unsupported": 102
+  },
+  "docs/guide/WGSL_ARTIFACT.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/platform/ARCHITECTURE.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/BRANCHING_AND_GOVERNANCE.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/BUILD_NOTES.md": {
+   "contradicted_total": 0,
+   "unsupported": 10
+  },
+  "docs/platform/CI_LANES.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/COMPILER_ASSURANCE.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/platform/DECISIONS.md": {
+   "contradicted_total": 0,
+   "unsupported": 11
+  },
+  "docs/platform/ICC_CONTRACT_SURFACE.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/IMPLEMENTATION_WORKFLOW.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/KERNEL_HANDOFF.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/MILESTONES_AND_EXIT_CRITERIA.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/PROGRAM_OVERVIEW.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/RELEASE_PROCESS.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/platform/RISKS_AND_NON_GOALS.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/ROADMAP_ALIGNMENT.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/RUNTIME_INVENTORY.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/SELF_HOSTED_RUNNERS.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/platform/SLICE_CHECKLIST.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/SYNC_POLICY.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/TARGET_SUPPORT_MATRIX.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/TEST_AND_CI_PLAN.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/platform/WORKSTREAMS.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/ad/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/ad/architecture.md": {
+   "contradicted_total": 0,
+   "unsupported": 46
+  },
+  "docs/reference/ad/operators.md": {
+   "contradicted_total": 0,
+   "unsupported": 193
+  },
+  "docs/reference/ad/support-matrix.md": {
+   "contradicted_total": 0,
+   "unsupported": 51
+  },
+  "docs/reference/ad/tape.md": {
+   "contradicted_total": 0,
+   "unsupported": 20
+  },
+  "docs/reference/agent/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/agent/capabilities.md": {
+   "contradicted_total": 0,
+   "unsupported": 9
+  },
+  "docs/reference/agent/crypto.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/reference/agent/eagle.md": {
+   "contradicted_total": 0,
+   "unsupported": 12
+  },
+  "docs/reference/agent/ffi.md": {
+   "contradicted_total": 0,
+   "unsupported": 33
+  },
+  "docs/reference/agent/http.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/reference/agent/memory-faculty.md": {
+   "contradicted_total": 0,
+   "unsupported": 16
+  },
+  "docs/reference/agent/platform-utilities.md": {
+   "contradicted_total": 0,
+   "unsupported": 21
+  },
+  "docs/reference/agent/platform.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/agent/pqc.md": {
+   "contradicted_total": 0,
+   "unsupported": 25
+  },
+  "docs/reference/agent/quantum.md": {
+   "contradicted_total": 0,
+   "unsupported": 35
+  },
+  "docs/reference/agent/sqlite.md": {
+   "contradicted_total": 0,
+   "unsupported": 16
+  },
+  "docs/reference/agent/subprocess.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reference/benchmarks/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/bindings/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/bindings/python.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reference/language/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reference/language/binding-mutation-and-scope.md": {
+   "contradicted_total": 0,
+   "unsupported": 72
+  },
+  "docs/reference/language/booleans-and-predicates.md": {
+   "contradicted_total": 0,
+   "unsupported": 45
+  },
+  "docs/reference/language/capabilities.md": {
+   "contradicted_total": 0,
+   "unsupported": 37
+  },
+  "docs/reference/language/continuations.md": {
+   "contradicted_total": 0,
+   "unsupported": 27
+  },
+  "docs/reference/language/control-flow.md": {
+   "contradicted_total": 0,
+   "unsupported": 47
+  },
+  "docs/reference/language/differentiation.md": {
+   "contradicted_total": 0,
+   "unsupported": 12
+  },
+  "docs/reference/language/error-handling.md": {
+   "contradicted_total": 0,
+   "unsupported": 112
+  },
+  "docs/reference/language/functions-and-parameters.md": {
+   "contradicted_total": 0,
+   "unsupported": 125
+  },
+  "docs/reference/language/i128.md": {
+   "contradicted_total": 0,
+   "unsupported": 66
+  },
+  "docs/reference/language/macros.md": {
+   "contradicted_total": 0,
+   "unsupported": 91
+  },
+  "docs/reference/language/modules.md": {
+   "contradicted_total": 0,
+   "unsupported": 48
+  },
+  "docs/reference/language/multiple-values.md": {
+   "contradicted_total": 0,
+   "unsupported": 28
+  },
+  "docs/reference/language/numeric-tower.md": {
+   "contradicted_total": 0,
+   "unsupported": 192
+  },
+  "docs/reference/language/pattern-matching.md": {
+   "contradicted_total": 0,
+   "unsupported": 25
+  },
+  "docs/reference/language/quote-and-quasiquote.md": {
+   "contradicted_total": 0,
+   "unsupported": 29
+  },
+  "docs/reference/language/special-forms.md": {
+   "contradicted_total": 0,
+   "unsupported": 59
+  },
+  "docs/reference/language/strings-chars-symbols.md": {
+   "contradicted_total": 0,
+   "unsupported": 65
+  },
+  "docs/reference/language/tail-calls.md": {
+   "contradicted_total": 0,
+   "unsupported": 45
+  },
+  "docs/reference/runtime/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reference/runtime/environment-variables.md": {
+   "contradicted_total": 0,
+   "unsupported": 26
+  },
+  "docs/reference/runtime/eshkol-repl.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reference/runtime/eshkol-run.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/reference/runtime/eshkol-vm-standalone.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/runtime/event-loop.md": {
+   "contradicted_total": 0,
+   "unsupported": 20
+  },
+  "docs/reference/runtime/fixed-point.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/reference/runtime/jit-internals.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/reference/runtime/memory-model.md": {
+   "contradicted_total": 0,
+   "unsupported": 111
+  },
+  "docs/reference/runtime/parallelism.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/reference/stdlib/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/stdlib/ad_algebraic.md": {
+   "contradicted_total": 0,
+   "unsupported": 22
+  },
+  "docs/reference/stdlib/ad_algebraic_farkas.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reference/stdlib/ad_algebraic_implicit.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_incremental.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_pullback.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_qp.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_reverse.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_ridge.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_sparse.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_spectral.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_algebraic_subspace.md": {
+   "contradicted_total": 0,
+   "unsupported": 11
+  },
+  "docs/reference/stdlib/ad_certified_continuation.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/reference/stdlib/ad_derived_operator.md": {
+   "contradicted_total": 0,
+   "unsupported": 14
+  },
+  "docs/reference/stdlib/ad_incremental_reverse.md": {
+   "contradicted_total": 0,
+   "unsupported": 9
+  },
+  "docs/reference/stdlib/ad_root_branch.md": {
+   "contradicted_total": 0,
+   "unsupported": 16
+  },
+  "docs/reference/stdlib/ad_sparsity.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/ad_tape.md": {
+   "contradicted_total": 0,
+   "unsupported": 153
+  },
+  "docs/reference/stdlib/ad_tensor_circuit_reverse.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/reference/stdlib/algebraic_batch.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/algebraic_field.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/reference/stdlib/algebraic_linalg.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/algebraic_update.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/alist.md": {
+   "contradicted_total": 0,
+   "unsupported": 24
+  },
+  "docs/reference/stdlib/argparse.md": {
+   "contradicted_total": 0,
+   "unsupported": 41
+  },
+  "docs/reference/stdlib/blc.md": {
+   "contradicted_total": 0,
+   "unsupported": 478
+  },
+  "docs/reference/stdlib/cache.md": {
+   "contradicted_total": 0,
+   "unsupported": 45
+  },
+  "docs/reference/stdlib/capabilities.md": {
+   "contradicted_total": 0,
+   "unsupported": 41
+  },
+  "docs/reference/stdlib/certified-enclosures.md": {
+   "contradicted_total": 0,
+   "unsupported": 37
+  },
+  "docs/reference/stdlib/certified_native_solve.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/reference/stdlib/certified_nonlinear.md": {
+   "contradicted_total": 0,
+   "unsupported": 16
+  },
+  "docs/reference/stdlib/certified_solve.md": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/reference/stdlib/certified_solve_pullback.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reference/stdlib/channels.md": {
+   "contradicted_total": 0,
+   "unsupported": 34
+  },
+  "docs/reference/stdlib/collections.md": {
+   "contradicted_total": 0,
+   "unsupported": 82
+  },
+  "docs/reference/stdlib/control_trampoline.md": {
+   "contradicted_total": 0,
+   "unsupported": 26
+  },
+  "docs/reference/stdlib/cyclotomic.md": {
+   "contradicted_total": 0,
+   "unsupported": 9
+  },
+  "docs/reference/stdlib/data_base64.md": {
+   "contradicted_total": 0,
+   "unsupported": 55
+  },
+  "docs/reference/stdlib/data_csv.md": {
+   "contradicted_total": 0,
+   "unsupported": 40
+  },
+  "docs/reference/stdlib/data_dataframe.md": {
+   "contradicted_total": 0,
+   "unsupported": 63
+  },
+  "docs/reference/stdlib/data_radix.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/dbsp.md": {
+   "contradicted_total": 0,
+   "unsupported": 37
+  },
+  "docs/reference/stdlib/dbsp_ad.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/dbsp_checkpoint.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reference/stdlib/dbsp_circuit.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/dbsp_ordered.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/reference/stdlib/dbsp_recursive.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reference/stdlib/dbsp_resident.md": {
+   "contradicted_total": 0,
+   "unsupported": 9
+  },
+  "docs/reference/stdlib/dbsp_sqlite_changefeed.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reference/stdlib/dbsp_tensor_circuit.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/dbsp_tensor_snapshot.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/dbsp_window.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/reference/stdlib/distributed.md": {
+   "contradicted_total": 0,
+   "unsupported": 184
+  },
+  "docs/reference/stdlib/dnc.md": {
+   "contradicted_total": 0,
+   "unsupported": 42
+  },
+  "docs/reference/stdlib/exact_linalg.md": {
+   "contradicted_total": 0,
+   "unsupported": 41
+  },
+  "docs/reference/stdlib/exact_psd.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/files.md": {
+   "contradicted_total": 0,
+   "unsupported": 24
+  },
+  "docs/reference/stdlib/functional_compose.md": {
+   "contradicted_total": 0,
+   "unsupported": 19
+  },
+  "docs/reference/stdlib/functional_curry.md": {
+   "contradicted_total": 0,
+   "unsupported": 36
+  },
+  "docs/reference/stdlib/functional_flip.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reference/stdlib/geometry.md": {
+   "contradicted_total": 0,
+   "unsupported": 200
+  },
+  "docs/reference/stdlib/http_server.md": {
+   "contradicted_total": 0,
+   "unsupported": 64
+  },
+  "docs/reference/stdlib/io.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/reference/stdlib/json.md": {
+   "contradicted_total": 0,
+   "unsupported": 123
+  },
+  "docs/reference/stdlib/json_schema.md": {
+   "contradicted_total": 0,
+   "unsupported": 80
+  },
+  "docs/reference/stdlib/list_compound.md": {
+   "contradicted_total": 0,
+   "unsupported": 99
+  },
+  "docs/reference/stdlib/list_convert.md": {
+   "contradicted_total": 0,
+   "unsupported": 14
+  },
+  "docs/reference/stdlib/list_generate.md": {
+   "contradicted_total": 0,
+   "unsupported": 39
+  },
+  "docs/reference/stdlib/list_higher_order.md": {
+   "contradicted_total": 0,
+   "unsupported": 43
+  },
+  "docs/reference/stdlib/list_query.md": {
+   "contradicted_total": 0,
+   "unsupported": 23
+  },
+  "docs/reference/stdlib/list_search.md": {
+   "contradicted_total": 0,
+   "unsupported": 37
+  },
+  "docs/reference/stdlib/list_sort.md": {
+   "contradicted_total": 0,
+   "unsupported": 30
+  },
+  "docs/reference/stdlib/list_transform.md": {
+   "contradicted_total": 0,
+   "unsupported": 46
+  },
+  "docs/reference/stdlib/logging.md": {
+   "contradicted_total": 0,
+   "unsupported": 19
+  },
+  "docs/reference/stdlib/logic_boolean.md": {
+   "contradicted_total": 0,
+   "unsupported": 21
+  },
+  "docs/reference/stdlib/logic_predicates.md": {
+   "contradicted_total": 0,
+   "unsupported": 19
+  },
+  "docs/reference/stdlib/logic_types.md": {
+   "contradicted_total": 0,
+   "unsupported": 13
+  },
+  "docs/reference/stdlib/manifold.md": {
+   "contradicted_total": 0,
+   "unsupported": 134
+  },
+  "docs/reference/stdlib/math.md": {
+   "contradicted_total": 0,
+   "unsupported": 59
+  },
+  "docs/reference/stdlib/memory.md": {
+   "contradicted_total": 0,
+   "unsupported": 98
+  },
+  "docs/reference/stdlib/memory_store.md": {
+   "contradicted_total": 0,
+   "unsupported": 91
+  },
+  "docs/reference/stdlib/merkle.md": {
+   "contradicted_total": 0,
+   "unsupported": 76
+  },
+  "docs/reference/stdlib/metrics.md": {
+   "contradicted_total": 0,
+   "unsupported": 35
+  },
+  "docs/reference/stdlib/ml_activations.md": {
+   "contradicted_total": 0,
+   "unsupported": 34
+  },
+  "docs/reference/stdlib/ml_gradient_estimators.md": {
+   "contradicted_total": 0,
+   "unsupported": 55
+  },
+  "docs/reference/stdlib/ml_neurosymbolic.md": {
+   "contradicted_total": 0,
+   "unsupported": 43
+  },
+  "docs/reference/stdlib/ml_optimization.md": {
+   "contradicted_total": 0,
+   "unsupported": 28
+  },
+  "docs/reference/stdlib/module-system.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/reference/stdlib/msgpack.md": {
+   "contradicted_total": 0,
+   "unsupported": 90
+  },
+  "docs/reference/stdlib/net.md": {
+   "contradicted_total": 0,
+   "unsupported": 6
+  },
+  "docs/reference/stdlib/ns-residual.md": {
+   "contradicted_total": 0,
+   "unsupported": 40
+  },
+  "docs/reference/stdlib/numeric_extras.md": {
+   "contradicted_total": 0,
+   "unsupported": 26
+  },
+  "docs/reference/stdlib/operators_arithmetic.md": {
+   "contradicted_total": 0,
+   "unsupported": 22
+  },
+  "docs/reference/stdlib/operators_compare.md": {
+   "contradicted_total": 0,
+   "unsupported": 25
+  },
+  "docs/reference/stdlib/plot.md": {
+   "contradicted_total": 0,
+   "unsupported": 22
+  },
+  "docs/reference/stdlib/polynomial_exact.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reference/stdlib/public_exports.tsv": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/stdlib/reflection.md": {
+   "contradicted_total": 0,
+   "unsupported": 63
+  },
+  "docs/reference/stdlib/sdnc.md": {
+   "contradicted_total": 0,
+   "unsupported": 59
+  },
+  "docs/reference/stdlib/sexp.md": {
+   "contradicted_total": 0,
+   "unsupported": 47
+  },
+  "docs/reference/stdlib/shipped_exports.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reference/stdlib/signal_fft.md": {
+   "contradicted_total": 0,
+   "unsupported": 22
+  },
+  "docs/reference/stdlib/signal_filters.md": {
+   "contradicted_total": 0,
+   "unsupported": 44
+  },
+  "docs/reference/stdlib/stdlib_extras.md": {
+   "contradicted_total": 0,
+   "unsupported": 27
+  },
+  "docs/reference/stdlib/streams.md": {
+   "contradicted_total": 0,
+   "unsupported": 85
+  },
+  "docs/reference/stdlib/strings.md": {
+   "contradicted_total": 0,
+   "unsupported": 117
+  },
+  "docs/reference/stdlib/symbolic.md": {
+   "contradicted_total": 0,
+   "unsupported": 86
+  },
+  "docs/reference/stdlib/testing.md": {
+   "contradicted_total": 0,
+   "unsupported": 25
+  },
+  "docs/reference/stdlib/threads.md": {
+   "contradicted_total": 0,
+   "unsupported": 35
+  },
+  "docs/reference/stdlib/url.md": {
+   "contradicted_total": 0,
+   "unsupported": 40
+  },
+  "docs/reference/stdlib/web.md": {
+   "contradicted_total": 0,
+   "unsupported": 56
+  },
+  "docs/reference/tensors/INDEX.md": {
+   "contradicted_total": 0,
+   "unsupported": 9
+  },
+  "docs/reference/tensors/creation.md": {
+   "contradicted_total": 0,
+   "unsupported": 66
+  },
+  "docs/reference/tensors/eskm-v1.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/reference/tensors/eskm-v2.md": {
+   "contradicted_total": 0,
+   "unsupported": 27
+  },
+  "docs/reference/tensors/eskt-engine-parity.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reference/tensors/gpu.md": {
+   "contradicted_total": 0,
+   "unsupported": 7
+  },
+  "docs/reference/tensors/ml-modules.md": {
+   "contradicted_total": 0,
+   "unsupported": 32
+  },
+  "docs/reference/tensors/operations.md": {
+   "contradicted_total": 0,
+   "unsupported": 92
+  },
+  "docs/reports/AD_DEPTH_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/AD_NESTED_REUSE_ROOTCAUSE_2026-06-26.md": {
+   "contradicted_total": 0,
+   "unsupported": 10
+  },
+  "docs/reports/AST_ROUTING_CONSOLIDATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reports/CONTINUATION_IR_OPERANDS_20260908.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reports/ESHKOL_ICC_COMPLETE_REVIEW_2026-07-01.md": {
+   "contradicted_total": 1,
+   "unsupported": 9
+  },
+  "docs/reports/ESHKOL_TO_NOESIS_nested_ad_2026-06-26.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reports/ESHKOL_TO_NOESIS_nested_ad_FIXED_2026-06-26.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reports/ESHKOL_TO_NOESIS_nested_ad_update_2026-06-26.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/ESHKOL_TO_NOESIS_static_getenv_RESOLVED_2026-06-26.md": {
+   "contradicted_total": 0,
+   "unsupported": 5
+  },
+  "docs/reports/GENERATIVE_DIFFERENTIAL_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 22
+  },
+  "docs/reports/METAMORPHIC_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/METAPROG_DEPTH_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/NESTING_DEPTH_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 8
+  },
+  "docs/reports/NOESIS_TO_ESHKOL_capability_env_2026-06-26.md": {
+   "contradicted_total": 0,
+   "unsupported": 1
+  },
+  "docs/reports/NOESIS_TO_ESHKOL_nested_ad_2026-06-26.md": {
+   "contradicted_total": 0,
+   "unsupported": 17
+  },
+  "docs/reports/NOESIS_TO_ESHKOL_static_getenv_2026-06-26_SUPERSEDED.md": {
+   "contradicted_total": 0,
+   "unsupported": 4
+  },
+  "docs/reports/NUMERIC_DEPTH_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/PARSER_EXPLICIT_STACK_20260908.md": {
+   "contradicted_total": 0,
+   "unsupported": 13
+  },
+  "docs/reports/PARSER_JIT_STACK_20260908.md": {
+   "contradicted_total": 0,
+   "unsupported": 13
+  },
+  "docs/reports/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/RECURSION_DEPTH_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/REFERENCE_DIFFERENTIAL_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 20
+  },
+  "docs/reports/SANITIZER_FUZZ_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/reports/SICP_COMPLETENESS_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 10
+  },
+  "docs/reports/SWEEP_GATE_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 2
+  },
+  "docs/reports/TENSOR_COLLECTION_DEPTH_REPORT.md": {
+   "contradicted_total": 0,
+   "unsupported": 13
+  },
+  "docs/tutorials/00_FIRST_5_MINUTES.md": {
+   "contradicted_total": 0,
+   "unsupported": 22
+  },
+  "docs/tutorials/01_AUTODIFF_AND_ML.md": {
+   "contradicted_total": 0,
+   "unsupported": 143
+  },
+  "docs/tutorials/02_BYTECODE_VM.md": {
+   "contradicted_total": 0,
+   "unsupported": 24
+  },
+  "docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/tutorials/04_CONSCIOUSNESS_ENGINE.md": {
+   "contradicted_total": 0,
+   "unsupported": 97
+  },
+  "docs/tutorials/05_SIGNAL_PROCESSING.md": {
+   "contradicted_total": 0,
+   "unsupported": 48
+  },
+  "docs/tutorials/06_EXACT_ARITHMETIC.md": {
+   "contradicted_total": 0,
+   "unsupported": 75
+  },
+  "docs/tutorials/07_PARALLEL_COMPUTING.md": {
+   "contradicted_total": 0,
+   "unsupported": 34
+  },
+  "docs/tutorials/08_CONTINUATIONS_AND_EXCEPTIONS.md": {
+   "contradicted_total": 0,
+   "unsupported": 84
+  },
+  "docs/tutorials/09_MODULE_SYSTEM.md": {
+   "contradicted_total": 0,
+   "unsupported": 25
+  },
+  "docs/tutorials/10_MACROS.md": {
+   "contradicted_total": 0,
+   "unsupported": 43
+  },
+  "docs/tutorials/11_TENSORS_AND_LINEAR_ALGEBRA.md": {
+   "contradicted_total": 0,
+   "unsupported": 70
+  },
+  "docs/tutorials/12_LISTS.md": {
+   "contradicted_total": 0,
+   "unsupported": 78
+  },
+  "docs/tutorials/13_STRINGS_AND_IO.md": {
+   "contradicted_total": 0,
+   "unsupported": 70
+  },
+  "docs/tutorials/14_DATA_FORMATS.md": {
+   "contradicted_total": 0,
+   "unsupported": 33
+  },
+  "docs/tutorials/15_PATTERN_MATCHING.md": {
+   "contradicted_total": 0,
+   "unsupported": 36
+  },
+  "docs/tutorials/16_HASH_TABLES.md": {
+   "contradicted_total": 0,
+   "unsupported": 21
+  },
+  "docs/tutorials/17_FUNCTIONAL_PROGRAMMING.md": {
+   "contradicted_total": 0,
+   "unsupported": 65
+  },
+  "docs/tutorials/18_WEB_PLATFORM.md": {
+   "contradicted_total": 0,
+   "unsupported": 32
+  },
+  "docs/tutorials/19_GPU_ACCELERATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 13
+  },
+  "docs/tutorials/20_BITWISE_AND_SYSTEM.md": {
+   "contradicted_total": 0,
+   "unsupported": 44
+  },
+  "docs/tutorials/21_PROJECT_NEURAL_NETWORK.md": {
+   "contradicted_total": 0,
+   "unsupported": 77
+  },
+  "docs/tutorials/22_PROJECT_EXPERT_SYSTEM.md": {
+   "contradicted_total": 0,
+   "unsupported": 94
+  },
+  "docs/tutorials/23_PROJECT_DATA_PIPELINE.md": {
+   "contradicted_total": 0,
+   "unsupported": 93
+  },
+  "docs/tutorials/24_PROJECT_OPTIMISATION.md": {
+   "contradicted_total": 0,
+   "unsupported": 69
+  },
+  "docs/tutorials/25_PROJECT_INTERPRETER.md": {
+   "contradicted_total": 0,
+   "unsupported": 74
+  },
+  "docs/tutorials/26_PROJECT_SELF_IMPROVING.md": {
+   "contradicted_total": 0,
+   "unsupported": 158
+  },
+  "docs/tutorials/COOKBOOK.md": {
+   "contradicted_total": 0,
+   "unsupported": 121
+  },
+  "docs/tutorials/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/tutorials/WHY_ESHKOL.md": {
+   "contradicted_total": 0,
+   "unsupported": 18
+  },
+  "docs/vision/ADDENDUM_TECHNICAL_WHITE_PAPER_V1.md": {
+   "contradicted_total": 0,
+   "unsupported": 44
+  },
+  "docs/vision/AI_FOCUS.md": {
+   "contradicted_total": 0,
+   "unsupported": 177
+  },
+  "docs/vision/DIFFERENTIATION_ANALYSIS.md": {
+   "contradicted_total": 0,
+   "unsupported": 52
+  },
+  "docs/vision/FUTURE_ROADMAP.md": {
+   "contradicted_total": 0,
+   "unsupported": 18
+  },
+  "docs/vision/PURPOSE_AND_VISION.md": {
+   "contradicted_total": 0,
+   "unsupported": 51
+  },
+  "docs/vision/README.md": {
+   "contradicted_total": 0,
+   "unsupported": 21
+  },
+  "docs/vision/SCIENTIFIC_COMPUTING.md": {
+   "contradicted_total": 0,
+   "unsupported": 220
+  },
+  "docs/vision/TECHNICAL_WHITE_PAPER.md": {
+   "contradicted_total": 0,
+   "unsupported": 24
+  },
+  "docs/xla-classification-floor-evidence/current-7f01cd97/floor-reference-plan.txt": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/xla-classification-floor-evidence/floor-reference-plan.txt": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  },
+  "docs/xla-classification-floor-evidence/verification.txt": {
+   "contradicted_total": 0,
+   "unsupported": 3
+  },
+  "docs/xla-classification-floor-evidence/work/builtin_reference.log": {
+   "contradicted_total": 0,
+   "unsupported": 0
+  }
+ }
+}

@@ -1,0 +1,245 @@
+;;; core.simplicial.kan -- horns and their fillers, the Kan and inner-Kan
+;;; (quasi-category) conditions, Kan's combinatorial homotopy groups, and
+;;; the enumeration of simplicial maps Map(X, Y).
+;;;
+;;; Usage: (require core.simplicial.kan)   or   (require core.simplicial)
+;;;
+;;; Sources: D. M. Kan, "A combinatorial definition of homotopy groups",
+;;; Ann. of Math. 67 (1958); J. P. May, "Simplicial Objects in Algebraic
+;;; Topology" (1967), Sec. 1-4; A. Joyal, "Quasi-categories and Kan
+;;; complexes", JPAA 175 (2002); J. Lurie, "Higher Topos Theory" (2009),
+;;; 1.1.2; P. G. Goerss, J. F. Jardine, "Simplicial Homotopy Theory" (1999),
+;;; I.7 (homotopy groups of Kan complexes).
+;;;
+;;; A horn Lambda^n_k in Y is a list of n simplices (y_0 .. y_n without y_k)
+;;; of dimension n - 1 with d_i y_j = d_{j-1} y_i for i < j, both different
+;;; from k; a filler is an n-simplex y with d_i y = y_i for i /= k. All
+;;; simplices here are simplices in the sense of core.simplicial.sset,
+;;; degenerate ones included, so "every horn has a filler" is a finite
+;;; check over every compatible horn, not only over horns cut out of
+;;; existing simplices.
+
+(require stdlib)
+(require core.simplicial.sset)
+
+(provide simplicial-horns horn-filler-table horn-fillers horn-filler-report
+         horn-violations kan-complex-through? quasi-category-through?
+         basepoint-simplex kan-spheres kan-homotopic? kan-homotopy-relation kan-homotopy-classes kan-pi1-product
+         simplicial-maps-fold simplicial-maps-count simplicial-map-order)
+
+(define (kn-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (kn-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (kn-all? pred (cdr xs))) (else #f)))
+(define (kn-any? pred xs) (cond ((null? xs) #f) ((pred (car xs)) #t) (else (kn-any? pred (cdr xs)))))
+(define (kn-remove-nth l i)
+  (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+
+;; faces of every simplex of dimension d, as a hash simplex -> vector of faces
+(define (kn-face-table Y d)
+  (let ((t (make-hash-table)))
+    (for-each (lambda (s) (hash-table-set! t s (list->vector (simplicial-set-faces Y s)))) (simplicial-set-simplices Y d))
+    t))
+
+;; chosen: list of (j . y) already placed, in decreasing j
+(define (kn-horn-extend Y n ft cands slots chosen acc)
+  (if (null? slots)
+      (cons (reverse (map cdr chosen)) acc)
+      (let ((j (car slots)))
+        (fold-left (lambda (acc y)
+                     (if (kn-all? (lambda (p)        ;; p = (i . x_i), i < j: d_i y_j = d_{j-1} x_i
+                                    (let ((i (car p)))
+                                      (or (< n 2)
+                                          (equal? (vector-ref (hash-table-ref/default ft y #f) i)
+                                                  (vector-ref (hash-table-ref/default ft (cdr p) #f) (- j 1))))))
+                                  chosen)
+                         (kn-horn-extend Y n ft cands (cdr slots) (cons (cons j y) chosen) acc)
+                         acc))
+                   acc cands))))
+;; every compatible horn Lambda^n_k (n >= 1), as lists of n simplices of
+;; dimension n - 1 ordered by face index
+(define (simplicial-horns Y n k)
+  (let* ((cands (simplicial-set-simplices Y (- n 1)))
+         (ft (if (>= n 2) (kn-face-table Y (- n 1)) #f))
+         (slots (filter (lambda (j) (not (= j k))) (kn-range (+ n 1)))))
+    (kn-horn-extend Y n ft cands slots '() '())))
+
+;; hash: horn (faces except the k-th) -> number of n-simplices filling it
+(define (horn-filler-table Y n k)
+  (let ((t (make-hash-table)))
+    (for-each (lambda (s)
+                (let ((h (kn-remove-nth (simplicial-set-faces Y s) k)))
+                  (hash-table-set! t h (+ 1 (hash-table-ref/default t h 0)))))
+              (simplicial-set-simplices Y n))
+    t))
+(define (horn-fillers Y n k horn)
+  (filter (lambda (s) (equal? (kn-remove-nth (simplicial-set-faces Y s) k) horn)) (simplicial-set-simplices Y n)))
+;; per k = 0..n: (k number-of-compatible-horns min-fillers max-fillers)
+(define (horn-filler-report Y n)
+  (map (lambda (k)
+         (let* ((t (horn-filler-table Y n k))
+                (counts (map (lambda (h) (hash-table-ref/default t h 0)) (simplicial-horns Y n k))))
+           (list k (length counts) (fold-left min (car counts) counts) (fold-left max (car counts) counts))))
+       (kn-range (+ n 1))))
+;; the compatible horns Lambda^n_k without a filler
+(define (horn-violations Y n k)
+  (let ((t (horn-filler-table Y n k)))
+    (filter (lambda (h) (= 0 (hash-table-ref/default t h 0))) (simplicial-horns Y n k))))
+(define (kan-complex-through? Y nmax)
+  (kn-all? (lambda (n) (kn-all? (lambda (k) (null? (horn-violations Y n k))) (kn-range (+ n 1)))) (cdr (kn-range (+ nmax 1)))))
+(define (quasi-category-through? Y nmax)
+  (kn-all? (lambda (n) (kn-all? (lambda (k) (null? (horn-violations Y n k))) (cdr (kn-range n)))) (cdr (cdr (kn-range (+ nmax 1))))))
+
+;; ---------------------------------------------------------------------------
+;; Kan's homotopy groups
+;; ---------------------------------------------------------------------------
+;; the totally degenerate n-simplex at the vertex v (a nondegenerate 0-simplex value)
+(define (basepoint-simplex v n) (vector 'simplex (map (lambda (t) 0) (kn-range (+ n 1))) v))
+;; n-simplices all of whose faces are the basepoint
+(define (kan-spheres Y v n)
+  (let ((b (basepoint-simplex v (- n 1))))
+    (filter (lambda (s) (kn-all? (lambda (f) (equal? f b)) (simplicial-set-faces Y s))) (simplicial-set-simplices Y n))))
+;; x ~ y when some (n+1)-simplex z has d_n z = x, d_{n+1} z = y and d_i z
+;; the basepoint for i < n. `kan-homotopy-relation` reads every
+;; (n+1)-simplex once and returns the relation as a predicate.
+(define (kan-homotopy-relation Y v n)
+  (let ((b (basepoint-simplex v n)) (rel (make-hash-table)))
+    (for-each (lambda (z)
+                (let ((fs (simplicial-set-faces Y z)))
+                  (if (kn-all? (lambda (i) (equal? (list-ref fs i) b)) (kn-range n))
+                      (hash-table-set! rel (list (list-ref fs n) (list-ref fs (+ n 1))) #t))))
+              (simplicial-set-simplices Y (+ n 1)))
+    (lambda (x y) (hash-table-ref/default rel (list x y) #f))))
+(define (kan-homotopic? Y v n x y) ((kan-homotopy-relation Y v n) x y))
+;; the classes of n-spheres under ~ (Kan: an equivalence relation on a Kan
+;; complex), in order of first appearance; the basepoint class is first
+(define (kan-homotopy-classes Y v n)
+  (let ((rel (kan-homotopy-relation Y v n)))
+    (let loop ((rest (kan-spheres Y v n)) (classes '()))
+      (if (null? rest) (reverse classes)
+          (let* ((x (car rest))
+                 (cls (filter (lambda (y) (or (equal? x y) (rel x y))) rest)))
+            (loop (filter (lambda (y) (not (member y cls))) rest) (cons cls classes)))))))
+;; [x][y] = [d_1 z] for z filling the inner horn (d_0 z = y, d_2 z = x)
+(define (kan-pi1-product Y x y)
+  (let loop ((zs (simplicial-set-simplices Y 2)))
+    (cond ((null? zs) #f)
+          ((let ((fs (simplicial-set-faces Y (car zs)))) (and (equal? (car fs) y) (equal? (caddr fs) x)))
+           (cadr (simplicial-set-faces Y (car zs))))
+          (else (loop (cdr zs))))))
+
+;; ---------------------------------------------------------------------------
+;; Simplicial maps X -> Y
+;; ---------------------------------------------------------------------------
+;; A map is determined by the images of the nondegenerate simplices of X,
+;; compatible with faces; the image of eta^* x is eta^* f(x). The
+;; enumeration order puts vertices first, then edges chosen greedily so that
+;; each new edge completes as many triangles as possible, each higher
+;; simplex immediately after its faces: a partial map is rejected as soon as
+;; one simplex has no admissible image.
+(define (simplicial-map-order X)
+  (let* ((md (simplicial-set-max-dim X))
+         (items (fold-left append '() (map (lambda (n) (map (lambda (x) (cons n x)) (vector->list (simplicial-set-nondegenerate X n)))) (kn-range (+ md 1)))))
+         (deps (make-hash-table))
+         (assigned (make-hash-table)))
+    (for-each (lambda (it)
+                (if (> (car it) 0)
+                    (hash-table-set! deps it
+                                     (map (lambda (f) (cons (simplex-base-degree f) (simplex-base f)))
+                                          (simplicial-set-faces X (simplex (cdr it) (car it)))))))
+              items)
+    (let* ((vertices (filter (lambda (it) (= 0 (car it))) items))
+           (edges (filter (lambda (it) (= 1 (car it))) items))
+           (higher (filter (lambda (it) (> (car it) 1)) items))
+           (ready? (lambda (it) (kn-all? (lambda (d) (hash-table-ref/default assigned d #f)) (hash-table-ref/default deps it '())))))
+      (for-each (lambda (v) (hash-table-set! assigned v #t)) vertices)
+      (let loop ((order (reverse vertices)) (edges edges) (higher higher))
+        (let close ((order order) (higher higher))
+          (let ((now (filter ready? higher)))
+            (if (not (null? now))
+                (begin (for-each (lambda (h) (hash-table-set! assigned h #t)) now)
+                       (close (append (reverse now) order) (filter (lambda (h) (not (member h now))) higher)))
+                (if (null? edges)
+                    (reverse order)
+                    (let* ((score (lambda (e)
+                                    (hash-table-set! assigned e #t)
+                                    (let ((c (length (filter (lambda (h) (and (= 2 (car h)) (ready? h))) higher))))
+                                      (hash-table-set! assigned e #f)
+                                      c)))
+                           (best (fold-left (lambda (b e) (if (> (score e) (score b)) e b)) (car edges) (cdr edges))))
+                      (hash-table-set! assigned best #t)
+                      (loop (cons best order) (filter (lambda (e) (not (equal? e best))) edges) higher))))))))))
+
+(define (kn-boundary-key ids base)
+  (let loop ((l ids) (k 0) (scale 1)) (if (null? l) k (loop (cdr l) (+ k (* scale (car l))) (* scale (+ base 1))))))
+;; the number of the image of a face (position . eta) of an item
+(define (kn-face-image Y order ys yid memo f face)
+  (let* ((p (car face)) (k (vector-ref f p)))
+    (if (not (cdr face)) k
+        (let ((key (cons k (cdr face))))
+          (or (hash-table-ref/default memo (cons (car (vector-ref order p)) key) #f)
+              (let* ((eta (cdr face)) (d (- (length eta) 1))
+                     (s (simplicial-set-operator Y (vector-ref (vector-ref ys (car (vector-ref order p))) k) eta))
+                     (id (hash-table-ref/default (vector-ref yid d) s -1)))
+                (hash-table-set! memo (cons (car (vector-ref order p)) key) id)
+                id))))))
+(define (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc acc i)
+  (if (= i nitems)
+      (proc image acc)
+      (let* ((n (car (vector-ref order i)))
+             (key (if (= n 0) 0
+                      (let ((base (+ 1 (vector-length (vector-ref ys (- n 1))))))
+                        (let loop ((fs (vector-ref item-faces i)) (k 0) (scale 1))
+                          (if (null? fs) k
+                              (loop (cdr fs) (+ k (* scale (kn-face-image Y order ys yid memo f (car fs)))) (* scale base)))))))
+             (cands (reverse (hash-table-ref/default (vector-ref by-boundary n) key '()))))
+        (let loop ((cs cands) (acc acc))
+          (if (null? cs)
+              (begin (vector-set! f i -1) acc)
+              (begin
+                (vector-set! f i (car cs))
+                (loop (cdr cs) (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc acc (+ i 1)))))))))
+;; fold proc over every simplicial map f : X -> Y; proc receives (image acc)
+;; with image a procedure (n x) -> f(x) for x nondegenerate in X_n.
+;; The simplices of Y are numbered per dimension; a simplex of Y_n is found
+;; from its boundary through one integer key (its face numbers in base
+;; |Y_{n-1}|), and the image of a degenerate face eta^* y of X is
+;; eta^* f(y), computed once per (f(y), eta) and remembered.
+(define (simplicial-maps-fold X Y proc init)
+  (let* ((order (list->vector (simplicial-map-order X)))
+         (nitems (vector-length order))
+         (pos (make-hash-table))
+         (dims (let loop ((i 0) (m 0)) (if (= i nitems) m (loop (+ i 1) (max m (car (vector-ref order i)))))))
+         (ys (make-vector (+ dims 1) #f))          ;; per dimension: vector of simplices of Y
+         (yid (make-vector (+ dims 1) #f))         ;; per dimension: hash simplex -> number
+         (by-boundary (make-vector (+ dims 1) #f)) ;; per dimension: hash key -> list of numbers
+         (memo (make-hash-table))                  ;; (number eta) -> number of eta^* simplex
+         (item-faces (make-vector nitems '()))     ;; per item: list of (position . eta-or-#f)
+         (f (make-vector nitems -1)))
+    (let loop ((i 0)) (if (< i nitems) (begin (hash-table-set! pos (vector-ref order i) i) (loop (+ i 1)))))
+    (let loop ((d 0))
+      (if (<= d dims)
+          (let ((v (list->vector (simplicial-set-simplices Y d))) (h (make-hash-table)) (bb (make-hash-table)))
+            (let fill ((k 0)) (if (< k (vector-length v)) (begin (hash-table-set! h (vector-ref v k) k) (fill (+ k 1)))))
+            (vector-set! ys d v) (vector-set! yid d h)
+            (let fill ((k 0))
+              (if (< k (vector-length v))
+                  (let ((key (if (= d 0) 0
+                                 (kn-boundary-key (map (lambda (fs) (hash-table-ref/default (vector-ref yid (- d 1)) fs -1))
+                                                       (simplicial-set-faces Y (vector-ref v k)))
+                                                  (vector-length (vector-ref ys (- d 1)))))))
+                    (hash-table-set! bb key (cons k (hash-table-ref/default bb key '())))
+                    (fill (+ k 1)))))
+            (vector-set! by-boundary d bb)
+            (loop (+ d 1)))))
+    (let loop ((i 0))
+      (if (< i nitems)
+          (let ((it (vector-ref order i)))
+            (if (> (car it) 0)
+                (vector-set! item-faces i
+                             (map (lambda (s) (cons (hash-table-ref/default pos (cons (simplex-base-degree s) (simplex-base s)) -1)
+                                                    (if (simplex-nondegenerate? s) #f (simplex-surjection s))))
+                                  (simplicial-set-faces X (simplex (cdr it) (car it))))))
+            (loop (+ i 1)))))
+    (let ((image (lambda (n x) (let ((i (hash-table-ref/default pos (cons n x) #f)))
+                                 (if (and i (>= (vector-ref f i) 0)) (vector-ref (vector-ref ys n) (vector-ref f i)) #f)))))
+      (kn-maps-search Y order nitems ys yid by-boundary memo item-faces f image proc init 0))))
+(define (simplicial-maps-count X Y) (simplicial-maps-fold X Y (lambda (image acc) (+ acc 1)) 0))

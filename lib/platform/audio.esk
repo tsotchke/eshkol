@@ -1,0 +1,136 @@
+;; platform/audio.esk — real-time audio in queue mode (ADR-0053).
+;;
+;; (require platform.audio)
+;;
+;; The OS audio thread runs a lock-free callback that moves frames between the
+;; device and a ring buffer. Eshkol code writes interleaved samples in
+;; [-1, 1] with audio-write!/audio-write-samples! (published to the audio
+;; thread by audio-commit!) and reads captured samples with audio-read.
+;; Underruns, overruns, callback timing and latency are counted on the audio
+;; thread and read with audio-stats.
+;;
+;; Backends: null (device-free clock; always), ALSA (Linux), CoreAudio
+;; (macOS). Select with ESHKOL_PLATFORM_AUDIO=null|alsa|coreaudio|auto.
+;; Opening a device requires the 'audio capability under a capability policy.
+
+(require stdlib)
+(require core.capabilities)
+
+(provide audio-open audio-open-output audio-open-input audio-device?
+         audio-start! audio-stop! audio-pause! audio-close!
+         audio-write! audio-write-samples! audio-commit!
+         audio-available audio-read audio-read-samples
+         audio-stat audio-stats audio-latency-ms audio-backend audio-format)
+
+(extern i64 -au-open i32 i32 i32 i32 i32 i32 :real eshkol_plat_audio_open)
+(extern i32 -au-close i64 :real eshkol_plat_audio_close)
+(extern i32 -au-control i64 i32 :real eshkol_plat_audio_control)
+(extern i32 -au-write i64 double :real eshkol_plat_audio_write)
+(extern i32 -au-commit i64 :real eshkol_plat_audio_commit)
+(extern i32 -au-available i64 :real eshkol_plat_audio_available)
+(extern double -au-read i64 :real eshkol_plat_audio_read)
+(extern i64 -au-stat i64 i32 :real eshkol_plat_audio_stat)
+(extern ptr -au-backend-name i32 :real eshkol_plat_backend_name)
+
+(define -au-status-names
+  (vector "ok" "invalid argument" "out of memory" "backend unavailable" "device error"
+          "invalid state" "handle busy" "not found" "queue full" "malformed data"))
+
+(define (-au-check r who)
+  (let ((n (inexact->exact r)))
+    (if (< n 0)
+        (error (string-append (symbol->string who) ": "
+                              (if (<= n -10) "error" (vector-ref -au-status-names (- 0 n)))))
+        n)))
+
+(define (audio-format name)
+  "Sample format code: 'u8 's16 's24 's32 'f32."
+  (cond ((eq? name 'u8) 0) ((eq? name 's16) 1) ((eq? name 's24) 2)
+        ((eq? name 's32) 3) ((eq? name 'f32) 4)
+        (else (error "audio-format: unknown format" name))))
+
+(define (audio-device? d)
+  (and (vector? d) (= (vector-length d) 3) (eq? (vector-ref d 0) 'audio-device)))
+
+(define (-ah d) (if (audio-device? d) (vector-ref d 1) (error "platform.audio: not a device" d)))
+
+(define (audio-open direction sample-rate channels format period-frames ring-frames)
+  "Open a queue-mode device. direction: 'output or 'input; ring-frames 0 = 8 periods."
+  (capability-require! 'audio)
+  (let ((dir (cond ((eq? direction 'output) 0) ((eq? direction 'input) 1)
+                   (else (error "audio-open: direction must be 'output or 'input" direction)))))
+    (vector 'audio-device
+            (-au-check (-au-open dir sample-rate channels (audio-format format)
+                                 period-frames ring-frames)
+                       'audio-open)
+            channels)))
+
+(define (audio-open-output sample-rate channels period-frames)
+  (audio-open 'output sample-rate channels 'f32 period-frames 0))
+(define (audio-open-input sample-rate channels period-frames)
+  (audio-open 'input sample-rate channels 'f32 period-frames 0))
+
+(define (audio-start! d) (-au-check (-au-control (-ah d) 0) 'audio-start!) #t)
+(define (audio-stop! d) (-au-check (-au-control (-ah d) 1) 'audio-stop!) #t)
+(define (audio-pause! d) (-au-check (-au-control (-ah d) 2) 'audio-pause!) #t)
+(define (audio-close! d) (-au-check (-au-close (-ah d)) 'audio-close!) #t)
+
+(define (audio-write! d sample)
+  "Stage one interleaved sample; returns #f when the ring is full."
+  (let ((r (inexact->exact (-au-write (-ah d) (exact->inexact sample)))))
+    (cond ((= r 0) #t)
+          ((= r -8) #f)
+          (else (-au-check r 'audio-write!)))))
+
+(define (audio-commit! d)
+  "Publish staged samples to the audio thread; returns frames published."
+  (-au-check (-au-commit (-ah d)) 'audio-commit!))
+
+(define (audio-write-samples! d samples)
+  "Stage a list or vector of samples and commit; returns samples accepted."
+  (let ((xs (if (vector? samples) (vector->list samples) samples)))
+    (let loop ((xs xs) (n 0))
+      (if (or (null? xs) (not (audio-write! d (car xs))))
+          (begin (audio-commit! d) n)
+          (loop (cdr xs) (+ n 1))))))
+
+(define (audio-available d)
+  "Captured frames ready to read."
+  (-au-check (-au-available (-ah d)) 'audio-available))
+
+(define (audio-read d)
+  "Next captured sample, or #f when none."
+  (let ((v (-au-read (-ah d))))
+    (if (= v v) v #f)))
+
+(define (audio-read-samples d n)
+  "Up to n captured samples as a vector."
+  (let loop ((i 0) (acc '()))
+    (if (= i n) (list->vector (reverse acc))
+        (let ((v (audio-read d)))
+          (if v (loop (+ i 1) (cons v acc)) (list->vector (reverse acc)))))))
+
+(define -au-stat-names
+  '(callbacks frames underruns underrun-frames overruns overrun-frames device-xruns
+    last-callback-ns max-callback-ns max-jitter-ns device-latency-frames queued-frames
+    period-frames sample-rate))
+
+(define (-index-of x xs i)
+  (cond ((null? xs) (error "audio-stat: unknown statistic" x))
+        ((eq? (car xs) x) i)
+        (else (-index-of x (cdr xs) (+ i 1)))))
+
+(define (audio-stat d name)
+  (-au-check (-au-stat (-ah d) (-index-of name -au-stat-names 0)) 'audio-stat))
+
+(define (audio-stats d)
+  "Association list of every counter."
+  (map (lambda (name) (cons name (audio-stat d name))) -au-stat-names))
+
+(define (audio-latency-ms d)
+  "Device latency plus queued frames, in milliseconds."
+  (/ (* 1000.0 (+ (audio-stat d 'device-latency-frames) (audio-stat d 'queued-frames)))
+     (audio-stat d 'sample-rate)))
+
+(define (audio-backend d)
+  (ptr->string (-au-backend-name (-au-check (-au-stat (-ah d) 14) 'audio-backend))))

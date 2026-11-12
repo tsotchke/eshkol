@@ -1,9 +1,11 @@
 # `core.channels` — Go-style bounded CSP channels
 
 **Source**: [`lib/core/channels.esk`](../../../lib/core/channels.esk)
-**Require**: `(require core.channels)` — **NOT** auto-loaded via `stdlib`; require it explicitly. (It internally pulls in `stdlib` and `core.threads`.)
+**Require**: `(require core.channels)` — **NOT** auto-loaded via `stdlib`; require it explicitly. (It internally pulls in `stdlib`, `core.threads` and `core.fibers`.)
 
 Bounded, blocking channels built on `core.threads` mutex + condvar. A channel is a fixed-capacity ring buffer; blocking `channel-send!`/`channel-recv!` are the default, with non-blocking `channel-try-send!`/`channel-try-recv!` for poll-style use. A channel is a length-10 vector tagged `'eshkol-channel`.
+
+**Fibers**: called from inside a [`core.fibers`](fibers.md) fiber, a blocking `channel-send!` or `channel-recv!` releases the channel mutex and parks the *fiber* until the channel has room, an item, or is closed; the scheduler runs other fibers meanwhile. Producers and consumers may be fibers, pool threads, or a mix — thread waiters still block on the condition variables.
 
 Once **closed**: `channel-send!` errors, `channel-recv!` drains any buffered items then returns the closed-sentinel forever, and all waiters are woken.
 

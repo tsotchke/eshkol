@@ -1,0 +1,3 @@
+;; A procedure returns a closure that captures a handle constructor.
+(define (make-opener) (lambda (path) (open-input-file path)))
+(define opener (make-opener))

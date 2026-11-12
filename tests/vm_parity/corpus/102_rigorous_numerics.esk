@@ -1,0 +1,51 @@
+; ADR-0050 rigorous numerics must agree between the native and VM engines:
+; directed rounding as the core.ad.interval default, interval Taylor jets
+; and gradients, certified sup over a box, exact torus means and the inverse
+; directional derivative, support bookkeeping, and an element-tensor program
+; on exact numbers, jets and Taylor models. Only a final PASS/FAIL line is
+; printed so the output is byte-identical across -r, vm-src and vm-eskb.
+(require core.ad.taylor_models)
+(require core.ad.interval_jet)
+(require core.ad.compact_bounds)
+(require core.torus)
+(require core.ad.interval_tensor)
+
+(define (contains? iv x)
+  (and (<= (inexact->exact (car iv)) x) (>= (inexact->exact (cdr iv)) x)))
+
+(define A (itensor-from-list '(2 2) (list 1 2 3 4)))
+(define B (itensor-from-list '(2 2) (list 1/2 -1 0 1/3)))
+(define (P t) (itensor-sum (itensor-matmul (itensor-sqr (itensor-scale A t)) B)))
+
+(define F (torus+ (torus-scale (torus-cos '(1 0)) 3) (torus-sin '(0 2))))
+(define G (torus-directional-inverse F '(1 1/3)))
+
+(define ok
+  (and
+    (equal? (interval-add (cons 0.1 0.2) (cons 0.3 0.7)) (ia+ (cons 0.1 0.2) (cons 0.3 0.7)))
+    (equal? (interval-mul (cons 1/3 1/2) (cons -2 3)) (cons -1 3/2))
+    (equal? (interval-pow (cons -2 3) 2) (cons 0 9))
+    (equal? (interval-sqrt (cons 9/4 16)) (cons 3/2 4))
+    (contains? (interval-exp (cons 0 1)) 1)
+    (contains? (interval-log (cons 1/64 8)) 0)
+    (equal? (interval-derivative-n (lambda (x) (rn-expt x 3)) (cons 1/3 1/3) 2) (cons 2 2))
+    (contains? (interval-derivative-n rn-atan (cons 3/7 3/7) 1) 49/58)
+    (let ((c (box-sup (lambda (v) (let ((x (vector-ref v 0))) (rn* x (rn- 1 x))))
+                      (vector (cons 0 1)) 1/1000000)))
+      (equal? (compact-bound-enclosure c) (cons 1/4 1/4)))
+    (eq? (compact-bound-kind
+          (box-certify-bound (lambda (v) (let ((x (vector-ref v 0))) (rn* x (rn- 1 x))))
+                             (vector (cons 0 1)) 0 1/5))
+         'refuted)
+    (equal? (torus-mean (torus* (torus-cos '(3)) (torus-cos '(3)))) 1/2)
+    (equal? (torus-mean (torus* F F)) 5)
+    (torus-zero? (torus- (torus-directional-deriv G '(1 1/3)) F))
+    (torus-supports-disjoint? (list (list (cons 0 1/4))) (list (list (cons 1/2 3/4))))
+    (not (torus-supports-disjoint? (list (list (cons 7/8 1/8))) (list (list (cons 1/16 3/8)))))
+    (equal? (P 3/5) 3/5)
+    (equal? (ijet-coeff (P (ijet-var (cons 3/5 3/5) 2)) 2) (cons 5/3 5/3))
+    (let ((b (tm-bound (P (tm-var 0 1/2 3)))))
+      (and (<= (inexact->exact (car b)) 0) (>= (inexact->exact (cdr b)) 5/12)))))
+
+(display (if ok "PASS: rigorous numerics native/VM parity" "FAIL: rigorous numerics native/VM parity"))
+(newline)

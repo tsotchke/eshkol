@@ -783,7 +783,8 @@ extern "C" void tensor_embedding_backward(ad_node_t* node) {
  *           selects the default
  *       [4] [5] reserved, zero
  *
- * The ball has radius 1/sqrt(c) for c = -K; K = 0 is the Euclidean case, where
+ * The ball has radius 1/sqrt(c) = 2/sqrt(-K) for the chart parameter
+ * c = eshkol_rm_ball_param(-K) (ADR-0018); K = 0 is the Euclidean case, where
  * the mean is linear in the points and the implicit machinery degenerates to the
  * exact closed form.
  ******************************************************************************/
@@ -811,7 +812,7 @@ namespace {
  *  from the arena, and the persistent gradient buffers must not come from here.
  */
 struct FrechetGeometry {
-    double  c;        /**< -K, so the ball has radius 1/sqrt(c); c > 0 */
+    double  c;        /**< chart parameter -K/4: the ball has radius 1/sqrt(c) */
     double  s;        /**< sqrt(c) */
     int64_t d;        /**< ambient dimension */
 
@@ -824,7 +825,8 @@ struct FrechetGeometry {
     std::vector<double> logv;      /**< log_mu(x)                          */
 
     FrechetGeometry(double curvature_K, int64_t dim)
-        : c(-curvature_K), s(std::sqrt(-curvature_K)), d(dim),
+        : c(eshkol_rm_ball_param(-curvature_K)),
+          s(std::sqrt(eshkol_rm_ball_param(-curvature_K))), d(dim),
           u((size_t)dim), du_dmu((size_t)(dim * dim)), du_dx((size_t)(dim * dim)),
           dlog_dmu((size_t)(dim * dim)), dlog_dx((size_t)(dim * dim)),
           logv((size_t)dim) {}
@@ -1053,7 +1055,7 @@ extern "C" void tensor_frechet_mean_backward(ad_node_t* node) {
     }
     if (!(K <= 0.0) || !(K == K)) {
         eshkol_fatal("frechet-mean backward: sectional curvature must be <= 0 "
-                     "(the Poincare ball has radius 1/sqrt(-K)); params slot 2 "
+                     "(the ball has radius 2/sqrt(-K)); params slot 2 "
                      "holds %.17g.", K);
         return;
     }
@@ -1826,35 +1828,6 @@ static bool stable_poincare_log_jacobians(
     return true;
 }
 
-static bool euclidean_distance_grad(const double* x, const double* y, int64_t n,
-                                    double* gx, double* gy) {
-    std::vector<double> zero((size_t)n, 0.0), seed((size_t)n, 0.0);
-    for (int64_t j = 0; j < n; ++j) {
-        seed[(size_t)j] = 1.0;
-        double tangent = 0.0;
-        if (!eshkol_rm_distance_directional(x, y, seed.data(), zero.data(),
-                                            0.0, (int)n, nullptr, &tangent))
-            return false;
-        gx[j] = tangent;
-        seed[(size_t)j] = 0.0;
-    }
-    for (int64_t j = 0; j < n; ++j) {
-        seed[(size_t)j] = 1.0;
-        double tangent = 0.0;
-        if (!eshkol_rm_distance_directional(x, y, zero.data(), seed.data(),
-                                            0.0, (int)n, nullptr, &tangent))
-            return false;
-        gy[j] = tangent;
-        seed[(size_t)j] = 0.0;
-    }
-    return true;
-}
-
-static bool spherical_distance_grad(const double* x, const double* y, double K,
-                                    int64_t n, double* gx, double* gy) {
-    return eshkol_rm_sphere_distance_gradient(x, y, K, (int)n, gx, gy) != 0;
-}
-
 /** @brief Backward for the Poincare logarithmic map log_x(y).
  *
  *  log_x(y) = k(x) * phi(|u|) * u with u = (-x) (+)_c y, k = (1 - c|x|^2)/sqrt(c)
@@ -1911,14 +1884,14 @@ extern "C" void tensor_poincare_log_map_backward(ad_node_t* node) {
     }
 }
 
-/** @brief Backward for geodesic attention: softmax over negated geodesic
- *  distances, composed with the value-weighted sum.
+/** @brief Backward for squared-distance geodesic attention (ADR-0018):
  *
- *      s_ij = -scale * d(Q_i, K_j),  p = softmax_j(s),  O_i = sum_j p_ij V_j
+ *      s_ij = -d^2(Q_i, K_j) / (2t),  p = softmax_j(s),  O_i = sum_j p_ij V_j
  *
  *  The chain is the standard attention one with the dot-product score replaced
- *  by the distance score, so only ds/dQ and ds/dK differ; those come from
- *  hyperbolic_distance_grad, the same routine the distance rule uses.
+ *  by the squared-distance score, so only ds/dQ and ds/dK differ. Those are
+ *  -(1/2t) times the coordinate gradients of d^2, -2 lambda^2 log, from
+ *  eshkol_rm_sq_distance_grad: exactly zero at q == k, every sign of K.
  *
  *  The softmax weights are read from node->saved_tensors[0], retained by the
  *  forward. Recomputing them here was the alternative and is rejected for the
@@ -1968,16 +1941,18 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
     const size_t  head_dim = (size_t)p6[1];
     const bool    causal   = (p6[2] != 0);
     const double  curvature = double_from_bits(p6[3]);
+    const double  temperature = double_from_bits(p6[4]);
     if (heads <= 0 || head_dim == 0 || dim != (size_t)heads * head_dim ||
-        !std::isfinite(curvature)) {
+        !std::isfinite(curvature) || !(temperature > 0.0) ||
+        !std::isfinite(temperature)) {
         eshkol_fatal("geodesic-attention backward: inconsistent params "
-                     "(heads=%d head_dim=%zu dim=%zu curvature=%.17g).",
-                     heads, head_dim, dim, curvature);
+                     "(heads=%d head_dim=%zu dim=%zu curvature=%.17g "
+                     "temperature=%.17g).",
+                     heads, head_dim, dim, curvature, temperature);
         return;
     }
-    const double metric_scale = curvature < 0.0
-        ? eshkol_rm_sqrt_nonnegative(-curvature) : 1.0;
-    const double scale = 1.0 / (metric_scale * std::sqrt((double)head_dim));
+    /* d s / d(d^2) = -1/(2t). */
+    const double scale = 0.5 / temperature;
 
     const double* Q = (const double*)qn->tensor_value;
     const double* K = (const double*)kn->tensor_value;
@@ -2014,6 +1989,7 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
 
     std::vector<scaled_real> dp(seq);
     std::vector<double> ds(seq), gq(head_dim), gk(head_dim);
+    std::vector<double> sq_scratch(2 * head_dim);
 
     for (size_t b = 0; b < batch; ++b) {
         for (int h = 0; h < heads; ++h) {
@@ -2067,45 +2043,19 @@ extern "C" void tensor_geodesic_attention_backward(ad_node_t* node) {
                     }
                 }
 
-                /* s_j = -scale * d(Q_i, K_j): push through the distance. */
+                /* s_j = -d^2(Q_i, K_j)/(2t): push through the squared
+                 * distance. Its gradient is smooth at Q_i == K_j (zero there). */
                 for (size_t j = 0; j < limit; ++j) {
                     if (ds[j] == 0.0) continue;
                     const size_t kj = (b * seq + j) * dim + off;
-                    bool grad_ok = false;
-                    if (curvature < 0.0) {
-                        grad_ok = hyperbolic_distance_grad(
-                            &Q[qi], &K[kj], -curvature, (int64_t)head_dim,
-                            gq.data(), gk.data(), nullptr);
-                    } else if (curvature == 0.0) {
-                        grad_ok = euclidean_distance_grad(
-                            &Q[qi], &K[kj], (int64_t)head_dim,
-                            gq.data(), gk.data());
-                    } else {
-                        grad_ok = spherical_distance_grad(
-                            &Q[qi], &K[kj], curvature, (int64_t)head_dim,
-                            gq.data(), gk.data());
-                    }
-                    if (!grad_ok) {
-                        if (curvature > 0.0) {
-                            const char* why = eshkol_rm_sphere_distance_domain(
-                                &Q[qi], &K[kj], curvature, (int)head_dim);
-                            eshkol_fatal(
-                                "geodesic-attention backward: spherical query/key "
-                                "row %zu/%zu is outside the shared forward domain: %s.",
-                                i, j, why ? why : "non-finite gradient");
-                            return;
-                        }
-                        eshkol_fatal(
-                            "geodesic-attention backward: query row %zu and key "
-                            "row %zu (batch %zu, head %d) coincide exactly, or "
-                            "one lies outside the Poincare ball. The geodesic "
-                            "distance has no derivative at coincident points — "
-                            "it is a cone point — so scoring attention by "
-                            "distance makes this op non-differentiable there. "
-                            "This is the ordinary case when Q and K are the same "
-                            "tensor. Refusing rather than inventing a "
-                            "subgradient for sectional curvature K=%.17g.",
-                            i, j, b, h, curvature);
+                    const char* why = eshkol_rm_sq_distance_grad(
+                        &Q[qi], &K[kj], curvature, (int)head_dim,
+                        gq.data(), gk.data(), sq_scratch.data());
+                    if (why) {
+                        eshkol_fatal("geodesic-attention backward: query row %zu and "
+                                     "key row %zu (batch %zu, head %d) are outside "
+                                     "the forward's domain at sectional curvature "
+                                     "K=%.17g: %s.", i, j, b, h, curvature, why);
                         return;
                     }
                     const double f = -eshkol_rm_scaled_product4(

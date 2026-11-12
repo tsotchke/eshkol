@@ -15,6 +15,7 @@
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
 #include "../core/keychain_native.h"
+#include "eshkol/core/curvature_runtime.h"
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
@@ -25,6 +26,11 @@
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "eshkol/core/net.h"
 #include "eshkol/core/tls.h"
+#if defined(ESHKOL_PLATFORM_LAYER)
+#include <eshkol/platform/audio.h>   // Platform layer bridge (ADR-0053)
+#include <eshkol/platform/midi.h>
+#include <eshkol/platform/window.h>
+#endif
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -601,6 +607,13 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_energy_from_tagged(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_create(int32_t num_qubits) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_qexpect_destroy(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_gate(int64_t handle, int32_t kind, int32_t q0, int32_t q1,
+                                    int32_t param, double coef) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_term(int64_t handle, double coef, const char* paulis)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_parameter_count(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
     void* eshkol_vqe_ad_prepare(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_ad_prepared_energy(const void* prepared)
@@ -1424,6 +1437,30 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_capability_runtime_clear);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
+    // core.curvature: the ADR-0018 signed-curvature chart (lib/core/curvature_runtime.c)
+    ADD_SYMBOL(eshkol_curvature_last_error);
+    ADD_SYMBOL(eshkol_curvature_convention_id);
+    ADD_SYMBOL(eshkol_curvature_alpha);
+    ADD_SYMBOL(eshkol_curvature_check_header);
+    ADD_SYMBOL(eshkol_curvature_distance);
+    ADD_SYMBOL(eshkol_curvature_sq_distance);
+    ADD_SYMBOL(eshkol_curvature_conformal_factor);
+    ADD_SYMBOL(eshkol_curvature_distance_jet);
+    ADD_SYMBOL(eshkol_curvature_sq_distance_jet);
+    ADD_SYMBOL(eshkol_curvature_sq_distance_grad);
+    ADD_SYMBOL(eshkol_curvature_exp_map);
+    ADD_SYMBOL(eshkol_curvature_log_map);
+    ADD_SYMBOL(eshkol_curvature_transport);
+    ADD_SYMBOL(eshkol_curvature_mobius_add);
+    ADD_SYMBOL(eshkol_curvature_mobius_scalar);
+    ADD_SYMBOL(eshkol_curvature_project);
+    ADD_SYMBOL(eshkol_curvature_riemannian_grad);
+    ADD_SYMBOL(eshkol_curvature_attention);
+    ADD_SYMBOL(eshkol_curvature_sphere_to_chart);
+    ADD_SYMBOL(eshkol_curvature_chart_to_sphere);
+    ADD_SYMBOL(eshkol_curvature_migrate_point);
+    ADD_SYMBOL(eshkol_curvature_migrate_tangent);
+    ADD_SYMBOL(eshkol_curvature_migrate_temperature);
     ADD_SYMBOL(eshkol_keychain_size);
     ADD_SYMBOL(eshkol_keychain_get_into);
     ADD_SYMBOL(eshkol_keychain_set);
@@ -1547,6 +1584,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_exact_ground_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_optimize);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_energy_from_tagged);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_gate);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_term);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_parameter_count);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepare);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_inputs);
@@ -1850,6 +1892,43 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_net_port);
     ADD_SYMBOL(eshkol_net_nonblocking);
     ADD_SYMBOL(eshkol_net_close);
+#if defined(ESHKOL_PLATFORM_LAYER)
+    // Platform layer bridge used by lib/platform/*.esk (ADR-0053).
+    ADD_SYMBOL(eshkol_plat_backend);
+    ADD_SYMBOL(eshkol_plat_backend_name);
+    ADD_SYMBOL(eshkol_plat_select_backend);
+    ADD_SYMBOL(eshkol_plat_window_open);
+    ADD_SYMBOL(eshkol_plat_window_close);
+    ADD_SYMBOL(eshkol_plat_window_query);
+    ADD_SYMBOL(eshkol_plat_window_set);
+    ADD_SYMBOL(eshkol_plat_window_set_title);
+    ADD_SYMBOL(eshkol_plat_window_fill_rect);
+    ADD_SYMBOL(eshkol_plat_window_get_pixel);
+    ADD_SYMBOL(eshkol_plat_window_present);
+    ADD_SYMBOL(eshkol_plat_window_read_presented);
+    ADD_SYMBOL(eshkol_plat_window_next_event);
+    ADD_SYMBOL(eshkol_plat_window_event_field);
+    ADD_SYMBOL(eshkol_plat_window_event_real);
+    ADD_SYMBOL(eshkol_plat_window_push_event);
+    ADD_SYMBOL(eshkol_plat_audio_open);
+    ADD_SYMBOL(eshkol_plat_audio_close);
+    ADD_SYMBOL(eshkol_plat_audio_control);
+    ADD_SYMBOL(eshkol_plat_audio_write);
+    ADD_SYMBOL(eshkol_plat_audio_commit);
+    ADD_SYMBOL(eshkol_plat_audio_available);
+    ADD_SYMBOL(eshkol_plat_audio_read);
+    ADD_SYMBOL(eshkol_plat_audio_stat);
+    ADD_SYMBOL(eshkol_plat_midi_open);
+    ADD_SYMBOL(eshkol_plat_midi_close);
+    ADD_SYMBOL(eshkol_plat_midi_stage);
+    ADD_SYMBOL(eshkol_plat_midi_send_staged);
+    ADD_SYMBOL(eshkol_plat_midi_receive);
+    ADD_SYMBOL(eshkol_plat_midi_byte);
+    ADD_SYMBOL(eshkol_plat_midi_timestamp);
+    ADD_SYMBOL(eshkol_plat_midi_stat);
+    ADD_SYMBOL(eshkol_plat_midi_source_count);
+    ADD_SYMBOL(eshkol_plat_midi_source_name);
+#endif
     // Optional native TLS context construction.
     ADD_SYMBOL(eshkol_tls_available);
     ADD_SYMBOL(eshkol_tls_client_context);

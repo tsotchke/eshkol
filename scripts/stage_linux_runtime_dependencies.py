@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Stage the relocatable Linux image-codec runtime closure for a release.
+"""Stage the relocatable Linux runtime-dependency directory for a release.
 
-Linux release binaries use the platform libpng/libjpeg/libwebp APIs.  A binary
-package must therefore carry the exact shared objects it was linked against,
-including the codec-side zlib dependency, rather than assuming the target host
-has matching runtime and ``-dev`` packages.  This script copies regular files
-(never symlinks), creates stable link-time aliases for Eshkol's AOT linker,
-records hashes/package versions, and stages the exact distribution copyright
-files for the redistributed objects.
+Image I/O is implemented by codecs built into the Eshkol runtime, so Linux
+release binaries must not depend on libpng, libjpeg or libwebp at all; this
+script fails the release if they do.  It still owns the relocatable
+``lib/eshkol/runtime-deps`` contract: packaged executables prefer that
+directory through their RUNPATH, and any family listed in STAGED_FAMILIES is
+copied there as regular files (never symlinks) with stable link-time aliases,
+SHA-256 hashes, package versions and the exact distribution copyright files.
+No family is staged today, so the manifest records an empty closure.
 """
 
 from __future__ import annotations
@@ -33,7 +34,13 @@ FAMILY_PATTERNS = {
     "libsharpyuv": re.compile(r"^libsharpyuv\.so(?:\..+)?$"),
     "zlib": re.compile(r"^libz\.so(?:\..+)?$"),
 }
-REQUIRED_FAMILIES = ("libpng", "libjpeg", "libwebp", "zlib")
+# Families that must be present and are redistributed.  Empty: the image
+# codecs that used to need a closure are part of the runtime now.
+STAGED_FAMILIES: tuple[str, ...] = ()
+REQUIRED_FAMILIES: tuple[str, ...] = STAGED_FAMILIES
+# Families a packaged binary must never resolve: the runtime's own codecs
+# replace them.
+FORBIDDEN_FAMILIES = ("libpng", "libjpeg", "libwebp", "libsharpyuv")
 LINK_ALIASES = {
     "libpng": ("libpng.so", "libpng16.so"),
     "libjpeg": ("libjpeg.so",),
@@ -170,7 +177,7 @@ def _ensure_packaged_runpath(binary: Path) -> None:
     runpath_match = re.search(r"\((?:RUNPATH|RPATH)\).*\[(.*?)\]", dynamic)
     if not runpath_match or runpath_match.group(1).split(":")[0] != REQUIRED_RUNPATH:
         fail(
-            f"packaged binary does not prefer relocatable codec RUNPATH {REQUIRED_RUNPATH}: "
+            f"packaged binary does not prefer relocatable RUNPATH {REQUIRED_RUNPATH}: "
             f"{binary}"
         )
 
@@ -201,15 +208,23 @@ def stage_runtime_dependencies(build_dir: Path, package_dir: Path) -> dict[str, 
         all_dependencies.update(parse_ldd_output(_run(["ldd", str(binary)], f"ldd {binary}")))
 
     selected: dict[str, tuple[str, Path]] = {}
+    forbidden: list[str] = []
     for soname, source in sorted(all_dependencies.items()):
         family = family_for_soname(soname)
-        if family is not None:
+        if family in FORBIDDEN_FAMILIES:
+            forbidden.append(soname)
+        elif family is not None and family in STAGED_FAMILIES:
             selected[soname] = (family, source)
+    if forbidden:
+        fail(
+            "packaged Linux executables link external image codecs although image I/O "
+            f"is built into the runtime: {', '.join(forbidden)}"
+        )
 
     present_families = {family for family, _ in selected.values()}
     missing = sorted(set(REQUIRED_FAMILIES) - present_families)
     if missing:
-        fail(f"required Linux image-codec dependency families are absent: {', '.join(missing)}")
+        fail(f"required Linux runtime dependency families are absent: {', '.join(missing)}")
 
     dependency_dir = package_dir / RUNTIME_SUBDIR
     dependency_dir.mkdir(parents=True, exist_ok=True)
@@ -245,9 +260,8 @@ def stage_runtime_dependencies(build_dir: Path, package_dir: Path) -> dict[str, 
             )
 
     # DT_RUNPATH is not inherited from eshkol-run by indirect dependencies.
-    # Give every redistributed codec object its own $ORIGIN lookup so libpng's
-    # zlib and newer libwebp's libsharpyuv dependencies remain inside the
-    # package as well.  Hashes below intentionally describe the patched,
+    # Give every redistributed object its own $ORIGIN lookup so its own
+    # dependencies remain inside the package as well.  Hashes below intentionally describe the patched,
     # shipped bytes rather than the unmodified distro files.
     for name in sorted(manifest_files):
         path = dependency_dir / name
@@ -294,8 +308,8 @@ def main() -> int:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
     print(
-        "PASS: staged relocatable Linux image-codec runtime closure "
-        f"({len(manifest['files'])} files)"
+        "PASS: staged relocatable Linux runtime-dependency directory "
+        f"({len(manifest['files'])} files; image codecs are built into the runtime)"
     )
     return 0
 

@@ -1,0 +1,10 @@
+;; A handler observes the state of every raise point in the body; the port
+;; stays open on both exits and is closed after the guard.
+(define in (open-input-file "strict-guard.txt"))
+(define first
+  (guard (e (#t "unreadable"))
+    (read-line in)))
+(close-port in)
+(guard (e ((string? e) (display e)))
+  (call-with-input-file "strict-guard.txt"
+    (lambda (p) (read-line p) (raise "stop"))))

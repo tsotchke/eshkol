@@ -1,0 +1,255 @@
+;; threads_semaphore_barrier_test.esk — counting semaphores and reusable
+;; barriers from core.threads, exercised on real thread-pool workers.
+;;
+;;   1. construction, predicates and argument checks
+;;   2. single-thread permit accounting, try-acquire and timed try-acquire
+;;   3. cross-thread wakeup: a blocked acquirer is released by another
+;;      worker's release, and a timed acquirer is satisfied before expiry
+;;   4. bounded permits: K workers contend for P permits; no more than P
+;;      ever hold one at once, and every permit comes back
+;;   5. phase barrier: N parties run R phases on one barrier; nobody leaves
+;;      phase r before all N arrived in it, exactly one party per phase is
+;;      the serial party, and the generation counts R meetings
+;;   6. spurious wakeups: an extra worker broadcasts the barrier's and the
+;;      semaphore's condition variables in a loop while parties wait; the
+;;      results of 4 and 5 must not change
+;;
+;; Every multi-party section starts its workers with make-thread, which
+;; submits each thunk to the thread pool at once, so all of them run
+;; concurrently.  (parallel-map is a data-parallel map, not a way to start
+;; parties that wait on each other: it may run some elements on the calling
+;; thread first.)  Worker counts adapt to the pool: a barrier with N parties
+;; needs N workers running at once, so N never exceeds the pool size.
+
+(require stdlib)
+(require core.threads)
+
+(define passed 0)
+(define failed 0)
+(define (check label expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display label) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display label)
+             (display " (expected ") (write expected)
+             (display ", got ") (write actual) (display ")") (newline)
+             (set! failed (+ failed 1)))))
+
+(define (raises? thunk)
+  (guard (e (#t #t))
+    (thunk)
+    #f))
+
+(define (iota-from0 n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; Run (body id) for every id on its own pool worker, all started before
+;; any is joined; return the results in id order.
+(define (run-workers body ids)
+  (let ((handles (map (lambda (id) (make-thread (lambda () (body id)))) ids)))
+    (map thread-join handles)))
+
+(define pool (thread-pool-size))
+;; Leave one pool worker free for the wakeup injector in section 6.
+(define parties (max 2 (min 4 (- pool 1))))
+(define contenders (max 2 (min 6 (- pool 1))))
+
+;; ── 1. Construction, predicates, argument checks ───────────────────────
+(define s0 (make-semaphore 2))
+(check "semaphore? recognises a semaphore" #t (semaphore? s0))
+(check "semaphore? rejects a symbol" #f (semaphore? 'x))
+(check "semaphore? rejects a vector" #f (semaphore? (vector 1 2 3 4)))
+(check "make-semaphore rejects negative permits" #t
+       (raises? (lambda () (make-semaphore -1))))
+(check "make-semaphore rejects a non-integer" #t
+       (raises? (lambda () (make-semaphore 1.5))))
+(define b0 (make-barrier 1))
+(check "barrier? recognises a barrier" #t (barrier? b0))
+(check "barrier? rejects a semaphore" #f (barrier? s0))
+(check "make-barrier rejects zero parties" #t
+       (raises? (lambda () (make-barrier 0))))
+(check "barrier-wait! rejects a non-barrier" #t
+       (raises? (lambda () (barrier-wait! s0))))
+(check "semaphore-acquire! rejects a non-semaphore" #t
+       (raises? (lambda () (semaphore-acquire! b0))))
+
+;; ── 2. Single-thread accounting ────────────────────────────────────────
+(check "fresh semaphore-value" 2 (semaphore-value s0))
+(check "acquire 1 of 2" #t (semaphore-acquire! s0))
+(check "try-acquire 2 of 2" #t (semaphore-try-acquire! s0))
+(check "value after two acquires" 0 (semaphore-value s0))
+(check "try-acquire on empty returns #f" #f (semaphore-try-acquire! s0))
+(define t-start (monotonic-time-ms))
+(define timed-empty (semaphore-try-acquire! s0 60))
+(define t-elapsed (- (monotonic-time-ms) t-start))
+(check "timed try-acquire on empty returns #f" #f timed-empty)
+(check "timed try-acquire waits at least its timeout" #t (>= t-elapsed 60))
+(check "timed try-acquire returns promptly after its timeout" #t (< t-elapsed 5000))
+(check "zero timeout on empty returns #f" #f (semaphore-try-acquire! s0 0))
+(check "release returns free permits" 1 (semaphore-release! s0))
+(check "release of 3 returns free permits" 4 (semaphore-release! s0 3))
+(check "release rejects a zero count" #t
+       (raises? (lambda () (semaphore-release! s0 0))))
+(check "timed try-acquire with a free permit" #t (semaphore-try-acquire! s0 1000))
+(check "value after timed acquire" 3 (semaphore-value s0))
+(check "single-party barrier: serial party every time" '(#t #t #t)
+       (list (barrier-wait! b0) (barrier-wait! b0) (barrier-wait! b0)))
+(check "single-party barrier generation" 3 (barrier-generation b0))
+(check "barrier-parties" 1 (barrier-parties b0))
+(semaphore-destroy! s0)
+(barrier-destroy! b0)
+
+;; ── 3. Cross-thread wakeup ─────────────────────────────────────────────
+(define wake-sem (make-semaphore 0))
+(define wake-results
+  (run-workers
+    (lambda (role)
+      (if (= role 0)
+          (semaphore-acquire! wake-sem)              ; blocks until role 1 releases
+          (begin (sleep-ms 50) (semaphore-release! wake-sem) 'released)))
+    '(0 1)))
+(check "blocked acquire is woken by another worker's release" '(#t released)
+       wake-results)
+(check "the released permit was consumed" 0 (semaphore-value wake-sem))
+
+(define timed-results
+  (run-workers
+    (lambda (role)
+      (if (= role 0)
+          (let* ((t0 (monotonic-time-ms))
+                 (ok (semaphore-try-acquire! wake-sem 10000)))
+            (list ok (< (- (monotonic-time-ms) t0) 10000)))
+          (begin (sleep-ms 50) (semaphore-release! wake-sem) 'released)))
+    '(0 1)))
+(check "timed acquire is satisfied by a release before expiry"
+       '((#t #t) released) timed-results)
+(semaphore-destroy! wake-sem)
+
+;; ── 4–6. Contention, phases, injected wakeups ──────────────────────────
+(define permits 2)
+(define holds-per-worker 200)
+(define phases 50)
+
+(define (run-contention inject?)
+  ;; K contenders + (optionally) one injector, all released together by a
+  ;; start barrier so the contenders genuinely overlap.
+  (let* ((sem (make-semaphore permits))
+         (start (make-barrier (if inject? (+ contenders 1) contenders)))
+         (stats-m (make-mutex))
+         (stats (vector 0 0 0))          ; inside, peak, total holds
+         (done (vector #f)))
+    (define (hold!)
+      (semaphore-acquire! sem)
+      (with-mutex stats-m
+        (lambda ()
+          (let ((inside (+ (vector-ref stats 0) 1)))
+            (vector-set! stats 0 inside)
+            (if (> inside (vector-ref stats 1)) (vector-set! stats 1 inside))
+            (vector-set! stats 2 (+ (vector-ref stats 2) 1)))))
+      (let spin ((i 0)) (if (< i 50) (spin (+ i 1))))
+      (with-mutex stats-m
+        (lambda () (vector-set! stats 0 (- (vector-ref stats 0) 1))))
+      (semaphore-release! sem))
+    (run-workers
+      (lambda (id)
+        (barrier-wait! start)
+        (if (= id contenders)
+            ;; Injector: wake every semaphore waiter, repeatedly, until the
+            ;; contenders finish.  Each wakeup is spurious for the waiter.
+            (let loop ((n 0))
+              (if (with-mutex stats-m (lambda () (vector-ref done 0)))
+                  n
+                  (begin (condvar-broadcast! (vector-ref sem 3))
+                         (loop (+ n 1)))))
+            (let loop ((i 0))
+              (if (< i holds-per-worker)
+                  (begin (hold!) (loop (+ i 1)))
+                  (begin
+                    (with-mutex stats-m
+                      (lambda ()
+                        (if (= (vector-ref stats 2) (* contenders holds-per-worker))
+                            (vector-set! done 0 #t))))
+                    'ok)))))
+      (iota-from0 (if inject? (+ contenders 1) contenders)))
+    (let ((result (list (vector-ref stats 1)
+                        (vector-ref stats 2)
+                        (semaphore-value sem))))
+      (semaphore-destroy! sem)
+      (barrier-destroy! start)
+      (mutex-destroy! stats-m)
+      result)))
+
+(define (run-phases inject?)
+  ;; N parties, R phases on one barrier.  arrivals[r] counts the parties
+  ;; that reached phase r; a party leaving the barrier must see all N.
+  (let* ((b (make-barrier parties))
+         (start (make-barrier (if inject? (+ parties 1) parties)))
+         (m (make-mutex))
+         (arrivals (make-vector phases 0))
+         (serial (vector 0))
+         (early (vector 0))
+         (done (vector 0)))
+    (run-workers
+      (lambda (id)
+        (barrier-wait! start)
+        (if (= id parties)
+            ;; Injector: spurious broadcasts on the phase barrier's condvar
+            ;; until every party has finished all phases.
+            (let loop ((n 0))
+              (if (= (with-mutex m (lambda () (vector-ref done 0))) parties)
+                  n
+                  (begin (condvar-broadcast! (vector-ref b 5))
+                         (loop (+ n 1)))))
+            (let loop ((r 0))
+              (if (< r phases)
+                  (begin
+                    (with-mutex m
+                      (lambda ()
+                        (vector-set! arrivals r (+ (vector-ref arrivals r) 1))))
+                    (let ((was-serial (barrier-wait! b)))
+                      (with-mutex m
+                        (lambda ()
+                          (if was-serial
+                              (vector-set! serial 0 (+ (vector-ref serial 0) 1)))
+                          (if (not (= (vector-ref arrivals r) parties))
+                              (vector-set! early 0 (+ (vector-ref early 0) 1))))))
+                    (loop (+ r 1)))
+                  (with-mutex m
+                    (lambda () (vector-set! done 0 (+ (vector-ref done 0) 1))))))))
+      (iota-from0 (if inject? (+ parties 1) parties)))
+    (let ((result (list (vector-ref early 0)
+                        (vector-ref serial 0)
+                        (barrier-generation b))))
+      (barrier-destroy! b)
+      (barrier-destroy! start)
+      (mutex-destroy! m)
+      result)))
+
+(define (check-contention label result)
+  (let ((peak (car result)) (total (cadr result)) (left (caddr result)))
+    (check (string-append label ": peak holders within permits") #t
+           (and (>= peak 1) (<= peak permits)))
+    (check (string-append label ": every acquire completed")
+           (* contenders holds-per-worker) total)
+    (check (string-append label ": every permit returned") permits left)))
+
+(define (check-phases label result)
+  (check (string-append label ": no party left a phase early") 0 (car result))
+  (check (string-append label ": one serial party per phase") phases (cadr result))
+  (check (string-append label ": generation counts every phase") phases (caddr result)))
+
+(check-contention "bounded permits" (run-contention #f))
+(check-phases "phase barrier" (run-phases #f))
+(check-contention "bounded permits under injected wakeups" (run-contention #t))
+(check-phases "phase barrier under injected wakeups" (run-phases #t))
+
+(newline)
+(display "parties: ") (display parties)
+(display "  contenders: ") (display contenders)
+(display "  permits: ") (display permits) (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "PASS: threads_semaphore_barrier_test") (newline) (exit 0))
+    (begin (display "FAIL: threads_semaphore_barrier_test") (newline) (exit 1)))

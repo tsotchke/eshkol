@@ -1,0 +1,180 @@
+;;; core.homological.abelian -- finitely presented abelian groups and the
+;;; derived functors of Hom and tensor over Z.
+;;;
+;;; Usage: (require core.homological.abelian)   or   (require core.homological)
+;;;
+;;; Sources: C. A. Weibel, "An Introduction to Homological Algebra" (1994),
+;;; 2.4, 3.1, 3.3 (Tor and Ext through projective resolutions), 3.6
+;;; (universal coefficient theorems); A. Hatcher, "Algebraic Topology"
+;;; (2002), 3.1 and 3.A; H. Cohen, GTM 138 (1993), 2.4 (the Smith normal
+;;; form, used through core.integer_linalg).
+;;;
+;;; A finitely presented abelian group is #(fp-group n R): the quotient of
+;;; Z^n by the lattice spanned by the columns of the n x r integer matrix R
+;;; (R = #f for no relations). A homomorphism A -> B is an integer matrix F
+;;; (B generators x A generators) with F(rel A) inside rel B, checked by
+;;; `fp-hom-well-defined?`. Every quotient, kernel and homology group is
+;;; computed with lattices: a lattice is given by generators, a basis comes
+;;; from the Smith normal form, and a subquotient L / S is read from the
+;;; Smith normal form of the coordinates of S in a basis of L. Results are
+;;; (betti torsion): Z^betti (+) Z/t_1 (+) ... with t_1 | t_2 | ...
+;;;
+;;; Tor and Ext are computed from a free resolution 0 -> Z^r -> Z^n -> A -> 0
+;;; (the relation lattice of A is free, so the resolution has length one),
+;;; tensored with or mapped into a presentation of B; the closed forms
+;;; (Tor(Z/m, Z/n) = Ext(Z/m, Z/n) = Z/gcd(m, n)) are tests, not the method.
+
+(require stdlib)
+(require core.integer_linalg)
+
+(provide make-fp-group fp-group? fp-group-generators fp-group-relations abelian-group
+         fp-group-invariants fp-hom-well-defined? fp-kernel fp-cokernel fp-subquotient
+         lattice-basis lattice-quotient-invariants lattice-contains?
+         abelian-tensor abelian-tor abelian-hom abelian-ext
+         universal-coefficients-cohomology universal-coefficients-mod-p)
+
+(define (ab-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (ab-rows A) (if A (vector-length A) 0))
+(define (ab-cols A) (if (and A (> (vector-length A) 0)) (vector-length (vector-ref A 0)) 0))
+(define (ab-columns A) (if (or (not A) (= 0 (ab-rows A))) '() (map (lambda (j) (integer-matrix-column A j)) (ab-range (ab-cols A)))))
+(define (ab-zero? v) (let loop ((i 0)) (cond ((= i (vector-length v)) #t) ((= 0 (vector-ref v i)) (loop (+ i 1))) (else #f))))
+
+(define (make-fp-group n R) (vector 'fp-group n (if (and R (> (ab-cols R) 0)) R #f)))
+(define (fp-group? A) (and (vector? A) (= 3 (vector-length A)) (eq? (vector-ref A 0) 'fp-group)))
+(define (fp-group-generators A) (vector-ref A 1))
+(define (fp-group-relations A) (vector-ref A 2))
+;; Z^b (+) Z/t_1 (+) ... from (b t_1 t_2 ...) given as a betti number and a torsion list
+(define (abelian-group betti torsion)
+  (let* ((n (+ betti (length torsion))) (R (integer-matrix n (length torsion))))
+    (let loop ((ts torsion) (j 0)) (if (not (null? ts)) (begin (integer-matrix-set! R (+ betti j) j (car ts)) (loop (cdr ts) (+ j 1)))))
+    (make-fp-group n R)))
+(define (ab-relation-columns A) (ab-columns (fp-group-relations A)))
+
+;; a basis of the lattice spanned by the vectors gens in Z^n: with
+;; U G V = D, the nonzero columns of U^-1 D
+(define (lattice-basis gens n)
+  (let ((gs (filter (lambda (v) (not (ab-zero? v))) gens)))
+    (if (null? gs) '()
+        (let* ((G (integer-matrix-from-columns gs n)) (s (smith-normal-form G)) (d (smith-diagonal s)) (U (smith-left s))
+               (su (smith-normal-form U)) (Uinv (integer-matrix-mul (smith-right su) (smith-left su))))
+          (let loop ((i 0) (ds d) (acc '()))
+            (if (null? ds) (reverse acc)
+                (loop (+ i 1) (cdr ds)
+                      (cons (let ((c (integer-matrix-column Uinv i))) (vector-map (lambda (x) (* (car ds) x)) c)) acc))))))))
+(define (lattice-contains? basis n v)
+  (if (null? basis) (ab-zero? v)
+      (if (integer-solve-in-basis (smith-normal-form (integer-matrix-from-columns basis n)) (length basis) v) #t #f)))
+;; L / S for lattices given by generators with S inside L: (betti torsion)
+(define (lattice-quotient-invariants L-gens S-gens n)
+  (let* ((B (lattice-basis L-gens n)) (k (length B)))
+    (if (= k 0) (list 0 '())
+        (let* ((snfB (smith-normal-form (integer-matrix-from-columns B n)))
+               (coords (map (lambda (v)
+                              (let ((y (integer-solve-in-basis snfB k v)))
+                                (if (not y) (error "lattice-quotient-invariants: the sublattice is not contained in the lattice" v))
+                                y))
+                            (filter (lambda (v) (not (ab-zero? v))) S-gens))))
+          (if (null? coords) (list k '())
+              (let ((d (integer-invariant-factors (integer-matrix-from-columns coords k))))
+                (list (- k (length d)) (filter (lambda (x) (> x 1)) d))))))))
+
+(define (fp-group-invariants A)
+  (let ((n (fp-group-generators A)))
+    (lattice-quotient-invariants (map (lambda (i) (integer-matrix-column (integer-identity-matrix n) i)) (ab-range n))
+                                 (ab-relation-columns A) n)))
+(define (fp-hom-well-defined? A B F)
+  (let ((relB (lattice-basis (ab-relation-columns B) (fp-group-generators B))))
+    (let loop ((rs (ab-relation-columns A)))
+      (cond ((null? rs) #t)
+            ((lattice-contains? relB (fp-group-generators B) (integer-matrix-vector F (car rs))) (loop (cdr rs)))
+            (else #f)))))
+;; the preimage lattice {x in Z^nA : F x in rel B}, by generators
+(define (ab-preimage A B F)
+  (let* ((nA (fp-group-generators A)) (nB (fp-group-generators B)) (relB (ab-relation-columns B))
+         (K (if (or (not F) (= 0 (ab-rows F))) #f
+                (integer-matrix-hstack (list F (let ((M (integer-matrix nB (length relB))))
+                                                 (let loop ((cs relB) (j 0))
+                                                   (if (not (null? cs))
+                                                       (begin (let fill ((i 0)) (if (< i nB) (begin (integer-matrix-set! M i j (- 0 (vector-ref (car cs) i))) (fill (+ i 1)))))
+                                                              (loop (cdr cs) (+ j 1)))))
+                                                 M))
+                                       nB))))
+    (if (or (not K) (= 0 nB))
+        (map (lambda (i) (integer-matrix-column (integer-identity-matrix nA) i)) (ab-range nA))
+        (map (lambda (v) (let ((w (make-vector nA 0))) (let loop ((i 0)) (if (< i nA) (begin (vector-set! w i (vector-ref v i)) (loop (+ i 1))))) w))
+             (integer-kernel K (+ nA (length relB)))))))
+;; homology at B of A --f--> B --g--> C: ker g / im f, f and g integer matrices (#f = zero)
+(define (fp-subquotient A B C f g)
+  (let* ((nB (fp-group-generators B))
+         (L (ab-preimage B C g))
+         (S (append (ab-relation-columns B) (if f (ab-columns f) '()))))
+    (lattice-quotient-invariants L S nB)))
+(define (fp-kernel A B F) (fp-subquotient (make-fp-group 0 #f) A B #f F))
+(define (fp-cokernel A B F) (fp-subquotient A B (make-fp-group 0 #f) F #f))
+
+;; a free resolution 0 -> Z^r --rho--> Z^n -> A -> 0: rho has a basis of the
+;; relation lattice as columns (injective)
+(define (ab-resolution A)
+  (let* ((n (fp-group-generators A)) (basis (lattice-basis (ab-relation-columns A) n)))
+    (list n (length basis) (if (null? basis) #f (integer-matrix-from-columns basis n)))))
+(define (ab-kron A ra ca B rb cb)              ;; A (x) B, generators ordered i * rb + k
+  (let ((M (integer-matrix (* ra rb) (* ca cb))))
+    (let li ((i 0))
+      (if (< i ra)
+          (begin
+            (let lj ((j 0))
+              (if (< j ca)
+                  (let ((a (integer-matrix-ref A i j)))
+                    (if (not (= a 0))
+                        (let lk ((k 0))
+                          (if (< k rb)
+                              (begin (let ll ((l 0)) (if (< l cb) (begin (integer-matrix-set! M (+ (* i rb) k) (+ (* j cb) l) (* a (integer-matrix-ref B k l))) (ll (+ l 1)))))
+                                     (lk (+ k 1))))))
+                    (lj (+ j 1)))))
+            (li (+ i 1)))))
+    M))
+(define (ab-power B k)                          ;; B^k as an fp group
+  (let* ((nB (fp-group-generators B)) (rel (ab-relation-columns B))
+         (cols (fold-left append '()
+                          (map (lambda (i) (map (lambda (c) (let ((v (make-vector (* k nB) 0)))
+                                                              (let loop ((t 0)) (if (< t nB) (begin (vector-set! v (+ (* i nB) t) (vector-ref c t)) (loop (+ t 1)))))
+                                                              v))
+                                                rel))
+                               (ab-range k)))))
+    (make-fp-group (* k nB) (if (null? cols) #f (integer-matrix-from-columns cols (* k nB))))))
+;; rho (x) id_B : B^r -> B^n and Hom(rho, B) : B^n -> B^r
+(define (ab-tensor-map rho n r nB) (ab-kron rho n r (integer-identity-matrix nB) nB nB))
+(define (ab-hom-map rho n r nB)
+  (let ((T (integer-matrix r n)))
+    (let li ((i 0)) (if (< i n) (begin (let lj ((j 0)) (if (< j r) (begin (integer-matrix-set! T j i (integer-matrix-ref rho i j)) (lj (+ j 1))))) (li (+ i 1)))))
+    (ab-kron T r n (integer-identity-matrix nB) nB nB)))
+(define (abelian-tensor A B)
+  (let* ((res (ab-resolution A)) (n (car res)) (r (cadr res)) (rho (caddr res)) (nB (fp-group-generators B)))
+    (if (= r 0) (fp-group-invariants (ab-power B n))
+        (fp-cokernel (ab-power B r) (ab-power B n) (ab-tensor-map rho n r nB)))))
+(define (abelian-tor A B)
+  (let* ((res (ab-resolution A)) (n (car res)) (r (cadr res)) (rho (caddr res)) (nB (fp-group-generators B)))
+    (if (= r 0) (list 0 '())
+        (fp-kernel (ab-power B r) (ab-power B n) (ab-tensor-map rho n r nB)))))
+(define (abelian-hom A B)
+  (let* ((res (ab-resolution A)) (n (car res)) (r (cadr res)) (rho (caddr res)) (nB (fp-group-generators B)))
+    (if (= r 0) (fp-group-invariants (ab-power B n))
+        (fp-kernel (ab-power B n) (ab-power B r) (ab-hom-map rho n r nB)))))
+(define (abelian-ext A B)
+  (let* ((res (ab-resolution A)) (n (car res)) (r (cadr res)) (rho (caddr res)) (nB (fp-group-generators B)))
+    (if (= r 0) (list 0 '())
+        (fp-cokernel (ab-power B n) (ab-power B r) (ab-hom-map rho n r nB)))))
+
+;; Universal coefficients, from an integral homology table ((k betti torsion) ...):
+;;   H^k(X; Z) = Hom(H_k, Z) (+) Ext(H_{k-1}, Z) = Z^{b_k} (+) T_{k-1}
+;;   dim H^k(X; F_p) = b_k + #{t in T_k : p | t} + #{t in T_{k-1} : p | t}
+(define (universal-coefficients-cohomology H)
+  (map (lambda (row)
+         (let ((k (car row)))
+           (list k (cadr row) (if (= k 0) '() (caddr (list-ref H (- k 1)))))))
+       H))
+(define (universal-coefficients-mod-p H p)
+  (map (lambda (row)
+         (let* ((k (car row)) (div (lambda (ts) (length (filter (lambda (t) (= 0 (remainder t p))) ts)))))
+           (list k (+ (cadr row) (div (caddr row)) (if (= k 0) 0 (div (caddr (list-ref H (- k 1)))))) '())))
+       H))

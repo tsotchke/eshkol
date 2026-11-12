@@ -972,7 +972,7 @@ The fix introduces a compile-time branch:
 
 ### Windows x64 Struct-by-Value Parameter Fix (`region_escape_tagged_value_into`)
 
-**File:** `lib/core/runtime_regions.cpp`
+**File:** `lib/core/runtime_regions_evacuation.cpp`
 
 The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. `region_escape_tagged_value_into` previously took `eshkol_tagged_value_t val` by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.
 
@@ -1120,7 +1120,7 @@ void     eshkol_thread_init_worker(size_t arena_size_hint);
 void     eshkol_thread_shutdown_worker(void);
 ```
 
-`arena_create_thread_local` (§224–230 in `lib/core/runtime_regions.cpp`):
+`arena_create_thread_local` (in `lib/core/runtime_regions.cpp`, the region lifecycle unit):
 
 ```c
 arena_t* arena_create_thread_local(size_t size_hint) {

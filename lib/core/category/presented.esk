@@ -1,0 +1,401 @@
+;;; core.category.presented -- finitely presented categories: a finite quiver
+;;; with relations between parallel paths, Knuth-Bendix completion under an
+;;; explicit budget, normal forms that decide equality of composites when the
+;;; completion finishes, and hom-sets enumerated lazily by normal form and
+;;; word length. Monoids and groups are one-object presentations.
+;;;
+;;; Usage: (require core.category.presented)
+;;;
+;;; Sources: D. E. Knuth, P. B. Bendix, "Simple word problems in universal
+;;; algebras" (1970); M. H. A. Newman, "On theories with a combinatorial
+;;; definition of equivalence", Ann. of Math. 43 (1942) (a terminating,
+;;; locally confluent system has unique normal forms); R. V. Book, F. Otto,
+;;; "String-Rewriting Systems" (1993), 2.3-2.4 (critical pairs of string
+;;; rewriting rules, completion), 6 (finite complete systems for groups);
+;;; D. Kapur, P. Narendran, "A finite Thue system with decidable word problem
+;;; and without equivalent finite canonical system", Theoret. Comput. Sci. 35
+;;; (1985) (<a, b | aba = bab> has no finite complete system on {a, b});
+;;; D. F. Holt, B. Eick, E. A. O'Brien, "Handbook of Computational Group
+;;; Theory" (2005), 12.2 (shortlex Knuth-Bendix for groups); S. Mac Lane,
+;;; "Categories for the Working Mathematician", II.8 (categories given by
+;;; generators and relations); nLab: "free category", "presentation of a
+;;; category by generators and relations", "free monoid".
+;;;
+;;; Design: ADR-0054; reference: docs/reference/stdlib/category-effective.md.
+;;;
+;;; Representation (public):
+;;;   word          a list of generator indices in composition order:
+;;;                 (g3 g2 g1) is g3 o g2 o g1, the convention of
+;;;                 core.sheaf.site's make-category-from-presentation. The
+;;;                 identity of x is the empty word at x.
+;;;   presentation  #(presentation nobj gens relations labels): gens a vector
+;;;                 of #(source target name), relations a list of (lhs . rhs)
+;;;                 pairs of parallel words (lhs nonempty or rhs nonempty).
+;;;   ordering      shortlex: shorter words are smaller; words of one length
+;;;                 compare lexicographically from the first (outermost)
+;;;                 generator by generator index. It is a well-order
+;;;                 compatible with composition on both sides, so rewriting
+;;;                 always terminates.
+;;;   rewriting system  #(rewriting-system status rules steps pending)
+;;;                 status 'complete when every critical pair was joined
+;;;                 (the rules are then confluent and the reduced form of a
+;;;                 word is the unique normal form of its class), or
+;;;                 'incomplete when the budget ran out first. The rules are
+;;;                 (lhs . rhs) with lhs > rhs; every rule is a consequence of
+;;;                 the relations, complete or not.
+;;;   presented category  #(presented-category presentation system effective)
+;;;                 effective is the core.category.effective view (#f while
+;;;                 incomplete). Its arrows are (source target normal-word).
+;;;
+;;; Deciding equality. presented-equal answers 'equal, 'distinct or
+;;; 'undecided. 'equal is sound in every case (the rewrites used are
+;;; consequences of the relations); 'distinct is returned only by a complete
+;;; system, for different endpoints, or for words of different lengths when
+;;; every relation preserves length; otherwise the answer is 'undecided,
+;;; never a guess. Operations that need normal forms (hom-sets, the
+;;; effective view, functors out of the category) refuse an incomplete
+;;; system with presentation-undecided-within-budget.
+;;;
+;;; Finiteness. The irreducible words of a complete system are the paths
+;;; accepted by a finite automaton whose state is (object, the last m - 1
+;;; generators), m the longest left-hand side. hom(a, b) is infinite exactly
+;;; when a cycle of that automaton lies on a path from a to b; otherwise the
+;;; enumerator is finite and its bound is one more than the longest path.
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.category.effective)
+
+(provide make-presentation presentation? presentation-object-count presentation-generators presentation-generator-count
+         presentation-relations presentation-generator-index presentation-generator-name word-source word-target
+         shortlex<? critical-pairs knuth-bendix rewriting-system? rewriting-system-status rewriting-system-complete?
+         rewriting-system-rules rewriting-system-steps rewriting-system-pending rewrite-normal-form word-reducible?
+         present-category presented-category? presented-category-presentation presented-category-system
+         presented-category-status presented-category-complete? presented-normal-form presented-equal presented-word
+         presented-arrow presented-generator-arrow presented-hom presented-hom-finite? presented-hom-count
+         presented->effective presented->finite-category presented-site-category
+         presented-monoid presented-group free-monoid free-category-on-quiver
+         presented-functor presented-functor-violations presented-transformation-violations)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix pr-)
+;; ---------------------------------------------------------------------------
+(define (pr-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (pr-take l k) (if (or (= k 0) (null? l)) '() (cons (car l) (pr-take (cdr l) (- k 1)))))
+(define (pr-drop l k) (if (or (= k 0) (null? l)) l (pr-drop (cdr l) (- k 1))))
+(define (pr-prefix? p w) (cond ((null? p) #t) ((null? w) #f) ((= (car p) (car w)) (pr-prefix? (cdr p) (cdr w))) (else #f)))
+(define (pr-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (pr-any? p (cdr xs)))))
+(define (pr-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (pr-all? p (cdr xs))) (else #f)))
+(define (pr-flatmap f xs) (let loop ((l xs) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (append (reverse (f (car l))) acc)))))
+(define (pr-max xs) (fold-left max 0 xs))
+
+;; ---------------------------------------------------------------------------
+;; Presentations
+;; ---------------------------------------------------------------------------
+;; gens: list of (source target name); relations: list of (lhs rhs) words of
+;; generator names or indices. Malformed input (an unknown name, a word that
+;; is not a path, a relation between non-parallel paths) is an error.
+(define (make-presentation nobj gens relations . labels)
+  (let* ((gv (list->vector (map (lambda (g) (vector (car g) (cadr g) (caddr g))) gens)))
+         (ng (vector-length gv))
+         (index-of (lambda (x) (if (and (integer? x) (exact? x) (>= x 0) (< x ng)) x
+                                   (let loop ((i 0)) (cond ((= i ng) (error "make-presentation: unknown generator" x))
+                                                           ((equal? (vector-ref (vector-ref gv i) 2) x) i)
+                                                           (else (loop (+ i 1))))))))
+         (P0 (vector 'presentation nobj gv '() (if (null? labels) (pr-range nobj) (car labels))))
+         (rels (map (lambda (r) (let ((l (map index-of (car r))) (rr (map index-of (cadr r))))
+                                  (if (not (and (word-path? P0 l) (word-path? P0 rr))) (error "make-presentation: a relation side is not a path" r))
+                                  (if (and (pair? l) (pair? rr) (not (and (= (word-source P0 l) (word-source P0 rr)) (= (word-target P0 l) (word-target P0 rr)))))
+                                      (error "make-presentation: the two sides of a relation are not parallel" r))
+                                  (if (and (null? l) (null? rr)) (error "make-presentation: a relation between two empty words" r))
+                                  (if (and (or (null? l) (null? rr)) (let ((w (if (null? l) rr l))) (not (= (word-source P0 w) (word-target P0 w)))))
+                                      (error "make-presentation: an identity relation needs a loop" r))
+                                  (cons l rr)))
+                    relations)))
+    (vector 'presentation nobj gv rels (vector-ref P0 4))))
+(define (presentation? P) (and (vector? P) (= 5 (vector-length P)) (eq? (vector-ref P 0) 'presentation)))
+(define (presentation-object-count P) (vector-ref P 1))
+(define (presentation-generators P) (vector-ref P 2))
+(define (presentation-generator-count P) (vector-length (vector-ref P 2)))
+(define (presentation-relations P) (vector-ref P 3))
+(define (pr-gsrc P g) (vector-ref (vector-ref (vector-ref P 2) g) 0))
+(define (pr-gtgt P g) (vector-ref (vector-ref (vector-ref P 2) g) 1))
+(define (presentation-generator-name P g) (vector-ref (vector-ref (vector-ref P 2) g) 2))
+(define (presentation-generator-index P name)
+  (let loop ((i 0)) (cond ((= i (presentation-generator-count P)) #f) ((equal? (presentation-generator-name P i) name) i) (else (loop (+ i 1))))))
+;; endpoints of a nonempty word (composition order: the last element acts first)
+(define (word-source P w) (pr-gsrc P (car (reverse w))))
+(define (word-target P w) (pr-gtgt P (car w)))
+(define (word-path? P w)
+  (or (null? w) (null? (cdr w))
+      (and (= (pr-gsrc P (car w)) (pr-gtgt P (cadr w))) (word-path? P (cdr w)))))
+
+;; ---------------------------------------------------------------------------
+;; Shortlex order, rewriting, critical pairs, completion
+;; ---------------------------------------------------------------------------
+(define (shortlex<? u v)
+  (let ((lu (length u)) (lv (length v)))
+    (cond ((< lu lv) #t) ((> lu lv) #f)
+          (else (let loop ((a u) (b v)) (cond ((null? a) #f) ((< (car a) (car b)) #t) ((> (car a) (car b)) #f) (else (loop (cdr a) (cdr b)))))))))
+;; one rewrite at the leftmost position where some left-hand side occurs, or #f
+(define (pr-rewrite-once rules w)
+  (let loop ((rest w) (before '()))
+    (if (null? rest) #f
+        (let ((r (let find ((rs rules)) (cond ((null? rs) #f) ((pr-prefix? (car (car rs)) rest) (car rs)) (else (find (cdr rs)))))))
+          (if r
+              (append (reverse before) (cdr r) (pr-drop rest (length (car r))))
+              (loop (cdr rest) (cons (car rest) before)))))))
+(define (rewrite-normal-form rules w) (let loop ((w w)) (let ((w2 (pr-rewrite-once rules w))) (if w2 (loop w2) w))))
+(define (word-reducible? rules w) (if (pr-rewrite-once rules w) #t #f))
+(define (pr-orient u v) (if (shortlex<? v u) (cons u v) (cons v u)))
+;; the critical pairs of rule r1 over rule r2: proper overlaps (a suffix of
+;; l1 is a prefix of l2) and inclusions (l2 inside l1), each as the pair of
+;; one-step reducts of the overlapping word
+(define (critical-pairs r1 r2)
+  (let* ((l1 (car r1)) (l2 (car r2)) (n1 (length l1)) (n2 (length l2)) (out '()))
+    (let loop ((k 1))
+      (if (and (< k n1) (< k n2))
+          (begin (if (equal? (pr-drop l1 (- n1 k)) (pr-take l2 k))
+                     (set! out (cons (cons (append (cdr r1) (pr-drop l2 k)) (append (pr-take l1 (- n1 k)) (cdr r2))) out)))
+                 (loop (+ k 1)))))
+    (if (not (and (equal? l1 l2) (equal? (cdr r1) (cdr r2))))
+        (let loop ((i 0))
+          (if (<= (+ i n2) n1)
+              (begin (if (equal? (pr-take (pr-drop l1 i) n2) l2)
+                         (set! out (cons (cons (cdr r1) (append (pr-take l1 i) (cdr r2) (pr-drop l1 (+ i n2)))) out)))
+                     (loop (+ i 1))))))
+    (reverse out)))
+(define (pr-system status rules steps pending) (vector 'rewriting-system status rules steps pending))
+(define (rewriting-system? S) (and (vector? S) (= 5 (vector-length S)) (eq? (vector-ref S 0) 'rewriting-system)))
+(define (rewriting-system-status S) (vector-ref S 1))
+(define (rewriting-system-complete? S) (eq? (vector-ref S 1) 'complete))
+(define (rewriting-system-rules S) (vector-ref S 2))
+(define (rewriting-system-steps S) (vector-ref S 3))
+(define (rewriting-system-pending S) (vector-ref S 4))
+;; Knuth-Bendix completion of the equations (pairs of words) under shortlex,
+;; with inter-reduction. Every processed equation is one step; the budget is
+;; max-rules rules alive at once and max-steps steps. Returns a rewriting
+;; system, 'complete exactly when no equation is pending.
+(define (knuth-bendix equations max-rules max-steps)
+  (let loop ((rules '()) (pending equations) (steps 0))
+    (cond ((null? pending) (pr-system 'complete rules steps 0))
+          ((or (>= steps max-steps) (> (length rules) max-rules)) (pr-system 'incomplete rules steps (length pending)))
+          (else
+           (let ((u (rewrite-normal-form rules (car (car pending)))) (v (rewrite-normal-form rules (cdr (car pending)))))
+             (if (equal? u v)
+                 (loop rules (cdr pending) (+ steps 1))
+                 (let* ((rule (pr-orient u v)) (one (list rule))
+                        (requeued (filter (lambda (r) (word-reducible? one (car r))) rules))
+                        (kept0 (filter (lambda (r) (not (word-reducible? one (car r)))) rules))
+                        (all0 (append kept0 one))
+                        (kept (map (lambda (r) (cons (car r) (rewrite-normal-form all0 (cdr r)))) kept0))
+                        (new-rules (append kept one))
+                        (cps (pr-flatmap (lambda (r) (if (equal? r rule) (critical-pairs rule rule)
+                                                         (append (critical-pairs rule r) (critical-pairs r rule))))
+                                         new-rules)))
+                   (loop new-rules (append (cdr pending) requeued cps) (+ steps 1)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Presented categories
+;; ---------------------------------------------------------------------------
+;; (present-category P [max-rules [max-steps]]): defaults 256 rules, 4096 steps
+(define (present-category P . budget)
+  (let* ((max-rules (if (pair? budget) (car budget) 256))
+         (max-steps (if (and (pair? budget) (pair? (cdr budget))) (cadr budget) 4096))
+         (S (knuth-bendix (presentation-relations P) max-rules max-steps))
+         (PC (vector 'presented-category P S #f (list max-rules max-steps) (make-hash-table))))
+    (if (rewriting-system-complete? S) (vector-set! PC 3 (pr-effective PC)))
+    PC))
+(define (presented-category? PC) (and (vector? PC) (= 6 (vector-length PC)) (eq? (vector-ref PC 0) 'presented-category)))
+(define (presented-category-presentation PC) (vector-ref PC 1))
+(define (presented-category-system PC) (vector-ref PC 2))
+(define (presented-category-status PC) (rewriting-system-status (vector-ref PC 2)))
+(define (presented-category-complete? PC) (rewriting-system-complete? (vector-ref PC 2)))
+(define (pr-require-complete PC who)
+  (if (not (presented-category-complete? PC))
+      (category-refuse 'presentation-undecided-within-budget who (presented-category-presentation PC) (vector-ref PC 4))))
+(define (pr-words PC w) (map (lambda (x) (if (and (integer? x) (exact? x)) x
+                                             (or (presentation-generator-index (vector-ref PC 1) x) (error "presented category: unknown generator" x))))
+                             w))
+;; the reduced word (normal form when complete) of a word of names or indices
+(define (presented-normal-form PC w) (rewrite-normal-form (rewriting-system-rules (vector-ref PC 2)) (pr-words PC w)))
+;; 'equal, 'distinct or 'undecided for two words (names or indices); an
+;; empty word is the identity of the optional object, or of the other word's
+;; source
+(define (presented-equal PC u v . object)
+  (let* ((P (vector-ref PC 1)) (iu (pr-words PC u)) (iv (pr-words PC v))
+         (x (cond ((pair? object) (car object)) ((pair? iu) (word-source P iu)) ((pair? iv) (word-source P iv)) (else 0)))
+         (ends (lambda (w) (if (null? w) (cons x x) (cons (word-source P w) (word-target P w))))))
+    (cond ((not (equal? (ends iu) (ends iv))) 'distinct)
+          ((equal? (presented-normal-form PC iu) (presented-normal-form PC iv)) 'equal)
+          ((presented-category-complete? PC) 'distinct)
+          ;; a sound invariant: when every relation relates words of one
+          ;; length, rewriting preserves length
+          ((and (not (= (length iu) (length iv)))
+                (pr-all? (lambda (r) (= (length (car r)) (length (cdr r)))) (presentation-relations P)))
+           'distinct)
+          (else 'undecided))))
+;; the arrow of a word: (source target normal-word); an empty word needs its object
+(define (presented-arrow PC w . object)
+  (pr-require-complete PC 'presented-arrow)
+  (let* ((P (vector-ref PC 1)) (iw (pr-words PC w)))
+    (if (null? iw)
+        (if (null? object) (error "presented-arrow: the empty word needs an object") (list (car object) (car object) '()))
+        (list (word-source P iw) (word-target P iw) (presented-normal-form PC iw)))))
+(define (presented-word PC w) (pr-words PC w))
+(define (presented-generator-arrow PC g)
+  (let* ((P (vector-ref PC 1)) (i (car (pr-words PC (list g))))) (presented-arrow PC (list i))))
+
+;; Irreducible words from an object, by length (memoized per object)
+(define (pr-irreducible-from PC a)
+  (let* ((cache (vector-ref PC 5)) (key (cons 'irreducible a)) (hit (hash-table-ref/default cache key #f)))
+    (or hit
+        (let* ((P (vector-ref PC 1)) (rules (rewriting-system-rules (vector-ref PC 2))) (ng (presentation-generator-count P))
+               (extend (lambda (p) ;; p = (target . word)
+                         (pr-flatmap (lambda (g) (if (= (pr-gsrc P g) (car p))
+                                                     (let ((w (cons g (cdr p))))
+                                                       (if (pr-any? (lambda (r) (pr-prefix? (car r) w)) rules) '() (list (cons (pr-gtgt P g) w))))
+                                                     '()))
+                                     (pr-range ng))))
+               (t (make-hash-table)))
+          (letrec ((stage (lambda (n)
+                            (let ((h (hash-table-ref/default t n 'pr-none)))
+                              (if (eq? h 'pr-none)
+                                  (let ((v (if (= n 0) (list (cons a '())) (pr-flatmap extend (stage (- n 1))))))
+                                    (hash-table-set! t n v) v)
+                                  h)))))
+            (hash-table-set! cache key stage)
+            stage)))))
+;; The automaton of irreducible words: is hom(a, b) finite, and how long is
+;; its longest word? Returns (finite? . longest) with longest -1 when empty.
+(define (pr-hom-shape PC a b)
+  (let* ((cache (vector-ref PC 5)) (key (list 'shape a b)) (hit (hash-table-ref/default cache key #f)))
+    (or hit
+        (let* ((P (vector-ref PC 1)) (rules (rewriting-system-rules (vector-ref PC 2))) (ng (presentation-generator-count P))
+               (W (max 0 (- (pr-max (map (lambda (r) (length (car r))) rules)) 1)))
+               (succ (lambda (s) (pr-flatmap (lambda (g) (if (= (pr-gsrc P g) (car s))
+                                                             (let ((w (cons g (cdr s))))
+                                                               (if (pr-any? (lambda (r) (pr-prefix? (car r) w)) rules) '()
+                                                                   (list (cons (pr-gtgt P g) (pr-take w W)))))
+                                                             '()))
+                                             (pr-range ng))))
+               (start (cons a '()))
+               (seen (make-hash-table)) (states '()) (edges (make-hash-table)))
+          ;; reachable states and their edges
+          (let bfs ((frontier (list start)))
+            (if (pair? frontier)
+                (let ((next '()))
+                  (for-each (lambda (s) (if (not (hash-table-ref/default seen s #f))
+                                            (let ((ss (succ s)))
+                                              (hash-table-set! seen s #t) (set! states (cons s states)) (hash-table-set! edges s ss)
+                                              (set! next (append ss next)))))
+                            frontier)
+                  (bfs next))))
+          ;; states from which a b-state is reachable
+          (let* ((co (make-hash-table))
+                 (changed #t))
+            (for-each (lambda (s) (if (= (car s) b) (hash-table-set! co s #t))) states)
+            (let saturate () (if changed (begin (set! changed #f)
+                                           (for-each (lambda (s) (if (and (not (hash-table-ref/default co s #f))
+                                                                          (pr-any? (lambda (t) (hash-table-ref/default co t #f)) (hash-table-ref/default edges s '())))
+                                                                     (begin (hash-table-set! co s #t) (set! changed #t))))
+                                                     states)
+                                           (saturate))))
+            (let* ((rel (filter (lambda (s) (hash-table-ref/default co s #f)) states))
+                   (rel-edges (lambda (s) (filter (lambda (t) (hash-table-ref/default co t #f)) (hash-table-ref/default edges s '()))))
+                   (indeg (make-hash-table)))
+              (for-each (lambda (s) (hash-table-set! indeg s 0)) rel)
+              (for-each (lambda (s) (for-each (lambda (t) (hash-table-set! indeg t (+ 1 (hash-table-ref/default indeg t 0)))) (rel-edges s))) rel)
+              ;; Kahn's algorithm: a leftover state lies on a cycle; longest paths from start
+              (let ((longest (make-hash-table)) (done 0))
+                (if (hash-table-ref/default co start #f) (hash-table-set! longest start 0))
+                (let kahn ((queue (filter (lambda (s) (= 0 (hash-table-ref/default indeg s 0))) rel)))
+                  (if (pair? queue)
+                      (let* ((s (car queue)) (ls (hash-table-ref/default longest s #f)) (more '()))
+                        (set! done (+ done 1))
+                        (for-each (lambda (t)
+                                    (if ls (hash-table-set! longest t (max (+ ls 1) (hash-table-ref/default longest t -1))))
+                                    (hash-table-set! indeg t (- (hash-table-ref/default indeg t 0) 1))
+                                    (if (= 0 (hash-table-ref/default indeg t 0)) (set! more (cons t more))))
+                                  (rel-edges s))
+                        (kahn (append (cdr queue) (reverse more))))))
+                (let ((result (if (< done (length rel))
+                                  (cons #f #f)
+                                  (cons #t (fold-left max -1 (map (lambda (s) (if (= (car s) b) (hash-table-ref/default longest s -1) -1)) rel))))))
+                  (hash-table-set! cache key result)
+                  result))))))))
+(define (presented-hom-finite? PC a b) (pr-require-complete PC 'presented-hom-finite?) (car (pr-hom-shape PC a b)))
+;; hom(a, b) as an enumerator of arrows (a b normal-word), stage n = words of length n
+(define (presented-hom PC a b)
+  (pr-require-complete PC 'presented-hom)
+  (let ((shape (pr-hom-shape PC a b)) (stage (pr-irreducible-from PC a)))
+    (make-enumerator (lambda (n) (map (lambda (p) (list a b (cdr p))) (filter (lambda (p) (= (car p) b)) (stage n))))
+                     (if (car shape) (+ 1 (max 0 (cdr shape))) #f))))
+(define (presented-hom-count PC a b)
+  (if (presented-hom-finite? PC a b) (enumerator-count (presented-hom PC a b))
+      (category-refuse 'enumeration-infinite 'presented-hom-count (list a b))))
+
+;; The effective view: objects 0..n-1, arrows (source target normal-word)
+(define (pr-effective PC)
+  (let* ((P (vector-ref PC 1)) (n (presentation-object-count P)) (rules (rewriting-system-rules (vector-ref PC 2)))
+         (gen-arrow (lambda (g) (list (pr-gsrc P g) (pr-gtgt P g) (rewrite-normal-form rules (list g))))))
+    (make-effective-category
+     (list 'presented (vector-ref P 4))
+     (pr-range n) (lambda (x) (and (integer? x) (exact? x) (>= x 0) (< x n)))
+     (lambda (a b) (presented-hom PC a b))
+     (lambda (g f) (list (car f) (cadr g) (rewrite-normal-form rules (append (caddr g) (caddr f)))))
+     (lambda (x) (list x x '()))
+     (lambda (f) (car f)) (lambda (f) (cadr f)) (lambda (f g) (equal? f g))
+     (list (cons 'generators (map gen-arrow (pr-range (presentation-generator-count P))))
+           (cons 'relations (map (lambda (r) (cons (map gen-arrow (car r)) (map gen-arrow (cdr r)))) (presentation-relations P)))
+           (cons 'presented (lambda () PC))))))
+(define (presented->effective PC) (pr-require-complete PC 'presented->effective) (vector-ref PC 3))
+;; a finite presented category as a core.sheaf.site finite-category (refused
+;; by name when a hom-set is infinite)
+(define (presented->finite-category PC) (effective->finite-category (presented->effective PC)))
+;; the same category through core.sheaf.site's make-category-from-presentation,
+;; with the completed system as its normal-form procedure (words up to max-len)
+(define (presented-site-category PC max-len)
+  (pr-require-complete PC 'presented-site-category)
+  (let ((P (vector-ref PC 1)) (rules (rewriting-system-rules (vector-ref PC 2))))
+    (make-category-from-presentation (presentation-object-count P)
+                                     (map (lambda (g) (list (pr-gsrc P g) (pr-gtgt P g) (presentation-generator-name P g)))
+                                          (pr-range (presentation-generator-count P)))
+                                     (lambda (w) (rewrite-normal-form rules w)) max-len)))
+
+;; ---------------------------------------------------------------------------
+;; Monoids, groups, free categories
+;; ---------------------------------------------------------------------------
+;; one object 0; generators named by names; relations (lhs rhs) of names
+(define (presented-monoid names relations . budget)
+  (apply present-category (make-presentation 1 (map (lambda (x) (list 0 0 x)) names) relations (list 'monoid)) budget))
+(define (free-monoid names) (presented-monoid names '()))
+;; a group: each generator x gets an inverse named (inv x), ordered x < (inv x)
+;; < next generator, with x (inv x) = 1 = (inv x) x; relators are words equal
+;; to the identity (names and (inv name))
+(define (presented-group names relators . budget)
+  (let* ((gens (pr-flatmap (lambda (x) (list (list 0 0 x) (list 0 0 (list 'inv x)))) names))
+         (inverses (pr-flatmap (lambda (x) (list (list (list x (list 'inv x)) '()) (list (list (list 'inv x) x) '()))) names)))
+    (apply present-category (make-presentation 1 gens (append inverses (map (lambda (w) (list w '())) relators)) (list 'group)) budget)))
+;; the free category on a finite quiver (no relations; always complete)
+(define (free-category-on-quiver nobj gens) (present-category (make-presentation nobj gens '())))
+
+;; ---------------------------------------------------------------------------
+;; Functors and transformations out of a presented category
+;; ---------------------------------------------------------------------------
+;; the functor to an effective category D determined by an object map
+;; (procedure, list or vector) and the images of the generators (a list in
+;; generator order, or a procedure on generator names)
+(define (presented-functor PC D objects images)
+  (let* ((C (presented->effective PC)) (P (vector-ref PC 1))
+         (obj (cond ((procedure? objects) objects) ((vector? objects) (lambda (x) (vector-ref objects x))) (else (lambda (x) (list-ref objects x)))))
+         (img (if (procedure? images) (lambda (g) (images (presentation-generator-name P g))) (let ((v (list->vector images))) (lambda (g) (vector-ref v g))))))
+    (make-effective-functor C D obj
+                            (lambda (f) (if (null? (caddr f)) (effective-category-identity D (obj (car f)))
+                                            (effective-category-compose-list D (map img (caddr f)))))
+                            "presented functor")))
+;; complete check: generator endpoints and every relation (a functor out of
+;; a presented category is exactly an assignment that respects the relations)
+(define (presented-functor-violations F) (effective-functor-generator-violations F))
+;; complete check: components at every object and naturality on generators
+(define (presented-transformation-violations F G alpha) (effective-transformation-generator-violations F G alpha))

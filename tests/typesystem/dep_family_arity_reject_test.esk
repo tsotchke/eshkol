@@ -1,0 +1,10 @@
+;; Type families (ADR-0042): Matrix takes three arguments.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: ill-formed type: the family Matrix takes 3 arguments, found 2
+
+(define-type (Matrix (a : (universe 0)) (m : integer) (n : integer))
+  (vector (vector a n) m))
+
+(define (f (x : (Matrix real 2))) x)
+(display (f (vector)))

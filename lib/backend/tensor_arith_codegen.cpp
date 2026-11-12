@@ -141,6 +141,12 @@ llvm::Value* TensorCodegen::isDualTensor(llvm::Value* tensor_struct_ptr) {
         llvm::ConstantInt::get(ctx_.int64Type(), TENSOR_DTYPE_DUAL));
 }
 
+// Tagged numeric slots (a jet tensor or an exact tensor, ADR-0058): the
+// tensors the generic-scalar kernels take. See header.
+llvm::Value* TensorCodegen::isTaggedNumericTensor(llvm::Value* tensor_struct_ptr) {
+    return ctx_.emitTensorIsTaggedNumeric(tensor_struct_ptr);
+}
+
 // Forward-mode elementwise arithmetic over jet tensors. See header.
 bool TensorCodegen::hasJetTensorArithmeticRule(const std::string& operation) {
     return eshkol_taylor_binary_opcode(jetArithmeticSpelling(operation)) >= 0;

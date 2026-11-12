@@ -110,6 +110,7 @@ runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	-	Runtime-closu
 define_library_same_unit_gate	^define_library_same_unit_	-	R7RS same-unit define-library resolution
 module_load_path_engine_parity_gate	^load_path_engine_parity_test$	-	Relative (load …) resolves identically on every execution engine
 squared_distance_exact_gate	^squared_distance_gradcheck$	-	Squared geodesic distance is exact and differentiable THROUGH the diagonal
+v140_codebase_gate	^(image_codecs_test|image_io_language_test|test_native_image_io_contract|runtime_regions_test|doc_truth_ratchet_unit|doc_truth_ratchet_phase1)$	6	v1.4.0 codebase row: built-in image codecs, region units, doc-truth ratchet phase 1
 GROUPS
 )
 

@@ -1,0 +1,15 @@
+;; Universe levels (ADR-0042): a parameter of sort (universe 1) accepts a
+;; type of (universe 1), cumulatively one of (universe 0), and (universe 0)
+;; itself, which lives in (universe 1).
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+
+(define-type (Tagged (t : (universe 1))) (pair symbol any))
+
+(define (tag-of (x : (Tagged (universe 0)))) (car x))
+(define (tag-of-real (x : (Tagged real))) (car x))
+(display (tag-of (cons 'shape 3)))
+(newline)
+(display (tag-of-real (cons 'radius 2.0)))
+(newline)

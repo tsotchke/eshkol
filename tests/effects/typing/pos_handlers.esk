@@ -1,0 +1,24 @@
+;;; Handlers discharge what they handle; declarations hold.
+;; expect-row: counter-op <Tally>
+;; expect-row: run-tally <>
+;; expect-row: run-partial <Tally>
+;; expect-row: with-tally <| param:0 - Tally>
+;; expect-row: tally-then-print <IO>
+;; expect-row: polymorphic-map <| param:0>
+(define-effect Tally (tally) (reset-tally))
+(define (counter-op) (tally) (tally))
+(define (run-tally) (let ((n 0)) (handle (begin (counter-op) n) (fun (tally) (set! n (+ n 1)) n) (fun (reset-tally) (set! n 0) 0))))
+;; a handler that covers only some of Tally's operations does not discharge Tally
+(define (run-partial) (handle (begin (counter-op) 1) (fun (tally) 0)))
+(define (with-tally thunk) (handle (thunk) (fun (tally) 0) (fun (reset-tally) 0)))
+(define (tally-then-print) (with-tally (lambda () (tally) (display "x"))))
+(define (polymorphic-map f xs) (map f xs))
+(declare-effects pure-tally Pure)
+(define (pure-tally) (with-tally (lambda () (tally) 1)))
+(declare-effects printing (IO))
+(define (printing) (tally-then-print))
+(declare-effects polymorphic-map e)
+(declare-effects mapper (IO . e))
+(define (mapper f xs) (display "map") (polymorphic-map f xs))
+(display (list (run-tally) (pure-tally) (polymorphic-map (lambda (x) x) '(1))))
+(printing) (newline)

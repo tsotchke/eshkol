@@ -45,6 +45,10 @@
 /* qllm_real scalar type + architecture constants (D/H/HD/N_LAYERS/FFN_DIM),
  * shared with the public backward surface and the gradient-check test. */
 #include "eshkol/backend/qllm_backward.h"
+/* The logistic-gate and softmax reverse-mode rule, shared with the runtime
+ * weight kernels in lib/core/sdnc_core.h. */
+#include "eshkol/core/saturating_vjp.h"
+ESHKOL_SATURATING_VJP_RULES(qllm_real, _qllm)
 
 /*******************************************************************************
  * Forward Cache — saved activations from forward pass for backward
@@ -205,7 +209,7 @@ void qllm_backward_ffn_gated(
     /* Gate branch: sigmoid backward: d_g_pre = d_gate * gate * (1 - gate) */
     qllm_real d_g_pre[FFN_DIM];
     for (int j = 0; j < FFN_DIM; j++)
-        d_g_pre[j] = d_gate[j] * gate_post[j] * (1.0f - gate_post[j]);
+        d_g_pre[j] = eshkol_logistic_vjp_qllm(d_gate[j], gate_post[j], (qllm_real)1);
 
     for (int j = 0; j < FFN_DIM; j++) db_gate[j] += d_g_pre[j];
     for (int i = 0; i < D; i++)
@@ -284,13 +288,11 @@ static void qllm_backward_attention(
     }
 
     /* Softmax backward: d_scores[p] = attn[p] * (d_attn[p] - dot(attn, d_attn)) */
-    qllm_real dot = 0;
-    for (int p = 0; p < np; p++)
-        dot += cache->attn_weights[p] * d_attn[p];
     qllm_real d_scores[256];
+    eshkol_softmax_vjp_qllm(cache->attn_weights, d_attn, np, (qllm_real)1, d_scores);
     qllm_real scale = 1.0f / sqrt((qllm_real)HD);
     for (int p = 0; p < np; p++)
-        d_scores[p] = cache->attn_weights[p] * (d_attn[p] - dot) * scale;
+        d_scores[p] = d_scores[p] * scale;
 
     /* dQ from scores: dQ[d] += sum_p(d_scores[p] * K[p][d]) for d in [0..HD-1] */
     qllm_real dQ[D] = {0};

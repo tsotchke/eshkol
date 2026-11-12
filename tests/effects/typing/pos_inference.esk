@@ -1,0 +1,22 @@
+;;; Effect rows inferred for ordinary procedures.
+;; expect-row: pure-add <>
+;; expect-row: greet <IO>
+;; expect-row: bump! <State>
+;; expect-row: careful <Exception>
+;; expect-row: safe-div <>
+;; expect-row: apply-twice <| param:0>
+;; expect-row: shout-all <IO>
+;; expect-row: local-counter <>
+;; expect-row: capture <Control>
+(define counter 0)
+(define (pure-add a b) (+ a b))
+(define (greet name) (display "hello ") (display name) (newline))
+(define (bump!) (set! counter (+ counter 1)) counter)
+(define (careful x) (if (< x 0) (raise 'negative) x))
+(define (safe-div a b) (guard (e (#t 0)) (if (= b 0) (raise 'div0) (/ a b))))
+(define (apply-twice f x) (f (f x)))
+(define (shout-all xs) (for-each (lambda (x) (display x)) xs))
+(define (local-counter n) (let ((c 0)) (set! c (+ c n)) c))
+(define (capture) (call/cc (lambda (k) (k 1))))
+(display (list (pure-add 1 2) (bump!) (careful 1) (safe-div 1 0) (apply-twice (lambda (x) (* x 2)) 3) (local-counter 4) (capture)))
+(greet "effects") (shout-all '(1 2)) (newline)

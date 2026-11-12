@@ -1,0 +1,5 @@
+;; A closure that captures a handle constructor and is never called opens
+;; nothing; it compiles.
+(define opener (lambda (path) (open-input-file path)))
+(display "defined")
+(newline)

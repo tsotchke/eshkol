@@ -28,6 +28,8 @@
 extern "C" int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_type);
 // Defined in runtime_taylor.c: does the value reference a Taylor tower?
 extern "C" int eshkol_is_taylor_tagged(const eshkol_tagged_value_t* tv);
+extern "C" int32_t eshkol_ad_point_is_exact_number(const eshkol_tagged_value_t* v);
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
 
 namespace {
 
@@ -180,11 +182,21 @@ bool is_forward_jet(const eshkol_tagged_value_t& value) {
     return eshkol_is_taylor_tagged(&value) != 0;
 }
 
+// An exact real of the scalar tower: a fixnum, a bignum or a rational. These
+// are the only values an exact tensor slot holds (ADR-0058).
+bool is_exact_real(const eshkol_tagged_value_t& value) {
+    return eshkol_ad_point_is_exact_number(&value) != 0;
+}
+
 bool tensor_slot_accepts(const eshkol_tensor_t* tensor,
                          const eshkol_tagged_value_t& value) {
     const uint8_t type = base_type(value.type);
     // A promoted carrier holds any value, like the Scheme vector it now is.
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) return true;
+    // An exact tensor holds exact reals only. An inexact number is refused
+    // rather than stored: storing it would either round the slot or make the
+    // tensor's declared exactness false.
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT) return is_exact_real(value);
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
         double ignored = 0.0;
         return is_forward_jet(value) || tagged_real_to_double(value, &ignored);
@@ -231,6 +243,12 @@ bool promote_numeric_tensor_to_tagged(eshkol_tensor_t* tensor, uint64_t dtype) {
 bool promote_tensor_to_boxed(eshkol_tensor_t* tensor) {
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) return true;
     if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) return false;
+    // An exact tensor's slots are already tagged numbers: the vector API
+    // widens it to the general carrier by re-labelling, with nothing to copy.
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT) {
+        tensor->dtype = ESHKOL_TENSOR_DTYPE_BOXED;
+        return true;
+    }
     return promote_numeric_tensor_to_tagged(tensor, ESHKOL_TENSOR_DTYPE_BOXED);
 }
 
@@ -247,6 +265,15 @@ bool promote_tensor_to_boxed(eshkol_tensor_t* tensor) {
 bool widen_tensor_for(eshkol_tensor_t* tensor, const eshkol_tagged_value_t& value,
                       bool allow_boxed) {
     if (tensor_slot_accepts(tensor, value)) return true;
+    // An exact tensor never narrows a slot to a double nor widens to a jet
+    // tensor; only the vector API may relabel it as a general carrier, and
+    // only for a value that is not a number at all.
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT) {
+        double ignored = 0.0;
+        if (tagged_real_to_double(value, &ignored) || is_forward_jet(value)) return false;
+        return allow_boxed && promote_tensor_to_boxed(tensor) &&
+               tensor_slot_accepts(tensor, value);
+    }
     if (is_forward_jet(value)) {
         if (eshkol_tensor_dtype_is_tagged(tensor->dtype)) return false;
         return promote_numeric_tensor_to_tagged(tensor, ESHKOL_TENSOR_DTYPE_DUAL) &&
@@ -256,9 +283,27 @@ bool widen_tensor_for(eshkol_tensor_t* tensor, const eshkol_tagged_value_t& valu
            tensor_slot_accepts(tensor, value);
 }
 
+// One slot of any tensor layout as a tagged value: a tagged slot is the value
+// itself; a numeric slot is the double it encodes.
+eshkol_tagged_value_t tensor_slot_value(const eshkol_tensor_t* tensor, int64_t index) {
+    if (eshkol_tensor_dtype_is_tagged(tensor->dtype)) {
+        return reinterpret_cast<const eshkol_tagged_value_t*>(tensor->elements)[index];
+    }
+    return tagged_double(reinterpret_cast<const double*>(tensor->elements)[index]);
+}
+
+// The status for a value the tensor refused: an inexact real offered to an
+// exact tensor is named as such, anything else has no slot representation.
+int32_t refusal_status(const eshkol_tensor_t* tensor, const eshkol_tagged_value_t& value) {
+    double ignored = 0.0;
+    return (tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT && tagged_real_to_double(value, &ignored))
+               ? ESHKOL_SLOT_STORE_INEXACT : ESHKOL_SLOT_STORE_VALUE;
+}
+
 void encode_tensor_slot(eshkol_tensor_t* tensor, int64_t index,
                         const eshkol_tagged_value_t& value) {
-    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED) {
+    if (tensor->dtype == ESHKOL_TENSOR_DTYPE_BOXED ||
+        tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT) {
         auto* slots = reinterpret_cast<eshkol_tagged_value_t*>(tensor->elements);
         store_tagged_value(tensor, slots + index, value);
         return;
@@ -302,6 +347,13 @@ void* sequence_object(const eshkol_tagged_value_t* sequence, uint8_t* subtype) {
 
 }  // namespace
 
+// The tensor a tagged value names, or null when it names anything else.
+extern "C" void* eshkol_tagged_as_tensor(const eshkol_tagged_value_t* value) {
+    uint8_t subtype = 0xFF;
+    void* object = sequence_object(value, &subtype);
+    return subtype == HEAP_SUBTYPE_TENSOR ? object : nullptr;
+}
+
 extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
                                                 const void* src, int64_t start,
                                                 int64_t end) {
@@ -340,6 +392,28 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
             dst_tensor->dtype != ESHKOL_TENSOR_DTYPE_BOXED &&
             !promote_tensor_to_boxed(dst_tensor)) {
             return ESHKOL_SLOT_STORE_VALUE;
+        }
+        // An exact tensor on either side of a copy between different dtypes
+        // goes slot by slot through the one encoder, so an exact destination
+        // refuses an inexact element and an exact source is carried into a
+        // numeric destination exactly as `inexact` would give it.
+        if (dst_tensor->dtype != src_tensor->dtype &&
+            (dst_tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT ||
+             src_tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT)) {
+            std::vector<eshkol_tagged_value_t> staged(static_cast<size_t>(count));
+            for (int64_t i = 0; i < count; ++i) {
+                staged[static_cast<size_t>(i)] = tensor_slot_value(src_tensor, start + i);
+            }
+            for (int64_t i = 0; i < count; ++i) {
+                if (!widen_tensor_for(dst_tensor, staged[static_cast<size_t>(i)],
+                                      /*allow_boxed=*/true)) {
+                    return refusal_status(dst_tensor, staged[static_cast<size_t>(i)]);
+                }
+            }
+            for (int64_t i = 0; i < count; ++i) {
+                encode_tensor_slot(dst_tensor, at + i, staged[static_cast<size_t>(i)]);
+            }
+            return ESHKOL_SLOT_STORE_OK;
         }
         const bool dst_tagged = eshkol_tensor_dtype_is_tagged(dst_tensor->dtype);
         const bool src_tagged = eshkol_tensor_dtype_is_tagged(src_tensor->dtype);
@@ -407,7 +481,7 @@ extern "C" int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
     // numeric carrier cannot hold promotes it once (ADR-0020).
     for (int64_t i = 0; i < count; ++i) {
         if (!widen_tensor_for(dst_tensor, src_values[i], /*allow_boxed=*/true)) {
-            return ESHKOL_SLOT_STORE_VALUE;
+            return refusal_status(dst_tensor, src_values[i]);
         }
     }
     for (int64_t i = 0; i < count; ++i) {
@@ -436,7 +510,7 @@ static int32_t tensor_slot_store(void* tensor_object, int64_t index,
     auto* tensor = reinterpret_cast<eshkol_tensor_t*>(tensor_object);
     const int64_t length = sequence_length(tensor_object, HEAP_SUBTYPE_TENSOR);
     if (index < 0 || index >= length) return ESHKOL_SLOT_STORE_BOUNDS;
-    if (!widen_tensor_for(tensor, *value, promote)) return ESHKOL_SLOT_STORE_VALUE;
+    if (!widen_tensor_for(tensor, *value, promote)) return refusal_status(tensor, *value);
     encode_tensor_slot(tensor, index, *value);
     return ESHKOL_SLOT_STORE_OK;
 }
@@ -497,10 +571,44 @@ extern "C" int32_t eshkol_tensor_store_indexed(void* tensor_object,
 // exactness or a forward-mode derivative carrier. The flat-collection operand
 // coercion asks this before building a tensor, so it and the constructors
 // share one answer.
+// The real-number projection of the numeric tower (what `inexact` gives a
+// real of any exactness), for the kernels that leave the exact tier by
+// contagion. Returns 0 when the value is not a real number.
+extern "C" int32_t eshkol_tensor_real_to_double(const eshkol_tagged_value_t* value,
+                                                 double* out) {
+    double ignored = 0.0;
+    return (value && tagged_real_to_double(*value, out ? out : &ignored)) ? 1 : 0;
+}
+
 extern "C" int32_t eshkol_tensor_leaf_is_storable(const eshkol_tagged_value_t* value) {
     if (!value) return 0;
     double ignored = 0.0;
     return (tagged_real_to_double(*value, &ignored) || is_forward_jet(*value)) ? 1 : 0;
+}
+
+// (make-tensor shape fill :dtype 'exact): re-point a freshly built tensor at
+// tagged slots and store the exact fill whole in every one (ADR-0058). The
+// descriptor keeps its address. An inexact fill is refused, not rounded.
+extern "C" void eshkol_tensor_make_exact_filled(void* tensor_object,
+                                                const eshkol_tagged_value_t* fill) {
+    if (!tensor_object || !fill) return;
+    if (!is_exact_real(*fill)) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+            "make-tensor: the fill of an exact tensor must be an exact number "
+            "(an integer or a rational)");
+        return;
+    }
+    auto* tensor = reinterpret_cast<eshkol_tensor_t*>(tensor_object);
+    const uint64_t n = tensor->total_elements;
+    auto* slots = static_cast<eshkol_tagged_value_t*>(arena_allocate(
+        get_global_arena(), (size_t)(n ? n : 1) * sizeof(eshkol_tagged_value_t)));
+    if (!slots) {
+        eshkol_raise_allocation_failure("make-tensor", (size_t)n * sizeof(eshkol_tagged_value_t));
+        return;
+    }
+    tensor->elements = reinterpret_cast<int64_t*>(slots);
+    tensor->dtype = ESHKOL_TENSOR_DTYPE_EXACT;
+    for (uint64_t i = 0; i < n; ++i) store_tagged_value(tensor, slots + i, *fill);
 }
 
 extern "C" int32_t eshkol_tensor_fill_slots(void* tensor_object,

@@ -23,6 +23,10 @@ and error text, taken from reading `lib/core/blc.esk` directly. All samples
 below were run under both the JIT (`eshkol-run -r`) and AOT (`eshkol-run -o`)
 engines; JIT and AOT outputs are byte-identical for every sample on this page.
 
+The stochastic extension — fair choice, exact rational distributions and the
+`2^-length` program prior over a separate `sblc-v1` code — is
+[`core.sblc`](sblc.md); this module is unchanged by it.
+
 ## Term representation
 
 Terms are homoiconic s-expressions, tagged with a symbol as the `car`:

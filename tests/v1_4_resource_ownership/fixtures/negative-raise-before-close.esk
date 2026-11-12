@@ -1,0 +1,4 @@
+;; An explicit raise with no handler ends the program with the port open.
+(define in (open-input-file "strict-raise.txt"))
+(raise 'stop)
+(close-port in)

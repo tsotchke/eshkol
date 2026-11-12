@@ -31,6 +31,12 @@
 ;; NOTE: as in the sibling examples, whose formerly-cited defects (LE-17/20/22/23, SW-153) are now closed.
 
 (require stdlib)
+(require core.transcript)
+
+;; Content-addressed transcript of this run's Gram matrix and its rank
+;; mod p (off by default; see docs/reference/stdlib/transcript.md).
+;; Recording never changes the receipt printed below.
+(define TRANSCRIPT (transcript-open "mathematics_fermat_hodge_classes_sweep"))
 
 (define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
 (define (ipow b n) (if (= n 0) 1 (* b (ipow b (- n 1)))))
@@ -174,6 +180,18 @@
 (define gap (- hodge-dim rank))
 (define elapsed-ms (quotient (- (current-time-ns) t0) 1000000))
 (define verdict (cond ((not (equal? griff shio)) "FAIL") ((< gap 0) "FAIL") (else "PASS")))
+(define receipt-label (string-append "fermat_m" (number->string m) "_n" (number->string n)))
+;; The Gram matrix's rank mod p is exactly gram_rank_mod_p above: an
+;; independent recomputation (replay_check.py, or PARI/GP via
+;; crosscheck_pari_sympy.py) cross-checks it directly. griffiths/shioda cross-check each other
+;; (two independently derived Hodge-number counts, compared for equality).
+(transcript-record! TRANSCRIPT "gram_matrix_rank_mod_p" receipt-label
+  (list (cons "gram_matrix" (tv-matrix-vec G)) (cons "prime" (tv-int prime)))
+  (tv-int rank))
+(transcript-record! TRANSCRIPT "character_count" receipt-label
+  (list (cons "degree" (tv-int m)) (cons "dim" (tv-int n)))
+  (list (cons "griffiths" (tv-int-list griff)) (cons "shioda" (tv-int-list shio))))
+(transcript-close! TRANSCRIPT)
 (display (string-append "{\"schema\":\"eshkol.math.fermat_hodge_classes.v1\",\"degree\":" (number->string m) ",\"dim\":" (number->string n)
                         ",\"hodge_numbers_griffiths\":" (json-int-list griff) ",\"hodge_numbers_shioda\":" (json-int-list shio)
                         ",\"hodge_dim\":" (number->string hodge-dim) ",\"all_hodge_characters_standard\":" (if standard? "true" "false")

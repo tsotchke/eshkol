@@ -1,0 +1,276 @@
+;;; core.sheaf.cohomology -- Cech cohomology of covers, sheaves on finite
+;;; spaces given by their stalks, and sheaf cohomology as derived limits,
+;;; with integer coefficients (torsion visible) or rational ones.
+;;;
+;;; Usage: (require core.sheaf.cohomology)   or   (require core.sheaf)
+;;;
+;;; Sources: R. Godement (1958), II.5 (Cech cohomology), II.5.9 (Leray); G. E.
+;;; Bredon, "Sheaf Theory" (2nd ed., 1997), III.4 (Cech cohomology and the
+;;; Leray theorem for acyclic covers); B. Iversen, "Cohomology of Sheaves"
+;;; (1986), III; A. K. Bousfield, D. M. Kan, LNM 304 (1972), XI.6-7 (the
+;;; cosimplicial replacement computing lim^n); M. C. McCord, Duke Math. J. 33
+;;; (1966), and J. A. Barmak, LNM 2032 (2011), for finite spaces.
+;;;
+;;; A sheaf of abelian groups on a finite T_0 space X is the same as a functor
+;;; on its poset: the stalk F(x) = F(U_x) and, for y <= x, the restriction
+;;; F(x) -> F(y). Such stalk data is a `poset module`:
+;;;   #(poset-module X ring ranks maps)
+;;;     ranks: vector, point x -> rank of F(x);
+;;;     maps:  procedure (x y), y <= x -> matrix of F(x) -> F(y) (rank y rows).
+;;; Sheaf cohomology H^n(X; F) is lim^n over the poset, the cohomology of
+;;;     C^n = prod over chains x_0 > ... > x_n of F(x_n),
+;;;     (d u)(x_0 > ... > x_{n+1}) = sum_{i <= n} (-1)^i u(chain without x_i)
+;;;                                + (-1)^{n+1} F(x_n -> x_{n+1}) u(x_0 > ... > x_n).
+;;; Sections over a down-set D are the kernel of the compatibility conditions
+;;; s_y = F(x -> y) s_x for y < x in D.
+;;;
+;;; Cech cohomology of a cover {U_i} has C^k = (+) over i_0 < ... < i_k of
+;;; F(U_{i_0} cap ... cap U_{i_k}). The same engine serves module presheaves
+;;; on any thin site with meets (core.sheaf.module) and poset modules on
+;;; finite spaces (intersections of point sets).
+
+(require stdlib)
+(require core.integer_linalg)
+(require core.sheaf.site)
+(require core.sheaf.module)
+
+(provide cech-complex-from-nerve module-cech-complex module-cech-cohomology
+         make-poset-module poset-local-system constant-poset-module poset-module?
+         poset-module-space poset-module-ring poset-module-rank poset-module-map
+         poset-module-functoriality-violations poset-module-functorial?
+         poset-module-cochain-complex poset-module-cohomology poset-module-cohomology-generators
+         poset-module-sections poset-module-restrict-section poset-module-cech-complex
+         poset-module-cech-cohomology poset-module->module-presheaf
+         finite-space-euler-characteristic cohomology-generators)
+
+(define (co-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (co-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (co-all? pred (cdr xs))) (else #f)))
+(define (co-remove-nth l i)
+  (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (co-last l) (if (null? (cdr l)) (car l) (co-last (cdr l))))
+(define (co-but-last l) (reverse (cdr (reverse l))))
+(define (co-position item items)
+  (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+(define (co-offsets sizes)
+  (let loop ((s sizes) (o 0) (acc '())) (if (null? s) (reverse acc) (loop (cdr s) (+ o (car s)) (cons o acc)))))
+
+;; ---------------------------------------------------------------------------
+;; The Cech engine
+;; ---------------------------------------------------------------------------
+;; n: number of cover members; open-of: index list J -> the intersection
+;; U_J (any value); rank-of: U -> rank of F(U); restrict: (U V) -> matrix of
+;; F(U) -> F(V) for V inside U. Returns (dims Ds) for C^0 .. C^kmax with
+;; D_k : C^k -> C^{k+1}.
+(define (cech-complex-from-nerve n kmax open-of rank-of restrict)
+  (let* ((simplices (lambda (k) (sheaf-subsets-of-size (co-range n) (+ k 1))))
+         (block-ranks (lambda (k) (map (lambda (J) (rank-of (open-of J))) (simplices k))))
+         (D-of (lambda (k)
+                 (let* ((src (simplices k)) (dst (simplices (+ k 1)))
+                        (sr (block-ranks k)) (dr (block-ranks (+ k 1)))
+                        (so (co-offsets sr)) (dofs (co-offsets dr))
+                        (D (integer-matrix (fold-left + 0 dr) (fold-left + 0 sr))))
+                   (let rows ((Js dst) (jr dr) (jo dofs))
+                     (if (not (null? Js))
+                         (let ((J (car Js)))
+                           (if (> (car jr) 0)
+                               (let faces ((i 0))
+                                 (if (<= i (+ k 1))
+                                     (let* ((I (co-remove-nth J i)) (p (co-position I src)) (ri (list-ref sr p)))
+                                       (if (> ri 0)
+                                           (let ((M (restrict (open-of I) (open-of J))) (sign (if (even? i) 1 -1)))
+                                             (let put-r ((r 0))
+                                               (if (< r (car jr))
+                                                   (begin
+                                                     (let put-c ((c 0))
+                                                       (if (< c ri)
+                                                           (let ((row (+ (car jo) r)) (col (+ (list-ref so p) c)))
+                                                             (integer-matrix-set! D row col (+ (integer-matrix-ref D row col) (* sign (integer-matrix-ref M r c))))
+                                                             (put-c (+ c 1)))))
+                                                     (put-r (+ r 1)))))))
+                                       (faces (+ i 1))))))
+                           (rows (cdr Js) (cdr jr) (cdr jo)))))
+                   D))))
+    (list (map (lambda (k) (fold-left + 0 (block-ranks k))) (co-range (+ kmax 1)))
+          (map D-of (co-range (+ kmax 1))))))
+
+;; Cech complex of a module presheaf for a cover by objects of a thin site
+;; with meets (finite spaces, finite lattices).
+(define (module-cech-complex site F cover kmax)
+  (let* ((C (site-category site)) (cv (list->vector cover))
+         (open-of (lambda (J)
+                    (let loop ((js (cdr J)) (m (vector-ref cv (car J))))
+                      (if (null? js) m
+                          (let ((m2 (category-meet C m (vector-ref cv (car js)))))
+                            (if (not m2) (error "module-cech-complex: cover members have no meet" J))
+                            (loop (cdr js) m2)))))))
+    (cech-complex-from-nerve (length cover) kmax open-of
+                             (lambda (U) (module-presheaf-rank F U))
+                             (lambda (U V) (module-presheaf-restriction F (category-thin-arrow C V U))))))
+(define (module-cech-cohomology site F cover kmax)
+  (let ((cx (module-cech-complex site F cover kmax)))
+    (sheaf-module-cochain-cohomology (module-presheaf-ring F) (car cx) (cadr cx))))
+
+;; explicit cocycles generating H^k of a complex (dims Ds), integer coefficients:
+;; a list of (order . cocycle), order 0 for an infinite cyclic summand
+(define (cohomology-generators complex k)
+  (let ((dims (car complex)) (Ds (cadr complex)))
+    (cochain-cohomology-generators (list-ref dims k) (if (= k 0) #f (list-ref Ds (- k 1))) (list-ref Ds k))))
+
+;; ---------------------------------------------------------------------------
+;; Poset modules: sheaves on finite spaces by their stalks
+;; ---------------------------------------------------------------------------
+(define (make-poset-module X ring rank maps)
+  (vector 'poset-module X ring (list->vector (map rank (co-range (finite-space-size X)))) maps))
+(define (poset-module? F) (and (vector? F) (= 5 (vector-length F)) (eq? (vector-ref F 0) 'poset-module)))
+(define (poset-module-space F) (vector-ref F 1))
+(define (poset-module-ring F) (vector-ref F 2))
+(define (poset-module-rank F x) (vector-ref (vector-ref F 3) x))
+(define (poset-module-map F x y) ((vector-ref F 4) x y))
+;; rank-one local system from an integer (or rational) assignment m(x, y)
+(define (poset-local-system X m . ring)
+  (make-poset-module X (if (null? ring) 'Z (car ring)) (lambda (x) 1) (lambda (x y) (vector (vector (m x y))))))
+(define (constant-poset-module X . ring) (apply poset-local-system X (lambda (x y) 1) ring))
+;; F(x -> x) = 1 and F(x -> z) = F(y -> z) F(x -> y) for z <= y <= x
+(define (poset-module-functoriality-violations F)
+  (let* ((X (poset-module-space F)) (pts (co-range (finite-space-size X))) (out '()))
+    (for-each
+     (lambda (x)
+       (if (not (integer-matrix-equal? (poset-module-map F x x) (integer-identity-matrix (poset-module-rank F x))))
+           (set! out (cons (list 'identity x) out)))
+       (for-each
+        (lambda (y)
+          (if (finite-space-leq? X y x)
+              (for-each
+               (lambda (z)
+                 (if (and (finite-space-leq? X z y) (> (poset-module-rank F z) 0) (> (poset-module-rank F x) 0)
+                          (> (poset-module-rank F y) 0)
+                          (not (integer-matrix-equal? (poset-module-map F x z)
+                                                      (integer-matrix-mul (poset-module-map F y z) (poset-module-map F x y)))))
+                     (set! out (cons (list 'composite x y z) out))))
+               pts)))
+        pts))
+     pts)
+    (reverse out)))
+(define (poset-module-functorial? F) (null? (poset-module-functoriality-violations F)))
+
+;; the cosimplicial replacement over the chains of points in `allowed`
+(define (poset-module-cochain-complex F kmax . allowed)
+  (let* ((X (poset-module-space F)) (al (if (null? allowed) (co-range (finite-space-size X)) (car allowed)))
+         (chains (lambda (k) (finite-space-chains X k al)))
+         (rk (lambda (c) (poset-module-rank F (co-last c))))
+         (D-of
+          (lambda (k)
+            (let* ((src (chains k)) (dst (chains (+ k 1)))
+                   (so (co-offsets (map rk src))) (dsto (co-offsets (map rk dst)))
+                   (index (let ((t (make-hash-table)))
+                            (let loop ((l src) (os so)) (if (not (null? l)) (begin (hash-table-set! t (car l) (car os)) (loop (cdr l) (cdr os)))))
+                            t))
+                   (D (integer-matrix (fold-left + 0 (map rk dst)) (fold-left + 0 (map rk src)))))
+              (let loop ((ds dst) (dofs dsto))
+                (if (not (null? ds))
+                    (let* ((c (car ds)) (r (rk c)) (row0 (car dofs)))
+                      ;; faces omitting x_i for i <= k keep the smallest point: identity blocks
+                      (let faces ((i 0) (sign 1))
+                        (if (<= i k)
+                            (let ((col0 (hash-table-ref/default index (co-remove-nth c i) #f)))
+                              (let put ((t 0))
+                                (if (< t r)
+                                    (begin (integer-matrix-set! D (+ row0 t) (+ col0 t) (+ (integer-matrix-ref D (+ row0 t) (+ col0 t)) sign))
+                                           (put (+ t 1)))))
+                              (faces (+ i 1) (- 0 sign)))))
+                      ;; the last face drops x_{k+1} and applies F(x_k -> x_{k+1})
+                      (let* ((front (co-but-last c)) (col0 (hash-table-ref/default index front #f))
+                             (sign (if (even? (+ k 1)) 1 -1))
+                             (M (poset-module-map F (co-last front) (co-last c))) (rf (rk front)))
+                        (let put-r ((t 0))
+                          (if (< t r)
+                              (begin
+                                (let put-c ((u 0))
+                                  (if (< u rf)
+                                      (begin (integer-matrix-set! D (+ row0 t) (+ col0 u)
+                                                                  (+ (integer-matrix-ref D (+ row0 t) (+ col0 u)) (* sign (integer-matrix-ref M t u))))
+                                             (put-c (+ u 1)))))
+                                (put-r (+ t 1))))))
+                      (loop (cdr ds) (cdr dofs)))))
+              D))))
+    (list (map (lambda (k) (fold-left + 0 (map rk (chains k)))) (co-range (+ kmax 1)))
+          (map D-of (co-range (+ kmax 1))))))
+;; ((k betti torsion) ...) for k = 0 .. kmax
+(define (poset-module-cohomology F kmax . allowed)
+  (let ((cx (apply poset-module-cochain-complex F kmax allowed)))
+    (sheaf-module-cochain-cohomology (poset-module-ring F) (car cx) (cadr cx))))
+(define (poset-module-cohomology-generators F k)
+  (cohomology-generators (poset-module-cochain-complex F (+ k 1)) k))
+(define (finite-space-euler-characteristic X kmax)
+  (let loop ((k 0) (s 0))
+    (if (> k kmax) s
+        (loop (+ k 1) (+ s (* (if (even? k) 1 -1) (length (finite-space-chains X k (co-range (finite-space-size X))))))))))
+
+;; sections over a down-set D: a basis of vectors over (+)_{x in D} F(x)
+(define (poset-module-sections F D)
+  (if (null? D) '()
+      (let* ((X (poset-module-space F)) (rks (map (lambda (x) (poset-module-rank F x)) D)) (offs (co-offsets rks))
+             (total (fold-left + 0 rks)) (off (lambda (x) (list-ref offs (co-position x D))))
+             (blocks '()))
+        (for-each
+         (lambda (x)
+           (for-each
+            (lambda (y)
+              (if (and (finite-space-lt? X y x) (> (poset-module-rank F y) 0))
+                  (let* ((ry (poset-module-rank F y)) (M (poset-module-map F x y)) (row (integer-matrix ry total)))
+                    (let fill ((r 0))
+                      (if (< r ry)
+                          (begin
+                            (integer-matrix-set! row r (+ (off y) r) 1)
+                            (let fc ((c 0))
+                              (if (< c (poset-module-rank F x))
+                                  (begin (integer-matrix-set! row r (+ (off x) c) (- (integer-matrix-ref row r (+ (off x) c)) (integer-matrix-ref M r c)))
+                                         (fc (+ c 1)))))
+                            (fill (+ r 1)))))
+                    (set! blocks (cons row blocks)))))
+            D))
+         D)
+        (sheaf-module-kernel (poset-module-ring F) (integer-matrix-vstack (reverse blocks)) total))))
+;; restriction of a section over D to a down-set E inside D
+(define (poset-module-restrict-section F D E s)
+  (let* ((rks (map (lambda (x) (poset-module-rank F x)) D)) (offs (co-offsets rks))
+         (out (make-vector (fold-left + 0 (map (lambda (x) (poset-module-rank F x)) E)) 0)))
+    (let loop ((es E) (o 0))
+      (if (null? es) out
+          (let* ((x (car es)) (r (poset-module-rank F x)) (src (list-ref offs (co-position x D))))
+            (let copy ((t 0)) (if (< t r) (begin (vector-set! out (+ o t) (vector-ref s (+ src t))) (copy (+ t 1)))))
+            (loop (cdr es) (+ o r)))))))
+(define (co-total F D) (fold-left + 0 (map (lambda (x) (poset-module-rank F x)) D)))
+;; the matrix of Gamma(U) -> Gamma(V) in the section bases
+(define (co-section-restriction F U V BU BV)
+  (let ((M (integer-matrix (length BV) (length BU))) (ring (poset-module-ring F)))
+    (if (or (null? BU) (null? BV)) M
+        (let ((BVM (integer-matrix-from-columns BV (co-total F V))))
+          (let loop ((bs BU) (col 0))
+            (if (null? bs) M
+                (let ((y (sheaf-module-solve ring BVM (length BV) (poset-module-restrict-section F U V (car bs)))))
+                  (if (not y) (error "poset module: restricted section is not a section" (list U V)))
+                  (let put ((t 0)) (if (< t (length BV)) (begin (integer-matrix-set! M t col (vector-ref y t)) (put (+ t 1)))))
+                  (loop (cdr bs) (+ col 1)))))))))
+;; Cech complex of a cover by down-sets (lists of points)
+(define (poset-module-cech-complex F cover kmax)
+  (let* ((cache (make-hash-table))
+         (sections (lambda (U) (let ((h (hash-table-ref/default cache U #f)))
+                                 (or h (let ((b (poset-module-sections F U))) (hash-table-set! cache U b) b))))))
+    (cech-complex-from-nerve (length cover) kmax
+                             (lambda (J) (sheaf-intersect-all (map (lambda (i) (list-ref cover i)) J)))
+                             (lambda (U) (length (sections U)))
+                             (lambda (U V) (co-section-restriction F U V (sections U) (sections V))))))
+(define (poset-module-cech-cohomology F cover kmax)
+  (let ((cx (poset-module-cech-complex F cover kmax)))
+    (sheaf-module-cochain-cohomology (poset-module-ring F) (car cx) (cadr cx))))
+;; the module presheaf U |-> Gamma(U) on the site of opens of the space
+(define (poset-module->module-presheaf site F)
+  (let* ((C (site-category site)) (n (category-object-count C))
+         (B (list->vector (map (lambda (c) (poset-module-sections F (category-object-label C c))) (co-range n)))))
+    (make-module-presheaf C (poset-module-ring F)
+                          (lambda (c) (length (vector-ref B c)))
+                          (lambda (a)
+                            (let ((d (arrow-source C a)) (c (arrow-target C a)))
+                              (co-section-restriction F (category-object-label C c) (category-object-label C d)
+                                                      (vector-ref B c) (vector-ref B d)))))))

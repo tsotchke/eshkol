@@ -1,0 +1,33 @@
+;;; Truncations (ADR-0043): propositional truncation ||A|| and set
+;;; truncation ||A||_0 as higher inductive types, with their eliminators.
+;;; Import with (hott (import truncation)).
+
+(hott
+  (import numbers)
+
+  ;; h-levels by recursion on the naturals: 0 is contractible
+  (define (isOfHLevel (l : Level)) : (-> Nat (U l) (U l))
+    (split (zero (lambda (A) (isContr l A)))
+           ((suc n) (lambda (A) (Pi ((x y : A)) (isOfHLevel l n (Path A x y)))))))
+
+  (data (Trunc (l : Level) (A : (U l))) : (U l)
+    (inc (a : A))
+    (squash (x y : (Trunc l A)) (dims i) (boundary ((= i 0) x) ((= i 1) y))))
+
+  (define (isProp-Trunc (l : Level) (A : (U l))) : (isProp l (Trunc l A))
+    (lambda (x y) (lambda (i) (squash x y i))))
+
+  ;; the universal property: maps into a proposition factor through ||A||
+  (define (Trunc-rec (l k : Level) (A : (U l)) (P : (U k)) (h : (isProp k P)) (f : (-> A P)))
+      : (-> (Trunc l A) P)
+    (split ((inc a) (f a))
+           ((squash x y i) ((h (Trunc-rec l k A P h f x) (Trunc-rec l k A P h f y)) i))))
+
+  (data (SetTrunc (l : Level) (A : (U l))) : (U l)
+    (sinc (a : A))
+    (squash0 (x y : (SetTrunc l A)) (p q : (Path (SetTrunc l A) x y))
+             (dims i j)
+             (boundary ((= i 0) (p j)) ((= i 1) (q j)) ((= j 0) x) ((= j 1) y))))
+
+  (define (isSet-SetTrunc (l : Level) (A : (U l))) : (isSet l (SetTrunc l A))
+    (lambda (x y p q) (lambda (i) (lambda (j) (squash0 x y p q i j))))))

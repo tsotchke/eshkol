@@ -1,0 +1,110 @@
+;;; core.reasoning.kg: index consistency under updates, pattern matching on
+;;; every index, and query answers cross-checked against a nested-loop scan.
+(require stdlib)
+(require core.reasoning.kg)
+
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define (same-set? a b) (and (= (length a) (length b)) (let all ((xs a)) (or (null? xs) (and (member (car xs) b) (all (cdr xs)))))))
+
+(define g (make-triple-store))
+(kg-load! g '((alice knows bob) (alice knows carol) (bob knows carol) (carol knows dave)
+              (alice age 31) (bob age 34) (carol age 27) (dave age 45)
+              (alice city paris) (bob city berlin) (carol city paris)
+              (bob email "bob@example.org") (paris in france) (berlin in germany)))
+(check "size" (= (kg-size g) 14))
+(check "duplicate add is refused" (not (kg-add! g 'alice 'knows 'bob)))
+(check "contains" (and (kg-contains? g 'bob 'age 34) (not (kg-contains? g 'bob 'age 35))))
+(check "match s p ?" (same-set? (kg-match g 'alice 'knows '?o) '((alice knows bob) (alice knows carol))))
+(check "match ? p o (POS)" (same-set? (kg-match g '?s 'city 'paris) '((alice city paris) (carol city paris))))
+(check "match s ? o (OSP)" (equal? (kg-match g 'alice '?p 'paris) '((alice city paris))))
+(check "match s ? ? (SPO)" (= (length (kg-match g 'bob '?p '?o)) 4))
+(check "match ? p ? (POS)" (= (length (kg-match g '?s 'age '?o)) 4))
+(check "match ? ? o (OSP)" (same-set? (kg-match g '?s '?p 'carol) '((alice knows carol) (bob knows carol))))
+(check "match all" (= (length (kg-match g '?s '?p '?o)) 14))
+(check "counts from indexes" (and (= (kg-count g '?s 'knows '?o) 4) (= (kg-count g 'alice '?p '?o) 4)
+                                  (= (kg-count g '?s '?p 'paris) 2)))
+(check "indexes consistent" (kg-index-consistent? g))
+
+;; ---- basic graph patterns
+(define sols (kg-query g '((?x knows ?y) (?y city paris))))
+(check "BGP join" (same-set? (map (lambda (s) (list (walk '?x s) (walk '?y s))) sols) '((alice carol) (bob carol))))
+(check "BGP solutions are substitutions" (substitution? (car sols)))
+(check "select with filter"
+       (equal? (kg-select g '(select (?x ?a) (where (?x knows ?y) (?y age ?a) (filter (> ?a 30))) (order-by ?x)))
+               '((alice 34) (carol 45))))
+(check "select distinct and order"
+       (equal? (kg-select g '(select (?c) (where (?p city ?c)) (distinct) (order-by ?c))) '((berlin) (paris))))
+(check "count" (= (kg-select g '(select (count) (where (?x knows ?y)))) 4))
+(check "limit/offset" (equal? (kg-select g '(select (?p) (where (?p age ?a)) (order-by (desc ?a)) (offset 1) (limit 2)))
+                              '((bob) (alice))))
+(check "optional"
+       (equal? (kg-select g '(select (?p ?e) (where (?p age ?a) (optional (?p email ?e))) (order-by ?p)))
+               '((alice #f) (bob "bob@example.org") (carol #f) (dave #f))))
+(check "bound filter after optional"
+       (equal? (kg-select g '(select (?p) (where (?p age ?a) (optional (?p email ?e)) (filter (not (bound ?e)))) (order-by ?p)))
+               '((alice) (carol) (dave))))
+(check "union"
+       (same-set? (kg-select g '(select (?x) (where (union ((?x city berlin)) ((?x age 27))))))
+                  '((bob) (carol))))
+(check "path of length three"
+       (equal? (kg-select g '(select (?a ?d) (where (?a knows ?b) (?b knows ?c) (?c knows ?d)) (order-by ?a)))
+               '((alice dave))))
+(check "string filter" (equal? (kg-select g '(select (?p) (where (?p email ?e) (filter (contains ?e "example")))))
+                               '((bob))))
+(check "select * returns every variable"
+       (equal? (kg-select g '(select * (where (?p city ?c) (?c in germany)))) '((bob berlin))))
+(check "malformed pattern refused" (raises? (lambda () (kg-query g '((?x knows))))))
+
+;; ---- removal keeps the indexes consistent
+(kg-remove! g 'bob 'knows 'carol)
+(kg-remove! g 'carol 'knows 'dave)
+(check "remove" (and (= (kg-size g) 12) (not (kg-contains? g 'bob 'knows 'carol)) (kg-index-consistent? g)))
+(check "query after removal" (null? (kg-query g '((?a knows ?b) (?b knows ?c)))))
+
+;; ---- random graph: queries agree with a nested-loop scan over all triples
+(define seed 99)
+(define (rand! k) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) k))
+(define rg (make-triple-store))
+(define ents '(e0 e1 e2 e3 e4 e5 e6 e7 e8 e9))
+(define rels '(r0 r1 r2))
+(let fill ((i 0))
+  (if (< i 120)
+      (begin (kg-add! rg (list-ref ents (rand! 10)) (list-ref rels (rand! 3)) (list-ref ents (rand! 10)))
+             (if (= (rand! 4) 0) (kg-remove! rg (list-ref ents (rand! 10)) (list-ref rels (rand! 3)) (list-ref ents (rand! 10))))
+             (fill (+ i 1)))))
+(check "random store indexes consistent" (kg-index-consistent? rg))
+(define all-triples (kg-triples rg))
+(define (scan patterns)
+  (let join ((ps patterns) (sols (list (make-substitution))))
+    (if (null? ps) sols
+        (join (cdr ps)
+              (apply append (map (lambda (s)
+                                   (let loop ((ts all-triples) (out '()))
+                                     (if (null? ts) out
+                                         (let ((s2 (unify (car ps) (car ts) s))) (loop (cdr ts) (if s2 (cons s2 out) out))))))
+                                 sols))))))
+(define (rows vars sols) (map (lambda (s) (map (lambda (v) (walk v s)) vars)) sols))
+(define queries
+  '(((?a r0 ?b) (?b r1 ?c))
+    ((?a r0 ?b) (?b r0 ?a))
+    ((?a r2 ?a))
+    ((?a r1 e3) (?a r2 ?b) (?b r0 ?c))
+    ((?a ?p ?b) (?b ?p ?c) (?c ?p ?a))
+    ((e1 ?p ?x) (?x ?q e2))))
+(check "six queries agree with the nested-loop scan"
+       (let all ((qs queries))
+         (or (null? qs)
+             (let* ((q (car qs)) (vars (let collect ((ps q) (out '()))
+                                         (if (null? ps) (reverse out)
+                                             (collect (cdr ps) (fold-left (lambda (acc x) (if (and (logic-var? x) (not (member x acc))) (cons x acc) acc)) out (car ps)))))))
+               (and (same-set? (rows vars (kg-query rg q)) (rows vars (scan q))) (all (cdr qs)))))))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: reasoning_kg_test") (newline)
+(display "RESULT: PASS") (newline)

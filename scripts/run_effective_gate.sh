@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+#
+# core.effective acceptance gate (ADR-0038, v1.4.0-connection).
+#
+# Runs, from an existing CMake build:
+#   1. the CTest entries that own the behaviour, in native JIT and AOT:
+#        effective_jit / effective_aot (tests/stdlib/effective_test.esk),
+#        effective_homotopy_jit / effective_homotopy_aot
+#        (tests/stdlib/effective_homotopy_test.esk);
+#   2. the long-run checks, run directly (not as CTest entries) and outside
+#      the default CTest suite because of their memory:
+#      tests/stdlib/effective_hypercover_test.esk (effective_hypercover_jit
+#      and effective_hypercover_aot, about 30 GB), tests/stdlib/effective_pi6_s3_test.esk
+#      (pi_6(S^3) = Z/12, about 3 minutes and 33 GB on Linux x64) and
+#      tests/stdlib/effective_hypercover_3type_test.esk (the 3-type on the
+#      product hypercover, about 3 minutes and 29 GB);
+#   3. every fenced example on docs/reference/stdlib/effective.md through the documentation example
+#      harness, on the JIT and as AOT binaries, comparing each `;; =>`
+#      annotation with what the build printed.
+#
+# It writes one event to $TRACE_DIR/v14_effective_homology.jsonl:
+#   {"kind": "v1_4_connection", "name": "v14_effective_homology", "value": PASS|FAIL}
+# PASS only when both default CTest entries, both effective_hypercover
+# long-run runs and both other long-run checks ran and passed and every
+# documentation example matched. Absence of a test is a FAIL, never a skip.
+#
+#   BUILD_DIR  (env, default "build")   the CMake build directory
+#   TRACE_DIR  (env, default scripts/icc_traces)
+#   JOBS       (env, default 2)          parallel CTest jobs
+
+set -u
+set -o pipefail
+export LC_ALL=C LC_CTYPE=C LANG=C
+cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
+
+BUILD_DIR="${BUILD_DIR:-build}"
+case "$BUILD_DIR" in
+    /*) BUILD_DIR_PATH="$BUILD_DIR" ;;
+    *)  BUILD_DIR_PATH="$REPO_ROOT/$BUILD_DIR" ;;
+esac
+if [ ! -x "$BUILD_DIR_PATH/eshkol-run" ]; then
+    echo "run_effective_gate.sh: $BUILD_DIR_PATH/eshkol-run not found; build first" >&2
+    exit 2
+fi
+BUILD_DIR_PATH="$(cd "$BUILD_DIR_PATH" && pwd -P)" || exit 2
+
+TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
+mkdir -p "$TRACE_DIR"
+TRACE_FILE="$TRACE_DIR/v14_effective_homology.jsonl"
+
+WORK="$BUILD_DIR_PATH/test-work/effective-gate"
+mkdir -p "$WORK"
+export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
+
+TESTS='^(effective|effective_homotopy)_(jit|aot)$'
+EXPECTED=4
+
+emit_event() { # PASS|FAIL snippet
+    python3 - "$TRACE_FILE" "$1" "$2" <<'PY'
+import json, os, sys
+path, value, snippet = sys.argv[1], sys.argv[2], sys.argv[3]
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"kind": "v1_4_connection", "name": "v14_effective_homology", "value": value,
+                        "snippet": snippet[:2000], "confidence": 0.95}, ensure_ascii=False) + "\n")
+os.replace(tmp, path)
+PY
+}
+
+status=0
+summary=""
+
+ctest_log="$WORK/ctest.log"
+(cd "$BUILD_DIR_PATH" && ctest -R "$TESTS" --output-on-failure -j "${JOBS:-2}") > "$ctest_log" 2>&1
+ctest_status=$?
+ran=$(grep -cE '^ *[0-9]+/[0-9]+ Test +#[0-9]+: ' "$ctest_log" || true)
+passed=$(grep -cE '^ *[0-9]+/[0-9]+ Test +#[0-9]+: .* Passed' "$ctest_log" || true)
+summary="ctest ${passed}/${EXPECTED} passed (ran ${ran}, exit ${ctest_status})"
+if [ "$ctest_status" -ne 0 ] || [ "$ran" -ne "$EXPECTED" ] || [ "$passed" -ne "$EXPECTED" ]; then
+    status=1
+fi
+
+# effective_hypercover_test: about 30 GB, so it is a long-run check run
+# directly in both JIT and AOT, never a CTest entry.
+hc_jit_log="$WORK/effective_hypercover_jit.log"
+ESHKOL_JIT_CACHE=0 "$BUILD_DIR_PATH/eshkol-run" -r "$REPO_ROOT/tests/stdlib/effective_hypercover_test.esk" > "$hc_jit_log" 2>&1
+hc_jit_status=$?
+if [ "$hc_jit_status" -eq 0 ] && grep -q "^PASS: effective_hypercover_test" "$hc_jit_log" && ! grep -qE "^FAIL:|Unhandled exception" "$hc_jit_log"; then
+    summary="$summary; effective_hypercover_jit PASS"
+else
+    summary="$summary; effective_hypercover_jit FAIL (exit $hc_jit_status)"
+    status=1
+fi
+
+hc_aot_bin="$WORK/effective_hypercover_aot"
+hc_aot_compile_log="$WORK/effective_hypercover_aot_compile.log"
+hc_aot_log="$WORK/effective_hypercover_aot.log"
+"$BUILD_DIR_PATH/eshkol-run" -O 1 -o "$hc_aot_bin" "$REPO_ROOT/tests/stdlib/effective_hypercover_test.esk" "-L$BUILD_DIR_PATH" > "$hc_aot_compile_log" 2>&1
+hc_aot_compile_status=$?
+if [ "$hc_aot_compile_status" -eq 0 ] && [ -x "$hc_aot_bin" ] && ! grep -qE "FAIL:|RESULT: FAIL|LLVM module verification failed" "$hc_aot_compile_log"; then
+    ESHKOL_PATH="$REPO_ROOT/lib" "$hc_aot_bin" > "$hc_aot_log" 2>&1
+    hc_aot_status=$?
+else
+    hc_aot_status=1
+    cat "$hc_aot_compile_log" > "$hc_aot_log"
+fi
+if [ "$hc_aot_status" -eq 0 ] && grep -q "^PASS: effective_hypercover_test" "$hc_aot_log" && ! grep -qE "^FAIL:|Unhandled exception" "$hc_aot_log"; then
+    summary="$summary; effective_hypercover_aot PASS"
+else
+    summary="$summary; effective_hypercover_aot FAIL (exit $hc_aot_status)"
+    status=1
+fi
+
+for long in effective_pi6_s3_test effective_hypercover_3type_test; do
+    long_log="$WORK/$long.log"
+    ESHKOL_JIT_CACHE=0 "$BUILD_DIR_PATH/eshkol-run" -r "$REPO_ROOT/tests/stdlib/$long.esk" > "$long_log" 2>&1
+    long_status=$?
+    if [ "$long_status" -eq 0 ] && grep -q "^PASS: $long" "$long_log" && ! grep -qE "^FAIL:|Unhandled exception" "$long_log"; then
+        summary="$summary; $long PASS"
+    else
+        summary="$summary; $long FAIL (exit $long_status)"
+        status=1
+    fi
+done
+
+PAGES="docs/reference/stdlib/effective.md"
+doc_log="$WORK/doc-examples.log"
+python3 "$REPO_ROOT/scripts/doc_audit/check_doc_examples.py" \
+    --eshkol-run "$BUILD_DIR_PATH/eshkol-run" \
+    --engines jit,aot \
+    --scope reference \
+    --only "$PAGES" \
+    --timeout 1500 \
+    --work-dir "$WORK/doc-examples" \
+    --no-trace > "$doc_log" 2>&1
+doc_status=$?
+# The harness reports "examples=N executed=E passed=P failed=F" for the whole
+# `reference` scope while executing only this page; the count that matters is
+# how many examples THIS page holds, counted independently
+# (as run_ring_gate.sh does). An example that was not executed is not
+# evidence, so all of them must run and pass.
+doc_counts=$(grep -oE 'examples=[0-9]+ executed=[0-9]+ passed=[0-9]+' "$doc_log" | tail -n 1)
+doc_examples=$(python3 - "$REPO_ROOT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/scripts/doc_audit")
+import extract_examples
+records = extract_examples.extract(sys.argv[1], ["docs/reference/stdlib/effective.md"])
+print(sum(1 for r in records if r.get("klass") != "data-file"))
+PY
+)
+doc_executed=$(printf '%s' "$doc_counts" | sed -E 's/.*executed=([0-9]+).*/\1/')
+doc_passed=$(printf '%s' "$doc_counts" | sed -E 's/.*passed=([0-9]+).*/\1/')
+summary="$summary; documentation examples on effective.md ${doc_examples:-?}, harness ${doc_counts:-none reported} (exit ${doc_status})"
+if [ "$doc_status" -ne 0 ] || [ -z "$doc_counts" ] || [ "${doc_examples:-0}" -eq 0 ] \
+   || [ "$doc_executed" -ne "$doc_examples" ] || [ "$doc_passed" -ne "$doc_examples" ]; then
+    status=1
+fi
+
+if [ "$status" -eq 0 ]; then
+    emit_event PASS "$summary"
+    echo "core.effective gate: PASS ($summary)"
+else
+    emit_event FAIL "$summary"
+    echo "core.effective gate: FAIL ($summary)"
+    tail -n 40 "$ctest_log"
+    tail -n 40 "$doc_log"
+fi
+exit "$status"

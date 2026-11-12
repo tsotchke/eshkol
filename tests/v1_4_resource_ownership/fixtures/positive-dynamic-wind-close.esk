@@ -1,0 +1,7 @@
+;; dynamic-wind's after thunk closes the port on normal exit and on every
+;; exception or continuation escape from the body.
+(define in (open-input-file "strict-wind.txt"))
+(dynamic-wind
+  (lambda () #f)
+  (lambda () (display (read-line in)))
+  (lambda () (close-port in)))

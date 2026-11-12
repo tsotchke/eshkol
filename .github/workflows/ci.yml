@@ -675,6 +675,7 @@ jobs:
           python3 scripts/check_build_fingerprint.py --self-test
           python3 scripts/lib/ad_numerics_gate.py --self-test
           python3 scripts/lib/ad_numerics_gate.py --profile p6 --self-test
+          python3 scripts/lib/ad_numerics_gate.py --profile nested --self-test
           python3 scripts/doc_audit/check_results_schema.py --self-test
           python3 scripts/doc_audit/test_harness.py
           python3 scripts/doc_audit/check_doc_examples.py --self-test
@@ -1494,6 +1495,9 @@ jobs:
               vqe_ad_adversarial.esk)
                 grep -q 'vqe_ad_adversarial: PASS' <<<"$output"
                 ;;
+              zx_moonlab_crosscheck_test.esk)
+                grep -q 'zx_moonlab_crosscheck_test: PASS' <<<"$output"
+                ;;
               *)
                 echo "Unhandled quantum test: $test" >&2
                 exit 1
@@ -2095,7 +2099,6 @@ jobs:
             libreadline-dev pkg-config \
             libssl-dev libncurses-dev \
             libpcre2-dev libsqlite3-dev \
-            libpng-dev libjpeg-dev libwebp-dev \
             git python3 python3-clang-${LLVM_MAJOR}
           if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
             scripts/ci_retry.sh --attempts 3 --base-delay 15 -- \
@@ -2204,6 +2207,59 @@ jobs:
           # those needed 15.92 GiB and could not be built here at any
           # parallelism at all — see the ASan block in CMakeLists.txt.)
           cmake --build "${{ matrix.build_dir }}" --parallel ${BUILD_JOBS}
+
+      - name: Required signed-curvature, bridge and VM cache qualification
+        if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite' || matrix.name == 'linux-x64-xla')
+        timeout-minutes: 35
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          ESHKOL_JIT_CACHE: '0'
+          ESHKOL_VM_NO_DISASM: '1'
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}-signed-curvature.log"
+          manifest="$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}-signed-curvature-inventory.json"
+          mkdir -p "$RUNNER_TEMP/eshkol-test-logs"
+          cmake --build "$BUILD_DIR" --parallel 2 --target \
+            eshkol-run eshkol-vm-standalone-test eshkol-vm-prelude-cache-gen \
+            signed_curvature_reference_grid_test squared_distance_gradcheck_test \
+            qllm_bridge_geometric_gradcheck_test qllm_bridge_geometric_scaled_gradcheck_test \
+            qllm_bridge_producer_gradcheck_test riemannian_core_adversarial_regression_test \
+            frechet_mean_backward_gradcheck_test 2>&1 | tee -a "$log"
+          tests='^(signed_curvature_reference_grid|squared_distance_gradcheck|qllm_bridge_geometric_gradcheck|qllm_bridge_geometric_scaled_gradcheck|qllm_bridge_producer_gradcheck|riemannian_core_adversarial_regression|frechet_mean_backward_gradcheck|signed_curvature_jit|signed_curvature_aot|vm_prelude_cache_is_current)$'
+          ctest --test-dir "$BUILD_DIR" --show-only=json-v1 -R "$tests" > "$manifest"
+          python3 - "$manifest" <<'PY' 2>&1 | tee -a "$log"
+          import json, sys
+          expected = {
+              "signed_curvature_reference_grid", "squared_distance_gradcheck",
+              "qllm_bridge_geometric_gradcheck", "qllm_bridge_geometric_scaled_gradcheck",
+              "qllm_bridge_producer_gradcheck", "riemannian_core_adversarial_regression",
+              "frechet_mean_backward_gradcheck", "signed_curvature_jit",
+              "signed_curvature_aot", "vm_prelude_cache_is_current",
+          }
+          actual = [t["name"] for t in json.load(open(sys.argv[1], encoding="utf-8"))["tests"]]
+          if len(actual) != len(expected) or set(actual) != expected:
+              raise SystemExit(f"Signed-curvature inventory mismatch: {actual}")
+          print(f"PASS: exact signed-curvature CTest inventory ({len(expected)} tests)")
+          PY
+          ctest --test-dir "$BUILD_DIR" -V --no-tests=error --timeout 900 -R "$tests" \
+            2>&1 | tee -a "$log"
+          grep -q 'GRID binary128 ' "$log"
+          . scripts/lib/harness_outcome.sh
+          work="$RUNNER_TEMP/eshkol-signed-curvature-vm-${{ matrix.name }}"
+          mkdir -p "$work"
+          python3 tests/toolchain/test_curvature_vm_output.py
+          for fixture in signed_curvature_surface geometric_riemannian_surface_regression \
+            geometric_adversarial_surface_regression frechet_mean_surface_regression \
+            riemannian_adam_state_regression; do
+            eshkol_outcome_guarded 180 "$BUILD_DIR/eshkol-run" --profile hosted-vm \
+              --emit-eskb "$work/$fixture.eskb" "tests/vm/$fixture.esk" \
+              2>&1 | tee -a "$log"
+            eshkol_outcome_guarded 180 "$BUILD_DIR/eshkol-vm-standalone-test" \
+              "$work/$fixture.eskb" 2>&1 | tee "$work/$fixture.stdout" | tee -a "$log"
+            python3 scripts/check_curvature_vm_output.py "$fixture" "$work/$fixture.stdout"
+          done
 
       - name: Public compiler APIs link and execute
         if: env.LANE_ACTIVE == 'true' && (matrix.name == 'linux-x64-lite')
@@ -3067,7 +3123,7 @@ jobs:
             cmake ninja-build \
             llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
             libreadline-dev pkg-config libssl-dev libncurses-dev \
-            libpcre2-dev libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev \
+            libpcre2-dev libsqlite3-dev \
             git python3
           sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
 

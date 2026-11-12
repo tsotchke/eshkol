@@ -1,0 +1,4 @@
+;; A closure that captures a handle constructor is passed to map, which
+;; collects its results; the ports it opens are never owned by anyone.
+(define opener (lambda (path) (open-input-file path)))
+(define ports (map opener (list "strict-a.txt" "strict-b.txt")))

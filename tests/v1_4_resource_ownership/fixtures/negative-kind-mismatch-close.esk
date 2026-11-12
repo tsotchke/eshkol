@@ -1,0 +1,3 @@
+;; close-input-port expects an input port; this is an output port.
+(define out (open-output-file "strict-kind.txt"))
+(close-input-port out)

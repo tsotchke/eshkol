@@ -1369,6 +1369,23 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         eshkol_ad_point_is_scalar: p => numeric(p) || [3, 4, 6].includes(baseType(p)) ? 1 : 0,
         eshkol_ad_point_is_exact_scalar: p => baseType(p) === 8 && numeric(p) ? 1 : 0,
         eshkol_ad_point_is_exact_number: p => numeric(p) && baseType(p) !== 2 ? 1 : 0,
+        // stop-gradient (ADR-0049): the primal of a forward jet (tag 6) or of
+        // a reverse-mode node (tag 9, subtype 2; exact payload kept exact);
+        // every other value is copied through unchanged.
+        eshkol_stop_gradient_tagged: (p, out) => {
+            if (!out) return;
+            const t = baseType(p);
+            if (t === 6) return output(out, () => ({ double: view().getFloat64(span(pointer(p), 8, 8), true) }));
+            if (t === 9 && pointer(p) && subtype(pointer(p)) === 2) {
+                const node = pointer(p);
+                span(node, 144, 8);
+                const ex = view().getUint32(node + 136, true);
+                if (ex && numeric(ex)) return output(out, () => read(ex));
+                return output(out, () => ({ double: view().getFloat64(node + 8, true) }));
+            }
+            span(p, 16, 8); span(out, 16, 8);
+            new Uint8Array(mem().buffer).copyWithin(Number(out), Number(p), Number(p) + 16);
+        },
     };
     for (const [name, op] of [['floor', 0], ['ceil', 1], ['truncate', 2], ['round', 3]]) {
         imports[`eshkol_rational_${name}`] = p => {

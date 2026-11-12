@@ -43,6 +43,21 @@ void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn) {
     (void)fn;
 }
 
+/* The HoTT-form hook, accepted and discarded for the same reason. */
+void eshkol_vm_install_hott_form(EshkolHottFormFn fn) {
+    (void)fn;
+}
+
+/* The dependent-type and refinement check hooks, accepted and discarded for
+ * the same reason. */
+void eshkol_vm_install_dependent_check(EshkolSourceCheckFn fn) {
+    (void)fn;
+}
+
+void eshkol_vm_install_refinement_check(EshkolSourceCheckFn fn) {
+    (void)fn;
+}
+
 int eshkol_emit_eskb(const char* source, const char* output_path) {
     (void)source;
     (void)output_path;

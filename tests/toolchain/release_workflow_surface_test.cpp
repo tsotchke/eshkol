@@ -372,7 +372,7 @@ int main(int argc, char** argv) {
                          "Unix archives stage pinned third-party licenses") &&
          expect_contains(workflow,
                          "python3 scripts/stage_linux_runtime_dependencies.py",
-                         "Linux archives stage their relocatable image-codec closure") &&
+                         "Linux archives stage their relocatable runtime-dependency directory") &&
          expect_contains(workflow,
                          "brew install llvm@${LLVM_MAJOR} openssl@3",
                          "macOS release installs the declared OpenSSL TLS provider") &&

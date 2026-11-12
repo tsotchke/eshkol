@@ -1,0 +1,333 @@
+;;; core.quantum.register -- quantum regions and registers at run time: the
+;;; procedures whose types the checker knows as the core.quantum primitives
+;;; (ADR-0048). A region owns one simulator state and the circuit applied to
+;;; it; registers are linear handles on wires of that state; gates record
+;;; circuit gates; a measurement compiles the pending gates (core.quantum.
+;;; optimize, and core.quantum.route when the region names a coupling graph)
+;;; and runs them on the region's backend.
+;;;
+;;; Usage: (require core.quantum)
+;;;
+;;;   (define-quantum-region qr (bell-pair)
+;;;     (let* ((r (qalloc qr 2))
+;;;            (r (qh r 0))
+;;;            (r (qcnot r 0 1)))
+;;;       (qmeasure r)))                  ; => (0 0) or (1 1)
+;;;
+;;; Static guarantees come from the checker (qreg<n> dimensions, qidx ranges,
+;;; no-cloning, no-discard, region scoping). The run-time checks below are the
+;;; same rules for values that reach this code untyped: a register record is
+;;; consumed by every operation, and a region closes only when no register of
+;;; it is live.
+;;;
+;;; Representation (public):
+;;;   region    #(qregion open? width backend state pending live -
+;;;                       options executed measured)
+;;;   register  #(qreg region wires live?)  wires: region wire numbers, in
+;;;             register order (register qubit i is wire (list-ref wires i))
+;;;   backend   #(qbackend name init extend apply measure close)
+;;;   options   alist: (backend . <qbackend>) (optimize . #t) (coupling . cg)
+;;;             (seed . k)
+;;;
+;;; Sources: ADR-0004 ("Quantum types are a specialization"); ADR-0048.
+
+(require stdlib)
+(require core.quantum.circuit)
+(require core.quantum.optimize)
+(require core.quantum.route)
+
+(provide call-with-quantum-region quantum-region-options set-quantum-region-options!
+         qregion? qregion-open? qregion-width qregion-executed-circuit qregion-gate-log
+         qreg? qreg-width qreg-wires qreg-live?
+         qalloc qh qx qy qz qs qsdg qt qtdg qp qrx qry qrz qcnot qcz qswap qrzz qccx qccz
+         qapply-circuit qmeasure qmeasure-bit qrelease qsplit qjoin qreg->qubit qubit->qreg
+         qbackend qbackend? qbackend-name statevector-backend quantum-region-state)
+
+;; ---------------------------------------------------------------------------
+;; Backends
+;; ---------------------------------------------------------------------------
+
+(define (qbackend name init extend apply measure close)
+  (vector 'qbackend name init extend apply measure close))
+(define (qbackend? b) (and (vector? b) (= 7 (vector-length b)) (eq? (vector-ref b 0) 'qbackend)))
+(define (qbackend-name b) (vector-ref b 1))
+
+;; The binary64 state vector of core.quantum.circuit. State: a box (vector)
+;; holding the amplitude vector.
+(define (sv-init) (vector (qstate-zero 0)))
+(define (sv-extend st old-width k)
+  ;; |psi> (x) |0..0>: new wires are appended after the old ones
+  (let* ((old (vector-ref st 0)) (scale (expt 2 k))
+         (new (make-vector (* (vector-length old) scale) (make-rectangular 0.0 0.0))))
+    (do ((x 0 (+ x 1))) ((= x (vector-length old)))
+      (vector-set! new (* x scale) (vector-ref old x)))
+    (vector-set! st 0 new)
+    st))
+(define (sv-apply st width gates)
+  (vector-set! st 0 (qstate-run width gates (vector-ref st 0)))
+  st)
+;; measure wires (a list) with the uniform draw u-fn; collapse; bits in order
+(define (sv-measure st width wires u-fn)
+  (let loop ((ws wires) (bits '()))
+    (if (null? ws) (reverse bits)
+        (let* ((psi (vector-ref st 0)) (w (car ws))
+               (p1 (let acc ((x 0) (s 0.0))
+                     (if (= x (vector-length psi)) s
+                         (acc (+ x 1) (if (= 1 (qstate-bit width x w))
+                                          (+ s (let ((a (vector-ref psi x))) (+ (* (real-part a) (real-part a)) (* (imag-part a) (imag-part a)))))
+                                          s)))))
+               (b (if (< (u-fn) p1) 1 0))
+               (norm (sqrt (if (= b 1) p1 (- 1.0 p1))))
+               (out (make-vector (vector-length psi) (make-rectangular 0.0 0.0))))
+          (do ((x 0 (+ x 1))) ((= x (vector-length psi)))
+            (if (= b (qstate-bit width x w))
+                (vector-set! out x (/ (vector-ref psi x) norm))))
+          (vector-set! st 0 out)
+          (loop (cdr ws) (cons b bits))))))
+(define statevector-backend
+  (qbackend 'statevector sv-init sv-extend sv-apply sv-measure (lambda (st) #t)))
+
+;; ---------------------------------------------------------------------------
+;; Regions
+;; ---------------------------------------------------------------------------
+
+(define *quantum-region-options* '())
+;; one measurement stream for every region (Park-Miller minimal standard);
+;; (seed . k) in the options restarts it, so a seeded program is reproducible
+(define *quantum-seed* #f)
+(define (quantum-region-options) *quantum-region-options*)
+(define (set-quantum-region-options! opts)
+  (set! *quantum-region-options* opts)
+  (let ((p (assq 'seed opts))) (if p (set! *quantum-seed* (+ 1 (modulo (cdr p) 2147483646))))))
+(define (qr-option opts key default) (let ((p (assq key opts))) (if p (cdr p) default)))
+
+(define (make-qregion opts)
+  (let ((backend (qr-option opts 'backend statevector-backend)))
+    (vector 'qregion #t 0 backend ((vector-ref backend 2)) '() '() #f opts '() 0 #f)))
+(define (qregion? r) (and (vector? r) (= 12 (vector-length r)) (eq? (vector-ref r 0) 'qregion)))
+(define (qregion-open? r) (vector-ref r 1))
+(define (qregion-width r) (vector-ref r 2))
+(define (qr-backend r) (vector-ref r 3))
+(define (quantum-region-state r) (vector-ref r 4))
+;; every gate executed so far, in order, on region wires
+(define (qregion-gate-log r) (reverse (vector-ref r 9)))
+(define (qregion-executed-circuit r) (make-qcircuit (qregion-width r) (qregion-gate-log r)))
+
+(define (qr-uniform r)
+  (if (not *quantum-seed*)
+      (set! *quantum-seed* (+ 1 (exact (floor (* 2147483000 (quantum-random)))))))
+  (set! *quantum-seed* (modulo (* *quantum-seed* 48271) 2147483647))
+  (/ (exact->inexact *quantum-seed*) 2147483647.0))
+
+(define (qr-check-open r who)
+  (if (not (and (qregion? r) (qregion-open? r)))
+      (error (string-append "core.quantum: " who ": the quantum region is closed or is not a region"))))
+
+;; Region wire -> backend wire. Without a coupling graph this is the
+;; identity; with one, routing moves logical wires and the layout follows.
+(define (qr-physical r w) (let ((l (vector-ref r 11))) (if l (vector-ref l w) w)))
+
+;; compile the pending gates (optimise, route) and run them on the backend
+(define (qr-flush! r)
+  (let ((pending (reverse (vector-ref r 5))))
+    (if (pair? pending)
+        (let* ((w (qregion-width r))
+               (c (make-qcircuit w pending))
+               (opts (vector-ref r 8))
+               (c1 (if (qr-option opts 'optimize #t) (qopt-optimize c) c))
+               (cg (qr-option opts 'coupling #f))
+               (c2 (if cg
+                       (begin
+                         (if (not (= (coupling-size cg) w))
+                             (error "core.quantum: a region compiled for a coupling graph allocates exactly its qubits before the first measurement"
+                                    (coupling-size cg) w))
+                         (if (not (vector-ref r 11)) (vector-set! r 11 (list->vector (iota w))))
+                         (let ((routed (qroute c1 cg (list (cons 'layout (vector-copy (vector-ref r 11)))))))
+                           (vector-set! r 11 (qrouting-final-layout routed))
+                           (qrouting-circuit routed)))
+                       c1)))
+          (vector-set! r 5 '())
+          (vector-set! r 9 (append (reverse (qcircuit-gates c2)) (vector-ref r 9)))
+          (vector-set! r 4 ((vector-ref (qr-backend r) 4) (quantum-region-state r) w (qcircuit-gates c2)))))
+    r))
+
+(define (qr-close! r)
+  (if (qregion-open? r)
+      (begin ((vector-ref (qr-backend r) 6) (quantum-region-state r))
+             (vector-set! r 1 #f))))
+
+;; Run (body region) in a fresh quantum region. The region closes on every
+;; exit; on a normal exit every register allocated in it must have been
+;; measured or released.
+(define (%call-with-quantum-region body)
+  (let ((r (make-qregion (quantum-region-options))))
+    (dynamic-wind
+     (lambda () #f)
+     (lambda ()
+       (let* ((result (body r))
+              (live (filter qreg-live? (vector-ref r 6))))
+         (if (pair? live)
+             (error (string-append "core.quantum: the quantum region closes with "
+                                   (number->string (apply + (map qreg-width live)))
+                                   " live qubit(s); measure or release every register before it ends")))
+         result))
+     (lambda () (qr-close! r)))))
+
+;; ---------------------------------------------------------------------------
+;; Registers
+;; ---------------------------------------------------------------------------
+
+(define (make-qreg r wires)
+  (let ((reg (vector 'qreg r wires #t)))
+    (vector-set! r 6 (cons reg (vector-ref r 6)))
+    reg))
+(define (qreg? x) (and (vector? x) (= 4 (vector-length x)) (eq? (vector-ref x 0) 'qreg)))
+(define (qreg-region q) (vector-ref q 1))
+(define (qreg-wires q) (vector-ref q 2))
+(define (qreg-width q) (length (vector-ref q 2)))
+(define (qreg-live? q) (vector-ref q 3))
+
+;; take a register for an operation: it must be live, and it is consumed
+(define (qreg-take! q who)
+  (if (not (qreg? q)) (error (string-append "core.quantum: " who ": not a quantum register") q))
+  (qr-check-open (qreg-region q) who)
+  (if (not (qreg-live? q))
+      (error (string-append "core.quantum: " who ": the register was already consumed (a register is used once)")))
+  (vector-set! q 3 #f)
+  q)
+(define (qreg-wire q i who)
+  (if (not (and (integer? i) (exact? i) (>= i 0) (< i (qreg-width q))))
+      (error (string-append "core.quantum: " who ": qubit index out of range") i (qreg-width q)))
+  (list-ref (qreg-wires q) i))
+
+(define (%qalloc r n)
+  (qr-check-open r "qalloc")
+  (if (not (and (integer? n) (exact? n) (> n 0)))
+      (error "core.quantum: qalloc: a register has a positive number of qubits" n))
+  (let ((w (qregion-width r)))
+    (if (vector-ref r 11)
+        (error "core.quantum: qalloc: a region compiled for a coupling graph allocates every register before its first measurement"))
+    (vector-set! r 4 ((vector-ref (qr-backend r) 3) (quantum-region-state r) w n))
+    (vector-set! r 2 (+ w n))
+    (make-qreg r (iota n w))))
+
+;; record one gate on register qubits; returns the successor register
+(define (qr-take xs k) (if (= k 0) '() (cons (car xs) (qr-take (cdr xs) (- k 1)))))
+(define (qr-distinct? xs) (or (null? xs) (and (not (memv (car xs) (cdr xs))) (qr-distinct? (cdr xs)))))
+(define (qr-gate q who name idxs . angle)
+  (let* ((wires (map (lambda (i) (qreg-wire q i who)) idxs)))
+    (if (not (qr-distinct? wires))
+        (error (string-append "core.quantum: " who ": a gate acts on distinct qubits") idxs))
+    (qreg-take! q who)
+    (let ((r (qreg-region q)))
+      (vector-set! r 5 (cons (append (list name) wires angle) (vector-ref r 5)))
+      (make-qreg r (qreg-wires q)))))
+
+(define (%qh r i) (qr-gate r "qh" 'H (list i)))
+(define (%qx r i) (qr-gate r "qx" 'X (list i)))
+(define (%qy r i) (qr-gate r "qy" 'Y (list i)))
+(define (%qz r i) (qr-gate r "qz" 'Z (list i)))
+(define (%qs r i) (qr-gate r "qs" 'S (list i)))
+(define (%qsdg r i) (qr-gate r "qsdg" 'Sdg (list i)))
+(define (%qt r i) (qr-gate r "qt" 'T (list i)))
+(define (%qtdg r i) (qr-gate r "qtdg" 'Tdg (list i)))
+(define (%qp r i p) (qr-gate r "qp" 'P (list i) p))
+(define (%qrx r i theta) (qr-gate r "qrx" 'RX (list i) theta))
+(define (%qry r i theta) (qr-gate r "qry" 'RY (list i) theta))
+(define (%qrz r i theta) (qr-gate r "qrz" 'RZ (list i) theta))
+(define (%qcnot r c t) (qr-gate r "qcnot" 'CNOT (list c t)))
+(define (%qcz r a b) (qr-gate r "qcz" 'CZ (list a b)))
+(define (%qswap r a b) (qr-gate r "qswap" 'SWAP (list a b)))
+(define (%qrzz r a b theta) (qr-gate r "qrzz" 'RZZ (list a b) theta))
+(define (%qccx r a b t) (qr-gate r "qccx" 'CCX (list a b t)))
+(define (%qccz r a b c) (qr-gate r "qccz" 'CCZ (list a b c)))
+
+;; apply a whole circuit of the register's width (register qubit i = circuit wire i)
+(define (%qapply-circuit q c)
+  (if (not (qcircuit? c)) (error "core.quantum: qapply-circuit: not a circuit" c))
+  (if (not (= (qcircuit-width c) (qreg-width q)))
+      (error "core.quantum: qapply-circuit: the circuit width differs from the register width"
+             (qcircuit-width c) (qreg-width q)))
+  (if (qcircuit-parametric? c)
+      (error "core.quantum: qapply-circuit: bind the circuit's parameters first (qcircuit-bind)"))
+  (qreg-take! q "qapply-circuit")
+  (let* ((r (qreg-region q)) (wv (list->vector (qreg-wires q)))
+         (gates (qcircuit-gates (qcircuit-remap c wv (qregion-width r)))))
+    (vector-set! r 5 (append (reverse gates) (vector-ref r 5)))
+    (make-qreg r (qreg-wires q))))
+
+;; measure every qubit of the register (consumes it); bits in register order
+(define (%qmeasure q)
+  (qreg-take! q "qmeasure")
+  (let ((r (qreg-region q)))
+    (qr-flush! r)
+    (let ((bits ((vector-ref (qr-backend r) 5) (quantum-region-state r) (qregion-width r)
+                 (map (lambda (w) (qr-physical r w)) (qreg-wires q))
+                 (lambda () (qr-uniform r)))))
+      (vector-set! r 10 (+ (vector-ref r 10) (length bits)))
+      bits)))
+(define (%qmeasure-bit q)
+  (if (not (and (qreg? q) (= 1 (qreg-width q))))
+      (error "core.quantum: qmeasure-bit: a one-qubit register is required"))
+  (car (%qmeasure q)))
+;; measure and forget: the qubits are reset and released
+(define (%qrelease q) (%qmeasure q) '())
+
+;; split off the first k qubits: (f first-k rest)
+(define (%qsplit q k f)
+  (if (not (and (integer? k) (exact? k) (>= k 0) (<= k (qreg-width q))))
+      (error "core.quantum: qsplit: split point out of range" k (qreg-width q)))
+  (qreg-take! q "qsplit")
+  (let* ((r (qreg-region q)) (ws (qreg-wires q)))
+    (f (make-qreg r (qr-take ws k)) (make-qreg r (list-tail ws k)))))
+(define (%qjoin a b)
+  (if (not (and (qreg? a) (qreg? b) (eq? (qreg-region a) (qreg-region b))))
+      (error "core.quantum: qjoin: registers of one region are required"))
+  (qreg-take! a "qjoin")
+  (qreg-take! b "qjoin")
+  (make-qreg (qreg-region a) (append (qreg-wires a) (qreg-wires b))))
+;; a Qubit is a one-qubit register
+(define (%qreg->qubit q)
+  (if (not (and (qreg? q) (= 1 (qreg-width q))))
+      (error "core.quantum: qreg->qubit: a one-qubit register is required"))
+  q)
+(define (%qubit->qreg q)
+  (if (not (and (qreg? q) (= 1 (qreg-width q))))
+      (error "core.quantum: qubit->qreg: not a qubit of a quantum region"))
+  q)
+
+;; ---------------------------------------------------------------------------
+;; The typed surface. Each signature is the one the checker binds for the
+;; core.quantum primitives (lib/types/quantum_types.cpp), so a program checks
+;; the same whether these definitions are compiled with it (AOT) or not (JIT).
+;; A register parameter is linear: each body passes it on exactly once.
+;; ---------------------------------------------------------------------------
+
+(define (call-with-quantum-region (body : qregion-body)) : a (%call-with-quantum-region body))
+(define (qalloc (qr : qregion) (n : integer)) : qreg<n> (%qalloc qr n))
+(define (qh (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qh r i))
+(define (qx (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qx r i))
+(define (qy (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qy r i))
+(define (qz (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qz r i))
+(define (qs (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qs r i))
+(define (qsdg (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qsdg r i))
+(define (qt (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qt r i))
+(define (qtdg (r : qreg<n>) (i : qidx<n>)) : qreg<n> (%qtdg r i))
+(define (qp (r : qreg<n>) (i : qidx<n>) (p : number)) : qreg<n> (%qp r i p))
+(define (qrx (r : qreg<n>) (i : qidx<n>) (theta : number)) : qreg<n> (%qrx r i theta))
+(define (qry (r : qreg<n>) (i : qidx<n>) (theta : number)) : qreg<n> (%qry r i theta))
+(define (qrz (r : qreg<n>) (i : qidx<n>) (theta : number)) : qreg<n> (%qrz r i theta))
+(define (qcnot (r : qreg<n>) (c : qidx<n>) (t : qidx<n>)) : qreg<n> (%qcnot r c t))
+(define (qcz (r : qreg<n>) (a : qidx<n>) (b : qidx<n>)) : qreg<n> (%qcz r a b))
+(define (qswap (r : qreg<n>) (a : qidx<n>) (b : qidx<n>)) : qreg<n> (%qswap r a b))
+(define (qrzz (r : qreg<n>) (a : qidx<n>) (b : qidx<n>) (theta : number)) : qreg<n> (%qrzz r a b theta))
+(define (qccx (r : qreg<n>) (a : qidx<n>) (b : qidx<n>) (t : qidx<n>)) : qreg<n> (%qccx r a b t))
+(define (qccz (r : qreg<n>) (a : qidx<n>) (b : qidx<n>) (c : qidx<n>)) : qreg<n> (%qccz r a b c))
+(define (qapply-circuit (r : qreg<n>) (c : any)) : qreg<n> (%qapply-circuit r c))
+(define (qmeasure (r : qreg<n>)) : list (%qmeasure r))
+(define (qmeasure-bit (r : qreg<1>)) : integer (%qmeasure-bit r))
+(define (qrelease (r : qreg<n>)) : null (%qrelease r))
+(define (qsplit (r : qreg<n>) (k : integer) (f : (-> qreg<k> qreg<n-k> a))) : a (%qsplit r k f))
+(define (qjoin (a : qreg<m>) (b : qreg<n>)) : qreg<m+n> (%qjoin a b))
+(define (qreg->qubit (r : qreg<1>)) : qubit (%qreg->qubit r))
+(define (qubit->qreg (q : qubit)) : qreg<1> (%qubit->qreg q))
