@@ -15805,13 +15805,14 @@ set(ESHKOL_NET_LEASE_STACK_SRC
     lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
 if(ESHKOL_BUILD_TESTS)
     add_executable(net_runtime_test tests/network/net_runtime_test.c lib/core/net.c
-        ${ESHKOL_NET_LEASE_STACK_SRC})
+        lib/core/capability_policy.cpp ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(net_runtime_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
         find_package(Threads REQUIRED)
         target_link_libraries(net_runtime_test PRIVATE Threads::Threads)
     endif()
     add_executable(net_clock_failure_test tests/network/net_clock_failure_test.c lib/core/net.c
+        lib/core/capability_policy.cpp
         lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_clock_failure_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(NOT WIN32 AND NOT EMSCRIPTEN)
@@ -15825,7 +15826,7 @@ if(ESHKOL_BUILD_TESTS)
 
     add_executable(tls_context_test
         tests/network/tls_context_test.c lib/core/net.c lib/core/tls.c
-        ${ESHKOL_NET_LEASE_STACK_SRC})
+        lib/core/capability_policy.cpp ${ESHKOL_NET_LEASE_STACK_SRC})
     target_include_directories(tls_context_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     if(ESHKOL_TLS_OPENSSL_FOUND)
         set_source_files_properties(tests/network/tls_context_test.c PROPERTIES

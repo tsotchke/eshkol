@@ -39,8 +39,11 @@ typedef struct { int fd; int nonblocking; } NetSocket;
 /* The capability gate for socket creation. core.net's Scheme layer asks for
  * the network capability before each of its own calls; this is the same gate
  * one level down, at the single point where a socket comes into existence, so
- * it holds for a caller that reaches the runtime entry point directly. */
-extern void eshkol_capability_enforce(const char *capability, const char *operation);
+ * it holds for a caller that reaches the runtime entry point directly. A
+ * refusal is reported the way every other outcome in this file is, as an
+ * ESHKOL_IO_* code — core.net turns codes into conditions, this layer does not
+ * raise. */
+extern int eshkol_capability_require(const char *capability);
 
 static int net_close_native(eshkol_handle_kind_t kind, uintptr_t native, void *user_data) {
     (void)kind; (void)user_data;
@@ -113,7 +116,7 @@ static int borrow(int64_t h, uint32_t mask, int32_t timeout, eshkol_resource_lea
 int64_t eshkol_net_open(const char *host, int32_t port, int32_t kind, int32_t timeout) {
     struct sockaddr_storage a; socklen_t len;
     if (kind < NET_LISTENER || kind > NET_DATAGRAM || timeout < 0) return ESHKOL_IO_INVALID;
-    eshkol_capability_enforce("network", "net-open");
+    if (!eshkol_capability_require("network")) return ESHKOL_IO_DENIED;
     int family = address(host, port, &a, &len);
     if (family < 0) return family;
     int64_t deadline = eshkol_resource_deadline(timeout);
@@ -146,7 +149,7 @@ int64_t eshkol_net_open(const char *host, int32_t port, int32_t kind, int32_t ti
 }
 int64_t eshkol_net_accept(int64_t h, int32_t timeout) {
     eshkol_resource_lease_t lease; NetSocket *s; int64_t deadline;
-    eshkol_capability_enforce("network", "net-accept");
+    if (!eshkol_capability_require("network")) return ESHKOL_IO_DENIED;
     int result = borrow(h, NET_MASK(NET_LISTENER), timeout, &lease, &s, &deadline);
     if (result) return result;
     int fd = -1;
