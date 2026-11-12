@@ -59,7 +59,7 @@ replace a C or runtime symbol, and `main` has to be renamed to `scheme_main`
 as a special case. Variables already avoid this through a mangling helper,
 but that helper is duplicated in two files, and there are three separate
 builders for module-private names. ADR-0006 section 5 already decided the
-fix: physical names derived from the binding's identity, with only `extern`
+change: physical names derived from the binding's identity, with only `extern`
 imports and `:export-symbol` exports carrying C names. It was not
 implemented.
 
@@ -212,7 +212,7 @@ sessions are not programs and never get an entry call.
 
 ## Implementation lanes
 
-Each lane has an ICC brief, a ledger entry where it fixes observable
+Each lane has an ICC brief, a ledger entry where it changes observable
 behaviour, and parity tests, and merges only after the ICC exam. They land in
 this order, since each builds on the last.
 
