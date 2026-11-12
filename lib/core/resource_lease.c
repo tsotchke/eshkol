@@ -601,11 +601,17 @@ int64_t eshkol_resource_close_request(int64_t id, eshkol_handle_kind_t kind, uin
 static int managed_close_detached(int64_t id, eshkol_handle_kind_t kind, uint32_t mask) {
     int64_t ticket = eshkol_resource_close_request(id, kind, mask);
     if (ticket < 0) return (int)ticket;
+    return eshkol_resource_cleanup_detach(ticket);
+}
+int eshkol_resource_cleanup_detach(int64_t ticket) {
     managed_lock_enter();
     ManagedResource *m = ticket_find(ticket);
     if (m) m->detached = 1;
     int complete = m && m->result.state == ESHKOL_CLEANUP_COMPLETE;
     pthread_mutex_unlock(&managed_lock);
+    if (!m) return ESHKOL_IO_INVALID;
+    /* Handoff is accepted even if owner maintenance wins the successful-release
+     * race. Failed/pending records remain owned by the detached recovery path. */
     if (complete) (void)eshkol_resource_cleanup_release(ticket);
     return 0;
 }
@@ -728,6 +734,7 @@ int64_t eshkol_resource_close_request(int64_t id, eshkol_handle_kind_t kind, uin
 int eshkol_resource_cleanup_result(int64_t ticket, eshkol_resource_cleanup_result_t *out) { (void)ticket; (void)out; return ESHKOL_IO_UNSUPPORTED; }
 int eshkol_resource_cleanup_retry(int64_t ticket) { (void)ticket; return ESHKOL_IO_UNSUPPORTED; }
 int eshkol_resource_cleanup_release(int64_t ticket) { (void)ticket; return ESHKOL_IO_UNSUPPORTED; }
+int eshkol_resource_cleanup_detach(int64_t ticket) { (void)ticket; return ESHKOL_IO_UNSUPPORTED; }
 int64_t eshkol_resource_cleanup_ticket(int64_t id) { (void)id; return ESHKOL_IO_UNSUPPORTED; }
 int eshkol_resource_pump(int64_t loop) { (void)loop; return 0; }
 int eshkol_resource_managed_registration_count(int64_t loop) { (void)loop; return 0; }
