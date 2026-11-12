@@ -1,4 +1,5 @@
 #include "eshkol/core/handle.h"
+#include "resource_handle_internal.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,7 @@ struct Entry {
     void *user_data = nullptr;
     uint64_t lease = 0;
     uint32_t tag = 0;
+    uint32_t flags = 0;
     bool close_requested = false;
     bool interrupted = false;
     eshkol_handle_wake_fn wake_fn = nullptr;
@@ -48,6 +50,8 @@ bool valid_kind(eshkol_handle_kind_t kind) {
     return kind == ESHKOL_HANDLE_KIND_FILE ||
            kind == ESHKOL_HANDLE_KIND_SOCKET ||
            kind == ESHKOL_HANDLE_KIND_EVENT_LOOP ||
+           kind == ESHKOL_HANDLE_KIND_PROCESS ||
+           kind == ESHKOL_HANDLE_KIND_CLEANUP ||
            kind == ESHKOL_HANDLE_KIND_WINDOW ||
            kind == ESHKOL_HANDLE_KIND_AUDIO_DEVICE ||
            kind == ESHKOL_HANDLE_KIND_MIDI_PORT ||
@@ -88,6 +92,7 @@ void retire_entry(Entry &entry) {
     entry.user_data = nullptr;
     entry.lease = 0;
     entry.tag = 0;
+    entry.flags = 0;
     entry.close_requested = false;
     entry.interrupted = false;
     entry.wake_fn = nullptr;
@@ -184,7 +189,15 @@ extern "C" int eshkol_handle_create_tagged(eshkol_handle_registry_t *registry,
                                            eshkol_handle_close_fn close_fn,
                                            void *user_data,
                                            eshkol_handle_id_t *out_id) {
-    if (!registry || !out_id || !close_fn || !valid_kind(kind)) {
+    return eshkol_handle_create_resource_tagged(registry, kind, tag, 0,
+                                                native_value, close_fn, user_data, out_id);
+}
+
+extern "C" int eshkol_handle_create_resource_tagged(eshkol_handle_registry_t *registry,
+    eshkol_handle_kind_t kind, uint32_t tag, uint32_t flags, uintptr_t native_value,
+    eshkol_handle_close_fn close_fn, void *user_data, eshkol_handle_id_t *out_id) {
+    if (!registry || !out_id || !close_fn || !valid_kind(kind) ||
+        (flags & ~ESHKOL_HANDLE_FLAG_MANAGED)) {
         return ESHKOL_HANDLE_EINVAL;
     }
 
@@ -204,6 +217,7 @@ extern "C" int eshkol_handle_create_tagged(eshkol_handle_registry_t *registry,
             ++entry.generation;
             entry.kind = kind;
             entry.tag = tag;
+            entry.flags = flags;
             entry.native_value = native_value;
             entry.close_fn = close_fn;
             entry.user_data = user_data;
@@ -219,6 +233,7 @@ extern "C" int eshkol_handle_create_tagged(eshkol_handle_registry_t *registry,
         Entry entry;
         entry.kind = kind;
         entry.tag = tag;
+        entry.flags = flags;
         entry.native_value = native_value;
         entry.close_fn = close_fn;
         entry.user_data = user_data;
@@ -273,7 +288,13 @@ extern "C" int eshkol_handle_borrow(eshkol_handle_registry_t *registry,
 extern "C" int eshkol_handle_release(eshkol_handle_registry_t *registry,
                                      eshkol_handle_id_t id,
                                      uint64_t lease) {
-    if (!registry || lease == 0) {
+    uint32_t ignored;
+    return eshkol_handle_release_resource(registry, id, lease, &ignored);
+}
+
+extern "C" int eshkol_handle_release_resource(eshkol_handle_registry_t *registry,
+    eshkol_handle_id_t id, uint64_t lease, uint32_t *out_flags) {
+    if (!registry || !out_flags || lease == 0) {
         return ESHKOL_HANDLE_EINVAL;
     }
 
@@ -290,6 +311,7 @@ extern "C" int eshkol_handle_release(eshkol_handle_registry_t *registry,
     if (entry->state != ESHKOL_HANDLE_STATE_BORROWED || entry->lease != lease) {
         return ESHKOL_HANDLE_ESTATE;
     }
+    *out_flags = entry->flags;
     entry->lease = 0;
     entry->wake_fn = nullptr;
     entry->wake_context = nullptr;
@@ -391,7 +413,14 @@ extern "C" int eshkol_handle_get_kind(eshkol_handle_registry_t *registry,
                                       eshkol_handle_id_t id,
                                       eshkol_handle_kind_t *out_kind,
                                       uint32_t *out_tag) {
-    if (!registry || !out_kind || !out_tag) {
+    uint32_t ignored;
+    return eshkol_handle_resource_info(registry, id, out_kind, out_tag, &ignored);
+}
+
+extern "C" int eshkol_handle_resource_info(eshkol_handle_registry_t *registry,
+    eshkol_handle_id_t id, eshkol_handle_kind_t *out_kind, uint32_t *out_tag,
+    uint32_t *out_flags) {
+    if (!registry || !out_kind || !out_tag || !out_flags) {
         return ESHKOL_HANDLE_EINVAL;
     }
     std::lock_guard<std::mutex> lock(registry->mutex);
@@ -405,7 +434,18 @@ extern "C" int eshkol_handle_get_kind(eshkol_handle_registry_t *registry,
     }
     *out_kind = entry->kind;
     *out_tag = entry->tag;
+    *out_flags = entry->flags;
     return ESHKOL_HANDLE_OK;
+}
+
+extern "C" int eshkol_handle_resource_flags(eshkol_handle_registry_t *registry,
+    eshkol_handle_id_t id, uint32_t *out_flags) {
+    if (!registry || !out_flags) return ESHKOL_HANDLE_EINVAL;
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    Entry *entry;
+    int status = find_entry(registry, id, &entry);
+    if (!status) *out_flags = entry->flags;
+    return status;
 }
 
 extern "C" int eshkol_handle_close_after_release(eshkol_handle_registry_t *registry,
@@ -500,4 +540,11 @@ extern "C" int eshkol_handle_take_interrupt(eshkol_handle_registry_t *registry,
     const bool was = entry->interrupted;
     entry->interrupted = false;
     return was ? 1 : 0;
+}
+
+/* One process-lifetime exact public identity domain. Module shutdown must only
+ * retire its own resources; destroying this registry would invalidate others. */
+extern "C" eshkol_handle_registry_t *eshkol_resource_registry(void) {
+    static eshkol_handle_registry_t *shared = eshkol_handle_registry_create_exact();
+    return shared;
 }

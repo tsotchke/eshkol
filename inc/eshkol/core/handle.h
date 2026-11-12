@@ -42,11 +42,12 @@ enum {
     ESHKOL_HANDLE_KIND_FILE = 1,
     ESHKOL_HANDLE_KIND_SOCKET = 2,
     ESHKOL_HANDLE_KIND_EVENT_LOOP = 3,
-    /* Platform layer objects (inc/eshkol/platform/, ADR-0053). */
+    /* Preserve published platform values; PROCESS follows the platform kinds. */
     ESHKOL_HANDLE_KIND_WINDOW = 4,
     ESHKOL_HANDLE_KIND_AUDIO_DEVICE = 5,
     ESHKOL_HANDLE_KIND_MIDI_PORT = 6,
-    ESHKOL_HANDLE_KIND_PROCESS = 7
+    ESHKOL_HANDLE_KIND_PROCESS = 7,
+    ESHKOL_HANDLE_KIND_CLEANUP = 8
 };
 
 typedef enum {

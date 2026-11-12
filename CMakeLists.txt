@@ -16666,6 +16666,20 @@ endif()
 set(ESHKOL_PLATFORM_STAGE tests)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
 
+# Shared explicit-loop ownership, cancellation and cleanup-completion contract.
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    find_package(Threads REQUIRED)
+    add_executable(resource_explicit_loop_test
+        tests/core/resource_explicit_loop_test.c lib/core/resource_lease.c
+        lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC} lib/core/runtime_handle.cpp)
+    target_compile_features(resource_explicit_loop_test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(resource_explicit_loop_test PRIVATE _GNU_SOURCE ESHKOL_RESOURCE_TESTING)
+    target_include_directories(resource_explicit_loop_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(resource_explicit_loop_test PRIVATE Threads::Threads)
+    add_test(NAME resource_explicit_loop_test COMMAND resource_explicit_loop_test)
+    set_tests_properties(resource_explicit_loop_test PROPERTIES TIMEOUT 30 LABELS "resource;ipc")
+endif()
+
 # Every harness that resolves the compiler, the VM or the compile database by
 # itself reads BUILD_DIR and falls back to a directory literally named "build".
 # Name this build tree for all of them at once, so the suite runs from any
