@@ -22,7 +22,7 @@ if [ "$(uname -s)" = Darwin ]; then
 fi
 runtime_objects=()
 for file in tests/agent/subprocess_stream_test.c lib/agent/c/agent_subprocess.c \
-            lib/core/event_loop.c "lib/core/event_loop_${backend}.c"; do
+            lib/core/resource_lease.c lib/core/event_loop.c "lib/core/event_loop_${backend}.c"; do
     object="$WORK/$(basename "$file").o"
     "$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} -c "$ROOT/$file" -o "$object"
     case "$file" in lib/*) runtime_objects+=("$object") ;; esac
@@ -73,5 +73,15 @@ if [ "$(uname -s)" = Linux ]; then
 import subprocess
 import sys
 raise SystemExit(subprocess.run([sys.argv[1]], timeout=5).returncode)
+PY
+    "$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} \
+        -c "$ROOT/tests/agent/subprocess_stream_watch_failure_test.c" -o "$WORK/watch-failure.o"
+    "$CXX" -pthread ${sanitize[@]+"${sanitize[@]}"} -Wl,--wrap=eshkol_event_loop_remove \
+        "$WORK/watch-failure.o" "${runtime_objects[@]}" "$WORK/runtime_handle.o" \
+        -o "$WORK/watch-failure"
+    python3 - "$WORK/watch-failure" <<'PY'
+import subprocess
+import sys
+raise SystemExit(subprocess.run([sys.argv[1]], timeout=10).returncode)
 PY
 fi

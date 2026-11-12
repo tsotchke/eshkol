@@ -143,7 +143,7 @@ caller's memory responsibility; use scratch regions for temporary result values.
 | `process-stream-result-value` / `process-stream-result-cleanup-status` / `process-stream-result-cleanup-ticket` | Inspect normal scope result: receiver value, `reaped`/`cleanup-pending`/`cleanup-error`, and optional native cleanup ticket |
 | `(process-cleanup-tickets)` / `(process-cleanup-status ticket)` | Discover closed scopes and observe retained cleanup, including after exceptional exits |
 | `(process-cleanup-drain! loop timeout-ms)` / `(process-cleanup-consume! ticket)` | Advance closed processes on a live loop; retire terminal records. Pending ownership cannot be consumed |
-| `(process-stream-runtime-shutdown!)` | Release an empty native stream registry; busy while records remain. Shutdown is terminal for this process-local first-slice runtime |
+| `(process-stream-runtime-shutdown!)` | Release native stream module state; busy while PROCESS records remain. Shared SOCKET/other owners remain valid. Shutdown is terminal for this process-local stream runtime |
 
 Options include `cwd`, `env`, `teardown-ms`, and `term-grace-ms`. Only null stdin,
 event-loop mode, and direct-child ownership are admitted in this scoped slice;

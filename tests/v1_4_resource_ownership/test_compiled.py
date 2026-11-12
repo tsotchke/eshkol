@@ -227,7 +227,8 @@ def main():
         def compile_case(name):
             source = FIXTURES / f"{name}.esk"
             artifact = out_dir / f"{name}.o"
-            command = [runner, "--strict-resources", "-c", "-o", str(artifact), str(source), "-L", lib_dir]
+            # Ownership is a frontend contract; optimizer latency is a separate gate.
+            command = [runner, "--strict-resources", "-O0", "-c", "-o", str(artifact), str(source), "-L", lib_dir]
             completed = subprocess.run(command, env=env, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, timeout=180)
             is_negative = name in NEGATIVE

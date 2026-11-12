@@ -8853,6 +8853,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     add_executable(eshkol-subprocess-stream-test
         tests/agent/subprocess_stream_test.c
         lib/agent/c/agent_subprocess.c
+        lib/core/resource_lease.c
         lib/core/event_loop.c
         ${ESHKOL_EVENT_LOOP_SRC}
         lib/core/runtime_handle.cpp)
@@ -8863,6 +8864,20 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     add_test(NAME agent-subprocess-stream COMMAND eshkol-subprocess-stream-test)
     set_tests_properties(agent-subprocess-stream PROPERTIES
         TIMEOUT 60 LABELS "resource;subprocess;stream")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(eshkol-subprocess-stream-watch-failure-test
+            tests/agent/subprocess_stream_watch_failure_test.c
+            lib/agent/c/agent_subprocess.c lib/core/resource_lease.c
+            lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC} lib/core/runtime_handle.cpp)
+        target_compile_features(eshkol-subprocess-stream-watch-failure-test PRIVATE c_std_11 cxx_std_17)
+        target_compile_definitions(eshkol-subprocess-stream-watch-failure-test PRIVATE _GNU_SOURCE)
+        target_include_directories(eshkol-subprocess-stream-watch-failure-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-subprocess-stream-watch-failure-test PRIVATE Threads::Threads)
+        target_link_options(eshkol-subprocess-stream-watch-failure-test PRIVATE "-Wl,--wrap=eshkol_event_loop_remove")
+        add_test(NAME agent-subprocess-stream-watch-failure COMMAND eshkol-subprocess-stream-watch-failure-test)
+        set_tests_properties(agent-subprocess-stream-watch-failure PROPERTIES
+            TIMEOUT 15 LABELS "resource;subprocess;stream;cleanup")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS)

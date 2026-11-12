@@ -6,6 +6,7 @@
 #endif
 #include <eshkol/core/event_loop.h>
 #include <eshkol/core/subprocess_stream.h>
+#include <eshkol/core/resource_lease.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -15,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -208,11 +210,14 @@ static void pass(const char *name) {
     printf("PASS: %s\n", name);
 }
 
+static void mixed_wait_check(int64_t loop, int64_t process);
+
 static void binary_test(void) {
     int64_t loop = eshkol_event_loop_open_handle(8);
     CHECK(loop > 0);
     int64_t id = open_child(loop, "binary");
     CHECK(eshkol_event_loop_close_handle(loop) < 0);
+    mixed_wait_check(loop, id);
     unsigned char output[2][16] = {{0}};
     size_t used[2] = {0, 0};
     int eof[2] = {0, 0};
@@ -489,6 +494,94 @@ static void *foreign_thread(void *arg) {
     return NULL;
 }
 
+static int mixed_socket_cleanup(uintptr_t native, void *unused,
+                                eshkol_resource_cleanup_result_t *result) {
+    (void)unused;
+    if (close((int)native) == 0) return 0;
+    result->state = ESHKOL_CLEANUP_FAILED;
+    result->stage = ESHKOL_CLEANUP_DESCRIPTOR;
+    result->os_error = errno;
+    result->retryable = 0;
+    return -1;
+}
+
+static void mixed_wait_check(int64_t loop, int64_t process) {
+    int fds[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    int64_t socket = eshkol_resource_adopt_on_loop(ESHKOL_HANDLE_KIND_SOCKET,
+        30, (uintptr_t)fds[0], mixed_socket_cleanup, NULL, loop, 1);
+    CHECK(socket > 0 && socket != process && socket != loop);
+    /* Leave PROCESS bytes unread so the common wait must preserve their
+     * descriptor registrations and readiness cookies. */
+    CHECK(write(fds[1], "S", 1) == 1);
+    CHECK(eshkol_process_stream_poll(process, 1000) > 0);
+    eshkol_resource_lease_t lease;
+    CHECK(eshkol_resource_borrow(socket, ESHKOL_HANDLE_KIND_SOCKET,
+        UINT32_C(1) << 30, &lease) == 0);
+    CHECK(eshkol_resource_wait_on_loop(&lease, fds[0], ESHKOL_RESOURCE_READ,
+        eshkol_resource_deadline(1000)) == ESHKOL_RESOURCE_READ);
+    char byte;
+    CHECK(read((int)lease.native, &byte, 1) == 1 && byte == 'S');
+    eshkol_resource_release(&lease);
+    CHECK(eshkol_process_stream_poll(process, 0) & (OUT | ERR));
+    int64_t ticket = eshkol_resource_close_request(socket,
+        ESHKOL_HANDLE_KIND_SOCKET, UINT32_C(1) << 30);
+    CHECK(ticket > 0);
+    eshkol_resource_cleanup_result_t result;
+    CHECK(eshkol_resource_cleanup_result(ticket, &result) == 0);
+    CHECK(result.state == ESHKOL_CLEANUP_COMPLETE);
+    CHECK(eshkol_resource_cleanup_release(ticket) == 0);
+    CHECK(close(fds[1]) == 0);
+}
+
+static int shared_socket_closes;
+static int shared_socket_close(eshkol_handle_kind_t kind, uintptr_t native, void *unused) {
+    (void)unused;
+    if (kind != ESHKOL_HANDLE_KIND_SOCKET) return -1;
+    ++shared_socket_closes;
+    return close((int)native);
+}
+
+static int64_t shared_socket(int *writer) {
+    int fds[2];
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    int64_t id = eshkol_resource_adopt(ESHKOL_HANDLE_KIND_SOCKET, 31,
+        (uintptr_t)fds[0], shared_socket_close, NULL);
+    CHECK(id > 0);
+    *writer = fds[1];
+    return id;
+}
+
+static void shared_identity_checks(int64_t process) {
+    int writer;
+    int64_t socket = shared_socket(&writer);
+    CHECK(socket != process);
+    eshkol_handle_kind_t kind;
+    uint32_t tag;
+    CHECK(eshkol_handle_get_kind(eshkol_resource_registry(), process, &kind, &tag) == 0);
+    CHECK(kind == ESHKOL_HANDLE_KIND_PROCESS);
+    CHECK(eshkol_resource_close(process, ESHKOL_HANDLE_KIND_PROCESS, 0) == ESHKOL_IO_BUSY);
+    CHECK(eshkol_process_stream_poll(process, 0) >= 0);
+    eshkol_resource_lease_t lease;
+    CHECK(eshkol_resource_borrow(process, ESHKOL_HANDLE_KIND_SOCKET, 0, &lease) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_resource_cancel(process, ESHKOL_HANDLE_KIND_SOCKET, 0) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_resource_close(process, ESHKOL_HANDLE_KIND_SOCKET, 0) == ESHKOL_IO_INVALID);
+    char byte;
+    CHECK(eshkol_process_stream_read(socket, OUT, &byte, 1) == ESHKOL_PROCESS_STREAM_EINVAL);
+    CHECK(eshkol_process_stream_poll(socket, 0) == ESHKOL_PROCESS_STREAM_EINVAL);
+    CHECK(eshkol_process_stream_cancel(socket, 0) == ESHKOL_PROCESS_STREAM_EINVAL);
+    CHECK(eshkol_process_stream_close(socket, 0, 0) == ESHKOL_PROCESS_STREAM_EINVAL);
+    CHECK(eshkol_process_cleanup_status(socket) == ESHKOL_PROCESS_STREAM_EINVAL);
+    CHECK(eshkol_resource_borrow(socket, ESHKOL_HANDLE_KIND_SOCKET,
+        UINT32_C(1) << 30, &lease) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_resource_borrow(socket, ESHKOL_HANDLE_KIND_SOCKET,
+        UINT32_C(1) << 31, &lease) == 0);
+    eshkol_resource_release(&lease);
+    CHECK(eshkol_resource_close(socket, ESHKOL_HANDLE_KIND_SOCKET, UINT32_C(1) << 31) == 0);
+    CHECK(shared_socket_closes == 1);
+    CHECK(close(writer) == 0);
+}
+
 static void validation_and_policy_test(void) {
     int64_t loop = eshkol_event_loop_open_handle(8);
     CHECK(loop > 0);
@@ -499,6 +592,7 @@ static void validation_and_policy_test(void) {
     CHECK(eshkol_process_stream_open(loop, "", ".", NULL) == ESHKOL_PROCESS_STREAM_EINVAL);
     int64_t id = open_child(loop, "idle");
     ready(id);
+    shared_identity_checks(id);
     char data;
     CHECK(eshkol_process_stream_read(id, 0, &data, 1) == ESHKOL_PROCESS_STREAM_EINVAL);
     CHECK(eshkol_process_stream_read(id, OUT, NULL, 1) == ESHKOL_PROCESS_STREAM_EINVAL);
@@ -566,7 +660,20 @@ int main(int argc, char **argv) {
     capacity_test();
     registration_rollback_test();
     watch_identity_test();
+    int writer;
+    int64_t socket = shared_socket(&writer);
     CHECK(eshkol_process_stream_runtime_shutdown() == 0);
+    CHECK(shared_socket_closes == 1);
+    CHECK(write(writer, "A", 1) == 1);
+    eshkol_resource_lease_t lease;
+    CHECK(eshkol_resource_borrow(socket, ESHKOL_HANDLE_KIND_SOCKET, UINT32_C(1) << 31, &lease) == 0);
+    char byte;
+    CHECK(read((int)lease.native, &byte, 1) == 1 && byte == 'A');
+    eshkol_resource_release(&lease);
+    CHECK(eshkol_resource_close(socket, ESHKOL_HANDLE_KIND_SOCKET, UINT32_C(1) << 31) == 0);
+    CHECK(shared_socket_closes == 2);
+    CHECK(close(writer) == 0);
+    puts("PASS: PROCESS/SOCKET identities are kind/tag checked; PROCESS shutdown preserves shared owners");
     printf("PASS: subprocess_stream_contract (%u scenarios, %u checks)\n", scenarios, checks);
     free(self);
     return 0;
