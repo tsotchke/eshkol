@@ -51,6 +51,7 @@
 #define VAL_SYMBOL      31   /* heap-backed internable Scheme symbol spelling */
 #define VAL_EOF         32   /* distinct end-of-file object                    */
 #define VAL_I128        33   /* heap-allocated native 128-bit integer (opaque) */
+#define VAL_PRNG        34   /* isolated state inline in its heap object */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5

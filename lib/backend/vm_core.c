@@ -311,6 +311,7 @@ typedef enum {
     HEAP_RIEMANNIAN_ADAM_STATE = 25,
     HEAP_FUTURE = 26,
     HEAP_I128 = 27,
+    HEAP_PRNG = 28,
 } HeapType;
 
 typedef struct {
@@ -339,6 +340,7 @@ typedef struct {
             int32_t* open_slots;
         } closure;
         struct { void* ptr; int subtype; } opaque;  /* for complex, rational, tensor, logic, etc. */
+        struct { uint64_t state; } prng; /* leaf, no pointers or external allocation */
     };
 } HeapObject;
 
@@ -1828,6 +1830,7 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
         case VAL_MANIFOLD:    printf("<manifold>"); break;
         case VAL_RIEMANNIAN_ADAM_STATE: printf("<riemannian-adam-state>"); break;
         case VAL_PORT:        printf("<port>"); break;
+        case VAL_PRNG:        printf("#<prng>"); break;
         case VAL_FUTURE:      printf("<future>"); break;
         case VAL_EOF:         printf("#<eof>"); break;
         case VAL_VOID:        break; /* unspecified — produces no output */
