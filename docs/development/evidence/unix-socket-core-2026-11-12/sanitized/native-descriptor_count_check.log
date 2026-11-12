@@ -1,0 +1,3 @@
+SCRATCH: /tmp/eshkol-unix-AyRPtH
+MEASURE: fd_before=6 fd_after=6 cycles=1000
+PASS: unix_socket_stream_test descriptor_count_check (7015 checks)

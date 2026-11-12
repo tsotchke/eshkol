@@ -4,6 +4,8 @@
 **Draft:** [Socket design addendum](SOCKET_DESIGN_ADDENDUM-2026-11-10.md).
 **Scaffold reviewed:** [#916](https://github.com/tsotchke/eshkol/pull/916), `da7005c7f23ee12f80e2f2fd07994b518d3f5532`. This document records the findings; it does not constitute a submitted GitHub PR review.
 
+**Implementation follow-up (2026-11-12):** The amended handoff and Unix socket core have since been integrated and qualified on Linux; see the [execution record](../docs/development/evidence/unix-socket-core-2026-11-12.md) and [current addendum](SOCKET_DESIGN_ADDENDUM-2026-11-10.md). The original-head findings below remain a historical review record.
+
 ## Assessment
 
 The draft covers the November 9 plan's required topics. It proposes changes to the scaffold's public API and acceptance tests; it does not claim those changes already exist. The three decisions below are agreed; the pending-connect API and implementation details still need alignment with the component owner and scaffold. The original IPC ownership and cleanup rules remain the architectural basis.

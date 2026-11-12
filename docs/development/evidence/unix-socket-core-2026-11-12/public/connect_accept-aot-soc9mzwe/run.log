@@ -1,0 +1,3 @@
+MEASURE: bytes=257 short-writes=0 would-block=0
+PASS: unix-socket connect_accept
+CHECKS: 13

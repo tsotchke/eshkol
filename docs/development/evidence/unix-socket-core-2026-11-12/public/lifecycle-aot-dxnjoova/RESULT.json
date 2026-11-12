@@ -1,0 +1,27 @@
+{
+  "status": "PASS",
+  "mode": "aot",
+  "scenario": "lifecycle",
+  "socket_directory": "/tmp/eshkol-unix-p_xc1wr0",
+  "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/lifecycle-aot-dxnjoova",
+  "commands": [
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-l",
+      "eshkol-unix-socket-fixture",
+      "-O0",
+      "-o",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/lifecycle-aot-dxnjoova/socket-acceptance",
+      "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_lifecycle.esk"
+    ],
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/lifecycle-aot-dxnjoova/socket-acceptance"
+    ]
+  ],
+  "group_verification": "signal0; successful ps group inventory on permission denial",
+  "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"
+}

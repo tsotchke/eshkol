@@ -1,0 +1,3 @@
+capability denied: file-read
+PASS: unix-socket lifecycle
+CHECKS: 30

@@ -1,0 +1,13 @@
+surface_counts_consistent: FAIL
+  canonical release        : v1.3.6-evolve PREPARED FOR PUBLICATION 2026-10-15 (tests/coverage/release_record.json)
+  canonical surface_total  : 1470 (tests/coverage/coverage_policy.json)
+  canonical builtins_total : 1069 (tests/coverage/language_surface.json)
+  canonical ctest_total    : 823 (tests/coverage/release_record.json)
+  canonical parity_total   : 411 (tests/coverage/release_record.json)
+  MISMATCHES:
+    - README.md:297 [builtins_total] found 1067, expected 1069 — '**1,067 built-in functions**'
+    - docs/FEATURE_MATRIX.md:491 [builtins_total] found 1067, expected 1069 — '1,067 builtins across'
+    - docs/FEATURE_MATRIX.md:865 [builtins_total] found 1067, expected 1069 — 'special forms, 1,067 builtins'
+    - docs/COMPLETE_LANGUAGE_SPECIFICATION.md:4866 [builtins_total] found 1067, expected 1069 — '1,067 built-in functions'
+    - docs/ESHKOL_LANGUAGE_GUIDE.md:167 [builtins_total] found 1067, expected 1069 — '1,067 built-in functions'
+    - docs/ESHKOL_QUICK_REFERENCE.md:3 [builtins_total] found 1067, expected 1069 — '**1,067 built-in functions**'

@@ -1,0 +1,7 @@
+[100%] Built target eshkol-subprocess-stream-test
+[100%] Built target eshkol-subprocess-stream-watch-failure-test
+[100%] Built target resource_explicit_loop_test
+[ 50%] Built target eshkol-unix-socket-fixture
+[100%] Built target eshkol-unix-stream-socket-stream-test
+Built target eshkol-unix-socket-cleanup-test
+Built target eshkol-unix-stream-socket-contract-test

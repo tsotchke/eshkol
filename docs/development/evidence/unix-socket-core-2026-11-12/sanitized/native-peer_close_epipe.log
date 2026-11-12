@@ -1,0 +1,2 @@
+SCRATCH: /tmp/eshkol-unix-mzeDSh
+PASS: unix_socket_stream_test peer_close_epipe (8 checks)

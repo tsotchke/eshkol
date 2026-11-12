@@ -1,0 +1,27 @@
+{
+  "status": "PASS",
+  "mode": "aot",
+  "scenario": "nul_and_large_payload",
+  "socket_directory": "/tmp/eshkol-unix-dfcvst7w",
+  "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/nul_and_large_payload-aot-hqvmgert",
+  "commands": [
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-l",
+      "eshkol-unix-socket-fixture",
+      "-O0",
+      "-o",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/nul_and_large_payload-aot-hqvmgert/socket-acceptance",
+      "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"
+    ],
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/nul_and_large_payload-aot-hqvmgert/socket-acceptance"
+    ]
+  ],
+  "group_verification": "signal0; successful ps group inventory on permission denial",
+  "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"
+}

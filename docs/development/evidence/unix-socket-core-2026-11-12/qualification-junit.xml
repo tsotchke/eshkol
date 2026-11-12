@@ -1,0 +1,528 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Linux-clang++"
+	tests="65"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="gabelinux"
+	time="64"
+	timestamp="2026-11-12T12:13:47"
+	>
+	<testcase name="agent-subprocess-stream" classname="agent-subprocess-stream" time="2.4768" status="run">
+		<properties>
+			<property name="cmake_labels" value="resource;stream;subprocess"/>
+		</properties>
+		<system-out>PASS: NUL-containing stdout/stderr, null stdin, exit status, loop ownership
+MEASURE: bytes_stdout=17825829 bytes_stderr=17825829 max_skew=4096 rss_growth_kib=0
+PASS: lossless &gt;16 MiB per stream, slow-consumer backpressure, fair bounded memory
+MEASURE: poll_100_ms_elapsed=100
+PASS: zero/positive deadlines, no implicit kill, immutable cancellation grace
+PASS: early stdout EOF preserves stderr progress
+PASS: direct-child reap and cleanup progress independently of inherited pipe writers
+PASS: bounded teardown, retained owner across loop closure, terminal consumption and expired IDs
+PASS: argument validation, owner-thread confinement, capability denial and unconditional cleanup
+PASS: reserved cleanup records respect subprocess budget and release capacity
+PASS: partial watch registration rolls back without orphaning ownership
+PASS: unmanaged watches and same-count descriptor/cookie/interest tampering are rejected
+PASS: PROCESS/SOCKET identities are kind/tag checked; PROCESS shutdown preserves shared owners
+PASS: su...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="agent-subprocess-stream-watch-failure" classname="agent-subprocess-stream-watch-failure" time="0.0234302" status="run">
+		<properties>
+			<property name="cmake_labels" value="cleanup;resource;stream;subprocess"/>
+		</properties>
+		<system-out>PASS: failed watch removal retains PROCESS descriptors/loop/lease and retries close/EOF cleanup
+</system-out>
+	</testcase>
+	<testcase name="resource_explicit_loop_test" classname="resource_explicit_loop_test" time="0.00176084" status="run">
+		<properties>
+			<property name="cmake_labels" value="ipc;resource"/>
+		</properties>
+		<system-out>PASS: explicit-loop leases, mixed readiness, sticky cancellation, deferred and retryable cleanup
+</system-out>
+	</testcase>
+	<testcase name="agent-unix-stream-socket-runner-oracle" classname="agent-unix-stream-socket-runner-oracle" time="1.38815" status="run">
+		<properties>
+			<property name="cmake_labels" value="metadata;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS_RUNNER_ORACLE_CONTROLS", "controls": 15, "rows": [{"case": "jit:success", "expected_pass": true, "status": "PASS"}, {"case": "jit:missing", "expected_pass": false, "status": "FAIL"}, {"case": "jit:duplicate", "expected_pass": false, "status": "FAIL"}, {"case": "jit:failure-marker", "expected_pass": false, "status": "FAIL"}, {"case": "jit:nonzero", "expected_pass": false, "status": "FAIL"}, {"case": "jit:jit-error", "expected_pass": false, "status": "FAIL"}, {"case": "jit:llvm-error", "expected_pass": false, "status": "FAIL"}, {"case": "aot:success", "expected_pass": true, "status": "PASS"}, {"case": "vm:vm-specific", "expected_pass": true, "status": "PASS"}, {"case": "vm:vm-unrelated", "expected_pass": false, "status": "FAIL"}, {"case": "vm:vm-artifact", "expected_pass": false, "status": "FAIL"}, {"case": "denied-probe-live-group", "status": "LIVE_AS_EXPECTED"}, {"case": "denied-probe-absent-group", "status": "ABSENT_AS_OBSERVED"}, {"case": "unreadable-group-state", "status": "REFUSED_AS_EXPE...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="agent-unix-stream-socket-peer-fixture" classname="agent-unix-stream-socket-peer-fixture" time="0.00167479" status="run">
+		<properties>
+			<property name="cmake_labels" value="fixture;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-uM4CkD
+MEASURE: pending_control=real_OS_backlog
+PASS: controlled pending-connect fixture (34 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-connect_accept" classname="ipc-unix-connect_accept" time="0.00185301" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-aRAMpO
+MEASURE: bytes=257 short_writes=0 would_block=0 core_peak_growth_kib=0
+PASS: unix_socket_stream_test connect_accept (25 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-partial_slow_peer" classname="ipc-unix-partial_slow_peer" time="0.523081" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-lPLIOn
+MEASURE: bytes=2097152 short_writes=52 would_block=413 core_peak_growth_kib=0
+PASS: unix_socket_stream_test partial_slow_peer (2024 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-peer_close_epipe" classname="ipc-unix-peer_close_epipe" time="0.00223627" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-kU3Phx
+PASS: unix_socket_stream_test peer_close_epipe (8 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-deadline_accept" classname="ipc-unix-deadline_accept" time="0.151981" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-JX5Sbm
+MEASURE: accept_150_ms_elapsed=150
+PASS: unix_socket_stream_test deadline_accept (11 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-deadline_connect" classname="ipc-unix-deadline_connect" time="0.351973" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-E6Q0JU
+MEASURE: pending_control=real_OS_backlog
+PASS: unix_socket_stream_test deadline_connect (39 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-cancellation" classname="ipc-unix-cancellation" time="0.0520295" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-DPGitf
+PASS: unix_socket_stream_test cancellation (15 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-nul_and_large_payload" classname="ipc-unix-nul_and_large_payload" time="4.1679" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-1tNa6g
+MEASURE: bytes=16777253 short_writes=453 would_block=3589 core_peak_growth_kib=0
+PASS: unix_socket_stream_test nul_and_large_payload (16356 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-descriptor_count_check" classname="ipc-unix-descriptor_count_check" time="0.035351" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-2MfCEq
+MEASURE: fd_before=7 fd_after=7 cycles=1000
+PASS: unix_socket_stream_test descriptor_count_check (7015 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-capability_denial" classname="ipc-unix-capability_denial" time="0.00223144" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-2WYxN6
+PASS: unix_socket_stream_test capability_denial (12 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-path_lifecycle" classname="ipc-unix-path_lifecycle" time="0.00191056" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-2rtb7w
+PASS: unix_socket_stream_test path_lifecycle (27 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-destination_errors" classname="ipc-unix-destination_errors" time="0.00185487" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-9f92Iq
+PASS: unix_socket_stream_test destination_errors (12 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-connect_cancellation" classname="ipc-unix-connect_cancellation" time="0.0520985" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-odZRu4
+MEASURE: pending_control=real_OS_backlog
+PASS: unix_socket_stream_test connect_cancellation (38 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-capability_revocation" classname="ipc-unix-capability_revocation" time="0.00165342" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-3Hkech
+PASS: unix_socket_stream_test capability_revocation (17 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-loop_lifetime" classname="ipc-unix-loop_lifetime" time="0.00199237" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-6McM1S
+PASS: unix_socket_stream_test loop_lifetime (14 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-zero_budget" classname="ipc-unix-zero_budget" time="0.00170762" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-tAJTlb
+MEASURE: pending_control=real_OS_backlog
+PASS: unix_socket_stream_test zero_budget (41 checks)
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-borrowed_close" classname="ipc-unix-borrowed_close" time="0.00164572" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;resource;socket"/>
+		</properties>
+		<system-out>SCRATCH: /tmp/eshkol-unix-6x6Klo
+PASS: unix_socket_stream_test borrowed_close (15 checks)
+</system-out>
+	</testcase>
+	<testcase name="agent-unix-socket-cleanup" classname="agent-unix-socket-cleanup" time="0.00262076" status="run">
+		<properties>
+			<property name="cmake_labels" value="cleanup;resource;socket"/>
+		</properties>
+		<system-out>PASS: socket borrowed/queued close and retryable path cleanup; descriptor reused safely
+</system-out>
+	</testcase>
+	<testcase name="agent-unix-stream-socket-contract" classname="agent-unix-stream-socket-contract" time="0.00234878" status="run">
+		<properties>
+			<property name="cmake_labels" value="contract;resource;socket"/>
+		</properties>
+		<system-out>PASS: socket argument and cross-kind contract
+</system-out>
+	</testcase>
+	<testcase name="handle_lifecycle_test" classname="handle_lifecycle_test" time="0.0867987" status="run">
+		<properties>
+			<property name="cmake_labels" value="concurrency;ownership;resource"/>
+		</properties>
+		<system-out>PASS: handle_lifecycle_test
+</system-out>
+	</testcase>
+	<testcase name="handle_c_api_test" classname="handle_c_api_test" time="0.00225644" status="run">
+		<properties>
+			<property name="cmake_labels" value="ffi;resource"/>
+		</properties>
+		<system-out>PASS: handle_c_api_test
+</system-out>
+	</testcase>
+	<testcase name="agent-subprocess-stream-public" classname="agent-subprocess-stream-public" time="34.7676" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;jit;resource;subprocess"/>
+		</properties>
+		<system-out>PASS: subprocess_stream_public jit
+PUBLIC STREAM CHECKS: 23
+PASS: subprocess_stream_large jit
+LARGE STREAM BYTES: #(17825829 17825829 19)
+PASS: subprocess_stream_reentry jit
+PASS: subprocess_stream_public aot
+PUBLIC STREAM CHECKS: 23
+PASS: subprocess_stream_large aot
+LARGE STREAM BYTES: #(17825829 17825829 19)
+PASS: subprocess_stream_reentry aot
+PASS: standalone VM explicitly rejects unsupported stream externs
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-connect_accept-jit" classname="ipc-unix-connect_accept-jit" time="21.6169" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "connect_accept", "socket_directory": "/tmp/eshkol-unix-dd9tl9q9", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_accept-jit-yp1ilijb", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-connect_accept-aot" classname="ipc-unix-connect_accept-aot" time="1.52132" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "connect_accept", "socket_directory": "/tmp/eshkol-unix-68qh8_9u", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_accept-aot-soc9mzwe", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_accept-aot-soc9mzwe/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_accept-aot-soc9mzwe/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent impl...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-partial_slow_peer-jit" classname="ipc-unix-partial_slow_peer-jit" time="22.6211" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "partial_slow_peer", "socket_directory": "/tmp/eshkol-unix-460mcla1", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/partial_slow_peer-jit-hqk7cni4", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-partial_slow_peer-aot" classname="ipc-unix-partial_slow_peer-aot" time="2.27152" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "partial_slow_peer", "socket_directory": "/tmp/eshkol-unix-u5nyqj4c", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/partial_slow_peer-aot-ad62xh1w", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/partial_slow_peer-aot-ad62xh1w/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/partial_slow_peer-aot-ad62xh1w/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socke...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-peer_close_epipe-jit" classname="ipc-unix-peer_close_epipe-jit" time="4.45839" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "peer_close_epipe", "socket_directory": "/tmp/eshkol-unix-rz2k1hkv", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/peer_close_epipe-jit-fgp45o5f", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-peer_close_epipe-aot" classname="ipc-unix-peer_close_epipe-aot" time="1.52488" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "peer_close_epipe", "socket_directory": "/tmp/eshkol-unix-sgpyqfmp", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/peer_close_epipe-aot-gmz_63_k", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/peer_close_epipe-aot-gmz_63_k/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/peer_close_epipe-aot-gmz_63_k/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/ag...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-deadline_accept-jit" classname="ipc-unix-deadline_accept-jit" time="4.65853" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "deadline_accept", "socket_directory": "/tmp/eshkol-unix-vhayhyed", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_accept-jit-t55b3vgo", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-deadline_accept-aot" classname="ipc-unix-deadline_accept-aot" time="1.6673" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "deadline_accept", "socket_directory": "/tmp/eshkol-unix-yvqg5lr1", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_accept-aot-4bmi25rg", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_accept-aot-4bmi25rg/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_accept-aot-4bmi25rg/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-deadline_connect-jit" classname="ipc-unix-deadline_connect-jit" time="4.77321" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "deadline_connect", "socket_directory": "/tmp/eshkol-unix-2pysxpn2", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_connect-jit-rsnybsss", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--backlog-peer", "/tmp/eshkol-unix-2pysxpn2"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-deadline_connect-aot" classname="ipc-unix-deadline_connect-aot" time="1.88572" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "deadline_connect", "socket_directory": "/tmp/eshkol-unix-8oi1nyny", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_connect-aot-3v7pff1o", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--backlog-peer", "/tmp/eshkol-unix-8oi1nyny"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_connect-aot-3v7pff1o/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/deadline_connect-aot-3v7pff1o/socket-acceptance"]], "group_verificat...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-cancellation-jit" classname="ipc-unix-cancellation-jit" time="4.45747" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "cancellation", "socket_directory": "/tmp/eshkol-unix-m2t2a5gb", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/cancellation-jit-0mj2llo1", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-cancellation-aot" classname="ipc-unix-cancellation-aot" time="1.5213" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "cancellation", "socket_directory": "/tmp/eshkol-unix-0m__8hb0", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/cancellation-aot-dgj8flfy", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/cancellation-aot-dgj8flfy/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/cancellation-aot-dgj8flfy/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementati...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-nul_and_large_payload-jit" classname="ipc-unix-nul_and_large_payload-jit" time="11.5627" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "nul_and_large_payload", "socket_directory": "/tmp/eshkol-unix-mejkinmf", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/nul_and_large_payload-jit-s0odj6h_", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-nul_and_large_payload-aot" classname="ipc-unix-nul_and_large_payload-aot" time="7.97411" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "nul_and_large_payload", "socket_directory": "/tmp/eshkol-unix-dfcvst7w", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/nul_and_large_payload-aot-hqvmgert", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/nul_and_large_payload-aot-hqvmgert/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/nul_and_large_payload-aot-hqvmgert/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-descriptor_count_check-jit" classname="ipc-unix-descriptor_count_check-jit" time="4.45717" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "descriptor_count_check", "socket_directory": "/tmp/eshkol-unix-h_njtb2j", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/descriptor_count_check-jit-506xmnt7", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-descriptor_count_check-aot" classname="ipc-unix-descriptor_count_check-aot" time="1.61885" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "descriptor_count_check", "socket_directory": "/tmp/eshkol-unix-bm2afix1", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/descriptor_count_check-aot-2rsbl2wc", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/descriptor_count_check-aot-2rsbl2wc/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/descriptor_count_check-aot-2rsbl2wc/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control D...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-capability_denial-jit" classname="ipc-unix-capability_denial-jit" time="4.45729" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "capability_denial", "socket_directory": "/tmp/eshkol-unix-4peubvzf", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_denial-jit-s903y_lq", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-capability_denial-aot" classname="ipc-unix-capability_denial-aot" time="1.53247" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "capability_denial", "socket_directory": "/tmp/eshkol-unix-rirwd03e", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_denial-aot-z28evcbh", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_denial-aot-z28evcbh/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_denial-aot-z28evcbh/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socke...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-path_lifecycle-jit" classname="ipc-unix-path_lifecycle-jit" time="4.45879" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "path_lifecycle", "socket_directory": "/tmp/eshkol-unix-fir_91fn", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/path_lifecycle-jit-9yx7ilcm", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-path_lifecycle-aot" classname="ipc-unix-path_lifecycle-aot" time="1.52023" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "path_lifecycle", "socket_directory": "/tmp/eshkol-unix-gf64id1q", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/path_lifecycle-aot-m3fe9696", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/path_lifecycle-aot-m3fe9696/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/path_lifecycle-aot-m3fe9696/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent impl...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-destination_errors-jit" classname="ipc-unix-destination_errors-jit" time="4.47285" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "destination_errors", "socket_directory": "/tmp/eshkol-unix-bf1c5y07", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/destination_errors-jit-mofq9gxn", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--leftover-peer", "/tmp/eshkol-unix-bf1c5y07"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-destination_errors-aot" classname="ipc-unix-destination_errors-aot" time="1.48538" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "destination_errors", "socket_directory": "/tmp/eshkol-unix-o_pj_5ed", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/destination_errors-aot-hf0q552t", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--leftover-peer", "/tmp/eshkol-unix-o_pj_5ed"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/destination_errors-aot-hf0q552t/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/destination_errors-aot-hf0q552t/socket-acceptance"]], "group_...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-connect_cancellation-jit" classname="ipc-unix-connect_cancellation-jit" time="4.48404" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "connect_cancellation", "socket_directory": "/tmp/eshkol-unix-qh0d8itw", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_cancellation-jit-cv69p03v", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--backlog-peer", "/tmp/eshkol-unix-qh0d8itw"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-connect_cancellation-aot" classname="ipc-unix-connect_cancellation-aot" time="1.5415" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "connect_cancellation", "socket_directory": "/tmp/eshkol-unix-0kej12vv", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_cancellation-aot-oy1av3_y", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--backlog-peer", "/tmp/eshkol-unix-0kej12vv"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_cancellation-aot-oy1av3_y/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_cancellation-aot-oy1av3_y/socket-acceptance"]], ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-capability_revocation-jit" classname="ipc-unix-capability_revocation-jit" time="4.50646" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "capability_revocation", "socket_directory": "/tmp/eshkol-unix-1cob6f5c", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_revocation-jit-hg0vm3ok", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-capability_revocation-aot" classname="ipc-unix-capability_revocation-aot" time="1.52281" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "capability_revocation", "socket_directory": "/tmp/eshkol-unix-mk4h9715", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_revocation-aot-hqq8b7rt", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_revocation-aot-hqq8b7rt/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/capability_revocation-aot-hqq8b7rt/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-loop_lifetime-jit" classname="ipc-unix-loop_lifetime-jit" time="4.51098" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "loop_lifetime", "socket_directory": "/tmp/eshkol-unix-sls2n97m", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/loop_lifetime-jit-hezl6zr3", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-loop_lifetime-aot" classname="ipc-unix-loop_lifetime-aot" time="1.52002" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "loop_lifetime", "socket_directory": "/tmp/eshkol-unix-j9eedx68", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/loop_lifetime-aot-i92mxo3o", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/loop_lifetime-aot-i92mxo3o/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/loop_lifetime-aot-i92mxo3o/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implemen...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-zero_budget-jit" classname="ipc-unix-zero_budget-jit" time="4.48532" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "zero_budget", "socket_directory": "/tmp/eshkol-unix-2m0j9mn4", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/zero_budget-jit-wlwpdru2", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--backlog-peer", "/tmp/eshkol-unix-2m0j9mn4"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-zero_budget-aot" classname="ipc-unix-zero_budget-aot" time="1.5359" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "zero_budget", "socket_directory": "/tmp/eshkol-unix-8_sftp8f", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/zero_budget-aot-2r_eav_3", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test", "--backlog-peer", "/tmp/eshkol-unix-8_sftp8f"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/zero_budget-aot-2r_eav_3/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/zero_budget-aot-2r_eav_3/socket-acceptance"]], "group_verification": "signal0; succ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-lifecycle-jit" classname="ipc-unix-lifecycle-jit" time="4.00673" status="run">
+		<properties>
+			<property name="cmake_labels" value="jit;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "jit", "scenario": "lifecycle", "socket_directory": "/tmp/eshkol-unix-uqeonuq9", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/lifecycle-jit-laatisbk", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-r", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_lifecycle.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"}
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-lifecycle-aot" classname="ipc-unix-lifecycle-aot" time="1.17314" status="run">
+		<properties>
+			<property name="cmake_labels" value="aot;resource;socket"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "aot", "scenario": "lifecycle", "socket_directory": "/tmp/eshkol-unix-p_xc1wr0", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/lifecycle-aot-dxnjoova", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-L", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build", "-l", "eshkol-unix-socket-fixture", "-O0", "-o", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/lifecycle-aot-dxnjoova/socket-acceptance", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_lifecycle.esk"], ["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/lifecycle-aot-dxnjoova/socket-acceptance"]], "group_verification": "signal0; successful ps group inventory on permission denial", "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchang...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="ipc-unix-vm-unsupported" classname="ipc-unix-vm-unsupported" time="0.254034" status="run">
+		<properties>
+			<property name="cmake_labels" value="resource;socket;vm"/>
+		</properties>
+		<system-out>{"status": "PASS", "mode": "vm", "scenario": "vm-unsupported", "socket_directory": "/tmp/eshkol-unix-or45d7rx", "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/vm-unsupported-vm-tezyshhw", "commands": [["/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run", "--profile", "hosted-vm", "--emit-eskb", "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/vm-unsupported-vm-tezyshhw/unsupported.eskb", "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_vm_unsupported.esk"]], "group_verification": "signal0; successful ps group inventory on permission denial"}
+</system-out>
+	</testcase>
+	<testcase name="net_clock_failure_test" classname="net_clock_failure_test" time="0.00170863" status="run">
+		<properties/>
+		<system-out>PASS: networking clock failure refuses without retained leases
+</system-out>
+	</testcase>
+	<testcase name="net_runtime_test" classname="net_runtime_test" time="0.0370227" status="run">
+		<properties/>
+		<system-out>PASS: independent TCP/UDP runtime peers
+</system-out>
+	</testcase>
+	<testcase name="tls_test_pki" classname="tls_test_pki" time="0.00525171" status="run">
+		<properties/>
+		<system-out>PASS: test PKI written to /home/gabe/.codex/worktrees/unix-socket-core-20261112/build/tls-test-pki
+</system-out>
+	</testcase>
+	<testcase name="tls_lease_test" classname="tls_lease_test" time="0.145992" status="run">
+		<properties>
+			<property name="cmake_labels" value="network;ownership;tls"/>
+		</properties>
+		<system-out>PASS: leased TLS handshakes, verification refusals, &gt;16 MiB round trip, cancellation
+RESULT: PASS
+</system-out>
+	</testcase>
+	<testcase name="net_close_concurrency_test" classname="net_close_concurrency_test" time="0.00237686" status="run">
+		<properties/>
+		<system-out>PASS: in-flight close cancels promptly, retired IDs, and descriptor exhaustion/recovery
+RESULT: PASS
+</system-out>
+	</testcase>
+	<testcase name="net_lease_test" classname="net_lease_test" time="0.921726" status="run">
+		<properties>
+			<property name="cmake_labels" value="network;ownership"/>
+		</properties>
+		<system-out>PASS: partial writes, reset, deadlines, cancellation, shutdown, truncation, descriptor cycles
+RESULT: PASS
+</system-out>
+	</testcase>
+</testsuite>

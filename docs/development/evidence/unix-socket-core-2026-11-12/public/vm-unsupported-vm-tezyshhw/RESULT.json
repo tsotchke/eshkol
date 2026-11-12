@@ -1,0 +1,18 @@
+{
+  "status": "PASS",
+  "mode": "vm",
+  "scenario": "vm-unsupported",
+  "socket_directory": "/tmp/eshkol-unix-or45d7rx",
+  "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/vm-unsupported-vm-tezyshhw",
+  "commands": [
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run",
+      "--profile",
+      "hosted-vm",
+      "--emit-eskb",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/vm-unsupported-vm-tezyshhw/unsupported.eskb",
+      "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_vm_unsupported.esk"
+    ]
+  ],
+  "group_verification": "signal0; successful ps group inventory on permission denial"
+}

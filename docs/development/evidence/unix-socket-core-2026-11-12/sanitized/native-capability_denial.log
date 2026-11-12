@@ -1,0 +1,2 @@
+SCRATCH: /tmp/eshkol-unix-SLPgZB
+PASS: unix_socket_stream_test capability_denial (12 checks)

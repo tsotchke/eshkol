@@ -1,0 +1,51 @@
+[  0%] Built target tree-sitter
+[  5%] Built target pcre2-8-static
+[  9%] Built target yogacore
+[  9%] Built target eshkol-agent-sqlite3
+[ 13%] Built target eshkol-agent-tree-sitter-grammars
+[ 17%] Built target zlibstatic
+[ 25%] Built target eshkol-runtime-core-obj
+[ 60%] Built target libcurl_static
+[ 66%] Built target eshkol-runtime-hosted-obj
+[ 68%] Built target eshkol-backend-runtime-obj
+[ 68%] Built target eshkol-vm-unity-obj
+[ 68%] Built target eshkol-gpu-runtime-obj
+[ 68%] Built target eshkol-bootstrap-object
+[ 78%] Built target eshkol-runtime-support-obj
+[ 78%] Built target eshkol-runtime-base
+[ 82%] Built target eshkol-agent-ffi
+[ 98%] Built target eshkol-static
+[ 98%] Built target eshkol-repl-lib
+[ 98%] Built target eshkol-bootstrap
+[ 98%] Linking CXX static library libeshkol-runtime.a
+[ 98%] Built target eshkol-runtime
+[ 98%] Building CXX object CMakeFiles/eshkol-run.dir/exe/eshkol-run.cpp.o
+[ 98%] Linking CXX executable eshkol-run
+[100%] Built target eshkol-run
+[  0%] Built target tree-sitter
+[  5%] Built target pcre2-8-static
+[  9%] Built target yogacore
+[  9%] Built target eshkol-agent-sqlite3
+[ 13%] Built target eshkol-agent-tree-sitter-grammars
+[ 17%] Built target zlibstatic
+[ 25%] Built target eshkol-runtime-core-obj
+[ 31%] Built target eshkol-runtime-hosted-obj
+[ 33%] Built target eshkol-backend-runtime-obj
+[ 43%] Built target eshkol-runtime-support-obj
+[ 78%] Built target libcurl_static
+[ 78%] Built target eshkol-vm-unity-obj
+[ 78%] Built target eshkol-gpu-runtime-obj
+[ 78%] Built target eshkol-bootstrap-object
+[ 78%] Built target eshkol-runtime-base
+[ 82%] Built target eshkol-agent-ffi
+[ 98%] Built target eshkol-static
+[ 98%] Built target eshkol-repl-lib
+[ 98%] Built target eshkol-bootstrap
+[ 98%] Built target eshkol-runtime
+[100%] Built target eshkol-run
+[100%] Compiling standard library to /home/gabe/.codex/worktrees/unix-socket-core-20261112/build/stdlib.o
+[WARN] Type warning: argument 2 of 'loop': expected Boolean, got Int64 (line 180:45)
+[WARN] Type warning: argument 4 of 'loop': expected Boolean, got Int64 (line 181:37)
+[WARN] Type warning: argument 2 of 'loop': expected Boolean, got Pair<Number, Number> (line 270:43)
+[1m[33m   WARNING:[0m HoTT: 3 type warnings detected (gradual typing continues)
+[100%] Built target stdlib

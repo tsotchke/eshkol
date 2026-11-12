@@ -1,0 +1,3 @@
+MEASURE: bytes=16777253 short-writes=453 would-block=3589
+PASS: unix-socket nul_and_large_payload
+CHECKS: 15837

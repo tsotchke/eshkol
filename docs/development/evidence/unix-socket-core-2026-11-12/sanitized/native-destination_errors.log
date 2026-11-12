@@ -1,0 +1,2 @@
+SCRATCH: /tmp/eshkol-unix-rzHdwS
+PASS: unix_socket_stream_test destination_errors (12 checks)

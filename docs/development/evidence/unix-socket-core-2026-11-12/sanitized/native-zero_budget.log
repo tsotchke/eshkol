@@ -1,0 +1,3 @@
+SCRATCH: /tmp/eshkol-unix-ysHkk4
+MEASURE: pending_control=real_OS_backlog
+PASS: unix_socket_stream_test zero_budget (41 checks)

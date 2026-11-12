@@ -1,0 +1,3 @@
+SCRATCH: /tmp/eshkol-unix-TXMP7Y
+MEASURE: pending_control=real_OS_backlog
+PASS: unix_socket_stream_test deadline_connect (39 checks)

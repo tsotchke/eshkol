@@ -1,0 +1,27 @@
+{
+  "status": "PASS",
+  "mode": "aot",
+  "scenario": "peer_close_epipe",
+  "socket_directory": "/tmp/eshkol-unix-sgpyqfmp",
+  "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/peer_close_epipe-aot-gmz_63_k",
+  "commands": [
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-l",
+      "eshkol-unix-socket-fixture",
+      "-O0",
+      "-o",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/peer_close_epipe-aot-gmz_63_k/socket-acceptance",
+      "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"
+    ],
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/peer_close_epipe-aot-gmz_63_k/socket-acceptance"
+    ]
+  ],
+  "group_verification": "signal0; successful ps group inventory on permission denial",
+  "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"
+}

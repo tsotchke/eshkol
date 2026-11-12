@@ -1,0 +1,49 @@
+{
+  "created_utc": "2026-11-12T17:09:19.686102+00:00",
+  "source_head": "b4c26cde661f6995f9e055c04f084d476d065a1d",
+  "source_hashes": {
+    "tests/agent/subprocess_stream_test.c": "9891aa04998c4905b89a84830b60784f17221338dcc78d9c9d9b43a1b809307a",
+    "tests/agent/subprocess_stream_clock_test.c": "395aa0a3ae51a4f1c416966b9a4fb4a13f19cfd83f4caa7f4f51862051dd1ef2",
+    "tests/agent/subprocess_stream_watch_failure_test.c": "17f0fa986d9bdc0f53de9d5373f29f6fab7a35707f1655e9854fb24fbde2d5e0",
+    "tests/agent/run_subprocess_stream_test.sh": "e746eef2fbf1663c621fd80ca9c73488cfdbadaf1882e546b96dc823caaa9961",
+    "lib/agent/c/agent_subprocess.c": "172e643be2376803b614c8fb78527f3339b5677cc178969f0ef94b0d9b60a935",
+    "inc/eshkol/core/subprocess_stream.h": "2a89d31e2ef05d809362bbe1d48f78aa4746a01cd1484d6952f915e17eab2c31",
+    "lib/core/resource_lease.c": "1561f9358eeabab7eecf7b6b9ffe393d1f0757834a5483b10846b7d667ebad12",
+    "lib/core/runtime_handle.cpp": "32438d304ac9acc0a35864993648537eeb680651a422d6887ae4077e2126fdae",
+    "lib/core/event_loop.c": "829000ce50dc89931d735766b1c4f1c52166b530d03ec7ab79b20e9c966f7f8a",
+    "lib/core/event_loop_epoll.c": "c2225a34d7d1c7b8ea1526e1d8a675d07a303c9b481bd5bcddd7e7f4209a6602",
+    "inc/eshkol/core/event_loop.h": "075c1456a43761db9b82f8fffc937e72023c3981e4db43f8a59c57ea23cb8035",
+    "inc/eshkol/core/resource_lease.h": "24e20201ea17a47c4ef0c9a8f81e5183b32668cb0ff771c0821439c0c660b534",
+    "inc/eshkol/core/handle.h": "ca0defedb1988c480382f1951211df556a34a2b7b6b641039185027aabf7e9ed",
+    "lib/core/event_loop_internal.h": "e28e994fe8ac858ec46332f0decc543973e361822fc39c8595fdb084ed6dd647"
+  },
+  "records": [
+    {
+      "name": "process-native",
+      "command": [
+        "tests/agent/run_subprocess_stream_test.sh"
+      ],
+      "environment": {},
+      "exit_code": 0,
+      "log": "process-native.log",
+      "log_sha256": "9ed31cc25ae1c7799d2bfd192d6d7383b32aeb9833c2914c60d31759037bfcb7"
+    },
+    {
+      "name": "process-sanitized",
+      "command": [
+        "tests/agent/run_subprocess_stream_test.sh"
+      ],
+      "environment": {
+        "CC": "clang",
+        "CXX": "clang++",
+        "ESHKOL_STREAM_SANITIZE": "1",
+        "ASAN_OPTIONS": "detect_leaks=1:halt_on_error=1:abort_on_error=1",
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      },
+      "exit_code": 0,
+      "log": "process-sanitized.log",
+      "log_sha256": "25172c77526056e7fc2ee69205ad4aea18db301082fc87f95f8bae3d6d69cb45"
+    }
+  ],
+  "scope": "Native actual PROCESS/shared socketpair integration, clock failure, missing capability checker, and wrapped watch-removal failure controls. Normal and ASan/UBSan/leak runs."
+}

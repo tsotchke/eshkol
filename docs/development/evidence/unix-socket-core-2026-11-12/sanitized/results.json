@@ -1,0 +1,483 @@
+{
+  "record_created_utc": "2026-11-12T17:09:15.627504+00:00",
+  "platform": "Linux x86_64 epoll",
+  "source_head": "b4c26cde661f6995f9e055c04f084d476d065a1d",
+  "source_hashes": {
+    "lib/agent/c/agent_unix_socket_stream.c": "f47d91caed2ef2160ac4099f230013ca9d533644b3c0a6f2610bd1d16a9aa401",
+    "lib/core/resource_lease.c": "1561f9358eeabab7eecf7b6b9ffe393d1f0757834a5483b10846b7d667ebad12",
+    "lib/core/event_loop.c": "829000ce50dc89931d735766b1c4f1c52166b530d03ec7ab79b20e9c966f7f8a",
+    "lib/core/event_loop_epoll.c": "c2225a34d7d1c7b8ea1526e1d8a675d07a303c9b481bd5bcddd7e7f4209a6602",
+    "lib/core/runtime_handle.cpp": "32438d304ac9acc0a35864993648537eeb680651a422d6887ae4077e2126fdae",
+    "tests/agent/unix_socket_stream_test.c": "9681cd07102649eb759d89d0cdcdd47578392d51bfd347b6c87f4a61c5c24ac1",
+    "tests/agent/unix_socket_cleanup_test.c": "349fb58caa91ddfadbcf7276176d5915e9deaf0be79f9d66797a89cdbe66a22e",
+    "tests/agent/unix_socket_stream_fixture_support.c": "0b16dfd985d47ea4e9b16eb64c9bcf7dc1008aa367b87e86e718bb3229b228d9",
+    "inc/eshkol/core/unix_socket_stream.h": "5424adb03b0f7a4d4dd0c4edccc4d6dd60dcc942d479da1aa433592cab4da010",
+    "inc/eshkol/core/resource_lease.h": "24e20201ea17a47c4ef0c9a8f81e5183b32668cb0ff771c0821439c0c660b534",
+    "inc/eshkol/core/event_loop.h": "075c1456a43761db9b82f8fffc937e72023c3981e4db43f8a59c57ea23cb8035",
+    "inc/eshkol/core/handle.h": "ca0defedb1988c480382f1951211df556a34a2b7b6b641039185027aabf7e9ed",
+    "lib/core/event_loop_internal.h": "e28e994fe8ac858ec46332f0decc543973e361822fc39c8595fdb084ed6dd647"
+  },
+  "compiler": "clang version 22.1.8",
+  "sanitizers": "detect_leaks=1:halt_on_error=1:abort_on_error=1",
+  "ubsan_options": "halt_on_error=1:print_stacktrace=1",
+  "scope": "standalone fully instrumented Unix socket core, native acceptance and cleanup; fixture DSO linked; no compiler/JIT/AOT claim",
+  "native_scenarios": 16,
+  "records": [
+    {
+      "name": "fixture-build",
+      "command": [
+        "clang",
+        "-std=c11",
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-fPIC",
+        "-shared",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_fixture_support.c",
+        "-ldl",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/libsocket-fixture.so"
+      ],
+      "exit_code": 0,
+      "seconds": 0.07,
+      "log": "fixture-build.log"
+    },
+    {
+      "name": "compile-0",
+      "command": [
+        "clang",
+        "-std=c11",
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-c",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/lib/agent/c/agent_unix_socket_stream.c",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/0.o"
+      ],
+      "exit_code": 0,
+      "seconds": 0.202,
+      "log": "compile-0.log"
+    },
+    {
+      "name": "compile-1",
+      "command": [
+        "clang",
+        "-std=c11",
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-c",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/lib/core/resource_lease.c",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/1.o"
+      ],
+      "exit_code": 0,
+      "seconds": 0.262,
+      "log": "compile-1.log"
+    },
+    {
+      "name": "compile-2",
+      "command": [
+        "clang",
+        "-std=c11",
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-c",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/lib/core/event_loop.c",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/2.o"
+      ],
+      "exit_code": 0,
+      "seconds": 0.172,
+      "log": "compile-2.log"
+    },
+    {
+      "name": "compile-3",
+      "command": [
+        "clang",
+        "-std=c11",
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-c",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/lib/core/event_loop_epoll.c",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/3.o"
+      ],
+      "exit_code": 0,
+      "seconds": 0.057,
+      "log": "compile-3.log"
+    },
+    {
+      "name": "compile-handle",
+      "command": [
+        "clang++",
+        "-std=c++17",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-c",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/lib/core/runtime_handle.cpp",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/handle.o"
+      ],
+      "exit_code": 0,
+      "seconds": 0.385,
+      "log": "compile-handle.log"
+    },
+    {
+      "name": "compile-native",
+      "command": [
+        "clang",
+        "-std=c11",
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-c",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_test.c",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/native.o"
+      ],
+      "exit_code": 0,
+      "seconds": 0.215,
+      "log": "compile-native.log"
+    },
+    {
+      "name": "link-native",
+      "command": [
+        "clang++",
+        "-pthread",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "/tmp/eshkol-unix-socket-sanitized/native.o",
+        "/tmp/eshkol-unix-socket-sanitized/0.o",
+        "/tmp/eshkol-unix-socket-sanitized/1.o",
+        "/tmp/eshkol-unix-socket-sanitized/2.o",
+        "/tmp/eshkol-unix-socket-sanitized/3.o",
+        "/tmp/eshkol-unix-socket-sanitized/handle.o",
+        "-L/tmp/eshkol-unix-socket-sanitized",
+        "-lsocket-fixture",
+        "-Wl,-rpath,/tmp/eshkol-unix-socket-sanitized",
+        "-ldl",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/native"
+      ],
+      "exit_code": 0,
+      "seconds": 0.212,
+      "log": "link-native.log"
+    },
+    {
+      "name": "compile-cleanup",
+      "command": [
+        "clang",
+        "-std=c11",
+        "-D_GNU_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-O1",
+        "-g",
+        "-Wall",
+        "-Wextra",
+        "-pthread",
+        "-I/home/gabe/Documents/ChatGPT/eshkol-sockets/inc",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "-c",
+        "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_cleanup_test.c",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/cleanup.o"
+      ],
+      "exit_code": 0,
+      "seconds": 0.1,
+      "log": "compile-cleanup.log"
+    },
+    {
+      "name": "link-cleanup",
+      "command": [
+        "clang++",
+        "-pthread",
+        "-fsanitize=address,undefined",
+        "-fno-omit-frame-pointer",
+        "/tmp/eshkol-unix-socket-sanitized/cleanup.o",
+        "/tmp/eshkol-unix-socket-sanitized/0.o",
+        "/tmp/eshkol-unix-socket-sanitized/1.o",
+        "/tmp/eshkol-unix-socket-sanitized/2.o",
+        "/tmp/eshkol-unix-socket-sanitized/3.o",
+        "/tmp/eshkol-unix-socket-sanitized/handle.o",
+        "-o",
+        "/tmp/eshkol-unix-socket-sanitized/cleanup"
+      ],
+      "exit_code": 0,
+      "seconds": 0.135,
+      "log": "link-cleanup.log"
+    },
+    {
+      "name": "native-connect_accept",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "connect_accept",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.012,
+      "log": "native-connect_accept.log"
+    },
+    {
+      "name": "native-partial_slow_peer",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "partial_slow_peer",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.543,
+      "log": "native-partial_slow_peer.log"
+    },
+    {
+      "name": "native-peer_close_epipe",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "peer_close_epipe",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.011,
+      "log": "native-peer_close_epipe.log"
+    },
+    {
+      "name": "native-deadline_accept",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "deadline_accept",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.159,
+      "log": "native-deadline_accept.log"
+    },
+    {
+      "name": "native-deadline_connect",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "deadline_connect",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.361,
+      "log": "native-deadline_connect.log"
+    },
+    {
+      "name": "native-cancellation",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "cancellation",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.062,
+      "log": "native-cancellation.log"
+    },
+    {
+      "name": "native-nul_and_large_payload",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "nul_and_large_payload",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 4.214,
+      "log": "native-nul_and_large_payload.log"
+    },
+    {
+      "name": "native-descriptor_count_check",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "descriptor_count_check",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.054,
+      "log": "native-descriptor_count_check.log"
+    },
+    {
+      "name": "native-capability_denial",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "capability_denial",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.009,
+      "log": "native-capability_denial.log"
+    },
+    {
+      "name": "native-path_lifecycle",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "path_lifecycle",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.01,
+      "log": "native-path_lifecycle.log"
+    },
+    {
+      "name": "native-destination_errors",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "destination_errors",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.009,
+      "log": "native-destination_errors.log"
+    },
+    {
+      "name": "native-connect_cancellation",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "connect_cancellation",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.06,
+      "log": "native-connect_cancellation.log"
+    },
+    {
+      "name": "native-capability_revocation",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "capability_revocation",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.009,
+      "log": "native-capability_revocation.log"
+    },
+    {
+      "name": "native-loop_lifetime",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "loop_lifetime",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.01,
+      "log": "native-loop_lifetime.log"
+    },
+    {
+      "name": "native-borrowed_close",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "borrowed_close",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.01,
+      "log": "native-borrowed_close.log"
+    },
+    {
+      "name": "native-zero_budget",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/native",
+        "zero_budget",
+        "/tmp/eshkol-unix-socket-sanitized/scratch"
+      ],
+      "exit_code": 0,
+      "seconds": 0.009,
+      "log": "native-zero_budget.log"
+    },
+    {
+      "name": "cleanup",
+      "command": [
+        "/tmp/eshkol-unix-socket-sanitized/cleanup"
+      ],
+      "exit_code": 0,
+      "seconds": 0.01,
+      "log": "cleanup.log"
+    }
+  ],
+  "artifact_hashes": {
+    "native": "766ef9544576f3ba07aaa76d490126ba3f8033a10c38719ff4a92ddd65ad64e5",
+    "cleanup": "592e0699ff1a5beee5c9f55ef1e09d202dc1ca46a8d2b6134317341110295316",
+    "libsocket-fixture.so": "24f5e8ef0e5dab767d8d27e0e4407f68b66bfe95b02fef3b83ccaa7377a66b8d"
+  },
+  "log_hashes": {
+    "fixture-build.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compile-0.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compile-1.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compile-2.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compile-3.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compile-handle.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compile-native.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "link-native.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "compile-cleanup.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "link-cleanup.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "native-connect_accept.log": "1fda25705a8293d22a2e2aa9d569a375123b1e8f05cc7bdf54ffa33d7099c1a7",
+    "native-partial_slow_peer.log": "a5c6f54f6849d251369084fe7607ea28896116c4561eb80abae0cd6f6cf09c64",
+    "native-peer_close_epipe.log": "4b5307de9147aea2da526f8789dd0b6594fe1526682cda8bcadd7e256f363678",
+    "native-deadline_accept.log": "f069dc8af71400e5f066d565cd981538791e5291b49d2ac670a8b0e2b6679229",
+    "native-deadline_connect.log": "e8b9c4618cef933bd4df5420aad2a3535e0fd37cae2523b41569acab5912e009",
+    "native-cancellation.log": "96d9879b8253de0c2ca1d96f25b430b81fa9937868227365a9c373c584f4ed12",
+    "native-nul_and_large_payload.log": "bce2d97d725cdaa5d210921e8fd0c335151ef5de55eaeccc97adb6277bbeee80",
+    "native-descriptor_count_check.log": "171b2362bd037aebee0f9102cc33f2dd3725179ca64c29ca119559c1ef267b57",
+    "native-capability_denial.log": "56cddc8723d1abad073c50b1322d608935e893a7cbdb74fb8087c948b7b330ae",
+    "native-path_lifecycle.log": "c7e75a3529f979d585870f4859a3db91e58ec504280b820dc8d9781fc3df409b",
+    "native-destination_errors.log": "dac646ccc3767ef35c486459d5320d6f9c32d32c30fc3000c595196eb1be64ee",
+    "native-connect_cancellation.log": "d3cb36899c86131cce0cbaa56077e76ab8209dc8119424c71719d6029b0abb50",
+    "native-capability_revocation.log": "742f0cee41cce471ecd0d9112d305a73b62163b9d31cfe639cab4a9663c1cc68",
+    "native-loop_lifetime.log": "710a6f423d2daa96de24912d7eeaadc6ed0f4eadde6ece7ffb5bcbf98344f2f5",
+    "native-borrowed_close.log": "d4cf7f8d65a147b031782ff893319d1bb738b1ef573d08ee4cedead2ed687709",
+    "native-zero_budget.log": "1d64e08ee0907520616c199609428d852eee2a09d8c874578377a8346fb01a85",
+    "cleanup.log": "4fd25fc80797f173e965dc7ad4f861bae9b9578841e97e4a6f4094e959999c74"
+  },
+  "log_hash_scope": "Only logs owned by the Unix socket qualification records; PROCESS logs are bound independently in process-results.json."
+}

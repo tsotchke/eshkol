@@ -1,0 +1,32 @@
+{
+  "status": "PASS",
+  "mode": "aot",
+  "scenario": "connect_cancellation",
+  "socket_directory": "/tmp/eshkol-unix-0kej12vv",
+  "work": "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_cancellation-aot-oy1av3_y",
+  "commands": [
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-unix-stream-socket-stream-test",
+      "--backlog-peer",
+      "/tmp/eshkol-unix-0kej12vv"
+    ],
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/eshkol-run",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-L",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build",
+      "-l",
+      "eshkol-unix-socket-fixture",
+      "-O0",
+      "-o",
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_cancellation-aot-oy1av3_y/socket-acceptance",
+      "/home/gabe/Documents/ChatGPT/eshkol-sockets/tests/agent/unix_socket_stream_pending.esk"
+    ],
+    [
+      "/home/gabe/.codex/worktrees/unix-socket-core-20261112/build/ipc-unix-scratch/connect_cancellation-aot-oy1av3_y/socket-acceptance"
+    ]
+  ],
+  "group_verification": "signal0; successful ps group inventory on permission denial",
+  "fixture_loading": "process-visible observation/control DSO; production socket/agent implementation unchanged"
+}
