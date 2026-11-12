@@ -132,7 +132,7 @@ try:
         case_env = env.copy()
         if control and case in ('--peer-fixture-selftest', 'deadline_connect', 'connect_cancellation', 'zero_budget'):
             case_env['DYLD_INSERT_LIBRARIES'] = str(control)
-        run('socket-' + case.lstrip('-'), [native, case], run_env=case_env)
+        run('socket-' + case.lstrip('-'), [native, case], run_env=case_env, timeout=150)
     cleanup_object, cleanup = output / 'cleanup.o', output / 'socket-cleanup'
     run('compile-cleanup', [cc, *cflags, '-c', root / 'tests/agent/unix_socket_cleanup_test.c', '-o', cleanup_object])
     run('link-cleanup', [cxx, '-pthread', *sanflags, cleanup_object, *objects, '-o', cleanup])

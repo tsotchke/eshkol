@@ -86,9 +86,25 @@ static void transfer(pair_t p, size_t size, int slow) {
     unsigned char *sent = malloc(size), *got = malloc(size); CHECK(sent && got);
     for (size_t i = 0; i < size; ++i) sent[i] = (unsigned char)(i % 7 ? i * 31 : 0);
     memset(got, 0xaa, size); /* fault in fixture buffers before core RSS measurement */
+    int64_t budget = 20000;
+    if (slow) {
+        int64_t calibration_start = now_ms();
+        for (int i = 0; i < 3; ++i) nap(1);
+        int64_t calibration = now_ms() - calibration_start; CHECK(calibration >= 0);
+        /* Darwin may coalesce a one-millisecond nap. Budget the unchanged
+         * paced reads from three actual sleeps, with two milliseconds of
+         * per-iteration margin; keep one deadline and a two-minute ceiling. */
+        int64_t per_iteration = (calibration + 2) / 3 + 2;
+        int64_t paced_iterations = (int64_t)((size + 4095) / 4096);
+        budget += paced_iterations * per_iteration;
+        if (budget > 120000) budget = 120000;
+        fprintf(stderr, "MEASURE: nap_calibration_calls=3 elapsed_ms=%lld paced_iterations=%lld per_iteration_budget_ms=%lld transfer_budget_ms=%lld\n",
+                (long long)calibration, (long long)paced_iterations,
+                (long long)per_iteration, (long long)budget);
+    }
     long before = peak_kib();
     size_t written = 0, read_total = 0; unsigned short_writes = 0, blocked = 0;
-    int64_t deadline = now_ms() + 20000;
+    int64_t deadline = now_ms() + budget;
     while (read_total < size) {
         CHECK(now_ms() < deadline);
         if (written < size) {

@@ -28,7 +28,7 @@
                (and (equal? (error-object-message e) operation)
                     (pair? args) (pair? (cdr args)) (= (cadr args) -4)))))
     (thunk) #f))
-(capability-install-policy! '(network))
+(capability-install-policy! '(network file-read))
 
 ;; A ticket owns its result independently of the retired socket identity.
 (define listener (unix-stream-socket-listen loop (path "ticket")))
@@ -41,11 +41,15 @@
 (check "cleanup completes on owner thread" (eq? (unix-stream-socket-cleanup-state completed) 'complete))
 (check "complete cleanup has no OS error" (= (unix-stream-socket-cleanup-os-error completed) 0))
 (check "complete result cannot retry" (not (unix-stream-socket-cleanup-retryable? completed)))
+;; Cleanup above ran with no capabilities. Permit only the independent path
+;; observation, then revoke again before releasing the owned result ticket.
+(capability-install-policy! '(file-read))
 (check "ticket cleanup unlinked pathname" (not (file-exists? (path "ticket"))))
+(capability-install-policy! '())
 (check "ticket release survives revocation" (= (unix-stream-socket-cleanup-release! ticket) 0))
 (check "released result identity rejected"
   (invalid? (lambda () (unix-stream-socket-cleanup-result ticket)) "unix-stream-socket-cleanup-result"))
-(capability-install-policy! '(network))
+(capability-install-policy! '(network file-read))
 
 (define seen #f)
 (check "listener scope preserves return value"
@@ -163,6 +167,10 @@
                 (capability-install-policy! '())
                 'revoked-cleanup))))))))
 (check "scoped return survives revoked cleanup" (eq? returned 'revoked-cleanup))
+;; All nested finalizers already ran under the empty policy. Path observation
+;; needs file-read; it must not turn a denied probe into a cleanup success.
+(capability-install-policy! '(file-read))
+(check "nested cleanup did not reacquire network" (not (capability-allowed? 'network)))
 (check "nested revoked cleanup removes path" (not (file-exists? (path "pair"))))
 (check "all socket retains released" (= (-loop-close-code loop) 0))
 (display "PASS: unix-socket lifecycle") (newline)

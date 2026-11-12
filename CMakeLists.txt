@@ -8931,6 +8931,14 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     endif()
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME agent-unix-stream-socket-host-refusal
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/test_unix_socket_unsupported.py
+                --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+                --cc ${CMAKE_C_COMPILER}
+                --work-root ${CMAKE_CURRENT_BINARY_DIR}/qualification/socket-host-refusal)
+        set_tests_properties(agent-unix-stream-socket-host-refusal PROPERTIES
+            TIMEOUT 120 LABELS "resource;socket;source-contract")
         add_test(NAME agent-unix-stream-socket-runner-oracle
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/unix_socket_stream_runner_contract_test.py
@@ -8957,7 +8965,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
             COMMAND eshkol-unix-stream-socket-stream-test ${case_name}
                 ${CMAKE_BINARY_DIR}/ipc-unix-scratch)
         set_tests_properties(ipc-unix-${case_name} PROPERTIES
-            LABELS "resource;socket;native" TIMEOUT 60)
+            LABELS "resource;socket;native" TIMEOUT 150)
     endforeach()
 
     if(APPLE)
@@ -8969,7 +8977,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     add_test(NAME ipc-unix-borrowed_close
         COMMAND eshkol-unix-stream-socket-stream-test borrowed_close)
     set_tests_properties(ipc-unix-borrowed_close PROPERTIES
-        LABELS "resource;socket;native" TIMEOUT 60)
+        LABELS "resource;socket;native" TIMEOUT 150)
 
     add_executable(eshkol-unix-socket-cleanup-test
         tests/agent/unix_socket_cleanup_test.c lib/agent/c/agent_unix_socket_stream.c
