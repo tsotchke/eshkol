@@ -1,0 +1,73 @@
+{
+  "source_commit": "cecebfe2b1e6674cdae52c7fddb8c54b0d09f9a8",
+  "base_commit": "e2c83bd48159909751130fbc0c595629738c0832",
+  "created_utc": "2026-11-12T21:27:17.105066+00:00",
+  "platform": "Linux x86_64 epoll",
+  "compiler": "Clang 22.1.8; LLVM21 selected for CMake configuration",
+  "scope": "Standalone shared resource facility, handle C/C++ lifecycle, legacy net/TLS compatibility; no compiler/JIT/AOT/macOS execution claim",
+  "source_sha256": {
+    "CMakeLists.txt": "2ad47a585b9e445296eb244c1acd687d119285f864026526480ca0fe43bff5c0",
+    "docs/api/core/event_loop.md": "945d5397cef5c93d3b016313e29f694f3f7c21572cb39a8ff3916912d43f09db",
+    "docs/api/core/handle.md": "e40eefdb0940918685a7e97622e4687166b3acce07443697d67c1fe55cba3b60",
+    "docs/api/core/resource_lease.md": "09445701c5ced86f9952b87f7bad7f707d6ba39f010fb08cb2d1cc96ee9879c7",
+    "docs/reference/runtime/event-loop.md": "a2dbe87a9454e87e1488a2f5593d1ae55a3e1ff989380048ed593575dbd95c8f",
+    "docs/reference/runtime/resource-leases.md": "239b47172ef40edc99ec77cf426d2a9d604f5633dc9410d2381344ebc94deef6",
+    "inc/eshkol/core/event_loop.h": "f87ff955c0e11bfde91b1a63ae6c62ed2392d54ebd152785b1793744fe5e8419",
+    "inc/eshkol/core/handle.h": "ca0defedb1988c480382f1951211df556a34a2b7b6b641039185027aabf7e9ed",
+    "inc/eshkol/core/resource_lease.h": "24e20201ea17a47c4ef0c9a8f81e5183b32668cb0ff771c0821439c0c660b534",
+    "lib/core/event_loop.c": "7affbfb91fcce333864c7cb3cd764a698153f83db93fad03ba487f6a3d4fa1f3",
+    "lib/core/event_loop_internal.h": "e28e994fe8ac858ec46332f0decc543973e361822fc39c8595fdb084ed6dd647",
+    "lib/core/resource_handle_internal.h": "ceefa947a240869f40f1e9a9a50f60aa0fb76a606051d7ccf6ed04f5153b1903",
+    "lib/core/resource_lease.c": "74b7e5f187fc3c3fea066ab072efdc0264b5d3399e783bd185d0892527bb7e90",
+    "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+    "tests/core/resource_explicit_loop_test.c": "81a2b0f052bd011702228c5ad9f4d8c03a4285e5129283b82857025af750f646",
+    "tests/network/net_clock_failure_test.c": "0ef37b5ad7deb2c51876a8f16d5e3026d86470d6faa86ccb13eb1315adbc6a26",
+    "tests/network/net_close_concurrency_test.c": "0630aedb50834ac41b20b8973b2c713601129a7f9f51d1a17ba407818ee8ae6b"
+  },
+  "ctest": {
+    "count": 9,
+    "passed": 9,
+    "names": [
+      "handle_lifecycle_test",
+      "handle_c_api_test",
+      "net_clock_failure_test",
+      "net_runtime_test",
+      "tls_test_pki",
+      "tls_lease_test",
+      "net_close_concurrency_test",
+      "net_lease_test",
+      "resource_explicit_loop_test"
+    ]
+  },
+  "standalone": [
+    "shared",
+    "handle-lifecycle",
+    "handle-c",
+    "net",
+    "tls"
+  ],
+  "modes": [
+    "normal",
+    "ASan/UBSan with detect_leaks=1 and halt_on_error=1"
+  ],
+  "logs_sha256": {
+    "ctest.log": "cac58ba6f8a69c2fc86d5b1b1750ff3e5f111b702b00362fd0ed39e42a9a3976",
+    "cmake-build.log": "19677e0a86dd28d8b0ec8004a784272b8f99661a2116d14700f3ff9d87e01a5c",
+    "configure.log": "247f815b6c25d47f41fc56dd5c9816610df4f6e2827eea5d12618bb524da9d69",
+    "tls-sanitized.log": "ada2533606c69e14e2ef46579ed4be5db654570f25062fcbba99e52eb71d011a",
+    "pki-sanitized.log": "1ed0b3a3d94fa35727280f46a39077fc9b0f4b7b0753a3ca1129c94e73a27798",
+    "net-sanitized.log": "a8029b009220508729dc6d1a063af288590914e5f8cc13f2a38e2ac7c8f84f29",
+    "handle-c-sanitized.log": "64ce71d46974f58f79cad2e79a4856e019528a7a6b5adad101f0f45884f28b81",
+    "handle-lifecycle-sanitized.log": "c6752c050b51878e9bfaf30bb7a0b164ad79f9ac5128aadea25bb9fe4723d125",
+    "shared-sanitized.log": "a69dd5225661f6f08ca60553e70fdbbd992fcbd700e912ec2edc15e2ffd95c69",
+    "tls-normal.log": "ada2533606c69e14e2ef46579ed4be5db654570f25062fcbba99e52eb71d011a",
+    "pki-normal.log": "1ed0b3a3d94fa35727280f46a39077fc9b0f4b7b0753a3ca1129c94e73a27798",
+    "net-normal.log": "a8029b009220508729dc6d1a063af288590914e5f8cc13f2a38e2ac7c8f84f29",
+    "handle-c-normal.log": "64ce71d46974f58f79cad2e79a4856e019528a7a6b5adad101f0f45884f28b81",
+    "handle-lifecycle-normal.log": "c6752c050b51878e9bfaf30bb7a0b164ad79f9ac5128aadea25bb9fe4723d125",
+    "shared-normal.log": "a69dd5225661f6f08ca60553e70fdbbd992fcbd700e912ec2edc15e2ffd95c69",
+    "driver.log": "211f68d2f4981de5dbb5dbef736e0bcb7336c399c424ff6fd8f9d39b98631f73"
+  },
+  "command_script_sha256": "6ca6777edc69324996ce96c095af35d98075f30aeb2b3d280babc1cc7d7773d1",
+  "log_provenance": "Raw machine logs are retained locally. Keys name original local logs; values hash their original bytes. No raw logs are repository content."
+}
