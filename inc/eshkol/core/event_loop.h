@@ -100,6 +100,7 @@ extern "C" {
 #define ESHKOL_EVENT_LOOP_ENOTSUP  (-4) /**< Platform cannot watch this object.   */
 #define ESHKOL_EVENT_LOOP_ENOENT   (-5) /**< Descriptor is not registered.        */
 #define ESHKOL_EVENT_LOOP_EFULL    (-6) /**< Registration table is at max_events. */
+#define ESHKOL_EVENT_LOOP_EBUSY    (-7) /**< A scoped resource still retains the loop. */
 /** @} */
 
 /** Upper bound accepted by eshkol_event_loop_create() for @p max_events. */
@@ -157,9 +158,15 @@ int eshkol_event_loop_add(eshkol_event_loop_t* loop, int fd, int events,
                           uint64_t user_data);
 
 /**
- * @brief Stop watching @p fd.
- * @return ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_ENOENT if @p fd was never
- *         registered.
+ * @brief Stop watching @p fd on the owner thread.
+ * @return OK after kernel removal (including an already-gone descriptor or
+ * filter), ENOENT when no table entry exists, or a negative backend error.
+ * A backend error preserves the registration and consumes its table slot. The
+ * caller must keep the descriptor and associated ownership alive, inspect
+ * last_os_error, repair the cause and retry removal; closing the descriptor
+ * behind the loop is not a substitute for releasing the registration. epoll
+ * and kqueue removal both treat ENOENT/EBADF as already removed. This differs
+ * from the earlier drop-on-error bookkeeping rule.
  */
 int eshkol_event_loop_remove(eshkol_event_loop_t* loop, int fd);
 
@@ -232,7 +239,11 @@ int64_t eshkol_event_loop_open_handle(int max_events);
 /**
  * @brief Resolve a handle to its loop.
  * @return The loop, or NULL if the handle is malformed, already closed, or
- *         refers to a recycled slot.
+ *         refers to a recycled slot, or belongs to another thread. All ordinary
+ * pointer/handle operations and Scheme event-loop builtins are owner-thread
+ * confined; only wake is a cross-thread request. Public loop integers now use
+ * the shared exact resource registry and remain opaque, generation-checked IDs;
+ * programs must not depend on their prior numeric value domain.
  */
 eshkol_event_loop_t* eshkol_event_loop_from_handle(int64_t handle);
 
@@ -245,9 +256,30 @@ eshkol_event_loop_t* eshkol_event_loop_from_handle(int64_t handle);
  * lifecycles. Using a closed handle for anything else fails closed, because
  * eshkol_event_loop_from_handle() returns NULL for it.
  *
- * @return ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_EINVAL.
+ * @return OK on close, EBUSY for a live loop owned by another thread or
+ * retained by a resource, or EINVAL for an invalid/closed identity. EBUSY
+ * preserves both the identity and loop; perform close on its owner after
+ * outstanding resource cleanup resolves.
  */
 int eshkol_event_loop_close_handle(int64_t handle);
+
+/* Single-owner-thread lifetime pins for scoped resource registrations. Both
+ * pointer and handle close reject retained loops. Release never closes a loop. */
+int eshkol_event_loop_retain_handle(int64_t handle);
+int eshkol_event_loop_release_handle(int64_t handle);
+
+/* Owner-thread checks and registration admission for shared waits. */
+int eshkol_event_loop_is_owner(const eshkol_event_loop_t* loop);
+/* Wake may be called from another thread while the caller retains the loop.
+ * Maintenance runs on the owner before/after poll, outside backend waits. */
+int eshkol_event_loop_wake(eshkol_event_loop_t* loop);
+int eshkol_event_loop_set_maintenance(eshkol_event_loop_t* loop,
+                                    void (*callback)(void *), void *data);
+int eshkol_event_loop_registration_present(const eshkol_event_loop_t* loop, int fd);
+
+/* Validate a live resource registration without exposing descriptor authority. */
+int eshkol_event_loop_registration_matches(const eshkol_event_loop_t* loop,
+    int fd, int events, uint64_t user_data);
 
 #ifdef __cplusplus
 }
