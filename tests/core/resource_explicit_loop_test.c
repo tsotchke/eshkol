@@ -2,6 +2,7 @@
 #include "eshkol/core/resource_lease.h"
 #include "eshkol/core/event_loop.h"
 #include "../../lib/core/event_loop_internal.h"
+#include "../../lib/core/resource_handle_internal.h"
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <assert.h>
@@ -302,6 +303,24 @@ static void removal_retains_until_retry(void) {
     close(fd[1]); assert(eshkol_event_loop_close(loop) == 0);
 #endif
 }
+static void explicit_ticket_detach_handoff(void) {
+    int64_t loop = eshkol_event_loop_open_handle(8); Native n;
+    int64_t id = adopt(loop, &n, -1); eshkol_resource_lease_t lease;
+    assert(eshkol_resource_borrow(id, ESHKOL_HANDLE_KIND_SOCKET, MASK, &lease) == 0);
+    int64_t ticket = eshkol_resource_close_request(id, ESHKOL_HANDLE_KIND_SOCKET, MASK);
+    assert(ticket > 0 && eshkol_resource_cleanup_detach(ticket) == 0);
+    eshkol_resource_release(&lease);
+    eshkol_resource_cleanup_result_t result;
+    assert(n.calls == 1 && eshkol_resource_cleanup_result(ticket, &result) == ESHKOL_IO_INVALID);
+    assert(eshkol_resource_cleanup_ticket(id) == ESHKOL_IO_INVALID);
+    id = adopt(loop, &n, -1); n.retry_path = 1;
+    ticket = eshkol_resource_close_request(id, ESHKOL_HANDLE_KIND_SOCKET, MASK);
+    assert(ticket > 0 && eshkol_resource_cleanup_detach(ticket) == 0);
+    assert(eshkol_resource_cleanup_ticket(id) == ticket);
+    assert(eshkol_resource_cleanup_retry(ticket) == 0); finish(ticket);
+    assert(n.calls == 2 && eshkol_resource_cleanup_detach(ticket) == ESHKOL_IO_INVALID);
+    assert(eshkol_event_loop_close_handle(loop) == 0);
+}
 static void legacy_removal_failure_recovers(void) {
 #ifdef ESHKOL_RESOURCE_TESTING
     extern void eshkol_event_loop_test_fail_remove_once(void);
@@ -354,7 +373,8 @@ int main(int argc, char **argv) {
     }
     identity_readiness(); cancellation(); deferred_close(); queued_and_retry(); nonsticky_admission();
     idle_wakeup_and_capacity(); adoption_rollback(); indexed_dispatch_and_retired_recovery();
-    removal_retains_until_retry(); legacy_removal_failure_recovers(); wake_descriptor_flags(argv[0]);
+    removal_retains_until_retry(); legacy_removal_failure_recovers(); explicit_ticket_detach_handoff();
+    wake_descriptor_flags(argv[0]);
     puts("PASS: explicit-loop leases, mixed readiness, sticky cancellation, deferred and retryable cleanup");
     return 0;
 }
