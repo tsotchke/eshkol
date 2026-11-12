@@ -1,4 +1,7 @@
 /* Inject clock failure into the actual runtime; never read poisoned times. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
