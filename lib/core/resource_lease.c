@@ -115,6 +115,13 @@ int eshkol_resource_close(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_ma
             return ESHKOL_IO_INVALID;
         return eshkol_resource_cleanup_release(id);
     }
+    if (kind == ESHKOL_HANDLE_KIND_PROCESS) {
+        if (!resource_matches(eshkol_resource_registry(), id, kind, tag_mask, NULL))
+            return ESHKOL_IO_INVALID;
+        /* PROCESS owns a budgeted reap/cleanup protocol and a lifetime borrow.
+         * A generic deferred close must not retire its discoverable owner. */
+        return ESHKOL_IO_BUSY;
+    }
     if (managed_has_id(id)) return managed_close_detached(id, kind, tag_mask);
     eshkol_handle_registry_t *registry = eshkol_resource_registry();
     if (!registry || !resource_matches(registry, id, kind, tag_mask, NULL))

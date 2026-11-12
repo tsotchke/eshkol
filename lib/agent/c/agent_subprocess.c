@@ -2774,29 +2774,41 @@ static void stream_close_fd(int* fd, process_stream_record* r) {
     if (close(value) != 0) r->close_error = 1;
 }
 
-static void stream_detach(process_stream_record* r) {
+static int stream_remove_watch(eshkol_event_loop_t* loop, int fd, int* registered) {
+    if (!*registered) return 0;
+    if (!loop) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    int rc = eshkol_event_loop_remove(loop, fd);
+    if (rc != ESHKOL_EVENT_LOOP_OK && rc != ESHKOL_EVENT_LOOP_ENOENT)
+        return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    *registered = 0;
+    return 0;
+}
+
+static int stream_detach(process_stream_record* r) {
     eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
-    if (loop && r->out_registered)
-        if (eshkol_event_loop_remove(loop, r->proc->stdout_fd) != 0)
-            r->close_error = 1;
-    if (loop && r->err_registered)
-        if (eshkol_event_loop_remove(loop, r->proc->stderr_fd) != 0)
-            r->close_error = 1;
-    r->out_registered = r->err_registered = 0;
+    int out = stream_remove_watch(loop, r->proc ? r->proc->stdout_fd : -1,
+                                  &r->out_registered);
+    int err = stream_remove_watch(loop, r->proc ? r->proc->stderr_fd : -1,
+                                  &r->err_registered);
+    /* A failed removal leaves the kernel registration and its descriptor owned.
+     * Keep the loop pin and lifetime lease until a later cleanup attempt succeeds. */
+    if (out || err) return ESHKOL_PROCESS_STREAM_ESYSTEM;
     if (r->proc) {
         stream_close_fd(&r->proc->stdin_fd, r);
         stream_close_fd(&r->proc->stdout_fd, r);
         stream_close_fd(&r->proc->stderr_fd, r);
     }
     if (r->loop_retained) {
-        if (eshkol_event_loop_release_handle(r->loop) != 0) r->close_error = 1;
+        if (eshkol_event_loop_release_handle(r->loop) != 0)
+            return ESHKOL_PROCESS_STREAM_ESYSTEM;
         r->loop_retained = 0;
     }
     if (r->lease) {
         if (eshkol_handle_release(stream_registry, r->id, r->lease) != 0)
-            r->close_error = 1;
-        else r->lease = 0;
+            return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        r->lease = 0;
     }
+    return 0;
 }
 
 static int stream_owner_close(eshkol_handle_kind_t kind, uintptr_t native,
@@ -2817,8 +2829,11 @@ static int stream_owner_close(eshkol_handle_kind_t kind, uintptr_t native,
 static int stream_finish(process_stream_record* r) {
     if (r->terminal)
         return r->close_error ? ESHKOL_PROCESS_STREAM_ESYSTEM : 0;
+    /* Progress cancellation/reaping even when detaching a watch must retry. */
     int rc = stream_advance(r);
+    int detached = r->closed ? stream_detach(r) : 0;
     if (rc) return rc;
+    if (detached) return detached;
     if (r->proc && !r->proc->exited) return ESHKOL_PROCESS_STREAM_PENDING;
     if (r->lease) return ESHKOL_PROCESS_STREAM_EBUSY;
     /* Only a confirmed reap permits the registry's terminal close callback. */
@@ -2843,7 +2858,7 @@ static void stream_forget(process_stream_record* r) {
 static int stream_managed_loop(int64_t handle, eshkol_event_loop_t* loop) {
     int managed = 0;
     for (process_stream_record* r = stream_records; r; r = r->next) {
-        if (!r->closed && r->loop == handle) {
+        if (r->loop == handle) {
             if (r->out_registered && !eshkol_event_loop_registration_matches(
                     loop, r->proc->stdout_fd, ESHKOL_EVENT_READ, r->id)) return 0;
             if (r->err_registered && !eshkol_event_loop_registration_matches(
@@ -2901,13 +2916,15 @@ int64_t eshkol_process_stream_open(int64_t handle, const char* argv,
     /* Some existing FFI i64 results pass through binary64 numeric boxing. */
     if (r->id > UINT64_C(9007199254740991) || eshkol_handle_borrow(stream_registry, r->id,
                                                 &native, &r->lease) != 0) {
-        r->closed = 1; stream_detach(r); stream_finish(r); stream_forget(r);
+        r->closed = 1; stream_detach(r); stream_finish(r);
+        if (r->terminal) stream_forget(r);
         return ESHKOL_PROCESS_STREAM_ELIMIT;
     }
     r->proc = qllm_process_spawn_argv_flags_impl(argv, cwd,
                                                 ESHKOL_SPAWN_STDIN_NULL, env);
     if (!r->proc) {
-        r->closed = 1; stream_detach(r); stream_finish(r); stream_forget(r);
+        r->closed = 1; stream_detach(r); stream_finish(r);
+        if (r->terminal) stream_forget(r);
         return ESHKOL_PROCESS_STREAM_ESYSTEM;
     }
     int descriptors[2] = {r->proc->stdout_fd, r->proc->stderr_fd};
@@ -2949,7 +2966,12 @@ int64_t eshkol_process_stream_read(int64_t id, int32_t which,
     int* fd = which == ESHKOL_PROCESS_STREAM_STDOUT ? &r->proc->stdout_fd : &r->proc->stderr_fd;
     int* eof = which == ESHKOL_PROCESS_STREAM_STDOUT ? &r->proc->stdout_eof : &r->proc->stderr_eof;
     int* registered = which == ESHKOL_PROCESS_STREAM_STDOUT ? &r->out_registered : &r->err_registered;
-    if (*eof) return 0;
+    if (*eof) {
+        eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
+        if (stream_remove_watch(loop, *fd, registered)) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        stream_close_fd(fd, r);
+        return 0;
+    }
     ssize_t count = read(*fd, buffer, (size_t)capacity);
     if (count > 0) return count;
     if (count < 0)
@@ -2957,9 +2979,7 @@ int64_t eshkol_process_stream_read(int64_t id, int32_t which,
             ? ESHKOL_PROCESS_STREAM_WOULD_BLOCK : ESHKOL_PROCESS_STREAM_ESYSTEM;
     *eof = 1;
     eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
-    if (*registered && loop && eshkol_event_loop_remove(loop, *fd) != 0)
-        r->close_error = 1;
-    *registered = 0;
+    if (stream_remove_watch(loop, *fd, registered)) return ESHKOL_PROCESS_STREAM_ESYSTEM;
     stream_close_fd(fd, r);
     return 0;
 }
@@ -3032,9 +3052,10 @@ int32_t eshkol_process_stream_close(int64_t id, int32_t timeout_ms, int32_t grac
     if (!r || timeout_ms < 0 || grace_ms < 0) return ESHKOL_PROCESS_STREAM_EINVAL;
     if (r->closed) return stream_finish(r);
     r->closed = 1;
-    stream_detach(r);
+    int detached = stream_detach(r);
     rc = stream_request_cancel(r, grace_ms);
     if (rc) return rc;
+    if (detached) return detached;
     int64_t now = stream_now();
     if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
     int64_t deadline = now + timeout_ms;

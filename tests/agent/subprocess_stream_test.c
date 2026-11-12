@@ -560,6 +560,8 @@ static void shared_identity_checks(int64_t process) {
     uint32_t tag;
     CHECK(eshkol_handle_get_kind(eshkol_resource_registry(), process, &kind, &tag) == 0);
     CHECK(kind == ESHKOL_HANDLE_KIND_PROCESS);
+    CHECK(eshkol_resource_close(process, ESHKOL_HANDLE_KIND_PROCESS, 0) == ESHKOL_IO_BUSY);
+    CHECK(eshkol_process_stream_poll(process, 0) >= 0);
     eshkol_resource_lease_t lease;
     CHECK(eshkol_resource_borrow(process, ESHKOL_HANDLE_KIND_SOCKET, 0, &lease) == ESHKOL_IO_INVALID);
     CHECK(eshkol_resource_cancel(process, ESHKOL_HANDLE_KIND_SOCKET, 0) == ESHKOL_IO_INVALID);
