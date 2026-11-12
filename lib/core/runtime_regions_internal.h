@@ -49,9 +49,8 @@ namespace eshkol::regions_internal {
 
 /* ---- lifecycle state (runtime_regions.cpp) ---------------------------- */
 
-// The calling thread's memory context (OALR Phase A); the resident owner
-// borrows its allocation domain.
-extern thread_local eshkol_memctx_t t_memctx;
+// Memory-context access across units goes through eshkol_memctx_current();
+// the defining unit retains its private thread-local storage.
 // >0 while a work-stealing construct may run.
 extern std::atomic<int> s_parallel_depth;
 
