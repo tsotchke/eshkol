@@ -1546,7 +1546,7 @@ static void taylor_binary_exact(arena_t* arena, const eshkol_tagged_value_t* lef
 /* The order and active epoch a result should carry: the max order and max
  * epoch across the tower operands (scalars contribute nothing). */
 static void result_shape(const eshkol_tagged_value_t* l, const eshkol_tagged_value_t* r,
-                         uint32_t* order_k, uint32_t* epoch) {
+                         uint32_t* order_k, uint64_t* epoch) {
     esh_taylor_t* lt = tagged_as_taylor(l);
     esh_taylor_t* rt = tagged_as_taylor(r);
     uint32_t k = 0; uint64_t e = 0;
