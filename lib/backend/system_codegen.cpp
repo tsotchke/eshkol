@@ -1983,7 +1983,24 @@ CE_ONE_ARG(dncPredBuiltin, "eshkol_dnc_pred_tagged")
 /* SDNC weight-program (core.sdnc) */
 CE_ONE_ARG(sdncProgramBuiltin, "eshkol_sdnc_program_tagged")
 CE_TWO_ARG(sdncRunBuiltin, "eshkol_sdnc_run_tagged")
-CE_THREE_ARG(sdncWeightGradBuiltin, "eshkol_sdnc_weight_grad_tagged")
+/* (sdnc-weight-grad θ input target [smoothing]): the optional fourth argument
+ * selects the backward smoothing (lib/core/sdnc_core.h SdncBackwardSmoothing). */
+llvm::Value* SystemCodegen::sdncWeightGradBuiltin(const eshkol_operations_t* op) {
+    const uint64_t n = op->call_op.num_vars;
+    if (n != 3 && n != 4) return tagged_.packNull();
+    if (!codegen_ast_callback_) return tagged_.packNull();
+    std::vector<llvm::Value*> args;
+    for (uint64_t i = 0; i < n; i++) {
+        llvm::Value* v = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!v) return tagged_.packNull();
+        args.push_back(v);
+    }
+    if (n == 3)
+        return callArenaTaggedFunc(ctx_, tagged_, "eshkol_sdnc_weight_grad_tagged", 3,
+                                   {args[0], args[1], args[2]});
+    return callArenaTaggedFunc(ctx_, tagged_, "eshkol_sdnc_weight_grad_smoothed_tagged", 4,
+                               {args[0], args[1], args[2], args[3]});
+}
 CE_ONE_ARG(sdncParamsBuiltin, "eshkol_sdnc_params_tagged")
 CE_TWO_ARG(sdncSetParamsBuiltin, "eshkol_sdnc_set_params_tagged")
 CE_FOUR_ARG(sdncImproveBuiltin, "eshkol_sdnc_improve_tagged")
@@ -2117,6 +2134,45 @@ TWO_ARG_BUILTIN(eventLoopRemoveFd, "eshkol_builtin_event_loop_remove_fd")
 TWO_ARG_BUILTIN(eventLoopPoll, "eshkol_builtin_event_loop_poll")
 ONE_ARG_BUILTIN(eventLoopClose, "eshkol_builtin_event_loop_close")
 ZERO_ARG_BUILTIN(eventLoopBackend, "eshkol_builtin_event_loop_backend")
+
+/* Stackful coroutines (lib/core/runtime_coroutines_hosted.cpp). */
+ONE_ARG_BUILTIN(makeCoroutine, "eshkol_builtin_make_coroutine")
+TWO_ARG_BUILTIN(coroutineRaise, "eshkol_builtin_coroutine_raise")
+ONE_ARG_BUILTIN(coroutineStatus, "eshkol_builtin_coroutine_status")
+ONE_ARG_BUILTIN(coroutineRelease, "eshkol_builtin_coroutine_release")
+ZERO_ARG_BUILTIN(currentCoroutine, "eshkol_builtin_current_coroutine")
+ONE_ARG_BUILTIN(coroutinePredicate, "eshkol_builtin_coroutine_p")
+ZERO_ARG_BUILTIN(coroutineStats, "eshkol_builtin_coroutine_stats")
+
+/* The transferred value is optional on both ends of a switch; an omitted one
+ * is passed as the empty value, so the C entry point has one arity. */
+llvm::Value* SystemCodegen::coroutineResume(const eshkol_operations_t* op) {
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) return tagged_.packNull();
+    if (!codegen_ast_callback_) return tagged_.packNull();
+    llvm::Value* co = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!co) return tagged_.packNull();
+    llvm::Value* value = tagged_.packNull();
+    if (op->call_op.num_vars == 2) {
+        value = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!value) return tagged_.packNull();
+    }
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, "eshkol_builtin_coroutine_resume", 2);
+    return callPtrRuntime(ctx_, f, {co, value});
+}
+
+llvm::Value* SystemCodegen::coroutineYield(const eshkol_operations_t* op) {
+    if (op->call_op.num_vars > 1) return tagged_.packNull();
+    llvm::Value* value = tagged_.packNull();
+    if (op->call_op.num_vars == 1) {
+        if (!codegen_ast_callback_) return tagged_.packNull();
+        value = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!value) return tagged_.packNull();
+    }
+    llvm::Module* mod = ctx_.builder().GetInsertBlock()->getParent()->getParent();
+    llvm::Function* f = getOrDeclareRuntimeFuncAllPtr(ctx_, mod, "eshkol_builtin_coroutine_yield", 1);
+    return callPtrRuntime(ctx_, f, {value});
+}
 
 TWO_ARG_BUILTIN(fdWrite, "eshkol_builtin_fd_write")
 TWO_ARG_BUILTIN(makeLineReader, "eshkol_builtin_make_line_reader")

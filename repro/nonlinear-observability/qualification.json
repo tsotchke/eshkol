@@ -1,0 +1,15 @@
+{
+  "completed_utc": "2026-10-30T22:34:10.322025+00:00",
+  "container_image": "sha256:549e945a2634f548c2fcb31035cb0a055974a45f9ea70db5b7cf5e62919f184c",
+  "native_returncode": 0,
+  "sources_unchanged": true,
+  "receipt_sha256": "89972bf8f60afb1498099ee6e60a134980816638aa69684833a695f23b5f65f8",
+  "tested_source_sha256": {
+    "lib/core/nonlinear_observability.esk": "d2a39f30bf190e70b9117a334a5fc721a38ddee82d0507e460b35ccfc8eddc1a",
+    "tests/stdlib/nonlinear_observability_test.esk": "bf01f009207947148b7984ec406d144c23ad2bd668d87357b6a468fb5ff2fefb",
+    "repro/nonlinear-observability/gate.py": "021c2dc00db31c656d70f78ba37cbb4d0484c5e551512584d337d0d3eecc4593",
+    "repro/nonlinear-observability/oracle.py": "3fbb90895c8c000b29d19e6e2eb7296e22bbae727230935af4a42cc9ef7d1f5d",
+    "repro/nonlinear-observability/gate_support.py": "8d15b80d4cdd379d6ade724427f5316dec049c1afc2c615cf1d054aac5ca5c43"
+  },
+  "qualification_scope": "Published Linux x64 runtime, feature-branch library sources, independent replay; no compiler rebuild or full upstream CI"
+}

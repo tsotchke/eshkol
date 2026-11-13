@@ -728,6 +728,13 @@ oracles:
         action: ./scripts/run_ctest_gate.sh
       - runtime_event:
           event_kinds: [ctest]
+          event_names: ["quantum_circuit_contract_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Static quantum circuit descriptions reject invalid bounds, arities, angles and cyclic lists before export; AOT contract and deliberate-failure driver self-test both pass. The CTest group requires both members and does not require optional Qiskit dependencies.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
           event_names: ["exact_input_ad_identity_gate"]
           event_values: ["PASS"]
         severity: high
@@ -1378,7 +1385,7 @@ oracles:
           event_names: ["native_image_io_no_stb"]
           event_values: ["PASS"]
         severity: high
-        label: 'image-read uses platform APIs, not bundled deps/stb'
+        label: 'image-read uses the built-in codecs: no bundled deps/stb and no external codec library (no codec header in lib/core/image_*, no codec search in cmake/EshkolImageIO.cmake)'
         action: ./scripts/run_icc_smoke.sh
 
       # severity: high (F19 false-green sweep): measured behaviour (the PGO
@@ -2021,7 +2028,7 @@ oracles:
           event_names: ["ad_taylor_p4_guw_multivariate"]
           event_values: ["PASS"]
         severity: high
-        label: P4 GUW multivariate mixed partials match analytic references to d=8
+        label: P4 GUW mixed partials at total order 8 in three variables match the analytic value 72 and permutation symmetry (JIT and AOT)
         action: run_ad_exact_taylor_gate
 
       - runtime_event:
@@ -2126,7 +2133,7 @@ oracles:
   # under this family to prove the new oracle's own wiring end-to-end),
   # promises/futures (#160), MessagePack (#162), and CAS + Merkle trees
   # (#175). Genuinely absent: TCP/UDP/TLS, a WebSocket SERVER (only a
-  # client exists), fibers/coroutines, semaphores/barriers, Protocol
+  # client exists), fibers/coroutines, Protocol
   # Buffers, static (compile-time) rejection of a leaked or double-closed
   # socket, the borrow pattern wired to real resources, v1.4.1's OALR ABI
   # v2 and portable tail transfer (Stage 4 — included here per the task
@@ -2147,12 +2154,24 @@ oracles:
   - name: v1.4-connection
     aliases: [v1.4, v1.4-release, release-1.4, connection]
     requires:
+      # ADR-0058 exact tensor element type (v1.4.0 item: exact linear algebra
+      # over tensor storage, cross-checked against core.exact_linalg).
+      - test_evidence: true
+        severity: high
+        label: Exact tensors keep exact rationals through arithmetic, matmul, det, inverse and solve, follow contagion, and match core.exact_linalg under JIT
+        required_names: [exact_tensor_jit]
+        action: ctest --test-dir build --output-on-failure -R '^exact_tensor_jit$'
+      - test_evidence: true
+        severity: high
+        label: Exact tensors keep exact rationals through arithmetic, matmul, det, inverse and solve, follow contagion, and match core.exact_linalg under AOT
+        required_names: [exact_tensor_aot]
+        action: ctest --test-dir build --output-on-failure -R '^exact_tensor_aot$'
       - runtime_event:
           event_kinds: [ad_exact]
           event_names: ["ad_taylor_p4_guw_multivariate"]
           event_values: ["PASS"]
         severity: high
-        label: P4 GUW multivariate mixed partials pass analytic oracle to d=8
+        label: P4 GUW mixed partials at total order 8 in three variables match the analytic value 72 and permutation symmetry (JIT and AOT)
         action: run_ad_exact_taylor_gate
 
       - runtime_event:
@@ -2173,6 +2192,43 @@ oracles:
         label: P11 tower-based user numerics converge on ODE/root/inversion examples
         action: ./scripts/run_ad_numerics_gate.sh
 
+      # ROADMAP v1.4.0 "Symbolic multivariate polynomial and truncated-series
+      # values": core.symbolic over Q and GF(p), the B_rho coefficient norm on
+      # series values, and polynomial-valued duals (series-of over the
+      # built-in AD operators, collect, affine solve). The producer runs the
+      # Q suite and the fields suite under JIT and AOT.
+      - runtime_event:
+          event_kinds: [symbolic_exact]
+          event_names: ["core_symbolic_fields_norm_duals"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'core.symbolic over Q and GF(p), series coefficient norm and polynomial-valued duals pass their JIT and AOT suites'
+        action: ./scripts/run_symbolic_fields_gate.sh
+
+      # ROADMAP v1.4.0 assurance item "SymPy oracle pilot on the exact-AD
+      # surface": derivative-n / taylor / derivative / gradient / hessian /
+      # jacobian on exact inputs against SymPy, case by case, JIT and AOT.
+      # Needs an interpreter with SymPy (ESHKOL_SYMPY_PYTHON); without one the
+      # producer records SKIP, which never satisfies this criterion.
+      - runtime_event:
+          event_kinds: [sympy_oracle]
+          event_names: ["sympy_exact_ad_oracle_pilot"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SymPy differential oracle agrees with every exact-AD corpus case under JIT and AOT'
+        action: ./scripts/run_sympy_exact_ad_oracle_gate.sh
+      # ADR-0027 / ADR-0057 (ROADMAP v1.4.0 nested-differentiation carrier
+      # row): differentiation nests to depth 4 in every mode -- forward,
+      # reverse and mixed -- with exact Taylor coefficients, confusion controls
+      # and more than 2^16 passes in one process, on JIT, AOT and the VM.
+      - runtime_event:
+          event_kinds: [ad_exact]
+          event_names: ["ad_nested_every_mode"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Nested differentiation in every mode: depth-4 nests of derivative/derivative-n/taylor/gradient/jacobian/hessian, forward over reverse, reverse over forward and reverse over reverse over reverse, curried gradients at computed points, exact Taylor coefficients, perturbation-confusion controls and more than 65536 passes, 64/64 checks on each of JIT, AOT and the VM (tests/ad/nested_depth_matrix_test.esk)'
+        action: ./scripts/run_ad_nested_gate.sh
+
       # ESH-0011 (workplan Tier 0, package P2) — the async foundation every
       # Tier 1 networking primitive registers its descriptors against. Real
       # criterion, not a placeholder: the probe runs the acceptance battery on
@@ -2185,6 +2241,54 @@ oracles:
         severity: high
         label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
         action: run_icc_smoke
+
+      # ADR-0031 differentiable optimization (core.ml.diffopt). The producer
+      # runs tests/ml/diffopt_test.esk on JIT and AOT; every check compares a
+      # pullback with an exact closed form, exact rationals or a central
+      # difference of an independent closed form.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["diffopt_pullbacks_exact"]
+          event_values: ["PASS"]
+        severity: high
+        label: Differentiable optimization - blackbox solver, perturbed optimizer, Fenchel-Young, implicit-differentiation and sparsemax pullbacks match exact closed forms (JIT and AOT)
+        action: run_icc_smoke
+
+      # ADR-0018 signed-curvature stereographic geometry. Real producer:
+      # scripts/run_signed_curvature_gate.sh runs the binary128 reference grid
+      # (every finite binade of K of both signs, all subnormal binades,
+      # DBL_TRUE_MIN, DBL_MAX and 0; value, squared distance, curvature jet and
+      # endpoint gradient per case, plus refusal classes), core.curvature under
+      # JIT and AOT, and the VM geometry ops against the same reference values.
+      # A build without binary128 arithmetic emits FAIL, never PASS.
+      - runtime_event:
+          event_kinds: [geometry_exact]
+          event_names: ["v14_signed_curvature_reference_grid"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Signed-curvature stereographic geometry (ADR-0018): one kappa-stereographic chart for every sign of K in the alpha = 1 gauge, analytic through K = 0 with curvature jets, squared-distance geodesic attention, versioned coordinate migration (x_v2 = 2 x_v1); the f64 shared core matches an independent binary128 reference across every K binade (tests/bridge/signed_curvature_reference_grid_test.cpp) and core.curvature reproduces it on JIT, AOT and the VM ops'
+        action: ./scripts/run_signed_curvature_gate.sh
+      # ROADMAP v1.4.0 codebase row. One group over the six CTest gates the
+      # row ships with (member floor 6): image codec goldens recorded from the
+      # previous system codecs, the language-level image round trip, the
+      # configure contract with codec packages disabled, the region runtime
+      # test over the four region units, and doc-truth phase 1 (unit + the
+      # recomputed ranking against the committed quota).
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["v140_codebase_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'v1.4.0 codebase: image I/O with built-in PNG/JPEG/BMP/WebP codecs and no external codec library, runtime regions in four translation units, doc-truth ratchet phase 1 (image_codecs_test, image_io_language_test, test_native_image_io_contract, runtime_regions_test, doc_truth_ratchet_unit, doc_truth_ratchet_phase1)'
+        action: ./scripts/run_ctest_gate.sh
+
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["native_cross_entropy_gradient_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Native cross-entropy preserves analytical and composed MLP gradients on JIT/AOT and both tensor tape lowerings; unsupported loss differentiation refuses explicitly, and harness negative controls and both C++ backward suites pass'
+        action: ./scripts/run_ctest_gate.sh
 
       # ─────────────────────────────────────────────────────────
       # Networking (#145/#146/#148/#150/#161)
@@ -2246,7 +2350,7 @@ oracles:
           event_names: ["v14_tls_handshake_verified"]
           event_values: ["PASS"]
         severity: high
-        label: 'TLS/SSL via system libraries: server and client contexts, certificate/key loading, peer verification, a local self-signed-cert smoke handshake — NOT YET IMPLEMENTED (no TLS primitive exists anywhere in lib/, inc/, or tests/)'
+        label: 'TLS/SSL via system libraries: server and client contexts, certificate/key loading, peer verification and a local trusted-certificate handshake; verified agent HTTP-client TLS alone does not establish the complete server/client context contract'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2254,7 +2358,7 @@ oracles:
           event_names: ["v14_websocket_server_echo"]
           event_values: ["PASS"]
         severity: high
-        label: 'WebSocket SERVER (#146): upgrade handshake, text/binary frames, close/ping/pong, backpressure — NOT YET IMPLEMENTED for the server side (only a WebSocket CLIENT exists — lib/core/system_builtins.c websocket-connect/-send/-receive/-close performs the client-side opening handshake against a remote server; there is no Sec-WebSocket-Accept computation or listen/accept loop anywhere)'
+        label: 'WebSocket SERVER (#146): public agent.http_server upgrade and text echo verified through JIT+AOT with a real local RFC 6455 Python client; focused native contract covers binary/empty frames, ping payload echo, malformed handshake/version/key, mask/size/truncation refusal, and bounded backpressure on the host FFI build'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
@@ -2297,7 +2401,7 @@ oracles:
           event_names: ["v14_atomics_surface"]
           event_values: ["PASS"]
         severity: medium
-        label: 'Atomic ops (CAS, fetch-add): atomic-store!/-load/-exchange!/-compare-exchange!/-fetch-add!/-sub!/-and!/-or!/-xor! with explicit memory-order args are correct SEQUENTIALLY (tests/ffi/low_level_memory_surface_test.esk) — no cross-thread contention probe exists yet, so this criterion certifies the primitive surface only, not cross-thread atomicity'
+        label: 'Atomic ops (CAS, fetch-add): atomic-store!/-load/-exchange!/-compare-exchange!/-fetch-add!/-sub!/-and!/-or!/-xor! with explicit memory-order args pass the sequential surface test (tests/ffi/low_level_memory_surface_test.esk) AND the contention probe (tests/v1_2_edge_cases/atomics_contention_test.esk: K barrier-aligned pool workers x N fetch-add, CAS-retry and fetch-sub operations on one word keep exact K*N totals) on JIT and AOT'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2305,7 +2409,7 @@ oracles:
           event_names: ["v14_fibers_coroutines"]
           event_values: ["PASS"]
         severity: medium
-        label: 'Fibers/coroutines (#159): lightweight cooperative tasks — NOT YET IMPLEMENTED (no make-fiber/fiber-*/coroutine primitive exists anywhere in lib/ or tests/)'
+        label: 'Fibers/coroutines (#159): stackful coroutines and the core.fibers scheduler over the event loop — scripts/run_fibers_gate.py runs ordering, fairness, cancellation (dynamic-wind after thunks exactly once), raises crossing fibers, a fiber parked on a pipe, channel ping-pong and a 10000-fiber stress through JIT and O1 AOT, and requires flat peak RSS across stress waves'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2313,7 +2417,7 @@ oracles:
           event_names: ["v14_semaphores_barriers"]
           event_values: ["PASS"]
         severity: low
-        label: 'Semaphores/barriers — NOT YET IMPLEMENTED (no make-semaphore/make-barrier primitive exists; the only "barrier" hits in the tree are the GC region write-barrier in lib/core/runtime_regions.cpp, unrelated to concurrency)'
+        label: 'Semaphores/barriers: core.threads counting semaphores (acquire, try-acquire, timed try-acquire, release) and reusable generation-counted barriers on its mutex + condvar; tests/v1_2_edge_cases/threads_semaphore_barrier_test.esk proves bounded permits under contention, cross-thread wakeup, and an N-party R-phase barrier with no early leaver and one serial party per phase, also under injected spurious wakeups, on JIT and AOT'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
@@ -2340,7 +2444,7 @@ oracles:
           event_names: ["v14_protobuf_roundtrip"]
           event_values: ["PASS"]
         severity: medium
-        label: 'Protocol Buffers, proto3 (#163): a parser/compiler subset sufficient for generated encoders/decoders — NOT YET IMPLEMENTED (lib/core/onnx_export.c hand-writes protobuf wire bytes for ONE fixed ONNX schema; no .proto parser or schema compiler exists)'
+        label: 'Protocol Buffers, proto3 (#163): a parser/compiler subset sufficient for generated encoders/decoders — lib/core/protobuf.esk parses proto3 .proto text, compiles schemas and returns per-type encoder/decoder closures; scripts/run_wire_format_gate.py --suite protobuf --all-routes requires hand-derived spec wire bytes, unknown-field preservation and malformed-input refusal on JIT, O1 AOT, VM source and ESKB, plus the native wire primitives (inc/eshkol/core/protobuf_wire.h) shared by the ONNX writer and PJRT client'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
@@ -2361,7 +2465,7 @@ oracles:
           event_names: ["v14_socket_leak_rejected_statically"]
           event_values: ["PASS"]
         severity: high
-        label: 'A program that opens a socket/file/thread resource and never closes it on every path FAILS TO COMPILE with a static type error (negative test — the v1.4 exit gate ADR-0004 calls "every resource acquisition has a statically verified consume/cleanup path") — NOT YET IMPLEMENTED: no ESHKOL_VALUE_SOCKET / linear socket type exists; real OS resources (lib/core/system_builtins.c) are plain runtime integers checked only DYNAMICALLY ("use-after-close fails closed... a catchable condition")'
+        label: 'A program that opens a socket/file/thread resource and never closes it on every path FAILS TO COMPILE with a static type error (negative test — the v1.4 exit gate ADR-0004 calls "every resource acquisition has a statically verified consume/cleanup path") — implemented ONLY under the opt-in `--strict-resources` flag (exe/eshkol-run.cpp), exercised by tests/v1_4_resource_ownership/test_compiled.py''s unclosed-resource/double-close/one-branch-unclosed fixtures; outside `--strict-resources` (the default), real OS resources (lib/core/system_builtins.c) remain plain runtime integers checked only DYNAMICALLY ("use-after-close fails closed... a catchable condition"). Planned for v1.4.1: default-on enforcement without the flag'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2369,7 +2473,7 @@ oracles:
           event_names: ["v14_double_close_rejected_statically"]
           event_values: ["PASS"]
         severity: high
-        label: 'Double-close and use-after-close on a typed handle are STATIC errors when the type checker can see them (ADR-0004: "the compiler should reject double-close and obvious use-after-close where the type checker can see it") — NOT YET IMPLEMENTED: same gap as v14_socket_leak_rejected_statically — today both are only dynamic, catchable, runtime errors'
+        label: 'Double-close and use-after-close on a typed handle are STATIC errors when the type checker can see them (ADR-0004: "the compiler should reject double-close and obvious use-after-close where the type checker can see it") — implemented ONLY under the opt-in `--strict-resources` flag, exercised by tests/v1_4_resource_ownership/test_compiled.py''s double-close/use-after-close fixtures; outside `--strict-resources` (the default), same gap as v14_socket_leak_rejected_statically — both remain dynamic, catchable, runtime errors. Planned for v1.4.1: default-on enforcement without the flag'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2377,7 +2481,7 @@ oracles:
           event_names: ["v14_borrow_pattern_honored"]
           event_values: ["PASS"]
         severity: high
-        label: 'Borrow pattern for temporary resource access: a borrowed handle used after its borrow scope ends is rejected — NOT YET IMPLEMENTED for real resources: the BorrowChecker class (Owned/Moved/Dropped/BorrowedShared/BorrowedMut, move/drop/borrowShared/borrowMut) exists in lib/types/type_checker.cpp, but only canBorrowMut/getState are wired into the real checking pass (one mutation-target call site); move/drop/borrowShared/returnBorrow are exercised only by isolated gtest unit tests, never reachable by compiling an actual .esk program'
+        label: 'Borrow pattern for temporary resource access: a borrowed handle used after its borrow scope ends is rejected, and a valid borrow-then-close observes exactly one close on both JIT and AOT — implemented ONLY under the opt-in `--strict-resources` flag, exercised by tests/v1_4_resource_ownership/test_compiled.py''s borrow-scope/consume-while-borrowed/loan-escape fixtures plus test_runtime.py''s borrow case; outside `--strict-resources` (the default), the BorrowChecker class (Owned/Moved/Dropped/BorrowedShared/BorrowedMut, move/drop/borrowShared/borrowMut) in lib/types/type_checker.cpp is reachable only via isolated gtest unit tests, not by compiling an actual .esk program. Planned for v1.4.1: default-on enforcement without the flag'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
@@ -2393,7 +2497,7 @@ oracles:
           event_names: ["v14_1_oalr_abi_v2_header"]
           event_values: ["PASS"]
         severity: low
-        label: 'v1.4.1-STAGE (S4): OALR ABI v2 — 8->32 byte header, exact layout descriptors ("every pointer-bearing layout registers a descriptor or startup fails"), alias-preserving escape ledgers, structured cross-thread transfer capsules — NOT YET IMPLEMENTED (the object header is still eshkol_object_header_t, statically asserted at 8 bytes in inc/eshkol/eshkol.h; zero hits anywhere for ESHKOL_MEMORY_ABI_V2 or a layout-descriptor/escape-ledger/transfer-capsule concept; design-only per ADR-0000/0004)'
+        label: 'v1.4.1-STAGE (S4): OALR ABI v2 — 8->32 byte header, exact layout descriptors ("every pointer-bearing layout registers a descriptor or startup fails"), alias-preserving escape ledgers, structured cross-thread transfer capsules — Phase A exists (inc/eshkol/memory_abi_v2.h declares the v2 header layout and the ESHKOL_MEMORY_ABI_V2_ENABLED build switch) but is OFF by default, is not wired into the live allocator/object-header path (eshkol_object_header_t, statically asserted at 8 bytes, remains the active header), and the migration is not stageable per subsystem (see ABI_V2_MIGRATION_INVENTORY.md). Planned for v1.4.1: default-path migration'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2401,7 +2505,7 @@ oracles:
           event_names: ["v14_1_portable_tail_transfer"]
           event_values: ["PASS"]
         severity: low
-        label: 'v1.4.1-STAGE (S4): portable tail transfer — internal i128 tagged-return ABI, a general tail-transfer dispatcher, heap-owned continuation chains, verified musttail on every target backend — NOT YET IMPLEMENTED (musttail is emitted conditionally on the LLVM backend only for matching self/named-let tail calls; docs/reference/language/tail-calls.md documents mutual tail recursion as a KNOWN, UNFIXED limitation — SIGILL past ~500k depth — and no VM-backend equivalent exists)'
+        label: 'v1.4.1-STAGE (S4): portable tail transfer — mutual tail calls lower to LLVM `musttail` (constant stack) on AArch64, and to a portable tail-transfer dispatcher on backends where `musttail` cannot express an aggregate-return mutual call (non-AArch64 backends); scripts/run_recursion_depth.sh''s mutual_tail_{cond,forms,arity} depth cells exercise both lowerings — including the spelling-independence (cond/when/or/case) and arity-independence of the dispatcher — at up to 100,000,000 hops in constant stack, on JIT (-r), AOT `musttail`, and the AOT `aot-xfer` lane that forces the portable dispatcher (ESHKOL_TAIL_TRANSFER_ONLY=1) on an AArch64 host. No VM-backend (bytecode interpreter) equivalent exists; the internal i128 tagged-return ABI and heap-owned continuation-chain generalization ADR-0000 Stage 4 also names remain open. Planned for v1.4.1: VM-backend tail transfer and the general continuation-chain ABI'
         action: run_v14_connection_gate
 
       # ─────────────────────────────────────────────────────────
@@ -2421,7 +2525,7 @@ oracles:
           event_names: ["v14_assurance_a10_packaging_manifest"]
           event_values: ["PASS"]
         severity: low
-        label: 'A10 — toolchain-driver/type-checker/packaging manifest categories (toolchain_flag/type_diagnostic/package_surface) + a packaging lane that installs and runs the artifact — NOT YET IMPLEMENTED (ADR-0010''s own gap table marks this row "Planned"; no such manifest categories exist in .icc/architecture-model.yaml or .icc/completion-oracles.yaml; adversarial-nightly.yml''s homebrew install step is a partial precursor, not the manifest-driven lane A10 asks for)'
+        label: 'A10 — toolchain-driver/type-checker/packaging manifest categories (toolchain_flag/type_diagnostic/package_surface). The `package_surface` category is implemented: .icc/package-manifest.yaml declares binaries, stdlib artifacts/sources, static libraries, docs, and CMake discovery modules; scripts/check_package_manifest.py checks a staged package directory against it and is wired into every release.yml packaging step and into this gate, which stages an install from the current build and checks it for real. The `toolchain_flag`/`type_diagnostic` categories and a dedicated install-and-run packaging lane beyond the existing verify_release_package.py smoke test remain open. Planned for v1.4.1: toolchain_flag/type_diagnostic categories + the dedicated packaging lane'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2429,7 +2533,7 @@ oracles:
           event_names: ["v14_assurance_a11_diagnostic_corpus"]
           event_values: ["PASS"]
         severity: low
-        label: 'A11 — diagnostic golden-corpus (input -> expected diagnostic code + span), gated per surface family — NOT YET IMPLEMENTED (no such corpus directory exists anywhere under tests/)'
+        label: 'A11 — diagnostic golden-corpus (input -> expected diagnostic code + span), gated per surface family — implemented: tests/diagnostics/<case>/ holds a corpus of real fixtures (compile-time, HoTT type-checker, and runtime diagnostic formats) each pinning file:line:col span plus message, checked by scripts/check_diagnostic_corpus.py and wired into both ci.yml and this gate'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2437,7 +2541,7 @@ oracles:
           event_names: ["v14_assurance_a12_lsan_lane"]
           event_values: ["PASS"]
         severity: medium
-        label: 'A12 — an LSan lane with an arena/JIT-cache suppression file (not blanket detect_leaks=0), plus region_evac POISON extended to the VM route — NOT YET IMPLEMENTED (.github/workflows/ci.yml''s ASan lanes explicitly set detect_leaks=0; lib/backend/vm_core.c has zero ESHKOL_ARENA_POISON hits)'
+        label: 'A12 — an LSan lane with an arena/JIT-cache suppression file (not blanket detect_leaks=0), plus region_evac POISON extended to the VM route — implemented: .github/workflows/ci.yml''s ASan matrix runs with detect_leaks=1 and .icc/lsan-suppressions.txt naming every known-acceptable retention one-by-one (scripts/check_leak_detection_selftest.sh proves the configuration still catches a planted retention), and lib/backend/vm_region_evac.c''s evacuator delegates to the same ESHKOL_ARENA_POISON switch the native arena uses. This fast local gate cannot rebuild an ASan-enabled toolchain to reproduce the lane itself — only a real ASan-lane CI run feeds this event PASS'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2464,7 +2568,7 @@ oracles:
           event_names: ["v14_distribution_pjrt_client_spike"]
           event_values: ["PASS"]
         severity: low
-        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item (per the draft ladder): a PJRT client spike — NOT YET IMPLEMENTED (zero "pjrt"/"PJRT" hits anywhere in the repo — code, headers, docs, or build)'
+        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged PJRT client spike: guarded Unix loader/client and dense host-f64 execution are implemented; runtime evidence from a real plugin/device remains unverified'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2472,7 +2576,7 @@ oracles:
           event_names: ["v14_distribution_xla_multi_device_single_host"]
           event_values: ["PASS"]
         severity: low
-        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: XLA multi-device single-host execution — NOT YET IMPLEMENTED (lib/backend/xla/ has zero hits for device_ordinal/num_replicas/num_partitions; docs/breakdown/GPU_ACCELERATION.md documents device-0-only enumeration and a single CUDA stream for all operations — XLA execution is single-device only today)'
+        label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: XLA multi-device single-host execution — the client-side call path exists (lib/backend/xla/pjrt_client.cpp''s PjrtClient::executeReplicated()), but it has no real multi-device PJRT plugin to execute against; docs/breakdown/GPU_ACCELERATION.md documents device-0-only enumeration and a single CUDA stream for all operations. Planned pending a real multi-device plugin'
         action: run_v14_connection_gate
 
       - runtime_event:
@@ -2483,6 +2587,54 @@ oracles:
         label: 'PENDING R7 — distribution scope not yet ruled. v1.4.0-staged item: native collectives over the v1.4.0 socket layer — NOT YET IMPLEMENTED (zero allreduce/sharding/GSPMD/replica hits in lib/backend/xla/ or lib/backend/gpu/; the only "distributed" module in the repo is pure-value Lamport/vector-clock/CRDT math, explicitly independent of sockets/async I/O)'
         action: run_v14_connection_gate
 
+      # ─────────────────────────────────────────────────────────
+      # Stochastic Binary Lambda Calculus, first slice (ADR-0017;
+      # ROADMAP v1.4.0). Producer: scripts/run_sblc_gate.sh runs
+      # tests/stdlib/sblc_test.esk on JIT and AOT and writes
+      # scripts/icc_traces/sblc.jsonl; an oracle event is PASS only when
+      # its "SBLC-GATE <oracle> PASS" line appears on BOTH engines, and the
+      # parity event only when the two engines' stdout is byte-identical.
+      # ─────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_codec_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC codec oracle: for every code length up to 12, brute-force strict decoding of every bit string equals structural enumeration and the exact count recurrence; decode(encode(M)) = M consumes every bit; no trailing-bit aliases; closedness is depth-aware; classic core.blc encodings unchanged (JIT and AOT)'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_mass_conservation"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC exact mass conservation: prior mass plus incomplete-prefix mass is exactly 1 for every L up to 14 (Kraft equality of the complete sblc-v1 code), root constructor prefixes carry exactly 1/2, 1/4, 1/8, 1/8, the grammar fixed point selects the least root 1, and normal + timeout mass is exactly 1 for every exact distribution checked (JIT and AOT)'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_coin_trace_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC coin-trace oracle: every exact rational distribution under a step bound equals the sum over exhaustively replayed coin traces of 2^-|trace| per outcome and for the timeout; every run reconciles steps = beta + coins within the bound (JIT and AOT)'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_jit_aot_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'SBLC fixed-seed JIT/AOT parity: the complete suite output, including bit-list and BLC8 conditioning receipts and a seeded sample trace, is byte-identical on JIT and AOT'
+        action: ./scripts/run_sblc_gate.sh
+
+      - runtime_event:
+          event_kinds: [sblc]
+          event_names: ["sblc_first_slice"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'ADR-0017 first slice complete: codec, mass, coin-trace, semantics (lazy choice, half mass, merging, step-bound edges, no-consistent-program), sampler statistics under predeclared bounds, conditioning receipts and JIT/AOT parity all PASS in one gate run'
+        action: ./scripts/run_sblc_gate.sh
+
       - runtime_event:
           event_kinds: [v1_4_connection]
           event_names: ["v14_connection_sweep_clean"]
@@ -2491,6 +2643,228 @@ oracles:
         label: 'Running-total sweep: every v1.4-connection probe above is green. Expected FAIL until the release actually ships — this criterion is a progress counter, not a release gate (see scripts/run_v14_connection_gate.sh''s summary line for the live pass/fail count)'
         action: run_v14_connection_gate
 
+      # core.sheaf (ADR-0033): sheaf theory on finite sites as one library.
+      # Producer: scripts/run_sheaf_gate.sh runs the six CTest entries that
+      # own the behaviour (the suite and the two examples written on the
+      # library, JIT and AOT) and every documentation example on the
+      # reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_sheaf
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_sheaf"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.sheaf (ADR-0033): finite sites and Grothendieck topologies checked against the three axioms, presheaves of sets and of Z-modules / Q-vector spaces, gluing with named obstructions, the plus construction, and Cech and derived cohomology with torsion and cocycle generators; sheaf_jit/sheaf_aot, the two library-based sheaf examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_sheaf_gate.sh
+
+      # core.topos (ADR-0035): the internal language of the topos of a finite
+      # site with Kripke-Joyal forcing. Producer: scripts/run_topos_gate.sh
+      # runs the fourteen CTest entries that own the behaviour (six suites and
+      # the presheaf-topos example written on the library, JIT and AOT) and every
+      # documentation example on the reference page; PASS only when all of
+      # them ran and passed.
+      - id: v14_core_topos
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_topos"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.topos (ADR-0035): the Mitchell-Benabou language of Sh(C, J) for finite sites, Kripke-Joyal forcing cross-checked against the Omega-valued interpretation on an enumerated corpus over five sites, the Kripke and Beth reductions, the j-translation, soundness of intuitionistic higher-order logic with classical-law counter-witnesses, and the internally local structure sheaf of Spec(Z/n); the topos suites, the library-based presheaf-topos example in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_topos_gate.sh
+
+      # core.ring and core.multimodular (ADR-0034, library rung).
+      # Producer: scripts/run_ring_gate.sh runs the eight CTest entries that
+      # own the behaviour (the ring-law gate, the IEEE-tier specification
+      # check, the multimodular cross-checks and the functor-of-points
+      # example, each in JIT and AOT) and every documentation example on the
+      # two reference pages; PASS only when all of them ran and passed.
+      - id: v14_core_ring
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_ring"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.ring and core.multimodular (ADR-0034 library rung): versioned ring-carrier descriptors for Z, Q, the IEEE tier, Z/m, jets, polynomials, Z[G] and algebraic fields; the ring laws exhaustive on small carriers and seeded on infinite ones, from-integer a ring map across the int64 boundary, characteristic, nilpotency and named refusals; the IEEE tier against its per-operation specification with a pinned bit-pattern digest; multimodular determinant, solve and Z[x] gcd equal to the exact paths; ring_jit/aot, ring_ieee_jit/aot, multimodular_jit/aot, rings_functor_of_points_jit/aot and the reference-page examples all pass'
+        action: ./scripts/run_ring_gate.sh
+
+      # core.transcript: content-addressed transcripts of certified
+      # mathematical quantities, independently cross-checked. Producer:
+      # scripts/run_transcript_gate.sh runs the eleven CTest entries that own
+      # the behaviour (the unit suite, the four wired examples/tests in JIT
+      # and AOT, and the pure-Python replay check against the committed
+      # fixtures); PASS only when all of them ran and passed.
+      - id: v14_math_transcripts
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_math_transcripts"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.transcript: a canonical, bignum-safe value encoding and an fnv1a-64-hashed (core.merkle) JSON claim format for a determinant, Smith normal form, rank mod p or polynomial gcd together with its exact inputs, off by default and never changing a program''s output; scripts/math_crosscheck/replay_check.py independently recomputes every known claim kind from pure-Python-stdlib (a tamper check on the hash plus a correctness check on the mathematics), and crosscheck_pari_sympy.py (for a host with PARI/GP and SymPy installed) additionally checks against PARI/GP and SymPy; wired into mathematics_group_cohomology_order_eight, mathematics_cohomology_rings_cup_products, mathematics_fermat_hodge_classes_sweep and multimodular_test; transcript_jit/aot, the four wired programs'' own CTest entries, and transcript_replay_check over the committed fixtures all pass'
+        action: ./scripts/run_transcript_gate.sh
+
+      # core.simplicial and core.homological (ADR-0037). Producer:
+      # scripts/run_simplicial_gate.sh runs the eighteen CTest entries that own
+      # the behaviour (the two suites and the seven examples written on the
+      # libraries, each in JIT and AOT) and every documentation example on the
+      # two reference pages; PASS only when all of them ran and passed.
+      - id: v14_simplicial_homological
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_simplicial_homological"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.simplicial and core.homological (ADR-0037): simplicial sets in Eilenberg-Zilber normal form, products, joins, nerves of categories, posets, groups and crossed modules, McCord models, Kan and quasi-category conditions over every compatible horn, Kan homotopy groups and mapping spaces; complexes over Z, Q and F_p with torsion, cones and long exact sequences, Ext/Tor over Z, spectral sequences page by page with exact convergence, cup and cup-i products, Steenrod squares with the Adem relations, group cohomology with twisted coefficients; simplicial_jit/aot, homological_jit/aot, the seven library-based algebraic-topology examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_simplicial_gate.sh
+
+      # nLab conformance: claims quoted from nLab pages, each decided exactly
+      # on core.sheaf, core.topos, core.ring, core.multimodular,
+      # core.integer_linalg, core.category, core.simplicial and
+      # core.homological. Producer: scripts/run_nlab_conformance.sh runs the
+      # ten CTest entries (five suites, JIT and AOT) and checks every claim
+      # line against tests/nlab/claims.tsv and the coverage line of
+      # docs/reports/NLAB_CONFORMANCE.md; PASS only when every computed claim
+      # passed once in both engines and no claim failed.
+      - id: v14_nlab_conformance
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_nlab_conformance"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'nLab conformance: 132 claims quoted from 50 nLab pages (toposes, subobject classifiers, sieves, Heyting algebras, Grothendieck and Lawvere-Tierney topologies, Boolean and De Morgan toposes, Kripke-Joyal semantics, Yoneda, exponentials, power objects, sheaves, sheafification, descent, Cech cohomology, finite spaces, spheres, tori, RP^2, the Klein bottle, Euler characteristics, nerves, Kan extensions, adjunctions, ends, comma categories, simplicial sets, Kan complexes, the bar construction, group cohomology, cup products, Steenrod squares, spectral sequences, crossed modules, Postnikov sections, local rings, dual numbers, jets, functor of points, Chinese remainder, quadratic reciprocity, group algebras, Smith normal form, prime spectra) computed exactly and passing in JIT and AOT; 9 further claims are listed with what each needs'
+        action: ./scripts/run_nlab_conformance.sh
+
+      # core.effective (ADR-0038). Producer: scripts/run_effective_gate.sh runs
+      # the six CTest entries that own the behaviour (effective_test,
+      # effective_homotopy_test, effective_hypercover_test, each in JIT and
+      # AOT), the two long-run checks (pi_6(S^3), 33 GB; the 3-type on the
+      # product hypercover, 29 GB) and every documentation example on the reference page; PASS only
+      # when all of them ran and passed.
+      - id: v14_effective_homology
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_effective_homology"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.effective (ADR-0038): reductions with exact identity checks, the basic perturbation lemma with its filtration checked on every cell, reductions from discrete vector fields, Eilenberg-Zilber by its vector field and by AW/EML/SHI, twisted products, W-bar G onto the bar construction, K(Z,n) and K(Z/m,n) with effective homology, the Whitehead tower (pi_3(S^2) = Z, pi_4(S^2) = pi_4(S^3) = pi_5(S^2) = pi_5(S^3) = Z/2, pi_6(S^3) = Z/12), hypercovers restoring descent on the pseudo-2-sphere (4 and 2 where the Cech nerve gives 2 and 1) and a 3-type with the Pontryagin square as second k-invariant computed on both sides of a cover; effective_jit/aot, effective_homotopy_jit/aot, effective_hypercover_jit/aot, the long-run checks effective_pi6_s3 and effective_hypercover_3type, and the reference-page examples all pass'
+        action: ./scripts/run_effective_gate.sh
+      # core.category (ADR-0036): finite category theory on core.sheaf.site's
+      # representation, and the S6.2 acceptance (descent as a Kan extension,
+      # sheafification as a reflector). Producer: scripts/run_category_gate.sh
+      # runs the ten CTest entries that own the behaviour (category_test,
+      # category_s62_test and the three examples written on the library, JIT
+      # and AOT) and every documentation example on the reference page; PASS
+      # only when all of them ran and passed.
+      - id: v14_core_category
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_core_category"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.category (ADR-0036): functors, natural transformations, functor and comma categories, limits, colimits, ends, coends, Yoneda, Grothendieck constructions, Kan extensions by both formulas with Lan -| F^* -| Ran, adjunctions with triangle identities, monads, nerves and derived limits; S6.2: a -| i with both triangle identities, the sheafification monad, Cech and cohomological descent, and the numbers of the sheaf and descent examples reproduced categorically; the suites, the three library-based examples in JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_category_gate.sh
+      - id: v14_monoidal_zx
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_monoidal_zx"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.monoidal (ADR-0041): monoidal, braided, symmetric, compact closed and dagger structure as data on core.category finite categories and on FinVect over Z, Q and Q(zeta_n), with pentagon, triangle, hexagons, snakes and monoidal-functor coherence checked exactly; string diagrams evaluated compositionally and as tensor networks with a normal form; the ZX-calculus with every rewrite rule sound on every instance over the phases k pi/4, Clifford+T circuits against an exact state-vector semantics, graph-like simplification; the suites in JIT and AOT, the reference-page examples, and the Moonlab cross-check when a quantum build is given'
+        action: ./scripts/run_monoidal_gate.sh
+      # core.groebner (ADR-0040). Producer: scripts/run_groebner_gate.sh runs
+      # groebner_jit, groebner_aot and groebner_sympy_crosscheck (180 reduced
+      # bases against the bases SymPy recorded, JIT and AOT) and every
+      # documentation example on docs/reference/stdlib/groebner.md; PASS only
+      # when all of them ran and passed.
+      - id: v14_groebner
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_groebner"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.groebner (ADR-0040): K[x1..xn] as a core.ring carrier under lex, grlex, grevlex, block, elimination and weight orders; division, Buchberger with the Gebauer-Moeller criteria and sugar selection, reduced bases over Q, F_p and other field carriers; the multimodular method over Q with lucky-prime selection and an exact check over Q; membership, elimination, intersection, quotient, saturation, radical membership, dimension, Hilbert series and polynomials, zero-dimensional triangular form and solutions; groebner_jit/aot, the 180-case SymPy cross-check on JIT and AOT, and the reference-page examples all pass'
+        action: ./scripts/run_groebner_gate.sh
+      # core.theory (ADR-0039): algebraic theories as first-class data.
+      # Producer: scripts/run_theory_gate.sh runs the four CTest entries that
+      # own the behaviour (theory_test and theory_topos_test, each in JIT and
+      # AOT), the core.ring law gate entries the theory law check now carries
+      # (ring_jit/aot), and every documentation example on theory.md; PASS
+      # only when all of them ran and passed.
+      - id: v14_algebraic_theories
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_algebraic_theories"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'core.theory (ADR-0039): signatures, terms, equational theories and models as data; the catalogue (semigroups, monoids, groups, abelian groups, rings, commutative rings, R-modules, lattices, distributive lattices, Boolean and Heyting algebras); laws exhaustive on finite models (the fourteen groups of order <= 8, Z/n, M2(Z/2), modules, lattices, Omega_J(c) of core.topos) and seeded on infinite ones; homomorphisms, products, congruences, quotients; free models with the word problem decided for every catalogue theory; the Lawvere theory with composition by substitution and finite products; core.ring carriers as models of commutative-ring-theory with ring-law-violations on the shared law check; theory_jit/aot, theory_topos_jit/aot, ring_jit/aot and the reference-page examples all pass'
+        action: ./scripts/run_theory_gate.sh
+
+  # -----------------------------------------------------------------
+  # v1.9.0-types readiness -- the type system becomes a proof system.
+  # -----------------------------------------------------------------
+  - name: v1.9-types
+    aliases: [v1.9, types]
+    requires:
+      # HoTT identity types, univalence and higher inductive types (ADR-0043).
+      # Producer: scripts/run_hott_gate.sh (CTest hott_gate) runs the HoTT
+      # programs through the kernel driver, JIT, AOT and the bytecode VM against
+      # their expected output, the negative corpus through the kernel and both
+      # compiler routes, and every example of the HoTT reference and guide.
+      - id: v19_hott_identity
+        runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_hott_identity"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'HoTT (ADR-0043): a cubical kernel with path types, J, transport, funext, computing univalence, the circle, suspensions and truncations; winding numbers of the circle computed by encode-decode and cross-checked in Cubical Agda; programs, rejections and documentation examples pass on the kernel, JIT, AOT and the VM'
+        action: ./scripts/run_hott_gate.sh build
+
+      # core.manifold.atlas (ADR-0018 amendment, charts as gluing data):
+      # atlases on core.sheaf. Producer: scripts/run_manifold_atlas_gate.sh
+      # runs manifold_atlas_{jit,aot} and signed_curvature_{jit,aot} and every
+      # documentation example of the reference scope (manifold.md with the
+      # core.sheaf pages); PASS only
+      # when all of them ran and passed.
+      - id: v14_manifold_atlas
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_manifold_atlas"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Manifolds glued from charts (ADR-0018 amendment): core.manifold.atlas checks the cocycle condition and the chain rule of transition Jacobians exactly on exact atlases and to a stated tolerance on float ones, with core.sheaf obstructions as witnesses; the stereographic sphere atlas and the ball/half-space atlas contain the ADR-0018 chart and agree with core.manifold and core.curvature, with the K = 0 contract preserved; w1 and Cech and derived cohomology of the nerve with constant and orientation coefficients on triangulated surfaces; manifold_atlas_jit/aot, signed_curvature_jit/aot and the manifold.md examples all pass'
+        action: ./scripts/run_manifold_atlas_gate.sh
+
+  # -----------------------------------------------------------------
+  # v1.9.0-types readiness -- the type system becomes a proof system
+  # (ROADMAP v1.9.0-types, ADR-0004 v1.9 rung). One criterion per rung
+  # item; the type records 0042-0046 extend this list.
+  # -----------------------------------------------------------------
+  - name: v1.9-types
+    aliases: [v1.9, v1.9.0, types]
+    requires:
+      # Dependent type enforcement (ADR-0042). Producer:
+      # scripts/run_dependent_types_gate.sh runs type_term_test,
+      # typesystem_dependent_corpus and dependent_type_engine_parity_gate;
+      # PASS only when all three ran and passed.
+      - id: v19_dependent_enforcement
+        runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_dependent_enforcement"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Dependent type enforcement (ADR-0042): bidirectional checking (the tail rule; lambdas checked against expected signatures; applications, let, define, declarations, the), Pi and Sigma types, universe levels, length-indexed vectors and define-type families, definitional equality by normalization; every positive fixture compiles under --types=strict and runs, every negative fixture is refused with its diagnostic, and the bytecode VM refuses and runs the same programs as the native engine'
+        action: ./scripts/run_dependent_types_gate.sh
+      # Structural types (ADR-0046). Producer: scripts/run_structural_types_gate.sh
+      # runs structural_types_test and types_ext_gate; PASS only when both ran
+      # and passed.
+      - id: v19_structural_types
+        runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_structural_types"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Structural types (ADR-0046): row-polymorphic records with principal types and width subtyping, predicative arbitrary-rank polymorphism with skolem escape (runST encapsulation), binary session types with duality, recursion and exactly-once endpoints over local channels and TCP; positives run on JIT and AOT (records and rank also on the VM) with their principal types, every negative is refused by JIT, AOT and the bytecode VM'
+        action: ./scripts/run_structural_types_gate.sh
+
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
   # differentiable-logic and neuro-symbolic ML theme.
@@ -2498,6 +2872,17 @@ oracles:
   - name: v1.5-release
     aliases: [v1.5, release-1.5, intelligence]
     requires:
+      # ADR-0050 rigorous numerics (v1.5.0 items: directed rounding as the
+      # core.ad.interval default, compact-set bounds, torus averaging).
+      - test_evidence: true
+        severity: high
+        label: Directed-rounding intervals, interval jets, certified box sup/inf and torus means contain exact rational ground truth under JIT
+        action: ctest --test-dir build --output-on-failure -R '^rigorous_numerics_runtime_smoke$'
+      - test_evidence: true
+        severity: high
+        label: Directed-rounding intervals, interval jets, certified box sup/inf and torus means contain exact rational ground truth under AOT
+        action: ctest --test-dir build --output-on-failure -R '^rigorous_numerics_aot_smoke$'
+
       - runtime_event:
           event_kinds: [ad_reverse_highorder]
           event_names: ["ad_taylor_p5_reverse_over_taylor"]
@@ -2545,6 +2930,25 @@ oracles:
         severity: high
         label: Placeholder for v1.5 symbol embeddings, soft unification, LSTM/GRU, differentiable logic, KB attention, and gradient estimators
         action: replace_with_v1_5_intelligence_oracle
+
+  # -----------------------------------------------------------------
+  # v1.6-reasoning readiness -- core.reasoning (ADR-0051).
+  # Producer: scripts/run_reasoning_gate.sh runs the sixteen CTest entries
+  # that own the behaviour (eight suites, JIT and AOT) and every example on
+  # docs/reference/stdlib/reasoning.md; PASS only when all of them ran and
+  # passed.
+  # -----------------------------------------------------------------
+  - name: v1.6-release
+    aliases: [v1.6, release-1.6, reasoning]
+    requires:
+      - id: v16_reasoning
+        runtime_event:
+          event_kinds: [v1_6_reasoning]
+          event_names: ["v16_reasoning"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'core.reasoning (ADR-0051): SLD resolution with cut, negation as failure and linear tabling (naive reverse, n-queens, zebra); stratified Datalog on recursive DBSP circuits with exact signed updates; finite-domain propagation with Regin all-different and branch and bound; CDCL SAT with DRAT proofs checked by an independent checker; SPO/POS/OSP triple store with a select form; TransE/DistMult/ComplEx/RotatE trained with reverse-mode gradients; incremental ansatz search; cross-engine soundness suite; JIT, AOT and the reference-page examples all pass'
+        action: ./scripts/run_reasoning_gate.sh
 
   # ─────────────────────────────────────────────────────────────────
   # SDNC paper reproducibility — the headline claim from
@@ -2596,6 +3000,27 @@ oracles:
         severity: high
         label: SDNC weight-matrix FFN backward gradients match finite differences (< 1e-6)
         action: ./scripts/run_icc_smoke.sh
+
+      # Exact-forward control fine-tuning (ADR 0032). The constructed
+      # interpreter's ADD dispatch is switched off; the exact derivative of
+      # every control weight is identically zero; smoothed-backward-ranked,
+      # exact-forward-accepted threshold moves must restore the full
+      # verifier battery and every recorded transition byte for byte.
+      - runtime_event:
+          event_kinds: [sdnc_control_finetune]
+          event_names: ["battery_repair"]
+          event_values: ["PASS"]
+        severity: high
+        label: Damaged ADD dispatch repaired by control fine-tuning; full battery and every recorded transition byte-identical
+        action: ./scripts/run_sdnc_finetune_gate.sh
+
+      - runtime_event:
+          event_kinds: [sdnc_control_finetune]
+          event_names: ["surface"]
+          event_values: ["PASS"]
+        severity: high
+        label: core.sdnc sdnc-load-weights! / sdnc-mismatches / sdnc-repair! / smoothed sdnc-weight-grad on the recorded artifacts
+        action: ./scripts/run_sdnc_finetune_gate.sh
 
   # ─────────────────────────────────────────────────────────────────
   # No-regression gate — used after a refactor or codegen change to
@@ -4172,3 +4597,128 @@ oracles:
         severity: high
         label: Classifying-space homology, cocycle classes and Dijkgraaf-Witten state sums agree with two independent routes, JIT and AOT
         action: ./scripts/run_math_example_gate.sh mathematics_classifying_space_dijkgraaf_witten dw_classifying_space dw_classifying_space_state_sums
+
+  # ─────────────────────────────────────────────────────────────────
+  # v2.0-starlight quantum (ADR-0048): register types qreg<n>, quantum
+  # regions, circuit compilation and QAOA. scripts/run_quantum_types_gate.sh
+  # produces the trace from a normal and a Moonlab-enabled build.
+  # ─────────────────────────────────────────────────────────────────
+  - name: quantum-types
+    aliases: [v20-quantum-types, quantum-registers, qaoa]
+    requires:
+      - id: v20_quantum_types
+        runtime_event:
+          event_kinds: [v2_0_starlight]
+          event_names: ["v20_quantum_types"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Quantum registers (ADR-0048): qreg<n>/qidx<n> dimensions unified at every call and fatal on mismatch, out-of-range and repeated qubits, clones, unconsumed registers, discards and region escapes refused on the native and bytecode engines; quantum regions at run time; the circuit optimiser and SABRE router sound on random circuits exactly over Q(zeta_m); QAOA exact on the state vector with AD gradients and p=1 closed forms; the same QAOA on Moonlab with the Moonlab adjoint gradient equal to Eshkol AD; reference-page examples in JIT and AOT'
+        action: ./scripts/run_quantum_types_gate.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # v1.7.0-synthesis (ADR-0052): example-based synthesis (core.synthesis),
+  # graph neural networks with exact reverse-mode gradients (ml.gnn on
+  # ml.autograd) and compiler completion of `??` synthesis holes.
+  # scripts/run_synthesis_gate.sh runs the CTest entries that own the
+  # behaviour (JIT and AOT) and writes one event; PASS only when every entry
+  # ran and passed.
+  # ─────────────────────────────────────────────────────────────────
+  - name: v1.7-synthesis
+    aliases: [synthesis, v17-synthesis, program-synthesis]
+    requires:
+      - id: v17_synthesis
+        runtime_event:
+          event_kinds: [v1_7_synthesis]
+          event_names: ["v17_synthesis"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'v1.7.0-synthesis (ADR-0052): 42/42 example-synthesis benchmark tasks verified on held-out examples, GCN/GraphSAGE/GAT backward rules agree with central differences and the karate-club classifiers learn, ?? holes are completed from their expected type and a hole with no completion stops compilation; synthesis_test, gnn_test and synthesis_holes_test in JIT and AOT plus the hole diagnostic and refusal entries all pass'
+        action: ./scripts/run_synthesis_gate.sh
+
+  - name: v1.9-types
+    aliases: [v1.9, types-1.9]
+    requires:
+      - runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_algebraic_effects"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Algebraic effects and handlers (ADR-0045): handler laws, resumption counts, unwinding order, the core.effects library, regions and AD give identical transcripts on native JIT, native AOT and the bytecode VM'
+        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces
+
+      - runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_effect_types"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Effect rows (ADR-0045): inferred latent rows match the typing corpus and every violated declare-effects is rejected under --strict-types'
+        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces
+
+  # -----------------------------------------------------------------
+  # Certified computation (ADR-0047, v1.7.0-synthesis W2): certificates
+  # for certified steps, an independent checker outside the compiler,
+  # a tamper suite and a Lean 4 export of the decidable facts.
+  # -----------------------------------------------------------------
+  - name: certified-computation
+    aliases: [certificates, v1.7-certificates, adr-0047]
+    requires:
+      - id: v17_certificates
+        runtime_event:
+          event_kinds: [v1_7_synthesis]
+          event_names: ["v17_certificates"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'core.certificate (ADR-0047): fourteen certificate kinds (rank, determinant with P A = L U, Smith form with unimodular transforms and their inverses, unique linear solution, solve enclosure, PSD factor or negative direction, integer and Q[x] gcd with Bezout data, polynomial identity, primality with Pratt trees and Miller-Rabin or factor witnesses, polynomial range, Taylor-model range with its remainder premise, cocycle, cohomology class) emitted as eshkol.certificate.v1 claims extending core.transcript; tools/certcheck/eshkol_certcheck.py (Python standard library only) accepts every emitted claim, tamper_suite.py shows every resealed false claim rejected, lean_export.py writes Lean 4 theorems proved by decide; the (certify (f ...)) form on native and VM; certificate_jit/aot, certificate_roundtrip_jit/aot, certificate_check_fixtures, certificate_tamper_fixtures, certificate_lean_export_current and the owning library suites all pass'
+        action: ./scripts/run_certificate_gate.sh
+  # Optional interoperability evidence, separate from the default native gate.
+  - name: quantum-circuit-interoperability
+    aliases: [quantum-circuit-oracle]
+    requires:
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["quantum_circuit_export_qiskit_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'OpenQASM parser and independent Qiskit matrix/state/probability checks pass for all 25 supported gate kinds and 100 deterministic generated circuits; missing Python extras fail explicitly.'
+        action: cmake -S . -B build -DESHKOL_QUANTUM_CIRCUIT_QISKIT_ORACLE=ON && ./scripts/run_ctest_gate.sh
+  # Windows x64 only: do not fold these conditionally registered units into
+  # platform-independent readiness. A full Windows run_ctest_gate.sh run emits
+  # each exact CTest event; actions below are focused diagnostic replays.
+  - name: windows-x64-native-jit
+    aliases: [windows-jit]
+    requires:
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["windows_jit_regressions"]
+          event_values: ["PASS"]
+        severity: high
+        label: Seven forced in-process JIT cases and their exact-output AOT controls pass on Windows x64
+        action: ctest --test-dir build -C Release -R '^windows_jit_regressions$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["windows_jit_regressions_harness"]
+          event_values: ["PASS"]
+        severity: high
+        label: Harness negative controls reject wrong output, silent errors, crashes, timeouts and failed controls
+        action: ctest --test-dir build -C Release -R '^windows_jit_regressions_harness$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["jit_parallel_init_test"]
+          event_values: ["PASS"]
+        severity: high
+        label: Independent ORC modules resolve and invoke their own worker initializer across unloading
+        action: ctest --test-dir build -C Release -R '^jit_parallel_init_test$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["jit_windows_x64_unwind_test"]
+          event_values: ["PASS"]
+        severity: high
+        label: Windows resolves JIT unwind metadata, supports a native jump into JIT code and removes metadata on unload
+        action: ctest --test-dir build -C Release -R '^jit_windows_x64_unwind_test$' --output-on-failure
+      - runtime_event:
+          event_kinds: [ctest]
+          event_names: ["windows_x64_continuation_restore_test"]
+          event_values: ["PASS"]
+        severity: high
+        label: The Windows context-restoration helper preserves native setjmp return values
+        action: ctest --test-dir build -C Release -R '^windows_x64_continuation_restore_test$' --output-on-failure

@@ -19,8 +19,23 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <llvm/IR/Function.h>
+#include <vector>
 
 namespace eshkol {
+
+namespace {
+
+// C size_t is i32 for wasm32, while string indexing and allocation lengths
+// use Eshkol's canonical i64 representation. Preserve the C ABI at the call
+// and widen its unsigned result only when an internal length is needed.
+llvm::Value* strlenAsInt64(CodegenContext& ctx, llvm::Function* strlen_func,
+                           llvm::Value* str_ptr, const llvm::Twine& name) {
+    llvm::Value* size = ctx.builder().CreateCall(strlen_func, {str_ptr});
+    if (size->getType() == ctx.int64Type()) return size;
+    return ctx.builder().CreateZExt(size, ctx.int64Type(), name);
+}
+
+} // namespace
 
 /**
  * @brief Construct the string/IO codegen helper bound to a shared codegen
@@ -1324,10 +1339,11 @@ llvm::Value* StringIOCodegen::stringFill(const eshkol_operations_t* op) {
  *        be either a char or a string.
  *
  * Emits a hand-built LLVM IR loop that scans for occurrences of the
- * delimiter (via strncmp at each candidate position), conses each segment
+ * delimiter (via memcmp at each candidate position), conses each segment
  * found onto a result list, and finally reverses that list (via
  * `eshkol_list_reverse_tagged`) so segments come out in left-to-right order.
- * A char delimiter is first materialized as a temporary 2-byte C string.
+ * A char delimiter is materialized by the checked runtime constructor so
+ * Unicode characters retain their complete UTF-8 encoding.
  */
 llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !cons_create_callback_) {
@@ -1343,9 +1359,9 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     llvm::Value* delim_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!str_arg || !delim_arg) return nullptr;
+    tagged_.requireContainer(str_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-split", "string");
 
     llvm::Function* parent_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::Function* strlen_func = ctx_.funcs().getStrlen();
     llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
     llvm::Value* arena_ptr = ctx_.currentArena();
 
@@ -1369,27 +1385,31 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     llvm::BasicBlock& entry_block = parent_func->getEntryBlock();
     ctx_.builder().SetInsertPoint(&entry_block, entry_block.begin());
     llvm::Value* delim_ptr_storage = ctx_.builder().CreateAlloca(ctx_.ptrType(), nullptr, "delim_ptr_storage");
+    llvm::Value* char_length_slot = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(), nullptr, "split_char_length");
+    llvm::Value* char_fill_slot = ctx_.builder().CreateAlloca(
+        ctx_.taggedValueType(), nullptr, "split_char_fill");
     ctx_.builder().restoreIP(saved_ip_delim);
 
     ctx_.builder().CreateCondBr(is_char, char_delim_block, str_delim_block);
 
-    // Handle char delimiter: convert to single-char string
+    // Encode the character through the runtime's checked UTF-8 constructor.
     ctx_.builder().SetInsertPoint(char_delim_block);
-    llvm::Value* char_val = tagged_.unpackInt64(delim_arg);
-    // Allocate 2 bytes for single char + null terminator (no header needed for temp buffer)
-    llvm::Value* char_buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocate(), {arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), 2)});
-    // Store char and null terminator
-    llvm::Value* char_i8 = ctx_.builder().CreateTrunc(char_val, ctx_.int8Type());
-    ctx_.builder().CreateStore(char_i8, char_buf);
-    llvm::Value* term_char = ctx_.builder().CreateGEP(ctx_.int8Type(), char_buf,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), term_char);
-    ctx_.builder().CreateStore(char_buf, delim_ptr_storage);
+    ctx_.builder().CreateStore(tagged_.packInt64(
+        llvm::ConstantInt::get(ctx_.int64Type(), 1)), char_length_slot);
+    ctx_.builder().CreateStore(delim_arg, char_fill_slot);
+    llvm::FunctionCallee make_char_string = ctx_.module().getOrInsertFunction(
+        "eshkol_make_string_checked",
+        llvm::FunctionType::get(ctx_.ptrType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* char_string = ctx_.builder().CreateCall(make_char_string,
+        {arena_ptr, char_length_slot, char_fill_slot});
+    ctx_.builder().CreateStore(char_string, delim_ptr_storage);
     ctx_.builder().CreateBr(delim_ready_block);
 
     // Handle string delimiter: use directly
     ctx_.builder().SetInsertPoint(str_delim_block);
+    tagged_.requireContainer(delim_arg, tagged_.containerBit(HEAP_SUBTYPE_STRING), "string-split", "string or character");
     llvm::Value* delim_ptr_int = tagged_.unpackInt64(delim_arg);
     llvm::Value* str_delim_ptr = ctx_.builder().CreateIntToPtr(delim_ptr_int, ctx_.ptrType());
     ctx_.builder().CreateStore(str_delim_ptr, delim_ptr_storage);
@@ -1399,9 +1419,14 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(delim_ready_block);
     llvm::Value* delim_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), delim_ptr_storage);
 
-    // Get delimiter length and string length
-    llvm::Value* delim_len = ctx_.builder().CreateCall(strlen_func, {delim_ptr});
-    llvm::Value* str_len = ctx_.builder().CreateCall(strlen_func, {str_ptr});
+    // Header lengths preserve embedded NULs and count UTF-8 bytes.
+    llvm::FunctionCallee byte_length = ctx_.module().getOrInsertFunction(
+        "eshkol_string_byte_length",
+        llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false));
+    llvm::Value* delim_len = ctx_.builder().CreateCall(byte_length, {delim_ptr},
+                                                        "split_delim_len_i64");
+    llvm::Value* str_len = ctx_.builder().CreateCall(byte_length, {str_ptr},
+                                                      "split_str_len_i64");
 
     // Create basic blocks
     llvm::BasicBlock* search_cond = llvm::BasicBlock::Create(ctx_.context(), "split_search", parent_func);
@@ -1461,10 +1486,13 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(found_delim);
     llvm::Value* curr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, curr_pos);
 
-    // Use strncmp to compare delimiter with current position
-    llvm::Function* strncmp_func = ctx_.funcs().getStrncmp();
-    llvm::Value* cmp_result = ctx_.builder().CreateCall(strncmp_func,
-        {curr_ptr, delim_ptr, delim_len});
+    // Use an explicit byte count so embedded NUL bytes participate in matches.
+    llvm::FunctionCallee memcmp_func = ctx_.module().getOrInsertFunction(
+        "memcmp", llvm::FunctionType::get(ctx_.int32Type(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.sizeType()}, false));
+    llvm::Value* cmp_len = ctx_.builder().CreateZExtOrTrunc(delim_len, ctx_.sizeType());
+    llvm::Value* cmp_result = ctx_.builder().CreateCall(memcmp_func,
+        {curr_ptr, delim_ptr, cmp_len});
     llvm::Value* is_match = ctx_.builder().CreateICmpEQ(cmp_result,
         llvm::ConstantInt::get(ctx_.int32Type(), 0));
 
@@ -1489,12 +1517,13 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     // (string-length (car (string-split "abc" "x"))) returned 4 instead
     // of 3 — visible as the "substring: end index less than start index"
     // crash in base64url-encode round-trips. Pass seg_len directly.
+    llvm::Value* seg_size = ctx_.builder().CreateZExtOrTrunc(seg_len, ctx_.sizeType());
     llvm::Value* seg_buf = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, seg_len});
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, seg_size});
 
     // Copy characters using memcpy
     llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, seg_start);
-    ctx_.builder().CreateCall(memcpy_func, {seg_buf, src_ptr, seg_len});
+    ctx_.builder().CreateCall(memcpy_func, {seg_buf, src_ptr, seg_size});
 
     // Null-terminate
     llvm::Value* term_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), seg_buf, seg_len);
@@ -2720,7 +2749,8 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(success_block);
 
     // Get string length
-    llvm::Value* len = ctx_.builder().CreateCall(strlen_func, {buffer});
+    llvm::Value* len = strlenAsInt64(ctx_, strlen_func, buffer,
+                                     "readline_len_i64");
 
     // Strip trailing newline if present
     llvm::Value* last_idx = ctx_.builder().CreateSub(len, llvm::ConstantInt::get(ctx_.int64Type(), 1));
@@ -3218,33 +3248,35 @@ llvm::Value* StringIOCodegen::charCompare(const eshkol_operations_t* op, const s
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 2) {
-        eshkol_arity_error_current("Character comparison requires exactly 2 arguments");
+    if (op->call_op.num_vars < 2) {
+        eshkol_arity_error_current("Character comparison requires at least 2 arguments");
         return nullptr;
     }
 
-    llvm::Value* char1_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
-    llvm::Value* char2_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-    if (!char1_arg || !char2_arg) return nullptr;
-
-    llvm::Value* char1_val = tagged_.unpackInt64(char1_arg);
-    llvm::Value* char2_val = tagged_.unpackInt64(char2_arg);
-
-    llvm::Value* result;
-    if (cmp_type == "eq") {
-        result = ctx_.builder().CreateICmpEQ(char1_val, char2_val);
-    } else if (cmp_type == "lt") {
-        result = ctx_.builder().CreateICmpSLT(char1_val, char2_val);
-    } else if (cmp_type == "gt") {
-        result = ctx_.builder().CreateICmpSGT(char1_val, char2_val);
-    } else if (cmp_type == "le") {
-        result = ctx_.builder().CreateICmpSLE(char1_val, char2_val);
-    } else if (cmp_type == "ge") {
-        result = ctx_.builder().CreateICmpSGE(char1_val, char2_val);
-    } else {
-        result = llvm::ConstantInt::getFalse(ctx_.context());
+    // Lower every argument once before emitting any pair comparison. Besides
+    // matching Scheme's call evaluation order, this keeps side effects from
+    // being repeated by the chain.
+    std::vector<llvm::Value*> chars;
+    chars.reserve(op->call_op.num_vars);
+    for (int i = 0; i < op->call_op.num_vars; ++i) {
+        llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!arg) return nullptr;
+        chars.push_back(tagged_.unpackInt64(arg));
     }
 
+    llvm::Value* result = llvm::ConstantInt::getTrue(ctx_.context());
+    for (size_t i = 1; i < chars.size(); ++i) {
+        llvm::Value* left = chars[i - 1];
+        llvm::Value* right = chars[i];
+        llvm::Value* pair_result;
+        if (cmp_type == "eq") pair_result = ctx_.builder().CreateICmpEQ(left, right);
+        else if (cmp_type == "lt") pair_result = ctx_.builder().CreateICmpSLT(left, right);
+        else if (cmp_type == "gt") pair_result = ctx_.builder().CreateICmpSGT(left, right);
+        else if (cmp_type == "le") pair_result = ctx_.builder().CreateICmpSLE(left, right);
+        else if (cmp_type == "ge") pair_result = ctx_.builder().CreateICmpSGE(left, right);
+        else pair_result = llvm::ConstantInt::getFalse(ctx_.context());
+        result = ctx_.builder().CreateAnd(result, pair_result);
+    }
     return tagged_.packBool(result);
 }
 
@@ -3266,17 +3298,19 @@ llvm::Value* StringIOCodegen::charCiCompare(const eshkol_operations_t* op, const
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 2) {
-        eshkol_arity_error_current("Case-insensitive character comparison requires exactly 2 arguments");
+    if (op->call_op.num_vars < 2) {
+        eshkol_arity_error_current("Character comparison requires at least 2 arguments");
         return nullptr;
     }
 
-    llvm::Value* char1_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
-    llvm::Value* char2_arg = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
-    if (!char1_arg || !char2_arg) return nullptr;
-
-    llvm::Value* char1_val = tagged_.unpackInt64(char1_arg);
-    llvm::Value* char2_val = tagged_.unpackInt64(char2_arg);
+    // Evaluate the entire operand list once before comparing adjacent pairs.
+    std::vector<llvm::Value*> chars;
+    chars.reserve(op->call_op.num_vars);
+    for (int i = 0; i < op->call_op.num_vars; ++i) {
+        llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+        if (!arg) return nullptr;
+        chars.push_back(tagged_.unpackInt64(arg));
+    }
 
     // Fold each operand: if ASCII uppercase, add 32; else keep.
     auto fold = [&](llvm::Value* v) -> llvm::Value* {
@@ -3289,17 +3323,19 @@ llvm::Value* StringIOCodegen::charCiCompare(const eshkol_operations_t* op, const
         return ctx_.builder().CreateZExt(folded, ctx_.int64Type());
     };
 
-    llvm::Value* fc1 = fold(char1_val);
-    llvm::Value* fc2 = fold(char2_val);
-
-    llvm::Value* result;
-    if (cmp_type == "eq")      result = ctx_.builder().CreateICmpEQ(fc1, fc2);
-    else if (cmp_type == "lt") result = ctx_.builder().CreateICmpSLT(fc1, fc2);
-    else if (cmp_type == "gt") result = ctx_.builder().CreateICmpSGT(fc1, fc2);
-    else if (cmp_type == "le") result = ctx_.builder().CreateICmpSLE(fc1, fc2);
-    else if (cmp_type == "ge") result = ctx_.builder().CreateICmpSGE(fc1, fc2);
-    else                       result = llvm::ConstantInt::getFalse(ctx_.context());
-
+    llvm::Value* result = llvm::ConstantInt::getTrue(ctx_.context());
+    for (size_t i = 1; i < chars.size(); ++i) {
+        llvm::Value* fc1 = fold(chars[i - 1]);
+        llvm::Value* fc2 = fold(chars[i]);
+        llvm::Value* pair_result;
+        if (cmp_type == "eq")      pair_result = ctx_.builder().CreateICmpEQ(fc1, fc2);
+        else if (cmp_type == "lt") pair_result = ctx_.builder().CreateICmpSLT(fc1, fc2);
+        else if (cmp_type == "gt") pair_result = ctx_.builder().CreateICmpSGT(fc1, fc2);
+        else if (cmp_type == "le") pair_result = ctx_.builder().CreateICmpSLE(fc1, fc2);
+        else if (cmp_type == "ge") pair_result = ctx_.builder().CreateICmpSGE(fc1, fc2);
+        else                       pair_result = llvm::ConstantInt::getFalse(ctx_.context());
+        result = ctx_.builder().CreateAnd(result, pair_result);
+    }
     return tagged_.packBool(result);
 }
 

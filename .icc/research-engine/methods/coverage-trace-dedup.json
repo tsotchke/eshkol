@@ -1,0 +1,40 @@
+{
+  "schema": "icc.research_method.v1",
+  "method": "coverage-trace-dedup",
+  "domain": "Historical execution-backed language coverage aggregation over the 2026-10-22 2,075-file, 553,691,039-byte TSV artifact; exact existing coverage semantics",
+  "objective_metric": "retained_P_records",
+  "objective_sense": "lower_is_better",
+  "baselines": [
+    {
+      "name": "append every P trace row to parsed list",
+      "value": 10836487,
+      "citation": "scripts/language_coverage.py load_runtime_evidence appends one (location, spelling) tuple for each raw P event; bounded streaming count receipt .scratch/release-recovery-20261022/coverage-trace-memory/evidence/p_record_count.json, input 553691039 bytes across 2075 TSV files",
+      "basis": "Exact streaming count of raw P events; retained_P_records counts the parsed list entries before downstream set-only consumers"
+    }
+  ],
+  "decision_points": [
+    {
+      "name": "P-event parsed-record retention",
+      "current_choice": "append every (normalized location, spelling) tuple to parsed",
+      "alternatives": [
+        {
+          "choice": "retain unique (normalized location, spelling) tuples in a set while preserving raw P event counting and validation",
+          "analytic_basis": "The existing consumer builds spellings_by_position values as sets and loops over parsed twice only to perform set-backed membership/credit operations. A tuple duplicated in parsed therefore has no additional effect on later results. For P=10,836,487 raw P rows and U=210,221 unique normalized location/spelling tuples on the bounded historical artifact, the retained-record change is U-P=-10,626,266. The event counter remains incremented once per input P row before deduplication.",
+          "reported_effect": "Exactly 10,626,266 fewer retained P tuples on the counted artifact; RSS and elapsed-time gain unmeasured",
+          "effect_direction": "improves",
+          "effect_metric": "retained_P_records",
+          "predicted_delta": {
+            "value": -10626266,
+            "metric": "retained_P_records",
+            "baseline": 10836487,
+            "baseline_ref": "streaming P-record count and unique-key receipt p_record_count.json"
+          },
+          "transferability_note": "Exact count applies only to the identified historical artifact. It predicts retained tuple count, not bytes, RSS, runtime, completion, or current execution proof. Any source normalization, malformed-input, ambiguity, hash-collision, negative-form or trace-path rule must remain unchanged.",
+          "unmeasured_precondition": "The collector must keep every original validation and raw event-count side effect and only replace duplicate P tuple retention; cache normalized source identities only within one load_runtime_evidence invocation.",
+          "falsifying_experiment": "On bounded real trace subsets compare baseline and candidate covered-name sets, every event count and trace path list exactly, and exercise duplicate P rows, ambiguous spellings at one source position, malformed duplicate rows, serialized hash collisions and negative syntax-error forms. Then the optimized full historical aggregation may run under the task-owned 3 GiB RSS / 180 second stop; any semantic mismatch falsifies the change. RSS or time is measured only if a complete run receipt is produced.",
+          "cost_class": "sub-gpu-hour"
+        }
+      ]
+    }
+  ]
+}

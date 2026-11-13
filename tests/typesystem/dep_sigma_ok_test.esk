@@ -1,0 +1,18 @@
+;; Dependent pairs (ADR-0042): (Sigma ((n : integer)) (vector real n)) pairs
+;; a length with a vector of that length. The second component of a pair p
+;; has type (vector real (car p)), so its length is (car p).
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(: sized (Sigma ((n : integer)) (vector real n)))
+(define sized (cons 3 (vector 1.0 2.0 3.0)))
+
+(define (payload (p : (Sigma ((n : integer)) (vector real n)))) : (vector real (car p))
+  (cdr p))
+
+(display (car sized))
+(newline)
+(display (payload sized))
+(newline)

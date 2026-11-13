@@ -1,0 +1,3 @@
+;; expect: which is not in the refinement predicate language
+(define (f (x : (Refine Integer (begin (display x) (> x 0))))) x)
+(display (f 1))

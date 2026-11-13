@@ -10,6 +10,7 @@
 
 (require core.list.query)
 (require core.list.transform)
+(require core.utf8)
 
 (provide
   msgpack-null msgpack-null?
@@ -120,39 +121,10 @@
       (else
        (error "msgpack-encode: bin payload too large for current substrate" len)))))
 
-;; A MessagePack str is UTF-8 text; bin remains arbitrary bytes. Validate
-;; scalar encodings before calling the permissive runtime UTF-8 converter.
-;; The first continuation bounds exclude overlong encodings, surrogates,
-;; and values above U+10FFFF without constructing an intermediate string.
-(define (msgpack-utf8-tail bv pos end count minimum maximum)
-  (if (= count 0) pos
-      (if (>= pos end)
-          (error "msgpack: truncated UTF-8 scalar" pos)
-          (let ((b (bytevector-u8-ref bv pos)))
-            (if (and (>= b minimum) (<= b maximum))
-                (msgpack-utf8-tail bv (+ pos 1) end (- count 1) 128 191)
-                (error "msgpack: invalid UTF-8 continuation" pos))))))
-
+;; A MessagePack str is UTF-8 text; bin remains arbitrary bytes. Text is
+;; validated by core.utf8 before calling the permissive runtime converter.
 (define (msgpack-require-utf8 bv pos len)
-  (let ((end (+ pos len)))
-    (let loop ((i pos))
-      (if (= i end) #t
-          (let ((b (bytevector-u8-ref bv i)) (next (+ i 1)))
-            (cond
-              ((<= b 127) (loop next))
-              ((and (>= b 194) (<= b 223))
-               (loop (msgpack-utf8-tail bv next end 1 128 191)))
-              ((= b 224) (loop (msgpack-utf8-tail bv next end 2 160 191)))
-              ((and (>= b 225) (<= b 236))
-               (loop (msgpack-utf8-tail bv next end 2 128 191)))
-              ((= b 237) (loop (msgpack-utf8-tail bv next end 2 128 159)))
-              ((and (>= b 238) (<= b 239))
-               (loop (msgpack-utf8-tail bv next end 2 128 191)))
-              ((= b 240) (loop (msgpack-utf8-tail bv next end 3 144 191)))
-              ((and (>= b 241) (<= b 243))
-               (loop (msgpack-utf8-tail bv next end 3 128 191)))
-              ((= b 244) (loop (msgpack-utf8-tail bv next end 3 128 143)))
-              (else (error "msgpack: invalid UTF-8 leading byte" i))))))))
+  (utf8-require-valid "msgpack" bv pos len))
 
 (define (msgpack-encode-string str)
   (let* ((utf8 (string->utf8 str))

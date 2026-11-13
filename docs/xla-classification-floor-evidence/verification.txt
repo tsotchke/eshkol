@@ -1,0 +1,46 @@
+XLA classification/floor plan port verification evidence
+
+Working clone: xla-classification-floor/source
+Canonical parent: 7f01cd9707d4368dc6731ad6d91ae8d1eec6a76a
+Classification source snapshot: 2d8c73a63e52f6ed80f73b1ceeeed62b65bf445f
+
+Registry reconciliation:
+- Old builtin names: 1,043
+- Canonical builtin names: 1,058
+- Added: _display2, _newline1, _std-port-parameter, _swish-tensor,
+  ad-scalar-ad-nodes, ad-tensor-ad-nodes, derivative-n, fl-next-down,
+  fl-next-up, i128-floor-remainder, raise-continuable, srand48, swish,
+  taylor, type-name
+- Removed: none
+- Shared-name classification changes: none
+- All 15 additions have explicit host-only source-grounded override entries.
+
+ICC_PYTHON=/Users/tyr/Desktop/infinite_context_coder/.venv/bin/python
+
+Command: $ICC_PYTHON scripts/gen_builtin_classification.py
+Result: wrote 1,058 entries (device=233 host=816 host-with-device-inner=9).
+
+Command: $ICC_PYTHON scripts/check_builtin_classification.py
+Result: PASS; registry=1,058, classified=1,058, unclassified=0, stale=0.
+
+Command: $ICC_PYTHON tests/xla/test_floor_builtin_plan.py
+Result: 8 tests passed. Negative controls reject a missing required floor row,
+wrong f64/i128 dtype, and floor quotient replaced with a truncating table entry. Other
+checks reject s64 MIN/-1 fixture input, preserve separate truncation/floor
+semantics, keep exact/bignum builtins host-only and out of the lowering table,
+and verify signed s64 endpoints serialize without a float round-trip.
+
+Command: XDG_CACHE_HOME=/private/tmp/xla-floor-xdg-cache $ICC_PYTHON
+scripts/gen_builtin_parity_plan.py --eshkol-run /usr/local/bin/eshkol-run
+--out docs/xla-classification-floor-evidence/floor-reference-plan.txt
+--work docs/xla-classification-floor-evidence/work --builtin modulo --builtin
+mod --builtin floor-remainder --builtin floor-quotient --builtin quotient
+--builtin remainder
+Result: 6 builtins, 6 host references, 0 without. `work/builtin_reference.esk`
+was run with `ESHKOL_XLA_DEVICE=0` by the generator; the full stdout/stderr is in
+`work/builtin_reference.log`. Inputs and references in the resulting plan are
+integer text for s64, including negative values. This is source-language host
+reference evidence only; no XLA lowering/device kernel was executed.
+
+No native build, SDK, model, service, or device command was run. Region-table
+floor rows remain queued until region implementation exists in the target.

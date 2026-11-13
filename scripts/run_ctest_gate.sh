@@ -103,6 +103,7 @@ fi
 # Each line becomes one roll-up event of kind "ctest", consumed by one
 # criterion under `eshkol-compiler-readiness`.
 CTEST_GATE_GROUPS=$(cat <<'GROUPS'
+quantum_circuit_contract_gate	^quantum_circuit_export_(aot|driver_selftest)$	2	Validated static circuit export and deliberate harness-failure checks
 fixed_point_exact_accumulation_gate	^fixedpoint_	-	Fixed-point / i128 exact-accumulation engine
 exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor|exactness_runtime_property)_(runtime|aot)_smoke$	-	Exact-input AD identity tier
 taylor_tower_exactness_gate	^(taylor_tower|taylor_tower_mono|exact_taylor|reverse_over_taylor|taylor_numerics|region_evac_taylor_exact)_(runtime|aot)_smoke$	12	Taylor-tower exactness stack (P1/P2/P5/P6/P11) in one run
@@ -110,6 +111,8 @@ runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	-	Runtime-closu
 define_library_same_unit_gate	^define_library_same_unit_	-	R7RS same-unit define-library resolution
 module_load_path_engine_parity_gate	^load_path_engine_parity_test$	-	Relative (load …) resolves identically on every execution engine
 squared_distance_exact_gate	^squared_distance_gradcheck$	-	Squared geodesic distance is exact and differentiable THROUGH the diagonal
+v140_codebase_gate	^(image_codecs_test|image_io_language_test|test_native_image_io_contract|runtime_regions_test|doc_truth_ratchet_unit|doc_truth_ratchet_phase1)$	6	v1.4.0 codebase row: built-in image codecs, region units, doc-truth ratchet phase 1
+native_cross_entropy_gradient_gate	^(cross_entropy_gradient_|tensor_backward_dual_impl_gradcheck$|qllm_bridge_gradcheck$)	7	Native CE gradients and explicit unsupported-loss refusals on JIT/AOT and both tensor lowerings
 GROUPS
 )
 

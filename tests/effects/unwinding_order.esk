@@ -1,0 +1,59 @@
+;;; Interaction with dynamic-wind, guard and raise.
+
+(define-effect Op (op x))
+(define-effect Stop (stop))
+(define trace '())
+(define (note x) (set! trace (cons x trace)))
+(define (flush label)
+  (display label) (display ": ") (display (reverse trace)) (newline)
+  (set! trace '()))
+(define (wind label thunk)
+  (dynamic-wind (lambda () (note (list 'in label))) thunk (lambda () (note (list 'out label)))))
+
+;; tail-resumptive clause: runs in place, the extent is not left
+(handle (wind 'body (lambda () (note (list 'got (op 1)))))
+  (fun (op x) (note (list 'clause x)) (* x 10)))
+(flush "tail")
+
+;; aborting clause: the extent is left (after-thunks) before the clause runs
+(handle (wind 'body (lambda () (stop) (note 'unreachable)))
+  ((stop) k (note 'clause) 'stopped))
+(flush "abort")
+
+;; general clause: leave, run the clause, re-enter on resume, leave at the end
+(handle (wind 'body (lambda () (note (list 'got (op 2)))))
+  (return (x) (note 'return) x)
+  ((op x) k (note (list 'clause x)) (let ((r (k (* x 10)))) (note 'after-resume) r)))
+(flush "general")
+
+;; raise inside the handled computation reaches a guard outside the handle,
+;; and the handler context is restored on the way out
+(display (guard (e (#t (list 'caught e (effect-handler-depth))))
+  (handle (wind 'body (lambda () (raise 'boom)))
+    (fun (op x) x))))
+(newline)
+(flush "raise-out")
+
+;; raise inside a resumed computation goes to the resumption site
+(display (handle (begin (op 1) (raise 'late))
+  ((op x) k (guard (e (#t (list 'resume-site e))) (k x)))))
+(newline)
+
+;; raise inside a clause goes to the context of the handle, not the body
+(display (guard (e (#t (list 'outside e)))
+  (handle (guard (e (#t (list 'body-guard e))) (op 1))
+    ((op x) k (raise 'from-clause)))))
+(newline)
+
+;; an escape continuation out of a handled computation restores the context
+(display (call/cc (lambda (out)
+  (handle (begin (out (list 'escaped (effect-handler-depth))) 'no)
+    (fun (op x) x)))))
+(newline)
+(display (list 'depth (effect-handler-depth)))
+(newline)
+
+;; unhandled operation is a catchable condition
+(display (guard (e ((unhandled-effect-error? e) (list 'unhandled (error-object-irritants e))))
+  (op 5)))
+(newline)

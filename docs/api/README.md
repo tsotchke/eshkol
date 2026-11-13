@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2575/5511 public symbols documented (46.7%), 2936 undocumented.
+**Coverage:** 2998/6731 public symbols documented (44.5%), 3733 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,16 +16,16 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-420/848 symbols documented.
+428/915 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`abi_fingerprint.h`](abi_fingerprint.md) | 46 | 14 |
-| [`agent_capabilities.h`](agent_capabilities.md) | 37 | 37 |
+| [`agent_capabilities.h`](agent_capabilities.md) | 49 | 37 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 4 | 1 |
-| [`eshkol.h`](eshkol.md) | 374 | 213 |
+| [`eshkol.h`](eshkol.md) | 381 | 218 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -35,42 +35,45 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`model_io.h`](model_io.md) | 8 | 5 |
 | [`module_resolver.h`](module_resolver.md) | 1 | 0 |
 | [`module_visibility.h`](module_visibility.md) | 1 | 0 |
-| [`platform_runtime.h`](platform_runtime.md) | 52 | 38 |
+| [`platform_runtime.h`](platform_runtime.md) | 54 | 40 |
 | [`runtime_exports.h`](runtime_exports.md) | 48 | 29 |
 | [`stdlib_identity.h`](stdlib_identity.md) | 3 | 2 |
+| [`strict_resource_contracts.h`](strict_resource_contracts.md) | 44 | 1 |
+| [`strict_source_identity.h`](strict_source_identity.md) | 2 | 0 |
 | [`tensor_cross_entropy.h`](tensor_cross_entropy.md) | 5 | 0 |
 | [`tensor_validation.h`](tensor_validation.md) | 4 | 0 |
 | [`tensorcore_adapter.h`](tensorcore_adapter.md) | 37 | 0 |
 
 ### `backend/`
 
-1318/3058 symbols documented.
+1357/3123 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 62 | 53 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 209 | 127 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 211 | 129 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 76 | 24 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 65 | 22 |
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
 | [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 6 | 6 |
-| [`backend/codegen_context.h`](backend/codegen_context.md) | 195 | 51 |
+| [`backend/codegen_context.h`](backend/codegen_context.md) | 199 | 53 |
 | [`backend/collection_codegen.h`](backend/collection_codegen.md) | 33 | 21 |
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 37 | 26 |
 | [`backend/control_flow_codegen.h`](backend/control_flow_codegen.md) | 32 | 12 |
 | [`backend/cpu_features.h`](backend/cpu_features.md) | 49 | 22 |
+| [`backend/debug_artifact.h`](backend/debug_artifact.md) | 2 | 0 |
 | [`backend/differential_form_core.h`](backend/differential_form_core.md) | 17 | 12 |
 | [`backend/frechet_mean_core.h`](backend/frechet_mean_core.md) | 8 | 4 |
 | [`backend/function_cache.h`](backend/function_cache.md) | 30 | 11 |
-| [`backend/function_codegen.h`](backend/function_codegen.md) | 20 | 8 |
+| [`backend/function_codegen.h`](backend/function_codegen.md) | 19 | 7 |
 | [`backend/hash_codegen.h`](backend/hash_codegen.md) | 39 | 9 |
 | [`backend/homoiconic_codegen.h`](backend/homoiconic_codegen.md) | 16 | 11 |
 | [`backend/ir_builder.h`](backend/ir_builder.md) | 10 | 0 |
 | [`backend/libm_codegen.h`](backend/libm_codegen.md) | 5 | 5 |
 | [`backend/link_probe.h`](backend/link_probe.md) | 1 | 1 |
-| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 762 | 17 |
+| [`backend/llvm_codegen.h`](backend/llvm_codegen.md) | 764 | 17 |
 | [`backend/llvm_compat.h`](backend/llvm_compat.md) | 4 | 0 |
 | [`backend/logic_workspace_codegen.h`](backend/logic_workspace_codegen.md) | 43 | 25 |
 | [`backend/map_codegen.h`](backend/map_codegen.md) | 54 | 23 |
@@ -78,18 +81,19 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/mutation_observation.h`](backend/mutation_observation.md) | 8 | 0 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 62 | 19 |
 | [`backend/qllm_backward.h`](backend/qllm_backward.md) | 9 | 0 |
-| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 87 | 26 |
+| [`backend/riemannian_core.h`](backend/riemannian_core.md) | 115 | 50 |
 | [`backend/static_callee_binding.h`](backend/static_callee_binding.md) | 13 | 7 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 75 | 57 |
-| [`backend/system_codegen.h`](backend/system_codegen.md) | 280 | 266 |
+| [`backend/system_codegen.h`](backend/system_codegen.md) | 289 | 275 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 57 | 49 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 22 | 22 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 209 | 189 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 218 | 192 |
+| [`backend/tensor_shape_guard.h`](backend/tensor_shape_guard.md) | 2 | 0 |
 | [`backend/tensorcore_codegen.h`](backend/tensorcore_codegen.md) | 7 | 0 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 61 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 77 | 21 |
-| [`backend/vm.h`](backend/vm.md) | 47 | 1 |
+| [`backend/vm.h`](backend/vm.md) | 55 | 1 |
 | [`backend/vm_limits.h`](backend/vm_limits.md) | 25 | 0 |
 | [`backend/work_stealing_deque.h`](backend/work_stealing_deque.md) | 76 | 37 |
 
@@ -103,29 +107,30 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/xla/`
 
-120/187 symbols documented.
+151/270 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
+| [`backend/xla/pjrt_client.h`](backend/xla/pjrt_client.md) | 61 | 24 |
 | [`backend/xla/stablehlo_emitter.h`](backend/xla/stablehlo_emitter.md) | 34 | 22 |
 | [`backend/xla/xla_codegen.h`](backend/xla/xla_codegen.md) | 32 | 25 |
 | [`backend/xla/xla_compiler.h`](backend/xla/xla_compiler.md) | 29 | 12 |
 | [`backend/xla/xla_memory.h`](backend/xla/xla_memory.md) | 25 | 16 |
-| [`backend/xla/xla_runtime.h`](backend/xla/xla_runtime.md) | 31 | 18 |
+| [`backend/xla/xla_runtime.h`](backend/xla/xla_runtime.md) | 53 | 25 |
 | [`backend/xla/xla_types.h`](backend/xla/xla_types.md) | 36 | 27 |
 
 ### `bridge/`
 
-34/34 symbols documented.
+35/35 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`bridge/qllm_bridge.h`](bridge/qllm_bridge.md) | 25 | 25 |
+| [`bridge/qllm_bridge.h`](bridge/qllm_bridge.md) | 26 | 26 |
 | [`bridge/space_form.h`](bridge/space_form.md) | 9 | 9 |
 
 ### `core/`
 
-311/619 symbols documented.
+393/783 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -134,41 +139,54 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/bignum.h`](core/bignum.md) | 45 | 27 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 62 | 19 |
+| [`core/coroutine.h`](core/coroutine.md) | 33 | 11 |
+| [`core/curvature_runtime.h`](core/curvature_runtime.md) | 24 | 4 |
 | [`core/dtoa_shortest.h`](core/dtoa_shortest.md) | 1 | 1 |
 | [`core/eval_bridge.h`](core/eval_bridge.md) | 9 | 4 |
 | [`core/event_loop.h`](core/event_loop.md) | 25 | 23 |
-| [`core/execution_profile.h`](core/execution_profile.md) | 36 | 8 |
-| [`core/handle.h`](core/handle.md) | 13 | 7 |
+| [`core/execution_profile.h`](core/execution_profile.md) | 47 | 11 |
+| [`core/handle.h`](core/handle.md) | 21 | 14 |
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |
 | [`core/inference.h`](core/inference.md) | 19 | 7 |
 | [`core/introspection.h`](core/introspection.md) | 31 | 30 |
 | [`core/linear_solve.h`](core/linear_solve.md) | 9 | 4 |
+| [`core/linear_solve_portable.h`](core/linear_solve_portable.md) | 1 | 1 |
 | [`core/logic.h`](core/logic.md) | 37 | 11 |
-| [`core/net.h`](core/net.md) | 10 | 10 |
+| [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
+| [`core/prng_state.h`](core/prng_state.md) | 3 | 0 |
+| [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
+| [`core/resource_lease.h`](core/resource_lease.md) | 25 | 22 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 67 | 40 |
-| [`core/runtime.h`](core/runtime.md) | 71 | 55 |
+| [`core/runtime.h`](core/runtime.md) | 73 | 56 |
+| [`core/saturating_vjp.h`](core/saturating_vjp.md) | 2 | 1 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |
+| [`core/tensor_inverse_checked.h`](core/tensor_inverse_checked.md) | 3 | 0 |
+| [`core/tls.h`](core/tls.md) | 20 | 17 |
 | [`core/unicode.h`](core/unicode.md) | 5 | 0 |
 | [`core/workspace.h`](core/workspace.md) | 15 | 4 |
 
 ### `frontend/`
 
-84/273 symbols documented.
+92/373 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`frontend/ast_strings.h`](frontend/ast_strings.md) | 15 | 11 |
 | [`frontend/binding_forms.h`](frontend/binding_forms.md) | 3 | 0 |
 | [`frontend/diagnostic.h`](frontend/diagnostic.md) | 8 | 0 |
+| [`frontend/differentiation_graph.h`](frontend/differentiation_graph.md) | 37 | 0 |
+| [`frontend/effect_syntax_core.h`](frontend/effect_syntax_core.md) | 35 | 8 |
+| [`frontend/incrementalize.h`](frontend/incrementalize.md) | 12 | 0 |
 | [`frontend/macro_expander.h`](frontend/macro_expander.md) | 48 | 21 |
 | [`frontend/node_identity.h`](frontend/node_identity.md) | 14 | 14 |
+| [`frontend/scalar_lowering.h`](frontend/scalar_lowering.md) | 16 | 0 |
 | [`frontend/semantic_identity.h`](frontend/semantic_identity.md) | 75 | 0 |
 | [`frontend/shadowable_ops.h`](frontend/shadowable_ops.md) | 1 | 0 |
 | [`frontend/source_paths.h`](frontend/source_paths.md) | 2 | 2 |
@@ -186,16 +204,38 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 |---|---:|---:|
 | [`pkg/subprocess.h`](pkg/subprocess.md) | 5 | 5 |
 
+### `platform/`
+
+58/148 symbols documented.
+
+| Header | Symbols | Documented |
+|---|---:|---:|
+| [`platform/audio.h`](platform/audio.md) | 28 | 12 |
+| [`platform/event.h`](platform/event.md) | 35 | 0 |
+| [`platform/midi.h`](platform/midi.md) | 26 | 13 |
+| [`platform/platform.h`](platform/platform.md) | 16 | 15 |
+| [`platform/window.h`](platform/window.md) | 43 | 18 |
+
 ### `types/`
 
-232/422 symbols documented.
+428/1014 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`types/dependent.h`](types/dependent.md) | 63 | 29 |
-| [`types/hott_types.h`](types/hott_types.md) | 128 | 74 |
-| [`types/type_checker.h`](types/type_checker.md) | 201 | 113 |
-| [`types/type_relation.h`](types/type_relation.md) | 30 | 16 |
+| [`types/effect_check.h`](types/effect_check.md) | 2 | 1 |
+| [`types/hole_synthesis.h`](types/hole_synthesis.md) | 19 | 4 |
+| [`types/hott_cubical.h`](types/hott_cubical.md) | 32 | 8 |
+| [`types/hott_forms.h`](types/hott_forms.md) | 9 | 3 |
+| [`types/hott_types.h`](types/hott_types.md) | 149 | 85 |
+| [`types/quantum_types.h`](types/quantum_types.md) | 59 | 23 |
+| [`types/refinement.h`](types/refinement.md) | 15 | 4 |
+| [`types/smt.h`](types/smt.md) | 165 | 30 |
+| [`types/structural_checker.h`](types/structural_checker.md) | 10 | 3 |
+| [`types/structural_types.h`](types/structural_types.md) | 95 | 27 |
+| [`types/type_checker.h`](types/type_checker.md) | 300 | 171 |
+| [`types/type_relation.h`](types/type_relation.md) | 32 | 16 |
+| [`types/type_term.h`](types/type_term.md) | 64 | 24 |
 
 ### `util/`
 

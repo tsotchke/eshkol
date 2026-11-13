@@ -1,0 +1,36 @@
+format = "eshkol-sblc-checkpoint-qualification-v1"
+parent_revision = "467321ed3b352d96e64164c77c24ef27bfe742e8"
+runtime = "v1.3.6-evolve Linux x64 lite"
+compiler_rebuilt = false
+checks_per_engine = 273
+jit_aot_wire_identical = true
+cold_producer_consumer_both_directions = true
+existing_sblc_checks_per_engine = 104
+resumption_checks_per_engine = 530
+checkpoint_history_trusted = true
+serialized_history_authenticated = false
+command = "ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_sblc_checkpoint_gate.sh"
+
+[[input]]
+path = "lib/core/sblc.esk"
+sha256 = "5085f087553b83b4b64e7d9efbf85b50d793a5f70770f04a50a3db9f85bac609"
+
+[[input]]
+path = "tests/stdlib/sblc_checkpoint_test.esk"
+sha256 = "01d62c42e2e00413481e23e47d60748db06e609b843669e167e700039add197f"
+
+[[input]]
+path = "scripts/run_sblc_checkpoint_gate.sh"
+sha256 = "7748abf396698b86ceeeda86bc1dc4d71153a7bd2b640f3ce82e851507fa1abe"
+
+[[input]]
+path = "CMakeLists.txt"
+sha256 = "ea5a468e0c3486b474b662f22b04016f313201349b7729526643ad80b8cbdf5b"
+
+[[input]]
+path = "docs/reference/stdlib/sblc.md"
+sha256 = "4739a9fdcbe578147d0b949d6a3da13102f37550267fb15930015e3b5db851d6"
+
+[[input]]
+path = "docs/design/adr/0017-stochastic-binary-lambda-calculus.md"
+sha256 = "59c4e9e8c611b9fcf1a63b3eaff9a98221bffe30f45b3b68dac45e166bb1828c"

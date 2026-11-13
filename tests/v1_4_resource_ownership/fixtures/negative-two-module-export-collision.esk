@@ -1,0 +1,5 @@
+(require test.strict.fake_net)
+(define bogus-close close-alias)
+(import (core net))
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (network-error? socket) #t (bogus-close socket))

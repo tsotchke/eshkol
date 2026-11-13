@@ -78,6 +78,11 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     /* These helpers walk the cursor list directly. They deliberately do not
      * call map recursively: doing so nests closure frames before the outer
      * cursor advances and can exhaust the VM frame budget. */
+    ";; Algebraic effects (ADR-0045): the handler context. Native keeps it in\n"
+    ";; the runtime (runtime_continuations.cpp); the VM in one global.\n"
+    "(define __eshkol-effect-context (quote ()))\n"
+    "(define (%effect-context) __eshkol-effect-context)\n"
+    "(define (%effect-context-set! v) (set! __eshkol-effect-context v) v)\n"
     "(define (__eshkol-any-null? xs)\n"
     "  (if (null? xs) #f\n"
     "      (if (null? (car xs)) #t (__eshkol-any-null? (cdr xs)))))\n"
@@ -257,6 +262,13 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define * (lambda args (fold-left mul2 1 args)))\n"
     "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
     "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
+    /* Keep the raw opcode available while exposing the public optional
+     * default as a procedure value, with an explicit upper arity. */
+    "(define _hash-ref-raw hash-ref)\n"
+    "(define (hash-ref table key . rest)\n"
+    "  (cond ((null? rest) (_hash-ref-raw table key #f))\n"
+    "        ((null? (cdr rest)) (_hash-ref-raw table key (car rest)))\n"
+    "        (else (error \"Arity mismatch: hash-ref expects 2 or 3 arguments\"))))\n"
     /* ── Variadic wrappers around 2-arg builtins ──────────────────────── */
     "(define _append-2 append)\n"
     "(define (append . lists) (fold-right _append-2 '() lists))\n"
@@ -279,6 +291,13 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define _cmp2_15 char=?) (define char=? (_chain2 _cmp2_15))\n"
     "(define _cmp2_16 char<?) (define char<? (_chain2 _cmp2_16))\n"
     "(define _cmp2_17 char>?) (define char>? (_chain2 _cmp2_17))\n"
+    /* Derive the inclusive predicates from the native strict comparisons.
+     * Reuse their binary comparison results while exposing the existing
+     * _chain2 two-or-more argument procedure shape. */
+    "(define _char-le-2 (lambda (a b) (not (char>? a b))))\n"
+    "(define char<=? (_chain2 _char-le-2))\n"
+    "(define _char-ge-2 (lambda (a b) (not (char<? a b))))\n"
+    "(define char>=? (_chain2 _char-ge-2))\n"
     /* SW-173: `list`, `vector` and `string` are compiled by head symbol in
      * CALL position (vm_compiler.c lowers `(list a b)` to a cons chain and
      * `(vector …)` to OP_VEC_CREATE before it ever looks a binding up), so

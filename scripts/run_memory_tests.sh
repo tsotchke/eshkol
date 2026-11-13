@@ -34,6 +34,8 @@ fi
 source "$ESHKOL_TEST_LIB"
 # shellcheck source=lib/checked_write.sh
 . "$(dirname "$ESHKOL_TEST_LIB")/checked_write.sh"
+# shellcheck source=lib/memory_compile_refusal.sh
+. "$(dirname "$ESHKOL_TEST_LIB")/memory_compile_refusal.sh"
 eshkol_test_isolation_init "memory"
 
 # Colors for output
@@ -111,17 +113,25 @@ for test_file in tests/memory/*.esk; do
             ((FAIL++)) || true
         fi
     # Check if this is a negative test (expected to fail)
-    elif grep -q ";;; Expected: Error" "$test_file"; then
-        # Negative test - should fail to compile
-        if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+    elif expected_compile_error=$(memory_expected_compile_error "$test_file"); [ -n "$expected_compile_error" ]; then
+        # A declared compile refusal passes only for the intended diagnostic,
+        # the compiler's ordinary error exit, and no emitted executable.
+        if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
             # Compilation succeeded but should have failed
             echo -e "${RED}❌ SHOULD HAVE FAILED${NC}"
             FAILED_TESTS+=("$test_name (expected compile error)")
             ((FAIL++)) || true
         else
-            # Compilation failed as expected
-            echo -e "${GREEN}✅ PASS (expected error)${NC}"
-            ((PASS++)) || true
+            compile_rc=$?
+            if memory_compile_refusal_matches "$compile_rc" "$expected_compile_error" "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_BIN"; then
+                echo -e "${GREEN}✅ PASS (expected compile error)${NC}"
+                ((PASS++)) || true
+            else
+                echo -e "${RED}❌ WRONG COMPILE REFUSAL${NC}"
+                FAILED_TESTS+=("$test_name (compile refusal did not match expected diagnostic/status/artifact contract)")
+                ((COMPILE_FAIL++)) || true
+                ((FAIL++)) || true
+            fi
         fi
     else
         # Normal test - should compile and run successfully

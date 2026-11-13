@@ -638,6 +638,8 @@ void eshkol_language_coverage_vm_call_hash(uint32_t name_hash);
  * manifest with collision rejection, exactly as for a validated call.
  */
 void eshkol_language_coverage_vm_form_hash(uint32_t name_hash);
+/** Record a binding-origin read, distinct from invocation evidence. */
+void eshkol_language_coverage_vm_read_hash(uint32_t binding_hash);
 /** Flush a pending opt-in language-coverage batch before exec/early exit. */
 void eshkol_language_coverage_flush(void);
 

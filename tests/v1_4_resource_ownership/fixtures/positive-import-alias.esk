@@ -1,0 +1,5 @@
+(import (prefix (core net) n-))
+(define socket (n-tcp-listen "127.0.0.1" 0))
+(if (n-network-error? socket)
+    #t
+    (n-tcp-close socket))

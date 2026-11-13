@@ -1,0 +1,8 @@
+(import (rename (core net)
+                (tcp-listen listen)
+                (network-error? net-error?)
+                (tcp-close close-socket)))
+(define socket (listen "127.0.0.1" 0))
+(if (net-error? socket)
+    #t
+    (close-socket socket))

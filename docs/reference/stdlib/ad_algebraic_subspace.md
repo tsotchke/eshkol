@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/algebraic_subspace.esk
+  - tests/stdlib/algebraic_subspace_test.esk
+  - tests/stdlib/algebraic_subspace_independent_test.esk
+---
+
 # `core.ad.algebraic_subspace`
 
 `(require core.ad.algebraic_subspace)` certifies and differentiates a caller-selected

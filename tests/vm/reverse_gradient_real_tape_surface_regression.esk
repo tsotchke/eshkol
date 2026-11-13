@@ -128,4 +128,5 @@
 (display "Checks: ") (display checks) (newline)
 (if (> failures 0)
     (error "reverse-gradient real tape surface regression failed")
-    (display "PASS: reverse-gradient real tape surface\n"))
+    (begin (display "PASS: reverse-gradient real tape surface\n")
+           (display "RESULT: PASS\n")))

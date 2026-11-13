@@ -15,8 +15,8 @@ pages and lets them fan out to their siblings.
 - [QUICKSTART](QUICKSTART.md) — 15-minute hands-on tutorial (lists to closures to tensors to gradients)
 - [Tutorials index](tutorials/README.md) — all 27 tutorials, from first program through full projects
 - [First 5 Minutes](tutorials/00_FIRST_5_MINUTES.md) — install, hello world, five wow moments
-- [Complete example catalogue](EXAMPLES.md) — source-backed descriptions, prerequisites, checks and run scope for every tracked program; 67 tracked examples (46 mathematics), each entry naming the published result it reproduces, its references, and its measured outcome at the release SHA ([docs/examples/measurements.json](examples/measurements.json))
-- [Mathematics example catalogue](MATHEMATICS_EXAMPLES.md) — algorithms, domains, arithmetic and limits, plus the authored JIT/AOT matrix, for the 46 mathematics programs among the 67 tracked examples
+- [Complete example catalogue](EXAMPLES.md) — source-backed descriptions, prerequisites, checks and run scope for every tracked program; 68 tracked examples (46 mathematics), each entry naming the published result it reproduces, its references, and its measured outcome at the release SHA ([docs/examples/measurements.json](examples/measurements.json))
+- [Mathematics example catalogue](MATHEMATICS_EXAMPLES.md) — algorithms, domains, arithmetic and limits, plus the authored JIT/AOT matrix, for the 46 mathematics programs among the 68 tracked examples
 - [Examples](../examples/README.md) — the runnable example collection (AD, parallelism, consciousness engine, streaming, simulation, quantum chemistry, and exact mathematics)
 - [AI-driven mathematics examples](AI_MATHEMATICS_EXAMPLES.md) — exact and AD-verified public witnesses, including the Jacobian counterexample, AlphaTensor factorizations, and a FunSearch cap set
 - [Navier-Stokes examples](NAVIER_STOKES_EXAMPLES.md) — residuals, scaling laws and similarity profiles; the authored 12-program/14-criteria/28-CTest matrix with native JIT and AOT variants
@@ -38,6 +38,8 @@ pages and lets them fan out to their siblings.
 - [WGSL artifact guide](guide/WGSL_ARTIFACT.md) — derive a bounded polynomial with AD and compose its standalone evaluator with browser WebGPU kernels
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
+- [Static quantum circuits](reference/stdlib/quantum_circuit.md) - validated operation lists, a defined OpenQASM 3 export subset, logical counts, and independent oracle checks
+- [Quantum landscape and roadmap](reports/quantum-2026-10-25/quantum-landscape.md) - historical 2026-10-25 source review of 25 systems and 100 measurable engineering or research targets; a baseline specification, not a completed feature list
 - [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
 - [Feature Matrix](FEATURE_MATRIX.md) — implementation status table
 - [Known Issues](KNOWN_ISSUES.md) — current limitations and tracked open items
@@ -45,6 +47,7 @@ pages and lets them fan out to their siblings.
 - [Function Composition](breakdown/FUNCTION_COMPOSITION.md) — closures, lambda registry, mutable captures
 - [Long-Running Loops](LONG_RUNNING_LOOPS.md) — tail-call and loop behaviour for long-lived processes
 - [Binary Lambda Calculus in Eshkol](guide/BINARY_LAMBDA_CALCULUS.md) — the `core.blc` module: De Bruijn-indexed lambda terms as bit strings, encode/decode/reduce
+- [Stochastic Binary Lambda Calculus](reference/stdlib/sblc.md) — the `core.sblc` module: fair choice in the `sblc-v1` prefix code, seeded sampling, exact rational distributions under a step bound, the `2^-length` prior and exact conditioning (ADR-0017)
 
 ## Automatic Differentiation
 
@@ -56,6 +59,11 @@ pages and lets them fan out to their siblings.
 - [AD Taylor-Tower design](design/AD_TAYLOR_TOWER.md) — arbitrary-order AD design (forward/Phase-0 POC, P1-P12 ledger)
 - [Automatic Differentiation (breakdown)](breakdown/AUTODIFF.md) — mathematical foundations and implementation (symbolic, forward, reverse modes)
 - [AD Campaign](AD_CAMPAIGN.md) — campaign tracking for the AD adversarial-testing pillars
+
+## Mathematics
+
+- [Mathematics guide](guide/MATHEMATICS.md) — a reader's guide to computing mathematics in Eshkol: sites and sheaves, toposes and Kripke–Joyal semantics, rings, finite categories and Kan extensions, simplicial and homological algebra, Lawvere theories, Gröbner bases, and monoidal categories with ZX
+- [nLab conformance report](reports/NLAB_CONFORMANCE.md) — nLab claims turned into finite statements and decided exactly by the mathematics libraries, page by page
 
 ## VM, REPL, and Runtime
 
@@ -209,7 +217,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0014 — Release invariant contracts are measured before grading](design/adr/0014-release-invariant-contracts.md) — Accepted — release invariants are executable, fail-closed contracts at each boundary, and the release workflow emits the ABI/layout, closed-enum, AD-counter and VM-parity receipts before the architecture grade is taken
 - [ADR 0015 — Static callee binding identity](design/adr/0015-static-callee-binding-identity.md) — Accepted — makes direct-call aliases depend on the binding storage that still owns them
 - [ADR 0016 — Staged dense-tensor reverse-mode AD and `value_and_grad`](design/adr/0016-ad-alt-architect.md) — Proposed — the typed static reverse schedule, the companion proposal to ADR 0002 (carried the number 0002 until 2026-09-17)
-- [ADR 0017 — Stochastic Binary Lambda Calculus](design/adr/0017-stochastic-binary-lambda-calculus.md) — Proposed — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice targets v1.4.0); carried the number 0011 until 2026-09-17
+- [ADR 0017 — Stochastic Binary Lambda Calculus](design/adr/0017-stochastic-binary-lambda-calculus.md) — Proposed — `core.sblc`, the self-delimiting binary program grammar, exact rational distribution semantics under a step bound (first slice: [`core.sblc`](reference/stdlib/sblc.md), v1.4.0); carried the number 0011 until 2026-09-17
 - [ADR 0018 — Signed-curvature stereographic geometry](design/adr/0018-signed-curvature-stereographic-geometry.md) — Accepted — one κ-stereographic chart for all curvature signs, analytic through `K = 0`, and the execution contract it implies (targets v1.4.0); carried the number 0012 until 2026-09-17
 - [ADR 0019 — Evergreen documentation architecture](design/adr/0019-evergreen-documentation-architecture.md) — Partially implemented
 - [ADR 0020 — One store boundary for every container slot](design/adr/0020-container-slot-store-boundary.md) — Implemented — a value stored into a vector or tensor slot is always a value of the slot's declared representation.
@@ -222,6 +230,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0027 — Recursive Taylor level carrier](design/adr/0027-recursive-taylor-level-carrier.md) — nested differentiation carries enclosing levels in its coefficients
 - [ADR 0028 — One number syntax recognizer](design/adr/0028-one-number-syntax-recognizer.md) — program literals and datum readers share the R7RS grammar
 - [ADR 0029 — Browser VM WebGPU dispatch](design/adr/0029-browser-vm-webgpu-dispatch.md) — browser tensor operations use the shared GPU dispatch seam
+- [ADR 0049 — Neuro-symbolic bridge](design/adr/0049-neuro-symbolic-bridge.md) — v1.5.0 item map, LSTM/GRU, stop-gradient and estimators, HNSW/BPE/sparse substrate, Noesis upstreaming proposal
 
 ## Testing and Quality Gates
 
@@ -253,6 +262,9 @@ Adversarial-campaign pillar harnesses (`tests/`):
 Engineering reports (`docs/reports/`) — see the [reports directory index](reports/README.md) for scope; individual reports:
 
 - [SICP-Completeness Report](reports/SICP_COMPLETENESS_REPORT.md) — release gate: 100% of the SICP book, executable (88/88 probes)
+- [nLab Conformance](reports/NLAB_CONFORMANCE.md) — claims quoted from nLab pages decided exactly on the mathematics libraries: 132 claims on 50 pages computed in JIT and AOT, 9 further claims listed with what each needs
+- [Formal cross-checks](reference/math/formal-crosschecks.md) — the general theorems behind the central nLab conformance claims, machine-checked in Agda and Rocq and paired with the instances Eshkol computes
+- [Documentation claims ranked by verification status](reports/DOC_TRUTH_RANKING.md) — the doc-truth ratchet: every `docs/` claim ICC can type, ranked per document, with the per-document quota (phase 1, report-only)
 - [Reference-Implementation Differential Report](reports/REFERENCE_DIFFERENTIAL_REPORT.md) — external R7RS ground-truth conformance oracle (P7a): 34/34 AGREE against chibi-scheme 0.12.0
 - [Generative Multi-Oracle Differential Report](reports/GENERATIVE_DIFFERENTIAL_REPORT.md) — generated closed R7RS-small program family cross-checked against every installed reference implementation (P7c)
 - [Sanitizer Fuzz Report](reports/SANITIZER_FUZZ_REPORT.md)

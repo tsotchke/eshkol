@@ -1,0 +1,3 @@
+(provide close-alias)
+(define (tcp-close socket) 17)
+(define close-alias tcp-close)

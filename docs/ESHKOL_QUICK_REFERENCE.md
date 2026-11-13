@@ -1,6 +1,6 @@
 # Eshkol Quick Reference Card
 
-**1,058 built-in functions**
+**1,067 built-in functions**
 
 ## Basics
 

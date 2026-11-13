@@ -2,9 +2,8 @@
  * @file eskb_writer.c
  * @brief Serialize compiled bytecode to .eskb binary format.
  *
- * Can be used as:
- *   1. Library: #include and call eskb_write_file()
- *   2. Standalone: linked with eshkol_compiler.c
+ * Included by the production VM and standalone weight assembler. The production
+ * bytecode path calls eskb_write_file() through eshkol_vm.c.
  *
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
@@ -13,8 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/* Write a compiled function chunk to .eskb file.
- * Takes the same Instr/Value types used in eshkol_compiler.c and eshkol_vm.c */
+/* Write a compiled function chunk to .eskb using the serialized instruction
+ * and constant records declared below. */
 
 typedef struct { uint8_t op; int32_t operand; } EskbInstr;
 typedef struct {

@@ -1,6 +1,6 @@
 /*******************************************************************************
  * Eshkol Source Compiler (parser + bytecode generator)
- * Merged from eshkol_compiler.c — single interpreter, one dispatch table.
+ * Historical parser code retained in the VM backend; the retired standalone compiler is not a live source.
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
@@ -609,14 +609,54 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
  */
 static Node* parse_sexp_impl(void);
 
+/* Algebraic-effect forms (ADR-0045). `define-effect`, `handle`,
+ * `handle-shallow` and `declare-effects` are rewritten by the one lowering the
+ * native compiler also uses (effect_syntax_core.h), once per complete
+ * top-level datum, so every consumer of the reader sees ordinary Scheme.
+ * Quoted data is left as written. */
+#include "eshkol/frontend/effect_syntax_core.h"
+
+static int g_vm_parse_depth = 0;
+
+static Node* vm_effect_lower_tree(Node* n) {
+    if (!n || n->type != N_LIST || n->n_children == 0) return n;
+    Node* head = n->children[0];
+    if (head->type == N_SYMBOL &&
+        (eshkol_syntax_base_is(head->symbol, "quote") ||
+         eshkol_syntax_base_is(head->symbol, "quasiquote")))
+        return n;
+    if (head->type == N_SYMBOL && eshkol_effect_keyword(head->symbol)) {
+        eshkol_syn* syn = vm_macro_to_syn(n);
+        if (!syn) { vm_compile_error("out of memory reading an effect form", head->symbol); return n; }
+        if (eshkol_effect_form_of(syn) != ESHKOL_EFFECT_FORM_NONE) {
+            char message[256];
+            eshkol_syn* lowered = eshkol_effect_lower(syn, message, sizeof(message));
+            eshkol_syn_free(syn);
+            if (!lowered) { vm_compile_error(message, head->symbol); return n; }
+            Node* result = vm_macro_from_syn(lowered);
+            eshkol_syn_free(lowered);
+            if (!result) { vm_compile_error("out of memory lowering an effect form", NULL); return n; }
+            free_node(n);
+            return vm_effect_lower_tree(result);
+        }
+        eshkol_syn_free(syn);
+    }
+    for (int i = 0; i < n->n_children; ++i)
+        n->children[i] = vm_effect_lower_tree(n->children[i]);
+    return n;
+}
+
 /* EOF between complete datums is normal. Failure after a datum starts must
  * poison the entire compilation, rather than execute or emit a valid prefix. */
 static Node* parse_sexp(void) {
     skip_ws();
     if (!*src_ptr) return NULL;
+    g_vm_parse_depth++;
     Node* datum = parse_sexp_impl();
+    g_vm_parse_depth--;
     if (!datum && !vm_compile_failed())
         vm_compile_error("invalid or incomplete Scheme datum", NULL);
+    if (datum && g_vm_parse_depth == 0) datum = vm_effect_lower_tree(datum);
     return datum;
 }
 
@@ -992,6 +1032,8 @@ typedef struct {
     int depth;
     int boxed;    /* 1 = variable is heap-boxed (stored in 1-element vector) */
     unsigned serial; /* creation order among all bindings (g_vm_binding_serial) */
+    uint32_t coverage_binding_id; /* exact exported origin; zero for user locals */
+    int compiler_temporary; /* stack accounting only; never a source binding */
 } Local;
 
 typedef struct {
@@ -1220,7 +1262,7 @@ static void patch(FuncChunk* c, int slot, uint8_t op, int32_t target) {
  */
 static int resolve_local(FuncChunk* c, const char* name) {
     for (int i = c->n_locals - 1; i >= 0; i--) {
-        if (strcmp(c->locals[i].name, name) == 0) return c->locals[i].slot;
+        if (!c->locals[i].compiler_temporary && strcmp(c->locals[i].name, name) == 0) return c->locals[i].slot;
     }
     return -1;
 }
@@ -1244,8 +1286,21 @@ static int add_local(FuncChunk* c, const char* name) {
     c->locals[c->n_locals].depth = c->scope_depth;
     c->locals[c->n_locals].boxed = 0;
     c->locals[c->n_locals].serial = ++g_vm_binding_serial;
+    c->locals[c->n_locals].coverage_binding_id = 0;
+    c->locals[c->n_locals].compiler_temporary = 0;
     c->n_locals++;
     return slot;
+}
+
+/* Compiler bookkeeping slots must never shadow legal Scheme identifiers. */
+static int add_temporary_local(FuncChunk* c, const char* label) {
+    int slot = add_local(c, label);
+    if (slot >= 0) c->locals[slot].compiler_temporary = 1;
+    return slot;
+}
+
+static int add_operand_local(FuncChunk* c) {
+    return add_temporary_local(c, "__operand__");
 }
 
 /**
@@ -1986,12 +2041,12 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
         int saved_locals = c->n_locals;
-        add_local(c, "__quoted_vec_literal__");
+        add_temporary_local(c, "__quoted_vec_literal__");
         for (int i = 1; i < datum->n_children; i++) {
             chunk_emit(c, OP_DUP, 0);                                    /* vec */
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1))); /* idx */
             int elem_locals = c->n_locals;
-            add_local(c, "__quoted_vec_idx__");
+            add_temporary_local(c, "__quoted_vec_idx__");
             compile_quote(c, datum->children[i]);                        /* val */
             c->n_locals = elem_locals;
             chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */

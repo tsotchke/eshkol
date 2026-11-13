@@ -1,0 +1,65 @@
+;;; Deterministic execution assertions for string/list helpers and public aliases.
+(require stdlib)
+
+(define checks 0)
+(define failures 0)
+
+(define (check name expected actual)
+  (set! checks (+ checks 1))
+  (if (equal? expected actual)
+      (begin
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual) (newline))))
+
+;; string-find returns the first zero-based match or #f.
+(check "string-find first match" 1 (string-find "banana" "ana"))
+(check "string-find at start" 0 (string-find "banana" "ban"))
+(check "string-find missing" #f (string-find "banana" "xyz"))
+
+;; string-replace replaces every occurrence and leaves a no-match string intact.
+(check "string-replace repeated matches" "bonono"
+       (string-replace "banana" "a" "o"))
+(check "string-replace missing target" "banana"
+       (string-replace "banana" "xyz" "!"))
+
+;; Right-side list operations cover empty, zero, full-length, and partial counts.
+(check "take-right empty zero" '() (take-right '() 0))
+(check "take-right zero" '() (take-right '(1 2 3) 0))
+(check "take-right full length" '(1 2 3) (take-right '(1 2 3) 3))
+(check "take-right partial" '(2 3) (take-right '(1 2 3) 2))
+(check "drop-right empty zero" '() (drop-right '() 0))
+(check "drop-right zero" '(1 2 3) (drop-right '(1 2 3) 0))
+(check "drop-right full length" '() (drop-right '(1 2 3) 3))
+(check "drop-right partial" '(1 2) (drop-right '(1 2 3) 1))
+
+;; Keep non-#f mapper results in their original order.
+(check "filter-map mixed results" '(20 40)
+       (filter-map (lambda (x) (if (even? x) (* x 10) #f)) '(1 2 3 4)))
+(check "filter-map empty list" '()
+       (filter-map (lambda (x) x) '()))
+
+;; The decimal fold is order-sensitive: left-to-right accumulation is -123.
+(check "foldl empty list retains initial value" 7
+       (foldl (lambda (acc x) (- (* acc 10) x)) 7 '()))
+(check "foldl processes values left to right" -123
+       (foldl (lambda (acc x) (- (* acc 10) x)) 0 '(1 2 3)))
+
+;; stdlib re-exports first-class comparison and numeric predicate wrappers.
+(check "ge greater" #t (ge 4 3))
+(check "ge equal boundary" #t (ge 3 3))
+(check "ge less" #f (ge 2 3))
+(check "eq equal numbers" #t (eq 3 3))
+(check "eq unequal numbers" #f (eq 3 4))
+(check "is-negative negative" #t (is-negative? -1))
+(check "is-negative zero boundary" #f (is-negative? 0))
+(check "is-negative positive control" #f (is-negative? 1))
+
+(display "Passed: ") (display (- checks failures))
+(display " Failed: ") (display failures) (newline)
+(if (> failures 0)
+    (begin (display "RESULT: FAIL") (newline) (exit 1))
+    (begin (display "RESULT: PASS") (newline)))

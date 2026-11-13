@@ -1,0 +1,8 @@
+(require stdlib)
+(require core.net)
+;; Invalid port returns a network-error value. This branch acquires no resource.
+(define result (tcp-listen "127.0.0.1" 65536))
+(if (network-error? result)
+    (display "EXPECTED-ERROR")
+    (tcp-close result))
+(newline)

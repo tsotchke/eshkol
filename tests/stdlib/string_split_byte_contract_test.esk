@@ -1,0 +1,57 @@
+;; Byte-safe string-split contract checks shared by VM and native backends.
+(require core.strings)
+
+(define passed 0)
+(define failed 0)
+(define (check label actual expected)
+  (if (equal? actual expected)
+      (set! passed (+ passed 1))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display label)
+        (display " got=") (display actual)
+        (display " expected=") (display expected) (newline))))
+
+(check "character newline delimiter"
+       (string-split "left\nright" #\newline)
+       '("left" "right"))
+(check "Unicode character delimiter"
+       (string-split "aλbλ" #\λ)
+       '("a" "b" ""))
+(check "Unicode string delimiter"
+       (string-split "aλbλ" "λ")
+       '("a" "b" ""))
+(check "multi-byte string delimiter"
+       (string-split "left::<=>right::<=>" "::<=>")
+       '("left" "right" ""))
+(check "empty input"
+       (string-split "" ",")
+       '(""))
+(check "empty delimiter returns whole string"
+       (string-split "whole" "")
+       '("whole"))
+(check "adjacent delimiters"
+       (string-split "a,,b" ",")
+       '("a" "" "b"))
+(check "trailing delimiter"
+       (string-split "a,b," ",")
+       '("a" "b" ""))
+
+(define nul (string (integer->char 0)))
+(define nul-input (string-append "a" nul "b" nul "c"))
+(check "NUL delimiter in embedded-NUL input"
+       (string-split nul-input nul)
+       (list "a" "b" "c"))
+(define multibyte-nul-delim (string-append nul "λ"))
+(define multibyte-nul-input
+  (string-append "a" multibyte-nul-delim "b" multibyte-nul-delim "c"))
+(check "multi-byte NUL-containing delimiter"
+       (string-split multibyte-nul-input multibyte-nul-delim)
+       (list "a" "b" "c"))
+
+(if (> failed 0)
+    (exit 1)
+    (begin (display "string-split byte contract: ")
+           (display passed) (display " checks passed") (newline)
+           (display "RESULT: PASS") (newline)
+           (exit 0)))

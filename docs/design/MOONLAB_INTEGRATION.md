@@ -10,6 +10,15 @@ Ha shift from the earlier PES). Differentiable quantum-chemistry examples and an
 arbitrary-order-AD H2 vibrational-frequency example ship with the release. The RFC
 text below is retained for the design rationale.
 
+Since ADR-0048 (v2.0-starlight), `core.quantum.moonlab` runs `core.quantum`
+circuits on Moonlab: quantum regions can use Moonlab as their backend
+(circuits lowered to {H X Y Z CNOT RX RY RZ}), and a circuit-expectation
+program (a parametric circuit and a Pauli-sum observable) shares the handle
+space of the Stage S2 Hamiltonians, so `vqe-energy-primitive` evaluates it
+with `moonlab_diff_forward` and differentiates it inside `gradient` through
+`moonlab_diff_backward_pauli_sum` (the same custom-VJP node, exact, no finite
+differences). QAOA uses it through `qaoa-moonlab-program`.
+
 Target Eshkol version: v1.3.5-evolve (`inc/eshkol/eshkol.h`)
 Scope: wire the Moonlab quantum simulator into Eshkol as quantum-computing
 builtins, and replace Eshkol's placeholder `quantum-random` with a real,
@@ -327,9 +336,8 @@ Stage S1, and Section 5.a for the WASM honesty label.
 To add a core builtin backed by C (the `quantum-random` re-point, and any core
 `quantum-*` primitives that are not agent-gated):
 1. Name->id registration: `lib/backend/eshkol_vm.c` `BUILTINS[]` (VM) and the
-   corresponding native/LLVM table in `lib/backend/eshkol_compiler.c`
-   (`language_surface.json._meta.sources`: `native_builtins` =
-   `eshkol_compiler.c BUILTINS[]`, `vm_builtins` = `eshkol_vm.c BUILTINS[]`).
+   corresponding VM builtin table in `lib/backend/eshkol_vm.c`
+   (`language_surface.json._meta.sources`: `vm_builtins` = `eshkol_vm.c BUILTINS[]`, sole core ID/arity authority; `native_llvm` retains dispatch names as separate source evidence only).
 2. VM native handler: a `vm_*.c` (here `vm_native.c`) dispatch case.
 3. AOT/JIT codegen: the `func_name` dispatch spine in the `*_codegen.cpp` family
    (`llvm-codegen` component in `.icc/architecture-model.yaml:39-57`).

@@ -1,0 +1,8 @@
+(require core.net)
+(extern i64 hidden-network-acquire ptr :real hidden_network_acquire)
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (network-error? socket)
+    #t
+    (begin
+      (hidden-network-acquire "127.0.0.1")
+      (tcp-close socket)))

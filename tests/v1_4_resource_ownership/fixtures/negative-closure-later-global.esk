@@ -1,0 +1,6 @@
+(require core.net)
+;; This closure captures a global resource declared later and used after its close.
+(define (close-later) (tcp-close socket))
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (not (network-error? socket))
+    (begin (tcp-close socket) (close-later)))

@@ -190,7 +190,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         std::vector<Type*> strlen_args;
         strlen_args.push_back(PointerType::get(*context, 0));  // str
         FunctionType* strlen_type = FunctionType::get(
-            int64_type, strlen_args, false);
+            types->getSizeType(), strlen_args, false);
         Function* strlen_func = Function::Create(
             strlen_type, Function::ExternalLinkage, "strlen", module.get());
         function_table["strlen"] = strlen_func;

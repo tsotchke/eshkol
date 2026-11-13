@@ -305,9 +305,10 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
 //     f(x0 + t) = sum_{k=0..K} c[k] * t^k        =>   f^(n)(x0) = n! * c[n].
 // Stored behind a tagged HEAP_PTR with subtype HEAP_SUBTYPE_TAYLOR. Mirrors
 // HEAP_SUBTYPE_TENSOR's homogeneous-double storage: the header is followed by
-// (order_k + 1) doubles. `flags` reserves a coefficient-type field and a
-// perturbation-confusion EPOCH tag so nested `derivative` levels never mix
-// (§5a). Differentiating the variable seeds {x0, 1, 0, ...}.
+// (order_k + 1) doubles. `flags` holds the coefficient-type field and
+// `epoch` the 64-bit perturbation tag of the pass that owns the series, so
+// nested differentiation levels never mix (§5a, ADR-0057). Differentiating
+// the variable seeds {x0, 1, 0, ...}.
 /**
  * @brief Arbitrary-order forward-mode AD Taylor series (Taylor tower).
  *
@@ -319,9 +320,9 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 8 * sizeof(double),
  */
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
-    uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
-    uint32_t reserved_epochs[3]; // zero; the companion lanes' epoch tags, retired by ADR-0027
-    uint32_t reserved1;     // pad: keeps `exact_c`/`c` 8-byte aligned for COEFF_RATIONAL
+    uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | zero[16..31]
+    uint64_t epoch;     // perturbation tag of the owning pass (never 0, never reused; ADR-0057)
+    uint32_t reserved[2];   // zero; keeps `exact_c`/`c` 8-byte aligned and the layout at 32 bytes
     eshkol_tagged_value_t* exact_c; // optional exact value-coefficient sidecar
     double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
 } esh_taylor_t;
@@ -336,7 +337,7 @@ typedef struct esh_taylor {
 // `eshkol_tagged_value_t c[order_k+1]` (each entry an exact int64/bignum/
 // rational tagged value, produced by Eshkol's existing exact numeric tower)
 // instead of raw doubles. This is safe because `c`'s offset (right after
-// order_k/flags/reserved_epochs/reserved1/exact_c,
+// order_k/flags/epoch/reserved/exact_c,
 // 32 bytes in) is 8-byte aligned, matching
 // alignof(eshkol_tagged_value_t); accessors in lib/core/runtime_taylor.c
 // never raw-index across coefficient types (design section 4/12).
@@ -396,26 +397,16 @@ typedef struct esh_taylor {
 // one thing: the reverse-seed tangent of reverse-over-Taylor (design section 8).
 // Nesting between forward passes is carried by level carriers
 // (ESH_TAYLOR_COEFF_CARRIER, ADR-0027), never by a companion lane.
-/** @brief Bit position (16) of the epoch tag inside esh_taylor_t::flags. */
-#define ESH_TAYLOR_EPOCH_SHIFT   16u
 /**
- * @brief Mask of the 16-bit epoch tag, bits 16..31 of esh_taylor_t::flags.
+ * @brief Build a flags word from a coefficient representation.
  *
- * The epoch identifies the differentiation pass that owns the series, so
- * that nested passes never mix their perturbations.
+ * @p coeff is masked to 8 bits; every other bit (tangent, sign-hint and
+ * exactness bits) is clear and is OR'd in separately. The perturbation tag is
+ * not part of the flags word: it is esh_taylor_t::epoch, a 64-bit counter
+ * value that is never reused within a process (ADR-0057), so the order of two
+ * tags is always the order in which their passes opened.
  */
-#define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
-/** @brief Extract the epoch tag (0..65535) from flags word @p fl. */
-#define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
-/**
- * @brief Build a flags word from a coefficient representation and an epoch.
- *
- * @p coeff is masked to 8 bits and @p epoch to 16 bits; every other bit
- * (tangent, sign-hint and exactness bits) is clear and is OR'd in separately.
- */
-#define ESH_TAYLOR_MK_FLAGS(coeff, epoch) \
-    (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
-    (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+#define ESH_TAYLOR_MK_FLAGS(coeff) ((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK)
 
 /**
  * @brief Order two values by their primal (c[0]) coefficient.
@@ -437,17 +428,22 @@ int32_t eshkol_taylor_order_tagged(
     void* arena, const eshkol_tagged_value_t* left,
     const eshkol_tagged_value_t* right, int op);
 
-// ADR-0027: nested-pass route codes. eshkol_ad_nested_seed() returns
-// ESH_AD_NEST_NONE for an un-nested pass, or ESH_AD_NEST_LEVEL packed with the
-// level's epoch in bits 8..23 and, in bit 24, whether the seed unit is inexact;
-// codegen threads that i32 to the matching eshkol_ad_nested_extract().
-// See docs/design/adr/0027-recursive-taylor-level-carrier.md.
+// ADR-0027 / ADR-0057: nested-pass routes. eshkol_ad_nested_seed() returns
+// ESH_AD_NEST_NONE (0) for an un-nested pass; for a pass that runs as a level
+// it returns the level's route, `(epoch << 1) | inexact`, where `epoch` is the
+// level's 64-bit perturbation tag (never 0) and bit 0 records whether the seed
+// unit is inexact. Codegen threads that i64 to the matching
+// eshkol_ad_nested_extract(). See docs/design/adr/0027-recursive-taylor-level-carrier.md
+// and docs/design/adr/0057-nested-differentiation-in-every-mode.md.
 /** @brief Route 0: the pass is not nested; the caller seeds it as usual. */
 #define ESH_AD_NEST_NONE         0
-/** @brief Route 2: the pass runs as a level whose coefficients are numbers of the enclosing levels (ADR-0027). */
-#define ESH_AD_NEST_LEVEL        2
-/** @brief Route -1: the level carrier could not be allocated; the caller raises. */
-#define ESH_AD_NEST_UNSUPPORTED (-1)
+/** @brief The perturbation tag carried by a nonzero level route. */
+#define ESH_AD_NEST_ROUTE_EPOCH(route)   ((uint64_t)(route) >> 1)
+/** @brief Whether a nonzero level route was seeded with an inexact unit. */
+#define ESH_AD_NEST_ROUTE_INEXACT(route) (((uint64_t)(route) & 1u) != 0u)
+/** @brief Build the route of a level with tag @p epoch. */
+#define ESH_AD_NEST_ROUTE(epoch, inexact) \
+    ((int64_t)(((uint64_t)(epoch) << 1) | ((inexact) ? 1u : 0u)))
 
 /**
  * @brief Complex number for signal processing, FFT, and complex analysis.
@@ -2065,6 +2061,12 @@ typedef struct eshkol_dynamic_wind_entry {
     eshkol_tagged_value_t before;       // Before thunk (callable)
     eshkol_tagged_value_t after;        // After thunk (callable)
     struct eshkol_dynamic_wind_entry* prev;  // Previous entry in stack
+    // Native cleanup run instead of `after` when non-NULL. Borrow scopes
+    // (call-with-port, call-with-input-file, call-with-output-file) use it to
+    // close their handle on an exception or continuation escape as well as
+    // on normal return.
+    void (*native_after)(void* arg);
+    void* native_after_arg;
 } eshkol_dynamic_wind_entry_t;
 
 // Global dynamic-wind stack
@@ -2190,6 +2192,13 @@ typedef uintptr_t (*eshkol_stack_base_fn)(void);
  * @param fn Probe to install, or NULL to disable stack capture.
  */
 void eshkol_set_stack_base_hook(eshkol_stack_base_fn fn);
+
+/** Restore a jump buffer after a continuation has replaced the native stack.
+ * The hosted implementation must not unwind the overwritten frames and must
+ * not return. Targets without such a requirement keep the default longjmp.
+ */
+typedef void (*eshkol_continuation_restore_fn)(void* jump_buffer, int value);
+void eshkol_set_continuation_restore_hook(eshkol_continuation_restore_fn fn);
 /**
  * @brief Push a new dynamic-wind frame with the given before/after thunks.
  * @param arena Arena to allocate the stack entry from.
@@ -2204,6 +2213,14 @@ void eshkol_push_dynamic_wind(void* arena, const eshkol_tagged_value_t* before, 
  * the after-thunk is invoked directly by the generated code.
  */
 void eshkol_pop_dynamic_wind(void);
+/**
+ * @brief Push a dynamic-wind frame whose exit action is a native cleanup.
+ *
+ * The frame has no before thunk. @p cleanup runs once with @p arg when a
+ * raise or a continuation escape unwinds past the frame. On normal exit the
+ * generated code pops the frame and performs the same cleanup itself.
+ */
+void eshkol_push_dynamic_wind_cleanup(void* arena, void (*cleanup)(void* arg), void* arg);
 /**
  * @brief Run after-thunks for all dynamic-wind frames above a saved marker.
  *
@@ -2520,8 +2537,14 @@ void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
  *
  * Selects which member of hott_type_expr_t's union is active: none for the
  * primitive types, `var_name` for HOTT_TYPE_VAR, `arrow`/`forall`/
- * `container`/`pair`/`sum`/`universe` for the corresponding compound kinds.
- * HOTT_TYPE_DEPENDENT/_PATH are reserved for future dependent-type support.
+ * `container`/`pair`/`sum`/`universe` for the corresponding compound kinds,
+ * `refine` for HOTT_TYPE_REFINE, `dependent` for the dependent function
+ * (HOTT_TYPE_DEPENDENT) and pair (HOTT_TYPE_SIGMA) telescopes, `app` for a
+ * type-family application (HOTT_TYPE_APP) and an index operator
+ * (HOTT_TYPE_INDEX_OP), and `index_value` for an integer index literal
+ * (HOTT_TYPE_INDEX_LIT). HOTT_TYPE_PATH is the identity type. New kinds are
+ * appended after the existing ones so the numbering of every earlier kind is
+ * unchanged.
  */
 typedef enum {
     HOTT_TYPE_INVALID,
@@ -2549,13 +2572,20 @@ typedef enum {
     HOTT_TYPE_VAR,          // type variable (e.g., 'a in forall)
     HOTT_TYPE_FORALL,       // (forall (a b ...) type) universal quantification
     // Advanced types (future)
-    HOTT_TYPE_DEPENDENT,    // dependent type (Pi type)
+    HOTT_TYPE_DEPENDENT,    // (Pi ((x : A) ...) B) dependent function type
     HOTT_TYPE_PATH,         // path type (identity type)
-    HOTT_TYPE_UNIVERSE      // universe level
+    HOTT_TYPE_UNIVERSE,     // (universe n) universe level
+    HOTT_TYPE_REFINE,       // (Refine base [binder] predicate): {binder : base | predicate} (ADR-0044)
+    // Dependent type language (ADR-0042)
+    HOTT_TYPE_SIGMA,        // (Sigma ((x : A) ...) B) dependent pair type
+    HOTT_TYPE_APP,          // (F arg ...) type-family application; args are types or index terms
+    HOTT_TYPE_INDEX_LIT,    // integer literal in an index position, e.g. the 3 of (vector real 3)
+    HOTT_TYPE_INDEX_OP      // (+ m n), (- m n), (* m n) index arithmetic
 } hott_type_kind_t;
 
-// Forward declaration
+// Forward declarations
 struct hott_type_expr;
+struct eshkol_ast;
 
 /**
  * @brief Homotopy-Type-Theory-inspired static type expression.
@@ -2608,6 +2638,37 @@ typedef struct hott_type_expr {
         struct {
             uint32_t level;  // Universe level (U0, U1, U2, ...)
         } universe;
+
+        // For refinement types {binder : base | predicate} (ADR-0044). The
+        // runtime representation is base's; the predicate is a compile-time
+        // proposition discharged by the refinement checker. A NULL binder is
+        // resolved by the checker (docs/reference/language/refinement-types.md).
+        struct {
+            struct hott_type_expr* base;
+            char* binder;
+            struct eshkol_ast* predicate;
+        } refine;
+
+        // For dependent function (Pi) and dependent pair (Sigma) types: a
+        // telescope of named binders, each type able to mention the earlier
+        // names, and a body that may mention all of them.
+        struct {
+            char** binder_names;                 // Binder names, num_binders entries
+            struct hott_type_expr** binder_types; // Binder types (domains), num_binders entries
+            uint64_t num_binders;
+            struct hott_type_expr* body;         // Codomain (Pi) or second component (Sigma)
+        } dependent;
+
+        // For type-family application (HOTT_TYPE_APP) and index operators
+        // (HOTT_TYPE_INDEX_OP): the family or operator name and its arguments.
+        struct {
+            char* head;                          // Family name ("vector", a define-type name) or operator
+            struct hott_type_expr** args;        // Arguments, num_args entries
+            uint64_t num_args;
+        } app;
+
+        // For HOTT_TYPE_INDEX_LIT: the literal value.
+        int64_t index_value;
     };
 } hott_type_expr_t;
 
@@ -2945,6 +3006,11 @@ typedef enum {
     // Expression-level type ascription (checked cast). Appended at the end to
     // preserve the numeric value of every existing operator.
     ESHKOL_THE_OP,                  // (the type expr) - ascribe expr's type to the checker; runtime no-op (evaluates expr verbatim)
+    // HoTT kernel forms (ADR-0043): (hott decl...) declares in the cubical
+    // kernel; (hott-eval term) is replaced by the normal form of term, as a
+    // quoted datum, before code generation. The reader datum is kept in the
+    // syntax side table under the node's id (inc/eshkol/frontend/syntax_datum.h).
+    ESHKOL_HOTT_OP,
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -3049,6 +3115,8 @@ typedef struct eshkol_operation {
 	           hott_type_expr_t *type_expr;      // The type expression this aliases
 	           char **type_params;               // Type parameter names (for parameterized types)
 	           uint64_t num_type_params;         // Number of type parameters
+	           hott_type_expr_t **type_param_kinds; // Declared sort per parameter, (m : integer) or
+	                                             // (a : (universe 0)); NULL array or NULL entry = undeclared
 	       } define_type_op;
 	       struct {
 	           char *path;                       // Path to file to import
@@ -3161,6 +3229,9 @@ typedef struct eshkol_operation {
             hott_type_expr_t *type_expr;    // Ascribed type
             struct eshkol_ast *expr;        // Wrapped expression (evaluated verbatim at runtime)
         } the_op;                           // (the type expr) - expression-level checked cast
+        struct {
+            uint8_t is_eval;                // 1: (hott-eval term); 0: (hott decl...)
+        } hott_op;                          // operands: the reader datum under the node id
         struct {
             char **type_vars;               // Quantified type variable names
             uint64_t num_vars;
@@ -3662,6 +3733,41 @@ hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* r
  * @return Newly allocated type expression.
  */
 hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hott_type_expr_t* body);
+/**
+ * @brief Construct a dependent telescope type: HOTT_TYPE_DEPENDENT `(Pi ((x : A) ...) B)`
+ *        or HOTT_TYPE_SIGMA `(Sigma ((x : A) ...) B)`.
+ * @param kind HOTT_TYPE_DEPENDENT or HOTT_TYPE_SIGMA.
+ * @param names Binder names (copied).
+ * @param types Binder types (deep-copied).
+ * @param num_binders Number of binders.
+ * @param body Codomain or second component (deep-copied).
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_dependent_type(hott_type_kind_t kind, char** names,
+                                           hott_type_expr_t** types, uint64_t num_binders,
+                                           hott_type_expr_t* body);
+/**
+ * @brief Construct HOTT_TYPE_APP `(head arg ...)` or HOTT_TYPE_INDEX_OP `(op arg ...)`.
+ * @param kind HOTT_TYPE_APP or HOTT_TYPE_INDEX_OP.
+ * @param head Family or operator name (copied).
+ * @param args Arguments (deep-copied).
+ * @param num_args Number of arguments.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_app_type(hott_type_kind_t kind, const char* head,
+                                     hott_type_expr_t** args, uint64_t num_args);
+/**
+ * @brief Construct HOTT_TYPE_INDEX_LIT, an integer literal in an index position.
+ * @param value The literal.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_index_literal(int64_t value);
+/**
+ * @brief Construct HOTT_TYPE_UNIVERSE `(universe level)`.
+ * @param level Universe level.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_universe_type(uint32_t level);
 
 // Copy and free type expressions
 /**
@@ -3670,6 +3776,15 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hot
  * @return Newly allocated, independent copy.
  */
 hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type);
+
+/**
+ * @brief Construct a HOTT_TYPE_REFINE type expression `(Refine base [binder] predicate)`.
+ *
+ * Takes ownership of @p base and @p predicate (both arena-owned trees);
+ * copies @p binder, which may be NULL.
+ */
+hott_type_expr_t* hott_make_refine_type(hott_type_expr_t* base, const char* binder,
+                                        struct eshkol_ast* predicate);
 /**
  * @brief Recursively free a type expression and its owned children.
  * @param type Type expression to free (may be NULL, a no-op).

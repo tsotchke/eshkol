@@ -51,6 +51,7 @@
 #define VAL_SYMBOL      31   /* heap-backed internable Scheme symbol spelling */
 #define VAL_EOF         32   /* distinct end-of-file object                    */
 #define VAL_I128        33   /* heap-allocated native 128-bit integer (opaque) */
+#define VAL_PRNG        34   /* isolated state inline in its heap object */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5
@@ -184,7 +185,7 @@ struct VmDual {
      * existing arithmetic dispatch remains one closed carrier family. */
     uint32_t kind;         /* VM_DUAL_KIND_SCALAR or VM_DUAL_KIND_TAYLOR */
     uint32_t order;        /* highest coefficient index for a Taylor tower */
-    uint32_t epoch;        /* perturbation epoch; 0 for scalar duals */
+    uint64_t epoch;        /* perturbation tag, never reused (ADR-0057); 0 for scalar duals */
     int32_t primal_sign;   /* exact sign hint when the double primal underflows */
     double* coeff;         /* c[0..order], present for VM_DUAL_KIND_TAYLOR */
     VmRational** exact_coeff; /* optional exact c[0..order] parallel array */
@@ -231,8 +232,8 @@ VmRational* vm_dual_exact_tangent(const VmDual* d);
 VmRational* vm_dual_exact_primal(const VmDual* d);
 VmDual*     vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
                                      double point_value, uint32_t order,
-                                     int exact, uint32_t epoch);
-uint32_t    vm_dual_next_taylor_epoch(void);
+                                     int exact, uint64_t epoch);
+uint64_t    vm_dual_next_taylor_epoch(void);
 int         vm_dual_is_taylor(const VmDual* d);
 
 /* ── Recursive level carrier (ADR-0027) ──
@@ -250,12 +251,12 @@ int         vm_dual_is_taylor(const VmDual* d);
 extern const char* vm_dual_error;   /* pending diagnostic (SW-219), or NULL */
 VmDual*     vm_dual_constant(VmRegionStack* rs, double value, VmRational* exact);
 VmDual*     vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
-                               uint32_t order, uint32_t epoch);
-uint32_t    vm_dual_carrier_epoch(const VmDual* d);
+                               uint32_t order, uint64_t epoch);
+uint64_t    vm_dual_carrier_epoch(const VmDual* d);
 VmDual*     vm_dual_level_coefficient(VmRegionStack* rs, const VmDual* r,
-                                      uint32_t epoch, uint32_t k);
+                                      uint64_t epoch, uint32_t k);
 VmDual*     vm_dual_level_derivative(VmRegionStack* rs, const VmDual* r,
-                                     uint32_t epoch, uint32_t k);
+                                     uint64_t epoch, uint32_t k);
 int         vm_dual_is_level(const VmDual* d);
 int         vm_dual_is_series(const VmDual* d);   /* a tower or a level */
 int         vm_dual_is_constant(const VmDual* d);

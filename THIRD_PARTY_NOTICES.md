@@ -25,20 +25,28 @@ artifact verifier.
 | curl (Linux packages only) | `a05f34973e6c4bb629d018f7cb51487be1c904d8` | curl license |
 | Eigen 5.0.1 (native Windows BLAS provider) | `bc3b39870ecb690a623a3f49149a358b95c5781d` | MPL-2.0 |
 | OpenXLA PJRT C API header, `deps/pjrt/pjrt_c_api.h` (XLA packages only) | PJRT API 0.114 (vendored from `openxla/xla`) | Apache-2.0 |
-| libpng (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | libpng license |
-| libjpeg-turbo (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | IJG/BSD-3-Clause/zlib licenses as distributed upstream |
-| libwebp (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | BSD-3-Clause |
-| zlib runtime (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | Zlib |
+| OpenSSL 3 runtime and static TLS link archives (macOS binary packages only) | Exact `openssl@3` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | Apache-2.0; `licenses/openssl-LICENSE.txt` |
+| LLVM shared runtime (macOS binary packages only) | Exact `llvm@21` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | Apache-2.0 with LLVM exceptions; `licenses/llvm-LICENSE.TXT` |
+| zstd shared runtime (macOS binary packages only) | Exact `zstd` formula version recorded in `lib/eshkol/runtime-deps/manifest.json` | BSD-3-Clause; `licenses/zstd-LICENSE` |
 
-Linux binary packages redistribute the exact image-codec shared-object closure
-used by the release build so image I/O and generated-program linking remain
-relocatable without target-host development packages. The package manifest
-records every object's SHA-256, source package, and source version; the exact
-distribution copyright files are shipped in `licenses/`. Linux packages still
-link against the platform OpenSSL libraries at final AOT link time and do not
-redistribute OpenSSL binaries. Windows system libraries and Apple frameworks
-are likewise supplied by their operating-system SDKs and are not redistributed
-by Eshkol.
+Image I/O uses PNG, JPEG, BMP and WebP codecs written as part of the Eshkol runtime
+(MIT), so no binary package links or redistributes an image-codec library. The
+release check fails a Linux package whose executables resolve libpng, libjpeg
+or libwebp. The WebP decoder's constant tables (VP8 coefficient, mode and
+distance-map values) are the values specified in RFC 6386 and RFC 9649, checked
+against libwebp. RFC code components are used under the Simplified BSD License
+(IETF Trust Legal Provisions); libwebp is Copyright (c) 2010, Google Inc.,
+BSD-3-Clause. Linux packages still
+link against platform OpenSSL libraries at final AOT link time and do not
+redistribute OpenSSL binaries. macOS release packages bundle OpenSSL 3 dylibs
+for compiler/JIT TLS and static archives for generated AOT TLS executables.
+They also bundle the LLVM and zstd dylibs used by the compiler. Exact formula
+versions, hashes, and licenses are recorded in the package. OpenSSL TLS uses
+the macOS system PEM bundle at `/etc/ssl/cert.pem` when callers have not set
+`SSL_CERT_FILE`, `SSL_CERT_DIR`, or `ESHKOL_OPENSSL_CERT_FILE`; explicit trust-
+store settings retain precedence. Windows system libraries and Apple
+frameworks are supplied by their operating-system SDKs and are not
+redistributed by Eshkol.
 
 SQLite has been dedicated to the public domain by its authors. The staged
 SQLite notice records the public-domain declaration and the canonical upstream

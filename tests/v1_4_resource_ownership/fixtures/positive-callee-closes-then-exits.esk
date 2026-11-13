@@ -1,0 +1,6 @@
+;; The helper closes the port it is given before it ends the process.
+(define (finish-and-quit in)
+  (close-port in)
+  (exit 0))
+(define in (open-input-file "strict-finish.txt"))
+(finish-and-quit in)

@@ -1,0 +1,94 @@
+;;; The circle S1 and its fundamental group (ADR-0043): the loop space of
+;;; the circle is the integers, by the encode-decode method (Licata-Shulman
+;;; 2013; HoTT Book 8.1), with the universal cover given by univalence.
+;;; Import with (hott (import circle)).
+
+(hott
+  (import numbers)
+
+  (data S1
+    base
+    (loop (dims i) (boundary ((= i 0) base) ((= i 1) base))))
+
+  (define OmegaS1 : U (Path S1 base base))
+
+  ;; the universal cover: the fibre over base is Int, and going once around
+  ;; the loop is the successor, a path in the universe by univalence
+  (define helix : (-> S1 U)
+    (split (base Int)
+           ((loop i) (sucPathInt i))))
+
+  ;; encode: transport 0 along the lift of a loop
+  (define (winding (p : OmegaS1)) : Int
+    (transp (i) (helix (p i)) i0 (pos 0)))
+
+  (define (encode (x : S1) (p : (Path S1 base x))) : (helix x)
+    (transp (i) (helix (p i)) i0 (pos 0)))
+
+  ;; decode on base: the n-th power of the loop
+  (define pos-loop : (-> Nat OmegaS1)
+    (split (zero (refl 0 S1 base))
+           ((suc n) (trans 0 S1 base base base (pos-loop n) loop))))
+  (define neg-loop : (-> Nat OmegaS1)
+    (split (zero (sym 0 S1 base base loop))
+           ((suc n) (trans 0 S1 base base base (neg-loop n) (sym 0 S1 base base loop)))))
+  (define intLoop : (-> Int OmegaS1)
+    (split ((pos n) (pos-loop n))
+           ((negsuc n) (neg-loop n))))
+
+  ;; the square relating intLoop (predInt n) and intLoop n over the loop
+  (define decodeSquare-pos
+      : (Pi ((n : Nat)) (PathP (i) (Path S1 base (loop i)) (intLoop (predInt (pos n))) (intLoop (pos n))))
+    (split (zero (lambda (i) (lambda (j) (loop (max i (~ j))))))
+           ((suc n)
+            (lambda (i) (lambda (j)
+              (hcomp S1 (k) (((= j 0) base)
+                             ((= j 1) (loop (min i k)))
+                             ((= i 0) ((pos-loop n) j)))
+                     ((pos-loop n) j)))))))
+
+  (define decodeSquare
+      : (Pi ((n : Int)) (PathP (i) (Path S1 base (loop i)) (intLoop (predInt n)) (intLoop n)))
+    (split ((pos n) (decodeSquare-pos n))
+           ((negsuc n)
+            (lambda (i) (lambda (j)
+              (hcomp S1 (k) (((= j 0) base)
+                             ((= j 1) (loop (~ (min (~ i) k))))
+                             ((= i 1) ((neg-loop n) j)))
+                     ((neg-loop n) j)))))))
+
+  (define decode : (Pi ((x : S1)) (-> (helix x) (Path S1 base x)))
+    (split (base intLoop)
+           ((loop i)
+            (lambda (y) (lambda (j)
+              (hcomp S1 (k) (((= i 0) (intLoop ((predSuc y) k) j))
+                             ((= i 1) (intLoop y j))
+                             ((= j 0) base)
+                             ((= j 1) (loop i)))
+                     (decodeSquare (unglue y) i j)))))))
+
+  ;; decode . encode = id, by path induction
+  (define (decodeEncode (x : S1) (p : (Path S1 base x)))
+      : (Path (Path S1 base x) (decode x (encode x p)) p)
+    (J 0 0 S1 base
+       (lambda (y) (lambda (q) (Path (Path S1 base y) (decode y (encode y q)) q)))
+       (refl 0 OmegaS1 (refl 0 S1 base))
+       x p))
+
+  ;; encode . decode = id on base, by induction on the integers
+  (define windingIntLoop-pos : (Pi ((n : Nat)) (Path Int (winding (pos-loop n)) (pos n)))
+    (split (zero (refl 0 Int (pos zero)))
+           ((suc n) (ap 0 0 Int Int sucInt (winding (pos-loop n)) (pos n) (windingIntLoop-pos n)))))
+  (define windingIntLoop-neg : (Pi ((n : Nat)) (Path Int (winding (neg-loop n)) (negsuc n)))
+    (split (zero (refl 0 Int (negsuc zero)))
+           ((suc n) (ap 0 0 Int Int predInt (winding (neg-loop n)) (negsuc n) (windingIntLoop-neg n)))))
+  (define windingIntLoop : (Pi ((n : Int)) (Path Int (winding (intLoop n)) n))
+    (split ((pos n) (windingIntLoop-pos n))
+           ((negsuc n) (windingIntLoop-neg n))))
+
+  ;; the fundamental group of the circle is the integers
+  (define OmegaS1-equiv-Int : (Equiv 0 0 OmegaS1 Int)
+    (iso-to-equiv 0 OmegaS1 Int winding intLoop windingIntLoop (decodeEncode base)))
+
+  (define OmegaS1=Int : (Path U OmegaS1 Int)
+    (ua 0 OmegaS1 Int OmegaS1-equiv-Int)))

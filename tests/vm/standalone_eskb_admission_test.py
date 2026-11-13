@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Exercise standalone ESKB admission with tiny CRC-valid containers."""
+import pathlib
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+
+
+def leb(value):
+    out = bytearray()
+    while True:
+        byte = value & 0x7f
+        value >>= 7
+        if value:
+            byte |= 0x80
+        out.append(byte)
+        if not value:
+            return bytes(out)
+
+
+def instruction(opcode, operand=0):
+    zigzag = (operand << 1) ^ (operand >> 31)
+    return bytes((opcode,)) + leb(zigzag)
+
+
+def int_constant(value):
+    return bytes((1,)) + struct.pack("<q", value)
+
+
+def float_constant(value):
+    return bytes((2,)) + struct.pack("<d", value)
+
+
+def string_constant(value):
+    encoded = value.encode("ascii")
+    return bytes((6,)) + leb(len(encoded)) + encoded
+
+
+def eskb(instructions, constants=(), advertised_count=None):
+    return eskb_functions([("main", instructions)], constants,
+                          advertised_count)
+
+
+def eskb_functions(functions, constants=(), advertised_count=None):
+    # Tiny containers keep all count-controlled sections small so malformed
+    # inputs cannot trigger large allocations.
+    code = bytearray(leb(len(functions)))
+    for name, instructions in functions:
+        encoded_name = name.encode("ascii")
+        code += leb(len(encoded_name)) + encoded_name
+        code += b"\0" + leb(0) + leb(0)
+        code += leb(len(instructions))
+        for opcode, operand in instructions:
+            code += instruction(opcode, operand)
+    constant_section = bytearray(leb(
+        len(constants) if advertised_count is None else advertised_count))
+    constant_section += b"".join(constants)
+    payload = bytearray(leb(2))
+    payload += bytes((0,)) + leb(len(constant_section))
+    payload += bytes((1,)) + leb(len(code))
+    payload += constant_section + code
+    header = struct.pack("<IIII", 0x45534b42, 2, 1,
+                         zlib.crc32(payload) & 0xffffffff)
+    return header + payload
+
+
+def run(binary, path):
+    try:
+        return subprocess.run([binary, str(path)], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=5)
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(f"{binary} hung on {path.name}") from exc
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: standalone_eskb_admission_test.py VM [VM ...]")
+    with tempfile.TemporaryDirectory(prefix="eshkol-eskb-admission-") as tmp:
+        root = pathlib.Path(tmp)
+        cases = {
+            "valid": eskb([(36, 0)]),
+            "valid-binding-read": eskb([(2, 0), (20, 0), (72, 123), (5, 0), (36, 0)]),
+            "invalid-binding-read-first": eskb([(72, 123), (36, 0)]),
+            "invalid-binding-read-predecessor": eskb([(2, 0), (72, 123), (36, 0)]),
+            "invalid-binding-read-zero-id": eskb([(2, 0), (20, 0), (72, 0), (36, 0)]),
+            "invalid-binding-read-negative-id": eskb([(2, 0), (20, 0), (72, -1), (36, 0)]),
+            "valid-zero-argument-call": eskb_functions(
+                [("main", [(24, 0), (25, 0), (36, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(3 | (1 << 40))]),
+            # The coverage call marker may precede all three compiler call
+            # opcodes. OP_TAIL_CALL_POPN packs local cleanup and argc in its
+            # operand; this fixture reaches a real zero-argument tail call.
+            "valid-coverage-call-tail-popn": eskb_functions(
+                [("main", [(24, 0), (25, 0), (36, 0)]),
+                 ("wrapper", [(24, 1), (65, 123), (70, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(3 | (1 << 40)), int_constant(6 | (1 << 40))]),
+            # Guard cleanup belongs before the marker; the marker must still
+            # directly precede the tail-call opcode after cleanup.
+            "valid-coverage-call-guarded-tail": eskb_functions(
+                [("main", [(24, 0), (25, 0), (36, 0)]),
+                 ("wrapper", [(24, 1), (58, 0), (65, 123), (70, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(3 | (1 << 40)), int_constant(7 | (1 << 40))]),
+            "invalid-coverage-call-successor": eskb_functions(
+                [("main", [(24, 0), (65, 123), (7, 0), (36, 0)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(4 | (1 << 40))]),
+            "valid-constant-pool": eskb([(1, 0), (5, 0), (36, 0)],
+                                        [int_constant(42)]),
+            "valid-closure-constant": eskb([(24, 0), (5, 0), (36, 0)],
+                                            [int_constant(0)]),
+            "valid-closure-long-constant": eskb(
+                [(67, 0), (68, 0), (5, 0), (36, 0)], [int_constant(0)]),
+            "invalid-opcode": eskb([(255, 0)]),
+            # ESKB admission accepts structurally valid CALL opcodes, so the
+            # interpreter must reject a missing callable before indexing the
+            # VM stack. Cover both tail-call handlers and an argc that exceeds
+            # the one available callable value.
+            "invalid-call-stack-underflow-call-zero": eskb([(25, 0)]),
+            "invalid-call-stack-underflow-tail-call-zero": eskb([(26, 0)]),
+            "invalid-call-stack-underflow-tail-call-popn-zero": eskb([(70, 0)]),
+            "invalid-call-stack-underflow-call-too-few-args": eskb_functions(
+                [("main", [(24, 0), (25, 1)]),
+                 ("callee", [(2, 0), (27, 0)])],
+                [int_constant(2 | (1 << 40))]),
+            "invalid-constant-index": eskb([(1, 1)]),
+            # The marker would be printed if the malformed closure passed
+            # module admission and execution began.
+            "invalid-closure-constant-type": eskb(
+                [(24, 0), (5, 0), (1, 1), (35, 0), (36, 0)],
+                [float_constant(0.0), string_constant("ADMISSION_MARKER")]),
+            "invalid-closure-constant-index": eskb(
+                [(24, 2), (5, 0), (1, 0), (35, 0), (36, 0)],
+                [int_constant(0), string_constant("ADMISSION_MARKER")]),
+            "invalid-closure-long-constant-type": eskb(
+                [(67, 0), (68, 0), (5, 0), (1, 1), (35, 0), (36, 0)],
+                [float_constant(0.0), string_constant("ADMISSION_MARKER")]),
+            "invalid-closure-long-constant-index": eskb(
+                [(67, 2), (68, 0), (5, 0), (1, 0), (35, 0), (36, 0)],
+                [int_constant(0), string_constant("ADMISSION_MARKER")]),
+            # Advertised pool records are intentionally tiny. These exercise
+            # EOF and count/entry mismatches without approaching the profile
+            # ceiling, whose parser allocation occurs before profile checks.
+            "truncated-constant-entry": eskb([(36, 0)], [bytes((1, 0, 0, 0))]),
+            "advertised-constant-count-mismatch": eskb(
+                [(36, 0)], [int_constant(7)], advertised_count=2),
+            # OP_VEC_CREATE (39) uses -(count + 1) for numeric tensors.
+            # Both signed extremes must fail admission before allocation;
+            # decoding INT32_MIN must also avoid signed negation overflow.
+            "invalid-vector-count-int32-max": eskb([(39, (1 << 31) - 1)]),
+            "invalid-tensor-count-int32-min": eskb([(39, -(1 << 31))]),
+            "truncated": eskb([(36, 0)])[:-1],
+        }
+        paths = {}
+        for name, data in cases.items():
+            if len(data) > 1024 * 1024:
+                raise AssertionError(f"fixture exceeds 1 MiB: {name}")
+            paths[name] = root / f"{name}.eskb"
+            paths[name].write_bytes(data)
+        failures = []
+        for binary in sys.argv[1:]:
+            for name in ("valid", "valid-zero-argument-call",
+                         "valid-constant-pool", "valid-closure-constant",
+                         "valid-closure-long-constant",
+                         "valid-coverage-call-tail-popn",
+                         "valid-coverage-call-guarded-tail"):
+                valid = run(binary, paths[name])
+                if valid.returncode != 0:
+                    failures.append(f"valid ESKB {name} rejected by {binary}: "
+                                    f"{valid.stderr.decode(errors='replace')}")
+            for name in cases.keys() - {"valid"}:
+                if name.startswith("valid-"):
+                    continue
+                result = run(binary, paths[name])
+                if result.returncode != 1:
+                    failures.append(f"{binary} failed unsafely on {name}: "
+                                    f"return code {result.returncode}")
+                diagnostic = result.stderr.lower()
+                if not any(word in diagnostic for word in
+                           (b"invalid", b"opcode", b"crc32", b"failed to load",
+                            b"error")):
+                    failures.append(f"{binary} gave no bounded diagnostic "
+                                    f"for {name}: {result.stderr!r}")
+                if name.startswith("invalid-call-stack-") and \
+                        b"stack underflow" not in diagnostic:
+                    failures.append(f"{binary} gave no call-stack diagnostic "
+                                    f"for {name}: {result.stderr!r}")
+                if b"ADMISSION_MARKER" in result.stdout + result.stderr:
+                    failures.append(f"{binary} executed rejected fixture {name}")
+        if failures:
+            raise AssertionError("\n".join(failures))
+    print("PASS: standalone ESKB admission rejects malformed operands and constant pools")
+
+
+if __name__ == "__main__":
+    main()

@@ -14,6 +14,8 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
+#include "../core/keychain_native.h"
+#include "eshkol/core/curvature_runtime.h"
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
@@ -23,6 +25,12 @@
 #include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "eshkol/core/net.h"
+#include "eshkol/core/tls.h"
+#if defined(ESHKOL_PLATFORM_LAYER)
+#include <eshkol/platform/audio.h>   // Platform layer bridge (ADR-0053)
+#include <eshkol/platform/midi.h>
+#include <eshkol/platform/window.h>
+#endif
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -35,8 +43,10 @@
 #include <llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h>  // ObjectLinkingLayerCreator arg (LLVM 24)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include "jit_coff_memory_manager.h"  // Co-located Windows ARM64 RuntimeDyld arena
+#include "jit_windows_x64_memory_manager.h"  // Native Windows unwind registration
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
 #include "jit_target_config.h"  // Windows ARM64 external-data import indirection
+#include "jit_parallel_init.h"  // JIT-only worker initializer visibility
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -599,6 +609,13 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_energy_from_tagged(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_create(int32_t num_qubits) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_qexpect_destroy(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_gate(int64_t handle, int32_t kind, int32_t q0, int32_t q1,
+                                    int32_t param, double coef) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_term(int64_t handle, double coef, const char* paulis)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_parameter_count(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
     void* eshkol_vqe_ad_prepare(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_ad_prepared_energy(const void* prepared)
@@ -1091,26 +1108,41 @@ void ReplJITContext::initializeJIT() {
     }
     const bool windows_aarch64_coff =
         eshkol::is_windows_aarch64_coff(jtmb->getTargetTriple());
+    const bool windows_x64_coff =
+        jtmb->getTargetTriple().isOSWindows() &&
+        jtmb->getTargetTriple().getArch() == Triple::x86_64 &&
+        jtmb->getTargetTriple().getObjectFormat() == Triple::COFF;
     LLJITBuilder jit_builder;
     jit_builder
         .setJITTargetMachineBuilder(std::move(*jtmb))
         .setNumCompileThreads(compile_threads);
 
-    if (windows_aarch64_coff) {
+    if (windows_aarch64_coff || windows_x64_coff) {
         // LLVM 21 selects RuntimeDyld rather than JITLink for AArch64 COFF.
         // Its default SectionMemoryManager uses three independent OS mapping
         // pools, so Small-model PAGEBASE/PAGEOFFSET relocations between JIT-
         // owned code and data can truncate when ASLR places those pools more
         // than 4 GiB apart. Reserve all sections for each object in one bounded
         // arena while retaining LLJIT's normal COFF symbol-claiming behavior.
-        auto make_colocated_rtdyld_layer =
-            [](orc::ExecutionSession& execution_session)
+        // On x64 the normal section allocation is retained, but .pdata must
+        // be registered with Windows: LLVM's default __register_frame hook
+        // does not make COFF frames visible to the native SEH unwinder.
+        auto make_windows_rtdyld_layer =
+            [windows_x64_coff](orc::ExecutionSession& execution_session)
                 -> Expected<std::unique_ptr<orc::ObjectLayer>> {
                 auto layer =
                     std::make_unique<orc::RTDyldObjectLinkingLayer>(
                         execution_session,
-                        [](const MemoryBuffer&)
+                        [windows_x64_coff](const MemoryBuffer&)
                             -> std::unique_ptr<RuntimeDyld::MemoryManager> {
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+                            if (windows_x64_coff) {
+                                return std::make_unique<
+                                    eshkol::WindowsX64SectionMemoryManager>();
+                            }
+#else
+                            (void)windows_x64_coff;
+#endif
                             return std::make_unique<
                                 eshkol::CoLocatedSectionMemoryManager>();
                         });
@@ -1128,20 +1160,20 @@ void ReplJITContext::initializeJIT() {
         // share the memory manager LLJIT already owns instead of making its
         // own.  This layer is RTDyld-backed, not JITLink-backed: it takes a
         // RuntimeDyld::MemoryManager factory, a different and incompatible
-        // manager interface, and deliberately supplies
-        // CoLocatedSectionMemoryManager for the Windows-ARM64 arena above.
+        // manager interface, and deliberately supplies the platform's native
+        // RuntimeDyld memory manager above.
         // The JITLink manager therefore has nothing to bind to here and is
         // intentionally unused; it stays owned by LLJIT, so nothing leaks and
         // no second manager of the same kind is constructed.
         jit_builder.setObjectLinkingLayerCreator(
-            [make_colocated_rtdyld_layer](
+            [make_windows_rtdyld_layer](
                 orc::ExecutionSession& execution_session,
                 jitlink::JITLinkMemoryManager& /*unused: RTDyld layer*/)
                 -> Expected<std::unique_ptr<orc::ObjectLayer>> {
-                return make_colocated_rtdyld_layer(execution_session);
+                return make_windows_rtdyld_layer(execution_session);
             });
 #else
-        jit_builder.setObjectLinkingLayerCreator(make_colocated_rtdyld_layer);
+        jit_builder.setObjectLinkingLayerCreator(make_windows_rtdyld_layer);
 #endif
     }
 
@@ -1422,6 +1454,35 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_capability_runtime_clear);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
+    // core.curvature: the ADR-0018 signed-curvature chart (lib/core/curvature_runtime.c)
+    ADD_SYMBOL(eshkol_curvature_last_error);
+    ADD_SYMBOL(eshkol_curvature_convention_id);
+    ADD_SYMBOL(eshkol_curvature_alpha);
+    ADD_SYMBOL(eshkol_curvature_check_header);
+    ADD_SYMBOL(eshkol_curvature_distance);
+    ADD_SYMBOL(eshkol_curvature_sq_distance);
+    ADD_SYMBOL(eshkol_curvature_conformal_factor);
+    ADD_SYMBOL(eshkol_curvature_distance_jet);
+    ADD_SYMBOL(eshkol_curvature_sq_distance_jet);
+    ADD_SYMBOL(eshkol_curvature_sq_distance_grad);
+    ADD_SYMBOL(eshkol_curvature_exp_map);
+    ADD_SYMBOL(eshkol_curvature_log_map);
+    ADD_SYMBOL(eshkol_curvature_transport);
+    ADD_SYMBOL(eshkol_curvature_mobius_add);
+    ADD_SYMBOL(eshkol_curvature_mobius_scalar);
+    ADD_SYMBOL(eshkol_curvature_project);
+    ADD_SYMBOL(eshkol_curvature_riemannian_grad);
+    ADD_SYMBOL(eshkol_curvature_attention);
+    ADD_SYMBOL(eshkol_curvature_sphere_to_chart);
+    ADD_SYMBOL(eshkol_curvature_chart_to_sphere);
+    ADD_SYMBOL(eshkol_curvature_migrate_point);
+    ADD_SYMBOL(eshkol_curvature_migrate_tangent);
+    ADD_SYMBOL(eshkol_curvature_migrate_temperature);
+    ADD_SYMBOL(eshkol_keychain_size);
+    ADD_SYMBOL(eshkol_keychain_get_into);
+    ADD_SYMBOL(eshkol_keychain_set);
+    ADD_SYMBOL(eshkol_keychain_delete);
+    ADD_SYMBOL(eshkol_keychain_has);
     ADD_SYMBOL(eshkol_capability_runtime_is_active);
     ADD_SYMBOL(eshkol_capability_runtime_allows);
     ADD_SYMBOL(eshkol_capability_runtime_allows_file_mode);
@@ -1540,6 +1601,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_exact_ground_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_optimize);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_energy_from_tagged);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_gate);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_term);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_parameter_count);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepare);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_inputs);
@@ -1843,6 +1909,56 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_net_port);
     ADD_SYMBOL(eshkol_net_nonblocking);
     ADD_SYMBOL(eshkol_net_close);
+#if defined(ESHKOL_PLATFORM_LAYER)
+    // Platform layer bridge used by lib/platform/*.esk (ADR-0053).
+    ADD_SYMBOL(eshkol_plat_backend);
+    ADD_SYMBOL(eshkol_plat_backend_name);
+    ADD_SYMBOL(eshkol_plat_select_backend);
+    ADD_SYMBOL(eshkol_plat_window_open);
+    ADD_SYMBOL(eshkol_plat_window_close);
+    ADD_SYMBOL(eshkol_plat_window_query);
+    ADD_SYMBOL(eshkol_plat_window_set);
+    ADD_SYMBOL(eshkol_plat_window_set_title);
+    ADD_SYMBOL(eshkol_plat_window_fill_rect);
+    ADD_SYMBOL(eshkol_plat_window_get_pixel);
+    ADD_SYMBOL(eshkol_plat_window_present);
+    ADD_SYMBOL(eshkol_plat_window_read_presented);
+    ADD_SYMBOL(eshkol_plat_window_next_event);
+    ADD_SYMBOL(eshkol_plat_window_event_field);
+    ADD_SYMBOL(eshkol_plat_window_event_real);
+    ADD_SYMBOL(eshkol_plat_window_push_event);
+    ADD_SYMBOL(eshkol_plat_audio_open);
+    ADD_SYMBOL(eshkol_plat_audio_close);
+    ADD_SYMBOL(eshkol_plat_audio_control);
+    ADD_SYMBOL(eshkol_plat_audio_write);
+    ADD_SYMBOL(eshkol_plat_audio_commit);
+    ADD_SYMBOL(eshkol_plat_audio_available);
+    ADD_SYMBOL(eshkol_plat_audio_read);
+    ADD_SYMBOL(eshkol_plat_audio_stat);
+    ADD_SYMBOL(eshkol_plat_midi_open);
+    ADD_SYMBOL(eshkol_plat_midi_close);
+    ADD_SYMBOL(eshkol_plat_midi_stage);
+    ADD_SYMBOL(eshkol_plat_midi_send_staged);
+    ADD_SYMBOL(eshkol_plat_midi_receive);
+    ADD_SYMBOL(eshkol_plat_midi_byte);
+    ADD_SYMBOL(eshkol_plat_midi_timestamp);
+    ADD_SYMBOL(eshkol_plat_midi_stat);
+    ADD_SYMBOL(eshkol_plat_midi_source_count);
+    ADD_SYMBOL(eshkol_plat_midi_source_name);
+#endif
+    // Optional native TLS context construction.
+    ADD_SYMBOL(eshkol_tls_available);
+    ADD_SYMBOL(eshkol_tls_client_context);
+    ADD_SYMBOL(eshkol_tls_server_context);
+    ADD_SYMBOL(eshkol_tls_context_close);
+    ADD_SYMBOL(eshkol_tls_listen);
+    ADD_SYMBOL(eshkol_tls_accept);
+    ADD_SYMBOL(eshkol_tls_connect);
+    ADD_SYMBOL(eshkol_tls_listener_port);
+    ADD_SYMBOL(eshkol_tls_read);
+    ADD_SYMBOL(eshkol_tls_write);
+    ADD_SYMBOL(eshkol_tls_session_close);
+    ADD_SYMBOL(eshkol_tls_listener_close);
     ADD_SYMBOL(eshkol_resident_open);
     ADD_SYMBOL(eshkol_resident_close);
     ADD_SYMBOL(eshkol_resident_enter);
@@ -2454,6 +2570,11 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     // every live REPL module before validation and ConcurrentIRCompiler.
     eshkol::prepare_jit_module_for_target(*module, jit_->getTargetTriple());
 
+    const std::string parallel_initializer =
+        eshkol::expose_jit_parallel_initializer(
+            *module, "__repl_init_parallel_workers_" +
+                         std::to_string(parallel_initializer_counter_++));
+
     // Verify the module
     std::string error_msg;
     raw_string_ostream error_stream(error_msg);
@@ -2476,9 +2597,6 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
 #endif
         std::cerr << "[REPL] LLJIT DataLayout: " << jit_->getDataLayout().getStringRepresentation() << std::endl;
     }
-
-    Function* parallel_init = module->getFunction("__eshkol_init_parallel_workers");
-    bool has_parallel_initializer = parallel_init && !parallel_init->isDeclaration();
 
     // Wrap module with its OWN context (each module gets its own ThreadSafeContext).
     // This is LLVM's recommended ORC JIT pattern — module and context must match.
@@ -2505,16 +2623,19 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     // ORC does not reliably run this Eshkol-specific worker-registration
     // initializer for REPL snippets. If the just-added module generated
     // parallel-map workers, register them before the entry function runs.
-    if (has_parallel_initializer) {
-        if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
+    if (!parallel_initializer.empty()) {
+        if (auto pw_init = jit_->lookup(parallel_initializer)) {
             using PWInitFn = void (*)(void);
             auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
             fn();
         } else {
-            consumeError(pw_init.takeError());
-            std::cerr << "[REPL] Warning: module defines __eshkol_init_parallel_workers "
-                         "but the symbol could not be resolved after JIT add."
-                      << std::endl;
+            const std::string detail = toString(pw_init.takeError());
+            if (auto remove_error = module_tracker->remove()) {
+                consumeError(std::move(remove_error));
+            }
+            throw std::runtime_error(
+                "failed to resolve JIT parallel worker initializer " +
+                parallel_initializer + ": " + detail);
         }
     }
 
@@ -2998,7 +3119,13 @@ llvm::Error ReplJITContext::loadStdlib() {
         // execution. Call it explicitly so the parallel runtime sees the same
         // worker registrations regardless of whether stdlib came from bitcode,
         // an object file, or a future loader path.
-        if (auto pw_init = jit_->lookup("__eshkol_init_parallel_workers")) {
+        auto pw_init = jit_->lookup(eshkol::kJitStdlibParallelInitializer);
+        if (!pw_init) {
+            consumeError(pw_init.takeError());
+            // Legacy AOT objects on ELF/Mach-O expose the original name.
+            pw_init = jit_->lookup("__eshkol_init_parallel_workers");
+        }
+        if (pw_init) {
             using PWInitFn = void (*)(void);
             auto fn = reinterpret_cast<PWInitFn>(pw_init->getValue());
             fn();
@@ -3066,9 +3193,11 @@ llvm::Error ReplJITContext::loadStdlib() {
                     // other header layout — which links, runs, and reads the wrong
                     // bytes. The tag comes from the same four numbers as the link
                     // guard, so it renames itself when the layout moves.
+                    // v5 exports the JIT worker initializer; a v4 Windows object
+                    // cannot satisfy LLJIT's explicit registration lookup.
                     std::filesystem::path cache_o =
                         bc_fs.parent_path() /
-                        ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" +
+                        ("stdlib-jit-v5-" + llvm::utohexstr(content_hash) + "-" +
                          triple + "-" + ESHKOL_OBJECT_ABI_CACHE_TAG + ".o");
 
                     std::error_code ec;
@@ -3088,6 +3217,9 @@ llvm::Error ReplJITContext::loadStdlib() {
                                         (*emit_tm)->getTargetTriple());
                                     eshkol::prepare_jit_module_for_target(
                                         **emit_mod, (*emit_tm)->getTargetTriple());
+                                    eshkol::expose_jit_parallel_initializer(
+                                        **emit_mod,
+                                        eshkol::kJitStdlibParallelInitializer);
                                     std::filesystem::path tmp_o = cache_o;
                                     tmp_o += ".tmp";
                                     std::error_code wec;
@@ -3221,6 +3353,8 @@ llvm::Error ReplJITContext::loadStdlib() {
                     }
                     eshkol::prepare_jit_module_for_target(
                         *stdlib_module, jit_->getTargetTriple());
+                    eshkol::expose_jit_parallel_initializer(
+                        *stdlib_module, eshkol::kJitStdlibParallelInitializer);
 
                     auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
                     auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
@@ -4058,7 +4192,19 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     void* result = nullptr;
     if (entry_func && !func_name.empty()) {
         uint64_t func_addr = lookupSymbol(func_name);
-        if (func_addr != 0) {
+        if (func_addr == 0) {
+            // `silent == false` is the batch/file CLI path (`eshkol-run -r`).
+            // ORC can report a missing external while materializing the entry
+            // lookup; lookupSymbol consumes that Error and returns zero, so
+            // without this check executeBatch returned nullptr and the driver
+            // mistook a failed file for a successful no-result batch. Module
+            // loads use silent batches and keep their established warning /
+            // recovery behavior, as does the interactive REPL.
+            if (!silent) {
+                throw std::runtime_error(
+                    "failed to resolve JIT batch entry function: " + func_name);
+            }
+        } else {
             incrementEvalCounter();
             typedef int32_t (*EvalFunc)(int32_t, char**);
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);

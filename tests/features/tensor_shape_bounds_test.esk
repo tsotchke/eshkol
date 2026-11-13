@@ -1,0 +1,116 @@
+;; Public front-door regressions for the shared shape-bound checks.
+(define failures 0)
+(define (check name ok)
+  (if ok
+      (begin (display "ok: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk)
+  (guard (e (#t #t)) (thunk) #f))
+(define (close? a b) (< (abs (- a b)) 1e-9))
+(define (same2? a b)
+  (and (close? (tensor-ref a 0) (tensor-ref b 0))
+       (close? (tensor-ref a 1) (tensor-ref b 1))))
+
+(define v4 (reshape #(1.0 2.0 3.0 4.0) 4))
+(define m2 (reshape #(1.0 2.0 3.0 4.0) 2 2))
+(define v3 (reshape #(1.0 2.0 3.0) 3))
+(define v2 (reshape #(1.0 2.0) 2))
+(define m2b (reshape #(4.0 3.0 2.0 1.0) 2 2))
+
+;; Equal element counts with unequal shapes must fail before either buffer read.
+(check "mse rejects same-length different-shape" (raises? (lambda () (mse-loss m2 v4))))
+(check "mse rejects shorter target" (raises? (lambda () (mse-loss v3 v2))))
+(check "bce rejects shape mismatch" (raises? (lambda () (bce-loss v3 v2))))
+(check "huber rejects shape mismatch" (raises? (lambda () (huber-loss m2 v4))))
+(check "mae rejects shape mismatch" (raises? (lambda () (mae-loss v3 v2))))
+(check "binary cross entropy rejects shape mismatch"
+       (raises? (lambda () (binary-cross-entropy-loss v3 v2))))
+(check "KL rejects shape mismatch" (raises? (lambda () (kl-div-loss v3 v2))))
+(check "hinge rejects shape mismatch" (raises? (lambda () (hinge-loss v3 v2))))
+(check "smooth L1 rejects shape mismatch" (raises? (lambda () (smooth-l1-loss m2 v4))))
+(check "label smoothing rejects shape mismatch"
+       (raises? (lambda () (label-smoothing-loss m2 v4 2))))
+(check "triplet rejects mismatch in negative role"
+       (raises? (lambda () (triplet-loss v4 v4 v3))))
+(check "contrastive rejects shape mismatch"
+       (raises? (lambda () (contrastive-loss v3 v2 1.0))))
+(check "cosine embedding rejects shape mismatch"
+       (raises? (lambda () (cosine-embedding-loss v3 v2 1.0))))
+
+;; Positive math controls.
+(check "mse valid result" (close? (mse-loss v3 #(1.0 2.0 4.0)) (/ 1.0 3.0)))
+(check "MAE valid result" (close? (mae-loss v3 #(1.0 2.0 4.0)) (/ 1.0 3.0)))
+(check "valid tensor dot" (close? (tensor-dot v3 #(4.0 5.0 6.0)) 32.0))
+(check "valid matrix multiply preserves shape" (equal? (tensor-shape (tensor-dot m2 m2b)) '(2 2)))
+(check "zero-length tensor dot" (close? (tensor-dot (reshape #() 0) (reshape #() 0)) 0.0))
+(check "zero-length tensor dot rejects unequal length"
+       (raises? (lambda () (tensor-dot (reshape #() 0) (reshape #(1.0) 1)))))
+
+;; Scheme vectors use tagged slots, so they have their own length guard.
+(check "Scheme vector dot rejects unequal lengths"
+       (raises? (lambda () (tensor-dot #(1.0 2.0 3.0) #(1.0 2.0)))))
+
+;; Every optimizer mismatch must be checked before any parameter or state store.
+(let* ((p (reshape #(5.0 6.0) 2)) (g (reshape #(1.0 1.0) 2))
+       (bad (reshape #(0.0) 1)) (before (reshape #(5.0 6.0) 2)))
+  (check "SGD gradient mismatch raises" (raises? (lambda () (sgd-step p bad 0.1))))
+  (check "SGD failure leaves params unchanged" (same2? p before))
+  (check "SGD positive math control"
+         (close? (tensor-ref (sgd-step (reshape #(5.0 6.0) 2) g 0.1) 0) 4.9)))
+(let* ((p (reshape #(5.0 6.0) 2)) (g (reshape #(1.0 1.0) 2))
+       (bad (reshape #(0.0) 1)) (before (reshape #(5.0 6.0) 2)))
+  (check "SGD velocity mismatch raises"
+         (raises? (lambda () (sgd-step p g 0.1 0.9 bad))))
+  (check "SGD velocity failure is atomic"
+         (and (same2? p before) (close? (tensor-ref bad 0) 0.0))))
+(let* ((p (reshape #(5.0 6.0) 2)) (g (reshape #(1.0 1.0) 2))
+       (m (reshape #(0.0 0.0) 2)) (v (reshape #(0.0 0.0) 2))
+       (bad (reshape #(0.0) 1)) (before (reshape #(5.0 6.0) 2)))
+  (check "Adam gradient mismatch raises" (raises? (lambda () (adam-step p bad 0.1 m v 1))))
+  (check "Adam m mismatch raises" (raises? (lambda () (adam-step p g 0.1 bad v 1))))
+  (check "Adam v mismatch raises" (raises? (lambda () (adam-step p g 0.1 m bad 1))))
+  (check "Adam failures leave params unchanged" (same2? p before))
+  (check "Adam failures leave m unchanged" (same2? m (reshape #(0.0 0.0) 2)))
+  (check "Adam failures leave v unchanged" (same2? v (reshape #(0.0 0.0) 2)))
+  (check "Adam short m remains unchanged" (close? (tensor-ref bad 0) 0.0))
+  (check "Adam positive math control" (tensor? (adam-step p g 0.1 m v 1))))
+(let* ((p (reshape #(5.0 6.0) 2)) (g (reshape #(1.0 1.0) 2))
+       (m (reshape #(0.0 0.0) 2)) (v (reshape #(0.0 0.0) 2))
+       (bad (reshape #(0.0) 1)) (before (reshape #(5.0 6.0) 2))
+       (mbefore (reshape #(0.0 0.0) 2)) (vbefore (reshape #(0.0 0.0) 2)))
+  (check "AdamW gradient mismatch raises" (raises? (lambda () (adamw-step p bad 0.1 m v 1))))
+  (check "AdamW m mismatch raises" (raises? (lambda () (adamw-step p g 0.1 bad v 1))))
+  (check "AdamW v mismatch raises" (raises? (lambda () (adamw-step p g 0.1 m bad 1))))
+  (check "AdamW failures are atomic"
+         (and (same2? p before) (same2? m mbefore) (same2? v vbefore)
+              (close? (tensor-ref bad 0) 0.0)))
+  (check "AdamW positive math control"
+         (< (tensor-ref (adamw-step (reshape #(5.0 6.0) 2) g 0.1
+                                  (reshape #(0.0 0.0) 2) (reshape #(0.0 0.0) 2) 1) 0)
+            5.0)))
+(let* ((p (reshape #(5.0 6.0) 2)) (g (reshape #(1.0 1.0) 2))
+       (bad (reshape #(0.0) 1)) (v (reshape #(0.0 0.0) 2))
+       (before (reshape #(5.0 6.0) 2)) (vbefore (reshape #(0.0 0.0) 2)))
+  (check "RMSprop gradient mismatch raises" (raises? (lambda () (rmsprop-step p bad 0.1 v))))
+  (check "RMSprop state mismatch raises" (raises? (lambda () (rmsprop-step p g 0.1 bad))))
+  (check "RMSprop failure is atomic"
+         (and (same2? p before) (same2? v vbefore) (close? (tensor-ref bad 0) 0.0)))
+  (check "RMSprop positive math control"
+         (< (tensor-ref (rmsprop-step (reshape #(5.0 6.0) 2) g 0.1
+                                     (reshape #(0.0 0.0) 2)) 0) 5.0)))
+(let* ((p (reshape #(5.0 6.0) 2)) (g (reshape #(1.0 1.0) 2))
+       (bad (reshape #(0.0) 1)) (acc (reshape #(0.0 0.0) 2))
+       (before (reshape #(5.0 6.0) 2)) (abefore (reshape #(0.0 0.0) 2)))
+  (check "Adagrad gradient mismatch raises" (raises? (lambda () (adagrad-step p bad 0.1 acc))))
+  (check "Adagrad accumulator mismatch raises"
+         (raises? (lambda () (adagrad-step p g 0.1 bad))))
+  (check "Adagrad failure is atomic"
+         (and (same2? p before) (same2? acc abefore) (close? (tensor-ref bad 0) 0.0)))
+  (check "Adagrad positive math control"
+         (< (tensor-ref (adagrad-step (reshape #(5.0 6.0) 2) g 0.1
+                                     (reshape #(0.0 0.0) 2)) 0) 5.0)))
+
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAILURES DETECTED") (newline) (exit 1)))

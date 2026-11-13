@@ -1,0 +1,124 @@
+;; core.monoidal.zx against Moonlab: Clifford+T circuits on 1-5 qubits are
+;; evaluated exactly as ZX graphs over Q(zeta_8) and simulated by Moonlab's
+;; state-vector engine through agent.quantum. Requires
+;; -DESHKOL_QUANTUM_ENABLED=ON.
+;;
+;; Tolerance contract. Moonlab's amplitudes are IEEE binary64 complex numbers,
+;; and agent.quantum exposes its state through gates and <Z_q> only, so the
+;; comparison is on Pauli expectations: for a Pauli string P the exact value
+;; <psi|P|psi> of the ZX state (a real number in Q(sqrt 2)) is converted to
+;; binary64 once, and Moonlab's value is measured by replaying the circuit,
+;; rotating each X (H) or Y (S^dagger then H) factor to Z, collecting the
+;; parity onto one qubit with CNOTs, and reading <Z> there. Every expectation
+;; must agree within 1e-10 (each gate adds rounding of order 1e-16 per
+;; amplitude; the circuits here have at most 40 gates). Moonlab's S, T and
+;; phase gates are RZ rotations, equal to the ZX phases up to a global phase,
+;; which no expectation sees. For n <= 3 qubits every Pauli string is
+;; compared (full state tomography, so the states agree up to a global phase)
+;; and the fidelity 2^-n sum_P <P>_zx <P>_moonlab must be 1 within 1e-9; for
+;; 4 and 5 qubits all strings of weight 1 and 2 and 24 random heavier ones.
+(require stdlib)
+(require agent.quantum)
+(require core.monoidal.scalars)
+(require core.monoidal.finvect)
+(require core.monoidal.zx)
+
+(define K (cyclotomic-scalars 8))
+(define pi (* 4 (atan 1.0)))
+(define tolerance 1e-10)
+(define fidelity-tolerance 1e-9)
+(define failures 0) (define compared 0) (define max-deviation 0.0) (define circuits-run 0) (define min-fidelity 1.0)
+(define (range n) (iota n))
+(define seed 777)
+(define (rand n) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) n))
+
+;; the exact state: column |0..0> of s [[g]]
+(define (zx-state n gates)
+  (let* ((r (circuit->zx n gates)) (U (linear-map-scale (zx-evaluate (car r) K) (zx-scalar->element K (cdr r))))
+         (e0 (make-vector (expt 2 n) (scalars-zero K))))
+    (vector-set! e0 0 (scalars-one K))
+    (linear-map-apply U e0)))
+
+;; replay a circuit on a fresh Moonlab state
+(define (moonlab-gate st gate)
+  (let ((k (car gate)))
+    (cond ((eq? k 'H) (apply-hadamard st (cadr gate)))
+          ((eq? k 'X) (apply-pauli-x st (cadr gate)))
+          ((eq? k 'Y) (apply-pauli-y st (cadr gate)))
+          ((eq? k 'Z) (apply-pauli-z st (cadr gate)))
+          ((eq? k 'S) (apply-rz st (cadr gate) (/ pi 2)))
+          ((eq? k 'Sdg) (apply-rz st (cadr gate) (- (/ pi 2))))
+          ((eq? k 'T) (apply-rz st (cadr gate) (/ pi 4)))
+          ((eq? k 'Tdg) (apply-rz st (cadr gate) (- (/ pi 4))))
+          ((eq? k 'P) (apply-rz st (cadr gate) (* pi (exact->inexact (caddr gate)))))
+          ((eq? k 'XP) (apply-rx st (cadr gate) (* pi (exact->inexact (caddr gate)))))
+          ((eq? k 'CNOT) (apply-cnot st (cadr gate) (caddr gate)))
+          ((eq? k 'CZ) (apply-hadamard st (caddr gate)) (apply-cnot st (cadr gate) (caddr gate)) (apply-hadamard st (caddr gate)))
+          ((eq? k 'SWAP) (apply-cnot st (cadr gate) (caddr gate)) (apply-cnot st (caddr gate) (cadr gate)) (apply-cnot st (cadr gate) (caddr gate)))
+          (else (error "zx_moonlab_crosscheck: unknown gate" gate)))))
+(define (moonlab-expectation n gates paulis)
+  (let ((support (filter (lambda (q) (not (eq? 'I (list-ref paulis q)))) (range n))))
+    (if (null? support) 1.0
+        (with-quantum-state n
+          (lambda (st)
+            (for-each (lambda (g) (moonlab-gate st g)) gates)
+            (for-each (lambda (q) (case (list-ref paulis q)
+                                    ((X) (apply-hadamard st q))
+                                    ((Y) (apply-rz st q (- (/ pi 2))) (apply-hadamard st q))
+                                    (else #t)))
+                      support)
+            (let ((target (car (reverse support))))
+              (for-each (lambda (q) (if (not (= q target)) (apply-cnot st q target))) support)
+              (expectation-z st target)))))))
+
+(define (pauli-strings n)
+  (let ((all (let loop ((k n)) (if (= k 0) (list '()) (apply append (map (lambda (t) (map (lambda (p) (cons p t)) '(I X Y Z))) (loop (- k 1))))))))
+    (if (<= n 3) all
+        (let ((low (filter (lambda (s) (<= (length (filter (lambda (p) (not (eq? p 'I))) s)) 2)) all)))
+          (append low (map (lambda (i) (map (lambda (q) (list-ref '(X Y Z) (rand 3))) (range n))) (range 24)))))))
+
+(define (cross-check! name n gates)
+  (let* ((psi (zx-state n gates)) (strings (pauli-strings n)) (dim (expt 2 n)))
+    (if (not (let loop ((i 0) (s (circuit-state K n gates))) (or (= i dim) (and (scalars-equal? K (vector-ref psi i) (vector-ref s i)) (loop (+ i 1) s)))))
+        (begin (set! failures (+ failures 1)) (display "FAIL: ZX state differs from the exact state-vector semantics: ") (display name) (newline)))
+    (let loop ((ss strings) (overlap 0.0))
+      (if (null? ss)
+          (begin
+            (set! circuits-run (+ circuits-run 1))
+            (if (<= n 3)
+                (let ((F (/ overlap dim)))
+                  (if (< F min-fidelity) (set! min-fidelity F))
+                  (if (> (abs (- 1.0 F)) fidelity-tolerance)
+                      (begin (set! failures (+ failures 1)) (display "FAIL: fidelity ") (display F) (display " for ") (display name) (newline))))))
+          (let* ((exact (scalars->real K (pauli-expectation K n psi (car ss))))
+                 (measured (moonlab-expectation n gates (car ss)))
+                 (dev (abs (- exact measured))))
+            (set! compared (+ compared 1))
+            (if (> dev max-deviation) (set! max-deviation dev))
+            (if (> dev tolerance)
+                (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (display " ") (display (car ss))
+                       (display " exact ") (display exact) (display " moonlab ") (display measured) (newline)))
+            (loop (cdr ss) (+ overlap (* exact measured))))))))
+
+(define one-qubit-gates '(H X Y Z S Sdg T Tdg))
+(define phases (map (lambda (k) (/ k 4)) (range 8)))
+(define (random-gate n)
+  (if (or (= n 1) (< (rand 10) 6))
+      (let ((q (rand n)) (r (rand 10)))
+        (cond ((< r 8) (list (list-ref one-qubit-gates r) q)) ((= r 8) (list 'P q (list-ref phases (rand 8)))) (else (list 'XP q (list-ref phases (rand 8))))))
+      (let* ((a (rand n)) (b (modulo (+ a 1 (rand (- n 1))) n)))
+        (list (list-ref '(CNOT CZ SWAP) (rand 3)) a b))))
+
+(cross-check! "Bell" 2 '((H 0) (CNOT 0 1)))
+(cross-check! "GHZ-5" 5 '((H 0) (CNOT 0 1) (CNOT 1 2) (CNOT 2 3) (CNOT 3 4)))
+(cross-check! "T-gadget" 3 '((H 0) (T 0) (CNOT 0 1) (H 1) (Tdg 1) (CZ 1 2) (S 2) (H 2) (XP 2 1/4)))
+(cross-check! "Y and SWAP" 2 '((H 0) (Y 1) (SWAP 0 1) (T 1) (CNOT 1 0)))
+(for-each (lambda (n) (for-each (lambda (i) (cross-check! (list 'random n i) n (map (lambda (j) (random-gate n)) (range (+ 6 (rand (* 4 n)))))))
+                                (range (if (<= n 3) 4 2))))
+          '(1 2 3 4 5))
+
+(display "zx_moonlab_crosscheck: circuits ") (display circuits-run) (display ", Pauli expectations ") (display compared)
+(display ", max deviation ") (display max-deviation) (display ", min fidelity (n <= 3) ") (display min-fidelity) (newline)
+(if (> failures 0)
+    (begin (display "zx_moonlab_crosscheck_test: FAIL (") (display failures) (display ")") (newline) (exit 1))
+    (begin (display "zx_moonlab_crosscheck_test: PASS") (newline)))

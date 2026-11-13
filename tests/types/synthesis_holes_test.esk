@@ -1,0 +1,44 @@
+;; `??` synthesis holes: every hole below is completed by the compiler from
+;; its expected type and the bindings in scope (ADR-0052); the program then
+;; runs the completed code. The compile log lists the candidates per hole.
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+
+;; whole body under a return annotation: both parameters are used
+(define (add2 (x : integer) (y : integer)) : integer ??)
+(check "integer body uses both parameters" (= (add2 3 4) 7))
+
+;; boolean result
+(define (lt (a : integer) (b : integer)) : boolean ??)
+(check "boolean body" (and (lt 1 2) (not (lt 2 1))))
+
+;; string result: the parameter itself is the smallest relevant term
+(define (same (s : string)) : string ??)
+(check "string body" (string=? (same "abc") "abc"))
+
+;; argument position: the hole takes the callee's parameter type
+(define (square (n : integer)) : integer (* n n))
+(define (square-of (k : integer)) : integer (square ??))
+(check "argument hole" (= (square-of 9) 81))
+
+;; if test: expected boolean, both branches' variables in scope
+(define (pick (a : integer) (b : integer)) : integer (if ?? a b))
+(check "if-test hole" (and (= (pick 3 5) 3) (= (pick 5 3) 3)))
+
+;; a hole inside a let body sees the let binding
+(define (shifted (x : integer)) : integer
+  (let ((y (+ x 10))) ??))
+(check "let-bound variable in scope" (= (shifted 1) 12))
+
+;; a hole nested in a larger expression
+(define (affine (x : integer) (y : integer)) : integer (+ 1 ??))
+(check "nested hole" (= (affine 2 3) 6))
+
+;; a program that binds ?? itself keeps it as an ordinary variable
+(define ?? 41)
+(check "a bound ?? is a variable" (= (+ ?? 1) 42))
+
+(display "synthesis_holes_test: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
+(if (= failures 0) (begin (display "PASS: synthesis_holes_test") (newline)) (begin (display "RESULT: FAIL") (newline)))

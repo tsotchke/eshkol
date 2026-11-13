@@ -1,0 +1,243 @@
+;;; Optional native TLS over core.net's opaque handles. Unsupported platforms
+;;; report a TLS error; there is no plaintext substitute. Peer verification is
+;;; on by default; only an explicit 'insecure-no-verify option turns it off.
+;;; A session holds an exclusive lease on its TCP stream for its lifetime.
+;;; Acquire sites: tls-connect, tls-accept, tls-client-start, tls-server-start
+;;; (session), tls-listen (listener). Close sites: tls-session-close,
+;;; tls-listener-close.
+(require stdlib)
+(require core.capabilities)
+(provide tls-available? tls-client-context tls-server-context tls-context-close
+         tls-listen tls-listener-port tls-accept tls-connect tls-read tls-write
+         tls-session-close tls-listener-close
+         tls-error? tls-error-code tls-error-operation
+         tls-error-reason tls-client-context/options tls-client-start tls-server-start
+         tls-read! tls-write! tls-write-all! tls-cancel!
+         call-with-tls-connection call-with-tls-accept call-with-tls-client
+         call-with-tls-server)
+(extern ptr -tls-alloc i64 :real malloc)
+(extern void -tls-free ptr :real free)
+(extern i32 -tls-available :real eshkol_tls_available)
+(extern i64 -tls-client-context ptr :real eshkol_tls_client_context)
+(extern i64 -tls-server-context ptr ptr :real eshkol_tls_server_context)
+(extern i32 -tls-context-close i64 :real eshkol_tls_context_close)
+(extern i64 -tls-listen i64 ptr i32 :real eshkol_tls_listen)
+(extern i64 -tls-accept i64 i32 :real eshkol_tls_accept)
+(extern i64 -tls-connect i64 ptr i32 ptr i32 :real eshkol_tls_connect)
+(extern i32 -tls-port i64 :real eshkol_tls_listener_port)
+(extern i32 -tls-read i64 ptr i32 i32 :real eshkol_tls_read)
+(extern i32 -tls-write i64 ptr i32 i32 :real eshkol_tls_write)
+(extern i32 -tls-session-close i64 :real eshkol_tls_session_close)
+(extern i32 -tls-listener-close i64 :real eshkol_tls_listener_close)
+(extern i64 -tls-client-context-options ptr i32 :real eshkol_tls_client_context_options)
+(extern i64 -tls-client-start i64 i64 ptr i32 :real eshkol_tls_client_start)
+(extern i64 -tls-server-start i64 i64 i32 :real eshkol_tls_server_start)
+(extern i32 -tls-read-bytes i64 ptr i64 i64 i32 :real eshkol_tls_read_bytes)
+(extern i32 -tls-write-bytes i64 ptr i64 i64 i32 :real eshkol_tls_write_bytes)
+(extern i64 -tls-write-all-bytes i64 ptr i64 i64 i32 :real eshkol_tls_write_all_bytes)
+(extern i32 -tls-cancel i64 :real eshkol_tls_cancel)
+
+(define (tls-error? v)
+  (and (vector? v) (= (vector-length v) 3) (eq? (vector-ref v 0) 'tls-error)))
+(define (tls-error-code v) (vector-ref v 1))
+(define (tls-error-operation v) (vector-ref v 2))
+(define (tls-error-reason v)
+  "Symbolic outcome for a TLS error code."
+  (let ((code (vector-ref v 1)))
+    (cond ((= code -1) 'failure) ((= code -2) 'timeout) ((= code -3) 'unsupported)
+          ((= code -4) 'invalid) ((= code -5) 'busy) ((= code -6) 'cancelled)
+          ((= code -7) 'reset) ((= code -9) 'refused)
+          ((= code -10) 'untrusted-certificate) ((= code -11) 'identity-mismatch)
+          (else 'failure))))
+(define (-tls-result n op)
+  (if (< n 0) (vector 'tls-error (inexact->exact n) op) (inexact->exact n)))
+(define (-tls-handle? n)
+  (and (integer? n) (exact? n) (>= n 1) (<= n 9007199254740991)))
+(define (-tls-timeout? n)
+  (and (integer? n) (exact? n) (>= n 0) (<= n 2147483647)))
+(define (-tls-text? value maximum)
+  (and (string? value) (> (string-byte-length value) 0)
+       (<= (string-byte-length value) maximum)
+       (let loop ((i 0))
+         (if (= i (string-length value)) #t
+             (and (not (= (char->integer (string-ref value i)) 0))
+                  (loop (+ i 1)))))))
+(define (-tls-path? path optional?)
+  (or (and optional? (not path)) (-tls-text? path 4096)))
+(define (-tls-address? address) (-tls-text? address 45))
+(define (tls-available?)
+  "True when native OpenSSL TLS sessions are linked for this build."
+  (= (-tls-available) 1))
+(define (tls-client-context ca-file)
+  "Create a peer-verifying client context; #f selects platform default trust."
+  (if (-tls-path? ca-file #t)
+      (begin
+        (if ca-file (capability-require! 'file-read ca-file) #t)
+        (capability-require! 'network)
+        (-tls-result (-tls-client-context (if ca-file ca-file "")) 'tls-client-context))
+      (-tls-result -4 'tls-client-context)))
+(define (tls-server-context certificate-file private-key-file)
+  "Create a server context from a PEM chain and matching PEM private key."
+  (if (and (-tls-path? certificate-file #f) (-tls-path? private-key-file #f))
+      (begin
+        (capability-require! 'file-read certificate-file)
+        (capability-require! 'file-read private-key-file)
+        (capability-require! 'network)
+        (-tls-result (-tls-server-context certificate-file private-key-file)
+                     'tls-server-context))
+      (-tls-result -4 'tls-server-context)))
+(define (tls-context-close context)
+  "Close a TLS context; active sessions retain it until they finish."
+  (if (-tls-handle? context)
+      (-tls-result (-tls-context-close context) 'tls-context-close)
+      (-tls-result -4 'tls-context-close)))
+(define (tls-listen context address port)
+  "Bind a TLS server listener to a numeric IPv4 or IPv6 address."
+  (capability-require! 'network address port)
+  (if (and (-tls-handle? context) (-tls-address? address)
+           (integer? port) (exact? port) (>= port 0) (<= port 65535))
+      (-tls-result (-tls-listen context address port) 'tls-listen)
+      (-tls-result -4 'tls-listen)))
+(define (tls-listener-port listener)
+  "Return the listener's local port, including an ephemeral port selected at bind."
+  (if (-tls-handle? listener)
+      (-tls-result (-tls-port listener) 'tls-listener-port)
+      (-tls-result -4 'tls-listener-port)))
+(define (tls-accept listener timeout-ms)
+  "Accept and finish the TLS handshake within one total timeout."
+  (capability-require! 'network)
+  (if (and (-tls-handle? listener) (-tls-timeout? timeout-ms))
+      (-tls-result (-tls-accept listener timeout-ms) 'tls-accept)
+      (-tls-result -4 'tls-accept)))
+(define (tls-connect context address port server-name timeout-ms)
+  "Connect to numeric address and verify the peer for server-name (or address)."
+  (capability-require! 'network address port)
+  (let ((identity (if server-name server-name address)))
+    (if (and (-tls-handle? context) (-tls-address? address)
+             (-tls-text? identity 253)
+             (integer? port) (exact? port) (>= port 0) (<= port 65535)
+             (-tls-timeout? timeout-ms))
+        (-tls-result (-tls-connect context address port identity timeout-ms)
+                     'tls-connect)
+        (-tls-result -4 'tls-connect))))
+(define (tls-read session capacity timeout-ms)
+  "Read up to capacity plaintext bytes; empty string means clean TLS EOF."
+  (capability-require! 'network)
+  (if (and (-tls-handle? session) (integer? capacity) (exact? capacity)
+           (>= capacity 1) (<= capacity 1048576) (-tls-timeout? timeout-ms))
+      (let ((buffer (-tls-alloc capacity)))
+        (if (= (ptr->usize buffer) 0) (-tls-result -1 'tls-read)
+            (let* ((n (-tls-read session buffer capacity timeout-ms))
+                   (result (if (< n 0) (-tls-result n 'tls-read)
+                               (ptr->string-n buffer (inexact->exact n)))))
+              (-tls-free buffer) result)))
+      (-tls-result -4 'tls-read)))
+(define (tls-write session data timeout-ms)
+  "Write one binary string, returning bytes accepted or a TLS error."
+  (capability-require! 'network)
+  (if (and (-tls-handle? session) (string? data)
+           (<= (string-byte-length data) 1048576) (-tls-timeout? timeout-ms))
+      (-tls-result (-tls-write session data (string-byte-length data) timeout-ms)
+                   'tls-write)
+      (-tls-result -4 'tls-write)))
+(define (tls-session-close session)
+  "Invalidate a TLS session identifier; in-flight I/O remains lifetime-safe."
+  (if (-tls-handle? session)
+      (-tls-result (-tls-session-close session) 'tls-session-close)
+      (-tls-result -4 'tls-session-close)))
+(define (tls-listener-close listener)
+  "Close a TLS listener and invalidate its identifier."
+  (if (-tls-handle? listener)
+      (-tls-result (-tls-listener-close listener) 'tls-listener-close)
+      (-tls-result -4 'tls-listener-close)))
+
+(define (tls-client-context/options ca-file options)
+  "Client context with an option list: '() verifies peers (the default);
+   '(insecure-no-verify) explicitly accepts unverified peers."
+  (let ((flags (cond ((null? options) 0)
+                     ((equal? options '(insecure-no-verify)) 1)
+                     (else -1))))
+    (if (and (-tls-path? ca-file #t) (>= flags 0))
+        (begin
+          (if ca-file (capability-require! 'file-read ca-file) #t)
+          (capability-require! 'network)
+          (-tls-result (-tls-client-context-options (if ca-file ca-file "") flags)
+                       'tls-client-context/options))
+        (-tls-result -4 'tls-client-context/options))))
+(define (tls-client-start context tcp-stream server-name timeout-ms)
+  "Client handshake over an owned core.net TCP stream, verifying server-name
+   (also sent as SNI). The stream moves into the session; a failed handshake
+   closes it."
+  (capability-require! 'network)
+  (if (and (-tls-handle? context) (-tls-handle? tcp-stream) (-tls-text? server-name 253)
+           (-tls-timeout? timeout-ms))
+      (-tls-result (-tls-client-start context tcp-stream server-name timeout-ms)
+                   'tls-client-start)
+      (-tls-result -4 'tls-client-start)))
+(define (tls-server-start context tcp-stream timeout-ms)
+  "Server handshake over an owned core.net TCP stream, with the same ownership rule."
+  (capability-require! 'network)
+  (if (and (-tls-handle? context) (-tls-handle? tcp-stream) (-tls-timeout? timeout-ms))
+      (-tls-result (-tls-server-start context tcp-stream timeout-ms) 'tls-server-start)
+      (-tls-result -4 'tls-server-start)))
+(define (-tls-range? bv start count minimum)
+  (and (bytevector? bv) (integer? start) (exact? start) (>= start 0)
+       (integer? count) (exact? count) (>= count minimum)
+       (<= (+ start count) (bytevector-length bv))))
+(define (tls-read! session bv start count timeout-ms)
+  "Read up to count plaintext bytes (at most 1 MiB) into bv at start: a byte
+   count, the eof object after close-notify, or a TLS error."
+  (capability-require! 'network)
+  (if (and (-tls-handle? session) (-tls-range? bv start count 1) (<= count 1048576)
+           (-tls-timeout? timeout-ms))
+      (let ((n (-tls-read-bytes session bv start count timeout-ms)))
+        (if (= n 0) (eof-object) (-tls-result n 'tls-read!)))
+      (-tls-result -4 'tls-read!)))
+(define (tls-write! session bv start count timeout-ms)
+  "Write bv[start, start + count) (at most 1 MiB); returns the byte count."
+  (capability-require! 'network)
+  (if (and (-tls-handle? session) (-tls-range? bv start count 0) (<= count 1048576)
+           (-tls-timeout? timeout-ms))
+      (-tls-result (-tls-write-bytes session bv start count timeout-ms) 'tls-write!)
+      (-tls-result -4 'tls-write!)))
+(define (tls-write-all! session bv start count timeout-ms)
+  "Write the whole range, of any length, under one deadline."
+  (capability-require! 'network)
+  (if (and (-tls-handle? session) (-tls-range? bv start count 0) (-tls-timeout? timeout-ms))
+      (-tls-result (-tls-write-all-bytes session bv start count timeout-ms) 'tls-write-all!)
+      (-tls-result -4 'tls-write-all!)))
+(define (tls-cancel! session)
+  "Cancel the session's waiting operation (from any thread), or its next one."
+  (if (-tls-handle? session)
+      (-tls-result (-tls-cancel session) 'tls-cancel!)
+      (-tls-result -4 'tls-cancel!)))
+
+;; Guaranteed close: exactly once on return, raise or continuation escape;
+;; re-entry raises; a failed acquisition returns its error without calling proc.
+(define (-tls-scoped resource close op proc)
+  (if (tls-error? resource) resource
+      (let ((state 'fresh))
+        (dynamic-wind
+          (lambda ()
+            (if (eq? state 'fresh) (set! state 'open)
+                (raise (vector 'tls-error -4 op))))
+          (lambda () (proc resource))
+          (lambda ()
+            (if (eq? state 'open)
+                (begin (set! state 'closed) (close resource))
+                #t))))))
+(define (call-with-tls-connection context address port server-name timeout-ms proc)
+  "Connect and verify, call (proc session), and always close the session."
+  (-tls-scoped (tls-connect context address port server-name timeout-ms)
+               tls-session-close 'call-with-tls-connection proc))
+(define (call-with-tls-accept listener timeout-ms proc)
+  "Accept and handshake one client, call (proc session), and always close it."
+  (-tls-scoped (tls-accept listener timeout-ms) tls-session-close 'call-with-tls-accept proc))
+(define (call-with-tls-client context tcp-stream server-name timeout-ms proc)
+  "Client handshake over an owned TCP stream, call (proc session), always close."
+  (-tls-scoped (tls-client-start context tcp-stream server-name timeout-ms)
+               tls-session-close 'call-with-tls-client proc))
+(define (call-with-tls-server context tcp-stream timeout-ms proc)
+  "Server handshake over an owned TCP stream, call (proc session), always close."
+  (-tls-scoped (tls-server-start context tcp-stream timeout-ms)
+               tls-session-close 'call-with-tls-server proc))

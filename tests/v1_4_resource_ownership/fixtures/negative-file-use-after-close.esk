@@ -1,0 +1,3 @@
+(define in (open-input-file "strict-after.txt"))
+(close-port in)
+(display (read-line in))

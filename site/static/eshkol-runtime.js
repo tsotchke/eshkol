@@ -28,6 +28,12 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
             fail('invalid wasm32 size or pointer', 'ESH_NUMERIC_ABI');
         return n;
     };
+    const wasm32 = x => {
+        const n = Number(x);
+        if (!Number.isSafeInteger(n) || n < -0x80000000 || n > 0xffffffff)
+            fail('invalid wasm32 size or pointer', 'ESH_NUMERIC_ABI');
+        return n >>> 0;
+    };
     const span = (p, n, alignment = 1) => {
         p = uint(p); n = uint(n);
         if (!p || p % alignment || p + n > mem().buffer.byteLength)
@@ -104,7 +110,12 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         const block = allocate(size + 8), v = view();
         v.setUint8(block, subtype); v.setUint8(block + 1, flags);
         v.setUint32(block + 4, size, true);
-        return block + 8;
+        const payload = block + 8;
+        if (subtype === 0) {
+            const consHeaders = owner._exactConsHeaders || (owner._exactConsHeaders = new Map());
+            consHeaders.set(payload, size);
+        }
+        return payload;
     };
     const transaction = fn => {
         const checkpoint = owner._bumpPtr;
@@ -338,6 +349,58 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
     const string = text => {
         const bytes = new TextEncoder().encode(text), p = header(bytes.length + 1, 1);
         new Uint8Array(mem().buffer, p, bytes.length).set(bytes); return p;
+    };
+    const makeStringChecked = (_arena, lengthPtr, fillPtr) => transaction(() => {
+        lengthPtr = span(wasm32(lengthPtr), 16, 8);
+        const lengthType = baseType(lengthPtr), count = view().getBigInt64(lengthPtr + 8, true);
+        if (lengthType !== 1 || count < 0n)
+            fail('make-string: expected a non-negative exact integer', 'ESH_NUMERIC_TYPE');
+        let codepoint = 0x20;
+        if (fillPtr) {
+            fillPtr = span(wasm32(fillPtr), 16, 8);
+            const fillType = baseType(fillPtr), scalar = view().getBigInt64(fillPtr + 8, true);
+            if (fillType !== 4 || scalar < 0n || scalar > 0x10ffffn ||
+                (scalar >= 0xd800n && scalar <= 0xdfffn))
+                fail('make-string: expected a Unicode character', 'ESH_NUMERIC_TYPE');
+            codepoint = Number(scalar);
+        }
+        const encoded = new TextEncoder().encode(String.fromCodePoint(codepoint));
+        const byteLength = count * BigInt(encoded.length);
+        if (byteLength > 0xfffffffen)
+            fail('make-string: requested string exceeds the WASM header limit', 'ESH_NUMERIC_MEMORY');
+        const bytes = Number(byteLength), result = header(bytes + 1, 1);
+        const target = new Uint8Array(mem().buffer, result, bytes + 1);
+        if (encoded.length === 1) target.fill(encoded[0], 0, bytes);
+        else if (bytes) {
+            target.set(encoded, 0);
+            let initialized = encoded.length;
+            while (initialized < bytes) {
+                const copyLength = Math.min(initialized, bytes - initialized);
+                target.copyWithin(initialized, 0, copyLength);
+                initialized += copyLength;
+            }
+        }
+        target[bytes] = 0;
+        return result;
+    });
+    const stringByteLength = pointerValue => {
+        const pointer = wasm32(pointerValue);
+        if (!pointer) return 0n;
+        const buffer = mem().buffer;
+        if (pointer > buffer.byteLength) fail('invalid WASM string span', 'ESH_NUMERIC_ABI');
+        const v = new DataView(buffer);
+        if (pointer >= 8 && v.getUint8(pointer - 8) === 1) {
+            const size = v.getUint32(pointer - 4, true);
+            if (size > 0) {
+                if (pointer + size > buffer.byteLength)
+                    fail('invalid WASM string span', 'ESH_NUMERIC_ABI');
+                return BigInt(size - 1);
+            }
+        }
+        const bytes = new Uint8Array(buffer, pointer, buffer.byteLength - pointer);
+        const terminator = bytes.indexOf(0);
+        if (terminator < 0) fail('unterminated WASM C string', 'ESH_NUMERIC_ABI');
+        return BigInt(terminator);
     };
     const numeric = p => {
         const t = baseType(p);
@@ -970,6 +1033,132 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
     };
     const tapeGetNodeCount = tapeValue => tapeSet().get(uint(tapeValue))?.nodes.length || 0;
     const consAllocateWithHeader = (_arena) => header(32, 0);
+    const consSlot = (cellValue, isCdr) => {
+        const cell = wasm32(cellValue);
+        if (!cell || cell % 8) fail('invalid WASM cons cell pointer', 'ESH_NUMERIC_ABI');
+        span(cell, 32, 8);
+        const knownSize = owner._exactConsHeaders && owner._exactConsHeaders.get(cell);
+        if (knownSize !== undefined) {
+            if (knownSize !== 32) fail('invalid WASM cons header size', 'ESH_NUMERIC_ABI');
+            const v = view();
+            if (v.getUint8(cell - 8) !== 0 || v.getUint32(cell - 4, true) !== 32)
+                fail('invalid WASM cons header', 'ESH_NUMERIC_ABI');
+        } else if (cell >= 8) {
+            span(cell - 8, 8, 8);
+            const v = view(), subtype = v.getUint8(cell - 8), size = v.getUint32(cell - 4, true);
+            if (subtype >= 1 && subtype <= 23 && size > 0 && cell + size <= mem().buffer.byteLength) {
+                fail('WASM cons pointer names a non-cons object', 'ESH_NUMERIC_ABI');
+            }
+        }
+        return cell + (Number(isCdr) !== 0 ? 16 : 0);
+    };
+    const consType = slot => view().getUint8(slot);
+    const consData = slot => view().getBigUint64(slot + 8, true);
+    const consIntStorageTypes = new Set([1, 3, 4, 5, 8, 9, 10, 32, 33, 34, 35, 36, 37, 38, 39, 40]);
+    const consPointerTypes = new Set([8, 9, 32, 33, 34, 35, 36, 37, 38, 39, 40]);
+    const consGetInt64 = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr);
+        return consIntStorageTypes.has(consType(slot)) ? BigInt.asIntN(64, consData(slot)) : 0n;
+    };
+    const consGetDouble = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr);
+        return consType(slot) === 2 ? view().getFloat64(slot + 8, true) : 0;
+    };
+    const consGetPtr = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr), type = consType(slot);
+        if ((type & 0x3f) === 0) return 0n;
+        return consPointerTypes.has(type) ? consData(slot) : 0n;
+    };
+    const consGetType = (cell, isCdr) => consType(consSlot(cell, isCdr));
+    const consGetFlags = (cell, isCdr) => view().getUint8(consSlot(cell, isCdr) + 1);
+    const consSetInt64 = (cell, isCdr, value, typeValue) => {
+        const slot = consSlot(cell, isCdr), type = Number(typeValue) & 0xff;
+        if (!consIntStorageTypes.has(type)) fail('invalid type for WASM cons int64 storage', 'ESH_NUMERIC_ABI');
+        const v = view(); v.setUint8(slot, type); v.setBigInt64(slot + 8, BigInt.asIntN(64, BigInt(value)), true);
+    };
+    const consSetDouble = (cell, isCdr, value, typeValue) => {
+        const slot = consSlot(cell, isCdr), type = Number(typeValue) & 0xff;
+        if (type !== 2) fail('invalid type for WASM cons double storage', 'ESH_NUMERIC_ABI');
+        const v = view(); v.setUint8(slot, type); v.setFloat64(slot + 8, Number(value), true);
+    };
+    const consSetPtr = (cell, isCdr, value, typeValue) => {
+        const slot = consSlot(cell, isCdr), type = Number(typeValue) & 0xff;
+        if (!consPointerTypes.has(type)) fail('invalid type for WASM cons pointer storage', 'ESH_NUMERIC_ABI');
+        const v = view(); v.setUint8(slot, type); v.setBigUint64(slot + 8, BigInt.asUintN(64, BigInt(value)), true);
+    };
+    const consSetNull = (cell, isCdr) => {
+        const slot = consSlot(cell, isCdr), v = view();
+        v.setUint8(slot, 0); v.setBigUint64(slot + 8, 0n, true);
+    };
+    const consSetTaggedValue = (cell, isCdr, taggedValue) => {
+        const slot = consSlot(cell, isCdr), source = span(taggedValue, 16, 8);
+        const copy = new Uint8Array(mem().buffer, source, 16).slice();
+        new Uint8Array(mem().buffer, slot, 16).set(copy);
+    };
+    // NativeLLVM's wasm32 ABI lowers the 16-byte aggregate to hidden sret:
+    // (tagged_out_ptr, cell_ptr, bool) -> void.
+    const consGetTaggedValue = (outValue, cell, isCdr) => {
+        const out = span(outValue, 16, 8), slot = consSlot(cell, isCdr);
+        const copy = new Uint8Array(mem().buffer, slot, 16).slice();
+        new Uint8Array(mem().buffer, out, 16).set(copy);
+    };
+    const listReverseTagged = (arenaValue, headValue, outValue) => {
+        const arena = wasm32(arenaValue), out = wasm32(outValue);
+        if (!out) return;
+        span(out, 16, 8);
+        const head = wasm32(headValue);
+        if (!arena || !head) {
+            new Uint8Array(mem().buffer, out, 16).fill(0);
+            return;
+        }
+        let current = new Uint8Array(mem().buffer, span(head, 16, 8), 16).slice();
+        const sourceCells = [], cars = [], seen = new Set();
+        const memory = mem().buffer, values = new DataView(memory);
+        const maximumItems = 1 << 20;
+        while (true) {
+            const tag = current[0];
+            if (tag !== 8 && tag !== 32) break;
+            const raw = new DataView(current.buffer, current.byteOffset, current.byteLength).getBigUint64(8, true);
+            if (!raw) break;
+            if (raw > 0xffffffffn) fail('cons pointer exceeds wasm32', 'ESH_NUMERIC_ABI');
+            const cell = Number(raw);
+            if (tag === 8) {
+                if (!cell || cell % 8 || cell < 8 || cell > memory.byteLength)
+                    fail('invalid WASM cons header span', 'ESH_NUMERIC_ABI');
+                const subtype = values.getUint8(cell - 8);
+                if (subtype !== 0) break;
+                if (values.getUint32(cell - 4, true) !== 32)
+                    fail('invalid WASM cons header size', 'ESH_NUMERIC_ABI');
+            }
+            span(cell, 32, 8);
+            if (seen.has(cell)) fail('cyclic WASM cons list', 'ESH_NUMERIC_ABI');
+            if (cars.length >= maximumItems)
+                fail('WASM list reverse exceeds the browser item limit', 'ESH_NUMERIC_MEMORY');
+            seen.add(cell);
+            sourceCells.push({ start: tag === 8 ? cell - 8 : cell, end: cell + 32 });
+            cars.push(new Uint8Array(memory, cell, 16).slice());
+            current = new Uint8Array(memory, cell + 16, 16).slice();
+        }
+        for (const source of sourceCells) {
+            if (out < source.end && source.start < out + 16)
+                fail('WASM list reverse output overlaps an input cons cell', 'ESH_NUMERIC_ABI');
+        }
+        new Uint8Array(mem().buffer, out, 16).fill(0);
+        return transaction(() => {
+            let result = new Uint8Array(16);
+            for (const car of cars) {
+                const cell = consAllocateWithHeader(arena);
+                span(cell, 32, 8);
+                const buffer = mem().buffer;
+                new Uint8Array(buffer, cell, 16).set(car);
+                new Uint8Array(buffer, cell + 16, 16).set(result);
+                result = new Uint8Array(16);
+                result[0] = 8;
+                new DataView(result.buffer).setBigUint64(8, BigInt(cell), true);
+            }
+            new Uint8Array(mem().buffer, out, 16).set(result);
+        });
+    };
     const vectorAllocateWithHeader = (_arena, capacityValue) => transaction(() => {
         const capacity = uint(capacityValue);
         if (capacity >= (1 << 28)) fail('vector capacity exceeds browser limit', 'ESH_NUMERIC_MEMORY');
@@ -1051,6 +1240,17 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         new Uint8Array(mem().buffer).copyWithin(target, source, source + length);
         return dst;
     };
+    const memoryCompare = (leftValue, rightValue, lengthValue) => {
+        const left = wasm32(leftValue), right = wasm32(rightValue), length = wasm32(lengthValue);
+        if (!length) return 0;
+        span(left, length); span(right, length);
+        const bytes = new Uint8Array(mem().buffer);
+        for (let i = 0; i < length; i++) {
+            const difference = bytes[left + i] - bytes[right + i];
+            if (difference) return difference;
+        }
+        return 0;
+    };
     const memorySet = (dstValue, value, lengthValue) => {
         const dst = uint(dstValue), length = uint(lengthValue);
         if (!length) return dst;
@@ -1071,6 +1271,17 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         eshkol_tensor_operand_carrier_checked: tensorOperandCarrierChecked,
         arena_allocate_tape: tapeAllocate,
         arena_allocate_cons_with_header: consAllocateWithHeader,
+        arena_tagged_cons_get_int64: consGetInt64,
+        arena_tagged_cons_get_double: consGetDouble,
+        arena_tagged_cons_get_ptr: consGetPtr,
+        arena_tagged_cons_get_type: consGetType,
+        arena_tagged_cons_get_flags: consGetFlags,
+        arena_tagged_cons_get_tagged_value: consGetTaggedValue,
+        arena_tagged_cons_set_int64: consSetInt64,
+        arena_tagged_cons_set_double: consSetDouble,
+        arena_tagged_cons_set_ptr: consSetPtr,
+        arena_tagged_cons_set_null: consSetNull,
+        arena_tagged_cons_set_tagged_value: consSetTaggedValue,
         arena_allocate_vector_with_header: vectorAllocateWithHeader,
         arena_allocate_multi_value: multiValueAllocate,
         arena_tape_add_node: tapeAddNode,
@@ -1079,6 +1290,10 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         arena_tape_get_node_count: tapeGetNodeCount,
         eshkol_unwrap_list_index: unwrapListIndex,
         eshkol_vref_unwrap_index: vrefUnwrapIndex,
+        eshkol_list_reverse_tagged: listReverseTagged,
+        eshkol_make_string_checked: makeStringChecked,
+        eshkol_string_byte_length: stringByteLength,
+        memcmp: memoryCompare,
         memcpy: memoryCopy,
         memmove: memoryCopy,
         memset: memorySet,
@@ -1165,6 +1380,23 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         eshkol_ad_point_is_scalar: p => numeric(p) || [3, 4, 6].includes(baseType(p)) ? 1 : 0,
         eshkol_ad_point_is_exact_scalar: p => baseType(p) === 8 && numeric(p) ? 1 : 0,
         eshkol_ad_point_is_exact_number: p => numeric(p) && baseType(p) !== 2 ? 1 : 0,
+        // stop-gradient (ADR-0049): the primal of a forward jet (tag 6) or of
+        // a reverse-mode node (tag 9, subtype 2; exact payload kept exact);
+        // every other value is copied through unchanged.
+        eshkol_stop_gradient_tagged: (p, out) => {
+            if (!out) return;
+            const t = baseType(p);
+            if (t === 6) return output(out, () => ({ double: view().getFloat64(span(pointer(p), 8, 8), true) }));
+            if (t === 9 && pointer(p) && subtype(pointer(p)) === 2) {
+                const node = pointer(p);
+                span(node, 144, 8);
+                const ex = view().getUint32(node + 136, true);
+                if (ex && numeric(ex)) return output(out, () => read(ex));
+                return output(out, () => ({ double: view().getFloat64(node + 8, true) }));
+            }
+            span(p, 16, 8); span(out, 16, 8);
+            new Uint8Array(mem().buffer).copyWithin(Number(out), Number(p), Number(p) + 16);
+        },
     };
     for (const [name, op] of [['floor', 0], ['ceil', 1], ['truncate', 2], ['round', 3]]) {
         imports[`eshkol_rational_${name}`] = p => {
@@ -1761,10 +1993,6 @@ class EshkolRuntime {
                 eshkol_arena_loop_scope_begin: () => {},
                 arena_allocate_cons_cell: () => rt._bump(32),
                 arena_allocate_tagged_cons_cell: () => rt._bump(48),
-                eshkol_tagged_cons_set_tagged_value: () => {},
-                arena_tagged_cons_set_ptr: () => {},
-                arena_tagged_cons_set_null: () => {},
-                arena_tagged_cons_set_int64: () => {},
                 arena_allocate_tensor_with_header: () => exact.header(40, 3),
                 arena_allocate_tensor_full: (_arena, ndim, total) => exact.tensorAllocateFull(ndim, total),
                 arena_allocate_ad_node: () => exact.adNodeAllocateRaw(),
@@ -1772,32 +2000,6 @@ class EshkolRuntime {
                 arena_hash_table_create_with_header: () => rt._bump(32) + 8,
                 arena_allocate_string_with_header: (arena, len) => rt._allocString(Number(len)),
                 // (make-string k [char]): the rules of the native runtime's
-                // eshkol_make_string_checked -- k an exact non-negative
-                // integer (tag 1), the fill a character (tag 4) written as
-                // UTF-8, a space when the fill pointer is null.
-                eshkol_make_string_checked: (arena, kPtr, fillPtr) => {
-                    const dv = new DataView(rt.memory.buffer);
-                    const base = (t) => (t >= 8 ? t : (t & 0x0F));
-                    const kType = base(dv.getUint8(Number(kPtr)));
-                    const k = dv.getBigInt64(Number(kPtr) + 8, true);
-                    if (kType !== 1 || k < 0n) throw new Error('Type error in make-string: expected non-negative exact integer');
-                    let cp = 32;
-                    if (Number(fillPtr) !== 0) {
-                        const fType = base(dv.getUint8(Number(fillPtr)));
-                        const c = Number(dv.getBigInt64(Number(fillPtr) + 8, true));
-                        if (fType !== 4 || c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF))
-                            throw new Error('Type error in make-string: expected character');
-                        cp = c;
-                    }
-                    const enc = new TextEncoder().encode(String.fromCodePoint(cp));
-                    const count = Number(k);
-                    const len = count * enc.length;
-                    const buf = rt._allocString(len);
-                    const mem = new Uint8Array(rt.memory.buffer);
-                    for (let i = 0; i < count; i++) mem.set(enc, Number(buf) + i * enc.length);
-                    mem[Number(buf) + len] = 0;
-                    return buf;
-                },
                 arena_allocate_closure_with_header: (_arena, funcPtr, packedInfo, sexprPtr, returnTypeInfo, namePtr) => {
                     return exact.transaction(() => {
                         const captures = Number(BigInt(packedInfo) & 0xffffffffn);
@@ -1823,12 +2025,6 @@ class EshkolRuntime {
                         return closure;
                     });
                 },
-                arena_tagged_cons_get_int64: () => 0n,
-                arena_tagged_cons_get_double: () => 0.0,
-                arena_tagged_cons_get_ptr: () => 0n,
-                arena_tagged_cons_get_type: () => 0,
-                arena_tagged_cons_get_flags: () => 0,
-                arena_tagged_cons_set_double: () => {},
 
                 // Runtime functions
                 __eshkol_register_parallel_workers: () => {},
@@ -1868,6 +2064,11 @@ class EshkolRuntime {
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,  // returns i32 (size_t)
                 eshkol_decrement_recursion_depth: () => {},
+                eshkol_save_recursion_depth: () => {},
+                eshkol_restore_recursion_depth: () => {},
+                // algebraic-effect handler context (16-byte tagged value), kept JS-side
+                eshkol_effect_context_get: (p) => { if (rt._effectContext) new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).set(rt._effectContext); },
+                eshkol_effect_context_set: (p) => { rt._effectContext = new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).slice(); },
                 eshkol_make_exception_with_header: () => 0,
                 eshkol_raise: (exc) => { console.error('Eshkol exception raised'); },
                 // R7RS `write` (write/write-shared/write-simple): same
@@ -2140,13 +2341,16 @@ class EshkolRuntime {
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,
                 eshkol_decrement_recursion_depth: () => {},
+                eshkol_save_recursion_depth: () => {},
+                eshkol_restore_recursion_depth: () => {},
+                // algebraic-effect handler context (16-byte tagged value), kept JS-side
+                eshkol_effect_context_get: (p) => { if (rt._effectContext) new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).set(rt._effectContext); },
+                eshkol_effect_context_set: (p) => { rt._effectContext = new Uint8Array((rt.memory || rt._importedMemory).buffer, p, 16).slice(); },
                 eshkol_runtime_current_output_fp: () => 0,
-                arena_tagged_cons_set_tagged_value: () => {},
                 hash_table_set: () => false,
                 hash_table_get: () => false,
                 hash_table_has_key: () => false,
                 hash_table_keys: () => 0,
-                eshkol_string_byte_length: (ptr) => BigInt(rt.readString(ptr).length),
                 eshkol_utf8_strlen: (ptr) => BigInt(Array.from(rt.readString(ptr)).length),
                 eshkol_utf8_ref: () => 0,
                 eshkol_utf8_substring: () => 0,
@@ -2245,7 +2449,6 @@ class EshkolRuntime {
                 __multi3: (alo, ahi, blo, bhi) => 0n,  // 128×128→128 mul; bignums route through eshkol_bignum_*
 
                 // Exact numeric imports are generated below.
-                eshkol_list_reverse_tagged:       (value) => value,
 
                 // Taylor towers remain outside this browser lane. Exact entry
                 // refuses at seeding; the ordinary scalar lane uses the shared
@@ -2277,13 +2480,13 @@ class EshkolRuntime {
                 eshkol_taylor_lift_ad_node:     () => {},
                 eshkol_taylor_project_forward_tangent: () => 0,
                 // ADR-0027 nested levels (runtime_taylor.c):
-                //   i32  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i64, tagged*)
-                //   void eshkol_ad_nested_extract(arena*, tagged*, i32, i32, i32, tagged*)
+                //   i64  eshkol_ad_nested_seed(arena*, tagged*, i32, i64, i32, i64, tagged*)
+                //   void eshkol_ad_nested_extract(arena*, tagged*, i64, i32, i32, tagged*)
                 //   void eshkol_ad_nested_unsupported(i32)
                 //   void eshkol_ad_curried_gradient_unsupported()
                 // ESH_AD_NEST_NONE (0) keeps the lite lane on the unchanged
                 // non-nested seeding, exactly as the sibling stubs degrade.
-                eshkol_ad_nested_seed:          () => 0,
+                eshkol_ad_nested_seed:          () => 0n,
                 // BEGIN GENERATED EXACT IMPORTS
                 eshkol_ad_point_is_exact_number: exact.imports.eshkol_ad_point_is_exact_number,
                 eshkol_ad_point_is_exact_scalar: exact.imports.eshkol_ad_point_is_exact_scalar,
@@ -2316,10 +2519,12 @@ class EshkolRuntime {
                 eshkol_format_double: exact.imports.eshkol_format_double,
                 eshkol_fprint_double: exact.imports.eshkol_fprint_double,
                 eshkol_is_bignum_tagged: exact.imports.eshkol_is_bignum_tagged,
+                eshkol_make_string_checked: exact.imports.eshkol_make_string_checked,
                 // Checked eight-coefficient tensor jets; Taylor and reverse carriers refuse.
                 eshkol_jet_tensor_binary: exact.imports.eshkol_jet_tensor_binary,
                 eshkol_jet_tensor_matmul: exact.imports.eshkol_jet_tensor_matmul,
                 eshkol_list_to_vector_sret: exact.imports.eshkol_list_to_vector_sret,
+                eshkol_list_reverse_tagged: exact.imports.eshkol_list_reverse_tagged,
                 eshkol_is_rational_tagged_ptr: exact.imports.eshkol_is_rational_tagged_ptr,
                 eshkol_rational_binary_tagged_ptr: exact.imports.eshkol_rational_binary_tagged_ptr,
                 eshkol_rational_ceil: exact.imports.eshkol_rational_ceil,
@@ -2345,19 +2550,33 @@ class EshkolRuntime {
                 eshkol_unwrap_list_index: exact.imports.eshkol_unwrap_list_index,
                 eshkol_wasm_numeric_abi_check: exact.imports.eshkol_wasm_numeric_abi_check,
                 eshkol_vref_unwrap_index: exact.imports.eshkol_vref_unwrap_index,
+                eshkol_string_byte_length: exact.imports.eshkol_string_byte_length,
                 arena_allocate_tape: exact.imports.arena_allocate_tape,
                 arena_allocate_cons_with_header: exact.imports.arena_allocate_cons_with_header,
+                arena_tagged_cons_get_int64: exact.imports.arena_tagged_cons_get_int64,
+                arena_tagged_cons_get_double: exact.imports.arena_tagged_cons_get_double,
+                arena_tagged_cons_get_ptr: exact.imports.arena_tagged_cons_get_ptr,
+                arena_tagged_cons_get_type: exact.imports.arena_tagged_cons_get_type,
+                arena_tagged_cons_get_flags: exact.imports.arena_tagged_cons_get_flags,
+                arena_tagged_cons_get_tagged_value: exact.imports.arena_tagged_cons_get_tagged_value,
+                arena_tagged_cons_set_int64: exact.imports.arena_tagged_cons_set_int64,
+                arena_tagged_cons_set_double: exact.imports.arena_tagged_cons_set_double,
+                arena_tagged_cons_set_ptr: exact.imports.arena_tagged_cons_set_ptr,
+                arena_tagged_cons_set_null: exact.imports.arena_tagged_cons_set_null,
+                arena_tagged_cons_set_tagged_value: exact.imports.arena_tagged_cons_set_tagged_value,
                 arena_allocate_multi_value: exact.imports.arena_allocate_multi_value,
                 arena_allocate_vector_with_header: exact.imports.arena_allocate_vector_with_header,
                 arena_tape_add_node: exact.imports.arena_tape_add_node,
                 arena_tape_get_node: exact.imports.arena_tape_get_node,
                 arena_tape_get_node_count: exact.imports.arena_tape_get_node_count,
                 arena_tape_reset: exact.imports.arena_tape_reset,
+                memcmp: exact.imports.memcmp,
                 memcpy: exact.imports.memcpy,
                 memmove: exact.imports.memmove,
                 memset: exact.imports.memset,
                 eshkol_write_value: exact.imports.eshkol_write_value,
                 eshkol_write_value_to_port: exact.imports.eshkol_write_value_to_port,
+                eshkol_stop_gradient_tagged: exact.imports.eshkol_stop_gradient_tagged,
                 // END GENERATED EXACT IMPORTS
 
                 // BEGIN GENERATED FLAT-AD IMPORTS
@@ -2430,12 +2649,27 @@ class EshkolRuntime {
                 eshkol_builtin_event_loop_close:      (out) => rt.writeFalse(out),
                 eshkol_builtin_event_loop_backend:    (out) => rt.writeFalse(out),
 
+                // Stackful coroutines need a second machine stack, which the
+                // browser sandbox does not provide; the coroutine surface fails
+                // closed with #f, like the event loop above. Native builds run
+                // lib/core/runtime_coroutines_hosted.cpp.
+                eshkol_builtin_make_coroutine: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_resume: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_raise: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_yield: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_status: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_release: (out) => rt.writeFalse(out),
+                eshkol_builtin_current_coroutine: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_p: (out) => rt.writeFalse(out),
+                eshkol_builtin_coroutine_stats: (out) => rt.writeFalse(out),
+
                 eshkol_capability_runtime_begin_install: () => {},
                 eshkol_capability_runtime_allow:   () => {},
                 eshkol_capability_runtime_clear:   () => {},
 
                 // Lazy futures — no browser worker backing for this WASM glue.
                 eshkol_lazy_future_is_ready: () => 1,
+                eshkol_lazy_future_result_available: () => 1,
                 eshkol_lazy_future_is_async: () => 0,
                 eshkol_lazy_future_join_async: () => {},
                 eshkol_lazy_future_get_thunk_ptr: () => 0,

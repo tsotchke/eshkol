@@ -1,0 +1,10 @@
+(define x (owned (cons 1 2)))
+(borrow x
+  (let ((x (owned (cons 3 4))))
+    (display (car (move x)))
+    (newline)))
+(display (car x))
+(newline)
+(define y (move x))
+(display (car y))
+(newline)

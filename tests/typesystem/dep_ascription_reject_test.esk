@@ -1,0 +1,8 @@
+;; Ascription (ADR-0042): (the T e) trusts T where nothing is known, but a
+;; known length that contradicts it is an error.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: ascription (the (vector Float64 4) ...) contradicts the inferred type (vector Value 3)
+
+(define v (vector 1.0 2.0 3.0))
+(display (vector-length (the (vector real 4) v)))

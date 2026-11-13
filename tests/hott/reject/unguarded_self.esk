@@ -1,0 +1,3 @@
+;; expect-error: recursion must be structural
+(hott (import numbers)
+  (define loopy : Nat (loopy)))

@@ -1,0 +1,111 @@
+schema_version = 1
+license = "MIT"
+upstream_base = "14dd4d0fbb2714e6fc40e99f53eb91b18a7f68be"
+upstream_pr = 850
+qualification_base = "3965b09e12d5c1e36afc2b04d27f4940e94bc999"
+prerequisite_pr = 855
+upstream_destination = "repro/transformer-staging"
+
+[[prerequisite]]
+path = "lib/core/blc_bytes.esk"
+sha256 = "86af74ec2326fc150371e69d8df8387f217d405122cf9a2073c987bca7eab1e7"
+
+[[file]]
+path = "LICENSE"
+sha256 = "6528219548a5bc069aeaa8d5d7791568fbc907ed38660224907a7ddee31be714"
+
+[[file]]
+path = "README.md"
+sha256 = "8b5e70fd71b13b19572ebb8acf2e4f38a2ee2b131b38b47b4605df3f5a9d85cf"
+
+[[file]]
+path = "attention0.blc"
+sha256 = "d5cb9707190d789b4735530e05500f857c538d0aa569dd804bfe6acb47d64b8d"
+
+[[file]]
+path = "attention0.blc8"
+sha256 = "0d91fd7daa66daae02935aef202ced18360317a27e07f677aad53df89a790be1"
+
+[[file]]
+path = "attention1.blc"
+sha256 = "02a6ccc393e73161a8240f3710c26f8b2d6f0c37f393e458fcd325e583cc3c82"
+
+[[file]]
+path = "attention1.blc8"
+sha256 = "2490ab5324cb11f355771a56abdcdf2df18d81aa68410a652e9272cb094a0bae"
+
+[[file]]
+path = "attention2.blc"
+sha256 = "d7cbae0e0279af272ef91426d672f093dfe07ff69df1be722d276fc6132d1790"
+
+[[file]]
+path = "attention2.blc8"
+sha256 = "b279d723efd73fe21f8f978f63a3653b0357ed728ae68b4e3aaeb76c7a4eb987"
+
+[[file]]
+path = "closed-sources.sexp"
+sha256 = "71a16b1db953161168e902f4eb465d55b7aa4df164d6b38e328e282a7fa6ab61"
+
+[[file]]
+path = "definitions.sexp"
+sha256 = "14be29801a83512a540897b42e7e8f0fbcbd7d7af6255e801d7c762e5d18aaaa"
+
+[[file]]
+path = "fixtures.toml"
+sha256 = "e8838ac9db87a5f8175b5b31d8636040bb9da207b5f007c555224b0b6da68622"
+
+[[file]]
+path = "generic.blc"
+sha256 = "08d434c2bec7e7dc0a38f304ac305bb688d2cca40d1930ee6fddb15b748c031c"
+
+[[file]]
+path = "generic.blc8"
+sha256 = "d3f72fa48dc67bf3d8da7f640c2c1e09c5a11fa8dd94ecd560c11877b46add90"
+
+[[file]]
+path = "producer.lisp"
+sha256 = "fba3329918b5aefb29fcec7e4db8ba0a31457f0c2f41012938f9f710ba7e1819"
+
+[[file]]
+path = "programs.sexp"
+sha256 = "b9019552c9ea0b47e8905de20aa2249851f5ae996f3b1e342bfaac7a67e3b347"
+
+[[file]]
+path = "results.json"
+sha256 = "47efc839e53eade2a47a3688080418936812338c8d6dcbf8684a0c25b5e7fb32"
+
+[[file]]
+path = "run_gate.py"
+sha256 = "863bc033ae6eedcf4237118666a1d95182f47e12c7913f395be800bf91dd713c"
+
+[[file]]
+path = "self_test.py"
+sha256 = "b0045ef5a3a269e02e59a9c5d9231c3f3b6ae88cb787f9a6e032f49f71294293"
+
+[[file]]
+path = "stager.lisp"
+sha256 = "4dd8b27d13f5073292a953fcdba80ced304372257327575edae937e69f0e2c87"
+
+[[file]]
+path = "transfer0.blc"
+sha256 = "3654c3cab19cfe942018f17ca40af75dfb3e9b60c1988dd4addc9b6c2b7b758c"
+
+[[file]]
+path = "transfer0.blc8"
+sha256 = "e929f046ee11222d5e39df03417093449fccf61a311099b700e2915f2939327c"
+
+[[file]]
+path = "transfer1.blc"
+sha256 = "41f2ba9076b55e3889e008dea10a1de72576ae265bb0978057c0cb8f258b0a40"
+
+[[file]]
+path = "transfer1.blc8"
+sha256 = "4e4e230e0dfa259d7e9f683002566fc6f80c0fa98547debbb9fa5e1ccffff8fe"
+
+[[file]]
+path = "transfer2.blc"
+sha256 = "4cd1d8b0ba23f31b668f94f02012ca534ec0b10db647b61ce6671f8a8f513da8"
+
+[[file]]
+path = "transfer2.blc8"
+sha256 = "1642c9e24a2806f8924853c2f30f78f5ef88a0b61fbb4b5dfda83e9be11c6a20"

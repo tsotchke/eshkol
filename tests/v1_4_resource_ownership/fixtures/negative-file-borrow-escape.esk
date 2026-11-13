@@ -1,0 +1,2 @@
+;; The loan escapes its borrow scope as the scope's result.
+(define kept (call-with-input-file "strict-escape.txt" (lambda (p) p)))

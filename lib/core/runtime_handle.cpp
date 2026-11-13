@@ -16,9 +16,17 @@ struct Entry {
     eshkol_handle_close_fn close_fn = nullptr;
     void *user_data = nullptr;
     uint64_t lease = 0;
+    uint32_t tag = 0;
+    bool close_requested = false;
+    bool interrupted = false;
+    eshkol_handle_wake_fn wake_fn = nullptr;
+    void *wake_context = nullptr;
 };
 
 constexpr uint32_t kMaxSlots = std::numeric_limits<uint32_t>::max() - 1;
+// With at most 2^21 - 1 generations, (generation << 32) | (slot + 1) stays
+// at or below 2^53 - 1 for every slot.
+constexpr uint32_t kExactMaxGeneration = (UINT32_C(1) << 21) - 1;
 
 eshkol_handle_id_t make_id(uint32_t slot, uint32_t generation) {
     const uint64_t encoded_slot = static_cast<uint64_t>(slot) + 1;
@@ -39,7 +47,10 @@ bool decode_id(eshkol_handle_id_t id, uint32_t *slot, uint32_t *generation) {
 bool valid_kind(eshkol_handle_kind_t kind) {
     return kind == ESHKOL_HANDLE_KIND_FILE ||
            kind == ESHKOL_HANDLE_KIND_SOCKET ||
-           kind == ESHKOL_HANDLE_KIND_EVENT_LOOP;
+           kind == ESHKOL_HANDLE_KIND_EVENT_LOOP ||
+           kind == ESHKOL_HANDLE_KIND_WINDOW ||
+           kind == ESHKOL_HANDLE_KIND_AUDIO_DEVICE ||
+           kind == ESHKOL_HANDLE_KIND_MIDI_PORT;
 }
 } // namespace
 
@@ -48,6 +59,7 @@ struct eshkol_handle_registry {
     std::vector<Entry> entries;
     bool destroying = false;
     uint64_t next_lease = 1;
+    uint32_t max_generation = std::numeric_limits<uint32_t>::max();
 };
 
 namespace {
@@ -74,7 +86,17 @@ void retire_entry(Entry &entry) {
     entry.close_fn = nullptr;
     entry.user_data = nullptr;
     entry.lease = 0;
+    entry.tag = 0;
+    entry.close_requested = false;
+    entry.interrupted = false;
+    entry.wake_fn = nullptr;
+    entry.wake_context = nullptr;
     entry.state = ESHKOL_HANDLE_STATE_CLOSED;
+}
+
+void wake_entry(Entry &entry) {
+    entry.interrupted = true;
+    if (entry.wake_fn) entry.wake_fn(entry.wake_context);
 }
 } // namespace
 
@@ -84,6 +106,12 @@ extern "C" eshkol_handle_registry_t *eshkol_handle_registry_create(void) {
     } catch (...) {
         return nullptr;
     }
+}
+
+extern "C" eshkol_handle_registry_t *eshkol_handle_registry_create_exact(void) {
+    eshkol_handle_registry_t *registry = eshkol_handle_registry_create();
+    if (registry) registry->max_generation = kExactMaxGeneration;
+    return registry;
 }
 
 extern "C" int eshkol_handle_registry_destroy(eshkol_handle_registry_t *registry) {
@@ -144,6 +172,17 @@ extern "C" int eshkol_handle_create(eshkol_handle_registry_t *registry,
                                     eshkol_handle_close_fn close_fn,
                                     void *user_data,
                                     eshkol_handle_id_t *out_id) {
+    return eshkol_handle_create_tagged(registry, kind, 0, native_value,
+                                       close_fn, user_data, out_id);
+}
+
+extern "C" int eshkol_handle_create_tagged(eshkol_handle_registry_t *registry,
+                                           eshkol_handle_kind_t kind,
+                                           uint32_t tag,
+                                           uintptr_t native_value,
+                                           eshkol_handle_close_fn close_fn,
+                                           void *user_data,
+                                           eshkol_handle_id_t *out_id) {
     if (!registry || !out_id || !close_fn || !valid_kind(kind)) {
         return ESHKOL_HANDLE_EINVAL;
     }
@@ -157,12 +196,13 @@ extern "C" int eshkol_handle_create(eshkol_handle_registry_t *registry,
         for (uint32_t slot = 0; slot < registry->entries.size(); ++slot) {
             Entry &entry = registry->entries[slot];
             if (entry.state != ESHKOL_HANDLE_STATE_CLOSED ||
-                entry.generation == std::numeric_limits<uint32_t>::max()) {
+                entry.generation >= registry->max_generation) {
                 continue;
             }
 
             ++entry.generation;
             entry.kind = kind;
+            entry.tag = tag;
             entry.native_value = native_value;
             entry.close_fn = close_fn;
             entry.user_data = user_data;
@@ -177,6 +217,7 @@ extern "C" int eshkol_handle_create(eshkol_handle_registry_t *registry,
         }
         Entry entry;
         entry.kind = kind;
+        entry.tag = tag;
         entry.native_value = native_value;
         entry.close_fn = close_fn;
         entry.user_data = user_data;
@@ -207,6 +248,9 @@ extern "C" int eshkol_handle_borrow(eshkol_handle_registry_t *registry,
     if (status != ESHKOL_HANDLE_OK) {
         return status;
     }
+    if (entry->close_requested) {
+        return ESHKOL_HANDLE_ENOENT;
+    }
     if (entry->state != ESHKOL_HANDLE_STATE_OPEN) {
         return ESHKOL_HANDLE_EBUSY;
     }
@@ -232,7 +276,7 @@ extern "C" int eshkol_handle_release(eshkol_handle_registry_t *registry,
         return ESHKOL_HANDLE_EINVAL;
     }
 
-    std::lock_guard<std::mutex> lock(registry->mutex);
+    std::unique_lock<std::mutex> lock(registry->mutex);
     if (registry->destroying) {
         return ESHKOL_HANDLE_EBUSY;
     }
@@ -246,7 +290,28 @@ extern "C" int eshkol_handle_release(eshkol_handle_registry_t *registry,
         return ESHKOL_HANDLE_ESTATE;
     }
     entry->lease = 0;
-    entry->state = ESHKOL_HANDLE_STATE_OPEN;
+    entry->wake_fn = nullptr;
+    entry->wake_context = nullptr;
+    if (!entry->close_requested) {
+        entry->state = ESHKOL_HANDLE_STATE_OPEN;
+        return ESHKOL_HANDLE_OK;
+    }
+    // The scheduled close runs exactly once, after this borrow ends.
+    entry->state = ESHKOL_HANDLE_STATE_CLOSING;
+    const uintptr_t native_value = entry->native_value;
+    void *user_data = entry->user_data;
+    const eshkol_handle_close_fn close_fn = entry->close_fn;
+    const eshkol_handle_kind_t kind = entry->kind;
+    lock.unlock();
+    try {
+        (void)close_fn(kind, native_value, user_data);
+    } catch (...) {
+    }
+    lock.lock();
+    Entry *closing;
+    if (find_entry(registry, id, &closing) == ESHKOL_HANDLE_OK) {
+        retire_entry(*closing);
+    }
     return ESHKOL_HANDLE_OK;
 }
 
@@ -270,6 +335,9 @@ extern "C" int eshkol_handle_close(eshkol_handle_registry_t *registry,
         const int status = find_entry(registry, id, &entry);
         if (status != ESHKOL_HANDLE_OK) {
             return status;
+        }
+        if (entry->close_requested) {
+            return ESHKOL_HANDLE_ENOENT;
         }
         if (entry->state != ESHKOL_HANDLE_STATE_OPEN) {
             return ESHKOL_HANDLE_EBUSY;
@@ -313,6 +381,122 @@ extern "C" int eshkol_handle_get_state(eshkol_handle_registry_t *registry,
         registry->entries[slot].state == ESHKOL_HANDLE_STATE_INVALID) {
         return ESHKOL_HANDLE_ENOENT;
     }
-    *out_state = registry->entries[slot].state;
+    const Entry &entry = registry->entries[slot];
+    *out_state = entry.close_requested ? ESHKOL_HANDLE_STATE_CLOSING : entry.state;
     return ESHKOL_HANDLE_OK;
+}
+
+extern "C" int eshkol_handle_get_kind(eshkol_handle_registry_t *registry,
+                                      eshkol_handle_id_t id,
+                                      eshkol_handle_kind_t *out_kind,
+                                      uint32_t *out_tag) {
+    if (!registry || !out_kind || !out_tag) {
+        return ESHKOL_HANDLE_EINVAL;
+    }
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    Entry *entry;
+    const int status = find_entry(registry, id, &entry);
+    if (status != ESHKOL_HANDLE_OK) {
+        return status;
+    }
+    if (entry->close_requested) {
+        return ESHKOL_HANDLE_ENOENT;
+    }
+    *out_kind = entry->kind;
+    *out_tag = entry->tag;
+    return ESHKOL_HANDLE_OK;
+}
+
+extern "C" int eshkol_handle_close_after_release(eshkol_handle_registry_t *registry,
+                                                 eshkol_handle_id_t id) {
+    if (!registry) {
+        return ESHKOL_HANDLE_EINVAL;
+    }
+    {
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        if (registry->destroying) {
+            return ESHKOL_HANDLE_EBUSY;
+        }
+        Entry *entry;
+        const int status = find_entry(registry, id, &entry);
+        if (status != ESHKOL_HANDLE_OK) {
+            return status;
+        }
+        if (entry->close_requested) {
+            return ESHKOL_HANDLE_ENOENT;
+        }
+        if (entry->state == ESHKOL_HANDLE_STATE_BORROWED) {
+            entry->close_requested = true;
+            wake_entry(*entry);
+            return ESHKOL_HANDLE_OK;
+        }
+        if (entry->state != ESHKOL_HANDLE_STATE_OPEN) {
+            return ESHKOL_HANDLE_EBUSY;
+        }
+    }
+    // Open: the ordinary close path applies (a racing borrow makes it EBUSY,
+    // in which case the request is retried as a scheduled close).
+    const int status = eshkol_handle_close(registry, id);
+    if (status == ESHKOL_HANDLE_EBUSY) {
+        return eshkol_handle_close_after_release(registry, id);
+    }
+    return status;
+}
+
+extern "C" int eshkol_handle_interrupt(eshkol_handle_registry_t *registry,
+                                       eshkol_handle_id_t id) {
+    if (!registry) {
+        return ESHKOL_HANDLE_EINVAL;
+    }
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    Entry *entry;
+    const int status = find_entry(registry, id, &entry);
+    if (status != ESHKOL_HANDLE_OK) {
+        return status;
+    }
+    if (entry->close_requested || entry->state == ESHKOL_HANDLE_STATE_CLOSING) {
+        return ESHKOL_HANDLE_ENOENT;
+    }
+    wake_entry(*entry);
+    return ESHKOL_HANDLE_OK;
+}
+
+extern "C" int eshkol_handle_set_waker(eshkol_handle_registry_t *registry,
+                                       eshkol_handle_id_t id, uint64_t lease,
+                                       eshkol_handle_wake_fn wake_fn,
+                                       void *context) {
+    if (!registry || lease == 0) {
+        return ESHKOL_HANDLE_EINVAL;
+    }
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    Entry *entry;
+    const int status = find_entry(registry, id, &entry);
+    if (status != ESHKOL_HANDLE_OK) {
+        return status;
+    }
+    if (entry->state != ESHKOL_HANDLE_STATE_BORROWED || entry->lease != lease) {
+        return ESHKOL_HANDLE_ESTATE;
+    }
+    entry->wake_fn = wake_fn;
+    entry->wake_context = wake_fn ? context : nullptr;
+    return entry->interrupted && wake_fn ? ESHKOL_HANDLE_EINTERRUPTED : ESHKOL_HANDLE_OK;
+}
+
+extern "C" int eshkol_handle_take_interrupt(eshkol_handle_registry_t *registry,
+                                            eshkol_handle_id_t id, uint64_t lease) {
+    if (!registry || lease == 0) {
+        return ESHKOL_HANDLE_EINVAL;
+    }
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    Entry *entry;
+    const int status = find_entry(registry, id, &entry);
+    if (status != ESHKOL_HANDLE_OK) {
+        return status;
+    }
+    if (entry->state != ESHKOL_HANDLE_STATE_BORROWED || entry->lease != lease) {
+        return ESHKOL_HANDLE_ESTATE;
+    }
+    const bool was = entry->interrupted;
+    entry->interrupted = false;
+    return was ? 1 : 0;
 }

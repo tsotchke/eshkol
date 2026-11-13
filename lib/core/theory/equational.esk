@@ -1,0 +1,795 @@
+;;; core.theory.equational -- algebraic theories as data: signatures, terms,
+;;; equational laws, models, law checks, homomorphisms, products,
+;;; congruences, quotients, interpretations and finite coalgebras.
+;;;
+;;; ADR-0039 (docs/design/adr/0039-lawvere-theories.md). It generalises
+;;; core.ring's law gate: the law check and term compiler are core.ring's
+;;; (law-violations, law-term->procedure), the laws of commutative-ring-theory
+;;; are core.ring's ring-law-equations, and (ring-carrier->model R) makes any
+;;; ring carrier a model of that theory, with no change to the carrier.
+;;;
+;;; A SIGNATURE is a list of operation symbols with arities, ((mul 2) (one 0)
+;;; (inv 1)). An operation name is any datum compared with equal?, so a
+;;; parameterised family such as the scalars of a module, ((scale 3) 1), is
+;;; a set of operation names.
+;;;
+;;; A TERM is a variable (a symbol) or an application (op t1 ... tn) of an
+;;; operation of arity n; a constant is written (one). An EQUATION is a name,
+;;; a left side and a right side; its variables are those of the left side
+;;; then those of the right side, in order of first appearance.
+;;;
+;;; A THEORY is a name, a signature and a list of equations, plus the kind of
+;;; presentation that names its decision procedure (core.theory.free solves
+;;; the word problem for every kind in the catalogue below).
+;;;
+;;; A MODEL of a theory is a carrier given by its operations, an equality
+;;; and, when it is finite, the list of its elements (canonical
+;;; representatives). Infinite models are checked on samples.
+;;;
+;;; The law check evaluates every equation under every assignment of the
+;;; samples (every element of a finite model) to its variables, extending
+;;; assignments one variable at a time and checking at each prefix the
+;;; equations with exactly that many variables. A violation is the list
+;;; (law value ...), the values in the order of the equation's variables.
+;;;
+;;; Sources: F. W. Lawvere, "Functorial Semantics of Algebraic Theories",
+;;; PhD thesis, Columbia University (1963), reprinted in Reprints in Theory
+;;; Appl. Categ. 5 (2004); J. Adamek, J. Rosicky, E. M. Vitale, "Algebraic
+;;; Theories", Cambridge Tracts in Mathematics 184 (2011); S. Burris,
+;;; H. P. Sankappanavar, "A Course in Universal Algebra" (1981), II.5-II.11
+;;; (congruences, quotients, products, free algebras); J. J. M. M. Rutten,
+;;; "Universal coalgebra: a theory of systems", Theoret. Comput. Sci. 249
+;;; (2000); nLab, "Lawvere theory".
+
+(require core.ring)
+
+(provide
+  ;; signatures and terms
+  make-signature signature? signature-operations signature-arity
+  term-variables term-substitute term-size term-operations well-formed-term?
+  ;; equations and theories
+  make-equation equation? equation-name equation-lhs equation-rhs equation-variables
+  make-theory theory? theory-name theory-signature theory-equations theory-kind
+  theory-parameters theory-arity theory-operations theory-extend
+  theory-refusal? theory-refusal-kind theory-refusal-irritants
+  ;; the catalogue
+  semigroup-theory monoid-theory group-theory abelian-group-theory
+  ring-theory commutative-ring-theory lattice-theory distributive-lattice-theory
+  boolean-algebra-theory heyting-algebra-theory module-theory
+  ;; models
+  make-model model? model-theory model-name model-elements model-finite?
+  model-size model-operation model-equal? model-member? model-extra model-ref
+  model-evaluate term->procedure ring-carrier->model
+  ;; laws
+  equations-violations model-law-violations model-satisfies?
+  ;; homomorphisms
+  model-homomorphism-violations model-homomorphism? model-generators
+  model-subalgebra model-homomorphisms model-isomorphic? finite-map-apply
+  ;; constructions
+  model-product model-projection model-submodel
+  model-congruence? model-congruence-closure model-kernel model-quotient
+  model-quotient-map
+  ;; interpretations (morphisms of theories)
+  make-interpretation interpretation? interpretation-source interpretation-target
+  interpretation-translate model-reduct
+  ;; finite coalgebras for F X = O x X^A
+  make-coalgebra coalgebra? coalgebra-states coalgebra-alphabet coalgebra-output
+  coalgebra-step coalgebra-homomorphism? coalgebra-bisimilarity coalgebra-bisimilar?
+  coalgebra-minimize coalgebra-sum coalgebra-behaviour)
+
+;; ===========================================================================
+;; Refusals
+;; ===========================================================================
+;;
+;; R7RS error objects whose message names the condition:
+;;   theory-ill-formed-term       (operation term)
+;;   theory-missing-operation     (operation model-name op)
+;;   theory-infinite-model        (operation model-name)
+;;   theory-not-a-congruence      (operation model-name)
+;;   theory-no-decision-procedure (operation theory-name)
+;;   theory-not-a-lattice         (operation elements)
+
+(define th-refusal-kinds
+  (list "theory-ill-formed-term" "theory-missing-operation" "theory-infinite-model"
+        "theory-not-a-congruence" "theory-no-decision-procedure" "theory-not-a-lattice"))
+(define (th-refuse kind . irritants) (apply error (symbol->string kind) irritants))
+(define (theory-refusal? e)
+  (and (error-object? e) (string? (error-object-message e))
+       (if (member (error-object-message e) th-refusal-kinds) #t #f)))
+(define (theory-refusal-kind e) (if (theory-refusal? e) (string->symbol (error-object-message e)) #f))
+(define (theory-refusal-irritants e) (if (theory-refusal? e) (error-object-irritants e) '()))
+
+;; ===========================================================================
+;; Private list helpers (prefixed th-)
+;; ===========================================================================
+
+(define (th-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (th-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (th-all? p (cdr xs))) (else #f)))
+(define (th-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (th-any? p (cdr xs)))))
+(define (th-adjoin x xs) (if (member x xs) xs (append xs (list x))))
+(define (th-union xs ys) (fold-left (lambda (acc y) (th-adjoin y acc)) xs ys))
+;; Every list of length k over xs, in lexicographic order of positions.
+(define (th-tuples xs k)
+  (if (= k 0) (list '())
+      (let ((rest (th-tuples xs (- k 1))))
+        (let loop ((ys (reverse xs)) (acc '()))
+          (if (null? ys) acc
+              (loop (cdr ys) (append (map (lambda (t) (cons (car ys) t)) rest) acc)))))))
+(define (th-replace-nth xs i v)
+  (let loop ((xs xs) (k 0))
+    (if (null? xs) '() (cons (if (= k i) v (car xs)) (loop (cdr xs) (+ k 1))))))
+
+;; Builtins are passed as values only through a lambda.
+(define (th-equal? a b) (equal? a b))
+
+;; ===========================================================================
+;; Signatures and terms
+;; ===========================================================================
+
+(define (make-signature ops)
+  (for-each (lambda (o)
+              (if (not (and (pair? o) (pair? (cdr o)) (null? (cddr o))
+                            (integer? (cadr o)) (exact? (cadr o)) (>= (cadr o) 0)))
+                  (error "make-signature: expected (operation arity) with arity >= 0" o)))
+            ops)
+  (vector 'signature-v1 ops))
+(define (signature? x) (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'signature-v1)))
+(define (signature-operations S) (map (lambda (x) (car x)) (vector-ref S 1)))
+(define (signature-arity S op)
+  (let ((p (assoc op (vector-ref S 1)))) (if p (cadr p) #f)))
+
+;; Variables in order of first appearance.
+(define (th-variables-walk t acc)
+  (cond ((symbol? t) (th-adjoin t acc))
+        ((pair? t) (th-variables-walk-list (cdr t) acc))
+        (else acc)))
+(define (th-variables-walk-list ts acc)
+  (if (null? ts) acc (th-variables-walk-list (cdr ts) (th-variables-walk (car ts) acc))))
+(define (term-variables t) (th-variables-walk t '()))
+(define (th-variables-of-terms ts) (fold-left (lambda (acc t) (th-union acc (term-variables t))) '() ts))
+
+;; Simultaneous substitution: subst is an alist variable -> term.
+(define (term-substitute t subst)
+  (cond ((symbol? t) (let ((p (assq t subst))) (if p (cdr p) t)))
+        ((pair? t) (cons (car t) (th-substitute-list (cdr t) subst)))
+        (else t)))
+(define (th-substitute-list ts subst)
+  (if (null? ts) '() (cons (term-substitute (car ts) subst) (th-substitute-list (cdr ts) subst))))
+(define (term-size t)
+  (if (pair? t) (th-size-list (cdr t) 1) 1))
+(define (th-size-list ts n) (if (null? ts) n (th-size-list (cdr ts) (+ n (term-size (car ts))))))
+(define (th-operations-walk t acc)
+  (if (pair? t) (th-operations-walk-list (cdr t) (th-adjoin (car t) acc)) acc))
+(define (th-operations-walk-list ts acc)
+  (if (null? ts) acc (th-operations-walk-list (cdr ts) (th-operations-walk (car ts) acc))))
+(define (term-operations t) (th-operations-walk t '()))
+
+(define (th-signature-of x)
+  (cond ((signature? x) x)
+        ((theory? x) (vector-ref x 2))
+        (else (error "expected a signature or a theory" x))))
+(define (well-formed-term? S t) (th-well-formed? (th-signature-of S) t))
+(define (th-well-formed? S t)
+  (cond ((symbol? t) #t)
+        ((pair? t) (let ((n (signature-arity S (car t))))
+                     (and n (list? (cdr t)) (= n (length (cdr t))) (th-well-formed-list? S (cdr t)))))
+        (else #f)))
+(define (th-well-formed-list? S ts)
+  (or (null? ts) (and (th-well-formed? S (car ts)) (th-well-formed-list? S (cdr ts)))))
+
+;; ===========================================================================
+;; Equations and theories
+;; ===========================================================================
+
+(define (make-equation name lhs rhs)
+  (vector 'equation-v1 name lhs rhs (th-variables-of-terms (list lhs rhs))))
+(define (equation? x) (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'equation-v1)))
+(define (equation-name e) (vector-ref e 1))
+(define (equation-lhs e) (vector-ref e 2))
+(define (equation-rhs e) (vector-ref e 3))
+(define (equation-variables e) (vector-ref e 4))
+
+;; (make-theory name signature equations [kind parameters]); signature is a
+;; signature or a list of (operation arity); an equation is an equation or a
+;; list (name lhs rhs). The kind names the decision procedure of
+;; core.theory.free: 'user (none) unless given; a theory without equations
+;; is 'absolutely-free.
+(define (make-theory name sig eqs . rest)
+  (let* ((S (if (signature? sig) sig (make-signature sig)))
+         (E (map (lambda (e) (if (equation? e) e (make-equation (car e) (cadr e) (caddr e)))) eqs))
+         (kind (cond ((pair? rest) (car rest)) ((null? E) 'absolutely-free) (else 'user)))
+         (params (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) '())))
+    (for-each (lambda (e)
+                (for-each (lambda (side)
+                            (if (not (well-formed-term? S side))
+                                (th-refuse 'theory-ill-formed-term 'make-theory side)))
+                          (list (equation-lhs e) (equation-rhs e))))
+              E)
+    (vector 'theory-v1 name S E kind params)))
+(define (theory? x) (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'theory-v1)))
+(define (th-check-theory T who) (if (theory? T) T (error (string-append who ": expected a theory") T)))
+(define (theory-name T) (vector-ref (th-check-theory T "theory-name") 1))
+(define (theory-signature T) (vector-ref (th-check-theory T "theory-signature") 2))
+(define (theory-equations T) (vector-ref (th-check-theory T "theory-equations") 3))
+(define (theory-kind T) (vector-ref (th-check-theory T "theory-kind") 4))
+(define (theory-parameters T) (vector-ref (th-check-theory T "theory-parameters") 5))
+(define (theory-operations T) (signature-operations (theory-signature T)))
+(define (theory-arity T op) (signature-arity (theory-signature T) op))
+
+;; A new theory with more operations and equations (kind 'user).
+(define (theory-extend T name extra-equations . extra-operations)
+  (th-check-theory T "theory-extend")
+  (make-theory name
+               (append (vector-ref (theory-signature T) 1) (if (pair? extra-operations) (car extra-operations) '()))
+               (append (theory-equations T) extra-equations)
+               'user))
+
+;; ===========================================================================
+;; The catalogue
+;; ===========================================================================
+;;
+;; Within each theory the equations are listed by number of variables, so
+;; the law check reports them in the order it meets them.
+
+(define th-ring-signature '((zero 0) (one 0) (add 2) (neg 1) (mul 2)))
+
+(define semigroup-theory
+  (make-theory "semigroups" '((mul 2))
+               (list (list 'associativity '(mul (mul x y) z) '(mul x (mul y z))))
+               'semigroup))
+(define monoid-theory
+  (make-theory "monoids" '((one 0) (mul 2))
+               (list (list 'left-identity '(mul (one) x) 'x)
+                     (list 'right-identity '(mul x (one)) 'x)
+                     (list 'associativity '(mul (mul x y) z) '(mul x (mul y z))))
+               'monoid))
+(define group-theory
+  (make-theory "groups" '((one 0) (mul 2) (inv 1))
+               (list (list 'left-identity '(mul (one) x) 'x)
+                     (list 'right-identity '(mul x (one)) 'x)
+                     (list 'left-inverse '(mul (inv x) x) '(one))
+                     (list 'right-inverse '(mul x (inv x)) '(one))
+                     (list 'associativity '(mul (mul x y) z) '(mul x (mul y z))))
+               'group))
+(define abelian-group-theory
+  (make-theory "abelian groups" '((zero 0) (add 2) (neg 1))
+               (list (list 'additive-identity '(add x (zero)) 'x)
+                     (list 'additive-inverse '(add x (neg x)) '(zero))
+                     (list 'additive-commutativity '(add x y) '(add y x))
+                     (list 'additive-associativity '(add (add x y) z) '(add x (add y z))))
+               'abelian-group))
+(define ring-theory
+  (make-theory "rings" th-ring-signature
+               (list (list 'additive-identity '(add x (zero)) 'x)
+                     (list 'multiplicative-left-identity '(mul (one) x) 'x)
+                     (list 'multiplicative-identity '(mul x (one)) 'x)
+                     (list 'additive-inverse '(add x (neg x)) '(zero))
+                     (list 'additive-commutativity '(add x y) '(add y x))
+                     (list 'additive-associativity '(add (add x y) z) '(add x (add y z)))
+                     (list 'multiplicative-associativity '(mul (mul x y) z) '(mul x (mul y z)))
+                     (list 'distributivity '(mul x (add y z)) '(add (mul x y) (mul x z)))
+                     (list 'right-distributivity '(mul (add x y) z) '(add (mul x z) (mul y z))))
+               'ring))
+(define commutative-ring-theory
+  (make-theory "commutative rings" th-ring-signature ring-law-equations 'commutative-ring))
+
+(define th-lattice-equations
+  (list (list 'meet-commutativity '(meet x y) '(meet y x))
+        (list 'join-commutativity '(join x y) '(join y x))
+        (list 'meet-absorption '(meet x (join x y)) 'x)
+        (list 'join-absorption '(join x (meet x y)) 'x)
+        (list 'meet-associativity '(meet (meet x y) z) '(meet x (meet y z)))
+        (list 'join-associativity '(join (join x y) z) '(join x (join y z)))))
+(define th-distributivity (list 'distributivity '(meet x (join y z)) '(join (meet x y) (meet x z))))
+(define lattice-theory
+  (make-theory "lattices" '((meet 2) (join 2)) th-lattice-equations 'lattice))
+(define distributive-lattice-theory
+  (make-theory "distributive lattices" '((meet 2) (join 2))
+               (append th-lattice-equations (list th-distributivity))
+               'distributive-lattice))
+(define th-bounds
+  (list (list 'join-bottom '(join x (bottom)) 'x)
+        (list 'meet-top '(meet x (top)) 'x)))
+(define boolean-algebra-theory
+  (make-theory "Boolean algebras" '((bottom 0) (top 0) (meet 2) (join 2) (complement 1))
+               (append th-bounds
+                       (list (list 'complement-join '(join x (complement x)) '(top))
+                             (list 'complement-meet '(meet x (complement x)) '(bottom)))
+                       th-lattice-equations (list th-distributivity))
+               'boolean-algebra))
+;; Bounded lattices with x -> x = 1, x /\ (x -> y) = x /\ y,
+;; y /\ (x -> y) = y and x -> (y /\ z) = (x -> y) /\ (x -> z); distributivity
+;; follows (Burris-Sankappanavar II.10, Exercise 4; Johnstone, "Stone Spaces"
+;; I.1.10).
+(define heyting-algebra-theory
+  (make-theory "Heyting algebras" '((bottom 0) (top 0) (meet 2) (join 2) (implies 2))
+               (append th-bounds
+                       (list (list 'implication-reflexive '(implies x x) '(top)))
+                       th-lattice-equations
+                       (list (list 'modus-ponens '(meet x (implies x y)) '(meet x y))
+                             (list 'implication-absorption '(meet y (implies x y)) 'y)
+                             (list 'implication-meet '(implies x (meet y z)) '(meet (implies x y) (implies x z)))))
+               'heyting-algebra))
+
+;; The theory of modules over a finite ring R, R a finite model of
+;; ring-theory or commutative-ring-theory: the abelian group operations and
+;; one unary operation (scale r) for each element r of R, with
+;; r(x + y) = rx + ry, (r + s)x = rx + sx, (rs)x = r(sx) and 1x = x.
+(define (module-theory R)
+  (if (not (model-finite? R)) (th-refuse 'theory-infinite-model 'module-theory (model-name R)))
+  (let* ((rs (model-elements R))
+         (add (model-operation R 'add)) (mul (model-operation R 'mul)) (one (model-operation R 'one))
+         (scale (lambda (r t) (list (list 'scale r) t))))
+    (make-theory (string-append (model-name R) "-modules")
+                 (append '((zero 0) (add 2) (neg 1)) (map (lambda (r) (list (list 'scale r) 1)) rs))
+                 (append
+                  (list (list 'unit-scalar (scale one 'x) 'x))
+                  (map (lambda (e) (make-equation (equation-name e) (equation-lhs e) (equation-rhs e)))
+                       (theory-equations abelian-group-theory))
+                  (map (lambda (r) (list (list 'scalar-distributivity r)
+                                         (scale r '(add x y)) (list 'add (scale r 'x) (scale r 'y))))
+                       rs)
+                  (apply append
+                         (map (lambda (r)
+                                (apply append
+                                       (map (lambda (s)
+                                              (list (list (list 'scalar-sum r s)
+                                                          (scale (add r s) 'x) (list 'add (scale r 'x) (scale s 'x)))
+                                                    (list (list 'scalar-product r s)
+                                                          (scale (mul r s) 'x) (scale r (scale s 'x)))))
+                                            rs)))
+                              rs)))
+                 'module (list (cons 'ring R)))))
+
+;; ===========================================================================
+;; Models
+;; ===========================================================================
+;;
+;; (make-model T name 'operations ((op . proc-or-constant) ...)
+;;             ['elements list] ['equal? proc] ['member? proc] ['extra alist])
+;; An operation of arity 0 is given by its value; every other by a procedure.
+
+(define (make-model T name . fields)
+  (th-check-theory T "make-model")
+  (let loop ((fs fields) (props '()))
+    (cond ((null? fs) (th-build-model T name props))
+          ((null? (cdr fs)) (error "make-model: field without a value" (car fs)))
+          (else (loop (cddr fs) (cons (cons (car fs) (cadr fs)) props))))))
+(define (th-prop props k d) (let ((p (assq k props))) (if p (cdr p) d)))
+(define (th-build-model T name props)
+  (let* ((ops (th-prop props 'operations '()))
+         (elements (th-prop props 'elements #f))
+         (same (th-prop props 'equal? th-equal?))
+         (member (th-prop props 'member?
+                          (if elements (lambda (x) (th-any? (lambda (y) (same x y)) elements)) (lambda (x) #t)))))
+    (for-each (lambda (op)
+                (if (not (assoc op ops)) (th-refuse 'theory-missing-operation 'make-model name op)))
+              (theory-operations T))
+    (vector 'model-v1 T name ops elements same member (th-prop props 'extra '()))))
+(define (model? x) (and (vector? x) (= (vector-length x) 8) (eq? (vector-ref x 0) 'model-v1)))
+(define (th-check-model M who) (if (model? M) M (error (string-append who ": expected a model") M)))
+(define (model-theory M) (vector-ref (th-check-model M "model-theory") 1))
+(define (model-name M) (vector-ref (th-check-model M "model-name") 2))
+(define (model-elements M)
+  (or (vector-ref (th-check-model M "model-elements") 4)
+      (th-refuse 'theory-infinite-model 'model-elements (vector-ref M 2))))
+(define (model-finite? M) (if (vector-ref (th-check-model M "model-finite?") 4) #t #f))
+(define (model-size M) (length (model-elements M)))
+(define (model-operation M op)
+  (let ((p (assoc op (vector-ref (th-check-model M "model-operation") 3))))
+    (if p (cdr p) (th-refuse 'theory-missing-operation 'model-operation (vector-ref M 2) op))))
+(define (model-equal? M a b) (if ((vector-ref (th-check-model M "model-equal?") 5) a b) #t #f))
+(define (model-member? M x) (if ((vector-ref (th-check-model M "model-member?") 6) x) #t #f))
+(define (model-extra M) (vector-ref (th-check-model M "model-extra") 7))
+(define (model-ref M key) (let ((p (assq key (model-extra M)))) (if p (cdr p) #f)))
+
+;; A term compiled against a model: (term->procedure M t vars) is a
+;; procedure of one vector holding the values of vars, in order.
+(define (term->procedure M t vars)
+  (let ((T (model-theory M)))
+    (if (not (and (well-formed-term? T t) (th-all? (lambda (v) (memq v vars)) (term-variables t))))
+        (th-refuse 'theory-ill-formed-term 'term->procedure t))
+    (law-term->procedure (lambda (op) (model-operation M op)) (lambda (op) (theory-arity T op)) t vars)))
+
+;; The value of t in M under env, an alist variable -> element.
+(define (model-evaluate M t env)
+  (let ((vars (map (lambda (x) (car x)) env)))
+    ((term->procedure M t vars) (list->vector (map (lambda (x) (cdr x)) env)))))
+
+;; A core.ring carrier as a model of commutative-ring-theory: the
+;; descriptor's own zero, one, add, neg, mul and equal?. The model of Z/m
+;; lists its m elements when m <= 4096 (a larger one is checked on samples,
+;; like an infinite carrier); any other carrier lists elements only when
+;; they are given.
+(define (ring-carrier->model R . elements)
+  (if (not (ring-carrier? R)) (error "ring-carrier->model: expected a ring carrier" R))
+  (make-model commutative-ring-theory (ring-carrier-name R)
+              'operations (list (cons 'zero (ring-ref R 'zero)) (cons 'one (ring-ref R 'one))
+                                (cons 'add (ring-ref R 'add)) (cons 'neg (ring-ref R 'neg))
+                                (cons 'mul (ring-ref R 'mul)))
+              'elements (cond ((pair? elements) (car elements))
+                              ((and (eq? (ring-carrier-family R) 'zmod) (<= (car (ring-carrier-parameters R)) 4096))
+                               (iota (car (ring-carrier-parameters R))))
+                              (else #f))
+              'equal? (ring-ref R 'equal?)
+              'member? (ring-ref R 'member?)
+              'extra (list (cons 'ring-carrier R))))
+
+;; ===========================================================================
+;; The law check
+;; ===========================================================================
+
+(define (th-samples M samples who)
+  (cond ((pair? samples) (car samples))
+        ((model-finite? M) (model-elements M))
+        (else (th-refuse 'theory-infinite-model who (model-name M)))))
+
+;; The violations of equations in M over every assignment of samples:
+;; core.ring's law check on M's operations and equality.
+(define (equations-violations M equations samples)
+  (let ((T (model-theory M)))
+    (for-each (lambda (e)
+                (if (not (and (well-formed-term? T (equation-lhs e)) (well-formed-term? T (equation-rhs e))))
+                    (th-refuse 'theory-ill-formed-term 'equations-violations (equation-name e))))
+              equations)
+    (law-violations (lambda (op) (model-operation M op)) (lambda (op) (theory-arity T op)) (vector-ref M 5)
+                    (map (lambda (e) (list (equation-name e) (equation-lhs e) (equation-rhs e))) equations)
+                    samples)))
+
+;; (model-law-violations M [samples]): every element of a finite model when
+;; samples are not given.
+(define (model-law-violations M . samples)
+  (th-check-model M "model-law-violations")
+  (equations-violations M (theory-equations (model-theory M)) (th-samples M samples 'model-law-violations)))
+(define (model-satisfies? M . samples) (null? (apply model-law-violations M samples)))
+
+;; ===========================================================================
+;; Homomorphisms
+;; ===========================================================================
+
+;; (model-homomorphism-violations f M N [samples]): the tuples on which f
+;; fails to commute with an operation, as (op argument ...).
+(define (model-homomorphism-violations f M N . samples)
+  (let* ((T (model-theory M)) (xs (th-samples M samples 'model-homomorphism-violations))
+         (bad '()))
+    (for-each
+     (lambda (op)
+       (let ((n (theory-arity T op)) (fm (model-operation M op)) (fn (model-operation N op)))
+         (for-each (lambda (args)
+                     (let ((lhs (f (if (= n 0) fm (apply fm args))))
+                           (rhs (if (= n 0) fn (apply fn (map f args)))))
+                       (if (not (model-equal? N lhs rhs)) (set! bad (cons (cons op args) bad)))))
+                   (th-tuples xs n))))
+     (theory-operations T))
+    (reverse bad)))
+(define (model-homomorphism? f M N . samples)
+  (null? (apply model-homomorphism-violations f M N samples)))
+
+;; Position of x among the elements of a finite model, or #f.
+(define (th-index M x)
+  (let ((same (vector-ref M 5)))
+    (let loop ((es (model-elements M)) (i 0))
+      (cond ((null? es) #f) ((same (car es) x) i) (else (loop (cdr es) (+ i 1)))))))
+(define (th-canonical M x)
+  (let ((i (th-index M x))) (if i (list-ref (model-elements M) i) x)))
+
+;; Apply a finite map (an alist from elements of M) to x, by M's equality.
+(define (finite-map-apply M graph x)
+  (let loop ((g graph))
+    (cond ((null? g) (error "finite-map-apply: not in the domain" x))
+          ((model-equal? M (car (car g)) x) (cdr (car g)))
+          (else (loop (cdr g))))))
+
+;; The closure of a set of elements under the operations: the subalgebra it
+;; generates, in order of discovery (constants first).
+(define (model-subalgebra M generators)
+  (let* ((T (model-theory M)) (ops (theory-operations T)) (same (vector-ref M 5))
+         (has? (lambda (x xs) (th-any? (lambda (y) (same x y)) xs))))
+    (let grow ((found (fold-left (lambda (acc c) (if (has? c acc) acc (append acc (list c))))
+                                 '()
+                                 (append (map (lambda (op) (model-operation M op))
+                                              (filter (lambda (op) (= 0 (theory-arity T op))) ops))
+                                         generators))))
+      (let ((next (fold-left
+                   (lambda (acc op)
+                     (let ((n (theory-arity T op)) (f (model-operation M op)))
+                       (if (= n 0) acc
+                           (fold-left (lambda (a args) (let ((v (apply f args))) (if (has? v a) a (append a (list v)))))
+                                      acc (th-tuples found n)))))
+                   found ops)))
+        (if (= (length next) (length found)) found (grow next))))))
+
+;; A generating set of a finite model, chosen greedily in element order.
+(define (model-generators M)
+  (let loop ((es (model-elements M)) (gens '()) (span (model-subalgebra M '())))
+    (cond ((null? es) gens)
+          ((th-any? (lambda (y) (model-equal? M (car es) y)) span) (loop (cdr es) gens span))
+          (else (let ((g2 (append gens (list (car es)))))
+                  (loop (cdr es) g2 (model-subalgebra M g2)))))))
+
+;; Every homomorphism M -> N between finite models, as graphs (alists over
+;; the elements of M). A homomorphism is determined by the images of a
+;; generating set; each choice is extended along the operations and kept
+;; when it is well defined and commutes with every operation.
+(define (model-homomorphisms M N)
+  (let* ((T (model-theory M)) (gens (model-generators M)) (targets (model-elements N)))
+    (filter (lambda (g) g)
+            (map (lambda (images) (th-extend-homomorphism T M N gens images))
+                 (th-tuples targets (length gens))))))
+(define (th-extend-homomorphism T M N gens images)
+  (let ((ops (theory-operations T)) (graph '()) (ok #t))
+    (define (lookup x)
+      (let loop ((g graph)) (cond ((null? g) #f) ((model-equal? M (car (car g)) x) (car g)) (else (loop (cdr g))))))
+    (define (bind! x y)
+      (let ((p (lookup x)))
+        (if p
+            (if (not (model-equal? N (cdr p) y)) (set! ok #f))
+            (set! graph (cons (cons (th-canonical M x) (th-canonical N y)) graph)))))
+    (for-each (lambda (op) (if (= 0 (theory-arity T op)) (bind! (model-operation M op) (model-operation N op)))) ops)
+    (for-each bind! gens images)
+    (let grow ((size -1))
+      (if (and ok (not (= size (length graph))))
+          (let ((size0 (length graph)) (known graph))
+            (for-each
+             (lambda (op)
+               (let ((n (theory-arity T op)) (fm (model-operation M op)) (fn (model-operation N op)))
+                 (if (> n 0)
+                     (for-each (lambda (pairs)
+                                 (if ok (bind! (apply fm (map (lambda (x) (car x)) pairs)) (apply fn (map (lambda (x) (cdr x)) pairs)))))
+                               (th-tuples known n)))))
+             ops)
+            (grow size0))))
+    (if (and ok (= (length graph) (model-size M)))
+        (let ((g (map (lambda (x) (lookup x)) (model-elements M))))
+          (if (model-homomorphism? (lambda (x) (finite-map-apply M g x)) M N) g #f))
+        #f)))
+
+;; Whether finite models of one theory are isomorphic: a bijective
+;; homomorphism exists.
+(define (model-isomorphic? M N)
+  (and (= (model-size M) (model-size N))
+       (th-any? (lambda (g)
+                  (let ((images (map (lambda (x) (cdr x)) g)))
+                    (th-all? (lambda (y) (th-any? (lambda (z) (model-equal? N y z)) images)) (model-elements N))))
+                (model-homomorphisms M N))))
+
+;; ===========================================================================
+;; Products, submodels, congruences and quotients
+;; ===========================================================================
+
+;; The product of a list of models of one theory: elements are lists,
+;; operations componentwise; finite when every factor is.
+(define (model-product . models)
+  (let* ((Ms (if (and (= (length models) 1) (list? (car models)) (not (model? (car models)))) (car models) models))
+         (T (model-theory (car Ms)))
+         (ops (map (lambda (op)
+                     (let ((n (theory-arity T op)) (fs (map (lambda (M) (model-operation M op)) Ms)))
+                       (cons op (if (= n 0) fs
+                                    (lambda args
+                                      (let loop ((fs fs) (i 0))
+                                        (if (null? fs) '()
+                                            (cons (apply (car fs) (map (lambda (a) (list-ref a i)) args))
+                                                  (loop (cdr fs) (+ i 1))))))))))
+                   (theory-operations T))))
+    (make-model T (fold-left (lambda (s M) (if (string=? s "") (model-name M) (string-append s " x " (model-name M)))) "" Ms)
+                'operations ops
+                'elements (if (th-all? model-finite? Ms) (th-cartesian (map model-elements Ms)) #f)
+                'equal? (lambda (a b) (let loop ((Ms Ms) (a a) (b b))
+                                        (or (null? Ms) (and (model-equal? (car Ms) (car a) (car b)) (loop (cdr Ms) (cdr a) (cdr b))))))
+                'extra (list (cons 'factors Ms)))))
+(define (th-cartesian lists)
+  (if (null? lists) (list '())
+      (let ((rest (th-cartesian (cdr lists))))
+        (apply append (map (lambda (x) (map (lambda (t) (cons x t)) rest)) (car lists))))))
+;; The i-th projection of a product, a homomorphism.
+(define (model-projection P i) (lambda (x) (list-ref x i)))
+
+;; The submodel on the subalgebra generated by gens.
+(define (model-submodel M gens . name)
+  (let ((T (model-theory M)))
+    (make-model T (if (pair? name) (car name) (string-append "<" (model-name M) ">"))
+                'operations (map (lambda (op) (cons op (model-operation M op))) (theory-operations T))
+                'elements (model-subalgebra M gens)
+                'equal? (vector-ref M 5))))
+
+;; A partition of a finite model is a list of classes (lists of elements).
+(define (th-class-index M partition x)
+  (let loop ((cs partition) (i 0))
+    (cond ((null? cs) (error "not in any class of the partition" x))
+          ((th-any? (lambda (y) (model-equal? M x y)) (car cs)) i)
+          (else (loop (cdr cs) (+ i 1))))))
+
+;; Whether a partition is a congruence: every operation maps related tuples
+;; to related elements (checked one argument position at a time).
+(define (model-congruence? M partition)
+  (let ((T (model-theory M)) (es (model-elements M)))
+    (th-all? (lambda (op)
+               (let ((n (theory-arity T op)) (f (model-operation M op)))
+                 (th-all? (lambda (i)
+                            (th-all? (lambda (args)
+                                       (th-all? (lambda (cls)
+                                                  (let ((k (th-class-index M partition (apply f (th-replace-nth args i (car cls))))))
+                                                    (th-all? (lambda (b) (= k (th-class-index M partition (apply f (th-replace-nth args i b)))))
+                                                             (cdr cls))))
+                                                partition))
+                                     (th-tuples es n)))
+                          (th-range n))))
+             (theory-operations T))))
+
+;; The least congruence containing the given pairs, by union-find closed
+;; under every unary polynomial f(.., a, ..): at the fixed point a ~ rep(a)
+;; implies f(.., a, ..) ~ f(.., rep(a), ..) in every argument position.
+(define (model-congruence-closure M pairs)
+  (let* ((T (model-theory M)) (es (model-elements M)) (n (length es))
+         (parent (list->vector (th-range n)))
+         (idx (lambda (x) (or (th-index M x) (error "model-congruence-closure: not an element" x)))))
+    (define (find i) (if (= (vector-ref parent i) i) i (let ((r (find (vector-ref parent i)))) (vector-set! parent i r) r)))
+    (define (union! i j)
+      (let ((a (find i)) (b (find j)))
+        (if (= a b) #f (begin (if (< a b) (vector-set! parent b a) (vector-set! parent a b)) #t))))
+    (for-each (lambda (p) (union! (idx (car p)) (idx (cdr p)))) pairs)
+    (let pass ()
+      (let ((changed #f) (ev (list->vector es)))
+        (for-each
+         (lambda (op)
+           (let ((k (theory-arity T op)) (f (model-operation M op)))
+             (for-each (lambda (i)
+                         (for-each (lambda (args)
+                                     (for-each (lambda (a)
+                                                 (let ((r (find a)))
+                                                   (if (not (= r a))
+                                                       (if (union! (idx (apply f (th-replace-nth args i (vector-ref ev a))))
+                                                                   (idx (apply f (th-replace-nth args i (vector-ref ev r)))))
+                                                           (set! changed #t)))))
+                                               (th-range n)))
+                                   (th-tuples es k)))
+                       (th-range k))))
+         (theory-operations T))
+        (if changed (pass))))
+    (let collect ((i 0) (classes '()))
+      (if (= i n)
+          (map (lambda (c) (reverse c)) classes)
+          (let* ((r (find i)) (x (list-ref es i))
+                 (pos (let loop ((cs classes) (j 0)) (cond ((null? cs) #f) ((= (find (th-index M (car (car cs)))) r) j) (else (loop (cdr cs) (+ j 1)))))))
+            (if pos
+                (collect (+ i 1) (th-replace-nth classes pos (cons x (list-ref classes pos))))
+                (collect (+ i 1) (append classes (list (list x))))))))))
+
+;; The kernel of a homomorphism f : M -> N, the partition of M by images.
+(define (model-kernel f M N)
+  (let loop ((es (model-elements M)) (classes '()))
+    (if (null? es)
+        (map (lambda (c) (reverse c)) classes)
+        (let* ((x (car es)) (y (f x))
+               (pos (let find ((cs classes) (j 0))
+                      (cond ((null? cs) #f) ((model-equal? N (f (car (car cs))) y) j) (else (find (cdr cs) (+ j 1)))))))
+          (loop (cdr es) (if pos (th-replace-nth classes pos (cons x (list-ref classes pos))) (append classes (list (list x)))))))))
+
+;; The quotient M / partition, refused unless the partition is a congruence.
+;; Its elements are the first element of each class.
+(define (model-quotient M partition . name)
+  (if (not (model-congruence? M partition)) (th-refuse 'theory-not-a-congruence 'model-quotient (model-name M)))
+  (let* ((T (model-theory M)) (reps (map (lambda (x) (car x)) partition))
+         (rep (lambda (x) (list-ref reps (th-class-index M partition x)))))
+    (make-model T (if (pair? name) (car name) (string-append (model-name M) "/~"))
+                'operations (map (lambda (op)
+                                   (let ((n (theory-arity T op)) (f (model-operation M op)))
+                                     (cons op (if (= n 0) (rep f) (lambda args (rep (apply f args)))))))
+                                 (theory-operations T))
+                'elements reps
+                'equal? (vector-ref M 5)
+                'extra (list (cons 'quotient-of M) (cons 'partition partition)))))
+(define (model-quotient-map M Q)
+  (let ((partition (model-ref Q 'partition)) (reps (model-elements Q)))
+    (lambda (x) (list-ref reps (th-class-index M partition x)))))
+
+;; ===========================================================================
+;; Interpretations: morphisms of theories
+;; ===========================================================================
+;;
+;; An interpretation I : S -> T sends each operation of S of arity n to a
+;; term of T in the variables (x1 ... xn) given with it:
+;;   (make-interpretation S T (list (list op (x1 ... xn) term) ...))
+;; It is a morphism of Lawvere theories when every equation of S translates
+;; to an equation T proves (core.theory.free checks this with T's word
+;; problem). The reduct of a T-model along I is an S-model.
+
+(define (make-interpretation S T mapping)
+  (th-check-theory S "make-interpretation") (th-check-theory T "make-interpretation")
+  (for-each (lambda (op)
+              (let ((m (assoc op mapping)))
+                (if (not m) (th-refuse 'theory-missing-operation 'make-interpretation (theory-name S) op))
+                (if (not (= (length (cadr m)) (theory-arity S op)))
+                    (th-refuse 'theory-ill-formed-term 'make-interpretation m))
+                (if (not (well-formed-term? T (caddr m))) (th-refuse 'theory-ill-formed-term 'make-interpretation (caddr m)))))
+            (theory-operations S))
+  (vector 'interpretation-v1 S T mapping))
+(define (interpretation? x) (and (vector? x) (= (vector-length x) 4) (eq? (vector-ref x 0) 'interpretation-v1)))
+(define (interpretation-source I) (vector-ref I 1))
+(define (interpretation-target I) (vector-ref I 2))
+;; The translation of an S-term into a T-term.
+(define (interpretation-translate I t)
+  (if (pair? t)
+      (let ((m (assoc (car t) (vector-ref I 3))))
+        (term-substitute (caddr m) (map (lambda (x y) (cons x y)) (cadr m) (th-translate-list I (cdr t)))))
+      t))
+(define (th-translate-list I ts)
+  (if (null? ts) '() (cons (interpretation-translate I (car ts)) (th-translate-list I (cdr ts)))))
+;; The S-model with the elements of the T-model M.
+(define (model-reduct I M . name)
+  (let* ((S (interpretation-source I)) (T (model-theory M)))
+    (make-model S (if (pair? name) (car name) (string-append (model-name M) " as " (theory-name S)))
+                'operations
+                (map (lambda (op)
+                       (let* ((m (assoc op (vector-ref I 3))) (vars (cadr m)) (n (length vars))
+                              (p (term->procedure M (caddr m) vars)))
+                         (cons op (if (= n 0) (p (vector)) (lambda args (p (list->vector args)))))))
+                     (theory-operations S))
+                'elements (vector-ref M 4)
+                'equal? (vector-ref M 5)
+                'member? (vector-ref M 6))))
+
+;; ===========================================================================
+;; Finite coalgebras for F X = O x X^A (Moore machines)
+;; ===========================================================================
+;;
+;; A coalgebra is a finite set of states with an output in O and a next
+;; state for each letter of the alphabet A. Its homomorphisms preserve output
+;; and transitions; bisimilarity, the largest bisimulation, is found by
+;; partition refinement, and the quotient by it is the minimal coalgebra:
+;; the image in the final coalgebra (Rutten 2000, sections 2-9).
+
+(define (make-coalgebra states alphabet output step)
+  (vector 'coalgebra-v1 states alphabet output step))
+(define (coalgebra? x) (and (vector? x) (= (vector-length x) 5) (eq? (vector-ref x 0) 'coalgebra-v1)))
+(define (coalgebra-states C) (vector-ref C 1))
+(define (coalgebra-alphabet C) (vector-ref C 2))
+(define (coalgebra-output C x) ((vector-ref C 3) x))
+(define (coalgebra-step C x a) ((vector-ref C 4) x a))
+
+(define (coalgebra-homomorphism? h C D)
+  (th-all? (lambda (x)
+             (and (equal? (coalgebra-output C x) (coalgebra-output D (h x)))
+                  (th-all? (lambda (a) (equal? (h (coalgebra-step C x a)) (coalgebra-step D (h x) a)))
+                           (coalgebra-alphabet C))))
+           (coalgebra-states C)))
+
+;; The largest bisimulation as a partition of the states: start from the
+;; partition by output, split by the classes of the successors until stable.
+(define (coalgebra-bisimilarity C)
+  (let* ((xs (coalgebra-states C)) (as (coalgebra-alphabet C))
+         (class-of (lambda (P x) (let loop ((cs P) (i 0)) (if (member x (car cs)) i (loop (cdr cs) (+ i 1))))))
+         (split (lambda (key)
+                  (let loop ((xs xs) (groups '()))
+                    (if (null? xs) (map (lambda (g) (reverse (cdr g))) (reverse groups))
+                        (let* ((k (key (car xs))) (g (assoc k groups)))
+                          (if g (begin (set-cdr! g (cons (car xs) (cdr g))) (loop (cdr xs) groups))
+                              (loop (cdr xs) (cons (list k (car xs)) groups)))))))))
+    (let refine ((P (split (lambda (x) (coalgebra-output C x)))))
+      (let ((Q (split (lambda (x) (cons (class-of P x) (map (lambda (a) (class-of P (coalgebra-step C x a))) as))))))
+        (if (= (length Q) (length P)) P (refine Q))))))
+(define (coalgebra-bisimilar? C x y)
+  (th-any? (lambda (cls) (and (member x cls) (member y cls) #t)) (coalgebra-bisimilarity C)))
+;; The quotient by bisimilarity: states are the first state of each class.
+(define (coalgebra-minimize C)
+  (let* ((P (coalgebra-bisimilarity C)) (reps (map (lambda (x) (car x)) P))
+         (rep (lambda (x) (let loop ((cs P)) (if (member x (car cs)) (car (car cs)) (loop (cdr cs)))))))
+    (make-coalgebra reps (coalgebra-alphabet C)
+                    (lambda (x) (coalgebra-output C x))
+                    (lambda (x a) (rep (coalgebra-step C x a))))))
+;; The disjoint sum: states (0 . x) and (1 . y).
+(define (coalgebra-sum C D)
+  (make-coalgebra (append (map (lambda (x) (cons 0 x)) (coalgebra-states C)) (map (lambda (y) (cons 1 y)) (coalgebra-states D)))
+                  (coalgebra-alphabet C)
+                  (lambda (s) (if (= (car s) 0) (coalgebra-output C (cdr s)) (coalgebra-output D (cdr s))))
+                  (lambda (s a) (cons (car s) (if (= (car s) 0) (coalgebra-step C (cdr s) a) (coalgebra-step D (cdr s) a))))))
+;; The behaviour of x up to depth n: the outputs after every word of length
+;; <= n, words in length-lexicographic order of the alphabet.
+(define (coalgebra-behaviour C x n)
+  (let loop ((k 0) (acc '()))
+    (if (> k n) (reverse acc)
+        (loop (+ k 1)
+              (append (reverse (map (lambda (w)
+                                      (coalgebra-output C (fold-left (lambda (s a) (coalgebra-step C s a)) x w)))
+                                    (th-tuples (coalgebra-alphabet C) k)))
+                      acc)))))

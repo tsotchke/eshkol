@@ -16,6 +16,7 @@
  * pre-training-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/tensor_shape_guard.h>
 #include <eshkol/backend/libm_codegen.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
@@ -81,6 +82,12 @@ llvm::Value* TensorCodegen::sgdStep(const eshkol_operations_t* op) {
         if (!velocity_tagged) return nullptr;
         velocity_ptr = unpackTensorOperandChecked(velocity_tagged, "sgd-step",
                            TensorOperandMode::RequireTensor);
+    }
+
+    if (has_momentum) {
+        emitMatchingTensorShapes(ctx_, {params_ptr, grads_ptr, velocity_ptr}, "sgd-step");
+    } else {
+        emitMatchingTensorShapes(ctx_, {params_ptr, grads_ptr}, "sgd-step");
     }
 
     // Get tensor dimensions
@@ -215,6 +222,7 @@ llvm::Value* TensorCodegen::adamStep(const eshkol_operations_t* op) {
                              TensorOperandMode::RequireTensor);
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "adam-step",
                              TensorOperandMode::RequireTensor);
+    emitMatchingTensorShapes(ctx_, {params_ptr, grads_ptr, m_ptr, v_ptr}, "adam-step");
     llvm::Value* t = tagged_.unpackInt64(t_tagged);
     llvm::Value* t_double = builder.CreateSIToFP(t, ctx_.doubleType());
 
@@ -565,6 +573,7 @@ llvm::Value* TensorCodegen::rmspropStep(const eshkol_operations_t* op) {
     llvm::Value* lr = taggedNumericToDouble(ctx_, tagged_, lr_tagged);
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "rmsprop-step",
                              TensorOperandMode::RequireTensor);
+    emitMatchingTensorShapes(ctx_, {params_ptr, grads_ptr, v_ptr}, "rmsprop-step");
 
     llvm::Value* alpha = llvm::ConstantFP::get(ctx_.doubleType(), 0.99);
     llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-8);
@@ -700,6 +709,7 @@ llvm::Value* TensorCodegen::adamwStep(const eshkol_operations_t* op) {
                              TensorOperandMode::RequireTensor);
     llvm::Value* v_ptr = unpackTensorOperandChecked(v_tagged, "adamw-step",
                              TensorOperandMode::RequireTensor);
+    emitMatchingTensorShapes(ctx_, {params_ptr, grads_ptr, m_ptr, v_ptr}, "adamw-step");
     llvm::Value* t = tagged_.unpackInt64(t_tagged);
     llvm::Value* t_double = builder.CreateSIToFP(t, ctx_.doubleType());
 
@@ -843,6 +853,7 @@ llvm::Value* TensorCodegen::adagradStep(const eshkol_operations_t* op) {
     llvm::Value* lr = taggedNumericToDouble(ctx_, tagged_, lr_tagged);
     llvm::Value* accum_ptr = unpackTensorOperandChecked(accum_tagged, "adagrad-step",
                                  TensorOperandMode::RequireTensor);
+    emitMatchingTensorShapes(ctx_, {params_ptr, grads_ptr, accum_ptr}, "adagrad-step");
 
     llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-10);
     if (op->call_op.num_vars >= 5) {

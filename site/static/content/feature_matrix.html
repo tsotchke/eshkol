@@ -1,7 +1,9 @@
-<h1 id="eshkol-v135-evolve-feature-matrix">Eshkol v1.3.5-evolve Feature Matrix</h1>
+<h1 id="eshkol-feature-matrix">Eshkol Feature Matrix</h1>
 <p><strong>Status Key</strong> (table cells): <code>Yes</code> = Production | <code>WIP</code> = In Progress | <code>Planned</code> = Planned | <code>No</code> = Not Planned | <code>Partial</code> = Partially supported</p>
 <p>This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the “Final verification” section of <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>, and is bound to the tagged commit.</p>
-<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,118</strong> constructs — 1,058 builtins, 116 special forms, 113 AST ops and 16 prelude entries, deduplicated by name with internal-only helpers excluded. Older cited figures — 1,107, 1,091 and 1,106 here and in <code>docs/COMPILER_ROADMAP.md</code>, 1,078 in <code>.icc/architecture-model.yaml</code>, “550+ built-in functions”/“39 special forms” in <code>README.md</code> — were each correct on the day they were written but drifted as the surface grew; the gate has ratcheted upward since. The “1,058 in ADR-0011 §2.1” citation from the previous reconciliation pass was itself wrong: ADR-0011 is the guest-collector adapter design and contains no surface-count section — there is no §2.1 that states 1,058. The only correct citation for this number is the coverage manifest itself: <code>tests/coverage/language_surface.json</code> (1,058 builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by name and with internal-only helpers excluded exactly the way <code>scripts/language_coverage.py</code> already deduplicates it to compute the number the coverage gate enforces: <code>tests/coverage/coverage_policy.json</code> <code>baseline_surface_total</code> = <code>tests/coverage/execution_deficit.json</code> <code>surface_total</code> = <strong>1,118</strong>, confirmed by regenerating <code>tests/coverage/language_surface.json</code> at the release commit. This is the figure this doc, README.md, and <code>.icc/architecture-model.yaml</code> use; <code>scripts/check_surface_counts.py</code> fails CI if any of them drift from the manifest again.</p>
+<p><strong>Language surface count (canonical):</strong> the declared language surface is <strong>1,470</strong> constructs. The generated manifest records 1,067 builtins, 116 special forms, 113 internal AST operations and 469 prelude records; the categories overlap, and the public count deduplicates names and excludes internal-only entries. See <code>tests/coverage/language_surface.json</code> and <code>scripts/language_coverage.py</code> for the exact inventory and counting rules.</p>
+<p>The required coverage floor is 1,470 entries at 100%, with no new execution deficit permitted. This is a target, not a measurement. The committed historical execution ledger still certifies 1,118 names; it has not been rewritten to claim coverage for the expanded candidate. Current execution evidence must close that gap before the coverage gate can pass. Exported data bindings also need an execution observation appropriate to reading data; a function name appearing in source or IR earns no invocation credit.</p>
+<p><code>scripts/check_surface_counts.py</code> checks the declared counts in these docs against the machine sources. Release verification remains bound to its tagged commit and is recorded separately in <a href="/docs#page=release_notes" data-url="/content/release_notes.html">RELEASE_NOTES.md</a>.</p>
 <hr />
 <h2 id="core-language-features">Core Language Features</h2>
 <table>
@@ -1347,6 +1349,12 @@
 <td>Gradual typing</td>
 </tr>
 <tr>
+<td>HoTT identity types, univalence, HITs</td>
+<td>Yes</td>
+<td>Cubical kernel (ADR-0043): path types, transp/hcomp, Glue, circle, suspension, truncations</td>
+<td><code>(hott ...)</code>, <code>(hott-eval ...)</code>; JIT, AOT, VM</td>
+</tr>
+<tr>
 <td>LLVM IR generation</td>
 <td>Yes</td>
 <td>LLVM 18-24 (one major pinned per build, 21 by default)</td>
@@ -2473,7 +2481,7 @@
 <td>API Reference</td>
 <td>Yes</td>
 <td>Complete</td>
-<td>1,058 builtins across a 1,118-construct declared surface (canonical count, see below)</td>
+<td>1,067 builtins across a 1,470-construct declared surface (canonical count, see below)</td>
 </tr>
 <tr>
 <td>Quickstart Guide</td>
@@ -3445,9 +3453,9 @@
 </tr>
 <tr>
 <td>Protocol Buffers</td>
-<td>Planned</td>
-<td>-</td>
-<td>Planned</td>
+<td>Yes</td>
+<td>v1.4.0</td>
+<td>proto3: <code>.proto</code> parser, schema compiler and generated encoders/decoders in <code>lib/core/protobuf.esk</code>; see <code>docs/reference/stdlib/protobuf.md</code></td>
 </tr>
 <tr>
 <td><strong>Databases</strong></td>
@@ -3757,7 +3765,7 @@
 <blockquote>
 <p><strong>Corrected 2026-08-25 (conformity audit item d2, folded into the #464 v1.3.5 wave’s own restructure of this section):</strong> this row previously also listed “Advanced Types: refinement types, effect types, higher-rank types, row polymorphism” and “Compiler Optimization: PGO, whole-program optimization, polyhedral loop optimization” as SHIPPED. None of the six exists in the tree (<code>grep -i 'Refinement\|EffectRow\|SMT\|polyhedral'</code> is empty; ROADMAP.md itself marks WPO <code>[ ]</code> and PGO <code>[~]</code>). These are real, intended capabilities, not deleted — they are BUILD ITEMs below (v1.9.0), targeted per ADR-0004 (types) and ADR-0007 (PGO/WPO/polyhedral), not claimed as shipped. See also the paragraph immediately below, which #464 independently added making the same point.</p>
 </blockquote>
-<p>Advanced type-theory items (refinement types, effect types, higher-rank types, row polymorphism) did not ship in the v1.3 line; they remain staged at v1.9.0-types. PGO remains a build-time scaffold (workload selection is the open gap); whole-program optimization and polyhedral loop optimization are not yet scheduled to a specific release.</p>
+<p>Advanced type-theory items (refinement types, effect types, higher-rank types, row polymorphism) did not ship in the v1.3 line; they are staged at v1.9.0-types, where refinement types are implemented with a built-in decision procedure (ADR-0044). PGO remains a build-time scaffold (workload selection is the open gap); whole-program optimization and polyhedral loop optimization are not yet scheduled to a specific release.</p>
 <h3 id="v135--the-consolidation-release-target-late-sep-2026">v1.3.5 — the consolidation release (target: late Sep 2026)</h3>
 <ul>
 <li><strong>VM region evacuator</strong>: <code>with-region</code> reclaims on the bytecode VM (flagship item)</li>
@@ -3779,12 +3787,14 @@
 </ul>
 <h3 id="v170-synthesis-target-q3-q4-2027">v1.7.0-synthesis (target: Q3-Q4 2027)</h3>
 <ul>
-<li><strong>Program Synthesis</strong>: Type-directed holes, neural-guided search</li>
-<li><strong>Advanced Neural</strong>: Graph Neural Networks</li>
+<li><strong>Program Synthesis</strong>: Type-directed holes (<code>??</code>, completed by the native compiler under JIT and AOT, <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/synthesis-holes.md" target="_blank" rel="noopener noreferrer">synthesis-holes.md</a>); synthesis from input-output examples (<code>core.synthesis</code>: enumeration with observational equivalence, FlashFill and map/filter deduction, 42/42 benchmark tasks verified on held-out examples, <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/synthesis.md" target="_blank" rel="noopener noreferrer">synthesis.md</a>); neural-guided search: the cost hook ships, the learned engines are in Noesis (ADR-0052)</li>
+<li><strong>Advanced Neural</strong>: Graph Neural Networks (<code>ml.gnn</code>: message passing, sum/mean/max aggregation, GCN, GraphSAGE, graph attention, exact reverse-mode gradients through <code>ml.autograd</code>, <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/gnn.md" target="_blank" rel="noopener noreferrer">gnn.md</a>)</li>
 </ul>
 <h3 id="v190-per-adr-0004adr-0007-adr-0000-stage-12">v1.9.0 (per ADR-0004/ADR-0007, ADR-0000 Stage 12)</h3>
 <ul>
-<li><strong>Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)</strong>: Refinement types, effect types, higher-rank types, row polymorphism — <code>NominalTypeId</code>/<code>TypeRef</code>/<code>EffectRowRef</code> do not exist yet; tracked as ADR-0000 Stage 12</li>
+<li><strong>Refinement types (ADR-0044)</strong>: <code>(Refine T phi)</code> with verification conditions from contracts, branches, arithmetic and index bounds, decided by a built-in procedure (Omega test, exact simplex, congruence closure, DPLL(T)) with an optional z3 backend; counterexamples in diagnostics; native and VM engines. See <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/refinement-types.md" target="_blank" rel="noopener noreferrer">refinement types</a>.</li>
+<li><strong>Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)</strong>: effect types, higher-rank types, row polymorphism — <code>NominalTypeId</code>/<code>TypeRef</code>/<code>EffectRowRef</code> do not exist yet; tracked as ADR-0000 Stage 12</li>
+<li><strong>Row polymorphism, higher-rank types, session types (ADR-0046)</strong>: extensible records with principal row types and width subtyping (<code>core.records</code>), predicative arbitrary-rank polymorphism checked bidirectionally, binary session types with duality and exactly-once endpoints over local channels and TCP (<code>core.sessions</code>); compile-time errors on JIT, AOT and the bytecode VM — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/language/structural-types.md" target="_blank" rel="noopener noreferrer">structural-types.md</a></li>
 <li><strong>Whole-Program Optimization + polyhedral loop optimization (BUILD ITEM, moved from v1.3-evolve, ADR-0007)</strong>: no closed-world root analysis, no LTO/ThinLTO exists yet</li>
 </ul>
 <h3 id="v20-starlight-target-q4-2028">v2.0-starlight (target: Q4 2028)</h3>
@@ -3799,7 +3809,7 @@
 <h2 id="production-readiness">Production Readiness</h2>
 <h3 id="production-ready-v11">Production-Ready (v1.1)</h3>
 <ul>
-<li>Core language (116 special forms, 1,058 builtins — 1,118-construct canonical surface, see “Language surface count” below)</li>
+<li>Core language (116 special forms, 1,067 builtins — 1,470-construct canonical surface, see “Language surface count” below)</li>
 <li>Automatic differentiation (3 modes)</li>
 <li>Tensor operations (30+ functions)</li>
 <li>List processing (50+ operations)</li>
@@ -3855,7 +3865,7 @@
 <tr>
 <td>72-opcode core ISA</td>
 <td>Yes</td>
-<td>Register+stack architecture, computed-goto dispatch; <code>OP_COUNT = 72</code> in <code>lib/backend/vm_core.c</code>, the enum <code>vm_run.c</code>’s dispatch table indexes — corrected 2026-08-25 from “64” (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. <code>lib/backend/eshkol_compiler.c</code> mirrors the enum exactly; <code>lib/backend/eshkol_benchmark.c</code> still declares its own <code>OpCode</code> stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc</td>
+<td>Register+stack architecture, computed-goto dispatch; <code>OP_COUNT = 72</code> in <code>lib/backend/vm_core.c</code>, the enum <code>vm_run.c</code>’s dispatch table indexes — corrected 2026-08-25 from “64” (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. The old standalone hosted compiler snapshot was retired; current VM source uses its own production opcode table; <code>lib/backend/eshkol_benchmark.c</code> still declares its own <code>OpCode</code> stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc</td>
 </tr>
 <tr>
 <td>741 VM-reachable builtins</td>

@@ -186,6 +186,7 @@ static int vm_language_coverage_compilation_enabled(void);
 static uint32_t vm_language_coverage_name_hash(const char* name);
 static void vm_language_coverage_named_call(VM* vm, Value func);
 static void vm_language_coverage_form(int name_hash);
+static void vm_language_coverage_read(VM* vm, int binding_hash);
 
 /* Compiler-only promise helpers.  They intentionally have no BUILTINS[]
  * spelling: public delay/force/make-promise/promise? forms lower to them. */
@@ -349,8 +350,12 @@ static int vm_load_prelude_cache(FuncChunk* chunk) {
         else v.as.i = prelude_const_ints[i];
         chunk_add_const(chunk, v);
     }
-    for (int i = 0; i < prelude_n_locals; i++)
-        add_local(chunk, prelude_local_names[i]);
+    for (int i = 0; i < prelude_n_locals; i++) {
+        int slot = add_local(chunk, prelude_local_names[i]);
+#ifdef ESHKOL_VM_PRELUDE_BINDING_IDS
+        if (slot >= 0) chunk->locals[slot].coverage_binding_id = prelude_binding_ids[i];
+#endif
+    }
     return 1;
 #else
     (void)chunk;
@@ -802,6 +807,7 @@ static const BuiltinDef BUILTINS[] = {
      * native-codegen lowering and the rationale for nextafter over
      * fesetround). */
     {"fl-next-up", 2228, 1}, {"fl-next-down", 2229, 1},
+    {"stop-gradient", 2252, 1},
     {"make-lru-cache", 1989, 1}, {"lru-get", 1990, 2},
     {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
     {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},
@@ -1024,6 +1030,8 @@ static const BuiltinDef BUILTINS[] = {
     /* Seeded pseudorandom numbers — the native VM uses the same hosted
      * runtime state as AOT/JIT; the WASM VM uses the same algorithm locally. */
     {"random", 1863, 0}, {"srand48", 1864, 1},
+    {"make-prng", 1866, 1}, {"prng?", 1867, 1},
+    {"prng-random", 1868, 1}, {"prng-random-integer", 1869, 2},
     /* Quantum-inspired RNG — IDs 1860-1862 */
     {"quantum-random", 1860, 0},
     {"quantum-random-int", 1861, 1},
@@ -1154,7 +1162,9 @@ int eshkol_builtin_min_arity(const char* name) {
 }
 
 static int vm_language_coverage_compilation_enabled(void) {
-#ifdef ESHKOL_VM_WASM
+#if defined(ESHKOL_VM_WASM) || defined(GENERATE_PRELUDE_CACHE)
+    /* Bootstrap bytes are a deterministic build artifact, not an executed
+     * coverage sample. An inherited trace directory must not alter them. */
     return 0;
 #else
     const char* trace_dir = getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
@@ -1198,6 +1208,7 @@ enum { VM_LANGUAGE_COVERAGE_SEEN_SLOTS = 4096 };
 static _Atomic uint32_t vm_language_coverage_seen_native[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
 static _Atomic uint32_t vm_language_coverage_seen_call[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
 static _Atomic uint32_t vm_language_coverage_seen_form[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
+static _Atomic uint32_t vm_language_coverage_seen_read[VM_LANGUAGE_COVERAGE_SEEN_SLOTS];
 
 static int vm_language_coverage_first_sighting(_Atomic uint32_t* slots,
                                                uint32_t key) {
@@ -1253,6 +1264,21 @@ static void vm_language_coverage_form(int name_hash) {
 #endif
 }
 
+static void vm_language_coverage_read(VM* vm, int binding_hash) {
+#ifndef ESHKOL_VM_WASM
+    if (!vm || vm->error || binding_hash <= 0 || vm->pc < 2 || vm->pc > vm->code_len) return;
+    if (vm->language_coverage_load_pc != vm->pc - 1) return;
+    vm->language_coverage_load_pc = 0;
+    const uint8_t previous = vm->code[vm->pc - 2].op;
+    if (previous != OP_GET_LOCAL && previous != OP_GET_UPVALUE) return;
+    if (!vm_language_coverage_first_sighting(vm_language_coverage_seen_read,
+                                             (uint32_t)binding_hash)) return;
+    eshkol_language_coverage_vm_read_hash((uint32_t)binding_hash);
+#else
+    (void)vm; (void)binding_hash;
+#endif
+}
+
 static void vm_language_coverage_named_call(VM* vm, Value func) {
 #ifndef ESHKOL_VM_WASM
     if (!vm || func.type != VAL_CLOSURE || vm->pc < 2 || vm->pc > vm->code_len)
@@ -1281,6 +1307,10 @@ static void emit_builtin_preamble(FuncChunk* c) {
     for (int b = 0; BUILTINS[b].name; b++) {
         const BuiltinDef* def = &BUILTINS[b];
         int func_slot = add_local(c, def->name);
+        char identity[256];
+        snprintf(identity, sizeof(identity), "vm.builtin:%s", def->name);
+        if (func_slot >= 0) c->locals[func_slot].coverage_binding_id =
+            vm_language_coverage_name_hash(identity);
 
         /* Emit: JUMP over body → body (GETL params, NATIVE_CALL, RET) → CLOSURE */
         int cfunc = chunk_add_const(c, INT_VAL(0)); /* placeholder for func PC */
@@ -1346,13 +1376,32 @@ static void emit_builtin_preamble(FuncChunk* c) {
  * Matches the annotation syntax — a `:` followed by one of the linear builtin
  * type names as a whole word — rather than the bare name, so a variable or
  * string that merely happens to contain "Stream" does not arm the check. The
- * linear builtins are Handle, Stream and Qubit (hott_types.h,
- * TYPE_FLAG_LINEAR); keep this list in step with them.
+ * linear builtins are Handle, Stream, Qubit and the quantum register family
+ * qreg (hott_types.h, TYPE_FLAG_LINEAR); keep this list in step with them.
+ * The quantum register and region forms arm it too: their linear values are
+ * typed by signature, with no annotation in the program.
  */
+static int vm_word_char(char c) {
+    return isalnum((unsigned char)c) || c == '-' || c == '_' || c == '?' || c == '!' ||
+           c == '>' || c == '<' || c == '*' || c == '/' || c == '%';
+}
+
 static int vm_source_carries_linear_annotation(const char* source) {
-    static const char* const kLinearTypeNames[] = { "Qubit", "Handle", "Stream" };
+    /* Quantum registers (ADR-0048) are linear too: qreg annotations, and the
+     * forms that create registers without any annotation (qalloc's result is
+     * qreg<n> by its signature) or open a quantum region. */
+    static const char* const kLinearTypeNames[] = { "Qubit", "Handle", "Stream", "qreg", "qregion" };
+    static const char* const kQuantumForms[] = {
+        "qalloc", "define-quantum-region", "with-quantum-region", "call-with-quantum-region"
+    };
     if (!source) return 0;
     for (const char* p = source; *p; ++p) {
+        if (p == source || !vm_word_char(p[-1])) {
+            for (size_t i = 0; i < sizeof(kQuantumForms) / sizeof(kQuantumForms[0]); ++i) {
+                size_t len = strlen(kQuantumForms[i]);
+                if (strncmp(p, kQuantumForms[i], len) == 0 && !vm_word_char(p[len])) return 1;
+            }
+        }
         if (*p != ':') continue;
         const char* q = p + 1;
         while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
@@ -1371,6 +1420,24 @@ static int vm_source_carries_linear_annotation(const char* source) {
     return 0;
 }
 
+/**
+ * @brief True when @p source carries structural types (ADR-0046): a record,
+ * channel-endpoint, one-shot or quantified type former, or the record/session
+ * libraries whose operations the structural layer types. Such a program has
+ * row, rank and protocol obligations the bridge decides, exactly as it
+ * decides linearity.
+ */
+static int vm_source_carries_structural_types(const char* source) {
+    static const char* const kMarkers[] = {
+        "core.records", "core.sessions", "(forall", "(chan ", "(record ", "(-o "
+    };
+    if (!source) return 0;
+    for (size_t i = 0; i < sizeof(kMarkers) / sizeof(kMarkers[0]); ++i) {
+        if (strstr(source, kMarkers[i])) return 1;
+    }
+    return 0;
+}
+
 /* The installed implementation, or NULL. See inc/eshkol/backend/vm.h for why
  * this is a hook and not a direct call: this translation unit ships inside
  * libeshkol-runtime.a, which is linked into every program the compiler emits,
@@ -1381,12 +1448,133 @@ void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn) {
     g_vm_linear_check = fn;
 }
 
+/* Skip whitespace and return the end of the balanced s-expression at @p p
+ * (bounded by @p limit characters), or NULL when there is none. */
+static const char* vm_sexp_end(const char* p, size_t limit) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (!*p || *p == ')') return NULL;
+    if (*p != '(') {
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' &&
+               *p != '(' && *p != ')') p++;
+        return p;
+    }
+    int depth = 0;
+    for (size_t n = 0; *p && n < limit; ++p, ++n) {
+        if (*p == '(') depth++;
+        else if (*p == ')' && --depth == 0) return p + 1;
+    }
+    return NULL;
+}
+
+/* True when [begin, end) holds a group (vector X Y ...) with an index: three
+ * or more elements, the shape of a length-indexed vector type. */
+static int vm_text_has_indexed_vector(const char* begin, const char* end) {
+    for (const char* p = begin; p && p < end; ++p) {
+        if (*p != '(' || strncmp(p + 1, "vector", 6) != 0) continue;
+        const char* q = p + 7;
+        if (*q != ' ' && *q != '\t' && *q != '\n' && *q != '\r') continue;
+        int elements = 1;
+        for (const char* e = vm_sexp_end(q, (size_t)(end - q)); e && e <= end;
+             e = vm_sexp_end(e, (size_t)(end - e))) {
+            if (++elements >= 3) return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief True when @p source writes a type in the dependent type language
+ *        (ADR-0042): a Pi or Sigma, a universe, a define-type family with
+ *        declared parameter sorts, or a length-indexed (vector T n) in an
+ *        annotation, an ascription, a declaration or a define-type.
+ *
+ * Such a program can fail a dependent-type obligation, which the native
+ * engine refuses to compile; the VM then asks the same front end. A program
+ * without these forms cannot fail one, and pays nothing.
+ */
+static int vm_source_carries_dependent_annotation(const char* source) {
+    static const char* const kKeywords[] = {
+        "(Pi", "(Sigma", "(\xCE\xA0", "(\xCE\xA3", "(universe"
+    };
+    if (!source) return 0;
+    for (size_t i = 0; i < sizeof(kKeywords) / sizeof(kKeywords[0]); ++i) {
+        const size_t len = strlen(kKeywords[i]);
+        for (const char* p = strstr(source, kKeywords[i]); p; p = strstr(p + 1, kKeywords[i])) {
+            const char after = p[len];
+            if (after == ' ' || after == '\t' || after == '\n' || after == '\r' || after == '(') {
+                return 1;
+            }
+        }
+    }
+    for (const char* p = source; *p; ++p) {
+        const char* q = NULL;
+        int sexps = 2;
+        int define_type = 0;
+        if (*p == ':') {
+            q = p + 1;
+        } else if (strncmp(p, "(the", 4) == 0 && (p[4] == ' ' || p[4] == '\n' || p[4] == '\t')) {
+            q = p + 4;
+            sexps = 1;
+        } else if (strncmp(p, "(define-type", 12) == 0 &&
+                   (p[12] == ' ' || p[12] == '\n' || p[12] == '\t')) {
+            q = p + 12;
+            define_type = 1;
+        }
+        if (!q) continue;
+        const char* start = q;
+        const char* end = q;
+        for (int i = 0; i < sexps && end; ++i) {
+            const char* next = vm_sexp_end(end, 4096);
+            if (!next) break;
+            if (define_type && i == 0 && memchr(end, ':', (size_t)(next - end))) return 1;
+            end = next;
+        }
+        if (end && end > start && vm_text_has_indexed_vector(start, end)) return 1;
+    }
+    return 0;
+}
+
+static EshkolSourceCheckFn g_vm_dependent_check = NULL;
+
+void eshkol_vm_install_dependent_check(EshkolSourceCheckFn fn) {
+    g_vm_dependent_check = fn;
+}
+
+/**
+ * @brief Run the native engine's dependent-type check over @p source.
+ * @return 0 to proceed, nonzero when the VM must refuse this program.
+ */
+static int vm_reject_dependent_violations(const char* source, const char* source_name) {
+    if (!source || !vm_source_carries_dependent_annotation(source)) return 0;
+    if (!g_vm_dependent_check) {
+        vm_compile_error("this build cannot verify dependent types",
+                         "no dependent-type checker is installed; link a driver that "
+                         "calls eshkol_vm_install_dependent_check()");
+        return 1;
+    }
+    const int failed = g_vm_dependent_check(source, source_name);
+    if (failed > 0) {
+        /* The bridge printed each failed obligation with the native wording. */
+        vm_compile_error("refusing to compile a program whose dependent types do not hold",
+                         "each failed obligation is reported above");
+        return 1;
+    }
+    if (failed < 0) {
+        vm_compile_error("refusing to compile a program carrying a dependent type "
+                         "that the front end could not analyse",
+                         "the dependent obligations of this source cannot be verified");
+        return 1;
+    }
+    return 0;
+}
+
 /**
  * @brief Run the native engine's linear check over @p source before compiling.
  * @return 0 to proceed, nonzero when the VM must refuse this program.
  */
 static int vm_reject_linear_violations(const char* source, const char* source_name) {
-    if (!source || !vm_source_carries_linear_annotation(source)) return 0;
+    if (!source || (!vm_source_carries_linear_annotation(source) &&
+                    !vm_source_carries_structural_types(source))) return 0;
 
     if (!g_vm_linear_check) {
         /* No front end installed — a freestanding or embedded build. Refuse
@@ -1403,7 +1591,7 @@ static int vm_reject_linear_violations(const char* source, const char* source_na
         /* The bridge has already printed each violation, with the same wording
          * the native engine uses — one rule, one diagnostic. */
         vm_compile_error("refusing to compile a program that violates linear "
-                         "(no-cloning) typing",
+                         "(no-cloning) or structural (record, rank, protocol) typing",
                          "linear types are use-exactly-once; run with --unsafe "
                          "to bypass (no-cloning is then NOT enforced)");
         return 1;
@@ -1418,6 +1606,70 @@ static int vm_reject_linear_violations(const char* source, const char* source_na
     return 0;
 }
 
+/* True when @p source writes a refinement type: `(Refine` in any case,
+ * followed by whitespace. Aliases are written with the same form. */
+static int vm_source_carries_refinement(const char* source) {
+    static const char kWord[] = "(refine";
+    for (const char* p = source; *p; ++p) {
+        size_t i = 0;
+        while (kWord[i] && p[i] && (char)tolower((unsigned char)p[i]) == kWord[i]) ++i;
+        if (!kWord[i] && (p[i] == ' ' || p[i] == '\t' || p[i] == '\n' || p[i] == '\r')) return 1;
+    }
+    return 0;
+}
+
+static EshkolSourceCheckFn g_vm_refinement_check = NULL;
+
+void eshkol_vm_install_refinement_check(EshkolSourceCheckFn fn) {
+    g_vm_refinement_check = fn;
+}
+
+/**
+ * @brief Run the native engine's refinement check (ADR-0044) over @p source.
+ * @return 0 to proceed, nonzero when the VM must refuse this program.
+ */
+static int vm_reject_refinement_violations(const char* source, const char* source_name) {
+    if (!source || !vm_source_carries_refinement(source)) return 0;
+    if (!g_vm_refinement_check) {
+        vm_compile_error("this build cannot verify refinement types",
+                         "no refinement checker is installed; link a driver that "
+                         "calls eshkol_vm_install_refinement_check(), or remove the "
+                         "refinement type annotations");
+        return 1;
+    }
+    int errors = g_vm_refinement_check(source, source_name);
+    if (errors > 0) {
+        vm_compile_error("refusing to compile a program whose refinement types do not hold",
+                         "each refinement error above names the obligation and a "
+                         "counterexample; run with --unsafe to bypass");
+        return 1;
+    }
+    if (errors < 0) {
+        vm_compile_error("refusing to compile a program carrying a refinement type "
+                         "that the front end could not analyse",
+                         "an unverified refinement must not run");
+        return 1;
+    }
+    return 0;
+}
+
+/**
+ * @brief The one front-end type gate of the VM: every source-level judgment
+ *        the native engine makes before code generation, in the native order.
+ *
+ * Dependent-type obligations (ADR-0042), linearity, then refinements
+ * (ADR-0044). Each judgment is reached through its own installed hook and is
+ * consulted only when the source writes a form it governs, so a program that
+ * uses none of them pays nothing. Both VM entry points (run and emit) call
+ * this one function, so they cannot disagree about which judgments apply.
+ * @return 0 to proceed, nonzero when the VM must refuse this program.
+ */
+static int vm_reject_type_violations(const char* source, const char* source_name) {
+    if (vm_reject_dependent_violations(source, source_name)) return 1;
+    if (vm_reject_linear_violations(source, source_name)) return 1;
+    if (vm_reject_refinement_violations(source, source_name)) return 1;
+    return 0;
+}
 
 /* Global ESKB output path — aliased through CompilerContext */
 #define g_eskb_output_path g_compiler_ctx.eskb_output
@@ -1433,7 +1685,8 @@ static int compile_and_run(const char* source) {
     vm_clear_compile_failure();
     vm_reset_compilation_unit_modules();
     vm_clear_import_bindings();
-    if (vm_reject_linear_violations(source, g_source_file_path)) return 1;
+    vm_hott_begin_unit();
+    if (vm_reject_type_violations(source, g_source_file_path)) return 1;
 
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
     vm_seed_entry_module_path(g_source_file_path);
@@ -1759,7 +2012,7 @@ static int compile_and_run(const char* source) {
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
         "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL",
-        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN","LFORM"
+        "GMARK","CLOSL","CLOSC","RAISE_SECONDARY","TCALL_POPN","LFORM","LREAD"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
@@ -2057,9 +2310,10 @@ static int emit_eskb_with_options(const char* source,
      * native engine refuses to write. Decided before compilation so nothing
      * downstream can trust the file's existence. */
     vm_clear_compile_failure();
+    vm_hott_begin_unit();
     const char* saved_source_path = g_compiler_ctx.source_path;
     g_compiler_ctx.source_path = source_path;
-    if (vm_reject_linear_violations(source, source_path ? source_path : output_path)) {
+    if (vm_reject_type_violations(source, source_path ? source_path : output_path)) {
         g_compiler_ctx.source_path = saved_source_path;
         return -1;
     }
@@ -2457,6 +2711,13 @@ static int eshkol_vm_validate_stack_operand(int32_t operand) {
     return operand >= 0 && operand < ESHKOL_VM_STACK_SIZE;
 }
 
+static int eshkol_vm_validate_vec_create_operand(int32_t operand) {
+    /* Reader numeric tensor literals encode their count as -(count + 1).
+     * Decode in a wider type so INT32_MIN is rejected without overflowing. */
+    int64_t count = operand < 0 ? -(int64_t)operand - 1 : operand;
+    return count >= 0 && count < ESHKOL_VM_STACK_SIZE;
+}
+
 static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
     if (!mod) return -1;
     /* The pool grows on demand; the ceiling is the profile bound. */
@@ -2519,10 +2780,12 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
             break;
         case OP_CALL:
         case OP_TAIL_CALL:
-        case OP_VEC_CREATE:
         case OP_POPN:
         case OP_PACK_REST:
             if (!eshkol_vm_validate_stack_operand(operand)) return -1;
+            break;
+        case OP_VEC_CREATE:
+            if (!eshkol_vm_validate_vec_create_operand(operand)) return -1;
             break;
         case OP_JUMP:
         case OP_JUMP_IF_FALSE:
@@ -2549,9 +2812,15 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
             if (operand < 0) return -1;
             if (pc + 1 >= mod->code_len ||
                 (mod->opcodes[pc + 1] != OP_CALL &&
-                 mod->opcodes[pc + 1] != OP_TAIL_CALL)) {
+                 mod->opcodes[pc + 1] != OP_TAIL_CALL &&
+                 mod->opcodes[pc + 1] != OP_TAIL_CALL_POPN)) {
                 return -1;
             }
+            break;
+        case OP_LANGUAGE_COVERAGE_READ:
+            if (operand <= 0 || pc == 0 ||
+                (mod->opcodes[pc - 1] != OP_GET_LOCAL &&
+                 mod->opcodes[pc - 1] != OP_GET_UPVALUE)) return -1;
             break;
         case OP_LANGUAGE_COVERAGE_FORM:
             /* A form marker precedes an arbitrary lowering, so there is no
@@ -2825,6 +3094,10 @@ int main(int argc, char** argv) {
      * read, so no compilation path can run ahead of it. Without this the VM
      * enforced nothing at all and ran a qubit clone to completion, exit 0. */
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
+    eshkol_vm_install_refinement_check(eshkol_refinement_check_source);
+    /* The same cubical kernel the native engine runs (ADR-0043). */
+    eshkol_vm_install_hott_form(eshkol_hott_form_source);
+    eshkol_vm_install_dependent_check(eshkol_dependent_check_source);
 
     /* SW-10: resolve the documented resource-limit environment variables before
      * anything runs. The VM sources themselves are freestanding-safe and never
@@ -2875,10 +3148,29 @@ int main(int argc, char** argv) {
                 /* Load and run ESKB bytecode */
                 EskbModule mod;
                 if (eskb_load_file(input, &mod) == 0) {
+                    EshkolVmLoadOptions load_options;
+                    if (eshkol_vm_validate_module_profile(&mod) != 0) {
+                        fprintf(stderr, "ERROR: invalid ESKB VM bytecode profile in %s\n", input);
+                        eskb_module_free(&mod);
+                        return 1;
+                    }
+                    if (eshkol_vm_default_load_options(&load_options) != 0 ||
+                        eshkol_vm_validate_load_policy(&mod, &load_options) != 0) {
+                        fprintf(stderr, "ERROR: ESKB module disallowed by VM load policy in %s\n", input);
+                        eskb_module_free(&mod);
+                        return 1;
+                    }
                     VM* vm = vm_create();
                     if (!vm) { fprintf(stderr, "ERROR: cannot create VM\n"); eskb_module_free(&mod); return 1; }
                     free(vm->code);
-                    vm->code = (Instr*)calloc(mod.code_len, sizeof(Instr));
+                    vm->code = (Instr*)calloc(mod.code_len ? (size_t)mod.code_len : 1,
+                                              sizeof(Instr));
+                    if (!vm->code) {
+                        fprintf(stderr, "ERROR: cannot allocate ESKB bytecode for %s\n", input);
+                        vm_free(vm);
+                        eskb_module_free(&mod);
+                        return 1;
+                    }
                     vm->code_len = mod.code_len;
                     for (int i = 0; i < mod.code_len; i++)
                         vm->code[i] = (Instr){mod.opcodes[i], mod.operands[i]};

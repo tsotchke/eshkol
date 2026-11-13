@@ -79,8 +79,12 @@ All five constants are defined together in `weight_matrices.c §53-58`:
 #define HD 2         /* head dimension */
 #define N_LAYERS 6
 #define FFN_DIM 2304 /* per-layer FFN hidden width */
-#define SCALE 300.0f /* softmax/sigmoid saturation temperature */
+#define SCALE SDNC_CONSTRUCTION_UNIT /* 300: softmax/sigmoid saturation temperature */
 ```
+
+`SDNC_CONSTRUCTION_UNIT` (300) is defined once, in `lib/core/sdnc_core.h`,
+because the runtime fine-tuning facility moves gate thresholds in exactly this
+unit (`docs/SDNC.md` §14).
 
 A direct count from the `InterpreterWeights` struct
 (`weight_matrices.c §2969-2982`) gives, per layer:
@@ -356,10 +360,11 @@ Of these 84, the current artifact weight-encodes 83.
 opcodes $\{0,1,\ldots,36,38,39,\ldots,83\}$ as weight-implemented and
 zero opcodes as native-delegated; the missing index is 37,
 `OP_NATIVE_CALL`. This is the deliberate external boundary for host
-runtime services (the Eshkol runtime uses native IDs in the 300+ range
+runtime services (the Eshkol VM uses native-call IDs in the 300+ range
 for cons, display, tensor ops, the consciousness engine, geometric
-manifolds, and AD subsystem entry points; see
-`lib/backend/eshkol_compiler.c` and the `vm_native.c` dispatcher).
+manifolds, and AD subsystem entry points; see the VM dispatcher in
+`lib/backend/vm_native.c`. The standalone compiler named in older revisions
+has been retired.
 
 ## 6. Two tiers of execution
 
@@ -479,6 +484,10 @@ execution; see `qllm_interpreter.c §207` for the header parse) and by
 `qllm_backward.c` for training-mode use (QLMW v4 extends the file with
 optimiser state; see `qllm_backward.c §591-593`). Version 3 is the
 inference-only weight-export format used by the paper artifact.
+`sdnc_weights_load_qlmw` (`lib/core/sdnc_finetune.c`) reads version 3 into the
+runtime weight struct; `core.sdnc`'s `sdnc-load-weights!` and `sdnc-repair!`
+use it to fine-tune the constructed interpreter's gate thresholds with an exact
+forward pass ([ADR-0032](../design/adr/0032-exact-forward-control-fine-tuning.md)).
 
 ESKB (`lib/backend/eskb_format.h`) is the *bytecode* binary container,
 not the weight container — magic `0x45534B42` ("ESKB"), version 2,

@@ -34,6 +34,7 @@
 
 #if !defined(_WIN32)
 #include <pthread.h>
+#include <sys/resource.h>
 #endif
 
 #if !defined(_WIN32)
@@ -621,6 +622,65 @@ static bool thread_pool_start_worker(
 // ============================================================================
 
 /**
+ * @brief The widest default pool whose worker stacks fit the address space.
+ *
+ * A worker stack is reserved address space, so the pool a host can actually
+ * run depends on the per-process address-space limit as well as the core
+ * count: at a 1 GiB worker stack a 16 GiB limit holds a handful of workers,
+ * not one per core. Half the limit is left for everything else the process
+ * reserves (the heap, the arenas, the code and the mapped libraries). With no
+ * finite limit, @p requested stands.
+ */
+static size_t thread_pool_workers_within_address_space(size_t requested) {
+#if ESHKOL_USE_PTHREAD_WORKERS && defined(RLIMIT_AS)
+    struct rlimit limit{};
+    if (getrlimit(RLIMIT_AS, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
+        return requested;
+    }
+    const size_t stack_size = thread_pool_default_worker_stack_size();
+    if (stack_size == 0) return requested;
+    const size_t budget = static_cast<size_t>(limit.rlim_cur) / 2;
+    const size_t affordable = budget / stack_size;
+    if (affordable == 0) return 1;
+    return affordable < requested ? affordable : requested;
+#else
+    return requested;
+#endif
+}
+
+/**
+ * @brief Settle a pool whose worker spawn stopped early.
+ *
+ * One worker stack is reserved address space, so a host with many cores and a
+ * per-process address-space limit runs out of room part way through the spawn
+ * loop — the more so the larger ESHKOL_WORKER_STACK_BYTES is. The workers that
+ * did start are real workers with the requested stack, so the pool keeps them
+ * and simply becomes as wide as the host allowed: submitted work still runs on
+ * a worker, with the worker stack the caller asked for, and the worker-stack
+ * diagnostics still come from a worker.
+ *
+ * Stopping the pool here instead would hand the caller a pool that accepts
+ * work nobody will ever run, and the inline fallback that follows runs the
+ * work on the submitting thread's much smaller stack — which is how a bounded
+ * recursion came back as a fatal signal rather than the stack-overflow
+ * diagnostic it is. Only a pool with no worker at all stays stopped.
+ */
+static void thread_pool_settle_short_pool(eshkol_thread_pool_t* pool) {
+    const size_t started = pool->workers.size();
+    if (started == 0) {
+        pool->stop.store(true);
+        pool->queue_cv.notify_all();
+        pool->num_threads = 0;
+        eshkol_error("[%s] no worker thread could be started; the pool accepts no work",
+                     pool->name.c_str());
+        return;
+    }
+    eshkol_info("[%s] running with %zu of %zu requested workers; the host allowed no more",
+                pool->name.c_str(), started, pool->num_threads);
+    pool->num_threads = started;
+}
+
+/**
  * @brief Create and start a new thread pool per @p config (worker count,
  *        per-thread arena size, queue capacity, metrics, name), defaulting
  *        num_threads to hardware_concurrency() and thread_arena_size to
@@ -640,6 +700,7 @@ eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* conf
         if (pool->num_threads == 0) {
             pool->num_threads = 4;  // Fallback
         }
+        pool->num_threads = thread_pool_workers_within_address_space(pool->num_threads);
     }
 
     pool->thread_arena_size = config->thread_arena_size;
@@ -680,9 +741,7 @@ eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* conf
         pool->workers.reserve(pool->num_threads);
         for (size_t i = 0; i < pool->num_threads; ++i) {
             if (!thread_pool_start_worker(pool, i, true)) {
-                pool->stop.store(true);
-                pool->queue_cv.notify_all();
-                pool->num_threads = pool->workers.size();
+                thread_pool_settle_short_pool(pool);
                 break;
             }
         }
@@ -694,9 +753,7 @@ eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* conf
         pool->workers.reserve(pool->num_threads);
         for (size_t i = 0; i < pool->num_threads; ++i) {
             if (!thread_pool_start_worker(pool, i, false)) {
-                pool->stop.store(true);
-                pool->queue_cv.notify_all();
-                pool->num_threads = pool->workers.size();
+                thread_pool_settle_short_pool(pool);
                 break;
             }
         }
@@ -1211,6 +1268,21 @@ extern "C" uint8_t eshkol_lazy_future_is_async(eshkol_lazy_future* lf) {
  *         future is treated as ready. */
 extern "C" uint8_t eshkol_lazy_future_is_ready(eshkol_lazy_future* lf) {
     return lf ? lf->forced : 1;
+}
+
+/** @brief `future-ready?`: can `force` return @p lf's value without blocking?
+ *
+ * True once the value has been forced, and also as soon as an eagerly
+ * submitted future's pool task has completed, before anyone forced it. This
+ * is the documented meaning of `future-ready?` and the one a scheduler needs:
+ * it lets a fiber wait for a pool computation without blocking its thread.
+ * `eshkol_lazy_future_is_ready` keeps its narrower "forced" meaning, which is
+ * what `force` itself tests before reading the cached result. A null future
+ * is ready. */
+extern "C" uint8_t eshkol_lazy_future_result_available(eshkol_lazy_future* lf) {
+    if (!lf || lf->forced) return 1;
+    return (lf->pool_future &&
+            future_is_ready(static_cast<eshkol_future_t*>(lf->pool_future))) ? 1 : 0;
 }
 
 /** @brief Get @p lf's wrapped thunk pointer (0 if @p lf is null). */

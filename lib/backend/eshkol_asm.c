@@ -19,7 +19,7 @@
 
 #include "eskb_writer.c"
 
-/* Opcodes (match eshkol_compiler.c) */
+/* This standalone assembler carries its own minimal ESKB opcode subset. */
 enum {
     OP_NOP=0, OP_CONST=1, OP_NIL=2, OP_TRUE=3, OP_FALSE=4, OP_POP=5, OP_DUP=6,
     OP_ADD=7, OP_SUB=8, OP_MUL=9, OP_DIV=10, OP_MOD=11, OP_NEG=12, OP_ABS=13,
