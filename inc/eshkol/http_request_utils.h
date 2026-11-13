@@ -364,7 +364,9 @@ inline eshkol_http_framing eshkol_http_examine_framing(const std::string& head) 
     // it. A line starting with SP or HTAB is an obs-fold continuation, which
     // RFC 9112 section 5.2 removed, and `Content-Length : 5` names no field
     // here while an intermediary that trims around the colon sees a body: the
-    // two framings disagree, so the message is refused instead.
+    // two framings disagree, so the message is refused instead. Receiving
+    // admits HTAB inside a value, which RFC 9110 allows and real Cookie and
+    // User-Agent strings carry; sending still refuses it.
     {
         size_t line_start = head.find('\n');
         if (line_start != std::string::npos) {
@@ -377,8 +379,8 @@ inline eshkol_http_framing eshkol_http_examine_framing(const std::string& head) 
                     --content_end;
                 const size_t length = content_end - line_start;
                 if (length == 0) break;  // end of the header section
-                if (!eshkol_http_valid_header_line_n(head.data() + line_start,
-                                                     length)) {
+                if (!eshkol_http_valid_received_header_line_n(
+                        head.data() + line_start, length)) {
                     framing.verdict =
                         eshkol_http_framing_verdict::malformed_field_line;
                     return framing;

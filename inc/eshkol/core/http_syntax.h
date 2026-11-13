@@ -393,6 +393,46 @@ static inline int eshkol_http_valid_request_target_n(const char* text,
 }
 
 /**
+ * @brief A received field line: the sending grammar, plus HTAB in the value.
+ *
+ * Eshkol refuses HTAB in a value it *sends*, because a proxy on the path may
+ * re-split a value on it. RFC 9110 section 5.5 nonetheless admits HTAB in a
+ * field value, and real `Cookie` and `User-Agent` strings carry it, so a
+ * server that refused one would reject conforming traffic. Receiving is
+ * therefore held to the RFC's set and sending to the stricter one; every
+ * other control byte, CR, LF, NUL and DEL included, is refused on both.
+ *
+ * @param text   Field line, not NUL-terminated.
+ * @param length Length of `text` in bytes.
+ * @return 1 when the line is one a peer may legitimately have sent.
+ */
+static inline int eshkol_http_valid_received_header_line_n(const char* text,
+                                                           size_t length) {
+    size_t name_length = 0;
+    size_t value_start;
+    size_t value_end;
+    size_t i;
+    if (!text || length == 0) return 0;
+    while (name_length < length && text[name_length] != ':') name_length++;
+    if (name_length == length) return 0;  /* no colon: not a field line */
+    if (!eshkol_http_valid_token(text, name_length)) return 0;
+    value_start = name_length + 1;
+    value_end = length;
+    while (value_start < value_end &&
+           (text[value_start] == ' ' || text[value_start] == '\t'))
+        value_start++;
+    while (value_end > value_start &&
+           (text[value_end - 1] == ' ' || text[value_end - 1] == '\t'))
+        value_end--;
+    for (i = value_start; i < value_end; ++i) {
+        const unsigned char c = (unsigned char)text[i];
+        if (c == '\t') continue;  /* RFC 9110 admits HTAB inside a value */
+        if (c < 0x20 || c == 0x7f) return 0;
+    }
+    return 1;
+}
+
+/**
  * @brief eshkol_http_valid_header_line() over exactly `length` bytes.
  *
  * Length-aware throughout rather than by copying, so a legal field line of

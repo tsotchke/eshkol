@@ -129,6 +129,9 @@ int main(int argc, char** argv) {
     }
     if (child == 0) {
         const std::string port_text = std::to_string(port);
+        /* A one-second deadline, so the 408 branch is reachable in a test
+         * rather than only after the shipped fifteen. */
+        setenv("ESHKOL_SERVER_REQUEST_DEADLINE_SECONDS", "1", 1);
         execl(server, server, "--host", "127.0.0.1", "--port",
               port_text.c_str(), static_cast<char*>(nullptr));
         _exit(127);
@@ -202,6 +205,38 @@ int main(int argc, char** argv) {
                                     "Content-Length: " + over + "\r\n\r\n"),
                       413, "a body over the budget answers 413");
     }
+
+    // ─── The deadline answers on the connection ─────────────────────────────
+    // A client that opens a request and never finishes it is answered 408 and
+    // let go, rather than holding the connection until it gives up.
+    {
+        int fd = connect_to(port);
+        expect(fd >= 0, "the slow client connects");
+        if (fd >= 0) {
+            const std::string opening =
+                "POST /compile HTTP/1.1\r\n" + host + "Content-Length: 100\r\n\r\n";
+            send(fd, opening.data(), opening.size(), 0);
+            // Nothing more: the body never arrives.
+            std::string response;
+            char buffer[1024];
+            for (;;) {
+                ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
+                if (n <= 0) break;
+                response.append(buffer, static_cast<size_t>(n));
+            }
+            close(fd);
+            int status = 0;
+            if (response.size() >= 12 && response.compare(0, 5, "HTTP/") == 0)
+                status = std::atoi(response.c_str() + 9);
+            expect_status(status, 408,
+                          "a request that never completes is answered 408");
+        }
+    }
+
+    // The server is still answering afterwards: the deadline closed one
+    // connection, not the listener.
+    expect(ask(port, "GET / HTTP/1.1\r\n" + host + "\r\n") > 0,
+           "an honest request is answered after a deadline fires");
 
     kill(child, SIGTERM);
     int status = 0;
