@@ -10550,7 +10550,9 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_VULKAN_COMPUTE_ENABLED)
     find_package(Threads REQUIRED)
     add_executable(vulkan_compute_test
         tests/gpu/vulkan_compute_test.c
-        lib/backend/gpu/gpu_vulkan.c)
+        lib/backend/gpu/gpu_vulkan.c
+        # The loader consults the capability policy before it opens a library.
+        lib/core/capability_policy.cpp)
     target_include_directories(vulkan_compute_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
@@ -10610,7 +10612,9 @@ if(ESHKOL_GPU_BACKEND STREQUAL "CUDA")
     # when the numerical GPU gates correctly report that hardware is absent.
     add_executable(cublas_lazy_loader_test
         tests/toolchain/cublas_lazy_loader_test.cpp
-        lib/backend/gpu/cublas_loader.cpp)
+        lib/backend/gpu/cublas_loader.cpp
+        # The loader consults the capability policy before it opens a library.
+        lib/core/capability_policy.cpp)
     target_compile_features(cublas_lazy_loader_test PRIVATE cxx_std_17)
     target_compile_definitions(cublas_lazy_loader_test PRIVATE
         ESHKOL_CUBLAS_LOADER_TESTING=1)

@@ -20,10 +20,11 @@
 #if !defined(ESHKOL_CUBLAS_LOADER_TESTING)
 #include <cuda_runtime_api.h>
 
+#endif
+
 /* A candidate path can come from the environment, so loading it is a
  * foreign-code sink: under a policy without `ffi` the library reads as absent. */
 extern "C" int eshkol_capability_require(const char* capability);
-#endif
 
 namespace eshkol::cuda {
 namespace {
