@@ -44,8 +44,19 @@ extern "C" {
 
 /* The platform cryptographic source (lib/core/crypto_primitives.c):
  * SecRandomCopyBytes, BCryptGenRandom, RAND_bytes or /dev/urandom.
- * Returns 0 on success. */
+ * Returns 0 on success.
+ *
+ * A browser bundle does not carry that source, and the WebSocket client is
+ * not built there either. ESHKOL_WS_HAVE_CRYPTO_SOURCE says which case this
+ * translation unit is in; where there is no source, the key and mask
+ * functions below report failure, which is a refusal rather than a weaker
+ * value, and nothing references the symbol. */
+#if defined(__EMSCRIPTEN__)
+#define ESHKOL_WS_HAVE_CRYPTO_SOURCE 0
+#else
+#define ESHKOL_WS_HAVE_CRYPTO_SOURCE 1
 int eshkol_random_bytes(char* buf, size_t len);
+#endif
 
 /** The RFC 6455 section 1.3 handshake GUID. */
 #define ESHKOL_WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -202,10 +213,15 @@ static inline int eshkol_ws_base64(const unsigned char* in, size_t len,
  *         connection: there is no acceptable substitute for the key.
  */
 static inline int eshkol_ws_generate_key(char* out, size_t out_cap) {
+#if ESHKOL_WS_HAVE_CRYPTO_SOURCE
     unsigned char raw[16];
     if (!out || out_cap < ESHKOL_WS_KEY_CAPACITY) return 0;
     if (eshkol_random_bytes((char*)raw, sizeof(raw)) != 0) return 0;
     return eshkol_ws_base64(raw, sizeof(raw), out, out_cap);
+#else
+    (void)out; (void)out_cap;
+    return 0;
+#endif
 }
 
 /**
@@ -216,7 +232,11 @@ static inline int eshkol_ws_generate_key(char* out, size_t out_cap) {
  */
 static inline int eshkol_ws_generate_mask(unsigned char out[4]) {
     if (!out) return 0;
+#if ESHKOL_WS_HAVE_CRYPTO_SOURCE
     return eshkol_random_bytes((char*)out, 4) == 0;
+#else
+    return 0;
+#endif
 }
 
 /**
