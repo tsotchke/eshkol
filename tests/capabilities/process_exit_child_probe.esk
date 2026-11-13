@@ -16,7 +16,17 @@
       (string-append "trap '' TERM; sleep 25 >/dev/null 2>&1")
       (string-append "sleep 3; printf child-survived > '" marker "' 2>/dev/null")))
 
-(define pid (process-spawn command ""))
+;; The native engines hand a command string to /bin/sh; the bytecode VM execs
+;; an argv directly and takes a list for it. Offer the list first — the native
+;; builtin reads a non-string first argument as a failure and answers -1, so
+;; the string form is what runs there — and the same child runs on all three.
+(define (spawn-through-shell command-string)
+  (let ((argv-pid (process-spawn (list "/bin/sh" "-c" command-string) ".")))
+    (if (and (number? argv-pid) (> argv-pid 0))
+        argv-pid
+        (process-spawn command-string ""))))
+
+(define pid (spawn-through-shell command))
 (display "spawned:")
 (display (if (and (number? pid) (> pid 0)) "yes" "no"))
 (newline)
