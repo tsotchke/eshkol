@@ -68,6 +68,7 @@ def _load_yaml(path: Path) -> object:
 
 def _cmake_files(repo_root: Path) -> list[Path]:
     files = [repo_root / "CMakeLists.txt"]
+    files.extend(sorted((repo_root / "cmake").rglob("*.cmake")))
     files.extend(sorted((repo_root / "tests").rglob("CMakeLists.txt")))
     return [path for path in files if path.is_file()]
 
@@ -297,6 +298,9 @@ def self_test() -> bool:
         root = Path(temp)
         (root / ".icc").mkdir()
         (root / "scripts").mkdir()
+        (root / "cmake").mkdir()
+        (root / "cmake" / "FeatureTests.cmake").write_text(
+            "add_test(NAME fragment_test COMMAND true)\n", encoding="utf-8")
         (root / "scripts" / "ok.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         os.chmod(root / "scripts" / "ok.sh", stat.S_IRWXU)
         (root / "CMakeLists.txt").write_text(
@@ -306,6 +310,7 @@ def self_test() -> bool:
         )
         cases = [
             ("good", _fixture_oracles("ctest -R real_test -L smoke && ./scripts/ok.sh"), True),
+            ("cmake-fragment", _fixture_oracles("ctest -R '^fragment_test$'"), True),
             ("missing-name", _fixture_oracles("ctest -R absent"), False),
             ("missing-label", _fixture_oracles("ctest -L absent"), False),
             ("missing-script", _fixture_oracles("./scripts/missing.sh"), False),

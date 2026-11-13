@@ -1,0 +1,7 @@
+schema_version = 1
+license = "MIT"
+upstream_base = "24552377142f47be4b3f592852cdad5f99a27fbb"
+prerequisite_pr = 895
+source_kind = "Selected input-admission fixes and independent qualification adapted to the upstream SAT implementation"
+source_owners = ["sat"]
+scope = "Complete DIMACS declarations, proper proof data, normalized deletion and independent producer-free replay; no second SAT solver"

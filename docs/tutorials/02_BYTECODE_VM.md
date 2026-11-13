@@ -170,8 +170,8 @@ Most features work in both backends. Key differences:
 | Feature | LLVM | VM |
 |---|---|---|
 | Forward-mode AD | Yes | Yes (dual numbers) |
-| Reverse-mode AD | Yes | No |
-| Gradient/Jacobian/Hessian | Yes | No (forward-mode only) |
+| Reverse-mode AD | Yes | Bounded scalar Wengert-tape API (`reverse-gradient`) |
+| Gradient/Jacobian/Hessian | Yes | Available: forward carrier passes for gradient/Jacobian; higher-order AD for Hessian |
 | Tensors | Yes (N-dimensional) | Yes (1D) |
 | Complex numbers | Yes | Yes |
 | Bignums + Rationals | Yes | Yes |
@@ -180,6 +180,14 @@ Most features work in both backends. Key differences:
 | Parallel primitives | Yes | No |
 | GPU acceleration | Yes (Metal/CUDA) | No |
 | XLA backend | Yes | No |
+
+API availability and differentiation algorithm are separate questions. The VM's
+gradient and Jacobian operators use forward carrier passes, while Hessians use
+higher-order seeded AD passes. The separate `reverse-gradient` operator records
+supported scalar arithmetic on a Wengert tape. These paths have their own
+operation and carrier limits; their presence does not establish general tensor
+reverse-mode parity or guarantee a diagnostic for every unsupported composition.
+The dispatch and implementations are in `lib/backend/vm_native.c`.
 
 ---
 

@@ -2805,6 +2805,18 @@
         "Unhandled exception: agent.quantum: make-h2-hamiltonian failed: Moonlab quantum support not enabled in this build (reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)"
       ]
     },
+    "examples/quantum/bell_openqasm3.esk": {
+      "source_sha256": "306d5ed031fcd6db88fac83a63cbab0c88a170ca14b60f9cf58ed3ecb7e9a760",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This example was added after the historical release measurement recorded in this document. The portable circuit contract and optional Qiskit oracle are separate current checks, not receipts for that earlier release."
+    },
     "examples/streaming_stats.esk": {
       "source_sha256": "fd101dfcf7bf4cbe3364fd2a4f6baea167de332bb4fd8d13c913b0c7550d4c8b",
       "jit": {
@@ -3182,6 +3194,30 @@
       "ctest": [],
       "key_output": [],
       "not_run_reason": "Source-only preparation; execution deliberately not performed."
+    },
+    "examples/mix/generate.esk": {
+      "source_sha256": "8c5f7369e3872a9ae588d9a17971ffc32a52fa6160757e1de28c3f08aa4d58af",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "This generator was added after the historical release measurement recorded in this document. The mix_gate and mix_verify_gate CTest entries are its current checks, not receipts for that earlier release."
+    },
+    "examples/blc-corpus/probe.esk": {
+      "source_sha256": "55ba2f27a9805c49150750598eff64a4fe209ddf194b6aba0504cacd3dcfd41a",
+      "jit": {
+        "status": "NOT-RUN"
+      },
+      "aot": {
+        "status": "NOT-RUN"
+      },
+      "ctest": [],
+      "key_output": [],
+      "not_run_reason": "Runs only as a template completed by examples/blc-corpus/run.py with an appended (learner-probe ...) call; the committed form alone prints no program output to measure."
     }
   }
 }

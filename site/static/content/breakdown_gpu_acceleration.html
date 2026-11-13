@@ -108,6 +108,7 @@
 <p><code>eshkol_gpu_has_fp64()</code> reports 1 on the <code>exact</code>/<code>high</code> tiers (as on Metal, whose f64 is also emulated) and <code>eshkol_gpu_supports_f64()</code> reports 0 (no hardware f64).</p>
 <p><strong>Operations.</strong> sf64 kernels cover matmul, elementwise add/sub/mul/div/neg/abs/ relu/reciprocal, and sum/prod/min/max/mean reductions. Transcendental elementwise ops (exp, log, sin, cos, tanh, sigmoid, sqrt), batched matmul, transpose, softmax, normalization and backward kernels have no sf64 kernel; the dispatch refuses them and runs the CPU path.</p>
 <p><strong>Fallback is explicit.</strong> When <code>navigator.gpu</code>, an adapter, a device or JSPI is missing, <code>initWebGPU()</code> resolves to <code>{ ok: false, reason }</code> and <code>eshkol_gpu_get_backend()</code> reports <code>ESHKOL_GPU_NONE</code>; the program runs on the CPU with identical results. With a device present, every call the GPU does not serve increments <code>backend.fallbackCount</code> and records the reason in <code>backend.diagnostics</code>; every call it does serve increments <code>backend.dispatchCount</code> and sets <code>backend.lastPath</code> (for example <code>webgpu:gemm_sf64</code>).</p>
+<p><code>python3 scripts/run_webgpu_wasm_fallback_test.py</code> compiles the actual Emscripten C backend and verifies no-device matmul refusal, its CPU matmul fallback, and batched fallback delegation to an instrumented scalar reference callback in Node. It needs no browser or GPU and makes no GPU execution or precision claim.</p>
 <p>A backend can be attached to multiple browser VMs. Each compute call retains the initiating VM’s memory through asynchronous readback, so concurrent calls write to their own destination. Dispatch counters, history and diagnostics describe the shared backend across those calls. Inexact tensor division has IEEE 754 zero-divisor behavior on both CPU fallback and sf64 GPU dispatch.</p>
 <p><strong>Correctness gate.</strong> <code>scripts/lib/webgpu_diff_runner.mjs</code> drives Chrome (Playwright, <code>channel: 'chrome'</code>) and compares every kernel with the CPU reference over data in a real <code>WebAssembly.Memory</code>: matmul shapes that are not multiples of the tile, each elementwise op on random values, on uniformly random f64 bit patterns and on an edge-value matrix, and each reduction. The exact tier must match bit for bit (reductions within <code>GPU_GATE_TOL</code>, default <code>1e-9</code>), a run with zero GPU dispatches fails, and <code>--corrupt=&lt;kernel&gt;</code> (gemm, elem, reduce, round, sticky) proves the gate goes red on a broken kernel. <code>tests/webgpu/webgpu_live_test.mjs</code> checks device limits, dispatch tiling and JSPI suspension in Chrome; <code>tests/webgpu/webgpu_regressions_test.mjs</code> checks the tier and fallback contracts without a browser.</p>
 <h3 id="the-browser-vm">The browser VM</h3>
@@ -439,20 +440,31 @@ cost_b       = overhead_b + compute_b</code></pre>
 <li><strong>Softmax</strong> (<code>gpu_cuda_kernels.cu:319</code>): Three-pass (max, exp+sum, normalize).</li>
 <li><strong>Normalize</strong> (<code>gpu_cuda_kernels.cu:364</code>): Layer normalization (mean, variance, scale+shift).</li>
 </ul>
+<h3 id="vulkan-compute-gpu_vulkanc">Vulkan compute (<code>gpu_vulkan.c</code>)</h3>
+<p>On Linux the GPU dispatch also carries a Vulkan compute backend (<code>ESHKOL_GPU_VULKAN</code>). It is built into every Linux build that has <code>ESHKOL_GPU_ENABLED=ON</code> (<code>-DESHKOL_VULKAN_COMPUTE=OFF</code> leaves it out) and opens the Vulkan loader (<code>libvulkan.so.1</code>) at run time, so neither the build host nor the produced binaries depend on Vulkan being installed.</p>
+<ul>
+<li><strong>Selection.</strong> In a CUDA build, <code>eshkol_gpu_init()</code> tries CUDA first and opens a Vulkan device when no CUDA device initialises. In a build without CUDA, Vulkan is the device backend of <code>gpu_memory_stub.cpp</code>. Automatic selection takes GPU-type devices only (discrete, then integrated, then virtual), so a software implementation never replaces the CPU path by accident; <code>ESHKOL_GPU_BACKEND=vulkan</code> also accepts CPU-type devices such as Mesa lavapipe. A device needs a compute queue and <code>shaderFloat64</code>.</li>
+<li><strong>Kernels.</strong> GLSL compute shaders in <code>lib/backend/gpu/vulkan/</code>, embedded as SPIR-V (<code>lib/backend/gpu/vulkan_spirv.h</code>, regenerated and checked by <code>scripts/gen_vulkan_spirv.sh</code>): elementwise f64 (add, sub, mul, div, neg, abs, relu, sqrt, reciprocal), full reductions (sum, prod, min, max, mean), and matmul in f64 and f32. Every expression mirrors the CPU reference and is compiled without contraction, so results are bit-identical to the CPU on IEEE-754 devices. Reductions use a fixed chunk tree (256 elements per invocation, partials of partials), so a sum is reproducible run to run and across devices. GLSL.std.450 defines exp/log/sin/cos/tanh only for 16- and 32-bit floats; those f64 operations, sigmoid, axis reductions, softmax, transpose, normalize and the backward kernels continue on the CPU with the same buffers.</li>
+<li><strong>Admission.</strong> When a device opens, every kernel runs a bitwise probe against the host (edge values including signed zeros, subnormals, infinities and NaN, plus random data; a three-pass reduction; odd matmul shapes). A kernel that differs is not used on that device and its calls take the CPU path. The admitted set is reported by <code>eshkol_vk_status()</code> and by the <code>GPU initialized: Vulkan compute (...)</code> log line.</li>
+<li><strong>Memory.</strong> Each buffer has a host-visible coherent staging allocation; when the device has separate device-local memory a device-local twin holds the kernel operands and command-buffer copies move data between them. Wrapped host memory keeps <code>host_ptr</code> equal to the caller’s pointer; every operation reads its inputs from it and writes results back before returning.</li>
+</ul>
+<p>Details, verification commands and the Vulkan items still planned are in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/platform/VULKAN_COMPUTE.md" target="_blank" rel="noopener noreferrer">docs/platform/VULKAN_COMPUTE.md</a>.</p>
 <hr />
 <h2 id="6-supported-operations">6. Supported Operations</h2>
 <table>
 <colgroup>
-<col style="width: 22%" />
-<col style="width: 26%" />
-<col style="width: 26%" />
-<col style="width: 24%" />
+<col style="width: 17%" />
+<col style="width: 20%" />
+<col style="width: 20%" />
+<col style="width: 23%" />
+<col style="width: 18%" />
 </colgroup>
 <thead>
 <tr>
 <th>Operation</th>
 <th>Metal Kernel</th>
 <th>CUDA Kernel</th>
+<th>Vulkan Kernel</th>
 <th>Complexity</th>
 </tr>
 </thead>
@@ -461,11 +473,13 @@ cost_b       = overhead_b + compute_b</code></pre>
 <td>Matmul (f64)</td>
 <td><code>matmul_sf64</code>, <code>matmul_sf64_v2</code></td>
 <td><code>cublasDgemm</code></td>
+<td><code>matmul_f64.comp</code></td>
 <td>O(MKN)</td>
 </tr>
 <tr>
 <td>Matmul (df64)</td>
 <td><code>matmul_df64</code>, <code>matmul_df64_pure</code></td>
+<td>–</td>
 <td>–</td>
 <td>O(MKN)</td>
 </tr>
@@ -473,11 +487,13 @@ cost_b       = overhead_b + compute_b</code></pre>
 <td>Matmul (f32)</td>
 <td><code>matmul_f32_simd</code>, <code>matmul_f32_simd_128</code></td>
 <td><code>cublasSgemm</code></td>
+<td><code>matmul_f32.comp</code></td>
 <td>O(MKN)</td>
 </tr>
 <tr>
 <td>Matmul (fp24/fp53)</td>
 <td><code>matmul_fp24</code>, <code>matmul_fp53</code></td>
+<td>–</td>
 <td>–</td>
 <td>O(MKN)</td>
 </tr>
@@ -485,41 +501,48 @@ cost_b       = overhead_b + compute_b</code></pre>
 <td>Matmul (Ozaki-II)</td>
 <td><code>matmul_ozaki_gemm</code></td>
 <td>INT8-Ozaki <code>cublasGemmEx</code> (opt-in)</td>
+<td>–</td>
 <td>O(T^2*MKN)</td>
 </tr>
 <tr>
 <td>Elementwise</td>
 <td><code>elementwise_sf64</code></td>
 <td><code>elementwise_f64_kernel</code></td>
+<td><code>elementwise_f64.comp</code> (add, sub, mul, div, neg, abs, relu, sqrt, reciprocal; the rest on the CPU path)</td>
 <td>O(N)</td>
 </tr>
 <tr>
 <td>Reduce (full/axis)</td>
 <td><code>reduce_sf64</code>, <code>reduce_axis_sf64</code></td>
 <td><code>reduce_f64_kernel</code></td>
+<td><code>reduce_f64.comp</code> (full); axis on the CPU path</td>
 <td>O(N)</td>
 </tr>
 <tr>
 <td>Softmax</td>
 <td><code>softmax_sf64</code></td>
 <td><code>softmax_f64_kernel</code></td>
+<td>CPU path</td>
 <td>O(N)</td>
 </tr>
 <tr>
 <td>Transpose</td>
 <td><code>transpose_sf64</code></td>
 <td><code>transpose_f64_kernel</code></td>
+<td>CPU path</td>
 <td>O(N)</td>
 </tr>
 <tr>
 <td>Normalize</td>
 <td><code>normalize_sf64</code></td>
 <td><code>normalize_f64_kernel</code></td>
+<td>CPU path</td>
 <td>O(N)</td>
 </tr>
 <tr>
 <td>Convert f64&lt;-&gt;f32/df64</td>
 <td><code>convert_*</code> pipelines</td>
+<td>–</td>
 <td>–</td>
 <td>O(N)</td>
 </tr>
@@ -579,6 +602,21 @@ cost_b       = overhead_b + compute_b</code></pre>
 <td><code>ESHKOL_FORCE_GPU=1</code></td>
 <td>–</td>
 <td>Force GPU for all ops</td>
+</tr>
+<tr>
+<td><code>ESHKOL_GPU_BACKEND</code></td>
+<td><code>auto</code></td>
+<td><code>cpu</code>/<code>none</code>, <code>cuda</code>, <code>vulkan</code> or <code>auto</code>; device backend chosen by <code>eshkol_gpu_init()</code> (Linux CUDA and non-CUDA builds)</td>
+</tr>
+<tr>
+<td><code>ESHKOL_VULKAN_DEVICE</code></td>
+<td>–</td>
+<td>Vulkan physical-device index to open (any device type)</td>
+</tr>
+<tr>
+<td><code>ESHKOL_VULKAN_LIBRARY</code></td>
+<td><code>libvulkan.so.1</code></td>
+<td>Path of the Vulkan loader to open</td>
 </tr>
 <tr>
 <td><code>ESHKOL_FORCE_CPU=1</code></td>

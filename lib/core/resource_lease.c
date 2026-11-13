@@ -260,6 +260,16 @@ int eshkol_resource_wait(const eshkol_resource_lease_t *lease, int fd, int event
         for (;;) {
             int32_t left = eshkol_resource_remaining(deadline);
             if (left < 0) { result = ESHKOL_IO_SYSTEM; break; }
+            /* Readiness can persist while the next nonblocking system call
+             * still reports EAGAIN (a datagram socket after shutdown, for
+             * example). The wait therefore ends on an exhausted budget before
+             * it consults the event loop, so repeated readiness can never
+             * extend the deadline. Cancellation still wins over expiry. */
+            if (!left) {
+                result = eshkol_handle_take_interrupt(registry, id, lease->lease) == 1
+                             ? ESHKOL_IO_CANCELLED : ESHKOL_IO_TIMEOUT;
+                break;
+            }
             const eshkol_event_t *fired = NULL;
             int count = 0;
             if (eshkol_event_loop_poll(context->loop, left, &fired, &count) != ESHKOL_EVENT_LOOP_OK) {
@@ -276,7 +286,6 @@ int eshkol_resource_wait(const eshkol_resource_lease_t *lease, int fd, int event
             /* Errors and hangups are reported as ready so the next system call
              * observes EOF, reset or the exact failure. */
             if (ready) { result = 0; break; }
-            if (!left) { result = ESHKOL_IO_TIMEOUT; break; }
         }
         int removed = eshkol_event_loop_remove(context->loop, fd);
         if (removed != ESHKOL_EVENT_LOOP_OK && removed != ESHKOL_EVENT_LOOP_ENOENT) {
