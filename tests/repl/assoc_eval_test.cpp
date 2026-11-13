@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -22,6 +23,19 @@ struct ProcessResult {
     int exit_code = 1;
     std::string output;
 };
+
+// An empty value removes the variable, on both platform families.
+void set_environment(const char* name, const std::string& value) {
+#ifdef _WIN32
+    _putenv_s(name, value.c_str());
+#else
+    if (value.empty()) {
+        unsetenv(name);
+    } else {
+        setenv(name, value.c_str(), 1);
+    }
+#endif
+}
 
 int fail(const std::string& message) {
     std::cerr << "FAIL: " << message << std::endl;
@@ -233,6 +247,32 @@ int main(int argc, char** argv) {
     ProcessResult source_fallback = run_process_capture(
         {isolated_binary.string(), "-e", assoc_eval[2]}, temp_root / "bin", lib_dir, true);
     if (int rc = assert_assoc_eval("source-fallback eval", source_fallback, true)) {
+        return rc;
+    }
+
+    // The same isolated compiler on a machine whose system prefix holds a
+    // precompiled stdlib from another build. Nobody pointed the compiler at
+    // that prefix, so its files are not candidates: the standard library is
+    // loaded from source exactly as above.
+    const fs::path foreign_prefix = temp_root / "system";
+    fs::create_directories(foreign_prefix / "lib" / "eshkol", ec);
+    if (ec) {
+        return fail("failed to create foreign system prefix: " + ec.message());
+    }
+    for (const char* name : {"stdlib.bc", "stdlib.o"}) {
+        std::ofstream foreign(foreign_prefix / "lib" / "eshkol" / name,
+                              std::ios::binary);
+        foreign << "precompiled stdlib of another build\n";
+        if (!foreign) {
+            return fail(std::string("failed to write foreign ") + name);
+        }
+    }
+    set_environment("ESHKOL_SYSTEM_PREFIXES", foreign_prefix.string());
+    ProcessResult beside_foreign_install = run_process_capture(
+        {isolated_binary.string(), "-e", assoc_eval[2]}, temp_root / "bin", lib_dir, true);
+    set_environment("ESHKOL_SYSTEM_PREFIXES", "");
+    if (int rc = assert_assoc_eval("source-fallback eval beside a foreign system install",
+                                   beside_foreign_install, true)) {
         return rc;
     }
 

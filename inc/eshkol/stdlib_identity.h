@@ -1,6 +1,7 @@
 #ifndef ESHKOL_STDLIB_IDENTITY_H
 #define ESHKOL_STDLIB_IDENTITY_H
 
+#include <eshkol/platform_runtime.h>
 #include <eshkol/stdlib_identity_config.h>
 
 #include <llvm/ADT/StringRef.h>
@@ -8,6 +9,7 @@
 #include <llvm/Object/ObjectFile.h>
 #include <llvm/Object/SymbolicFile.h>
 #include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
@@ -112,6 +114,56 @@ inline bool matches_module(const llvm::Module& module, std::string& found) {
         return false;
     }
     return expected_marker;
+}
+
+/**
+ * @brief Checks whether a stdlib artifact on disk carries this build's
+ *        identity, reading as little of it as the answer needs.
+ *
+ * `stdlib.bc` is opened lazily: the identity global lives at module level, so
+ * no function body is materialized. Any other name is read as an object file.
+ *
+ * @param path Path of a `stdlib.bc` or `stdlib.o` candidate.
+ * @return true only when the file is readable and carries the expected marker.
+ */
+inline bool file_belongs_to_this_build(const std::string& path) {
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer) return false;
+    std::string found;
+    if (llvm::StringRef(path).ends_with(".bc")) {
+        llvm::LLVMContext context;
+        auto module = llvm::getLazyBitcodeModule(
+            (*buffer)->getMemBufferRef(), context,
+            /*ShouldLazyLoadMetadata=*/true);
+        if (!module) {
+            llvm::consumeError(module.takeError());
+            return false;
+        }
+        return matches_module(**module, found);
+    }
+    return matches_object((*buffer)->getMemBufferRef(), found);
+}
+
+/**
+ * @brief Resolve a precompiled stdlib artifact (`stdlib.bc` or `stdlib.o`)
+ *        for the running compiler.
+ *
+ * Every loader and the driver resolve through this one function, so they all
+ * agree on which copy is this compiler's. A copy in a tier someone chose
+ * (env, `-L`, beside the compiler, the working tree) is returned as found and
+ * the caller's identity validation accepts or refuses it. A copy that sits
+ * only in a system prefix and was produced by another build is not a
+ * candidate at all: the compiler proceeds as it does on a machine with no
+ * system install, loading the standard library from source.
+ *
+ * @param roots Ordered roots from platform::install_library_roots().
+ * @param leaf  `"stdlib.bc"` or `"stdlib.o"`.
+ */
+inline platform::ResolvedInstallArtifact resolve_artifact(
+    const std::vector<platform::InstallSearchRoot>& roots,
+    const std::string& leaf) {
+    return platform::resolve_install_artifact(
+        roots, {leaf}, file_belongs_to_this_build);
 }
 
 } // namespace eshkol::stdlib_identity
