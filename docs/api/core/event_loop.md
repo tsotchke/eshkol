@@ -198,14 +198,14 @@ OK after kernel removal (including an already-gone descriptor or filter), ENOENT
 
 ### `eshkol_event_loop_poll`
 
-*Function* — line 193
+*Function* — line 197
 
 ```c
 int eshkol_event_loop_poll(eshkol_event_loop_t* loop, int timeout_ms,
  const eshkol_event_t** out_events, int* n_events);
 ```
 
-Wait for readiness on any registered descriptor. On return `out_events` points into storage owned by `loop` that stays valid until the next poll or close on the same loop — no caller buffer, no ownership transfer. A timeout is a success with `*n_events == 0`, never an error. A signal that interrupts the wait (EINTR) is reported as a timeout rather than an error, matching `eshkol_poll()`. That is what keeps an unbounded wait breakable: Ctrl-C interrupts the syscall and the call returns instead of wedging the REPL.
+Wait for readiness on any registered descriptor. On return `out_events` points into storage owned by `loop` that stays valid until the next poll or close on the same loop — no caller buffer, no ownership transfer. A timeout is a success with `*n_events == 0`, never an error. A signal that interrupts the wait (EINTR) is reported as a timeout rather than an error, matching `eshkol_poll()`. That is what keeps an unbounded wait breakable: Ctrl-C interrupts the syscall and the call returns instead of wedging the REPL. With no public registrations and no live/unresolved managed owner, a negative timeout returns immediately, even if a maintenance hook remains installed. Pending/retryable cleanup counts as an owner; terminal result tickets do not. Finite empty polls still honor their timeout.
 
 **Parameters**
 
@@ -220,7 +220,7 @@ ESHKOL_EVENT_LOOP_OK, or a negative result code.
 
 ### `eshkol_event_loop_close`
 
-*Function* — line 205
+*Function* — line 209
 
 ```c
 int eshkol_event_loop_close(eshkol_event_loop_t* loop);
@@ -234,7 +234,7 @@ ESHKOL_EVENT_LOOP_OK, or ESHKOL_EVENT_LOOP_EINVAL for a NULL loop.
 
 ### `eshkol_event_loop_count`
 
-*Function* — line 208
+*Function* — line 212
 
 ```c
 int eshkol_event_loop_count(const eshkol_event_loop_t* loop);
@@ -246,7 +246,7 @@ Number of descriptors currently registered, or -1 for a NULL loop.
 
 ### `eshkol_event_loop_last_os_error`
 
-*Function* — line 214
+*Function* — line 218
 
 ```c
 int eshkol_event_loop_last_os_error(const eshkol_event_loop_t* loop);
@@ -256,7 +256,7 @@ Host error detail (errno, or GetLastError/WSAGetLastError) for the most recent E
 
 ### `eshkol_event_loop_backend_name`
 
-*Function* — line 222
+*Function* — line 226
 
 ```c
 const char* eshkol_event_loop_backend_name(void);
@@ -266,7 +266,7 @@ Name of the compiled-in backend: "kqueue", "epoll", "iocp" or "none". Reported b
 
 ### `eshkol_event_loop_open_handle`
 
-*Function* — line 237
+*Function* — line 241
 
 ```c
 int64_t eshkol_event_loop_open_handle(int max_events);
@@ -280,7 +280,7 @@ A handle >= 1, or -1 on failure.
 
 ### `eshkol_event_loop_from_handle`
 
-*Function* — line 248
+*Function* — line 252
 
 ```c
 eshkol_event_loop_t* eshkol_event_loop_from_handle(int64_t handle);
@@ -294,7 +294,7 @@ The loop, or NULL if the handle is malformed, already closed, or refers to a rec
 
 ### `eshkol_event_loop_close_handle`
 
-*Function* — line 264
+*Function* — line 268
 
 ```c
 int eshkol_event_loop_close_handle(int64_t handle);
@@ -312,10 +312,10 @@ OK on close, EBUSY for a live loop owned by another thread or retained by a reso
 |---|---|---:|
 | `ESHKOL_EVENT_READ` | Macro | 83 |
 | `ESHKOL_EVENT_LOOP_OK` | Macro | 96 |
-| `eshkol_event_loop_retain_handle` | Function | 268 |
-| `eshkol_event_loop_release_handle` | Function | 269 |
-| `eshkol_event_loop_is_owner` | Function | 272 |
-| `eshkol_event_loop_wake` | Function | 275 |
-| `eshkol_event_loop_set_maintenance` | Function | 276 |
-| `eshkol_event_loop_registration_present` | Function | 278 |
-| `eshkol_event_loop_registration_matches` | Function | 281 |
+| `eshkol_event_loop_retain_handle` | Function | 272 |
+| `eshkol_event_loop_release_handle` | Function | 273 |
+| `eshkol_event_loop_is_owner` | Function | 276 |
+| `eshkol_event_loop_wake` | Function | 279 |
+| `eshkol_event_loop_set_maintenance` | Function | 280 |
+| `eshkol_event_loop_registration_present` | Function | 282 |
+| `eshkol_event_loop_registration_matches` | Function | 285 |

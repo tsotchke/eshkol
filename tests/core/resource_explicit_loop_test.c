@@ -1,4 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
+/* Contract checks must execute in Release builds too. */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include "eshkol/core/resource_lease.h"
 #include "eshkol/core/event_loop.h"
 #include "../../lib/core/event_loop_internal.h"
@@ -8,6 +12,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,12 +30,12 @@ static int dispose(uintptr_t value, void *data, eshkol_resource_cleanup_result_t
     if (n->fd >= 0) { int fd = n->fd; n->fd = -1; assert(close(fd) == 0); ++n->closes; }
     if (n->retry_path && n->calls == 1) {
         *result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_FAILED,
-            ESHKOL_CLEANUP_PATH, EACCES, 1};
+            ESHKOL_CLEANUP_STAGE_PATH, EACCES, 1};
         return ESHKOL_IO_SYSTEM;
     }
     if (n->terminal_error) {
         *result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_FAILED,
-            ESHKOL_CLEANUP_DESCRIPTOR, EIO, 0};
+            ESHKOL_CLEANUP_STAGE_DESCRIPTOR, EIO, 0};
         return ESHKOL_IO_SYSTEM;
     }
     return 0;
@@ -150,7 +155,7 @@ static void queued_and_retry(void) {
     assert(pthread_join(thread, NULL) == 0 && req.ticket > 0 && n.closes == 0);
     eshkol_resource_cleanup_result_t result;
     assert(eshkol_resource_cleanup_result(req.ticket, &result) == 0);
-    assert(result.state == ESHKOL_CLEANUP_FAILED && result.stage == ESHKOL_CLEANUP_PATH &&
+    assert(result.state == ESHKOL_CLEANUP_FAILED && result.stage == ESHKOL_CLEANUP_STAGE_PATH &&
            result.os_error == EACCES && result.retryable && n.closes == 1);
     assert(eshkol_event_loop_close_handle(loop) == ESHKOL_EVENT_LOOP_EBUSY);
     assert(eshkol_resource_cleanup_release(req.ticket) == ESHKOL_IO_BUSY);
@@ -346,6 +351,74 @@ static void legacy_removal_failure_recovers(void) {
     close(fds[0]); close(fds[1]);
 #endif
 }
+static void spent_budget_never_consults_loop(void) {
+#ifdef ESHKOL_RESOURCE_TESTING
+    extern uint64_t eshkol_event_loop_test_add_calls(void);
+    extern uint64_t eshkol_event_loop_test_poll_calls(void);
+    int fds[2]; assert(pipe(fds) == 0);
+    int64_t loop = eshkol_event_loop_open_handle(1);
+    Native n; int64_t id = adopt(loop, &n, fds[0]);
+    eshkol_event_loop_t *native_loop = eshkol_event_loop_from_handle(loop);
+    eshkol_resource_lease_t lease;
+    assert(eshkol_resource_borrow(id, ESHKOL_HANDLE_KIND_SOCKET, MASK, &lease) == 0);
+    assert(write(fds[1], "b", 1) == 1);
+    uint64_t additions = eshkol_event_loop_test_add_calls();
+    uint64_t polls = eshkol_event_loop_test_poll_calls();
+    assert(eshkol_resource_wait_on_loop(&lease, fds[0], ESHKOL_RESOURCE_READ,
+                                      eshkol_resource_deadline(0)) == ESHKOL_IO_TIMEOUT);
+    assert(eshkol_event_loop_test_add_calls() == additions);
+    assert(eshkol_event_loop_test_poll_calls() == polls);
+    assert(eshkol_event_loop_count(native_loop) == 0);
+    /* Expiry also wins before checking another owner's watch on the same fd. */
+    assert(eshkol_event_loop_add(native_loop, fds[0], ESHKOL_EVENT_READ, 777) == 0);
+    additions = eshkol_event_loop_test_add_calls();
+    assert(eshkol_resource_wait_on_loop(&lease, fds[0], ESHKOL_RESOURCE_READ,
+                                      eshkol_resource_deadline(0)) == ESHKOL_IO_TIMEOUT);
+    assert(eshkol_event_loop_registration_matches(native_loop, fds[0], ESHKOL_EVENT_READ, 777));
+    assert(eshkol_event_loop_test_add_calls() == additions);
+    assert(eshkol_event_loop_test_poll_calls() == polls);
+    assert(eshkol_event_loop_remove(native_loop, fds[0]) == 0);
+    assert(eshkol_resource_cancel(id, ESHKOL_HANDLE_KIND_SOCKET, MASK) == 0);
+    assert(eshkol_resource_wait_on_loop(&lease, fds[0], ESHKOL_RESOURCE_READ,
+                                      eshkol_resource_deadline(0)) == ESHKOL_IO_CANCELLED);
+    assert(eshkol_event_loop_test_add_calls() == additions);
+    assert(eshkol_event_loop_test_poll_calls() == polls);
+    eshkol_resource_release(&lease);
+    finish(eshkol_resource_close_request(id, ESHKOL_HANDLE_KIND_SOCKET, MASK));
+    close(fds[1]); assert(eshkol_event_loop_close_handle(loop) == 0);
+#endif
+}
+static void empty_poll_after_final_owner(void) {
+    /* A bounded parent catches the regression even though the child uses a
+     * genuinely unbounded poll. Retaining a terminal ticket is intentional. */
+    pid_t child = fork(); assert(child >= 0);
+    if (!child) {
+        alarm(5);
+        int64_t loop = eshkol_event_loop_open_handle(1);
+        eshkol_event_loop_t *native_loop = eshkol_event_loop_from_handle(loop);
+        Native n; int64_t id = adopt(loop, &n, -1); n.terminal_error = 1;
+        int64_t ticket = eshkol_resource_close_request(id, ESHKOL_HANDLE_KIND_SOCKET, MASK);
+        eshkol_resource_cleanup_result_t result;
+        assert(eshkol_resource_cleanup_result(ticket, &result) == 0);
+        assert(result.state == ESHKOL_CLEANUP_FAILED && !result.retryable);
+        assert(native_loop->managed_owners == 0 && native_loop->maintenance);
+        const eshkol_event_t *events; int count;
+        assert(eshkol_event_loop_poll(native_loop, -1, &events, &count) == 0 && count == 0);
+        assert(eshkol_resource_cleanup_release(ticket) == 0);
+        id = adopt(loop, &n, -1);
+        assert(native_loop->managed_owners == 1);
+        Request req = {id, 0, 2, 0}; pthread_t thread;
+        assert(pthread_create(&thread, NULL, request, &req) == 0);
+        while (!n.calls)
+            assert(eshkol_event_loop_poll(native_loop, -1, &events, &count) == 0);
+        assert(pthread_join(thread, NULL) == 0 && native_loop->managed_owners == 0);
+        assert(eshkol_event_loop_poll(native_loop, -1, &events, &count) == 0 && count == 0);
+        assert(eshkol_event_loop_close_handle(loop) == 0);
+        _exit(0);
+    }
+    int status; assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
 static void wake_descriptor_flags(const char *self) {
     eshkol_event_loop_t *loop = eshkol_event_loop_create(1); assert(loop);
     assert((fcntl(loop->wake_read, F_GETFL) & O_NONBLOCK) != 0);
@@ -374,6 +447,7 @@ int main(int argc, char **argv) {
     identity_readiness(); cancellation(); deferred_close(); queued_and_retry(); nonsticky_admission();
     idle_wakeup_and_capacity(); adoption_rollback(); indexed_dispatch_and_retired_recovery();
     removal_retains_until_retry(); legacy_removal_failure_recovers(); explicit_ticket_detach_handoff();
+    spent_budget_never_consults_loop(); empty_poll_after_final_owner();
     wake_descriptor_flags(argv[0]);
     puts("PASS: explicit-loop leases, mixed readiness, sticky cancellation, deferred and retryable cleanup");
     return 0;

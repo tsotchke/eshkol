@@ -182,6 +182,10 @@ int eshkol_event_loop_remove(eshkol_event_loop_t* loop, int fd);
  * than an error, matching `eshkol_poll()`. That is what keeps an unbounded
  * wait breakable: Ctrl-C interrupts the syscall and the call returns instead
  * of wedging the REPL.
+ * With no public registrations and no live/unresolved managed owner, a
+ * negative timeout returns immediately, even if a maintenance hook remains
+ * installed. Pending/retryable cleanup counts as an owner; terminal result
+ * tickets do not. Finite empty polls still honor their timeout.
  *
  * @param loop       Loop from eshkol_event_loop_create().
  * @param timeout_ms Milliseconds to wait; 0 polls without blocking, negative
