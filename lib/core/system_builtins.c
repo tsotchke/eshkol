@@ -4661,6 +4661,12 @@ typedef struct {
     int active;
     int fd;
     int closed;
+    /* An open fragment sequence: the data opcode the sequence began with and
+     * the bytes gathered so far. RFC 6455 section 5.4 delivers a message only
+     * once FIN arrives, so a fragment is never surfaced as a whole frame. */
+    int fragment_opcode;
+    char* fragment_data;
+    size_t fragment_length;
 } SysWebSocketClient;
 
 static SysWebSocketClient g_sys_websocket_clients[16];
@@ -4765,7 +4771,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
     /* Caller-supplied headers and the URL-derived target and authority are
      * decided against the grammar before a socket exists. */
     const char* offending =
-        eshkol_http_request_offending_field("GET", NULL, headers);
+        eshkol_http_request_offending_field_ex("GET", NULL, headers, 1);
     if (offending) sys_protocol_refusal("websocket-connect", offending);
     if (!sys_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
         return sys_make_bool(0);
@@ -4842,6 +4848,41 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_send_binary_v(
                                            data, strlen(data)));
 }
 
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+/**
+ * @brief Fails the connection: reports the close code, then closes.
+ *
+ * RFC 6455 section 7.1.7 fails a connection by sending a Close frame with the
+ * code and closing the socket. Returning while the stream sits mid-frame is
+ * what must not happen: a later read would parse attacker-chosen payload
+ * bytes as a frame header, putting the frame type and length under the peer's
+ * control. Any gathered fragment is released with the connection.
+ *
+ * @param handle     WebSocket handle, already validated.
+ * @param close_code Close code to report, or 0 to close without one.
+ * @return False, the value every refusal on this path returns.
+ */
+static eshkol_sysbuiltin_value_t sys_ws_fail_connection(int handle,
+                                                        int close_code) {
+    SysWebSocketClient* client = &g_sys_websocket_clients[handle];
+    if (close_code > 0) {
+        unsigned char body[2];
+        body[0] = (unsigned char)((close_code >> 8) & 0xff);
+        body[1] = (unsigned char)(close_code & 0xff);
+        (void)sys_ws_send_frame(client->fd, 8, (const char*)body, 2);
+    }
+    if (client->fragment_data) {
+        free(client->fragment_data);
+        client->fragment_data = NULL;
+    }
+    client->fragment_length = 0;
+    client->fragment_opcode = 0;
+    close(client->fd);
+    client->closed = 1;
+    return sys_make_bool(0);
+}
+#endif
+
 static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_receive_v(
     eshkol_sysbuiltin_value_t ws_val,
     eshkol_sysbuiltin_value_t timeout_val) {
@@ -4859,43 +4900,102 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_receive_v(
         return sys_make_bool(0);
 
     unsigned char hdr[2];
-    if (recv(fd, hdr, 2, MSG_WAITALL) != 2) return sys_make_bool(0);
+    if (recv(fd, hdr, 2, MSG_WAITALL) != 2)
+        return sys_ws_fail_connection(handle, 0);
+    int fin = (hdr[0] & 0x80) != 0;
     int opcode = hdr[0] & 0x0f;
-    int masked = hdr[1] & 0x80;
     uint64_t len = hdr[1] & 0x7f;
     if (len == 126) {
         unsigned char ext[2];
-        if (recv(fd, ext, 2, MSG_WAITALL) != 2) return sys_make_bool(0);
+        if (recv(fd, ext, 2, MSG_WAITALL) != 2)
+            return sys_ws_fail_connection(handle, 0);
         len = ((uint64_t)ext[0] << 8) | ext[1];
     } else if (len == 127) {
         unsigned char ext[8];
-        if (recv(fd, ext, 8, MSG_WAITALL) != 8) return sys_make_bool(0);
+        if (recv(fd, ext, 8, MSG_WAITALL) != 8)
+            return sys_ws_fail_connection(handle, 0);
         len = 0;
         for (int i = 0; i < 8; i++) len = (len << 8) | ext[i];
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
-    if (masked && recv(fd, mask, 4, MSG_WAITALL) != 4) return sys_make_bool(0);
-    if (len > 65536) return sys_make_bool(0);
+
+    /* Judged before a byte of payload is read, and any refusal fails the
+     * connection rather than returning with the stream mid-frame. */
+    {
+        const int in_fragment =
+            g_sys_websocket_clients[handle].fragment_opcode != 0;
+        const eshkol_ws_frame_verdict verdict =
+            eshkol_ws_examine_frame(hdr[0], hdr[1], len, in_fragment);
+        if (verdict != ESHKOL_WS_FRAME_OK)
+            return sys_ws_fail_connection(handle,
+                                          eshkol_ws_frame_close_code(verdict));
+    }
 
     char* payload = (char*)malloc((size_t)len + 1);
-    if (!payload) return sys_make_bool(0);
-    if (recv(fd, payload, (size_t)len, MSG_WAITALL) != (ssize_t)len) {
+    if (!payload) return sys_ws_fail_connection(handle, 1011);
+    if (len > 0 && recv(fd, payload, (size_t)len, MSG_WAITALL) != (ssize_t)len) {
         free(payload);
-        return sys_make_bool(0);
-    }
-    if (masked) {
-        for (uint64_t i = 0; i < len; i++) payload[i] ^= (char)mask[i % 4];
+        return sys_ws_fail_connection(handle, 0);
     }
     payload[len] = '\0';
-    const char* type = opcode == 1 ? "text" :
-                       opcode == 2 ? "binary" :
-                       opcode == 9 ? "ping" :
-                       opcode == 8 ? "close" : "unknown";
-    if (opcode == 8) g_sys_websocket_clients[handle].closed = 1;
-    eshkol_sysbuiltin_value_t result =
-        sys_make_pair(sys_make_string(type), sys_make_string_len(payload, (size_t)len));
-    free(payload);
-    return result;
+
+    /* A control frame is answered or reported immediately; it never joins a
+     * fragment sequence (RFC 6455 section 5.5 allows one to arrive inside
+     * one). A ping is answered with the pong the RFC requires. */
+    if (opcode & 0x08) {
+        const char* control_type = opcode == 9 ? "ping" :
+                                   opcode == 10 ? "pong" :
+                                   opcode == 8 ? "close" : "unknown";
+        if (opcode == 9) (void)sys_ws_send_frame(fd, 10, payload, (size_t)len);
+        if (opcode == 8) g_sys_websocket_clients[handle].closed = 1;
+        eshkol_sysbuiltin_value_t control = sys_make_pair(
+            sys_make_string(control_type),
+            sys_make_string_len(payload, (size_t)len));
+        free(payload);
+        return control;
+    }
+
+    /* A data frame: gather it, and surface a message only on FIN. */
+    {
+        SysWebSocketClient* client = &g_sys_websocket_clients[handle];
+        const int message_opcode =
+            opcode == 0 ? client->fragment_opcode : opcode;
+        size_t total = client->fragment_length + (size_t)len;
+        char* gathered;
+        if (total > eshkol_ws_max_frame_bytes()) {
+            free(payload);
+            return sys_ws_fail_connection(handle, 1009);
+        }
+        gathered = (char*)realloc(client->fragment_data, total + 1);
+        if (!gathered) {
+            free(payload);
+            return sys_ws_fail_connection(handle, 1011);
+        }
+        if (len > 0) memcpy(gathered + client->fragment_length, payload, (size_t)len);
+        gathered[total] = '\0';
+        free(payload);
+        client->fragment_data = gathered;
+        client->fragment_length = total;
+        if (!fin) {
+            client->fragment_opcode = message_opcode;
+            return sys_make_bool(0);
+        }
+        client->fragment_opcode = 0;
+        client->fragment_data = NULL;
+        client->fragment_length = 0;
+        if (message_opcode == 1 && !eshkol_ws_valid_utf8(gathered, total)) {
+            free(gathered);
+            /* Section 8.1: a text message that is not UTF-8 fails the
+             * connection, with the 1007 the RFC names for it. */
+            return sys_ws_fail_connection(handle, 1007);
+        }
+        {
+            eshkol_sysbuiltin_value_t result = sys_make_pair(
+                sys_make_string(message_opcode == 1 ? "text" : "binary"),
+                sys_make_string_len(gathered, total));
+            free(gathered);
+            return result;
+        }
+    }
 #else
     (void)ws_val; (void)timeout_val;
     return sys_make_bool(0);
@@ -4908,6 +5008,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_close_v(eshkol_sysbuil
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     (void)sys_ws_send_frame(g_sys_websocket_clients[handle].fd, 8, "", 0);
     close(g_sys_websocket_clients[handle].fd);
+    if (g_sys_websocket_clients[handle].fragment_data)
+        free(g_sys_websocket_clients[handle].fragment_data);
 #endif
     memset(&g_sys_websocket_clients[handle], 0, sizeof(g_sys_websocket_clients[handle]));
     return sys_make_bool(1);

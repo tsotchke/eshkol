@@ -1131,6 +1131,12 @@ typedef struct VM {
         int active;
         int fd;
         int closed;
+        /* An open fragment sequence: the data opcode it began with and the
+         * bytes gathered so far. A fragment is never surfaced as a whole
+         * frame; the message is delivered on FIN (RFC 6455 section 5.4). */
+        int fragment_opcode;
+        char* fragment_data;
+        size_t fragment_length;
     } websocket_clients[16];
 
     char http_proxy_url[512];

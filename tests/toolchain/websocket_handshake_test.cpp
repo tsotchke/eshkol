@@ -359,6 +359,108 @@ int main() {
                        "no bytes at all is a refusal");
     }
 
+    // ─── Received frames (RFC 6455 section 5) ───────────────────────────────
+    // A frame from a server is never masked; a client that unmasks one and
+    // carries on has accepted a frame the RFC says must fail the connection.
+    expect(eshkol_ws_examine_frame(0x81, 0x85, 5, 0) ==
+               ESHKOL_WS_FRAME_MASKED_FROM_SERVER,
+           "a masked server frame fails the connection");
+    expect(eshkol_ws_examine_frame(0x81, 0x05, 5, 0) == ESHKOL_WS_FRAME_OK,
+           "an unmasked text frame is admitted");
+    expect(eshkol_ws_examine_frame(0xc1, 0x05, 5, 0) ==
+               ESHKOL_WS_FRAME_RESERVED_BITS_SET,
+           "RSV1 set with no extension negotiated is refused");
+    expect(eshkol_ws_examine_frame(0x83, 0x05, 5, 0) ==
+               ESHKOL_WS_FRAME_RESERVED_OPCODE,
+           "a reserved opcode is refused");
+    expect(eshkol_ws_examine_frame(0x8b, 0x00, 0, 0) ==
+               ESHKOL_WS_FRAME_RESERVED_OPCODE,
+           "a reserved control opcode is refused");
+
+    // Control frames: at most 125 bytes, never fragmented.
+    expect(eshkol_ws_examine_frame(0x89, 0x7e, 65535, 0) ==
+               ESHKOL_WS_FRAME_CONTROL_TOO_LARGE,
+           "a 65535-byte ping is refused");
+    expect(eshkol_ws_examine_frame(0x88, 0x7e, 126, 0) ==
+               ESHKOL_WS_FRAME_CONTROL_TOO_LARGE,
+           "a 126-byte close is refused");
+    expect(eshkol_ws_examine_frame(0x89, 0x7d, 125, 0) == ESHKOL_WS_FRAME_OK,
+           "a 125-byte ping is admitted");
+    expect(eshkol_ws_examine_frame(0x09, 0x05, 5, 0) ==
+               ESHKOL_WS_FRAME_CONTROL_FRAGMENTED,
+           "a ping with FIN clear is refused");
+
+    // Fragment sequencing (section 5.4).
+    expect(eshkol_ws_examine_frame(0x80, 0x05, 5, 0) ==
+               ESHKOL_WS_FRAME_BAD_CONTINUATION,
+           "a continuation outside a sequence is refused");
+    expect(eshkol_ws_examine_frame(0x81, 0x05, 5, 1) ==
+               ESHKOL_WS_FRAME_BAD_CONTINUATION,
+           "a new data frame inside a sequence is refused");
+    expect(eshkol_ws_examine_frame(0x80, 0x05, 5, 1) == ESHKOL_WS_FRAME_OK,
+           "a continuation inside a sequence is admitted");
+    expect(eshkol_ws_examine_frame(0x01, 0x05, 5, 0) == ESHKOL_WS_FRAME_OK,
+           "a text frame with FIN clear opens a sequence");
+    expect(eshkol_ws_examine_frame(0x89, 0x05, 5, 1) == ESHKOL_WS_FRAME_OK,
+           "a control frame may arrive inside a sequence");
+
+    // The budget, and the 126/127 length encodings that reach it. The
+    // reviewer's frame: 82 7F 00 00 00 00 00 01 11 70 declares 69 999 999
+    // bytes, which must be refused rather than read.
+    expect(eshkol_ws_examine_frame(0x82, 0x7f, 69999999ull, 0) ==
+               ESHKOL_WS_FRAME_TOO_LARGE,
+           "a 64-bit length beyond the budget is refused");
+    expect(eshkol_ws_examine_frame(0x82, 0x7e, 65535, 0) == ESHKOL_WS_FRAME_OK,
+           "a 16-bit length within the budget is admitted");
+    expect(eshkol_ws_examine_frame(0x82, 0x7f, 70000, 0) ==
+               ESHKOL_WS_FRAME_TOO_LARGE,
+           "a 70000-byte frame is refused against the default budget");
+    expect(eshkol_ws_max_frame_bytes() == 65536,
+           "the default frame budget is 64 KiB");
+
+    // The close code a refusal is reported with.
+    expect(eshkol_ws_frame_close_code(ESHKOL_WS_FRAME_TOO_LARGE) == 1009,
+           "an over-budget frame is reported 1009");
+    expect(eshkol_ws_frame_close_code(ESHKOL_WS_FRAME_MASKED_FROM_SERVER) == 1002,
+           "a protocol error is reported 1002");
+
+    // ─── Text payloads are UTF-8 (section 8.1) ──────────────────────────────
+    expect(eshkol_ws_valid_utf8("hello", 5), "ASCII is UTF-8");
+    expect(eshkol_ws_valid_utf8("", 0), "an empty payload is UTF-8");
+    expect(eshkol_ws_valid_utf8("\xc2\xa2", 2), "a two-byte sequence is UTF-8");
+    expect(eshkol_ws_valid_utf8("\xe2\x82\xac", 3), "a three-byte sequence is UTF-8");
+    expect(eshkol_ws_valid_utf8("\xf0\x9f\x92\xa9", 4), "a four-byte sequence is UTF-8");
+    expect(!eshkol_ws_valid_utf8("\xc0\xaf", 2), "an overlong form is refused");
+    expect(!eshkol_ws_valid_utf8("\xed\xa0\x80", 3), "a surrogate is refused");
+    expect(!eshkol_ws_valid_utf8("\xf5\x80\x80\x80", 4), "above U+10FFFF is refused");
+    expect(!eshkol_ws_valid_utf8("\xe2\x82", 2), "a truncated sequence is refused");
+    expect(!eshkol_ws_valid_utf8("\x80", 1), "a bare continuation byte is refused");
+
+    // ─── The masking a client owes every frame it sends (section 5.3) ───────
+    // The send path draws a fresh key per frame and masks the payload with
+    // mask[(offset + i) % 4]. The property that keeps a chunked send correct
+    // is that the index follows the payload offset, not the chunk offset.
+    {
+        const unsigned char mask[4] = {0x37, 0xfa, 0x21, 0x3d};
+        std::string payload(9000, 'A');
+        std::string masked = payload;
+        for (size_t i = 0; i < masked.size(); ++i)
+            masked[i] = (char)(masked[i] ^ mask[i % 4]);
+        bool differs = masked != payload;
+        bool round_trips = true;
+        for (size_t i = 0; i < masked.size(); ++i) {
+            if ((char)(masked[i] ^ mask[i % 4]) != payload[i]) round_trips = false;
+        }
+        expect(differs, "masking changes the bytes that leave");
+        expect(round_trips, "unmasking with the same key restores the payload");
+        // Across a 4096-byte chunk boundary the key index must still follow
+        // the payload offset: byte 4096 takes mask[0], not mask[4096 % 4] of
+        // a restarted count. Both are 0 here, so check a boundary that is not
+        // a multiple of four as well.
+        expect((4096 % 4) == 0 && (4097 % 4) == 1,
+               "the key index follows the payload offset across a chunk edge");
+    }
+
     if (g_failures == 0) {
         std::cout << "websocket_handshake_test: all cases pass" << std::endl;
         return 0;

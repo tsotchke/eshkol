@@ -37,6 +37,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -417,5 +418,129 @@ static inline const char* eshkol_ws_handshake_refusal(const char* response,
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif
+
+
+/* ─── Received frames (RFC 6455 section 5) ────────────────────────────────── */
+
+/**
+ * @brief The largest frame payload this client will accept, in bytes.
+ *
+ * A budget, not a constant: `ESHKOL_WS_MAX_FRAME_BYTES` overrides it, the way
+ * the server's three budgets are overridden. The default is 64 KiB. A frame
+ * declaring more is refused with close code 1009 (message too big) and the
+ * connection is closed, because a client that returned without consuming the
+ * payload would leave the stream desynchronised: every later read would parse
+ * attacker-chosen payload bytes as a frame header.
+ */
+static inline size_t eshkol_ws_max_frame_bytes(void) {
+    const char* raw = getenv("ESHKOL_WS_MAX_FRAME_BYTES");
+    if (raw && *raw) {
+        char* end = NULL;
+        unsigned long long parsed = strtoull(raw, &end, 10);
+        if (end && *end == '\0' && parsed > 0) return (size_t)parsed;
+    }
+    return 65536u;
+}
+
+/** @brief What a received frame header is, once judged. */
+typedef enum {
+    ESHKOL_WS_FRAME_OK = 0,
+    /** RFC 6455 section 5.1: a client must fail the connection on a masked
+     *  frame from a server. */
+    ESHKOL_WS_FRAME_MASKED_FROM_SERVER,
+    /** Section 5.2: RSV1-3 are zero unless an extension negotiated them, and
+     *  this client negotiates none. */
+    ESHKOL_WS_FRAME_RESERVED_BITS_SET,
+    /** Section 5.5: a control frame carries at most 125 bytes. */
+    ESHKOL_WS_FRAME_CONTROL_TOO_LARGE,
+    /** Section 5.5: a control frame is never fragmented. */
+    ESHKOL_WS_FRAME_CONTROL_FRAGMENTED,
+    /** Section 5.4: a continuation outside a fragment sequence, or a new data
+     *  frame inside one. */
+    ESHKOL_WS_FRAME_BAD_CONTINUATION,
+    /** Section 5.2: opcodes 3-7 and 11-15 are reserved. */
+    ESHKOL_WS_FRAME_RESERVED_OPCODE,
+    /** The payload exceeds eshkol_ws_max_frame_bytes(). */
+    ESHKOL_WS_FRAME_TOO_LARGE
+} eshkol_ws_frame_verdict;
+
+/**
+ * @brief Judges a received frame header against RFC 6455 section 5.
+ *
+ * @param first_byte  FIN, RSV1-3 and the opcode.
+ * @param second_byte MASK and the 7-bit length.
+ * @param length      Payload length, after any 16- or 64-bit extension.
+ * @param in_fragment Non-zero when a fragment sequence is open.
+ * @return ESHKOL_WS_FRAME_OK, or the rule the frame breaks.
+ */
+static inline eshkol_ws_frame_verdict eshkol_ws_examine_frame(
+    unsigned char first_byte, unsigned char second_byte, uint64_t length,
+    int in_fragment) {
+    const int fin = (first_byte & 0x80) != 0;
+    const int opcode = first_byte & 0x0f;
+    const int control = (opcode & 0x08) != 0;
+    if (second_byte & 0x80) return ESHKOL_WS_FRAME_MASKED_FROM_SERVER;
+    if (first_byte & 0x70) return ESHKOL_WS_FRAME_RESERVED_BITS_SET;
+    if ((opcode >= 0x03 && opcode <= 0x07) || opcode >= 0x0b)
+        return ESHKOL_WS_FRAME_RESERVED_OPCODE;
+    if (control) {
+        if (length > 125) return ESHKOL_WS_FRAME_CONTROL_TOO_LARGE;
+        if (!fin) return ESHKOL_WS_FRAME_CONTROL_FRAGMENTED;
+        return ESHKOL_WS_FRAME_OK;
+    }
+    if (opcode == 0x00 && !in_fragment) return ESHKOL_WS_FRAME_BAD_CONTINUATION;
+    if (opcode != 0x00 && in_fragment) return ESHKOL_WS_FRAME_BAD_CONTINUATION;
+    if (length > (uint64_t)eshkol_ws_max_frame_bytes())
+        return ESHKOL_WS_FRAME_TOO_LARGE;
+    return ESHKOL_WS_FRAME_OK;
+}
+
+/** @brief The RFC 6455 section 7.4 close code a verdict is reported with. */
+static inline int eshkol_ws_frame_close_code(eshkol_ws_frame_verdict verdict) {
+    switch (verdict) {
+        case ESHKOL_WS_FRAME_OK: return 0;
+        case ESHKOL_WS_FRAME_TOO_LARGE: return 1009;   /* message too big */
+        default: return 1002;                          /* protocol error */
+    }
+}
+
+/**
+ * @brief True when `length` bytes at `text` are well-formed UTF-8.
+ *
+ * RFC 6455 section 8.1 requires a client to fail the connection on a text
+ * frame whose payload is not valid UTF-8. Overlong encodings, surrogates and
+ * values above U+10FFFF are refused, so the check is the strict one the RFC
+ * points at rather than a length-only scan.
+ */
+static inline int eshkol_ws_valid_utf8(const char* text, size_t length) {
+    size_t i = 0;
+    if (!text) return length == 0;
+    while (i < length) {
+        const unsigned char c = (unsigned char)text[i];
+        size_t extra;
+        uint32_t code;
+        if (c < 0x80) { i++; continue; }
+        if ((c & 0xe0) == 0xc0) { extra = 1; code = (uint32_t)(c & 0x1f); }
+        else if ((c & 0xf0) == 0xe0) { extra = 2; code = (uint32_t)(c & 0x0f); }
+        else if ((c & 0xf8) == 0xf0) { extra = 3; code = (uint32_t)(c & 0x07); }
+        else return 0;
+        if (i + extra >= length) return 0;
+        {
+            size_t k;
+            for (k = 1; k <= extra; ++k) {
+                const unsigned char cc = (unsigned char)text[i + k];
+                if ((cc & 0xc0) != 0x80) return 0;
+                code = (code << 6) | (uint32_t)(cc & 0x3f);
+            }
+        }
+        if (extra == 1 && code < 0x80) return 0;
+        if (extra == 2 && code < 0x800) return 0;
+        if (extra == 3 && code < 0x10000) return 0;
+        if (code > 0x10ffff) return 0;
+        if (code >= 0xd800 && code <= 0xdfff) return 0;
+        i += extra + 1;
+    }
+    return 1;
+}
 
 #endif /* ESHKOL_CORE_WEBSOCKET_HANDSHAKE_H */
