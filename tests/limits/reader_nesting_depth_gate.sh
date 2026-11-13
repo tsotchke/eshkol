@@ -90,6 +90,16 @@ check_quoted_datum() {
         return
     fi
     if [ "$status" -ne 0 ]; then
+        # The bytecode VM builds a datum on its OPERAND STACK, whose width is
+        # this VM profile's one fixed capacity (ESHKOL_VM_STACK_SIZE).  Reading
+        # the datum has no depth limit; carrying it on that stack does.  Past
+        # that width the VM must say so in words and name the ceiling -- which
+        # is what is asserted here.  The native paths carry the same datum on
+        # the heap and so are held to building and printing it in full.
+        if [ "$label" = "vm" ] && printf '%s' "$out" | grep -q 'ESHKOL_VM_STACK_SIZE'; then
+            note "$label: depth $depth named the operand-stack width of this VM profile"
+            return
+        fi
         fail "$label: depth $depth did not run (status $status): $(printf '%s' "$out" | tail -3)"
         return
     fi

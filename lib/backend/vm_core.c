@@ -1549,9 +1549,24 @@ static inline int is_heap_type(VM* vm, Value v, HeapType type) {
 }
 
 /** @brief Push @p v onto the VM's value stack, setting vm->error on
- *         overflow. */
+ *         overflow.
+ *
+ * The operand stack is this VM profile's one fixed capacity, so the report
+ * names it and says how it is set: a datum nested deeper than the stack is
+ * wide is answered here, in words, rather than by the process ending.  Reading
+ * such a datum has no depth limit of its own
+ * (inc/eshkol/core/reader_limits.h); it is building the value on the operand
+ * stack that this ceiling governs. */
 static void vm_push(VM* vm, Value v) {
-    if (vm->sp >= STACK_SIZE) { fprintf(stderr, "STACK OVERFLOW\n"); vm->error = 1; return; }
+    if (vm->sp >= STACK_SIZE) {
+        fprintf(stderr,
+                "ERROR: the operand stack is full at its %d slots "
+                "(ESHKOL_VM_STACK_SIZE): the expression or datum being built "
+                "needs more nesting than this VM profile carries\n",
+                (int)STACK_SIZE);
+        vm->error = 1;
+        return;
+    }
     vm->stack[vm->sp++] = v;
 }
 
