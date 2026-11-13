@@ -5,15 +5,18 @@
 (require stdlib)
 
 (define dump (getenv "ESHKOL_CHILD_ENV_DUMP"))
-(define overlay "ESHKOL_CHILD_ENV_PROBE=child-only")
+;; Two names: one the parent does not have, and one it does — the second
+;; is what tells an overlay that overrides from one that is ignored.
+(define overlay "ESHKOL_CHILD_ENV_PROBE=child-only ESHKOL_CHILD_ENV_OVERRIDE=child-value")
 
 ;; `cmd /c` on Windows, the POSIX shell elsewhere: both honour a redirection,
 ;; and each spells a variable reference its own way.
 (define windows? (string=? (os-type) "windows"))
 (define command
   (if windows?
-      (string-append "echo %ESHKOL_CHILD_ENV_PROBE% > \"" dump "\"")
-      (string-append "printf %s \"$ESHKOL_CHILD_ENV_PROBE\" > '" dump "'")))
+      (string-append "echo %ESHKOL_CHILD_ENV_PROBE%;%ESHKOL_CHILD_ENV_OVERRIDE% > \"" dump "\"")
+      (string-append "printf '%s;%s' \"$ESHKOL_CHILD_ENV_PROBE\" "
+                     "\"$ESHKOL_CHILD_ENV_OVERRIDE\" > '" dump "'")))
 
 (define pid (process-spawn command overlay))
 (if (and (number? pid) (> pid 0)) (process-wait pid) #t)
@@ -29,7 +32,22 @@
       "no-dump"))
 (newline)
 
+;; The parent already has ESHKOL_CHILD_ENV_OVERRIDE set to something else, so
+;; this is the half that catches an overlay appended where the parent's own
+;; entry still wins.
+(display "child-saw-override:")
+(display
+  (if (file-exists? dump)
+      (if (string-contains? (read-file dump) "child-value") "yes" "no")
+      "no-dump"))
+(newline)
+
 ;; The spawning program's own environment must not have gained the overlay.
 (display "parent-unchanged:")
 (display (if (getenv "ESHKOL_CHILD_ENV_PROBE") "no" "yes"))
+(newline)
+
+(display "parent-override-intact:")
+(display (if (string=? (getenv "ESHKOL_CHILD_ENV_OVERRIDE") "parent-value")
+             "yes" "no"))
 (newline)

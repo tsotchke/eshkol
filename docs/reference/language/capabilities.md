@@ -60,6 +60,11 @@ Core hosted capability symbols:
 
 ### What each capability gates
 
+`(process-spawn-pty cmd)` returns the pair `(pid . master-fd)` on every engine,
+or `#f` when it cannot start the child or the host has no pseudo-terminal. The
+descriptor belongs to the program: read the child's output through it and close
+it with `(socket-close …)`.
+
 `subprocess` — `(fork)`, `(execv path argv)`, `(process-spawn cmd env)` and
 every `process-spawn-*` variant including `process-spawn-pty`,
 `process-spawn-argv-env` and `process-spawn-argv-options`; the process-control

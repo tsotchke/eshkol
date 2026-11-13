@@ -32,6 +32,8 @@ if [ -n "${ESHKOL_CHILD_ENV_PROBE:-}" ]; then
     echo "FAIL: ESHKOL_CHILD_ENV_PROBE is already set in the environment" >&2
     exit 1
 fi
+# The parent holds this one, so the overlay has something to override.
+export ESHKOL_CHILD_ENV_OVERRIDE=parent-value
 
 check_lane() {
     lane="$1"
@@ -40,6 +42,10 @@ check_lane() {
     grep -q "spawned:yes" "$out" || { echo "FAIL: $lane did not spawn" >&2; ok=0; }
     grep -q "child-saw-overlay:yes" "$out" || {
         echo "FAIL: $lane child did not receive the overlay" >&2; ok=0; }
+    grep -q "child-saw-override:yes" "$out" || {
+        echo "FAIL: $lane overlay did not override the parent's own value" >&2; ok=0; }
+    grep -q "parent-override-intact:yes" "$out" || {
+        echo "FAIL: $lane the override changed the spawning program's value" >&2; ok=0; }
     grep -q "parent-unchanged:yes" "$out" || {
         echo "FAIL: $lane overlay reached the spawning program's environment" >&2; ok=0; }
     if [ "$ok" -eq 1 ]; then

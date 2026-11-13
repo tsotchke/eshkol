@@ -332,10 +332,10 @@ struct ModuleContract {
 // (CTest strict_resource_contract_pins).
 inline constexpr ModuleContract kModuleContracts[] = {
     {"core.net", "core/net.esk",
-     "7ada0e09a9ffa49fc6319455d0402036e85f47fc4d42e9059d491191f61ccb05",
+     "f599e3b8d95512b4fcadd31b75451001201d709d9ecf76f68a31cf1d8790a940",
      kCoreNetContracts, sizeof(kCoreNetContracts) / sizeof(kCoreNetContracts[0])},
     {"core.tls", "core/tls.esk",
-     "91f95582ab932508335fd83df585b956a74fd83264b7cff90823b5bf061f4398",
+     "b17db720c3e88dcd494497df5d1c4e5f2435cbabd94d4a0f988d5eab88e634e0",
      kCoreTlsContracts, sizeof(kCoreTlsContracts) / sizeof(kCoreTlsContracts[0])},
     {"core.threads", "core/threads.esk",
      "79612384c29b0fdf28b738f6588062a1916cd589588b3e9a617c112ac7de572b",

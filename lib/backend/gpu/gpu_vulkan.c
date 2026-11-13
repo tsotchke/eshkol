@@ -164,7 +164,16 @@ static void vk_status(const char* fmt, ...) {
     va_end(ap);
 }
 
+/* Loading a shared library brings foreign code into the process, and the path
+ * here can come from an environment variable, so a program holding env-write
+ * could choose it. Under a policy that does not grant `ffi` nothing is loaded
+ * and the caller sees the same "not available" answer it gets when the library
+ * is absent. Reported rather than raised: every caller already handles an
+ * unavailable library. */
+extern int eshkol_capability_require(const char* capability);
+
 static void* vk_dlopen(const char* path) {
+    if (!eshkol_capability_require("ffi")) return NULL;
 #if defined(_WIN32)
     return (void*)LoadLibraryA(path);
 #else

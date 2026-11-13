@@ -1,0 +1,24 @@
+;;; A grant of `subprocess` without `shell` is not a grant of the shell.
+;;;
+;;; The two process entry points that hand their command to an interpreter
+;;; must still be refused, and the refusal must name `shell`, not `subprocess`.
+(require stdlib)
+(require core.capabilities)
+
+(capability-install-policy! (list 'file-read 'subprocess))
+
+(define (outcome thunk)
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (begin (thunk) "ran")))
+
+(display "subprocess-granted:")
+(display (if (capability-allowed? 'subprocess) "yes" "no"))
+(newline)
+
+(display "process-spawn:")
+(display (outcome (lambda () (process-spawn "exit 0" ""))))
+(newline)
+
+(display "process-spawn-pty:")
+(display (outcome (lambda () (process-spawn-pty "exit 0"))))
+(newline)

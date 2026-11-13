@@ -198,6 +198,77 @@ for engine in jit aot; do
     fi
 done
 
+# Every remaining sink of each class, under a policy that withholds its
+# capability. One sink per class is not evidence that the others are gated.
+echo "=== every other sink, under a policy that withholds its capability ==="
+for engine in jit aot vm; do
+    tag="table-$engine"
+    checks=$((checks + 1))
+    run_engine "$engine" "$TEST_DIR/capability_sink_table_probe.esk" "$tag" || continue
+    if grep -q "^failures:0" "$WORK_DIR/$tag.out" && \
+       ! grep -q "NOT-REFUSED" "$WORK_DIR/$tag.out"; then
+        echo "  ok  table/$engine ($(grep -c ':refused' "$WORK_DIR/$tag.out") sinks refused)"
+    else
+        echo "FAIL: table/$engine did not refuse every sink" >&2
+        grep -E "NOT-REFUSED|^failures:" "$WORK_DIR/$tag.out" >&2
+        failures=$((failures + 1))
+    fi
+done
+
+# A grant of subprocess is not a grant of the shell.
+echo "=== partial grant: subprocess without shell ==="
+for engine in jit aot vm; do
+    tag="partial-$engine"
+    checks=$((checks + 1))
+    run_engine "$engine" "$TEST_DIR/capability_partial_grant_probe.esk" "$tag" || continue
+    out="$WORK_DIR/$tag.out"
+    if grep -q "subprocess-granted:yes" "$out" && \
+       grep -q "process-spawn:.*capability denied: shell" "$out" && \
+       grep -q "process-spawn-pty:.*capability denied: shell" "$out"; then
+        echo "  ok  partial-grant/$engine"
+    else
+        echo "FAIL: partial-grant/$engine did not hold shell back" >&2
+        echo "  stdout: $(cat "$out")" >&2
+        failures=$((failures + 1))
+    fi
+done
+
+# A refused subprocess does not run.
+echo "=== a refused subprocess has no effect ==="
+for engine in jit aot vm; do
+    marker="$WORK_DIR/subproc-no-effect-$engine.txt"
+    tag="noeffect-$engine"
+    checks=$((checks + 1))
+    ESHKOL_CAP_SUBPROC_MARKER="$marker" \
+        run_engine "$engine" "$TEST_DIR/capability_subprocess_no_effect_probe.esk" "$tag" || continue
+    if grep -q "capability denied" "$WORK_DIR/$tag.out" && [ ! -e "$marker" ]; then
+        echo "  ok  no-effect/$engine"
+    else
+        echo "FAIL: no-effect/$engine ran the child or was not refused" >&2
+        echo "  stdout: $(cat "$WORK_DIR/$tag.out")" >&2
+        failures=$((failures + 1))
+    fi
+done
+
+# A refusal nobody catches ends the program, and the sink still does not happen.
+echo "=== an unhandled refusal ends the program ==="
+for engine in jit aot; do
+    marker="$WORK_DIR/unhandled-$engine.txt"
+    tag="unhandled-$engine"
+    checks=$((checks + 1))
+    ESHKOL_CAP_UNHANDLED_MARKER="$marker" \
+        run_engine "$engine" "$TEST_DIR/capability_unhandled_refusal_probe.esk" "$tag"
+    rc=$?
+    if [ "$rc" -ne 0 ] && grep -q "before" "$WORK_DIR/$tag.out" && \
+       ! grep -q "after" "$WORK_DIR/$tag.out" && [ ! -e "$marker" ]; then
+        echo "  ok  unhandled/$engine (exit $rc, nothing after it ran)"
+    else
+        echo "FAIL: unhandled/$engine continued past the refusal (exit $rc)" >&2
+        echo "  stdout: $(cat "$WORK_DIR/$tag.out")" >&2
+        failures=$((failures + 1))
+    fi
+done
+
 echo "checks: $checks, failures: $failures"
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: capability_sink_coverage_test" >&2

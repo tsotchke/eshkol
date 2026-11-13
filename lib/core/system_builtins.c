@@ -1482,6 +1482,90 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
  * Process Management
  * ═══════════════════════════════════════════════════════════════════ */
 
+#if defined(_WIN32)
+/** Reentrant strtok, so a tokenising loop can run inside another one. The
+ *  Windows environment block needs exactly that: each parent entry is checked
+ *  against the overlay's names, and the overlay is itself a token list. */
+static char* sys_strtok_r(char* str, const char* delim, char** saveptr) {
+    return strtok_s(str, delim, saveptr);
+}
+
+/* ── The processes this runtime started, on Windows ───────────────────
+ *
+ * CreateProcess hands back a handle that keeps the process object alive after
+ * the child exits, which is what makes its exit status readable. A pid alone
+ * does not: once the last handle is gone the id can be reused, so re-opening
+ * by id can fail, or reach a different process entirely. The handle is
+ * therefore kept here until `(process-wait pid)` collects the child, and
+ * released then. The table is bounded; past the bound the spawn still happens
+ * and the wait falls back to opening by id.
+ */
+#define SYS_WIN_CHILD_CAPACITY 256
+
+typedef struct {
+    DWORD pid;
+    HANDLE handle;
+} sys_win_child_t;
+
+static sys_win_child_t g_sys_win_children[SYS_WIN_CHILD_CAPACITY];
+static int g_sys_win_children_count = 0;
+static CRITICAL_SECTION g_sys_win_children_lock;
+static INIT_ONCE g_sys_win_children_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK sys_win_children_init(PINIT_ONCE once, PVOID param, PVOID* ctx) {
+    (void)once; (void)param; (void)ctx;
+    InitializeCriticalSection(&g_sys_win_children_lock);
+    return TRUE;
+}
+
+static void sys_win_children_lock(void) {
+    InitOnceExecuteOnce(&g_sys_win_children_once, sys_win_children_init, NULL, NULL);
+    EnterCriticalSection(&g_sys_win_children_lock);
+}
+
+/** Keep the handle CreateProcess returned, so the child's exit status stays
+ *  readable and its id cannot be reused underneath us. Closes the handle
+ *  rather than dropping it when the table is full. */
+static void sys_win_child_record(DWORD pid, HANDLE handle) {
+    if (!handle || handle == INVALID_HANDLE_VALUE) return;
+    sys_win_children_lock();
+    for (int i = 0; i < g_sys_win_children_count; i++) {
+        if (g_sys_win_children[i].pid == pid) {
+            CloseHandle(g_sys_win_children[i].handle);
+            g_sys_win_children[i].handle = handle;
+            LeaveCriticalSection(&g_sys_win_children_lock);
+            return;
+        }
+    }
+    if (g_sys_win_children_count < SYS_WIN_CHILD_CAPACITY) {
+        g_sys_win_children[g_sys_win_children_count].pid = pid;
+        g_sys_win_children[g_sys_win_children_count].handle = handle;
+        g_sys_win_children_count++;
+        LeaveCriticalSection(&g_sys_win_children_lock);
+        return;
+    }
+    LeaveCriticalSection(&g_sys_win_children_lock);
+    CloseHandle(handle);
+}
+
+/** Take the handle held for @p pid, removing its entry. The caller owns the
+ *  handle and closes it. NULL when the runtime holds none. */
+static HANDLE sys_win_child_take(DWORD pid) {
+    HANDLE handle = NULL;
+    sys_win_children_lock();
+    for (int i = 0; i < g_sys_win_children_count; i++) {
+        if (g_sys_win_children[i].pid == pid) {
+            handle = g_sys_win_children[i].handle;
+            g_sys_win_children[i] = g_sys_win_children[g_sys_win_children_count - 1];
+            g_sys_win_children_count--;
+            break;
+        }
+    }
+    LeaveCriticalSection(&g_sys_win_children_lock);
+    return handle;
+}
+#endif
+
 /* ── Children spawned through the raw builtin surface ─────────────────
  *
  * `(process-spawn ...)`, `(process-spawn-pty ...)` and `(fork)` hand the
@@ -1707,9 +1791,15 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
      * CreateProcessA, so the overlay applies to the child and to nothing else.
      * The parent's own environment is left exactly as it was, which matches
      * the POSIX branch above, where each KEY=VAL lands inside the forked
-     * child. The block is the parent's environment followed by the overlay
-     * pairs, NUL-separated and NUL-terminated; a later key wins, which is how
-     * the process environment resolves duplicates.
+     * child.
+     *
+     * Windows resolves a name to the FIRST matching entry in the block, so an
+     * overlay entry appended after the parent's copy of the same name would
+     * never be seen. A parent entry whose name the overlay also sets is
+     * therefore skipped while copying, and the overlay's value is the only one
+     * in the block — which is what the POSIX branch does, where the child's
+     * putenv replaces outright. Names are compared case-insensitively, the way
+     * the environment itself compares them.
      *
      * NULL for lpEnvironment means "inherit the parent's", so a spawn with no
      * overlay needs no block at all. */
@@ -1729,31 +1819,62 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
         size_t block_size = parent_len + overlay_len;
         child_env = (char*)malloc(block_size);
         env_copy = _strdup(env_str);
-        if (!child_env || !env_copy) {
+        char* overlay_names = _strdup(env_str);
+        if (!child_env || !env_copy || !overlay_names) {
             if (parent_env) FreeEnvironmentStringsA((LPCH)parent_env);
             free(child_env);
             free(env_copy);
+            free(overlay_names);
             return sys_make_int64(-1);
         }
 
         size_t offset = 0;
-        if (parent_env && parent_len > 2) {
-            /* copy every parent entry, dropping the block's own terminator */
-            memcpy(child_env, parent_env, parent_len - 1);
-            offset = parent_len - 1;
+        if (parent_env) {
+            for (const char* entry = parent_env; *entry; entry += strlen(entry) + 1) {
+                /* Skip a parent entry the overlay also sets. An entry with no
+                 * '=' has no name to match and is copied as it stands. */
+                const char* equals = strchr(entry, '=');
+                int overridden = 0;
+                if (equals && equals != entry) {
+                    size_t name_len = (size_t)(equals - entry);
+                    char* saved = NULL;
+                    strcpy(overlay_names, env_str);
+                    for (char* pair = sys_strtok_r(overlay_names, " ", &saved);
+                         pair; pair = sys_strtok_r(NULL, " ", &saved)) {
+                        const char* pair_equals = strchr(pair, '=');
+                        if (!pair_equals) continue;
+                        size_t pair_name_len = (size_t)(pair_equals - pair);
+                        if (pair_name_len == name_len &&
+                            _strnicmp(pair, entry, name_len) == 0) {
+                            overridden = 1;
+                            break;
+                        }
+                    }
+                }
+                if (overridden) continue;
+                size_t entry_len = strlen(entry);
+                if (offset + entry_len + 2 > block_size) break;
+                memcpy(child_env + offset, entry, entry_len);
+                offset += entry_len;
+                child_env[offset++] = '\0';
+            }
+            FreeEnvironmentStringsA((LPCH)parent_env);
         }
-        if (parent_env) FreeEnvironmentStringsA((LPCH)parent_env);
+        free(overlay_names);
 
-        char* pair = strtok(env_copy, " ");
-        while (pair) {
+        char* saved_pair = NULL;
+        for (char* pair = sys_strtok_r(env_copy, " ", &saved_pair);
+             pair; pair = sys_strtok_r(NULL, " ", &saved_pair)) {
             size_t pair_len = strlen(pair);
             if (pair_len > 0 && offset + pair_len + 2 <= block_size) {
                 memcpy(child_env + offset, pair, pair_len);
                 offset += pair_len;
                 child_env[offset++] = '\0';
             }
-            pair = strtok(NULL, " ");
         }
+        /* An environment block is a run of NUL-terminated entries closed by a
+         * further NUL. With no entries at all that is two NULs, not one. */
+        if (offset == 0) child_env[offset++] = '\0';
         child_env[offset++] = '\0';
         free(env_copy);
     }
@@ -1764,11 +1885,12 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
     if (!created) {
         return sys_make_int64(-1);
     }
-    /* Both handles are released here: `(process-wait pid)` re-opens the
-     * process by id, so retaining either one would only hold kernel objects
-     * for the life of the program. */
+    /* The thread handle is not needed. The process handle is: it keeps the
+     * process object alive after the child exits, so `(process-wait pid)` can
+     * still read the exit status and cannot reach a reused id. It is released
+     * when that wait collects the child. */
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    sys_win_child_record(pi.dwProcessId, pi.hProcess);
     return sys_make_int64((int64_t)pi.dwProcessId);
 #endif
 }
@@ -1786,8 +1908,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_wait_v(eshkol_sysbuiltin
     if (WIFSIGNALED(status)) return sys_make_int64(128 + WTERMSIG(status));
     return sys_make_int64(-1);
 #else
-    /* Windows process wait via OpenProcess + WaitForSingleObject */
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    /* The handle this runtime kept when it started the child, if it is one of
+     * ours: it holds the process object open, so the exit status is still
+     * there to read and the id cannot have been reused. A pid from elsewhere
+     * is opened by id, as before. */
+    HANDLE hProcess = sys_win_child_take((DWORD)pid);
+    if (!hProcess) {
+        hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
+    }
     if (!hProcess) return sys_make_int64(-1);
     WaitForSingleObject(hProcess, INFINITE);
     DWORD exit_code = 0;
@@ -2252,17 +2380,18 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_tree_v(eshkol_sysbu
  *  program owns the master descriptor and can read the child's output through
  *  it and close it with `(socket-close ...)`. The child leads its own process
  *  group, so `(process-kill-tree ...)` reaches it and its descendants.
- *  Returns -1 on failure, and on platforms without a pseudo-terminal.
+ *  Returns #f on failure, and on platforms without a pseudo-terminal — the
+ *  same value the bytecode VM returns, so the two engines answer alike.
  *  Requires the `subprocess` and `shell` capabilities. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_pty_v(eshkol_sysbuiltin_value_t cmd_val) {
     eshkol_capability_enforce("subprocess", "process-spawn-pty");
     eshkol_capability_enforce("shell", "process-spawn-pty");
     const char* cmd = sys_extract_string(cmd_val);
-    if (!cmd) return sys_make_int64(-1);
+    if (!cmd) return sys_make_bool(0);
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     int master_fd = -1;
     pid_t pid = forkpty(&master_fd, NULL, NULL, NULL);
-    if (pid < 0) return sys_make_int64(-1);
+    if (pid < 0) return sys_make_bool(0);
     if (pid == 0) {
         /* Child: lead a new process group, then exec the command via shell */
         (void)setpgid(0, 0);
@@ -2272,7 +2401,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_pty_v(eshkol_sysbu
     if (master_fd < 0) {
         (void)kill(pid, SIGTERM);
         (void)waitpid(pid, NULL, 0);
-        return sys_make_int64(-1);
+        return sys_make_bool(0);
     }
     (void)setpgid(pid, pid);
     eshkol_sysbuiltin_value_t handle = sys_make_pair(sys_make_int64((int64_t)pid),
@@ -2281,12 +2410,12 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_pty_v(eshkol_sysbu
         close(master_fd);
         (void)kill(pid, SIGTERM);
         (void)waitpid(pid, NULL, 0);
-        return sys_make_int64(-1);
+        return sys_make_bool(0);
     }
     sys_child_record(pid, master_fd);
     return handle;
 #else
-    return sys_make_int64(-1);
+    return sys_make_bool(0);
 #endif
 }
 

@@ -44,6 +44,7 @@
     (cond ((= code -1) 'system) ((= code -2) 'timeout) ((= code -3) 'unsupported)
           ((= code -4) 'invalid) ((= code -5) 'busy) ((= code -6) 'cancelled)
           ((= code -7) 'reset) ((= code -8) 'truncated) ((= code -9) 'refused)
+          ((= code -12) 'denied)
           (else 'system))))
 ;; Keep ports, counts and error codes exact across generic FFI numeric boxing.
 (define (-net-result n op)

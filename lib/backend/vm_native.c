@@ -20392,6 +20392,11 @@ tensor_inverse_done:
         Value env_val = vm_pop(vm), args_val = vm_pop(vm), cmd_val = vm_pop(vm);
         if (vm_capability_denied(vm, "subprocess", "process-spawn")) break;
         int argv_mode = (cmd_val.type == VAL_PAIR);
+        /* A command given as a string is the shell-shaped form of this call,
+         * and asks for `shell` on every engine, so a program gets the same
+         * answer from the policy whichever one runs it. A list first argument
+         * is an argv, which reaches no interpreter. */
+        if (!argv_mode && vm_capability_denied(vm, "shell", "process-spawn")) break;
         Value program_val = cmd_val;
         Value command_args = args_val;
         const char* cwd_path = NULL;
