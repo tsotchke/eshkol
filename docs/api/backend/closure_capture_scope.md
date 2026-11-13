@@ -40,7 +40,7 @@ the owner's LLVM name, or "<module>" for module-level values.
 inline bool functionHasCaptureParameters(const llvm::Function* fn) { ... }
 ```
 
-True when `fn` takes closure-capture parameters. Capture parameters are the pointer parameters a lambda or local define is lowered with, one per free variable (or one `captured_env` for a large closure); they are the only parameters named with the `captured_` prefix. A direct call to such a function must supply them.
+True when `fn` takes closure-capture parameters. Capture parameters are the pointer parameters a lambda or local define is lowered with, one per free variable; they are the only parameters named with the `captured_` prefix. A direct call to such a function must supply them.
 
 ### `currentFunctionCapturePointer`
 
@@ -65,7 +65,7 @@ Source location suffix for a capture diagnostic, " (line L, column C)" or empty 
 
 ### `emitClosureCaptureArguments`
 
-*Function* — line 145
+*Function* — line 142
 
 ```c
 inline std::vector<llvm::Value*> emitClosureCaptureArguments(
@@ -73,7 +73,7 @@ inline std::vector<llvm::Value*> emitClosureCaptureArguments(
  llvm::Function* callee, size_t first_capture_param) { ... }
 ```
 
-Emit the capture-pointer arguments for a direct call to `callee,` reading them from the environment of the closure at `closure_ptr.` Mirrors the closure-call ABI: the closure's environment pointer sits at offset 8; the environment holds a packed info word (capture count in bits 0-31) followed by one tagged value per capture. A callee with at most 64 captures takes one pointer per capture slot; a larger one takes a single `captured_env` parameter holding the environment pointer. A lone capture parameter named `captured_env` is ambiguous at compile time (it is also the name of a single capture of a variable called `env`), so that case is decided from the environment's capture count at run time.
+Emit the capture-pointer arguments for a direct call to `callee,` reading them from the environment of the closure at `closure_ptr.` Mirrors the closure-call ABI: the closure's environment pointer sits at offset 8; the environment holds a packed info word (capture count in bits 0-31) followed by one tagged value per capture. A procedure body takes one pointer parameter per captured variable, and capture parameter i receives the address of slot i, for any number of captures.
 
 **Parameters**
 
