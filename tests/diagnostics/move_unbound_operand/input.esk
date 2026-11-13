@@ -1,0 +1,7 @@
+;; Diagnostic corpus case: (move name) where the name is bound in neither the
+;; local nor the module scope. The operand is reported as an ordinary unbound
+;; variable at its own position, in a definition and inside a function body,
+;; and the compiler finishes normally after the diagnostics.
+
+(define taken (move nowhere))
+(define (f) (let ((local (move elsewhere))) local))

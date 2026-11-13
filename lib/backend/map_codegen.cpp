@@ -249,7 +249,47 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
     Value* proc = nullptr;
     Function* proc_func = nullptr;
 
-    if (resolve_lambda_callback_) {
+    // Maps the lists with an already evaluated procedure value, through the
+    // runtime closure dispatcher.
+    auto mapWithProcedureValue = [&](Value* closure_val) -> Value* {
+        if (!codegen_ast_callback_) return nullptr;
+        std::vector<Value*> lists;
+        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+            Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+            if (!list) return nullptr;
+            lists.push_back(list);
+        }
+        return lists.empty() ? nullptr : mapWithClosureN(closure_val, lists);
+    };
+
+    const bool proc_is_inline_lambda =
+        op->call_op.variables[0].type == ESHKOL_OP &&
+        op->call_op.variables[0].operation.op == ESHKOL_LAMBDA_OP;
+    if (proc_is_inline_lambda && codegen_ast_callback_) {
+        // An inline lambda is compiled once, here. One with no free variables
+        // yields its function and is called directly. One that closes over
+        // variables yields its closure value, whose environment already holds
+        // the captures in the layout the callee expects; it is entered through
+        // the closure-call protocol like any other procedure value, so the
+        // number of captured variables never matters at this site.
+        Value* lambda_value = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!lambda_value) {
+            eshkol_error("Failed to resolve procedure for map");
+            if (pop_function_context_) pop_function_context_(callback_context_);
+            return nullptr;
+        }
+        if (isa<Function>(lambda_value)) {
+            proc = lambda_value;
+        } else {
+            if (lambda_value->getType()->isPointerTy()) {
+                lambda_value = ctx_.builder().CreateLoad(ctx_.taggedValueType(), lambda_value,
+                                                         "map_proc_value");
+            }
+            Value* result = mapWithProcedureValue(lambda_value);
+            if (pop_function_context_) pop_function_context_(callback_context_);
+            return result;
+        }
+    } else if (resolve_lambda_callback_) {
         proc = resolve_lambda_callback_(&op->call_op.variables[0], num_lists, callback_context_);
     }
 

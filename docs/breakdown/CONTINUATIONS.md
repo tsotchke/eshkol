@@ -194,9 +194,12 @@ The `codegenDynamicWind` function at `llvm_codegen.cpp` emits:
 2. Store `before` and `after` tagged values into stack allocas (placed in the
    function entry block for LLVM dominance correctness).
 3. Call `before()` via `codegenClosureCall` with zero arguments.
-4. Push the wind entry via `eshkol_push_dynamic_wind(arena, &before, &after)`
+4. Push the wind entry via
+   `eshkol_push_dynamic_wind(arena, &before, &after, __eshkol_call_thunk)`
    (`runtime_continuations.cpp`). The push happens *after* `before()` succeeds,
-   per R7RS semantics.
+   per R7RS semantics. The fourth argument is the module's thunk caller
+   (§3.4): the procedure the runtime uses to enter `before` and `after`
+   when a transfer of control crosses the extent.
 5. Call `thunk()` via `codegenClosureCall`, capturing the result.
 6. Pop the wind entry via `eshkol_pop_dynamic_wind()` (`runtime_continuations.cpp`).
 7. Call `after()` via `codegenClosureCall`.
@@ -214,7 +217,7 @@ void eshkol_unwind_dynamic_wind(void* saved_wind_mark) {
     while (g_dynamic_wind_stack != NULL && g_dynamic_wind_stack != mark) {
         eshkol_dynamic_wind_entry_t* entry = g_dynamic_wind_stack;
         g_dynamic_wind_stack = entry->prev;
-        call_thunk_from_tagged(&entry->after);
+        call_wind_thunk(entry, &entry->after);
     }
 }
 ```
@@ -224,11 +227,28 @@ saved mark, calling each `after` thunk along the way. The `wind_mark` was
 captured at `call/cc` time, so this unwinds exactly those `dynamic-wind` scopes
 that were entered after the continuation was created.
 
-The `call_thunk_from_tagged` helper (`runtime_continuations.cpp`) extracts the
-closure pointer from a tagged `CALLABLE` value and calls `call_thunk_closure`
-(`runtime_continuations.cpp`), which dispatches by capture count (0 through 4).
+The runtime never calls a thunk's code address itself. `call_wind_thunk`
+(`runtime_continuations.cpp`) hands the tagged `CALLABLE` value to the entry's
+`call_thunk`, a function the compiler emits once per module:
 
-**Platform ABI note:** `call_thunk_closure` uses a compile-time branch on `__aarch64__` because `eshkol_tagged_value_t` (16 bytes) is returned differently on ARM64 (register pairs) vs x86/Windows (hidden return buffer). See [MEMORY_MANAGEMENT.md — Platform-Specific ABI Considerations](MEMORY_MANAGEMENT.md#platform-specific-abi-considerations).
+```c
+void __eshkol_call_thunk(const eshkol_tagged_value_t* thunk,
+                         eshkol_tagged_value_t* result);
+```
+
+Its body is a single `codegenClosureCall` with zero arguments — the same
+closure-call protocol used for `before()`, `thunk()` and `after()` on the
+normal-return path and for every other procedure call. A thunk entered while a
+continuation or a raise crosses the extent therefore behaves exactly like one
+called from generated code: it may capture any number of variables, in either
+closure layout (one pointer per capture, or a single environment pointer for
+a closure with more than 64 captures), may take a rest parameter, and is
+subject to the same arity check.
+
+**Platform ABI note:** only pointers cross the C boundary — the thunk by
+address, the result through an out-pointer — so the runtime side is the same
+on every architecture and does not depend on how a platform returns the
+16-byte `eshkol_tagged_value_t`. See [MEMORY_MANAGEMENT.md — Platform-Specific ABI Considerations](MEMORY_MANAGEMENT.md#platform-specific-abi-considerations).
 
 ---
 
@@ -557,7 +577,7 @@ general multi-shot re-entry.
   (§17495), continuation invocation dispatch (§4751)
 - `lib/core/runtime_continuations.cpp`: eshkol_make_continuation_state,
   eshkol_make_continuation_closure, wind stack runtime,
-  `call_thunk_closure` ABI dispatch
+  `call_wind_thunk` (enters thunks through the compiler-emitted thunk caller)
 - `lib/core/runtime_exceptions_hosted.cpp`: exception handler stack
 - `inc/eshkol/eshkol.h`: eshkol_continuation_state_t, eshkol_dynamic_wind_entry_t,
   runtime function declarations
@@ -783,44 +803,35 @@ critical: it tells LLVM's optimizers that any value defined before the
 normal one and would hoist or coalesce loads/stores around it,
 silently corrupting the call/cc and guard semantics.
 
-### 9.4 ARM64 16-Byte Struct Return ABI
+### 9.4 Thunk Calls Across the C Boundary
 
 `eshkol_tagged_value_t` is a 16-byte struct (`{u8, u8, u16, u32, u64}`).
-The two dominant ABI families handle 16-byte aggregate return
-differently:
+The two dominant ABI families return a 16-byte aggregate differently:
 
-- **x86-64 (System V) and Windows x64**: The caller passes a hidden
-  first argument — a pointer to the caller's return slot. The function
-  writes the return value there and returns `void`.
-- **AArch64 (both POSIX and Windows)**: Returns the 16-byte struct
-  directly in the `x0:x1` register pair. No hidden buffer is passed.
+- **x86-64 (System V) and Windows x64**: through a hidden first argument
+  that points at the caller's return slot.
+- **AArch64 (both POSIX and Windows)**: directly in the `x0:x1` register
+  pair.
 
-The `call_thunk_closure` helper in `lib/core/runtime_continuations.cpp`
-dispatches by architecture at compile time:
+The runtime does not depend on either. When it has to run a `dynamic-wind`
+thunk — during `call/cc` continuation unwinding (load `wind_mark`, call
+`eshkol_reroot_dynamic_wind`), when a raise unwinds to its handler
+(`eshkol_unwind_dynamic_wind`), or when a continuation re-enters an extent —
+it calls the thunk caller stored in the wind entry:
 
 ```c
-#if defined(__aarch64__) || defined(_M_ARM64)
-    typedef eshkol_tagged_value_t (*fn0_t)(void);
-    typedef eshkol_tagged_value_t (*fn1_t)(void*);
-    // ... fn2_t through fn4_t follow the same pattern
-    result = ((fn0_t)(uintptr_t)closure->func_ptr)();
-#else
-    typedef void (*fn0_t)(eshkol_tagged_value_t*);
-    typedef void (*fn1_t)(eshkol_tagged_value_t*, void*);
-    // ... fn2_t through fn4_t follow the same pattern
-    ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
-#endif
+typedef void (*eshkol_thunk_caller_t)(const eshkol_tagged_value_t* thunk,
+                                      eshkol_tagged_value_t* result);
 ```
 
-This trampoline is used by `call_thunk_from_tagged` (§4766–4772),
-which is called during `call/cc` continuation unwinding
-(§17421 — load `wind_mark`, call `eshkol_unwind_dynamic_wind`)
-and dynamic-wind before/after thunk invocation. Without the per-arch
-branch, ARM64 would treat the hidden return-buffer pointer as the
-first data argument, shifting all real arguments by one slot and
-corrupting the return value. See MEMORY_MANAGEMENT.md
-§`ARM64 Thunk Calling Convention` for the broader context on
-platform ABIs and Eshkol's aggregate-value handling.
+The caller is generated code (`__eshkol_call_thunk`, emitted by
+`getOrCreateRuntimeThunkCaller` in `llvm_codegen.cpp`). It loads the thunk,
+performs an ordinary closure call, and stores the value through `result`.
+Both parameters are pointers, so the C side has one signature on every
+platform, and the aggregate return and the callee's capture layout stay
+inside generated code, where the compiler that chose them applies them.
+See MEMORY_MANAGEMENT.md §`Thunk Calls From the Runtime` for the broader
+context on platform ABIs and Eshkol's aggregate-value handling.
 
 ### 9.5 Continuation State and Wind-Mark Layout
 

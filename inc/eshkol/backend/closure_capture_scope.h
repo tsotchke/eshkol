@@ -77,8 +77,8 @@ inline std::string valueOwnerName(const llvm::Value* v) {
  * @brief True when @p fn takes closure-capture parameters.
  *
  * Capture parameters are the pointer parameters a lambda or local define is
- * lowered with, one per free variable (or one `captured_env` for a large
- * closure); they are the only parameters named with the `captured_` prefix.
+ * lowered with, one per free variable; they are the only parameters named
+ * with the `captured_` prefix.
  * A direct call to such a function must supply them.
  */
 inline bool functionHasCaptureParameters(const llvm::Function* fn) {
@@ -128,12 +128,9 @@ inline std::string captureDiagnosticLocation(const eshkol_ast_t* ast) {
  *
  * Mirrors the closure-call ABI: the closure's environment pointer sits at
  * offset 8; the environment holds a packed info word (capture count in bits
- * 0-31) followed by one tagged value per capture. A callee with at most 64
- * captures takes one pointer per capture slot; a larger one takes a single
- * `captured_env` parameter holding the environment pointer. A lone capture
- * parameter named `captured_env` is ambiguous at compile time (it is also
- * the name of a single capture of a variable called `env`), so that case is
- * decided from the environment's capture count at run time.
+ * 0-31) followed by one tagged value per capture. A procedure body takes one
+ * pointer parameter per captured variable, and capture parameter i receives
+ * the address of slot i, for any number of captures.
  *
  * @param b builder positioned where the call will be emitted.
  * @param tagged_ty the tagged value struct type.
@@ -160,15 +157,6 @@ inline std::vector<llvm::Value*> emitClosureCaptureArguments(
     llvm::Value* env_ptr = b.CreateLoad(ptr, env_addr, "closure_env");
     llvm::Value* captures_base = b.CreateGEP(i8, env_ptr, llvm::ConstantInt::get(i64, 8),
                                              "closure_captures");
-
-    if (num_capture_params == 1 &&
-        callee->getArg(first_capture_param)->getName() == "captured_env") {
-        llvm::Value* info = b.CreateLoad(i64, env_ptr, "closure_env_info");
-        llvm::Value* count = b.CreateAnd(info, llvm::ConstantInt::get(i64, 0xFFFFFFFFULL));
-        llvm::Value* large = b.CreateICmpUGT(count, llvm::ConstantInt::get(i64, 64));
-        out.push_back(b.CreateSelect(large, env_ptr, captures_base, "closure_capture_arg"));
-        return out;
-    }
 
     for (size_t i = 0; i < num_capture_params; ++i) {
         out.push_back(b.CreateGEP(tagged_ty, captures_base, llvm::ConstantInt::get(i64, i),

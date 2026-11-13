@@ -1,0 +1,71 @@
+;;; Test: (move name) resolves the binding the name denotes in the scope of
+;;; the move -- a local binding first, then a module-level one -- and moves a
+;;; non-variable expression after evaluating it once.
+;;; Expected: No errors, compiles and runs successfully
+
+(define failures 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline))))
+
+;; A module-level binding moved into another module-level binding.
+(define module-pair (owned (cons 1 2)))
+(define module-moved (move module-pair))
+(check "module-level binding" 1 (car module-moved))
+
+;; A function parameter. Each local owner hands its value on with a further
+;; move, so every owned value is consumed before its scope ends.
+(define (move-parameter p)
+  (let ((q (move p)))
+    (move q)))
+(define from-parameter (move-parameter (owned (cons 3 4))))
+(check "function parameter" 3 (car from-parameter))
+
+;; A let-bound local.
+(define (move-local)
+  (let ((l (owned (vector 5 6))))
+    (let ((m (move l)))
+      (move m))))
+(define from-local (move-local))
+(check "let-bound local" 6 (vector-ref from-local 1))
+
+;; A local binding that shadows a module-level one: the local is moved and the
+;; module-level binding of the same name keeps its value.
+(define shadowed (owned (cons 7 8)))
+(define (move-shadowing-local)
+  (let ((shadowed (owned (cons 9 10))))
+    (let ((taken (move shadowed)))
+      (move taken))))
+(define from-shadowing-local (move-shadowing-local))
+(check "local shadowing a module-level binding" 9 (car from-shadowing-local))
+(check "module-level binding of the same name is intact" 7 (borrow shadowed (car shadowed)))
+
+;; A captured variable moved inside a closure body.
+(define (move-captured)
+  (let ((c (owned (cons 11 12))))
+    ((lambda () (let ((d (move c))) (move d))))))
+(define from-captured (move-captured))
+(check "captured variable" 12 (cdr from-captured))
+
+;; A non-variable operand is evaluated exactly once.
+(define evaluations 0)
+(define (fresh)
+  (set! evaluations (+ evaluations 1))
+  (owned (cons 13 14)))
+(define from-expression (move (fresh)))
+(check "expression operand value" 13 (car from-expression))
+(check "expression operand evaluated once" 1 evaluations)
+
+;; A numeric operand in arithmetic position keeps its type through the move.
+(define (move-number n)
+  (+ (move n) 1))
+(check "exact operand" 42 (move-number 41))
+(check "inexact operand" 2.5 (move-number 1.5))
+
+(if (= failures 0)
+    (begin (display "typed move binding resolution: ALL PASS") (newline))
+    (begin (display "typed move binding resolution: FAILURES") (newline) (exit 1)))

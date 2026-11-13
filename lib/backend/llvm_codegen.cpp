@@ -6255,13 +6255,21 @@ private:
                     // For variables, check if they're stored in a tagged_value GlobalVariable
                     if (inner->type == ESHKOL_VAR && inner->variable.id) {
                         std::string var_name = inner->variable.id;
-                        // Look up the variable
-                        auto it = symbol_table.find(var_name);
-                        if (it == symbol_table.end()) {
-                            it = global_symbol_table.find(var_name);
+                        // The binding the name denotes here: the local scope
+                        // first, then the module scope. Each table is searched
+                        // with its own iterator and compared against its own
+                        // end(); a name bound in neither yields no storage and
+                        // takes the general route below, where the variable
+                        // reference itself is resolved or reported.
+                        Value* var_ptr = nullptr;
+                        if (auto local_it = symbol_table.find(var_name);
+                            local_it != symbol_table.end()) {
+                            var_ptr = local_it->second;
+                        } else if (auto global_it = global_symbol_table.find(var_name);
+                                   global_it != global_symbol_table.end()) {
+                            var_ptr = global_it->second;
                         }
-                        if (it != global_symbol_table.end() || it != symbol_table.end()) {
-                            Value* var_ptr = it->second;
+                        if (var_ptr) {
                             if (GlobalVariable* gv = dyn_cast<GlobalVariable>(var_ptr)) {
                                 // If stored as tagged_value, load it and return with preserved type
                                 if (gv->getValueType() == tagged_value_type) {
@@ -7299,6 +7307,52 @@ private:
         Value* address;
     };
 
+    // The number of capture slots a closure call passes by address.
+    static constexpr size_t kClosureCallCaptureSlots = 64;
+
+    // The code address stored in a closure object for @p body, a function
+    // whose trailing @p num_captures parameters are capture-slot pointers.
+    //
+    // A closure call passes the user arguments followed by the addresses of
+    // capture slots 0..63 (codegenClosureCall). A body with at most that many
+    // captures is entered directly: its capture parameters line up with the
+    // slots it is passed. A body with more is entered through an entry
+    // function with the same user parameters and a single pointer -- the
+    // address of slot 0, which is the first capture argument of every call --
+    // that computes the address of each slot and forwards to the body. The
+    // call site is therefore identical for every capture count, and inside
+    // the body every captured variable is an ordinary capture parameter.
+    Function* closureEntryPoint(Function* body, size_t num_captures) {
+        if (!body || num_captures <= kClosureCallCaptureSlots) return body;
+        const std::string name = body->getName().str() + ".slots";
+        if (Function* existing = module->getFunction(name)) return existing;
+        FunctionType* body_type = body->getFunctionType();
+        const size_t leading = body_type->getNumParams() - num_captures;
+        Type* pointer_type = PointerType::getUnqual(*context);
+        std::vector<Type*> types(body_type->param_begin(),
+                                 body_type->param_begin() + leading);
+        types.push_back(pointer_type);
+        Function* entry = Function::Create(
+            FunctionType::get(body_type->getReturnType(), types, false),
+            Function::InternalLinkage, name, module.get());
+        IRBuilder<> ir(*context);
+        ir.SetInsertPoint(BasicBlock::Create(*context, "entry", entry));
+        std::vector<Value*> forwarded;
+        forwarded.reserve(leading + num_captures);
+        auto parameter = entry->arg_begin();
+        for (size_t i = 0; i < leading; ++i, ++parameter) forwarded.push_back(&*parameter);
+        Value* slot0 = &*parameter;
+        slot0->setName("capture_slots");
+        for (size_t i = 0; i < num_captures; ++i) {
+            forwarded.push_back(ir.CreateGEP(tagged_value_type, slot0,
+                                             ConstantInt::get(int64_type, i)));
+        }
+        CallInst* call = ir.CreateCall(body, forwarded);
+        call->setCallingConv(body->getCallingConv());
+        ir.CreateRet(call);
+        return entry;
+    }
+
     // WASM call_indirect requires the callee's exact capture tail. Cache one
     // non-inline dispatcher per user-argument arity in the module: placing the
     // 65-way capture switch at every call site would multiply compiler work.
@@ -7335,7 +7389,7 @@ private:
             Value* count = &*parameter++;
             std::vector<Value*> values;
             for (; parameter != thunk->arg_end(); ++parameter) values.push_back(&*parameter);
-            BasicBlock* invalid = BasicBlock::Create(*context, "invalid_capture_count", thunk);
+            BasicBlock* invalid = BasicBlock::Create(*context, "captures_base_only", thunk);
             SwitchInst* dispatch = ir.CreateSwitch(count, invalid, 65);
             for (unsigned n = 0; n <= 64; ++n) {
                 BasicBlock* arm = BasicBlock::Create(*context, "captures_" + std::to_string(n), thunk);
@@ -7351,9 +7405,17 @@ private:
                 FunctionType* exact_type = FunctionType::get(tagged_value_type, call_types, false);
                 ir.CreateRet(ir.CreateCall(exact_type, target, call_values));
             }
+            // More than 64 captures: the callee takes one pointer, the address
+            // of capture slot 0.
             ir.SetInsertPoint(invalid);
-            ir.CreateCall(Intrinsic::getDeclaration(module.get(), Intrinsic::trap));
-            ir.CreateUnreachable();
+            {
+                std::vector<Value*> call_values = values;
+                std::vector<Type*> call_types(values.size(), tagged_value_type);
+                call_values.push_back(environment);
+                call_types.push_back(pointer_type);
+                FunctionType* exact_type = FunctionType::get(tagged_value_type, call_types, false);
+                ir.CreateRet(ir.CreateCall(exact_type, target, call_values));
+            }
         }
         std::vector<Value*> parameters{function_ptr, captures, capture_count};
         parameters.insert(parameters.end(), arguments.begin(), arguments.end());
@@ -7826,69 +7888,17 @@ private:
         Value* captures_typed = builder->CreateBitCast(captures_base,
             PointerType::getUnqual(*context));
 
-        // Large closures use the environment-pointer ABI emitted by
-        // codegenLambda. This branch is deliberately separate from the small
-        // closure dispatcher below: it keeps the established fast path's
-        // bounded argument matrix while making the large path independent of
-        // the capture count.
-        BasicBlock* large_capture_bb = BasicBlock::Create(
-            *context, "large_closure_env_call", current_func);
-        BasicBlock* small_capture_bb = BasicBlock::Create(
-            *context, "small_closure_capture_call", current_func);
-        Value* is_large_capture = builder->CreateICmpUGT(
-            num_captures, ConstantInt::get(int64_type, 64));
-        builder->CreateCondBr(is_large_capture, large_capture_bb, small_capture_bb);
-
-        builder->SetInsertPoint(large_capture_bb);
-        if (spread) {
-            BasicBlock* large_default = BasicBlock::Create(
-                *context, "large_closure_default", current_func);
-            SwitchInst* large_switch = builder->CreateSwitch(
-                spread_count, large_default, spread->width + 1);
-            for (int arg_count = 0; arg_count <= spread->width; ++arg_count) {
-                BasicBlock* large_case = BasicBlock::Create(
-                    *context, "large_closure_args_" + std::to_string(arg_count), current_func);
-                large_switch->addCase(ConstantInt::get(int64_type, arg_count), large_case);
-                builder->SetInsertPoint(large_case);
-                std::vector<Value*> large_args;
-                std::vector<Type*> large_types;
-                for (int i = 0; i < arg_count; ++i) {
-                    large_args.push_back(spread_arg_vals[(size_t)i]);
-                    large_types.push_back(tagged_value_type);
-                }
-                large_args.push_back(env_ptr);
-                large_types.push_back(PointerType::getUnqual(*context));
-                FunctionType* large_type = FunctionType::get(
-                    tagged_value_type, large_types, false);
-                Value* large_result = builder->CreateCall(
-                    large_type, actual_func_ptr, large_args);
-                builder->CreateBr(merge_bb);
-                results.push_back({builder->GetInsertBlock(), large_result});
-            }
-            builder->SetInsertPoint(large_default);
-            Value* large_default_result = packNullToTaggedValue();
-            builder->CreateBr(merge_bb);
-            results.push_back({large_default, large_default_result});
-        } else {
-            std::vector<Value*> large_args = call_args;
-            std::vector<Type*> large_types(
-                call_args.size(), tagged_value_type);
-            large_args.push_back(env_ptr);
-            large_types.push_back(PointerType::getUnqual(*context));
-            FunctionType* large_type = FunctionType::get(
-                tagged_value_type, large_types, false);
-            Value* large_result = builder->CreateCall(
-                large_type, actual_func_ptr, large_args);
-            builder->CreateBr(merge_bb);
-            results.push_back({builder->GetInsertBlock(), large_result});
-        }
-
-        builder->SetInsertPoint(small_capture_bb);
-
-        // Capture-count ceiling. A closure with N captures lowers to a function
-        // taking N individual capture-pointer parameters. The dispatch below
-        // Small closures retain the bounded over-provisioned pointer ABI.
-        const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
+        // One call shape for every closure. The code address in a closure
+        // object (closureEntryPoint) is either a body that takes one pointer
+        // per capture slot, for at most MAX_CLOSURE_DISPATCH_CAPTURES
+        // captures, or an entry function that takes the address of capture
+        // slot 0 and forwards every slot address to a larger body. Either way
+        // the first capture argument is &captures[0], so the dispatch below --
+        // which passes the addresses of the first MAX slots after the user
+        // arguments -- enters both with the same call, after the same arity
+        // check and rest-list construction. The capture count never selects
+        // a path.
+        const int MAX_CLOSURE_DISPATCH_CAPTURES = (int)kClosureCallCaptureSlots;
 
         // THE CALL PROTOCOL (SW-216): a procedure is entered only with an
         // argument count its declaration accepts -- exactly fixed_params, or
@@ -8267,8 +8277,9 @@ private:
         // compilation of closure-heavy code (e.g. 256 nested closures) ~18x
         // slower (13s -> 237s) and blew the -O0 frame. Over-provisioning keeps
         // exactly one call per arg arm regardless of MAX_CAP, so the capture
-        // ceiling can be raised with negligible compile-time cost. Counts beyond
-        // MAX are rejected by the capture-overflow guard above.
+        // ceiling can be raised with negligible compile-time cost. A closure
+        // with more than MAX captures is entered through its slot-0 entry
+        // function, which reads only the first capture argument.
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
         SwitchInst* sw = builder->CreateSwitch(clamped_arg_count, nonvar_switch_default,
             max_call_args + 1);
@@ -24966,6 +24977,36 @@ private:
         builder->CreateCall(close_fn, {close_fp});
     }
 
+    // The procedure the runtime uses to enter a thunk of this module:
+    //   void __eshkol_call_thunk(const tagged* thunk, tagged* result)
+    // Its body is one ordinary closure call, so a thunk entered by the runtime
+    // (a dynamic-wind before/after thunk run while a continuation or a raise
+    // crosses the extent) follows the same call protocol as a thunk called
+    // from generated code: any number of captured variables in either closure
+    // layout, rest parameters, and the arity check. Only pointers cross the
+    // C boundary.
+    Function* getOrCreateRuntimeThunkCaller() {
+        static const char* const kName = "__eshkol_call_thunk";
+        if (Function* existing = module->getFunction(kName)) return existing;
+        FunctionType* caller_type = FunctionType::get(builder->getVoidTy(),
+            {builder->getPtrTy(), builder->getPtrTy()}, false);
+        Function* caller = Function::Create(caller_type, Function::InternalLinkage,
+                                            kName, module.get());
+        caller->getArg(0)->setName("thunk");
+        caller->getArg(1)->setName("result");
+        IRBuilderBase::InsertPoint saved = builder->saveIP();
+        builder->SetInsertPoint(BasicBlock::Create(*context, "entry", caller));
+        Value* thunk = builder->CreateLoad(tagged_value_type, caller->getArg(0), "thunk_value");
+        std::vector<Value*> no_args;
+        Value* result = codegenClosureCall(thunk, no_args, "runtime-thunk");
+        if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+            builder->CreateStore(ensureTaggedValue(result), caller->getArg(1));
+            builder->CreateRetVoid();
+        }
+        builder->restoreIP(saved);
+        return caller;
+    }
+
     Value* codegenDynamicWind(const eshkol_operations_t* op) {
         // Evaluate the three thunks. Each operand goes through
         // ensureTaggedValue, the normalisation every other procedure operand
@@ -24994,7 +25035,8 @@ private:
         Function* push_wind_func = module->getFunction("eshkol_push_dynamic_wind");
         if (!push_wind_func) {
             FunctionType* push_type = FunctionType::get(builder->getVoidTy(),
-                {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false);
+                {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy(),
+                 builder->getPtrTy()}, false);
             push_wind_func = Function::Create(push_type, Function::ExternalLinkage,
                 "eshkol_push_dynamic_wind", module.get());
         }
@@ -25020,7 +25062,8 @@ private:
 
         // Push wind entry AFTER before() succeeds (R7RS: before is called on entry)
         Value* arena_ptr = getArenaPtr();
-        builder->CreateCall(push_wind_func, {arena_ptr, before_alloca, after_alloca});
+        builder->CreateCall(push_wind_func,
+            {arena_ptr, before_alloca, after_alloca, getOrCreateRuntimeThunkCaller()});
 
         // Call thunk() — 0 args, capture result
         Value* result = codegenClosureCall(thunk_val, no_args, "dynamic-wind-thunk");
@@ -34779,15 +34822,12 @@ private:
             eshkol_debug("Lambda %s is variadic with rest param: %s",
                         lambda_name.c_str(), op->lambda_op.rest_param);
         }
-        const bool use_env_capture_abi = free_vars.size() > 64;
-        // Small closures retain the established one-pointer-per-capture ABI.
-        // Large closures receive the contiguous environment as one pointer.
-        if (use_env_capture_abi) {
+        // The body takes one pointer parameter per captured variable, whatever
+        // their number, so every capture is an ordinary argument inside it.
+        // The closure object's entry point is chosen where the closure is
+        // allocated (closureEntryPoint).
+        for (size_t i = 0; i < free_vars.size(); i++) {
             param_types.push_back(PointerType::getUnqual(*context));
-        } else {
-            for (size_t i = 0; i < free_vars.size(); i++) {
-                param_types.push_back(PointerType::getUnqual(*context));
-            }
         }
 
         FunctionType* func_type = FunctionType::get(
@@ -34821,17 +34861,10 @@ private:
             ++arg_it;
         }
         // Set names for capture parameters
-        if (use_env_capture_abi) {
+        for (const std::string& var_name : free_vars) {
             if (arg_it != lambda_func->arg_end()) {
-                arg_it->setName("captured_env");
+                arg_it->setName("captured_" + var_name);
                 ++arg_it;
-            }
-        } else {
-            for (const std::string& var_name : free_vars) {
-                if (arg_it != lambda_func->arg_end()) {
-                    arg_it->setName("captured_" + var_name);
-                    ++arg_it;
-                }
             }
         }
 
@@ -34926,22 +34959,8 @@ private:
         // They get new stack frames on each call, so we can't use pointer-passing for them.
         std::vector<Value*> capture_args;
         capture_args.reserve(free_vars.size());
-        if (use_env_capture_abi) {
-            if (arg_it != lambda_func->arg_end()) {
-                Value* capture_env = &(*arg_it);
-                for (size_t i = 0; i < free_vars.size(); ++i) {
-                    Value* slot = builder->CreateGEP(
-                        int8_type, capture_env,
-                        ConstantInt::get(int64_type, 8 + i * sizeof(eshkol_tagged_value_t)));
-                    capture_args.push_back(builder->CreateBitCast(
-                        slot, PointerType::getUnqual(*context)));
-                }
-                ++arg_it;
-            }
-        } else {
-            for (size_t i = 0; i < free_vars.size() && arg_it != lambda_func->arg_end(); ++i, ++arg_it)
-                capture_args.push_back(&(*arg_it));
-        }
+        for (size_t i = 0; i < free_vars.size() && arg_it != lambda_func->arg_end(); ++i, ++arg_it)
+            capture_args.push_back(&(*arg_it));
         for (size_t capture_index = 0; capture_index < free_vars.size(); ++capture_index) {
             const std::string& var_name = free_vars[capture_index];
             if (capture_index < capture_args.size()) {
@@ -35354,7 +35373,8 @@ private:
         // CLOSURE FIX: If there are captures, allocate a closure at runtime
         if (!free_vars.empty()) {
             // Get function pointer as intptr_t (i32 on wasm32, i64 on native)
-            Value* func_ptr = builder->CreatePtrToInt(lambda_func, intptr_type);
+            Value* func_ptr = builder->CreatePtrToInt(
+                closureEntryPoint(lambda_func, free_vars.size()), intptr_type);
 
             // HOMOICONICITY FIX: Generate S-expression at closure creation time
             // We're past restoreIP so control flow disruption is acceptable - we'll end up
@@ -35855,7 +35875,8 @@ private:
         Function* thunk = getNamedLetEscapeThunk(info);
         if (!thunk) return nullptr;
 
-        Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
+        Value* func_ptr_int = builder->CreatePtrToInt(
+            closureEntryPoint(thunk, info.captures.size()), intptr_type);
         Value* arena_ptr = getArenaPtr();
         uint64_t packed_info = info.captures.size() & UINT64_C(0xFFFFFFFF);
         packed_info |= (info.arity & 0xFFFF) << 32;

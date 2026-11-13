@@ -2051,11 +2051,25 @@ typedef struct eshkol_tail_transfer {
 eshkol_tail_transfer_t* eshkol_tail_transfer_slot(void);
 
 /**
+ * @brief Enters a nullary procedure on behalf of the runtime.
+ *
+ * The compiler emits one of these per module. It applies the closure-call
+ * protocol of ordinary generated calls -- the callee's capture layout, its
+ * arity and variadic checks, continuations and parameters used as procedures
+ * -- to the procedure at @p thunk and stores its value at @p result. Only
+ * pointers cross the boundary, so the runtime never has to know how a
+ * procedure receives its captured variables.
+ */
+typedef void (*eshkol_thunk_caller_t)(const eshkol_tagged_value_t* thunk,
+                                      eshkol_tagged_value_t* result);
+
+/**
  * @brief One entry in the `dynamic-wind` stack.
  *
- * Records the before/after thunks of an active `dynamic-wind` so that
- * eshkol_unwind_dynamic_wind() can run the appropriate after-thunks when a
- * continuation invocation unwinds past this dynamic extent.
+ * Records the before/after thunks of an active `dynamic-wind` so that the
+ * runtime can run them when a continuation invocation or a raise leaves or
+ * re-enters this dynamic extent. The thunks are entered through
+ * `call_thunk`, the caller emitted by the compiler that produced them.
  */
 typedef struct eshkol_dynamic_wind_entry {
     eshkol_tagged_value_t before;       // Before thunk (callable)
@@ -2067,6 +2081,8 @@ typedef struct eshkol_dynamic_wind_entry {
     // on normal return.
     void (*native_after)(void* arg);
     void* native_after_arg;
+    // Enters `before` and `after`; NULL for native-cleanup entries.
+    eshkol_thunk_caller_t call_thunk;
 } eshkol_dynamic_wind_entry_t;
 
 // Global dynamic-wind stack
@@ -2204,8 +2220,12 @@ void eshkol_set_continuation_restore_hook(eshkol_continuation_restore_fn fn);
  * @param arena Arena to allocate the stack entry from.
  * @param before Thunk invoked when entering this dynamic extent.
  * @param after Thunk invoked when leaving this dynamic extent.
+ * @param call_thunk Caller the runtime uses to enter @p before and @p after
+ *        when a transfer of control crosses this extent.
  */
-void eshkol_push_dynamic_wind(void* arena, const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after);
+void eshkol_push_dynamic_wind(void* arena, const eshkol_tagged_value_t* before,
+                              const eshkol_tagged_value_t* after,
+                              eshkol_thunk_caller_t call_thunk);
 /**
  * @brief Pop the innermost dynamic-wind frame without running its after-thunk.
  *
