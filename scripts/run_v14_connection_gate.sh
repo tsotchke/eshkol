@@ -89,7 +89,15 @@ print(json.dumps({"kind": "v1_4_connection", "name": sys.argv[1], "value": sys.a
 probe_http_server_source_receipt() {
     local icc_bin repo_name binding_output binding_status command_line jit_cache fingerprint_trace fingerprint_file out status snippet receipt_ok
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
-    icc_bin="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+    if [ -n "${ICC_BIN:-}" ]; then
+        icc_bin="$ICC_BIN"
+    elif [ -x "$HOME/Desktop/infinite_context_coder/bin/icc" ]; then
+        icc_bin="$HOME/Desktop/infinite_context_coder/bin/icc"
+    elif [ -x "$HOME/infinite_context_coder/bin/icc" ]; then
+        icc_bin="$HOME/infinite_context_coder/bin/icc"
+    else
+        icc_bin="$HOME/Desktop/infinite_context_coder/bin/icc"
+    fi
     if [ ! -x "$icc_bin" ]; then
         PROBE_FAILURES=$((PROBE_FAILURES + 1))
         emit_event v14_http_server_roundtrip FAIL "ICC receipt producer unavailable: $icc_bin"
