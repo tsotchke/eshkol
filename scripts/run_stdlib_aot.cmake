@@ -41,16 +41,6 @@ else()
     execute_process(COMMAND "${ESHKOL_RUN}" -O 1 -o "${ESHKOL_BINARY}" "${ESHKOL_SOURCE}" "-L${ESHKOL_LINK_DIR}"
         RESULT_VARIABLE compile_status OUTPUT_VARIABLE compile_output ERROR_VARIABLE compile_error TIMEOUT ${ESHKOL_COMPILE_TIMEOUT})
 endif()
-# A compile stopped at its deadline cannot release the scratch object it
-# reserved beside its output, and the compiler never overwrites a file it did
-# not create. This runner owns the output location, so it clears the empty
-# reservation of the compile it stopped; the next run starts from a clean slot.
-if(compile_status MATCHES "timeout" AND EXISTS "${ESHKOL_BINARY}.tmp.o")
-    file(SIZE "${ESHKOL_BINARY}.tmp.o" _reserved_size)
-    if(_reserved_size EQUAL 0)
-        file(REMOVE "${ESHKOL_BINARY}.tmp.o")
-    endif()
-endif()
 message("${compile_output}${compile_error}")
 if(NOT compile_status STREQUAL "0" OR
    "${compile_output}${compile_error}" MATCHES "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")

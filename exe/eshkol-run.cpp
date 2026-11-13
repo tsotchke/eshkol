@@ -71,6 +71,7 @@
 #ifdef _WIN32
 #include <process.h>
 #else
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -8347,18 +8348,100 @@ static char** intern_driver_module_name_array(const std::string& name) {
 
 // Own only scratch objects that this driver creates for a later native link.
 // In particular, entries in compiled_files may be caller-owned object files.
+//
+// The scratch object belongs to one driver process, so its name carries that
+// process: `<output>.<pid>.<n>.tmp.o`, created exclusively. Two consequences
+// follow from the name alone. A file a caller keeps beside the output, whatever
+// it is called, is never opened by the driver. And a driver that is stopped
+// before it can clean up (a deadline delivers a signal no process can handle)
+// leaves a file that only it would ever have reused, so the next compile of
+// the same output is not held up by it. That next compile also reclaims such
+// a leftover once the process named in it is gone.
 struct OwnedLinkTemporaryObjects {
     std::vector<std::string> paths;
 
-    bool reserve(const std::string& path) {
-        // Exclusive creation also protects a caller's pre-existing <output>.tmp.o.
-        FILE* file = std::fopen(path.c_str(), "wbx");
-        if (!file) {
-            return false;
+    static uint64_t current_process_id() {
+#ifdef _WIN32
+        return static_cast<uint64_t>(_getpid());
+#else
+        return static_cast<uint64_t>(getpid());
+#endif
+    }
+
+    // Parse `<stem>.<pid>.<n>.tmp.o`; answers the pid, or nothing when the
+    // name is not one this driver family produces for @p stem.
+    static std::optional<uint64_t> scratch_owner(const std::string& name,
+                                                 const std::string& stem) {
+        static const std::string suffix = ".tmp.o";
+        if (name.size() <= stem.size() + suffix.size() + 1 ||
+            name.compare(0, stem.size(), stem) != 0 ||
+            name[stem.size()] != '.' ||
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            return std::nullopt;
         }
-        paths.push_back(path);
-        std::fclose(file);
-        return true;
+        const std::string middle = name.substr(
+            stem.size() + 1, name.size() - stem.size() - 1 - suffix.size());
+        const auto dot = middle.find('.');
+        if (dot == std::string::npos || dot == 0 || dot + 1 == middle.size() ||
+            dot > 19 || middle.size() - dot - 1 > 19) {
+            return std::nullopt;
+        }
+        uint64_t pid = 0;
+        for (size_t i = 0; i < middle.size(); ++i) {
+            if (i == dot) continue;
+            if (!std::isdigit(static_cast<unsigned char>(middle[i]))) return std::nullopt;
+            if (i < dot) pid = pid * 10 + static_cast<uint64_t>(middle[i] - '0');
+        }
+        return pid;
+    }
+
+    // Remove scratch objects for this output whose driver no longer exists.
+    // A pid that is alive (this process included, or an unrelated process the
+    // system gave the same number) keeps its file; only a certain absence
+    // reclaims. Without a portable liveness query the leftovers are kept.
+    static void reclaim_abandoned(const std::filesystem::path& output) {
+#ifndef _WIN32
+        std::error_code ec;
+        std::filesystem::path dir = output.parent_path();
+        if (dir.empty()) dir = ".";
+        const std::string stem = output.filename().string();
+        for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end;
+             it.increment(ec)) {
+            const auto owner = scratch_owner(it->path().filename().string(), stem);
+            if (!owner || *owner == 0 || *owner == current_process_id() ||
+                *owner > static_cast<uint64_t>(INT32_MAX)) {
+                continue;
+            }
+            if (::kill(static_cast<pid_t>(*owner), 0) == -1 && errno == ESRCH) {
+                std::error_code remove_ec;
+                std::filesystem::remove(it->path(), remove_ec);
+            }
+        }
+#else
+        (void)output;
+#endif
+    }
+
+    // Create this process's scratch object for @p output. Answers its path,
+    // or an empty string when the directory does not admit a new file.
+    std::string reserve_for(const std::string& output) {
+        static std::atomic<uint64_t> sequence{0};
+        reclaim_abandoned(output);
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            const std::string path = output + "." +
+                std::to_string(current_process_id()) + "." +
+                std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)) +
+                ".tmp.o";
+            // Exclusive creation: an existing file of this name is not ours.
+            FILE* file = std::fopen(path.c_str(), "wbx");
+            if (file) {
+                paths.push_back(path);
+                std::fclose(file);
+                return path;
+            }
+            if (errno != EEXIST) break;
+        }
+        return {};
     }
 
     void cleanup() {
@@ -10071,9 +10154,9 @@ int main(int argc, char **argv)
             const std::string library_path =
                 shared_library_output_path(output, module_name);
             shared_library_path = library_path;
-            const std::string temp_obj = library_path + ".tmp.o";
-            if (!owned_link_temp_objects.reserve(temp_obj)) {
-                eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+            const std::string temp_obj = owned_link_temp_objects.reserve_for(library_path);
+            if (temp_obj.empty()) {
+                eshkol_error("Cannot create a temporary object beside %s", library_path.c_str());
                 return 1;
             }
 
@@ -10114,9 +10197,9 @@ int main(int argc, char **argv)
 
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
-                std::string temp_obj = exe_name + ".tmp.o";
-                if (!owned_link_temp_objects.reserve(temp_obj)) {
-                    eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+                std::string temp_obj = owned_link_temp_objects.reserve_for(exe_name);
+                if (temp_obj.empty()) {
+                    eshkol_error("Cannot create a temporary object beside %s", exe_name.c_str());
                     return 1;
                 }
                 eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
