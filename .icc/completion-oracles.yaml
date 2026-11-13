@@ -2782,6 +2782,17 @@ oracles:
         severity: medium
         label: 'core.theory (ADR-0039): signatures, terms, equational theories and models as data; the catalogue (semigroups, monoids, groups, abelian groups, rings, commutative rings, R-modules, lattices, distributive lattices, Boolean and Heyting algebras); laws exhaustive on finite models (the fourteen groups of order <= 8, Z/n, M2(Z/2), modules, lattices, Omega_J(c) of core.topos) and seeded on infinite ones; homomorphisms, products, congruences, quotients; free models with the word problem decided for every catalogue theory; the Lawvere theory with composition by substitution and finite products; core.ring carriers as models of commutative-ring-theory with ring-law-violations on the shared law check; theory_jit/aot, theory_topos_jit/aot, ring_jit/aot and the reference-page examples all pass'
         action: ./scripts/run_theory_gate.sh
+      # The capability policy at the non-file sinks. Producer:
+      # scripts/run_capability_policy_gate.sh runs the three CTest entries that
+      # own the behaviour; PASS only when all three ran and passed.
+      - id: v14_capability_policy
+        runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["v14_capability_policy"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Capability policy: a program that installs no policy reaches every host operation as before, and under an active policy every capability it does not name is refused — shell (system), subprocess (fork, execv, every process-spawn variant, process-kill/kill-tree/setpgid, the agent subprocess layer), network (the socket layer under core.net and core.tls, unix-socket-connect, the http-request builtin, every HTTP client backend, websocket-connect, the server listen path) and ffi (dlopen, dlsym, platform library loading), on the LLVM JIT, ahead-of-time executables and the bytecode VM, from one policy store; a refusal names the capability and is catchable; (process-spawn-pty cmd) hands back the pseudo-terminal descriptor on every engine; a child environment overlay applies to the child and not to the spawning program'
+        action: ./scripts/run_capability_policy_gate.sh
 
   # -----------------------------------------------------------------
   # v1.9.0-types readiness -- the type system becomes a proof system.
