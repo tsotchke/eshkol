@@ -57,7 +57,7 @@ run_engine() {
                 echo "FAIL: $tag ahead-of-time compile did not succeed" >&2
                 tail -40 "$WORK_DIR/$tag.build" >&2
                 failures=$((failures + 1))
-                return 1
+                return 200
             fi
             "$WORK_DIR/$tag.bin" >"$WORK_DIR/$tag.out" 2>"$WORK_DIR/$tag.err"
             ;;
@@ -66,7 +66,9 @@ run_engine() {
                 >"$WORK_DIR/$tag.out" 2>"$WORK_DIR/$tag.err"
             ;;
     esac
-    return 0
+    # The program's own exit status, which the unhandled-refusal case reads.
+    # 200 is reserved above for "the ahead-of-time compile did not run".
+    return $?
 }
 
 # expect <engine> <probe> <mode> <capability> <pattern>
@@ -75,9 +77,8 @@ expect() {
     engine="$1"; probe="$2"; mode="$3"; capability="$4"; pattern="$5"
     tag="${capability}-${engine}-${mode}"
     checks=$((checks + 1))
-    if ! ESHKOL_CAP_MODE="$mode" run_engine "$engine" "$TEST_DIR/$probe" "$tag"; then
-        return
-    fi
+    ESHKOL_CAP_MODE="$mode" run_engine "$engine" "$TEST_DIR/$probe" "$tag"
+    [ "$?" -eq 200 ] && return
     if grep -Eq "$pattern" "$WORK_DIR/$tag.out"; then
         echo "  ok  $capability/$engine/$mode"
     else
@@ -125,7 +126,8 @@ for engine in jit aot; do
         tag="ffi-extern-$engine-$mode"
         checks=$((checks + 1))
         ESHKOL_CAP_MODE="$mode" ESHKOL_CAP_FFI_MARKER="$marker" \
-            run_engine "$engine" "$TEST_DIR/capability_sink_ffi_native_probe.esk" "$tag" || continue
+            run_engine "$engine" "$TEST_DIR/capability_sink_ffi_native_probe.esk" "$tag"
+        [ "$?" -eq 200 ] && continue
         if [ "$mode" = "deny" ]; then
             if grep -q "capability denied: ffi" "$WORK_DIR/$tag.out" && [ ! -e "$marker" ]; then
                 echo "  ok  ffi-extern/$engine/$mode"
@@ -204,7 +206,8 @@ echo "=== every other sink, under a policy that withholds its capability ==="
 for engine in jit aot vm; do
     tag="table-$engine"
     checks=$((checks + 1))
-    run_engine "$engine" "$TEST_DIR/capability_sink_table_probe.esk" "$tag" || continue
+    run_engine "$engine" "$TEST_DIR/capability_sink_table_probe.esk" "$tag"
+    [ "$?" -eq 200 ] && continue
     if grep -q "^failures:0" "$WORK_DIR/$tag.out" && \
        ! grep -q "NOT-REFUSED" "$WORK_DIR/$tag.out"; then
         echo "  ok  table/$engine ($(grep -c ':refused' "$WORK_DIR/$tag.out") sinks refused)"
@@ -220,7 +223,8 @@ echo "=== partial grant: subprocess without shell ==="
 for engine in jit aot vm; do
     tag="partial-$engine"
     checks=$((checks + 1))
-    run_engine "$engine" "$TEST_DIR/capability_partial_grant_probe.esk" "$tag" || continue
+    run_engine "$engine" "$TEST_DIR/capability_partial_grant_probe.esk" "$tag"
+    [ "$?" -eq 200 ] && continue
     out="$WORK_DIR/$tag.out"
     if grep -q "subprocess-granted:yes" "$out" && \
        grep -q "process-spawn:.*capability denied: shell" "$out" && \
@@ -240,7 +244,8 @@ for engine in jit aot vm; do
     tag="noeffect-$engine"
     checks=$((checks + 1))
     ESHKOL_CAP_SUBPROC_MARKER="$marker" \
-        run_engine "$engine" "$TEST_DIR/capability_subprocess_no_effect_probe.esk" "$tag" || continue
+        run_engine "$engine" "$TEST_DIR/capability_subprocess_no_effect_probe.esk" "$tag"
+    [ "$?" -eq 200 ] && continue
     if grep -q "capability denied" "$WORK_DIR/$tag.out" && [ ! -e "$marker" ]; then
         echo "  ok  no-effect/$engine"
     else
@@ -259,6 +264,7 @@ for engine in jit aot; do
     ESHKOL_CAP_UNHANDLED_MARKER="$marker" \
         run_engine "$engine" "$TEST_DIR/capability_unhandled_refusal_probe.esk" "$tag"
     rc=$?
+    [ "$rc" -eq 200 ] && continue
     if [ "$rc" -ne 0 ] && grep -q "before" "$WORK_DIR/$tag.out" && \
        ! grep -q "after" "$WORK_DIR/$tag.out" && [ ! -e "$marker" ]; then
         echo "  ok  unhandled/$engine (exit $rc, nothing after it ran)"

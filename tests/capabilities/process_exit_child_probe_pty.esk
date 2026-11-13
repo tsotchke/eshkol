@@ -1,5 +1,7 @@
-;;; The same for a pseudo-terminal child: the program ends, the child keeps
-;;; running, and the exit does not wait for it.
+;;; The same for a pseudo-terminal child, for the half that is the runtime's:
+;;; the program's exit does not wait for it. The child itself is hung up when
+;;; the terminal's master descriptor goes away with the program, which is the
+;;; terminal's own behaviour and not something the runtime sends.
 (require stdlib)
 
 (define marker (getenv "ESHKOL_EXIT_CHILD_MARKER"))

@@ -9,6 +9,13 @@
 #
 # Both halves run on every engine, because the runtime's child bookkeeping is
 # the native engines' and the bytecode VM has its own; they must agree.
+#
+# A pseudo-terminal child is a different case and is not asserted to survive: a
+# terminal hangs up its session when the master descriptor goes away, and that
+# happens when the program ends whether or not the runtime closes it, so the
+# child receives SIGHUP from the terminal rather than anything the runtime
+# sends. What is asserted for it is the half that is ours — that the exit does
+# not wait.
 
 set -u
 
@@ -121,13 +128,38 @@ echo "=== a child started before the program ends keeps running ==="
 for engine in jit aot vm; do
     check_survives "$engine" process_exit_child_probe.esk plain
 done
-for engine in jit aot vm; do
-    check_survives "$engine" process_exit_child_probe_pty.esk pty
-done
-
 echo "=== a child that ignores SIGTERM does not hold the program open ==="
 for engine in jit aot vm; do
     check_no_hang "$engine"
+done
+
+# The same for a pseudo-terminal child: its descriptor is the program's, and
+# handing it back is not a reason for the exit to wait on the child.
+echo "=== a pseudo-terminal child does not hold the program open either ==="
+for engine in jit aot vm; do
+    tag="pty-exit-$engine"
+    checks_started=$(date +%s)
+    ESHKOL_EXIT_CHILD_MODE=survives \
+    ESHKOL_EXIT_CHILD_MARKER="$WORK_DIR/pty-marker-$engine.txt" \
+        run_engine "$engine" process_exit_child_probe_pty.esk "$tag" 30
+    rc=$?
+    elapsed=$(( $(date +%s) - checks_started ))
+    if [ "$rc" -eq 2 ]; then
+        echo "FAIL: $tag ahead-of-time compile did not succeed" >&2
+        failures=$((failures + 1))
+    elif [ "$rc" -eq 124 ]; then
+        echo "FAIL: pty-exit/$engine did not exit within 30s" >&2
+        failures=$((failures + 1))
+    elif ! grep -q "spawned:yes" "$WORK_DIR/$tag.out" 2>/dev/null; then
+        echo "FAIL: pty-exit/$engine did not spawn a pseudo-terminal child" >&2
+        echo "  stdout: $(cat "$WORK_DIR/$tag.out" 2>/dev/null)" >&2
+        failures=$((failures + 1))
+    elif [ "$elapsed" -gt 12 ]; then
+        echo "FAIL: pty-exit/$engine exit took ${elapsed}s; it waited for the child" >&2
+        failures=$((failures + 1))
+    else
+        echo "  ok  pty-exit/$engine exited in ${elapsed}s"
+    fi
 done
 
 if [ "$failures" -ne 0 ]; then

@@ -14,8 +14,7 @@
 (define command
   (if (string=? mode "stubborn")
       (string-append "trap '' TERM; sleep 25 >/dev/null 2>&1")
-      (string-append "sleep 3; printf child-survived > '" marker
-                     "' >/dev/null 2>&1")))
+      (string-append "sleep 3; printf child-survived > '" marker "' 2>/dev/null")))
 
 (define pid (process-spawn command ""))
 (display "spawned:")
