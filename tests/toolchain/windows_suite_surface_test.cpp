@@ -199,8 +199,21 @@ int main(int argc, char** argv) {
                              "target_link_options(eshkol-repl PRIVATE \"/WHOLEARCHIVE:${_llvm_repl_lib_path}\")",
                              "Windows REPL must not mix static target archives with LLVM-C") &&
          expect_contains(cmake,
-                         "if(TARGET eshkol-run)\n                eshkol_windows_export_runtime(eshkol-run)",
-                         "runtime export generation is deferred until agent targets exist") &&
+                         "if(WIN32)\n"
+                         "    if(TARGET eshkol-run)\n"
+                         "        eshkol_windows_export_runtime(eshkol-run)\n"
+                         "    endif()\n"
+                         "    if(TARGET eshkol-repl)\n"
+                         "        eshkol_windows_export_runtime(eshkol-repl)\n"
+                         "    endif()\n"
+                         "endif()",
+                         "runtime exports are registered once for both drivers, with or without agent FFI") &&
+         (cmake.find("Agent FFI modules: lib/agent/c/ not found, skipping") != std::string::npos &&
+          cmake.find("Agent FFI modules: lib/agent/c/ not found, skipping") <
+              cmake.find("eshkol_windows_export_runtime(eshkol-run)")
+              ? true
+              : (std::cerr << "missing: runtime export generation is deferred until agent targets exist\n",
+                 false)) &&
          expect_not_contains(cmake,
                              "ClangCL on\n"
                              "            # Windows needs OpenBLAS",
