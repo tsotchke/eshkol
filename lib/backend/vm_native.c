@@ -1,4 +1,6 @@
 #include "../../inc/eshkol/core/number_syntax.h"
+#include "../../inc/eshkol/core/http_syntax.h"
+#include "../../inc/eshkol/core/websocket_handshake.h"
 #include <eshkol/core/linear_solve_portable.h>
 #include <eshkol/core/tensor_inverse_checked.h>
 #include <math.h>
@@ -1261,27 +1263,20 @@ static Value vm_base64_decode_value(VM* vm, Value input) {
     return result;
 }
 
-/** @brief Fill `out` with `len` random bytes, preferring /dev/urandom on POSIX
- *         and falling back to a seeded rand() stream (not cryptographically
- *         strong) if the device is unavailable or on other platforms. */
+/** @brief Fill `out` with `len` bytes from the operating system's
+ *         cryptographic source, the one source the VM draws unguessable
+ *         values from. Returns 0 when that source cannot be read, which is a
+ *         refusal rather than a weaker stream: the seeded generator behind
+ *         `(random)` is for reproducible simulation and has no part here. */
 static int vm_random_bytes(unsigned char* out, size_t len) {
-    if (!out) return 0;
-#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        size_t pos = 0;
-        while (pos < len) {
-            ssize_t n = read(fd, out + pos, len - pos);
-            if (n <= 0) break;
-            pos += (size_t)n;
-        }
-        close(fd);
-        if (pos == len) return 1;
-    }
+    if (!out || len == 0) return 0;
+#if defined(__EMSCRIPTEN__)
+    /* A WASM host without the native core CSPRNG refuses rather than
+     * substituting a stream a clock could have produced. */
+    return 0;
+#else
+    return eshkol_random_bytes((char*)out, len) == 0;
 #endif
-    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
-    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
-    return 1;
 }
 
 /** @brief Generate a random RFC 4122 version-4 UUID string, using
@@ -3074,11 +3069,27 @@ static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
         for (int i = 7; i >= 0; i--)
             header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
+    /* RFC 6455 section 5.3: a fresh masking key per frame from the operating
+     * system's cryptographic source, and the payload masked with it. When the
+     * source cannot be read the frame is not sent. */
+    unsigned char mask[4];
+    if (!eshkol_ws_generate_mask(mask)) return 0;
     memcpy(header + hlen, mask, sizeof(mask));
     hlen += 4;
-    return vm_ws_send_all(fd, header, (size_t)hlen) &&
-           (len == 0 || vm_ws_send_all(fd, data, len));
+    if (!vm_ws_send_all(fd, header, (size_t)hlen)) return 0;
+    if (len == 0) return 1;
+    const unsigned char* payload = (const unsigned char*)data;
+    unsigned char chunk[4096];
+    size_t offset = 0;
+    while (offset < len) {
+        size_t span = len - offset;
+        if (span > sizeof(chunk)) span = sizeof(chunk);
+        for (size_t i = 0; i < span; i++)
+            chunk[i] = (unsigned char)(payload[offset + i] ^ mask[(offset + i) % 4]);
+        if (!vm_ws_send_all(fd, chunk, span)) return 0;
+        offset += span;
+    }
+    return 1;
 }
 
 typedef int32_t (*VmTsAvailableFn)(void);
@@ -15226,24 +15237,58 @@ tensor_inverse_done:
         int port = 80;
         int timeout_ms = (int)as_number(timeout_val);
         if (timeout_ms <= 0) timeout_ms = 30000;
-        if (method && method->data && method->byte_len > 0 &&
-            vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+        /* The request line and the header block are decided against the
+         * protocol grammar before a socket exists; the refusal is an ordinary
+         * VM error naming the field that does not fit. */
+        char method_text[64];
+        if (!method || !method->data || method->byte_len <= 0 ||
+            (size_t)method->byte_len >= sizeof(method_text)) {
+            vm_raise_error_msg(vm, "http-request: method does not fit the protocol grammar");
+            break;
+        }
+        memcpy(method_text, method->data, (size_t)method->byte_len);
+        method_text[method->byte_len] = '\0';
+        const char* header_block = (headers && headers->data) ? headers->data : "";
+        const char* offending =
+            eshkol_http_request_offending_field(method_text, NULL, header_block);
+        if (offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "http-request: %s does not fit the protocol grammar", offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char rendered_headers[4096];
+        if (!eshkol_http_render_header_block(header_block, rendered_headers,
+                                             sizeof(rendered_headers), NULL)) {
+            vm_raise_error_msg(vm, "http-request: header does not fit the protocol grammar");
+            break;
+        }
+        if (vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "http-request: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_field_value(host, strlen(host))) {
+                vm_raise_error_msg(vm,
+                    "http-request: Host header does not fit the protocol grammar");
+                break;
+            }
             int fd = vm_http_connect(host, port, timeout_ms);
             if (fd >= 0) {
                 const char* body_data = (body && body->data) ? body->data : "";
                 int64_t body_len = (body && body->data) ? body->byte_len : 0;
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char header[8192];
                 int hlen = snprintf(header, sizeof(header),
-                                    "%.*s %s HTTP/1.1\r\n"
+                                    "%s %s HTTP/1.1\r\n"
                                     "Host: %s\r\n"
                                     "Connection: close\r\n"
-                                    "%s%s"
+                                    "%s"
                                     "Content-Length: %lld\r\n\r\n",
-                                    (int)method->byte_len, method->data,
+                                    method_text,
                                     path, host,
-                                    extra_headers,
-                                    extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                                    rendered_headers,
                                     (long long)body_len);
                 int ok = hlen > 0 && hlen < (int)sizeof(header);
                 if (ok) {
@@ -15304,10 +15349,46 @@ tensor_inverse_done:
         char host[256];
         char path[2048];
         int port = 80;
+        const char* ws_header_block = (headers && headers->data) ? headers->data : "";
+        const char* ws_offending =
+            eshkol_http_request_offending_field("GET", NULL, ws_header_block);
+        if (ws_offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "websocket-connect: %s does not fit the protocol grammar",
+                     ws_offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char ws_rendered_headers[2048];
+        if (!eshkol_http_render_header_block(ws_header_block, ws_rendered_headers,
+                                             sizeof(ws_rendered_headers), NULL)) {
+            vm_raise_error_msg(vm,
+                "websocket-connect: header does not fit the protocol grammar");
+            break;
+        }
         if (vm_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_field_value(host, strlen(host))) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: Host header does not fit the protocol grammar");
+                break;
+            }
+            /* One key per handshake, from the operating system's
+             * cryptographic source; the server's answer is checked against
+             * it, so without a key there is no handshake to make. */
+            char ws_key[ESHKOL_WS_KEY_CAPACITY];
+            if (!eshkol_ws_generate_key(ws_key, sizeof(ws_key))) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: the cryptographic source for Sec-WebSocket-Key is unavailable");
+                break;
+            }
             int fd = vm_http_connect(host, port, 5000);
             if (fd >= 0) {
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char request[4096];
                 int n = snprintf(request, sizeof(request),
                                  "GET %s HTTP/1.1\r\n"
@@ -15315,19 +15396,21 @@ tensor_inverse_done:
                                  "Upgrade: websocket\r\n"
                                  "Connection: Upgrade\r\n"
                                  "Sec-WebSocket-Version: 13\r\n"
-                                 "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
-                                 "%s%s"
+                                 "Sec-WebSocket-Key: %s\r\n"
+                                 "%s"
                                  "\r\n",
-                                 path, host, extra_headers,
-                                 extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+                                 path, host, ws_key, ws_rendered_headers);
                 if (n > 0 && n < (int)sizeof(request) &&
                     vm_ws_send_all(fd, request, (size_t)n)) {
                     char response[4096];
                     ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
                     if (r > 0) {
                         response[r] = '\0';
-                        if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
-                            strstr(response, " 101\n")) {
+                        /* RFC 6455 section 4.1: 101, the Upgrade and
+                         * Connection fields, and a Sec-WebSocket-Accept
+                         * equal to the value derived from this key. */
+                        if (eshkol_ws_handshake_refusal(response, (size_t)r,
+                                                        ws_key) == NULL) {
                             int handle = vm_ws_store(vm, fd);
                             if (handle > 0) {
                                 vm_push(vm, INT_VAL((int64_t)handle));

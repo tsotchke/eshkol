@@ -22,17 +22,43 @@
 ;; its hash.  Trees with an odd number of leaves at any level
 ;; duplicate the last leaf (Bitcoin convention) so every inode has
 ;; two children and proofs are uniform.
+;;
+;; Domain separation (RFC 6962 section 2.1)
+;; ---------------------------------------
+;; A leaf hash and an interior hash are computed over different
+;; domains: a leaf hashes byte 0x00 followed by its data, an interior
+;; node hashes byte 0x01 followed by the hex renderings of its two
+;; child hashes.  Without the two prefixes, leaf and interior hashes
+;; live in one value space, and the hash of a node can be offered as
+;; the data of a leaf: a proof for one reads as a proof for the other.
+;; With them, no leaf hash is ever an interior hash of anything.
+;;
+;; Format versions
+;; ---------------
+;; (merkle-format-version) is 2: the domain-separated tree described
+;; above, and what merkle-tree, merkle-proof and merkle-verify compute.
+;; Version 1 was the same tree without the prefixes.  Roots recorded
+;; under version 1 differ from version 2 roots over the same data, so
+;; version 1 remains available by name, for reading what was written
+;; under it: merkle-tree-v1, merkle-proof-v1 and merkle-verify-v1
+;; compute exactly what they always did.  A stored root should be kept
+;; with the version that produced it; new trees should be version 2.
 
 (require stdlib)
 
 (provide
   ;; Hash
   fnv1a-64 hash->hex
+  ;; Format
+  merkle-format-version merkle-leaf-domain merkle-node-domain
   ;; Merkle tree
   merkle-leaf merkle-leaf? merkle-inode? merkle-root merkle-data
   merkle-tree merkle-tree-with-hash
   merkle-leaves
   merkle-proof merkle-verify
+  ;; Version 1: the pre-domain-separation computation, kept so roots
+  ;; recorded under it stay readable
+  merkle-tree-v1 merkle-tree-with-hash-v1 merkle-proof-v1 merkle-verify-v1
   ;; Content-addressable store
   make-cas make-cas-with-hash cas? cas-put! cas-get cas-has? cas-size cas-keys)
 
@@ -65,9 +91,35 @@
 
 ;; ── Merkle tree ──────────────────────────────────────────────────────
 
+;; ── Domain separation ───────────────────────────────────────────────
+
+(define (merkle-format-version)
+  "The tree format merkle-tree, merkle-proof and merkle-verify compute:
+   2, the domain-separated tree.  See the header of this module."
+  2)
+
+(define (merkle-leaf-domain)
+  "The one-byte prefix every leaf hash is computed over: 0x00."
+  (string (integer->char 0)))
+
+(define (merkle-node-domain)
+  "The one-byte prefix every interior hash is computed over: 0x01."
+  (string (integer->char 1)))
+
 (define (merkle-leaf data . hash-fn-opt)
   "Wrap raw data as a leaf node.  Optional second arg is the hash
-   function (defaults to fnv1a-64).  data must be a string."
+   function (defaults to fnv1a-64).  data must be a string.
+
+   The leaf hash is taken over the leaf domain prefix followed by the
+   data, so it cannot coincide with the hash of any interior node."
+  (let ((hash-fn (if (null? hash-fn-opt) fnv1a-64 (car hash-fn-opt))))
+    (vector 'merkle-leaf
+            (hash-fn (string-append (merkle-leaf-domain) data))
+            data)))
+
+(define (merkle-leaf-v1 data . hash-fn-opt)
+  "Version-1 leaf: the hash of the data with no domain prefix.  Kept so
+   trees and roots recorded under version 1 stay readable."
   (let ((hash-fn (if (null? hash-fn-opt) fnv1a-64 (car hash-fn-opt))))
     (vector 'merkle-leaf (hash-fn data) data)))
 
@@ -94,12 +146,19 @@
       (error "merkle-data: not a leaf node")))
 
 (define (merkle-pair-hash hash-fn left right)
-  "Hash the concatenation of two child hashes (rendered as hex)."
+  "Hash of an interior node: the interior domain prefix followed by the
+   hex renderings of the two child hashes."
+  (hash-fn (string-append (merkle-node-domain)
+                          (hash->hex left) (hash->hex right))))
+
+(define (merkle-pair-hash-v1 hash-fn left right)
+  "Version-1 interior hash: the two hex child hashes with no prefix."
   (hash-fn (string-append (hash->hex left) (hash->hex right))))
 
-(define (merkle-build-level hash-fn nodes)
+(define (merkle-build-level-with pair-fn hash-fn nodes)
   ;; Pair adjacent nodes; if odd, duplicate the last one.  Returns
-  ;; the next level up.
+  ;; the next level up.  pair-fn is the interior-hash computation, so
+  ;; the same walk serves both format versions.
   (cond
     ((null? nodes) '())
     ((null? (cdr nodes))
@@ -112,36 +171,53 @@
          ((null? (cdr rest))
           ;; Odd one out — duplicate it
           (let* ((only (car rest))
-                 (h (merkle-pair-hash hash-fn
-                                      (merkle-root only)
-                                      (merkle-root only))))
+                 (h (pair-fn hash-fn
+                             (merkle-root only)
+                             (merkle-root only))))
             (reverse (cons (vector 'merkle-inode h only only) acc))))
          (else
           (let* ((l (car rest))
                  (r (cadr rest))
-                 (h (merkle-pair-hash hash-fn
-                                      (merkle-root l)
-                                      (merkle-root r))))
+                 (h (pair-fn hash-fn
+                             (merkle-root l)
+                             (merkle-root r))))
             (loop (cddr rest)
                   (cons (vector 'merkle-inode h l r) acc)))))))))
 
-(define (merkle-tree-with-hash data-list hash-fn)
-  "Build a Merkle tree from a list of strings using the given hash
-   function.  Returns the root node.  Empty list errors out."
+(define (merkle-build-level hash-fn nodes)
+  "One level of the current (domain-separated) tree."
+  (merkle-build-level-with merkle-pair-hash hash-fn nodes))
+
+(define (merkle-build-tree leaf-fn pair-fn data-list hash-fn)
   (cond
     ((null? data-list)
      (error "merkle-tree-with-hash: cannot build tree from empty list"))
     (else
-     (let* ((leaves (map (lambda (d) (merkle-leaf d hash-fn)) data-list)))
+     (let* ((leaves (map (lambda (d) (leaf-fn d hash-fn)) data-list)))
        (let loop ((level leaves))
          (if (null? (cdr level))
              (car level)
-             (loop (merkle-build-level hash-fn level))))))))
+             (loop (merkle-build-level-with pair-fn hash-fn level))))))))
+
+(define (merkle-tree-with-hash data-list hash-fn)
+  "Build a Merkle tree from a list of strings using the given hash
+   function.  Returns the root node.  Empty list errors out.
+   Format version 2: leaf and interior hashes are domain-separated."
+  (merkle-build-tree merkle-leaf merkle-pair-hash data-list hash-fn))
 
 (define (merkle-tree data-list)
   "Build a Merkle tree from a list of strings using the default hash
    (FNV-1a 64-bit).  Returns the root node."
   (merkle-tree-with-hash data-list fnv1a-64))
+
+(define (merkle-tree-with-hash-v1 data-list hash-fn)
+  "Build a format-version-1 tree: the same shape with no domain
+   prefixes.  For reading roots recorded under version 1."
+  (merkle-build-tree merkle-leaf-v1 merkle-pair-hash-v1 data-list hash-fn))
+
+(define (merkle-tree-v1 data-list)
+  "Format-version-1 tree with the default hash."
+  (merkle-tree-with-hash-v1 data-list fnv1a-64))
 
 (define (merkle-leaves tree)
   "Walk the tree left-to-right, returning the list of leaf data."
@@ -193,21 +269,42 @@
                    (cons (cons (merkle-root l) 'left) acc)))))
       (else (error "merkle-proof: not a merkle node")))))
 
+(define (merkle-verify-with leaf-hash pair-fn root-hash leaf-data proof hash-fn)
+  (let loop ((h (leaf-hash leaf-data hash-fn)) (rest proof))
+    (cond
+      ((null? rest) (= h root-hash))
+      (else
+       (let* ((p (car rest))
+              (sibling-h (car p))
+              (side (cdr p))
+              (combined (if (eq? side 'right)
+                            (pair-fn hash-fn h sibling-h)
+                            (pair-fn hash-fn sibling-h h))))
+         (loop combined (cdr rest)))))))
+
 (define (merkle-verify root-hash leaf-data proof . hash-fn-opt)
   "Verify that leaf-data is included under root-hash given proof.
-   Returns #t on valid proof, #f otherwise."
+   Returns #t on valid proof, #f otherwise.
+
+   leaf-data is hashed in the leaf domain and each proof step in the
+   interior domain, so an interior hash presented as leaf data cannot
+   reproduce a root: the two computations never meet."
   (let ((hash-fn (if (null? hash-fn-opt) fnv1a-64 (car hash-fn-opt))))
-    (let loop ((h (hash-fn leaf-data)) (rest proof))
-      (cond
-        ((null? rest) (= h root-hash))
-        (else
-         (let* ((p (car rest))
-                (sibling-h (car p))
-                (side (cdr p))
-                (combined (if (eq? side 'right)
-                              (merkle-pair-hash hash-fn h sibling-h)
-                              (merkle-pair-hash hash-fn sibling-h h))))
-           (loop combined (cdr rest))))))))
+    (merkle-verify-with
+      (lambda (d h) (h (string-append (merkle-leaf-domain) d)))
+      merkle-pair-hash root-hash leaf-data proof hash-fn)))
+
+(define (merkle-verify-v1 root-hash leaf-data proof . hash-fn-opt)
+  "Verify a proof produced under format version 1."
+  (let ((hash-fn (if (null? hash-fn-opt) fnv1a-64 (car hash-fn-opt))))
+    (merkle-verify-with (lambda (d h) (h d))
+                        merkle-pair-hash-v1
+                        root-hash leaf-data proof hash-fn)))
+
+(define (merkle-proof-v1 tree index)
+  "Inclusion proof over a format-version-1 tree.  The walk is the same;
+   only the hashes in the tree differ, so this is merkle-proof."
+  (merkle-proof tree index))
 
 ;; ── Content-addressable store ───────────────────────────────────────
 ;;

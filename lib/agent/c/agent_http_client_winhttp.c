@@ -252,7 +252,8 @@ static qllm_http_response_t* perform_request(const wchar_t* method,
                                              const char* body,
                                              int64_t body_len,
                                              int32_t timeout_ms) {
-    if (!url || body_len < 0 || (uint64_t)body_len > UINT32_MAX ||
+    if (!eshkol_http_valid_absolute_url(url) || body_len < 0 ||
+        (uint64_t)body_len > UINT32_MAX ||
         (!body && body_len != 0)) return NULL;
     for (int64_t i = 0; headers && i < header_count; ++i) {
         if (headers[i] && !eshkol_http_valid_header_line(headers[i])) return NULL;
@@ -475,7 +476,8 @@ qllm_http_response_t* eshkol_http_request_bytes(const char* method,
                                                 const char* body,
                                                 int64_t body_len,
                                                 int32_t timeout_ms) {
-    if (!eshkol_http_valid_method(method) || !url) return NULL;
+    if (!eshkol_http_valid_method(method) ||
+        !eshkol_http_valid_absolute_url(url)) return NULL;
     wchar_t* wide_method = utf8_to_wide(method);
     if (!wide_method) return NULL;
     header_array_t headers;
@@ -557,7 +559,8 @@ void* eshkol_http_stream_open_bytes(const char* method,
                                     const char* body,
                                     int64_t body_len,
                                     int32_t timeout_ms) {
-    if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
+    if (!eshkol_http_valid_method(method) ||
+        !eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (uint64_t)body_len > UINT32_MAX || (!body && body_len != 0)) return NULL;
     const int timeout = timeout_ms > 0 ? timeout_ms : ESHKOL_HTTP_DEFAULT_TIMEOUT_MS;
     eshkol_winhttp_stream_t* stream =

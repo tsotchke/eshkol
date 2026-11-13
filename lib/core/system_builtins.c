@@ -21,6 +21,8 @@ extern size_t arena_get_used_memory(const void* a);
 #include <errno.h>
 #include "model_io_atomic.h"
 #include "eshkol/eshkol.h"
+#include "eshkol/core/http_syntax.h"
+#include "eshkol/core/websocket_handshake.h"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -247,6 +249,21 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
  *  filesystem mutation, network access, etc). */
 static int sys_require_capability(const char* capability) {
     return eshkol_capability_require(capability);
+}
+
+/* The runtime's catchable-error entry (lib/core/runtime_errors_hosted.cpp,
+ * linked in the same archive as this file). Raises an R7RS condition the
+ * program's own handler can take; it does not return. */
+extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+
+/** Refuse a network operation because one of its fields does not fit the
+ *  protocol grammar, naming the operation and the field. The refusal happens
+ *  before any byte of the request reaches a socket, and it is an ordinary
+ *  Eshkol error, so a program can catch it and choose what to do. */
+static void sys_protocol_refusal(const char* operation, const char* field) {
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                         "%s: %s does not fit the protocol grammar",
+                         operation, field);
 }
 
 /** Extract an int64 from a tagged value, truncating a double via cast if
@@ -3092,24 +3109,16 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbui
 /** Fill @p out with @p len cryptographically-random bytes from /dev/urandom,
  *  falling back to rand() seeded from time/address if that is unavailable.
  *  Returns 1. */
+/* The bytes behind `(uuid-v4)` and every other value whose worth rests on
+ * being unguessable. They come from the operating system's cryptographic
+ * source on every platform (SecRandomCopyBytes, BCryptGenRandom, RAND_bytes,
+ * /dev/urandom) and from nowhere else: when that source cannot be read the
+ * answer is a refusal, not a value a clock could have produced. The seeded
+ * generator behind `(random)` stays what it is — a reproducible stream for
+ * simulation and replay — and has no part in this path. */
 static int sys_random_bytes(unsigned char* out, size_t len) {
-    if (!out) return 0;
-#ifndef _WIN32
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        size_t pos = 0;
-        while (pos < len) {
-            ssize_t n = read(fd, out + pos, len - pos);
-            if (n <= 0) break;
-            pos += (size_t)n;
-        }
-        close(fd);
-        if (pos == len) return 1;
-    }
-#endif
-    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
-    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
-    return 1;
+    if (!out || len == 0) return 0;
+    return eshkol_random_bytes((char*)out, len) == 0;
 }
 
 /** Implements `(uuid-v4)`: generates a random RFC 4122 version-4 UUID (with
@@ -4555,26 +4564,44 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
     int port = 80;
     int timeout_ms = (int)sys_extract_int64(timeout_val);
     if (timeout_ms <= 0) timeout_ms = 30000;
+    /* The request line and the header block are decided before a socket
+     * exists. A method that is not a token, a target that is not one of the
+     * four request-target forms, or a header line carrying a control byte or
+     * a line break is an error the program catches, naming the field. */
+    const char* offending =
+        eshkol_http_request_offending_field(method, NULL, headers);
+    if (offending) sys_protocol_refusal("http-request", offending);
     if (!method || !*method ||
         !sys_http_request_parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
         return sys_make_bool(0);
+    if (!eshkol_http_valid_request_target(path))
+        sys_protocol_refusal("http-request", "request-target");
+    if (!eshkol_http_valid_field_value(host, strlen(host)))
+        sys_protocol_refusal("http-request", "Host header");
+
+    /* Re-render the caller's header block from the validated parse, with
+     * canonical CRLF endings, so the bytes written to the socket are the
+     * lines the grammar admitted rather than the caller's own bytes. */
+    char rendered_headers[4096];
+    size_t rendered_len = 0;
+    if (!eshkol_http_render_header_block(headers, rendered_headers,
+                                         sizeof(rendered_headers), &rendered_len))
+        sys_protocol_refusal("http-request", "header");
 
     int fd = sys_http_request_connect(host, port, timeout_ms);
     if (fd < 0) return sys_make_bool(0);
 
     const char* body_data = body ? body : "";
     size_t body_len = body ? strlen(body) : 0;
-    const char* extra_headers = headers ? headers : "";
     char header[8192];
     int hlen = snprintf(header, sizeof(header),
                         "%s %s HTTP/1.1\r\n"
                         "Host: %s\r\n"
                         "Connection: close\r\n"
-                        "%s%s"
+                        "%s"
                         "Content-Length: %lld\r\n\r\n",
                         method, path, host,
-                        extra_headers,
-                        extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                        rendered_headers,
                         (long long)body_len);
     int ok = hlen > 0 && hlen < (int)sizeof(header);
     if (ok) ok = send(fd, header, (size_t)hlen, 0) == hlen;
@@ -4674,6 +4701,11 @@ static int sys_ws_send_all(int fd, const void* data, size_t len) {
 #endif
 }
 
+/* RFC 6455 section 5.3: a client frame carries a masking key drawn fresh for
+ * that frame and a payload masked with it. The key comes from the operating
+ * system's cryptographic source; when that source cannot be read the frame is
+ * not sent, because an all-zero or guessable key is the thing masking exists
+ * to prevent. */
 static int sys_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     unsigned char header[14];
     int hlen = 0;
@@ -4689,11 +4721,25 @@ static int sys_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
         for (int i = 7; i >= 0; i--)
             header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
+    unsigned char mask[4];
+    if (!eshkol_ws_generate_mask(mask)) return 0;
     memcpy(header + hlen, mask, sizeof(mask));
     hlen += 4;
-    return sys_ws_send_all(fd, header, (size_t)hlen) &&
-           (len == 0 || sys_ws_send_all(fd, data, len));
+    if (!sys_ws_send_all(fd, header, (size_t)hlen)) return 0;
+    if (len == 0) return 1;
+
+    const unsigned char* payload = (const unsigned char*)data;
+    unsigned char chunk[4096];
+    size_t offset = 0;
+    while (offset < len) {
+        size_t span = len - offset;
+        if (span > sizeof(chunk)) span = sizeof(chunk);
+        for (size_t i = 0; i < span; i++)
+            chunk[i] = (unsigned char)(payload[offset + i] ^ mask[(offset + i) % 4]);
+        if (!sys_ws_send_all(fd, chunk, span)) return 0;
+        offset += span;
+    }
+    return 1;
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
@@ -4705,12 +4751,33 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
     char host[256];
     char path[2048];
     int port = 80;
+    /* Caller-supplied headers and the URL-derived target and authority are
+     * decided against the grammar before a socket exists. */
+    const char* offending =
+        eshkol_http_request_offending_field("GET", NULL, headers);
+    if (offending) sys_protocol_refusal("websocket-connect", offending);
     if (!sys_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path)))
         return sys_make_bool(0);
+    if (!eshkol_http_valid_request_target(path))
+        sys_protocol_refusal("websocket-connect", "request-target");
+    if (!eshkol_http_valid_field_value(host, strlen(host)))
+        sys_protocol_refusal("websocket-connect", "Host header");
+
+    char rendered_headers[2048];
+    if (!eshkol_http_render_header_block(headers, rendered_headers,
+                                         sizeof(rendered_headers), NULL))
+        sys_protocol_refusal("websocket-connect", "header");
+
+    /* One key per handshake, from the operating system's cryptographic
+     * source. Without it there is nothing to check the server's answer
+     * against, so the connection is not attempted. */
+    char ws_key[ESHKOL_WS_KEY_CAPACITY];
+    if (!eshkol_ws_generate_key(ws_key, sizeof(ws_key)))
+        sys_protocol_refusal("websocket-connect", "Sec-WebSocket-Key source");
+
     int fd = sys_http_request_connect(host, port, 5000);
     if (fd < 0) return sys_make_bool(0);
 
-    const char* extra_headers = headers ? headers : "";
     char request[4096];
     int n = snprintf(request, sizeof(request),
                      "GET %s HTTP/1.1\r\n"
@@ -4718,18 +4785,20 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
                      "Upgrade: websocket\r\n"
                      "Connection: Upgrade\r\n"
                      "Sec-WebSocket-Version: 13\r\n"
-                     "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
-                     "%s%s"
+                     "Sec-WebSocket-Key: %s\r\n"
+                     "%s"
                      "\r\n",
-                     path, host, extra_headers,
-                     extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+                     path, host, ws_key, rendered_headers);
     if (n > 0 && n < (int)sizeof(request) && sys_ws_send_all(fd, request, (size_t)n)) {
         char response[4096];
         ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
         if (r > 0) {
             response[r] = '\0';
-            if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
-                strstr(response, " 101\n")) {
+            /* RFC 6455 section 4.1: the handshake completes only on 101 with
+             * Upgrade and Connection naming the upgrade, and with
+             * Sec-WebSocket-Accept equal to the value derived from the key
+             * this connection sent. Anything else leaves the socket closed. */
+            if (eshkol_ws_handshake_refusal(response, (size_t)r, ws_key) == NULL) {
                 int handle = sys_ws_store(fd);
                 if (handle > 0) return sys_make_int64((int64_t)handle);
             }

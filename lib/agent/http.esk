@@ -161,9 +161,27 @@
              (and (http-token-char? (string-ref s i))
                   (loop (+ i 1)))))))
 
+(define (http-url-has-scheme? url scheme)
+  "True when url begins with scheme. Local to this module so the HTTP client
+   keeps its one module dependency."
+  (and (string? url)
+       (>= (string-length url) (string-length scheme))
+       (string=? (substring url 0 (string-length scheme)) scheme)))
+
 (define (http-check-url url)
   (unless (http-safe-string? url)
-    (error "http: URL contains unsafe control byte (CR/LF/NUL/TAB/VT/FF/DEL) — possible injection" url)))
+    (error "http: URL contains unsafe control byte (CR/LF/NUL/TAB/VT/FF/DEL) — possible injection" url))
+  ;; A space in a request target ends the target for any parser that re-reads
+  ;; the request line, so the rest of the URL would read as the HTTP version
+  ;; and whatever follows as a new line. RFC 9112 admits no space in a target.
+  (when (string-contains url " ")
+    (error "http: URL contains a space, which RFC 9112 does not admit in a request target" url))
+  ;; This client speaks to an absolute URL. The native layer refuses anything
+  ;; else as well; naming it here gives the program a catchable error with the
+  ;; field in it rather than a transport failure.
+  (unless (or (http-url-has-scheme? url "http://")
+              (http-url-has-scheme? url "https://"))
+    (error "http: URL must be an absolute http:// or https:// URL" url)))
 
 (define (http-check-headers headers)
   (for-each (lambda (pair)

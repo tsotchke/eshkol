@@ -66,7 +66,8 @@ static NSMutableURLRequest* apple_request(const char* method,
                                           const char* body,
                                           int64_t body_len,
                                           int32_t timeout_ms) {
-    if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
+    if (!eshkol_http_valid_method(method) ||
+        !eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (!body && body_len != 0) || (uint64_t)body_len > NSUIntegerMax) return nil;
     NSString* urlText = [NSString stringWithUTF8String:url];
     NSURL* target = urlText ? [NSURL URLWithString:urlText] : nil;
