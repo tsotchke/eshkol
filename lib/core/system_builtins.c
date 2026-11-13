@@ -3118,7 +3118,13 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbui
  * simulation and replay — and has no part in this path. */
 static int sys_random_bytes(unsigned char* out, size_t len) {
     if (!out || len == 0) return 0;
+#if defined(__EMSCRIPTEN__)
+    /* A browser bundle without the native core CSPRNG refuses rather than
+     * substituting a stream a clock could have produced. */
+    return 0;
+#else
     return eshkol_random_bytes((char*)out, len) == 0;
+#endif
 }
 
 /** Implements `(uuid-v4)`: generates a random RFC 4122 version-4 UUID (with
