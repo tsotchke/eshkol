@@ -39,6 +39,20 @@ export ESHKOL_VM_NO_DISASM=1
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ESHKOL_PATH="${ESHKOL_PATH:-$REPO_ROOT/lib}"
 
+# Bind the standard library to the RUNNER this gate was handed, not to whatever
+# is installed on the machine.  Without this the runner discovers
+# /usr/local/lib/eshkol/stdlib.bc, refuses it for a mismatched embedded identity
+# and exits before reading a byte of the test program -- so every native check
+# below would report a nesting failure that is really a stale install, and a
+# green run on a machine with no install would mean something different from a
+# green run on a machine with one.
+if [ -z "${ESHKOL_LIB_DIR:-}" ]; then
+    _runner_dir="$(cd "$(dirname "$ESHKOL_RUN")" && pwd)"
+    if [ -f "$_runner_dir/stdlib.bc" ] || [ -f "$_runner_dir/stdlib.o" ]; then
+        export ESHKOL_LIB_DIR="$_runner_dir"
+    fi
+fi
+
 failures=0
 note() { echo "  $*"; }
 fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
