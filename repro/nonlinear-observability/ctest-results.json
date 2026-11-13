@@ -1,0 +1,9 @@
+{
+  "scope": "Standalone registration project; readiness test executed; native gate independently qualified; full upstream CTest not run",
+  "registered_tests": [
+    "nonlinear-observability_native",
+    "nonlinear-observability_readiness"
+  ],
+  "readiness_returncode": 0,
+  "ctest_cmake_sha256": "771f496e5f31d956fc430dd933d5f49a6204a63382d7ff5e89fc1d615006f123"
+}
