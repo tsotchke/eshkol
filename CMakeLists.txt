@@ -8653,6 +8653,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             COMMAND bash
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh"
                     $<TARGET_FILE:eshkol-run>
+                    "${STDLIB_OUTPUT}"
         )
         set_tests_properties(aot_owned_temp_cleanup PROPERTIES TIMEOUT 300)
     endif()
