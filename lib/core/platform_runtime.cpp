@@ -1805,6 +1805,45 @@ std::filesystem::path resolve_executable_output(const std::filesystem::path& bas
 /* C entry point for the bytecode VM's C unity build. Keep the policy in the
  * canonical C++ resolver above; this adapter only converts its std::string
  * result into a caller-owned buffer. */
+/**
+ * @brief Whether @p host_path names a source file inside the Eshkol module
+ *        tree — the directory that carries stdlib.esk.
+ *
+ * The capability policy treats a foreign declaration differently depending on
+ * who wrote it: a module shipped with the language declares the runtime entry
+ * points it is built on and carries its own gates, while a program's own
+ * `(extern …)` is the program reaching outside the language and needs the `ffi`
+ * capability. This is the question that separates the two.
+ *
+ * Compares canonical paths, so a symlinked or relative spelling of the same
+ * file answers the same. An unknown or unreadable path answers 0 — a file the
+ * runtime cannot place is treated as the program's own.
+ *
+ * @param host_path Absolute or relative path to a source file; NULL answers 0.
+ * @return 1 when the file lies inside the module tree, 0 otherwise.
+ */
+extern "C" int eshkol_path_is_stdlib_module(const char* host_path) {
+    if (!host_path || !*host_path) return 0;
+
+    std::error_code ec;
+    const std::filesystem::path root = eshkol::platform::module_source_root().path;
+    if (root.empty()) return 0;
+
+    std::filesystem::path canonical_root = std::filesystem::weakly_canonical(root, ec);
+    if (ec) { canonical_root = root; ec.clear(); }
+    std::filesystem::path canonical_file =
+        std::filesystem::weakly_canonical(std::filesystem::path(host_path), ec);
+    if (ec) { canonical_file = std::filesystem::path(host_path); ec.clear(); }
+
+    auto root_it = canonical_root.begin();
+    auto file_it = canonical_file.begin();
+    for (; root_it != canonical_root.end(); ++root_it, ++file_it) {
+        if (file_it == canonical_file.end()) return 0;
+        if (*root_it != *file_it) return 0;
+    }
+    return 1;
+}
+
 extern "C" int eshkol_resolve_module_source_path_c(const char* module_name,
                                                     const char* base_dir,
                                                     const char* lib_dir,

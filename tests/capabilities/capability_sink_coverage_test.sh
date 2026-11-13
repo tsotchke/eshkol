@@ -12,7 +12,9 @@
 # and on each engine that carries the sink: the LLVM JIT, an ahead-of-time
 # executable, and the bytecode VM. `(system ...)` is a code-generated call with
 # no VM binding, and `(dlopen ...)` is a VM operation with no code-generated
-# form, so each of those runs on the engines that have it.
+# form, so each of those runs on the engines that have it. On the native
+# engines the ffi row is a program's own `(extern ...)` naming a libc symbol
+# directly, which is the other way out of the language.
 #
 # The last case is the one the policy exists for: under a policy granting only
 # file-read, a shell command that would write a file must leave no file behind.
@@ -111,6 +113,64 @@ sink_matrix capability_sink_network_probe.esk network \
 
 echo "=== ffi: (dlopen path) ==="
 sink_matrix capability_sink_ffi_probe.esk ffi 'ran:(loaded|unavailable)' vm
+
+# On the native engines a program reaches outside the language through its own
+# (extern ...) declaration, so that is what the ffi row exercises there. The
+# denied case also asserts that nothing happened: the command the foreign
+# symbol would have run writes a marker, and the marker must not appear.
+echo "=== ffi: a program's own (extern ...) on the native engines ==="
+for engine in jit aot; do
+    for mode in none deny grant; do
+        marker="$WORK_DIR/ffi-extern-$engine-$mode.txt"
+        tag="ffi-extern-$engine-$mode"
+        checks=$((checks + 1))
+        ESHKOL_CAP_MODE="$mode" ESHKOL_CAP_FFI_MARKER="$marker" \
+            run_engine "$engine" "$TEST_DIR/capability_sink_ffi_native_probe.esk" "$tag" || continue
+        if [ "$mode" = "deny" ]; then
+            if grep -q "capability denied: ffi" "$WORK_DIR/$tag.out" && [ ! -e "$marker" ]; then
+                echo "  ok  ffi-extern/$engine/$mode"
+            else
+                echo "FAIL: ffi-extern/$engine/$mode was not refused, or it had an effect" >&2
+                echo "  stdout: $(cat "$WORK_DIR/$tag.out")" >&2
+                [ -e "$marker" ] && echo "  the foreign call ran: marker exists" >&2
+                failures=$((failures + 1))
+            fi
+        else
+            if grep -Eq "ran:[0-9]+" "$WORK_DIR/$tag.out"; then
+                echo "  ok  ffi-extern/$engine/$mode"
+            else
+                echo "FAIL: ffi-extern/$engine/$mode did not reach the foreign symbol" >&2
+                echo "  stdout: $(cat "$WORK_DIR/$tag.out")" >&2
+                tail -20 "$WORK_DIR/$tag.err" >&2
+                failures=$((failures + 1))
+            fi
+        fi
+    done
+done
+
+# The policy's own entry points are not declarable by the program it governs.
+echo "=== a program cannot declare the policy's own entry points ==="
+for engine in jit aot; do
+    checks=$((checks + 1))
+    tag="extern-policy-$engine"
+    if [ "$engine" = jit ]; then
+        ESHKOL_JIT_CACHE=0 "$ESH" -r "$TEST_DIR/capability_extern_policy_negative.esk" \
+            -L"$BUILD_DIR" >"$WORK_DIR/$tag.out" 2>"$WORK_DIR/$tag.err"
+    else
+        "$ESH" "$TEST_DIR/capability_extern_policy_negative.esk" \
+            -o "$WORK_DIR/$tag.bin" -L"$BUILD_DIR" \
+            >"$WORK_DIR/$tag.out" 2>"$WORK_DIR/$tag.err"
+    fi
+    rc=$?
+    if [ "$rc" -ne 0 ] && \
+       grep -q "is the capability policy itself" "$WORK_DIR/$tag.err" "$WORK_DIR/$tag.out"; then
+        echo "  ok  extern-policy/$engine refused at compile time"
+    else
+        echo "FAIL: extern-policy/$engine was accepted (exit $rc)" >&2
+        tail -10 "$WORK_DIR/$tag.err" >&2
+        failures=$((failures + 1))
+    fi
+done
 
 echo "=== a policy granting only file-read also holds for the shell ==="
 for engine in jit aot; do

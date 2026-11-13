@@ -6,6 +6,7 @@
  */
 #include <functional>
 #include <eshkol/core/ast_routing.h>
+#include <eshkol/module_resolver.h>
 #include <eshkol/core/execution_profile.h>
 #include <eshkol/util/continuation_task.h>
 #include <eshkol/backend/ir_builder.h>
@@ -28270,6 +28271,95 @@ private:
         return externVar;
     }                        
     
+    // ── The `ffi` capability at a program's own foreign declaration ──────
+    //
+    // `(extern … :real sym)` is the one construct that reaches outside the
+    // language, and on the native engines it reaches anything the process can
+    // resolve: the JIT searches the whole process and an ahead-of-time build
+    // links libc. So this is where the `ffi` capability has to hold, or it
+    // governs nothing a native program can call.
+    //
+    // A module shipped with the language is exempt. Those declarations are how
+    // core.net, core.tls, agent.sqlite and the rest reach the runtime entry
+    // points they are built on, and each of those entry points carries its own
+    // gate already; making them ask for `ffi` as well would mean a policy
+    // granting `network` could not open a socket.
+
+    // The entry points that are the policy itself. A program must not be able
+    // to reach them through a foreign declaration: a policy that the governed
+    // code can switch off is not a policy. core.capabilities reaches them the
+    // same way and is exempt, being part of the module tree.
+    static bool externNamesThePolicy(const char* real_name) {
+        if (!real_name) return false;
+        static const char* const kPolicyEntryPoints[] = {
+            "eshkol_capability_runtime_clear",
+            "eshkol_capability_runtime_begin_install",
+            "eshkol_capability_runtime_allow",
+            "eshkol_capability_runtime_deny",
+            "eshkol_capability_require",
+            "eshkol_capability_enforce",
+        };
+        for (const char* entry : kPolicyEntryPoints) {
+            if (std::strcmp(real_name, entry) == 0) return true;
+        }
+        return false;
+    }
+
+    // Whether this declaration is the program's own rather than a module's.
+    // A file the runtime cannot place counts as the program's own, so an
+    // unplaceable source cannot buy an exemption.
+    static bool externIsProgramOwn() {
+        const char* host = eshkol_source_file_host_path(g_source_file_id_active);
+        return !(host && eshkol_path_is_stdlib_module(host));
+    }
+
+    // Bind the declared name to a wrapper that asks for `ffi` and then calls
+    // the symbol, instead of to the symbol itself, so every call site goes
+    // through the gate without the call path knowing anything about it.
+    // With no policy installed the wrapper costs one allow query that always
+    // permits; under a policy that withholds `ffi` the wrapper raises and the
+    // symbol is never entered.
+    Function* externFfiGateWrapper(Function* target, const char* real_name) {
+        FunctionType* target_type = target->getFunctionType();
+        const std::string wrapper_name = std::string("__eshkol_ffi_gate.") + real_name;
+        if (Function* existing = module->getFunction(wrapper_name)) {
+            if (existing->getFunctionType() == target_type) return existing;
+        }
+
+        Function* wrapper = Function::Create(
+            target_type, Function::InternalLinkage, wrapper_name, module.get());
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", wrapper);
+        IRBuilder<> gate_builder(entry);
+
+        FunctionType* enforce_type = FunctionType::get(
+            void_type,
+            {PointerType::getUnqual(*context), PointerType::getUnqual(*context)},
+            false);
+        FunctionCallee enforce = module->getOrInsertFunction(
+            "eshkol_capability_enforce", enforce_type);
+        Value* capability = eshkol::llvm_compat::createGlobalString(
+            gate_builder, "ffi", "eshkol_ffi_capability");
+        Value* operation = eshkol::llvm_compat::createGlobalString(
+            gate_builder, real_name, "eshkol_ffi_operation");
+        gate_builder.CreateCall(enforce, {capability, operation});
+
+        std::vector<Value*> forwarded;
+        forwarded.reserve(wrapper->arg_size());
+        for (auto& argument : wrapper->args()) forwarded.push_back(&argument);
+        CallInst* call = gate_builder.CreateCall(target_type, target, forwarded);
+        if (target_type->isVarArg()) {
+            // A variadic callee cannot be forwarded by re-packing arguments;
+            // a guaranteed tail call hands the frame over unchanged.
+            call->setTailCallKind(CallInst::TCK_MustTail);
+        }
+        if (target_type->getReturnType()->isVoidTy()) {
+            gate_builder.CreateRetVoid();
+        } else {
+            gate_builder.CreateRet(call);
+        }
+        return wrapper;
+    }
+
     Value* codegenExtern(const eshkol_operations_t* op) {
         const char* return_type_str = op->extern_op.return_type;
         const char* func_name = op->extern_op.name;
@@ -28279,6 +28369,22 @@ private:
         bool is_vaarg = false;
 
         eshkol_debug("Creating external function declaration: %s (real: %s)", func_name, real_func_name);
+
+        // Who wrote this declaration decides whether the `ffi` capability
+        // applies to it, and whether it may name the policy at all.
+        const bool extern_is_program_own = externIsProgramOwn();
+        if (extern_is_program_own && externNamesThePolicy(real_func_name)) {
+            eshkol_error_at(
+                g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                current_source_line, current_source_column,
+                g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                "extern '%s' names '%s', which is the capability policy itself. "
+                "A program cannot declare the policy's own entry points; install "
+                "and inspect a policy through core.capabilities.",
+                func_name, real_func_name);
+            markFatalCodegenError();
+            return nullptr;
+        }
 
         // FFI POINTER-ARG GUARD (ESH-0363): record the DECLARED parameter type
         // keywords before anything can return early. Both the "already
@@ -28306,7 +28412,9 @@ private:
         if (Function* existing_func = module->getFunction(real_func_name)) {
             // Function already exists - use the existing declaration
             applyExternFunctionAttributes(op->extern_op, existing_func);
-            function_table[func_name] = existing_func;
+            function_table[func_name] = extern_is_program_own
+                ? externFfiGateWrapper(existing_func, real_func_name)
+                : existing_func;
             eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
             // ESH-0362: reuse binds the Eshkol name to a signature the
             // declaration did not ask for. That is intentional for benign
@@ -28347,6 +28455,11 @@ private:
         auto ft_it = function_table.find(func_name);
         if (ft_it != function_table.end() && ft_it->second) {
             applyExternFunctionAttributes(op->extern_op, ft_it->second);
+            if (extern_is_program_own &&
+                !ft_it->second->getName().starts_with("__eshkol_ffi_gate.")) {
+                function_table[func_name] =
+                    externFfiGateWrapper(ft_it->second, real_func_name);
+            }
             eshkol_info("External function '%s' already in function_table, skipping re-declaration", func_name);
             return nullptr;
         }
@@ -28432,8 +28545,12 @@ private:
         );
         applyExternFunctionAttributes(op->extern_op, extern_func);
 
-        // Add to function table using the given name so it can be called by that name
-        function_table[func_name] = extern_func;
+        // Add to function table using the given name so it can be called by
+        // that name. A program's own declaration is bound to the `ffi` gate
+        // wrapper rather than to the symbol, so every call site passes the gate.
+        function_table[func_name] = extern_is_program_own
+            ? externFfiGateWrapper(extern_func, real_func_name)
+            : extern_func;
 
         eshkol_info("Declared external function: %s (real: %s) with %llu parameters",
                    func_name, real_func_name, (unsigned long long)num_params);
