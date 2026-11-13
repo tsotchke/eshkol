@@ -1,4 +1,6 @@
 #include "../../inc/eshkol/core/number_syntax.h"
+#include "../../inc/eshkol/core/http_syntax.h"
+#include "../../inc/eshkol/core/websocket_handshake.h"
 #include <eshkol/core/linear_solve_portable.h>
 #include <eshkol/core/tensor_inverse_checked.h>
 #include <math.h>
@@ -1261,27 +1263,20 @@ static Value vm_base64_decode_value(VM* vm, Value input) {
     return result;
 }
 
-/** @brief Fill `out` with `len` random bytes, preferring /dev/urandom on POSIX
- *         and falling back to a seeded rand() stream (not cryptographically
- *         strong) if the device is unavailable or on other platforms. */
+/** @brief Fill `out` with `len` bytes from the operating system's
+ *         cryptographic source, the one source the VM draws unguessable
+ *         values from. Returns 0 when that source cannot be read, which is a
+ *         refusal rather than a weaker stream: the seeded generator behind
+ *         `(random)` is for reproducible simulation and has no part here. */
 static int vm_random_bytes(unsigned char* out, size_t len) {
-    if (!out) return 0;
-#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        size_t pos = 0;
-        while (pos < len) {
-            ssize_t n = read(fd, out + pos, len - pos);
-            if (n <= 0) break;
-            pos += (size_t)n;
-        }
-        close(fd);
-        if (pos == len) return 1;
-    }
+    if (!out || len == 0) return 0;
+#if defined(__EMSCRIPTEN__)
+    /* A WASM host without the native core CSPRNG refuses rather than
+     * substituting a stream a clock could have produced. */
+    return 0;
+#else
+    return eshkol_random_bytes((char*)out, len) == 0;
 #endif
-    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
-    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
-    return 1;
 }
 
 /** @brief Generate a random RFC 4122 version-4 UUID string, using
@@ -3059,26 +3054,63 @@ static int vm_ws_send_all(int fd, const void* data, size_t len) {
 /** @brief Encode and send one RFC 6455 WebSocket frame (FIN bit set, given
  *         opcode, RFC-mandated masked payload length encoding with a
  *         zero mask key) followed by the payload. */
+static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len);
+
+/**
+ * @brief Fails a WebSocket connection: reports the close code, then closes.
+ *
+ * The twin of sys_ws_fail_connection(). RFC 6455 section 7.1.7 fails a
+ * connection by sending a Close frame and closing the socket; returning with
+ * the stream mid-frame would put the next frame header under the peer's
+ * control. Any gathered fragment is released with the connection.
+ */
+static void vm_ws_fail_connection(VM* vm, int handle, int close_code) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (close_code > 0) {
+        unsigned char body[2];
+        body[0] = (unsigned char)((close_code >> 8) & 0xff);
+        body[1] = (unsigned char)(close_code & 0xff);
+        (void)vm_ws_send_frame(vm->websocket_clients[handle].fd, 8,
+                               (const char*)body, 2);
+    }
+    if (vm->websocket_clients[handle].fragment_data) {
+        free(vm->websocket_clients[handle].fragment_data);
+        vm->websocket_clients[handle].fragment_data = NULL;
+    }
+    vm->websocket_clients[handle].fragment_length = 0;
+    vm->websocket_clients[handle].fragment_opcode = 0;
+    close(vm->websocket_clients[handle].fd);
+    vm->websocket_clients[handle].closed = 1;
+#else
+    (void)vm; (void)handle; (void)close_code;
+#endif
+}
+
 static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     unsigned char header[14];
-    int hlen = 0;
-    header[hlen++] = (unsigned char)(0x80 | (opcode & 0x0f));
-    if (len < 126) {
-        header[hlen++] = (unsigned char)(0x80 | len);
-    } else if (len <= 65535) {
-        header[hlen++] = 0x80 | 126;
-        header[hlen++] = (unsigned char)((len >> 8) & 0xff);
-        header[hlen++] = (unsigned char)(len & 0xff);
-    } else {
-        header[hlen++] = 0x80 | 127;
-        for (int i = 7; i >= 0; i--)
-            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
+    int hlen;
+    /* RFC 6455 section 5.3: a fresh masking key per frame from the operating
+     * system's cryptographic source, and the payload masked with it. When the
+     * source cannot be read the frame is not sent. */
+    unsigned char mask[4];
+    if (!eshkol_ws_generate_mask(mask)) return 0;
+    hlen = eshkol_ws_write_frame_header(header, opcode, len, mask);
+    if (!vm_ws_send_all(fd, header, (size_t)hlen)) return 0;
+    if (len == 0) return 1;
+    const unsigned char* payload = (const unsigned char*)data;
+    unsigned char chunk[4096];
+    size_t offset = 0;
+    while (offset < len) {
+        size_t span = len - offset;
+        if (span > sizeof(chunk)) span = sizeof(chunk);
+        memcpy(chunk, payload + offset, span);
+        /* The key index follows the payload offset, not the chunk's, so a
+         * payload larger than one chunk is masked correctly. */
+        eshkol_ws_mask_payload(chunk, span, offset, mask);
+        if (!vm_ws_send_all(fd, chunk, span)) return 0;
+        offset += span;
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
-    memcpy(header + hlen, mask, sizeof(mask));
-    hlen += 4;
-    return vm_ws_send_all(fd, header, (size_t)hlen) &&
-           (len == 0 || vm_ws_send_all(fd, data, len));
+    return 1;
 }
 
 typedef int32_t (*VmTsAvailableFn)(void);
@@ -15226,24 +15258,58 @@ tensor_inverse_done:
         int port = 80;
         int timeout_ms = (int)as_number(timeout_val);
         if (timeout_ms <= 0) timeout_ms = 30000;
-        if (method && method->data && method->byte_len > 0 &&
-            vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+        /* The request line and the header block are decided against the
+         * protocol grammar before a socket exists; the refusal is an ordinary
+         * VM error naming the field that does not fit. */
+        char method_text[64];
+        if (!method || !method->data || method->byte_len <= 0 ||
+            (size_t)method->byte_len >= sizeof(method_text)) {
+            vm_raise_error_msg(vm, "http-request: method does not fit the protocol grammar");
+            break;
+        }
+        memcpy(method_text, method->data, (size_t)method->byte_len);
+        method_text[method->byte_len] = '\0';
+        const char* header_block = (headers && headers->data) ? headers->data : "";
+        const char* offending =
+            eshkol_http_request_offending_field(method_text, NULL, header_block);
+        if (offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "http-request: %s does not fit the protocol grammar", offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char rendered_headers[4096];
+        if (!eshkol_http_render_header_block(header_block, rendered_headers,
+                                             sizeof(rendered_headers), NULL)) {
+            vm_raise_error_msg(vm, "http-request: header does not fit the protocol grammar");
+            break;
+        }
+        if (vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "http-request: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_authority(host)) {
+                vm_raise_error_msg(vm,
+                    "http-request: Host header does not fit the protocol grammar");
+                break;
+            }
             int fd = vm_http_connect(host, port, timeout_ms);
             if (fd >= 0) {
                 const char* body_data = (body && body->data) ? body->data : "";
                 int64_t body_len = (body && body->data) ? body->byte_len : 0;
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char header[8192];
                 int hlen = snprintf(header, sizeof(header),
-                                    "%.*s %s HTTP/1.1\r\n"
+                                    "%s %s HTTP/1.1\r\n"
                                     "Host: %s\r\n"
                                     "Connection: close\r\n"
-                                    "%s%s"
+                                    "%s"
                                     "Content-Length: %lld\r\n\r\n",
-                                    (int)method->byte_len, method->data,
+                                    method_text,
                                     path, host,
-                                    extra_headers,
-                                    extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                                    rendered_headers,
                                     (long long)body_len);
                 int ok = hlen > 0 && hlen < (int)sizeof(header);
                 if (ok) {
@@ -15304,10 +15370,47 @@ tensor_inverse_done:
         char host[256];
         char path[2048];
         int port = 80;
+        const char* ws_header_block = (headers && headers->data) ? headers->data : "";
+        const char* ws_offending =
+            eshkol_http_request_offending_field_ex("GET", NULL,
+                                                   ws_header_block, 1);
+        if (ws_offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "websocket-connect: %s does not fit the protocol grammar",
+                     ws_offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char ws_rendered_headers[2048];
+        if (!eshkol_http_render_header_block(ws_header_block, ws_rendered_headers,
+                                             sizeof(ws_rendered_headers), NULL)) {
+            vm_raise_error_msg(vm,
+                "websocket-connect: header does not fit the protocol grammar");
+            break;
+        }
         if (vm_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_authority(host)) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: Host header does not fit the protocol grammar");
+                break;
+            }
+            /* One key per handshake, from the operating system's
+             * cryptographic source; the server's answer is checked against
+             * it, so without a key there is no handshake to make. */
+            char ws_key[ESHKOL_WS_KEY_CAPACITY];
+            if (!eshkol_ws_generate_key(ws_key, sizeof(ws_key))) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: the cryptographic source for Sec-WebSocket-Key is unavailable");
+                break;
+            }
             int fd = vm_http_connect(host, port, 5000);
             if (fd >= 0) {
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char request[4096];
                 int n = snprintf(request, sizeof(request),
                                  "GET %s HTTP/1.1\r\n"
@@ -15315,19 +15418,21 @@ tensor_inverse_done:
                                  "Upgrade: websocket\r\n"
                                  "Connection: Upgrade\r\n"
                                  "Sec-WebSocket-Version: 13\r\n"
-                                 "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
-                                 "%s%s"
+                                 "Sec-WebSocket-Key: %s\r\n"
+                                 "%s"
                                  "\r\n",
-                                 path, host, extra_headers,
-                                 extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+                                 path, host, ws_key, ws_rendered_headers);
                 if (n > 0 && n < (int)sizeof(request) &&
                     vm_ws_send_all(fd, request, (size_t)n)) {
                     char response[4096];
                     ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
                     if (r > 0) {
                         response[r] = '\0';
-                        if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
-                            strstr(response, " 101\n")) {
+                        /* RFC 6455 section 4.1: 101, the Upgrade and
+                         * Connection fields, and a Sec-WebSocket-Accept
+                         * equal to the value derived from this key. */
+                        if (eshkol_ws_handshake_refusal(response, (size_t)r,
+                                                        ws_key) == NULL) {
                             int handle = vm_ws_store(vm, fd);
                             if (handle > 0) {
                                 vm_push(vm, INT_VAL((int64_t)handle));
@@ -15394,45 +15499,144 @@ tensor_inverse_done:
             pfd.revents = 0;
             if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN)) {
                 unsigned char hdr[2];
-                if (recv(fd, hdr, 2, MSG_WAITALL) == 2) {
+                if (recv(fd, hdr, 2, MSG_WAITALL) != 2) {
+                    vm_ws_fail_connection(vm, handle, 0);
+                    vm_push(vm, BOOL_VAL(0));
+                    break;
+                }
+                {
+                    int fin = (hdr[0] & 0x80) != 0;
                     int opcode = hdr[0] & 0x0f;
-                    int masked = hdr[1] & 0x80;
                     uint64_t len = hdr[1] & 0x7f;
+                    int short_read = 0;
                     if (len == 126) {
                         unsigned char ext[2];
-                        if (recv(fd, ext, 2, MSG_WAITALL) != 2) len = 65537;
+                        if (recv(fd, ext, 2, MSG_WAITALL) != 2) short_read = 1;
                         else len = ((uint64_t)ext[0] << 8) | ext[1];
                     } else if (len == 127) {
                         unsigned char ext[8];
-                        if (recv(fd, ext, 8, MSG_WAITALL) != 8) len = 65537;
+                        if (recv(fd, ext, 8, MSG_WAITALL) != 8) short_read = 1;
                         else {
                             len = 0;
                             for (int i = 0; i < 8; i++) len = (len << 8) | ext[i];
                         }
                     }
-                    unsigned char mask[4] = {0, 0, 0, 0};
-                    if (masked && recv(fd, mask, 4, MSG_WAITALL) != 4) len = 65537;
-                    if (len <= 65536) {
+                    if (short_read) {
+                        vm_ws_fail_connection(vm, handle, 0);
+                        vm_push(vm, BOOL_VAL(0));
+                        break;
+                    }
+                    /* Judged before a byte of payload is read; a refusal fails
+                     * the connection rather than leaving the stream mid-frame
+                     * with the next frame header under the peer's control. */
+                    {
+                        const int in_fragment =
+                            vm->websocket_clients[handle].fragment_opcode != 0;
+                        const eshkol_ws_frame_verdict verdict =
+                            eshkol_ws_examine_frame(hdr[0], hdr[1], len,
+                                                    in_fragment);
+                        if (verdict != ESHKOL_WS_FRAME_OK) {
+                            vm_ws_fail_connection(
+                                vm, handle, eshkol_ws_frame_close_code(verdict));
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                    }
+                    {
                         char* payload = (char*)malloc((size_t)len + 1);
-                        if (payload) {
-                            if (recv(fd, payload, (size_t)len, MSG_WAITALL) == (ssize_t)len) {
-                                if (masked) {
-                                    for (uint64_t i = 0; i < len; i++) payload[i] ^= (char)mask[i % 4];
-                                }
-                                payload[len] = '\0';
-                                const char* type = opcode == 1 ? "text" :
-                                                   opcode == 2 ? "binary" :
-                                                   opcode == 9 ? "ping" :
-                                                   opcode == 8 ? "close" : "unknown";
-                                if (opcode == 8) vm->websocket_clients[handle].closed = 1;
-                                Value result = vm_cons_value(vm,
-                                    vm_string_value(vm, type, -1),
+                        if (!payload) {
+                            vm_ws_fail_connection(vm, handle, 1011);
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        if (len > 0 &&
+                            recv(fd, payload, (size_t)len, MSG_WAITALL) !=
+                                (ssize_t)len) {
+                            free(payload);
+                            vm_ws_fail_connection(vm, handle, 0);
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        payload[len] = '\0';
+                        if (opcode & 0x08) {
+                            const char* control_type =
+                                opcode == 9 ? "ping" :
+                                opcode == 10 ? "pong" :
+                                opcode == 8 ? "close" : "unknown";
+                            if (opcode == 9)
+                                (void)vm_ws_send_frame(fd, 10, payload,
+                                                       (size_t)len);
+                            if (opcode == 8)
+                                vm->websocket_clients[handle].closed = 1;
+                            {
+                                Value control = vm_cons_value(vm,
+                                    vm_string_value(vm, control_type, -1),
                                     vm_string_value(vm, payload, (int64_t)len));
                                 free(payload);
-                                vm_push(vm, result);
+                                vm_push(vm, control);
+                            }
+                            break;
+                        }
+                        {
+                            int message_opcode =
+                                opcode == 0
+                                    ? vm->websocket_clients[handle].fragment_opcode
+                                    : opcode;
+                            size_t total =
+                                vm->websocket_clients[handle].fragment_length +
+                                (size_t)len;
+                            char* gathered;
+                            if (total > eshkol_ws_max_frame_bytes()) {
+                                free(payload);
+                                vm_ws_fail_connection(vm, handle, 1009);
+                                vm_push(vm, BOOL_VAL(0));
                                 break;
                             }
+                            gathered = (char*)realloc(
+                                vm->websocket_clients[handle].fragment_data,
+                                total + 1);
+                            if (!gathered) {
+                                free(payload);
+                                vm_ws_fail_connection(vm, handle, 1011);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            if (len > 0)
+                                memcpy(gathered +
+                                           vm->websocket_clients[handle]
+                                               .fragment_length,
+                                       payload, (size_t)len);
+                            gathered[total] = '\0';
                             free(payload);
+                            vm->websocket_clients[handle].fragment_data = gathered;
+                            vm->websocket_clients[handle].fragment_length = total;
+                            if (!fin) {
+                                vm->websocket_clients[handle].fragment_opcode =
+                                    message_opcode;
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            vm->websocket_clients[handle].fragment_opcode = 0;
+                            vm->websocket_clients[handle].fragment_data = NULL;
+                            vm->websocket_clients[handle].fragment_length = 0;
+                            if (message_opcode == 1 &&
+                                !eshkol_ws_valid_utf8(gathered, total)) {
+                                free(gathered);
+                                vm_ws_fail_connection(vm, handle, 1007);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            {
+                                Value result = vm_cons_value(vm,
+                                    vm_string_value(vm,
+                                        message_opcode == 1 ? "text" : "binary",
+                                        -1),
+                                    vm_string_value(vm, gathered,
+                                                    (int64_t)total));
+                                free(gathered);
+                                vm_push(vm, result);
+                            }
+                            break;
                         }
                     }
                 }
@@ -15451,6 +15655,8 @@ tensor_inverse_done:
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
             (void)vm_ws_send_frame(vm->websocket_clients[handle].fd, 8, "", 0);
             close(vm->websocket_clients[handle].fd);
+            if (vm->websocket_clients[handle].fragment_data)
+                free(vm->websocket_clients[handle].fragment_data);
 #endif
             memset(&vm->websocket_clients[handle], 0, sizeof(vm->websocket_clients[handle]));
             vm_push(vm, BOOL_VAL(1));
