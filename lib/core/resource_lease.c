@@ -9,6 +9,7 @@
 #include "eshkol/core/resource_lease.h"
 #include "eshkol/core/event_loop.h"
 #include "resource_handle_internal.h"
+#include "event_loop_internal.h"
 #include <limits.h>
 #include <stddef.h>
 #include <string.h>
@@ -320,7 +321,7 @@ typedef struct ManagedResource {
     uintptr_t native;
     eshkol_resource_cleanup_fn cleanup;
     void *data;
-    int sticky, cancelled, closing, ready, running, detached, native_done;
+    int sticky, cancelled, closing, ready, running, detached, native_done, loop_retained;
     int wait_fd, wait_events;
     eshkol_resource_cleanup_result_t result;
     struct ManagedResource *next, *previous, *pending_next;
@@ -472,6 +473,7 @@ int64_t eshkol_resource_adopt_on_loop(eshkol_handle_kind_t kind, uint32_t tag,
         free(m); return ESHKOL_IO_SYSTEM;
     }
     m->owner = pthread_self(); m->loop = loop; m->loop_pointer = target; m->native = native;
+    m->loop_retained = 1;
     m->cleanup = cleanup; m->data = data; m->sticky = sticky != 0;
     eshkol_handle_id_t resource_id = 0;
     int created = eshkol_handle_create_resource_tagged(eshkol_resource_registry(),
@@ -512,6 +514,7 @@ int64_t eshkol_resource_adopt_on_loop(eshkol_handle_kind_t kind, uint32_t tag,
         m->next = managed_resources;
         if (managed_resources) managed_resources->previous = m;
         managed_resources = m;
+        ++target->managed_owners;
     }
     pthread_mutex_unlock(&managed_lock);
     if (indexed) {
@@ -553,6 +556,14 @@ int eshkol_resource_wait_on_loop(const eshkol_resource_lease_t *lease,
     if (rc && !m->closing && !m->sticky) m->cancelled = 0;
     pthread_mutex_unlock(&managed_lock);
     if (rc) return rc;
+    int32_t left = eshkol_resource_remaining(deadline);
+    if (left < 0) return ESHKOL_IO_SYSTEM;
+    if (!left) {
+        /* Match the legacy wait: cancellation wins, but a spent budget never
+         * registers a watch or consults the event loop, even for a ready fd. */
+        rc = eshkol_resource_check(lease);
+        return rc ? rc : ESHKOL_IO_TIMEOUT;
+    }
     eshkol_event_loop_t *loop = eshkol_event_loop_from_handle(m->loop);
     if (!loop || managed_unwatch(m)) return ESHKOL_IO_SYSTEM;
     if (eshkol_event_loop_registration_present(loop, fd)) return ESHKOL_IO_BUSY;
@@ -566,8 +577,13 @@ int eshkol_resource_wait_on_loop(const eshkol_resource_lease_t *lease,
     for (;;) {
         rc = eshkol_resource_check(lease);
         if (rc) break;
-        int32_t left = eshkol_resource_remaining(deadline);
+        left = eshkol_resource_remaining(deadline);
         if (left < 0) { rc = ESHKOL_IO_SYSTEM; break; }
+        if (!left) {
+            rc = eshkol_resource_check(lease);
+            if (!rc) rc = ESHKOL_IO_TIMEOUT;
+            break;
+        }
         const eshkol_event_t *fired; int count;
         if (eshkol_event_loop_poll(loop, left, &fired, &count)) { rc = ESHKOL_IO_SYSTEM; break; }
         int ready = 0;
@@ -582,7 +598,7 @@ int eshkol_resource_wait_on_loop(const eshkol_resource_lease_t *lease,
         rc = eshkol_resource_check(lease);
         if (rc) break;
         if (ready) { rc = ready; break; }
-        if (!left || eshkol_resource_remaining(deadline) == 0) { rc = ESHKOL_IO_TIMEOUT; break; }
+        if (eshkol_resource_remaining(deadline) == 0) { rc = ESHKOL_IO_TIMEOUT; break; }
     }
     if (managed_unwatch(m)) rc = ESHKOL_IO_SYSTEM;
     if (rc == ESHKOL_IO_CANCELLED && !m->sticky) {
@@ -644,7 +660,7 @@ int eshkol_resource_pump(int64_t loop_handle) {
         if (rc) {
             eshkol_event_loop_t *loop = eshkol_event_loop_from_handle(m->loop);
             result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_FAILED,
-                ESHKOL_CLEANUP_WATCH, loop ? eshkol_event_loop_last_os_error(loop) : 0, 1};
+                ESHKOL_CLEANUP_STAGE_WATCH, loop ? eshkol_event_loop_last_os_error(loop) : 0, 1};
         } else if (!m->native_done) {
             rc = m->cleanup(m->native, m->data, &result);
             if (!rc) result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_COMPLETE, 0, 0, 0};
@@ -652,10 +668,14 @@ int eshkol_resource_pump(int64_t loop_handle) {
                 result.state = ESHKOL_CLEANUP_FAILED;
             if (!result.retryable) m->native_done = 1;
         }
-        if (m->native_done) {
+        if (m->native_done && m->loop_retained) {
             int release = eshkol_event_loop_release_handle(m->loop);
             if (release) result = (eshkol_resource_cleanup_result_t){ESHKOL_CLEANUP_FAILED,
-                ESHKOL_CLEANUP_LOOP, 0, 1};
+                ESHKOL_CLEANUP_STAGE_LOOP, 0, 1};
+            else {
+                m->loop_retained = 0;
+                --m->loop_pointer->managed_owners;
+            }
         }
         managed_lock_enter();
         m->result = result; m->running = 0;

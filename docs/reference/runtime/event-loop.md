@@ -111,8 +111,10 @@ replacing it, so a reader still drains what is buffered before observing EOF.
 A signal that interrupts the wait is reported as a timeout, not an error. That
 is what keeps an unbounded wait breakable — `Ctrl-C` interrupts the syscall and
 the call returns rather than wedging the REPL. Polling a loop with nothing
-registered returns immediately instead of blocking forever on a queue no one can
-wake.
+registered and no live or unresolved managed owner returns immediately, even if
+a maintenance hook remains installed from an earlier resource. Pending/retryable
+cleanup still counts as an owner and can receive cross-thread wake requests; a
+terminal result ticket does not. Finite empty polls still honor their timeout.
 
 Raises on a closed or unknown handle, or on a kernel error.
 
