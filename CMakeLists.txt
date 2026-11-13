@@ -12398,6 +12398,25 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
     endif()
 
+    # With no policy in sight: a child started before the program ends keeps
+    # running, and a child that ignores SIGTERM does not hold the program open.
+    if(NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_exit_child_test.sh")
+        add_test(
+            NAME process_exit_child_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/process_exit_child_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(process_exit_child_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: process_exit_child_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
     # A child environment overlay belongs to the child: the child sees it and
     # the spawning program's own environment is unchanged. Registered on every
     # platform with a bash, because the Windows path builds an environment

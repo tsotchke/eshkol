@@ -1,0 +1,23 @@
+;;; A program that ends while a child it started is still running leaves that
+;;; child running, and its own exit does not wait for the child.
+;;;
+;;; MODE picks which half to exercise:
+;;;   survives   the child writes a marker a little after the parent is gone;
+;;;              the driver looks for the marker afterwards
+;;;   stubborn   the child ignores SIGTERM and outlives the parent by a long
+;;;              way; the driver times the parent's exit
+(require stdlib)
+
+(define mode (getenv "ESHKOL_EXIT_CHILD_MODE"))
+(define marker (getenv "ESHKOL_EXIT_CHILD_MARKER"))
+
+(define command
+  (if (string=? mode "stubborn")
+      (string-append "trap '' TERM; sleep 25 >/dev/null 2>&1")
+      (string-append "sleep 3; printf child-survived > '" marker
+                     "' >/dev/null 2>&1")))
+
+(define pid (process-spawn command ""))
+(display "spawned:")
+(display (if (and (number? pid) (> pid 0)) "yes" "no"))
+(newline)

@@ -7,7 +7,7 @@
 # refused — at the shell, process-creation, socket and foreign-code sinks as
 # well as the file and environment surfaces, on every engine.
 #
-# Runs, from an existing CMake build, the three CTest entries that own that
+# Runs, from an existing CMake build, the four CTest entries that own that
 # claim:
 #   capability_sink_coverage_test   each sink class with no policy, under a
 #                                   policy that withholds the capability, and
@@ -21,10 +21,13 @@
 #   process_child_env_test          a child environment overlay reaches the
 #                                   child and leaves the spawning program's own
 #                                   environment as it was
+#   process_exit_child_test         with no policy in sight, a child started
+#                                   before the program ends keeps running and
+#                                   does not hold the exit open
 #
 # It writes one event to $TRACE_DIR/v14_capability_policy.jsonl:
 #   {"kind": "v1_4_connection", "name": "v14_capability_policy", "value": PASS|FAIL}
-# PASS only when all three ran and passed. A test that did not run is a FAIL,
+# PASS only when all four ran and passed. A test that did not run is a FAIL,
 # never a skip — absence of evidence is not evidence.
 #
 #   BUILD_DIR  (env, default "build")             the CMake build directory
@@ -58,8 +61,8 @@ WORK="$BUILD_DIR_PATH/test-work/capability-policy-gate"
 mkdir -p "$WORK"
 export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 
-TESTS='^(capability_sink_coverage_test|process_child_bookkeeping_test|process_child_env_test)$'
-EXPECTED=3
+TESTS='^(capability_sink_coverage_test|process_child_bookkeeping_test|process_child_env_test|process_exit_child_test)$'
+EXPECTED=4
 
 emit_event() { # PASS|FAIL snippet
     python3 - "$TRACE_FILE" "$1" "$2" <<'PY'

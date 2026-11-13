@@ -1,0 +1,11 @@
+;;; The same for a pseudo-terminal child: the program ends, the child keeps
+;;; running, and the exit does not wait for it.
+(require stdlib)
+
+(define marker (getenv "ESHKOL_EXIT_CHILD_MARKER"))
+(define handle
+  (process-spawn-pty
+    (string-append "sleep 3; printf child-survived > '" marker "'")))
+(display "spawned:")
+(display (if (pair? handle) "yes" "no"))
+(newline)

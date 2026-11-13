@@ -1519,9 +1519,16 @@ static int g_sys_children_hook_installed = 0;
 extern uint32_t eshkol_register_shutdown_hook(int (*hook)(void*, int), void* context,
                                               const char* name);
 
-/** Close every pty descriptor still held, then stop and collect every child
- *  still running. Registered as a shutdown hook the first time a child is
- *  recorded. */
+/** Release what the runtime still holds for the children it created: close any
+ *  pseudo-terminal descriptor it owns, and collect a child that has already
+ *  exited so it does not outlive the program as a zombie.
+ *
+ *  It does not signal a child and it does not wait on one. A program that ends
+ *  while a child it started is still running leaves that child running, which
+ *  is what a program does today and what a program that daemonizes or starts a
+ *  long-lived server depends on. Collecting is WNOHANG for the same reason:
+ *  exit must not depend on when a child chooses to finish. Registered as a
+ *  shutdown hook the first time a child is recorded. */
 static int sys_children_release_all(void* context, int reason) {
     (void)context;
     (void)reason;
@@ -1539,10 +1546,7 @@ static int sys_children_release_all(void* context, int reason) {
         if (pending[i].master_fd >= 0) close(pending[i].master_fd);
         if (pending[i].pid <= 0) continue;
         int status = 0;
-        if (waitpid(pending[i].pid, &status, WNOHANG) == 0) {
-            (void)kill(pending[i].pid, SIGTERM);
-            (void)waitpid(pending[i].pid, &status, 0);
-        }
+        (void)waitpid(pending[i].pid, &status, WNOHANG);
     }
     return 0;
 }
