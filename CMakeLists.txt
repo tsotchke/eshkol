@@ -5326,18 +5326,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    # `(tensor ...)` builds an f64 tensor from integer literals: each element is
+    # converted once at construction and prints as the inexact number it is,
+    # with its decimal point.
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 1 2 3))"
     )
     set_tests_properties(tensor_integer_vector_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1 2 3\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1\\.0 2\\.0 3\\.0\\)")
     add_test(
         NAME tensor_integer_shaped_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 2 2 1 2 3 4))"
     )
     set_tests_properties(tensor_integer_shaped_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1 2\\) \\(3 4\\)\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1\\.0 2\\.0\\) \\(3\\.0 4\\.0\\)\\)")
     # #309 regression guard: a matmul result read via tensor-ref/tensor-data
     # from INSIDE a defined function (captured global, argument, in-function
     # matmul, nested define, closure, with-region escape, and a large
