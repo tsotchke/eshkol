@@ -18,7 +18,8 @@ sources:
 ---
 # ADR-0044: Refinement types with a built-in decision procedure
 
-**Status:** Accepted (implementation for root review; lands in rung order)
+**Status:** Accepted with conditions (2026-11-08)
+Conditions: see ## Planned.
 **Rung:** v1.9.0-types
 **Builds on:** ADR-0004 (one quantitative dependent type system), ADR-0013 (the gradual type relation)
 

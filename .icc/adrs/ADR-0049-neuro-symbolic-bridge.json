@@ -15,7 +15,7 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0049-neuro-symbolic-bridge.md:1",
   "source_path": "docs/design/adr/0049-neuro-symbolic-bridge.md",
-  "status": "proposed",
+  "status": "accepted_with_conditions",
   "tags": [
     "imported-markdown",
     "v1.5.0",

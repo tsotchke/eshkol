@@ -18,7 +18,7 @@ sources:
 ---
 # ADR-0041: `core.monoidal` — monoidal categories, string diagrams and the ZX-calculus
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Date:** 2026-10-29
 **Scope:** the library that computes with monoidal, braided, symmetric,
 compact closed and dagger structure and monoidal functors; FinVect over exact

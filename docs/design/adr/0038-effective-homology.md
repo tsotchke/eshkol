@@ -18,7 +18,7 @@ sources:
 ---
 # ADR-0038: `core.effective` — effective homology, homotopy groups and hypercover descent
 
-**Status:** Proposed
+**Status:** On hold (2026-11-08)
 **Date:** 2026-10-30
 **Scope:** reductions and the basic perturbation lemma; reductions from
 discrete vector fields; objects with effective homology (products, twisted

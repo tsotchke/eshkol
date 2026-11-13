@@ -13,7 +13,7 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0046-structural-types-rows-rank-sessions.md:1",
   "source_path": "docs/design/adr/0046-structural-types-rows-rank-sessions.md",
-  "status": "proposed",
+  "status": "accepted_with_conditions",
   "tags": [
     "imported-markdown"
   ],
