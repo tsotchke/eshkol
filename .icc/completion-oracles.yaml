@@ -2316,6 +2316,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [v1_4_connection]
+          event_names: ["v14_reader_nesting"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Reader nesting is bounded by memory, not by a number: a quoted datum nested 10^4, 10^5 and 10^6 levels deep reads, compares and prints in full on the native JIT, native AOT and the bytecode VM; the same nesting written as a CODE form is answered with an ordinary diagnostic and never a signal; the input-size cap is the documented one and honours both ESHKOL_MAX_SOURCE_BYTES and --max-source-bytes=N; and running out of address space while reading is reported in words rather than aborting (tests/limits/reader_nesting_depth_gate.sh)'
+        action: run_v14_connection_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
           event_names: ["v14_tcp_roundtrip"]
           event_values: ["PASS"]
         severity: high

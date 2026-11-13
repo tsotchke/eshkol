@@ -529,6 +529,16 @@ else
     probe_unverified v14_resource_limits_enforced "local VM runner is unavailable; resource-limit enforcement evidence is required"
 fi
 
+# Reader nesting: a datum nests as deeply as memory allows, a deeply nested
+# CODE form is answered rather than signalled, the input-size cap is the
+# documented one, and running out of address space while reading is a
+# diagnostic (tests/limits/reader_nesting_depth_gate.sh, CMake-registered;
+# invoked here so this run records its own result).
+probe_run v14_reader_nesting \
+    'Reader nesting is bounded by memory: 10^4/10^5/10^6-deep quoted data read, compare and print in full on JIT, AOT and VM; a nested code form is refused in words, never on a signal; the input cap is the documented one' \
+    '"$REPO_ROOT/tests/limits/reader_nesting_depth_gate.sh" "$ESHKOL_RUN" "${VM_RUN:-none}" "$WORK/reader-nesting"' \
+    '^PASS: nesting depth is bounded by memory$'
+
 # Numeric TCP/UDP use the public module with binary payloads, deadlines,
 # endpoints and stale-handle checks. Other protocols still require their own
 # implementation and verified runtime evidence.
