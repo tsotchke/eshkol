@@ -19,7 +19,7 @@ sources:
 ---
 # ADR-0047: Certificates, an independent checker and a Lean export
 
-**Status:** Proposed
+**Status:** On hold (2026-11-08)
 **Date:** 2026-10-30
 **Scope:** the format in which Eshkol states a certified result together
 with the data that proves it; the program outside Eshkol that checks it;

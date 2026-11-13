@@ -13,7 +13,7 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0053-platform-layer.md:1",
   "source_path": "docs/design/adr/0053-platform-layer.md",
-  "status": "proposed",
+  "status": "accepted",
   "tags": [
     "imported-markdown"
   ],

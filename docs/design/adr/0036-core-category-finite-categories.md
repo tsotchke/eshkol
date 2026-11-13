@@ -17,7 +17,7 @@ sources:
 ---
 # ADR-0036: `core.category` — finite category theory as the shared base layer
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Date:** 2026-10-29
 **Scope:** the library that computes with finite categories, functors,
 natural transformations, limits and colimits, ends and coends, Kan

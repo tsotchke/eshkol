@@ -19,7 +19,7 @@ sources:
 ---
 # ADR-0053: The v1.8.0 platform layer
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Scope:** Windows and events, real-time audio, MIDI, Vulkan compute in the
 ordinary GPU dispatch, and embedded cross-compilation (ARM and RISC-V bare
 metal).

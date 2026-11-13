@@ -1,6 +1,6 @@
 # ADR-0051: `core.reasoning` — chaining, constraints and SAT, knowledge graphs
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Date:** 2026-10-30
 **Scope:** the v1.6.0-reasoning items of the roadmap: backward chaining,
 forward chaining, constraint solving with SAT integration, knowledge graphs

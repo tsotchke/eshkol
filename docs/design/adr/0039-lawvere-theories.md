@@ -16,7 +16,7 @@ sources:
 ---
 # ADR-0039: Algebraic theories as data: Lawvere theories and their models
 
-- **Status:** Proposed — library implemented in `core.theory`
+- **Status:** Accepted (2026-11-08) — library implemented in `core.theory`
 - **Date:** 2026-10-29
 - **Decision owners:** `core.ring`, `core.topos`, `core.category` and exact algebra maintainers
 - **Depends on:** ADR-0034 (ring carriers), ADR-0035 (Kripke-Joyal semantics, `core.topos`), ADR-0033 (finite sites), ADR-0036 (`core.category`)

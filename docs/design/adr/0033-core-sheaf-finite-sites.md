@@ -15,7 +15,7 @@ sources:
 ---
 # ADR-0033: `core.sheaf` — one sheaf-theory facility on finite sites
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Date:** 2026-10-24
 **Scope:** the representation of finite sites, sieves, presheaves and gluing
 used by every Eshkol program that computes with sheaves; the exact linear
