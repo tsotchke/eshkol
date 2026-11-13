@@ -2317,12 +2317,12 @@
           "exports": [
             {
               "name": "ia*",
-              "line": 158,
-              "definition_line": 325,
+              "line": 165,
+              "definition_line": 332,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 325,
+                "line": 332,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2330,12 +2330,12 @@
             },
             {
               "name": "ia+",
-              "line": 158,
-              "definition_line": 294,
+              "line": 165,
+              "definition_line": 301,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 294,
+                "line": 301,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2343,12 +2343,12 @@
             },
             {
               "name": "ia-",
-              "line": 158,
-              "definition_line": 306,
+              "line": 165,
+              "definition_line": 313,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 306,
+                "line": 313,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2356,12 +2356,12 @@
             },
             {
               "name": "ia-abs-interval",
-              "line": 165,
-              "definition_line": 392,
+              "line": 172,
+              "definition_line": 399,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 392,
+                "line": 399,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2369,12 +2369,12 @@
             },
             {
               "name": "ia-atan",
-              "line": 159,
-              "definition_line": 746,
+              "line": 166,
+              "definition_line": 753,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 746,
+                "line": 753,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2382,12 +2382,12 @@
             },
             {
               "name": "ia-contains?",
-              "line": 165,
-              "definition_line": 387,
+              "line": 172,
+              "definition_line": 394,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 387,
+                "line": 394,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2395,12 +2395,12 @@
             },
             {
               "name": "ia-cos",
-              "line": 159,
-              "definition_line": 818,
+              "line": 166,
+              "definition_line": 825,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 818,
+                "line": 825,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2408,12 +2408,12 @@
             },
             {
               "name": "ia-exact-up",
-              "line": 166,
-              "definition_line": 289,
+              "line": 173,
+              "definition_line": 296,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 289,
+                "line": 296,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2421,12 +2421,12 @@
             },
             {
               "name": "ia-exp",
-              "line": 159,
-              "definition_line": 560,
+              "line": 166,
+              "definition_line": 567,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 560,
+                "line": 567,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2434,12 +2434,12 @@
             },
             {
               "name": "ia-hull",
-              "line": 165,
-              "definition_line": 377,
+              "line": 172,
+              "definition_line": 384,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 377,
+                "line": 384,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2447,12 +2447,12 @@
             },
             {
               "name": "ia-intersect",
-              "line": 165,
-              "definition_line": 382,
+              "line": 172,
+              "definition_line": 389,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 382,
+                "line": 389,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2460,12 +2460,12 @@
             },
             {
               "name": "ia-ipow",
-              "line": 158,
-              "definition_line": 539,
+              "line": 165,
+              "definition_line": 546,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 539,
+                "line": 546,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2473,12 +2473,12 @@
             },
             {
               "name": "ia-log",
-              "line": 159,
-              "definition_line": 638,
+              "line": 166,
+              "definition_line": 645,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 638,
+                "line": 645,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2486,12 +2486,12 @@
             },
             {
               "name": "ia-mag",
-              "line": 166,
-              "definition_line": 216,
+              "line": 173,
+              "definition_line": 223,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 216,
+                "line": 223,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2499,12 +2499,12 @@
             },
             {
               "name": "ia-neg",
-              "line": 158,
-              "definition_line": 320,
+              "line": 165,
+              "definition_line": 327,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 320,
+                "line": 327,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2512,12 +2512,12 @@
             },
             {
               "name": "ia-pi",
-              "line": 160,
-              "definition_line": 714,
+              "line": 167,
+              "definition_line": 721,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 714,
+                "line": 721,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2525,12 +2525,12 @@
             },
             {
               "name": "ia-scale",
-              "line": 158,
-              "definition_line": 373,
+              "line": 165,
+              "definition_line": 380,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 373,
+                "line": 380,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2538,12 +2538,12 @@
             },
             {
               "name": "ia-sin",
-              "line": 159,
-              "definition_line": 814,
+              "line": 166,
+              "definition_line": 821,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 814,
+                "line": 821,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2551,12 +2551,12 @@
             },
             {
               "name": "ia-sqr",
-              "line": 165,
-              "definition_line": 402,
+              "line": 172,
+              "definition_line": 409,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 402,
+                "line": 409,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2564,12 +2564,12 @@
             },
             {
               "name": "ia-sqrt",
-              "line": 159,
-              "definition_line": 501,
+              "line": 166,
+              "definition_line": 508,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 501,
+                "line": 508,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2577,12 +2577,12 @@
             },
             {
               "name": "ia-to-double-down",
-              "line": 166,
-              "definition_line": 233,
+              "line": 173,
+              "definition_line": 240,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 233,
+                "line": 240,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2590,12 +2590,12 @@
             },
             {
               "name": "ia-to-double-up",
-              "line": 166,
-              "definition_line": 255,
+              "line": 173,
+              "definition_line": 262,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 255,
+                "line": 262,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2603,12 +2603,12 @@
             },
             {
               "name": "ia/",
-              "line": 158,
-              "definition_line": 352,
+              "line": 165,
+              "definition_line": 359,
               "definition_origin": {
                 "module": "core.ad.rigorous_interval",
                 "path": "lib/core/ad/rigorous_interval.esk",
-                "line": 352,
+                "line": 359,
                 "chain": [
                   "core.ad.rigorous_interval"
                 ]
@@ -2618,371 +2618,371 @@
           "top_level_definitions": [
             {
               "name": "ia*",
-              "line": 325
+              "line": 332
             },
             {
               "name": "ia+",
-              "line": 294
+              "line": 301
             },
             {
               "name": "ia-",
-              "line": 306
+              "line": 313
             },
             {
               "name": "ia-abs",
-              "line": 170
+              "line": 177
             },
             {
               "name": "ia-abs-interval",
-              "line": 392
+              "line": 399
             },
             {
               "name": "ia-all-exact4?",
-              "line": 220
+              "line": 227
             },
             {
               "name": "ia-atan",
-              "line": 746
+              "line": 753
             },
             {
               "name": "ia-atan-cc",
-              "line": 455
+              "line": 462
             },
             {
               "name": "ia-atan-coeffs-desc",
-              "line": 688
+              "line": 695
             },
             {
               "name": "ia-atan-core",
-              "line": 699
+              "line": 706
             },
             {
               "name": "ia-atan-core-maxdeg",
-              "line": 686
+              "line": 693
             },
             {
               "name": "ia-atan-loop",
-              "line": 733
+              "line": 740
             },
             {
               "name": "ia-atan-max-depth",
-              "line": 731
+              "line": 738
             },
             {
               "name": "ia-atan-reduce-target",
-              "line": 730
+              "line": 737
             },
             {
               "name": "ia-check",
-              "line": 190
+              "line": 197
             },
             {
               "name": "ia-contains?",
-              "line": 387
+              "line": 394
             },
             {
               "name": "ia-conversion-max-steps",
-              "line": 231
+              "line": 238
             },
             {
               "name": "ia-cos",
-              "line": 818
+              "line": 825
             },
             {
               "name": "ia-cos-cc",
-              "line": 454
+              "line": 461
             },
             {
               "name": "ia-cos-point",
-              "line": 786
+              "line": 793
             },
             {
               "name": "ia-cos0",
-              "line": 675
+              "line": 682
             },
             {
               "name": "ia-cos0-coeffs-desc",
-              "line": 655
+              "line": 662
             },
             {
               "name": "ia-exact-root",
-              "line": 494
-            },
-            {
-              "name": "ia-exact-up",
-              "line": 289
-            },
-            {
-              "name": "ia-exact-zero?",
-              "line": 292
-            },
-            {
-              "name": "ia-exp",
-              "line": 560
-            },
-            {
-              "name": "ia-exp-cc",
-              "line": 451
-            },
-            {
-              "name": "ia-exp-choose-k",
-              "line": 531
-            },
-            {
-              "name": "ia-exp-coeffs-desc",
-              "line": 519
-            },
-            {
-              "name": "ia-exp-narrow",
-              "line": 545
-            },
-            {
-              "name": "ia-exp-order",
-              "line": 517
-            },
-            {
-              "name": "ia-exp-r0",
-              "line": 515
-            },
-            {
-              "name": "ia-exp-r0-d",
-              "line": 516
-            },
-            {
-              "name": "ia-exp-reduced",
-              "line": 523
-            },
-            {
-              "name": "ia-fact",
-              "line": 212
-            },
-            {
-              "name": "ia-float-results-ok?",
-              "line": 278
-            },
-            {
-              "name": "ia-halfpi",
-              "line": 724
-            },
-            {
-              "name": "ia-halfpi-cache",
-              "line": 723
-            },
-            {
-              "name": "ia-hits-lattice?",
-              "line": 794
-            },
-            {
-              "name": "ia-horner-cached",
-              "line": 444
-            },
-            {
-              "name": "ia-horner-desc",
-              "line": 421
-            },
-            {
-              "name": "ia-hull",
-              "line": 377
-            },
-            {
-              "name": "ia-intersect",
-              "line": 382
-            },
-            {
-              "name": "ia-ipow",
-              "line": 539
-            },
-            {
-              "name": "ia-ipow-double",
-              "line": 209
-            },
-            {
-              "name": "ia-ipow-exact",
-              "line": 206
-            },
-            {
-              "name": "ia-isqrt",
-              "line": 485
-            },
-            {
-              "name": "ia-ln2",
-              "line": 601
-            },
-            {
-              "name": "ia-ln2-cache",
-              "line": 600
-            },
-            {
-              "name": "ia-log",
-              "line": 638
-            },
-            {
-              "name": "ia-log-cc",
-              "line": 452
-            },
-            {
-              "name": "ia-log-choose-k",
-              "line": 618
-            },
-            {
-              "name": "ia-log-coeffs-desc",
-              "line": 573
-            },
-            {
-              "name": "ia-log-narrow",
-              "line": 627
-            },
-            {
-              "name": "ia-log-order",
-              "line": 571
-            },
-            {
-              "name": "ia-log1p",
-              "line": 580
-            },
-            {
-              "name": "ia-mag",
-              "line": 216
-            },
-            {
-              "name": "ia-max-double-exact",
-              "line": 230
-            },
-            {
-              "name": "ia-max2",
-              "line": 172
-            },
-            {
-              "name": "ia-memo-coeffs",
-              "line": 437
-            },
-            {
-              "name": "ia-min2",
-              "line": 171
-            },
-            {
-              "name": "ia-monotone-endpoints",
-              "line": 556
-            },
-            {
-              "name": "ia-neg",
-              "line": 320
-            },
-            {
-              "name": "ia-outward-list",
-              "line": 432
-            },
-            {
-              "name": "ia-perfect-square-root",
-              "line": 491
-            },
-            {
-              "name": "ia-pi",
-              "line": 714
-            },
-            {
-              "name": "ia-pi-cache",
-              "line": 713
-            },
-            {
-              "name": "ia-pow2-double",
-              "line": 613
-            },
-            {
-              "name": "ia-pow2-exact",
-              "line": 608
-            },
-            {
-              "name": "ia-prod",
-              "line": 322
-            },
-            {
-              "name": "ia-pt",
-              "line": 173
-            },
-            {
-              "name": "ia-scale",
-              "line": 373
-            },
-            {
-              "name": "ia-sin",
-              "line": 814
-            },
-            {
-              "name": "ia-sin-cc",
-              "line": 453
-            },
-            {
-              "name": "ia-sin-point",
-              "line": 780
-            },
-            {
-              "name": "ia-sin0",
-              "line": 671
-            },
-            {
-              "name": "ia-sin0-coeffs-desc",
-              "line": 647
-            },
-            {
-              "name": "ia-sqr",
-              "line": 402
-            },
-            {
-              "name": "ia-sqrt",
               "line": 501
             },
             {
-              "name": "ia-sqrt-lower-certify",
-              "line": 469
+              "name": "ia-exact-up",
+              "line": 296
             },
             {
-              "name": "ia-sqrt-max-iters",
+              "name": "ia-exact-zero?",
+              "line": 299
+            },
+            {
+              "name": "ia-exp",
+              "line": 567
+            },
+            {
+              "name": "ia-exp-cc",
               "line": 458
             },
             {
-              "name": "ia-sqrt-upper-certify",
-              "line": 477
+              "name": "ia-exp-choose-k",
+              "line": 538
             },
             {
-              "name": "ia-to-double-down",
-              "line": 233
+              "name": "ia-exp-coeffs-desc",
+              "line": 526
             },
             {
-              "name": "ia-to-double-up",
-              "line": 255
+              "name": "ia-exp-narrow",
+              "line": 552
             },
             {
-              "name": "ia-trig-clamp",
-              "line": 767
+              "name": "ia-exp-order",
+              "line": 524
             },
             {
-              "name": "ia-trig-order",
+              "name": "ia-exp-r0",
+              "line": 522
+            },
+            {
+              "name": "ia-exp-r0-d",
+              "line": 523
+            },
+            {
+              "name": "ia-exp-reduced",
+              "line": 530
+            },
+            {
+              "name": "ia-fact",
+              "line": 219
+            },
+            {
+              "name": "ia-float-results-ok?",
+              "line": 285
+            },
+            {
+              "name": "ia-halfpi",
+              "line": 731
+            },
+            {
+              "name": "ia-halfpi-cache",
+              "line": 730
+            },
+            {
+              "name": "ia-hits-lattice?",
+              "line": 801
+            },
+            {
+              "name": "ia-horner-cached",
+              "line": 451
+            },
+            {
+              "name": "ia-horner-desc",
+              "line": 428
+            },
+            {
+              "name": "ia-hull",
+              "line": 384
+            },
+            {
+              "name": "ia-intersect",
+              "line": 389
+            },
+            {
+              "name": "ia-ipow",
+              "line": 546
+            },
+            {
+              "name": "ia-ipow-double",
+              "line": 216
+            },
+            {
+              "name": "ia-ipow-exact",
+              "line": 213
+            },
+            {
+              "name": "ia-isqrt",
+              "line": 492
+            },
+            {
+              "name": "ia-ln2",
+              "line": 608
+            },
+            {
+              "name": "ia-ln2-cache",
+              "line": 607
+            },
+            {
+              "name": "ia-log",
               "line": 645
             },
             {
+              "name": "ia-log-cc",
+              "line": 459
+            },
+            {
+              "name": "ia-log-choose-k",
+              "line": 625
+            },
+            {
+              "name": "ia-log-coeffs-desc",
+              "line": 580
+            },
+            {
+              "name": "ia-log-narrow",
+              "line": 634
+            },
+            {
+              "name": "ia-log-order",
+              "line": 578
+            },
+            {
+              "name": "ia-log1p",
+              "line": 587
+            },
+            {
+              "name": "ia-mag",
+              "line": 223
+            },
+            {
+              "name": "ia-max-double-exact",
+              "line": 237
+            },
+            {
+              "name": "ia-max2",
+              "line": 179
+            },
+            {
+              "name": "ia-memo-coeffs",
+              "line": 444
+            },
+            {
+              "name": "ia-min2",
+              "line": 178
+            },
+            {
+              "name": "ia-monotone-endpoints",
+              "line": 563
+            },
+            {
+              "name": "ia-neg",
+              "line": 327
+            },
+            {
+              "name": "ia-outward-list",
+              "line": 439
+            },
+            {
+              "name": "ia-perfect-square-root",
+              "line": 498
+            },
+            {
+              "name": "ia-pi",
+              "line": 721
+            },
+            {
+              "name": "ia-pi-cache",
+              "line": 720
+            },
+            {
+              "name": "ia-pow2-double",
+              "line": 620
+            },
+            {
+              "name": "ia-pow2-exact",
+              "line": 615
+            },
+            {
+              "name": "ia-prod",
+              "line": 329
+            },
+            {
+              "name": "ia-pt",
+              "line": 180
+            },
+            {
+              "name": "ia-scale",
+              "line": 380
+            },
+            {
+              "name": "ia-sin",
+              "line": 821
+            },
+            {
+              "name": "ia-sin-cc",
+              "line": 460
+            },
+            {
+              "name": "ia-sin-point",
+              "line": 787
+            },
+            {
+              "name": "ia-sin0",
+              "line": 678
+            },
+            {
+              "name": "ia-sin0-coeffs-desc",
+              "line": 654
+            },
+            {
+              "name": "ia-sqr",
+              "line": 409
+            },
+            {
+              "name": "ia-sqrt",
+              "line": 508
+            },
+            {
+              "name": "ia-sqrt-lower-certify",
+              "line": 476
+            },
+            {
+              "name": "ia-sqrt-max-iters",
+              "line": 465
+            },
+            {
+              "name": "ia-sqrt-upper-certify",
+              "line": 484
+            },
+            {
+              "name": "ia-to-double-down",
+              "line": 240
+            },
+            {
+              "name": "ia-to-double-up",
+              "line": 262
+            },
+            {
+              "name": "ia-trig-clamp",
+              "line": 774
+            },
+            {
+              "name": "ia-trig-order",
+              "line": 652
+            },
+            {
               "name": "ia-trig-quadrant",
-              "line": 752
+              "line": 759
             },
             {
               "name": "ia-trig-range",
-              "line": 806
+              "line": 813
             },
             {
               "name": "ia-trig-remainder-mag",
-              "line": 664
+              "line": 671
             },
             {
               "name": "ia-unit",
-              "line": 766
+              "line": 773
             },
             {
               "name": "ia-wider-than-period?",
-              "line": 770
+              "line": 777
             },
             {
               "name": "ia/",
-              "line": 352
+              "line": 359
             }
           ]
         },
@@ -5435,12 +5435,12 @@
           "exports": [
             {
               "name": "exact-affine-solve",
-              "line": 51,
-              "definition_line": 571,
+              "line": 47,
+              "definition_line": 487,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 571,
+                "line": 487,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5448,12 +5448,12 @@
             },
             {
               "name": "exact-det",
-              "line": 51,
-              "definition_line": 343,
+              "line": 47,
+              "definition_line": 215,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 343,
+                "line": 215,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5461,12 +5461,12 @@
             },
             {
               "name": "exact-inverse",
-              "line": 51,
-              "definition_line": 522,
+              "line": 47,
+              "definition_line": 431,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 522,
+                "line": 431,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5474,12 +5474,12 @@
             },
             {
               "name": "exact-matrix-mul",
-              "line": 50,
-              "definition_line": 224,
+              "line": 46,
+              "definition_line": 147,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 224,
+                "line": 147,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5487,12 +5487,12 @@
             },
             {
               "name": "exact-matrix-ref",
-              "line": 50,
-              "definition_line": 62,
+              "line": 46,
+              "definition_line": 58,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 62,
+                "line": 58,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5500,12 +5500,12 @@
             },
             {
               "name": "exact-matrix-transpose",
-              "line": 50,
-              "definition_line": 243,
+              "line": 46,
+              "definition_line": 166,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 243,
+                "line": 166,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5513,12 +5513,12 @@
             },
             {
               "name": "exact-matrix?",
-              "line": 50,
-              "definition_line": 115,
+              "line": 46,
+              "definition_line": 76,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 115,
+                "line": 76,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5526,12 +5526,12 @@
             },
             {
               "name": "exact-nullspace",
-              "line": 52,
-              "definition_line": 426,
+              "line": 48,
+              "definition_line": 353,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 426,
+                "line": 353,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5539,12 +5539,12 @@
             },
             {
               "name": "exact-pivot-columns",
-              "line": 52,
-              "definition_line": 398,
+              "line": 48,
+              "definition_line": 325,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 398,
+                "line": 325,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5552,12 +5552,12 @@
             },
             {
               "name": "exact-plu",
-              "line": 51,
-              "definition_line": 303,
+              "line": 47,
+              "definition_line": 232,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 303,
+                "line": 232,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5565,12 +5565,12 @@
             },
             {
               "name": "exact-rank",
-              "line": 51,
-              "definition_line": 392,
+              "line": 47,
+              "definition_line": 319,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 392,
+                "line": 319,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5578,12 +5578,12 @@
             },
             {
               "name": "exact-solve",
-              "line": 51,
-              "definition_line": 471,
+              "line": 47,
+              "definition_line": 382,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 471,
+                "line": 382,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5591,12 +5591,12 @@
             },
             {
               "name": "torus-average",
-              "line": 53,
-              "definition_line": 542,
+              "line": 49,
+              "definition_line": 458,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 542,
+                "line": 458,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5604,12 +5604,12 @@
             },
             {
               "name": "torus-average-2d",
-              "line": 53,
-              "definition_line": 557,
+              "line": 49,
+              "definition_line": 473,
               "definition_origin": {
                 "module": "core.exact_linalg",
                 "path": "lib/core/exact_linalg.esk",
-                "line": 557,
+                "line": 473,
                 "chain": [
                   "core.exact_linalg"
                 ]
@@ -5619,247 +5619,195 @@
           "top_level_definitions": [
             {
               "name": "el-affine-exact-row?",
-              "line": 567
-            },
-            {
-              "name": "el-append-row",
-              "line": 436
-            },
-            {
-              "name": "el-as-rows",
-              "line": 149
-            },
-            {
-              "name": "el-as-vector",
-              "line": 150
-            },
-            {
-              "name": "el-augment-column",
-              "line": 442
-            },
-            {
-              "name": "el-augment-identity",
-              "line": 491
-            },
-            {
-              "name": "el-bareiss",
-              "line": 266
-            },
-            {
-              "name": "el-bareiss-eliminate!",
-              "line": 260
-            },
-            {
-              "name": "el-bareiss-eliminate-row!",
-              "line": 248
-            },
-            {
-              "name": "el-cols",
-              "line": 60
-            },
-            {
-              "name": "el-concat-row",
               "line": 483
             },
             {
-              "name": "el-copy-matrix",
-              "line": 176
+              "name": "el-append-row",
+              "line": 359
             },
             {
-              "name": "el-copy-row",
-              "line": 171
+              "name": "el-augment-column",
+              "line": 365
             },
             {
-              "name": "el-det",
-              "line": 286
+              "name": "el-augment-identity",
+              "line": 410
             },
             {
-              "name": "el-dot-ik",
-              "line": 196
+              "name": "el-bareiss",
+              "line": 195
             },
             {
-              "name": "el-eliminate-col!",
-              "line": 364
+              "name": "el-bareiss-eliminate!",
+              "line": 189
             },
             {
-              "name": "el-eliminate-row!",
-              "line": 353
+              "name": "el-bareiss-eliminate-row!",
+              "line": 177
             },
             {
-              "name": "el-exact-num?",
-              "line": 74
+              "name": "el-cols",
+              "line": 56
             },
             {
-              "name": "el-extract-right-half",
-              "line": 504
-            },
-            {
-              "name": "el-extract-right-row",
-              "line": 499
-            },
-            {
-              "name": "el-extract-solution",
-              "line": 450
-            },
-            {
-              "name": "el-fill-pivot-components!",
+              "name": "el-concat-row",
               "line": 402
             },
             {
+              "name": "el-copy-matrix",
+              "line": 112
+            },
+            {
+              "name": "el-copy-row",
+              "line": 107
+            },
+            {
+              "name": "el-dot-ik",
+              "line": 132
+            },
+            {
+              "name": "el-eliminate-col!",
+              "line": 291
+            },
+            {
+              "name": "el-eliminate-row!",
+              "line": 280
+            },
+            {
+              "name": "el-exact-num?",
+              "line": 69
+            },
+            {
+              "name": "el-extract-right-half",
+              "line": 423
+            },
+            {
+              "name": "el-extract-right-row",
+              "line": 418
+            },
+            {
+              "name": "el-extract-solution",
+              "line": 373
+            },
+            {
+              "name": "el-fill-pivot-components!",
+              "line": 329
+            },
+            {
               "name": "el-find-pivot",
-              "line": 188
+              "line": 124
             },
             {
               "name": "el-identity",
-              "line": 478
+              "line": 397
             },
             {
               "name": "el-identity-row",
-              "line": 475
-            },
-            {
-              "name": "el-inverse",
-              "line": 512
-            },
-            {
-              "name": "el-matrix-answer",
-              "line": 161
-            },
-            {
-              "name": "el-matrix-mul",
-              "line": 211
-            },
-            {
-              "name": "el-matrix-transpose",
-              "line": 234
+              "line": 394
             },
             {
               "name": "el-mul-row",
-              "line": 202
+              "line": 138
             },
             {
               "name": "el-normalize-row!",
-              "line": 348
+              "line": 275
             },
             {
               "name": "el-nullspace-basis",
-              "line": 415
+              "line": 342
             },
             {
               "name": "el-nullspace-vector",
-              "line": 409
+              "line": 336
             },
             {
               "name": "el-row-all?",
-              "line": 67
-            },
-            {
-              "name": "el-rows",
-              "line": 59
-            },
-            {
-              "name": "el-rows-exact-matrix?",
-              "line": 78
-            },
-            {
-              "name": "el-rref",
-              "line": 375
-            },
-            {
-              "name": "el-solve",
-              "line": 459
-            },
-            {
-              "name": "el-sum-f",
-              "line": 527
-            },
-            {
-              "name": "el-sum-f2",
-              "line": 547
-            },
-            {
-              "name": "el-swap-rows!",
-              "line": 181
-            },
-            {
-              "name": "el-tensor->rows",
-              "line": 125
-            },
-            {
-              "name": "el-tensor->vector",
-              "line": 141
-            },
-            {
-              "name": "el-transpose-col",
-              "line": 228
-            },
-            {
-              "name": "el-vector-answer",
-              "line": 166
-            },
-            {
-              "name": "el-vector-exact?",
-              "line": 152
-            },
-            {
-              "name": "el-well-formed?",
-              "line": 95
-            },
-            {
-              "name": "exact-affine-solve",
-              "line": 571
-            },
-            {
-              "name": "exact-det",
-              "line": 343
-            },
-            {
-              "name": "exact-inverse",
-              "line": 522
-            },
-            {
-              "name": "exact-matrix-mul",
-              "line": 224
-            },
-            {
-              "name": "exact-matrix-ref",
               "line": 62
             },
             {
+              "name": "el-rows",
+              "line": 55
+            },
+            {
+              "name": "el-rref",
+              "line": 302
+            },
+            {
+              "name": "el-sum-f",
+              "line": 443
+            },
+            {
+              "name": "el-sum-f2",
+              "line": 463
+            },
+            {
+              "name": "el-swap-rows!",
+              "line": 117
+            },
+            {
+              "name": "el-transpose-col",
+              "line": 160
+            },
+            {
+              "name": "el-well-formed?",
+              "line": 93
+            },
+            {
+              "name": "exact-affine-solve",
+              "line": 487
+            },
+            {
+              "name": "exact-det",
+              "line": 215
+            },
+            {
+              "name": "exact-inverse",
+              "line": 431
+            },
+            {
+              "name": "exact-matrix-mul",
+              "line": 147
+            },
+            {
+              "name": "exact-matrix-ref",
+              "line": 58
+            },
+            {
               "name": "exact-matrix-transpose",
-              "line": 243
+              "line": 166
             },
             {
               "name": "exact-matrix?",
-              "line": 115
+              "line": 76
             },
             {
               "name": "exact-nullspace",
-              "line": 426
+              "line": 353
             },
             {
               "name": "exact-pivot-columns",
-              "line": 398
+              "line": 325
             },
             {
               "name": "exact-plu",
-              "line": 303
+              "line": 232
             },
             {
               "name": "exact-rank",
-              "line": 392
+              "line": 319
             },
             {
               "name": "exact-solve",
-              "line": 471
+              "line": 382
             },
             {
               "name": "torus-average",
-              "line": 542
+              "line": 458
             },
             {
               "name": "torus-average-2d",
-              "line": 557
+              "line": 473
             }
           ]
         },
@@ -13763,9 +13711,9 @@
   },
   "counts": {
     "builtins_total": 1069,
-    "builtins_in_vm_table": 800,
+    "builtins_in_vm_table": 796,
     "builtins_in_llvm_aot_dispatch": 811,
-    "builtins_aot_only": 247,
+    "builtins_aot_only": 251,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 123,
     "ast_ops": 114,
@@ -20893,13 +20841,10 @@
     },
     {
       "name": "make-prng",
-      "ids": [
-        1866
-      ],
-      "arity": 1,
-      "min_arity": 1,
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
       "backends": [
-        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
@@ -22208,39 +22153,30 @@
     },
     {
       "name": "prng-random",
-      "ids": [
-        1868
-      ],
-      "arity": 1,
-      "min_arity": 1,
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
       "backends": [
-        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
     },
     {
       "name": "prng-random-integer",
-      "ids": [
-        1869
-      ],
-      "arity": 2,
-      "min_arity": 2,
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
       "backends": [
-        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
     },
     {
       "name": "prng?",
-      "ids": [
-        1867
-      ],
-      "arity": 1,
-      "min_arity": 1,
+      "ids": [],
+      "arity": null,
+      "min_arity": null,
       "backends": [
-        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
@@ -37327,13 +37263,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 571,
+          "definition_line": 487,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 571,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37346,7 +37282,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-affine-solve",
-            "line": 571,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37356,13 +37292,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 571,
+          "definition_line": 487,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 571,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37375,7 +37311,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-affine-solve",
-            "line": 571,
+            "line": 487,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37397,13 +37333,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 343,
+          "definition_line": 215,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 343,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37416,7 +37352,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-det",
-            "line": 343,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37426,13 +37362,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 343,
+          "definition_line": 215,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 343,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37445,7 +37381,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-det",
-            "line": 343,
+            "line": 215,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37537,13 +37473,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 522,
+          "definition_line": 431,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 522,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37556,7 +37492,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-inverse",
-            "line": 522,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37566,13 +37502,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 522,
+          "definition_line": 431,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 522,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37585,7 +37521,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-inverse",
-            "line": 522,
+            "line": 431,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37607,13 +37543,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 224,
+          "definition_line": 147,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 224,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37626,7 +37562,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-mul",
-            "line": 224,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37636,13 +37572,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 224,
+          "definition_line": 147,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 224,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37655,7 +37591,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-mul",
-            "line": 224,
+            "line": 147,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37677,13 +37613,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 62,
+          "definition_line": 58,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 62,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37696,7 +37632,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-ref",
-            "line": 62,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37706,13 +37642,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 62,
+          "definition_line": 58,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 62,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37725,7 +37661,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-ref",
-            "line": 62,
+            "line": 58,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37747,13 +37683,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 243,
+          "definition_line": 166,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 243,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37766,7 +37702,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-transpose",
-            "line": 243,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37776,13 +37712,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 243,
+          "definition_line": 166,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 243,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37795,7 +37731,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix-transpose",
-            "line": 243,
+            "line": 166,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37817,13 +37753,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 115,
+          "definition_line": 76,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 115,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37836,7 +37772,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix?",
-            "line": 115,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37846,13 +37782,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 50,
+          "line": 46,
           "defined_at_top_level": true,
-          "definition_line": 115,
+          "definition_line": 76,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 115,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37865,7 +37801,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-matrix?",
-            "line": 115,
+            "line": 76,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37887,13 +37823,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 52,
+          "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 426,
+          "definition_line": 353,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 426,
+            "line": 353,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37906,7 +37842,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-nullspace",
-            "line": 426,
+            "line": 353,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37916,13 +37852,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 52,
+          "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 426,
+          "definition_line": 353,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 426,
+            "line": 353,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37935,7 +37871,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-nullspace",
-            "line": 426,
+            "line": 353,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37957,13 +37893,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 52,
+          "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 398,
+          "definition_line": 325,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 398,
+            "line": 325,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37976,7 +37912,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-pivot-columns",
-            "line": 398,
+            "line": 325,
             "chain": [
               "core.exact_linalg"
             ]
@@ -37986,13 +37922,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 52,
+          "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 398,
+          "definition_line": 325,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 398,
+            "line": 325,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38005,7 +37941,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-pivot-columns",
-            "line": 398,
+            "line": 325,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38027,13 +37963,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 303,
+          "definition_line": 232,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 303,
+            "line": 232,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38046,7 +37982,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-plu",
-            "line": 303,
+            "line": 232,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38056,13 +37992,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 303,
+          "definition_line": 232,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 303,
+            "line": 232,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38075,7 +38011,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-plu",
-            "line": 303,
+            "line": 232,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38097,13 +38033,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 392,
+          "definition_line": 319,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 392,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38116,7 +38052,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-rank",
-            "line": 392,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38126,13 +38062,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 392,
+          "definition_line": 319,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 392,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38145,7 +38081,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-rank",
-            "line": 392,
+            "line": 319,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38167,13 +38103,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 471,
+          "definition_line": 382,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 471,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38186,7 +38122,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-solve",
-            "line": 471,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38196,13 +38132,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 51,
+          "line": 47,
           "defined_at_top_level": true,
-          "definition_line": 471,
+          "definition_line": 382,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 471,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -38215,7 +38151,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "exact-solve",
-            "line": 471,
+            "line": 382,
             "chain": [
               "core.exact_linalg"
             ]
@@ -39945,13 +39881,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 158,
+          "line": 165,
           "defined_at_top_level": true,
-          "definition_line": 325,
+          "definition_line": 332,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 325,
+            "line": 332,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -39964,7 +39900,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia*",
-            "line": 325,
+            "line": 332,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -39986,13 +39922,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 158,
+          "line": 165,
           "defined_at_top_level": true,
-          "definition_line": 294,
+          "definition_line": 301,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 294,
+            "line": 301,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40005,7 +39941,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia+",
-            "line": 294,
+            "line": 301,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40027,13 +39963,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 158,
+          "line": 165,
           "defined_at_top_level": true,
-          "definition_line": 306,
+          "definition_line": 313,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 306,
+            "line": 313,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40046,7 +39982,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-",
-            "line": 306,
+            "line": 313,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40068,13 +40004,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 165,
+          "line": 172,
           "defined_at_top_level": true,
-          "definition_line": 392,
+          "definition_line": 399,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 392,
+            "line": 399,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40087,7 +40023,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-abs-interval",
-            "line": 392,
+            "line": 399,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40109,13 +40045,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 159,
+          "line": 166,
           "defined_at_top_level": true,
-          "definition_line": 746,
+          "definition_line": 753,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 746,
+            "line": 753,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40128,7 +40064,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-atan",
-            "line": 746,
+            "line": 753,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40150,13 +40086,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 165,
+          "line": 172,
           "defined_at_top_level": true,
-          "definition_line": 387,
+          "definition_line": 394,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 387,
+            "line": 394,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40169,7 +40105,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-contains?",
-            "line": 387,
+            "line": 394,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40191,13 +40127,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 159,
+          "line": 166,
           "defined_at_top_level": true,
-          "definition_line": 818,
+          "definition_line": 825,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 818,
+            "line": 825,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40210,7 +40146,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-cos",
-            "line": 818,
+            "line": 825,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40232,13 +40168,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 166,
+          "line": 173,
           "defined_at_top_level": true,
-          "definition_line": 289,
+          "definition_line": 296,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 289,
+            "line": 296,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40251,7 +40187,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-exact-up",
-            "line": 289,
+            "line": 296,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40273,13 +40209,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 159,
+          "line": 166,
           "defined_at_top_level": true,
-          "definition_line": 560,
+          "definition_line": 567,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 560,
+            "line": 567,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40292,7 +40228,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-exp",
-            "line": 560,
+            "line": 567,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40314,13 +40250,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 165,
+          "line": 172,
           "defined_at_top_level": true,
-          "definition_line": 377,
+          "definition_line": 384,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 377,
+            "line": 384,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40333,7 +40269,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-hull",
-            "line": 377,
+            "line": 384,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40355,13 +40291,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 165,
+          "line": 172,
           "defined_at_top_level": true,
-          "definition_line": 382,
+          "definition_line": 389,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 382,
+            "line": 389,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40374,7 +40310,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-intersect",
-            "line": 382,
+            "line": 389,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40396,13 +40332,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 158,
+          "line": 165,
           "defined_at_top_level": true,
-          "definition_line": 539,
+          "definition_line": 546,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 539,
+            "line": 546,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40415,7 +40351,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-ipow",
-            "line": 539,
+            "line": 546,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40437,13 +40373,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 159,
+          "line": 166,
           "defined_at_top_level": true,
-          "definition_line": 638,
+          "definition_line": 645,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 638,
+            "line": 645,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40456,7 +40392,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-log",
-            "line": 638,
+            "line": 645,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40478,13 +40414,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 166,
+          "line": 173,
           "defined_at_top_level": true,
-          "definition_line": 216,
+          "definition_line": 223,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 216,
+            "line": 223,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40497,7 +40433,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-mag",
-            "line": 216,
+            "line": 223,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40519,13 +40455,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 158,
+          "line": 165,
           "defined_at_top_level": true,
-          "definition_line": 320,
+          "definition_line": 327,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 320,
+            "line": 327,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40538,7 +40474,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-neg",
-            "line": 320,
+            "line": 327,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40560,13 +40496,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 160,
+          "line": 167,
           "defined_at_top_level": true,
-          "definition_line": 714,
+          "definition_line": 721,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 714,
+            "line": 721,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40579,7 +40515,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-pi",
-            "line": 714,
+            "line": 721,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40601,13 +40537,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 158,
+          "line": 165,
           "defined_at_top_level": true,
-          "definition_line": 373,
+          "definition_line": 380,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 373,
+            "line": 380,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40620,7 +40556,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-scale",
-            "line": 373,
+            "line": 380,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40642,13 +40578,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 159,
+          "line": 166,
           "defined_at_top_level": true,
-          "definition_line": 814,
+          "definition_line": 821,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 814,
+            "line": 821,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40661,7 +40597,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-sin",
-            "line": 814,
+            "line": 821,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40683,13 +40619,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 165,
+          "line": 172,
           "defined_at_top_level": true,
-          "definition_line": 402,
+          "definition_line": 409,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 402,
+            "line": 409,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40702,7 +40638,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-sqr",
-            "line": 402,
+            "line": 409,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40724,13 +40660,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 159,
+          "line": 166,
           "defined_at_top_level": true,
-          "definition_line": 501,
+          "definition_line": 508,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 501,
+            "line": 508,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40743,7 +40679,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-sqrt",
-            "line": 501,
+            "line": 508,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40765,13 +40701,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 166,
+          "line": 173,
           "defined_at_top_level": true,
-          "definition_line": 233,
+          "definition_line": 240,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 233,
+            "line": 240,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40784,7 +40720,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-to-double-down",
-            "line": 233,
+            "line": 240,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40806,13 +40742,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 166,
+          "line": 173,
           "defined_at_top_level": true,
-          "definition_line": 255,
+          "definition_line": 262,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 255,
+            "line": 262,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40825,7 +40761,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia-to-double-up",
-            "line": 255,
+            "line": 262,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40847,13 +40783,13 @@
           "kind": "module_export",
           "module": "core.ad.rigorous_interval",
           "path": "lib/core/ad/rigorous_interval.esk",
-          "line": 158,
+          "line": 165,
           "defined_at_top_level": true,
-          "definition_line": 352,
+          "definition_line": 359,
           "definition_origin": {
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
-            "line": 352,
+            "line": 359,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -40866,7 +40802,7 @@
             "module": "core.ad.rigorous_interval",
             "path": "lib/core/ad/rigorous_interval.esk",
             "name": "ia/",
-            "line": 352,
+            "line": 359,
             "chain": [
               "core.ad.rigorous_interval"
             ]
@@ -65022,13 +64958,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 53,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 542,
+          "definition_line": 458,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 542,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -65041,7 +64977,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average",
-            "line": 542,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -65051,13 +64987,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 53,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 542,
+          "definition_line": 458,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 542,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -65070,7 +65006,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average",
-            "line": 542,
+            "line": 458,
             "chain": [
               "core.exact_linalg"
             ]
@@ -65092,13 +65028,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 53,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 557,
+          "definition_line": 473,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 557,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]
@@ -65111,7 +65047,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average-2d",
-            "line": 557,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]
@@ -65121,13 +65057,13 @@
           "kind": "module_export",
           "module": "core.exact_linalg",
           "path": "lib/core/exact_linalg.esk",
-          "line": 53,
+          "line": 49,
           "defined_at_top_level": true,
-          "definition_line": 557,
+          "definition_line": 473,
           "definition_origin": {
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
-            "line": 557,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]
@@ -65140,7 +65076,7 @@
             "module": "core.exact_linalg",
             "path": "lib/core/exact_linalg.esk",
             "name": "torus-average-2d",
-            "line": 557,
+            "line": 473,
             "chain": [
               "core.exact_linalg"
             ]

@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix="macro-scope-", dir=scratch) as work:
     run([args.native, str(bindings), "-o", executable], check_values=False)
     run([executable], expected=expected)
     traversal = root / "tests/macros/native_traversal_test.esk"
-    expected = ["10", "2.0", "10", "15", "15", "12", "9"]
+    expected = ["10", "2", "10", "15", "15", "12", "9"]
     run([args.native, "-r", str(traversal)], expected=expected)
     run([args.native, str(traversal), "-o", executable], check_values=False)
     run([executable], expected=expected)

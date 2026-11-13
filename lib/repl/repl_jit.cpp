@@ -2826,8 +2826,8 @@ void ReplJITContext::registerLambdaVar(const std::string& var_name) {
  * @return The resolved path, or an empty string if no root carries it.
  */
 static std::string findStdlibObject() {
-    return eshkol::stdlib_identity::resolve_artifact(
-        platform::install_library_roots(), "stdlib.o").path;
+    return platform::resolve_install_artifact(
+        platform::install_library_roots(), {"stdlib.o"}).path;
 }
 
 /**
@@ -2898,8 +2898,8 @@ static bool objectMatchesRunningAbi(llvm::MemoryBufferRef buffer,
  * @return The resolved path, or an empty string if no root carries it.
  */
 static std::string findStdlibBitcode() {
-    return eshkol::stdlib_identity::resolve_artifact(
-        platform::install_library_roots(), "stdlib.bc").path;
+    return platform::resolve_install_artifact(
+        platform::install_library_roots(), {"stdlib.bc"}).path;
 }
 
 // Discover and register stdlib symbols dynamically from .bc metadata.

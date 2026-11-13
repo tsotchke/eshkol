@@ -38,40 +38,15 @@ def main():
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
-    # The peer waits for the client in short slices and stops waiting when the
-    # client process ends, so the wait follows the client's own lifetime (which
-    # the process deadline below bounds) instead of a separate clock that would
-    # start before the client has compiled its program.
-    listener.settimeout(0.2)
+    listener.settimeout(10)
     port = listener.getsockname()[1]
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_context.load_cert_chain(certfile=cert, keyfile=key)
     failures = []
-    client = []
-    client_started = threading.Event()
-
-    def accept_client():
-        client_started.wait()
-        while True:
-            try:
-                raw, _ = listener.accept()
-            except socket.timeout:
-                if not client or client[0].poll() is not None:
-                    # One last look: a connection made just before exit is
-                    # already queued on the listening socket.
-                    try:
-                        raw, _ = listener.accept()
-                    except socket.timeout:
-                        raise AssertionError(
-                            "client ended without connecting to the TLS peer") from None
-                else:
-                    continue
-            raw.settimeout(None)
-            return raw
 
     def serve_once():
         try:
-            raw = accept_client()
+            raw, _ = listener.accept()
             with raw:
                 incoming = ssl.MemoryBIO()
                 outgoing = ssl.MemoryBIO()
@@ -175,22 +150,10 @@ def main():
     else:
         command = [str(output)]
 
-    try:
-        process = subprocess.Popen(
-            command, cwd=root, env=env, text=True, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        client.append(process)
-    finally:
-        client_started.set()
-    try:
-        stdout, _ = process.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, _ = process.communicate()
-        print(stdout, end="")
-        raise
-    result = subprocess.CompletedProcess(command, process.returncode, stdout)
+    result = subprocess.run(
+        command, cwd=root, env=env, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, timeout=60, check=False,
+    )
     print(result.stdout, end="")
     peer.join(timeout=12)
     if peer.is_alive():

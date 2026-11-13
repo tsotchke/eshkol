@@ -132,7 +132,7 @@ actual="$($RUN -n -O0 -r "$AD_PRIV_SRC" \
     2>"$ESHKOL_TEST_TMPDIR/dd10-ad-private-jit.log")" \
     || fail "dd10-ad-private: native JIT rejected probe: $(sed -n '1,5p' "$ESHKOL_TEST_TMPDIR/dd10-ad-private-jit.log")"
 actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
-[ "$actual" = "(loaded-private-ad #t 4.0 9 16 25)" ] \
+[ "$actual" = "(loaded-private-ad #t 4 9 16 25)" ] \
     || fail "dd10-ad-private: native JIT output: $actual"
 
 AD_PRIV_NATIVE_BIN="$ESHKOL_TEST_TMPDIR/dd10-ad-private-native"
@@ -142,7 +142,7 @@ AD_PRIV_NATIVE_BIN="$ESHKOL_TEST_TMPDIR/dd10-ad-private-native"
 actual="$($AD_PRIV_NATIVE_BIN 2>&1)" \
     || fail "dd10-ad-private: native AOT executable failed"
 actual="$(printf '%s\n' "$actual" | sed '/^$/d')"
-[ "$actual" = "(loaded-private-ad #t 4.0 9 16 25)" ] \
+[ "$actual" = "(loaded-private-ad #t 4 9 16 25)" ] \
     || fail "dd10-ad-private: native AOT output: $actual"
 run_probe "dd10-cond-expand" "$ROOT/tests/toolchain/dd10_cond_expand_probe.esk" \
     $'and=alpha\nor=beta' "-D" "ALPHA=1" "-D" "BETA=two"

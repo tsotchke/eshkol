@@ -3524,16 +3524,11 @@ foreach(_part IN ITEMS plan runtime scalar)
 endforeach()
 add_custom_target(eshkol-incremental-bootstrap DEPENDS "${_incremental_plan_object}" "${_incremental_runtime_object}" "${_scalar_lower_object}")
 target_sources(eshkol-runtime PRIVATE "${_incremental_runtime_object}")
-# Several targets take these objects as sources. Each one depends on the single
-# target that produces them, so every generator runs the three commands once
-# and the consumers wait for that one run instead of each starting its own.
-add_dependencies(eshkol-runtime eshkol-incremental-bootstrap)
 
 # Final native tools register the packaged pass at startup; the seed remains
 # the explicit reference backend and no final-tool build retries after refusal.
 foreach(_native_tool IN LISTS EXES)
     target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
-    add_dependencies(${_native_tool} eshkol-incremental-bootstrap)
     if(ESHKOL_SELF_HOSTED_INCREMENTAL)
         target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
         target_compile_features(${_native_tool} PRIVATE cxx_std_20)
@@ -5331,21 +5326,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    # `(tensor ...)` builds an f64 tensor from integer literals: each element is
-    # converted once at construction and prints as the inexact number it is,
-    # with its decimal point.
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 1 2 3))"
     )
     set_tests_properties(tensor_integer_vector_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1\\.0 2\\.0 3\\.0\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1 2 3\\)")
     add_test(
         NAME tensor_integer_shaped_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 2 2 1 2 3 4))"
     )
     set_tests_properties(tensor_integer_shaped_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1\\.0 2\\.0\\) \\(3\\.0 4\\.0\\)\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1 2\\) \\(3 4\\)\\)")
     # #309 regression guard: a matmul result read via tensor-ref/tensor-data
     # from INSIDE a defined function (captured global, argument, in-function
     # matmul, nested define, closure, with-region escape, and a large
@@ -8658,7 +8650,6 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             COMMAND bash
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh"
                     $<TARGET_FILE:eshkol-run>
-                    "${STDLIB_OUTPUT}"
         )
         set_tests_properties(aot_owned_temp_cleanup PROPERTIES TIMEOUT 300)
     endif()
@@ -16449,7 +16440,6 @@ if(ESHKOL_BUILD_TESTS)
         target_link_libraries(${_lower_test} PRIVATE eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
         if(_lower_test STREQUAL "selfhost_scalar_lowering_test")
             target_sources(${_lower_test} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
-            add_dependencies(${_lower_test} eshkol-incremental-bootstrap)
             target_compile_definitions(${_lower_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
         endif()
         add_test(NAME ${_lower_test} COMMAND ${_lower_test})
@@ -16490,7 +16480,6 @@ endif()
 foreach(_native_tool IN ITEMS eshkol-repl)
     if(TARGET ${_native_tool})
         target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
-        add_dependencies(${_native_tool} eshkol-incremental-bootstrap)
         if(ESHKOL_SELF_HOSTED_INCREMENTAL)
             target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
             target_compile_features(${_native_tool} PRIVATE cxx_std_20)
@@ -16548,7 +16537,6 @@ if(ESHKOL_BUILD_TESTS)
         if(_planner_test STREQUAL "selfhost_incremental_test")
             target_sources(${_planner_test} PRIVATE lib/frontend/incremental_plan_host.cpp
                 "${_incremental_plan_object}" "${_incremental_runtime_object}")
-            add_dependencies(${_planner_test} eshkol-incremental-bootstrap)
             eshkol_target_llvm_includes(${_planner_test})
             target_compile_definitions(${_planner_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
         endif()

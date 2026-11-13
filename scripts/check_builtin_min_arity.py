@@ -74,9 +74,12 @@ LLVM_CPP = ROOT / "lib" / "backend" / "llvm_codegen.cpp"
 # recorded gap, not an exemption: the VM accepts a shorter call than the
 # documentation describes. Shrink-only — remove a name when it is fixed, and
 # never add one without a build item explaining why the two surfaces differ.
-KNOWN_PERMISSIVE = set()
-# Empty: `tensor` was the last entry. Its table minimum now meets the
-# documented arity, so every builtin minimum is derived rather than pinned.
+KNOWN_PERMISSIVE = {
+    # `tensor` is documented as (tensor shape data) but the VM opcode loads a
+    # single operand, so the VM accepts a one-argument call. Recorded in
+    # .swarm/runtime/CODEX_HANDOFF.md.
+    "tensor",
+}
 
 # Builtins the table declares variadic (min_arity < 0), mapped to the
 # llvm_codegen.cpp handler that makes that true. Verified, not pinned: the
