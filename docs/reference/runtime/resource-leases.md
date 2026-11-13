@@ -22,7 +22,7 @@ in `eshkol/core/resource_lease.h` is the contract every resource kind shares:
 | Acquire | `eshkol_resource_adopt(kind, tag, native, close_fn, data)` is the one acquire site: it moves sole ownership of the native resource into the registry and returns an exact identity (at most 2^53 - 1, never reused). On failure ownership stays with the caller. |
 | Kinds | The registry kind (`SOCKET`, `FILE`, `EVENT_LOOP`, ...) plus an immutable tag (TCP listener, TCP stream, UDP socket, ...) let every operation check the handle it receives. |
 | Borrow | Each operation borrows exclusively (`eshkol_resource_borrow`) and releases when done. A second borrower gets `ESHKOL_IO_BUSY` instead of waiting. |
-| Deadline | One monotonic deadline per operation (`eshkol_resource_deadline`), shared across retries and phases; a zero timeout is one nonblocking pass. |
+| Deadline | One monotonic deadline per operation (`eshkol_resource_deadline`), shared across retries and phases; a spent budget ends the wait before consulting the loop, with cancellation taking precedence. |
 | Wait | `eshkol_resource_wait` waits for readiness on the calling thread's event loop (kqueue, epoll), together with a wake pipe. Each thread creates its loop on first use and releases it at thread exit. |
 | Cancel | `eshkol_resource_cancel` from any thread wakes the borrower, whose wait returns `ESHKOL_IO_CANCELLED`; with no borrower, the next wait observes it once. |
 | Close | `eshkol_resource_close` is the one close site. An open handle closes now. A borrowed handle becomes unusable at once, its borrower is woken, and the close callback runs exactly once when that borrow ends. Retired, repeated and other-kind closes return `ESHKOL_IO_INVALID`. |
@@ -74,13 +74,15 @@ Unix-domain sockets opt into `eshkol_resource_adopt_on_loop`, retaining a
 caller-supplied live EVENT_LOOP identity and enforcing owner-thread I/O.
 `eshkol_resource_wait_on_loop` uses the same event-loop backends, validates
 readiness cookies and preserves unrelated PROCESS/SOCKET registrations.
+A spent explicit-loop wait budget returns timeout before watch registration or
+polling, including when the descriptor is ready; cancellation takes precedence.
 Cancellation is sticky for these Unix owners; existing TCP/UDP/TLS operations
 keep their documented consumable requests and per-thread waits.
 
 PROCESS, EVENT_LOOP, SOCKET and CLEANUP public handles share the process-lifetime
-exact registry. Every operation checks kind and tag. PROCESS module shutdown
-never destroys this registry or another module's resources. Published platform
-kind values remain WINDOW4, AUDIO5 and MIDI6; PROCESS is7 and CLEANUP is8.
+exact registry. Every operation checks kind and tag. PROCESS shutdown retires
+only its own records, never destroys this registry or another adapter's resources. Published platform kind values remain WINDOW 4,
+AUDIO 5 and MIDI 6; PROCESS is 7 and CLEANUP is 8. The PROCESS stream and Unix socket adapters use this facility.
 
 `eshkol_resource_close_request` retires a managed owner's identity and returns a
 separate CLEANUP ticket. Ticket capacity is reserved before publishing the
@@ -96,5 +98,24 @@ releases a terminal result. An uncertain descriptor close is never retried.
 The convenience `eshkol_resource_close` detaches this result: success is released
 automatically and a failed result is recoverable through
 `eshkol_resource_cleanup_ticket` using the retired owner identity. It grants no
-new I/O authority. See the [Unix socket surface](../agent/unix-sockets.md) for
-the Scheme ticket and scoped operations.
+new I/O authority. The cleanup callback owns terminality: the shared layer never
+times out or automatically retries a recoverable failure. Each adapter must
+provide a documented route to a terminal result, including a persistent-failure
+case. A terminal ticket may outlive loop destruction because it retains only
+result data; pending/retryable cleanup retains the loop.
+
+Routine legacy TCP/UDP/TLS operations dispatch through immutable registry flags
+without the managed-resource lock. Managed identities and tickets use a full-ID
+hash index, preserving outstanding failed results across registry-slot reuse.
+Release pumps only an owner's newly ready cleanup; loop maintenance traverses
+queued work rather than all active resources.
+
+`eshkol_resource_cleanup_detach` transfers a result ticket back to detached
+runtime ownership. Successful terminal results release automatically; pending
+work stays owned until owner progress, and failed results remain recoverable by
+the retired resource identity. Scoped adapters use this public handoff when a
+non-local exit cannot complete cleanup or transfer a ticket to its caller.
+Completion states use `ESHKOL_CLEANUP_*`; stage names use the distinct
+`ESHKOL_CLEANUP_STAGE_*` prefix.
+
+See the [Unix socket surface](../agent/unix-sockets.md) for Scheme ticket and scoped operations.

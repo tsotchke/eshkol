@@ -33,6 +33,12 @@ int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
 #endif
 #include <string.h>
 
+#ifdef ESHKOL_RESOURCE_TESTING
+static _Thread_local uint64_t test_add_calls, test_poll_calls;
+uint64_t eshkol_event_loop_test_add_calls(void) { return test_add_calls; }
+uint64_t eshkol_event_loop_test_poll_calls(void) { return test_poll_calls; }
+#endif
+
 /* ─────────────────────────────────────────────────────────────────────
  * Pointer API
  * ───────────────────────────────────────────────────────────────────── */
@@ -177,6 +183,9 @@ int eshkol_event_loop_add(eshkol_event_loop_t* loop, int fd, int events,
                           uint64_t user_data) {
     if (!loop || fd < 0 || fd == loop->wake_read) return ESHKOL_EVENT_LOOP_EINVAL;
     if (!eshkol_event_loop_is_owner(loop)) return ESHKOL_EVENT_LOOP_EBUSY;
+#ifdef ESHKOL_RESOURCE_TESTING
+    ++test_add_calls;
+#endif
 
     /* ESHKOL_EVENT_ERROR is reported, never requested — asking for it alone is
      * a caller mistake, not a silent no-op registration. */
@@ -234,16 +243,20 @@ int eshkol_event_loop_poll(eshkol_event_loop_t* loop, int timeout_ms,
                            const eshkol_event_t** out_events, int* n_events) {
     if (!loop || !out_events || !n_events) return ESHKOL_EVENT_LOOP_EINVAL;
     if (!eshkol_event_loop_is_owner(loop)) return ESHKOL_EVENT_LOOP_EBUSY;
+#ifdef ESHKOL_RESOURCE_TESTING
+    ++test_poll_calls;
+#endif
 
     *out_events = loop->out;
     *n_events = 0;
     if (loop->maintenance) loop->maintenance(loop->maintenance_data);
 
-    /* An empty finite wait still honors its deadline (process reaping can
-     * require a later status check after every pipe has closed). An empty
-     * unbounded wait without resource maintenance retains its earlier immediate
-     * return behavior. Managed loops can be woken by cross-thread requests. */
-    if (loop->n_regs == 0 && !loop->maintenance && timeout_ms < 0) return ESHKOL_EVENT_LOOP_OK;
+    /* A managed owner can still receive a cross-thread request with no public
+     * watch armed. Terminal tickets no longer retain a loop, so a leftover
+     * maintenance hook alone must not turn an empty unbounded poll into a wait.
+     * Finite empty polls retain their timeout behavior for process reaping. */
+    if (loop->n_regs == 0 && !loop->managed_owners && timeout_ms < 0)
+        return ESHKOL_EVENT_LOOP_OK;
 
     int n = 0;
     const int rc = eshkol_event_backend_poll(loop, timeout_ms, &n);
