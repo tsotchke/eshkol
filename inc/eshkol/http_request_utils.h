@@ -15,6 +15,11 @@
 
 #pragma once
 
+// The request grammar: a server that frames a request also decides whether
+// its request line is a request line, and it reads that from the same place
+// every Eshkol HTTP client reads it.
+#include <eshkol/core/http_syntax.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
