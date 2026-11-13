@@ -14867,6 +14867,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 endif()
 
+# The same hostile inputs through agent.http, so the module's own URL and
+# reserved-name checks and the native clients' per-line check are exercised
+# too. JIT and AOT only: the bytecode VM does not admit this module's externs.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME http_wrapper_hostile_input_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/agent/http_wrapper_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(http_wrapper_hostile_input_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-WRAPPER-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME http_wrapper_hostile_input_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/http_wrapper_hostile_input_aot' tests/agent/http_wrapper_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/http_wrapper_hostile_input_aot'"
+    )
+    set_tests_properties(http_wrapper_hostile_input_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-WRAPPER-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
     add_test(NAME http_hostile_input_vm
         COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1

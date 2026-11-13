@@ -2809,8 +2809,8 @@ oracles:
         test_evidence: true
         severity: high
         label: 'HTTP request grammar: the RFC 9110 method and field-name token, the field-value subset Eshkol sends, the four RFC 9112 request-target forms, the absolute-URL and authority shapes, and the header block; a satisfying and a refusing case for every rule, with the injected request target and injected URL from the external audit verbatim'
-        required_names: [http_protocol_syntax_test]
-        action: ctest --test-dir build --output-on-failure -R '^http_protocol_syntax_test$'
+        required_names: [http_protocol_syntax_test, http_hostile_input_jit, http_hostile_input_aot, http_hostile_input_vm, http_wrapper_hostile_input_jit, http_wrapper_hostile_input_aot]
+        action: ctest --test-dir build --output-on-failure -R '^(http_protocol_syntax_test|http_hostile_input_(jit|aot|vm)|http_wrapper_hostile_input_(jit|aot))$'
 
       # RFC 6455 section 4.1 and 5.3 for the WebSocket client, shared by the
       # native runtime and the bytecode VM through
@@ -2819,8 +2819,8 @@ oracles:
         test_evidence: true
         severity: high
         label: 'WebSocket opening handshake (RFC 6455): a 16-byte Sec-WebSocket-Key per handshake from the operating system cryptographic source, Sec-WebSocket-Accept computed as base64(SHA-1(key || GUID)) and compared against the key this connection sent, the 101 status and the Upgrade and Connection fields, and a fresh 4-byte masking key per client frame; the handshake runs over loopback against peers answering with the derived value, with a value from another key, with 200, with 101 only in a reason phrase, and without the Upgrade or Accept field'
-        required_names: [websocket_handshake_test]
-        action: ctest --test-dir build --output-on-failure -R '^websocket_handshake_test$'
+        required_names: [websocket_handshake_test, http_hostile_input_jit, http_hostile_input_vm]
+        action: ctest --test-dir build --output-on-failure -R '^(websocket_handshake_test|http_hostile_input_(jit|vm))$'
 
       # One reading of the header section decides a request's framing, and
       # the same answer serves the read loop and the handler; the budgets
@@ -2829,8 +2829,8 @@ oracles:
         test_evidence: true
         severity: high
         label: 'Server request handling: framing from one reading of the header section, with Content-Length admitted at most once (RFC 9112 section 6.3), Transfer-Encoding refused beside it, field names matched only at line starts, and accumulation by exact byte count so a NUL-carrying body arrives whole; the header, body and per-request-deadline budgets answer 431, 413 and 408 with documented defaults and environment overrides, and a drip client does not delay an honest one over real loopback sockets'
-        required_names: [eshkol_server_request_handling_test]
-        action: ctest --test-dir build --output-on-failure -R '^eshkol_server_request_handling_test$'
+        required_names: [eshkol_server_request_handling_test, eshkol_server_handle_client_test]
+        action: ctest --test-dir build --output-on-failure -R '^eshkol_server_(request_handling|handle_client)_test$'
 
       # Merkle leaf and interior hashes live in separate domains
       # (RFC 6962 section 2.1), so a node cannot be presented as a leaf.

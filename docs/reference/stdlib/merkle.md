@@ -2,6 +2,9 @@
 
 **Source**: [`lib/core/merkle.esk`](../../../lib/core/merkle.esk)
 **Require**: `(require core.merkle)` — must be required individually (not auto-loaded by `(require stdlib)`).
+**Engines**: the JIT and the AOT path. The module declares `fnv1a-64-raw` and
+`u64-to-hex16-raw` as externs, which the bytecode VM does not admit, so
+`core.merkle` is unavailable there.
 
 Pure-Eshkol Merkle trees and a content-addressable store (CAS). The default hash is
 **FNV-1a 64-bit** (the inner loop is in `lib/core/merkle.c` for correct `uint64_t`
