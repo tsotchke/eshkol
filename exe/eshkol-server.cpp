@@ -389,13 +389,15 @@ HttpRequest parse_request(const std::string& raw, size_t header_end,
     // The request line must itself be a request line: a method token and one
     // of the request-target forms. A request whose line is neither is refused
     // before any route sees it.
-    if (req.method.empty() || !eshkol_http_valid_method(req.method.c_str())) {
+    if (req.method.empty() ||
+        !eshkol_http_valid_method_n(req.method.data(), req.method.size())) {
         req.malformed = true;
         req.error_status = 400;
         req.error_message = "Request method is not a token";
         return req;
     }
-    if (req.path.empty() || !eshkol_http_valid_request_target(req.path.c_str())) {
+    if (req.path.empty() ||
+        !eshkol_http_valid_request_target_n(req.path.data(), req.path.size())) {
         req.malformed = true;
         req.error_status = 400;
         req.error_message = "Request target is not a request-target form";

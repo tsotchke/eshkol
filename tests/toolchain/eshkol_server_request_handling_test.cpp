@@ -246,6 +246,64 @@ int main() {
                "a list-valued Content-Length is refused");
     }
 
+    // ─── Every field line is held to the field-line grammar ────────────────
+    // `Content-Length : 5` names no field to a parser that requires the colon
+    // to follow the name, and names one to a parser that trims around it. The
+    // two framings disagree, so the message is refused rather than served
+    // with its body discarded as a pipelined follower.
+    {
+        accumulator a = feed(line + "Content-Length : 5\r\n\r\nhello");
+        expect(a.current() == state::refused,
+               "a space before the colon is refused");
+        expect_equal(a.refusal_status(), 400,
+                     "a malformed field line answers 400");
+    }
+    {
+        accumulator a = feed(line + "X: a\r\n content-length: 5\r\n\r\nhello");
+        expect(a.current() == state::refused,
+               "an obs-fold continuation is refused");
+        expect_equal(a.refusal_status(), 400, "an obs-fold answers 400");
+    }
+    {
+        accumulator a = feed(line + "X: a\r\n\tcontent-length: 5\r\n\r\nhello");
+        expect(a.current() == state::refused,
+               "an obs-fold with HTAB is refused");
+    }
+    {
+        accumulator a = feed(line + "No-Colon-Here\r\n\r\n");
+        expect(a.current() == state::refused,
+               "a field line with no colon is refused");
+    }
+    {
+        accumulator a = feed(line + "X-Ok: fine\r\n\r\n");
+        expect(a.current() == state::complete,
+               "an ordinary field line is still admitted");
+    }
+
+    // ─── HTTP/1.1 requires exactly one valid Host ──────────────────────────
+    {
+        accumulator a = feed(
+            "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
+        expect(a.current() == state::refused, "two Host fields are refused");
+        expect_equal(a.refusal_status(), 400, "two Host fields answer 400");
+    }
+    {
+        accumulator a = feed("GET / HTTP/1.1\r\n\r\n");
+        expect(a.current() == state::refused, "no Host field is refused");
+    }
+    {
+        accumulator a = feed(
+            "GET / HTTP/1.1\r\nHost: evil.test/x?y\r\n\r\n");
+        expect(a.current() == state::refused,
+               "a Host that is not an authority is refused");
+    }
+    {
+        accumulator a = feed(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n");
+        expect(a.current() == state::complete,
+               "one valid Host with a port is admitted");
+    }
+
     // A field name is a field name only where a line begins.
     {
         accumulator a = feed(line + "X-Junk: content-length: 999\r\n\r\n");
@@ -306,16 +364,21 @@ int main() {
                "a NUL-carrying body arrives unchanged when dripped");
     }
     {
-        // A NUL inside the header section does not end the header section
-        // either: the terminator is the blank line.
+        // A NUL inside the header section does not end the header section:
+        // the terminator is the blank line, and the accumulator keeps
+        // reading. The message is then refused rather than served, because
+        // NUL is not a field-value byte and a field line carrying one does
+        // not fit the grammar every field line is held to.
         std::string request = line;
         request += std::string("X-Note: a\0b\r\n", 13);
         request += "Content-Length: 1\r\n\r\nz";
         accumulator a = feed(request);
-        expect(a.current() == state::complete,
-               "a NUL in a header line does not end the request");
-        expect(a.data().substr(a.header_end()) == "z",
-               "the body after a NUL-carrying header is read");
+        expect(a.current() == state::refused,
+               "a NUL in a header line is refused, not truncated at");
+        expect_equal(a.refusal_status(), 400,
+                     "a NUL-carrying field line answers 400");
+        expect(a.data().find(std::string("a\0b", 3)) != std::string::npos,
+               "the NUL-carrying line was read whole before being judged");
     }
 
     // ─── Budgets ────────────────────────────────────────────────────────────

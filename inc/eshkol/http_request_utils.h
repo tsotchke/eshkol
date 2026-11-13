@@ -284,7 +284,9 @@ enum class eshkol_http_framing_verdict {
     transfer_encoding_with_content_length,
     unsupported_transfer_encoding,
     header_section_too_large,
-    body_too_large
+    body_too_large,
+    malformed_field_line,
+    missing_or_repeated_host
 };
 
 struct eshkol_http_framing {
@@ -356,6 +358,53 @@ inline eshkol_http_framing eshkol_http_examine_framing(const std::string& head) 
     if (head.size() > eshkol_server_max_header_bytes()) {
         framing.verdict = eshkol_http_framing_verdict::header_section_too_large;
         return framing;
+    }
+
+    // Every field line is held to the grammar before any field is read from
+    // it. A line starting with SP or HTAB is an obs-fold continuation, which
+    // RFC 9112 section 5.2 removed, and `Content-Length : 5` names no field
+    // here while an intermediary that trims around the colon sees a body: the
+    // two framings disagree, so the message is refused instead.
+    {
+        size_t line_start = head.find('\n');
+        if (line_start != std::string::npos) {
+            ++line_start;
+            while (line_start < head.size()) {
+                size_t line_end = head.find('\n', line_start);
+                if (line_end == std::string::npos) line_end = head.size();
+                size_t content_end = line_end;
+                if (content_end > line_start && head[content_end - 1] == '\r')
+                    --content_end;
+                const size_t length = content_end - line_start;
+                if (length == 0) break;  // end of the header section
+                if (!eshkol_http_valid_header_line_n(head.data() + line_start,
+                                                     length)) {
+                    framing.verdict =
+                        eshkol_http_framing_verdict::malformed_field_line;
+                    return framing;
+                }
+                line_start = line_end < head.size() ? line_end + 1 : head.size();
+            }
+        }
+    }
+
+    // HTTP/1.1 requires exactly one Host, and this server holds it to the
+    // authority grammar the clients are held to. Duplicates are a routing
+    // ambiguity: the parser that answers and the parser that logs or forwards
+    // need not pick the same one.
+    {
+        const std::vector<std::string> hosts =
+            eshkol_http_field_values(head, "host");
+        const bool http_11 =
+            head.find("HTTP/1.1") != std::string::npos &&
+            head.find("HTTP/1.1") < head.find('\n');
+        if (http_11 &&
+            (hosts.size() != 1 ||
+             !eshkol_http_valid_authority(hosts.front().c_str()))) {
+            framing.verdict =
+                eshkol_http_framing_verdict::missing_or_repeated_host;
+            return framing;
+        }
     }
 
     const std::vector<std::string> transfer_encodings =
@@ -431,6 +480,10 @@ inline const char* eshkol_http_framing_message(
             return "Header fields exceed the configured limit";
         case eshkol_http_framing_verdict::body_too_large:
             return "Payload exceeds the configured limit";
+        case eshkol_http_framing_verdict::malformed_field_line:
+            return "A header field line does not fit the field-line grammar";
+        case eshkol_http_framing_verdict::missing_or_repeated_host:
+            return "HTTP/1.1 requires exactly one valid Host field";
     }
     return "Request could not be framed";
 }
