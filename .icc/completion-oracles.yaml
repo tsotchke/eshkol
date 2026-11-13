@@ -2837,7 +2837,7 @@ oracles:
       - id: v14_merkle_domain_separation
         test_evidence: true
         severity: medium
-        label: 'core.merkle domain separation (RFC 6962 section 2.1): a leaf hashes 0x00 followed by its data and an interior node hashes 0x01 followed by its two child renderings, so an interior node offered as leaf data verifies against no root; the version-1 computation is the control and stays available by name for roots recorded under it'
+        label: 'core.merkle domain separation (RFC 6962 section 2.1): a leaf hashes 0x00 followed by its data and an interior node hashes 0x01 followed by its two child renderings, so an interior node offered as leaf data is not the leaf of any tree with that root under this construction; the separation is structural, and with the default non-cryptographic digest it buys structure rather than tamper resistance; the version-1 computation is the control and stays available by name for roots recorded under it'
         required_names: [merkle_domain_separation_jit, merkle_domain_separation_aot]
         action: ctest --test-dir build --output-on-failure -R '^merkle_domain_separation_(jit|aot)$'
 

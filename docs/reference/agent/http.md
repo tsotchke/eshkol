@@ -46,7 +46,8 @@ them.
 | URL | an absolute `http://` or `https://` URL, built of RFC 3986 target bytes, with no space and no control byte | an error naming the URL |
 | request target | one of the four RFC 9112 §3.2 forms: origin (`/path?query`), absolute, authority (`host:port`), or `*` | an error naming `request-target` |
 | header name | an RFC 9110 token | an error naming `header` |
-| header value | visible ASCII and SP — Eshkol deliberately refuses HTAB and the rest of the C0 controls as well as CR and LF, because a proxy on the path may re-split a value on them | an error naming `header` |
+| header value | visible ASCII, SP and the RFC 9110 `obs-text` range (0x80-0xFF) — Eshkol deliberately refuses HTAB and the rest of the C0 controls as well as CR, LF, NUL and DEL, because a proxy on the path may re-split a value on them | an error naming `header` |
+| header name, reserved set | not `Content-Length`, `Transfer-Encoding`, `Host`, `Connection` or `Upgrade`, and on the WebSocket path not `Sec-WebSocket-*` | an error naming `framing header` |
 
 A refusal is an ordinary Eshkol error naming the field that did not fit, so a
 program can catch it with `with-exception-handler` or `guard` and decide what
@@ -58,6 +59,24 @@ re-rendered from the validated parse with canonical CRLF line endings, so the
 request on the wire is exactly the lines the grammar admitted and nothing
 else. Blank lines in the input are dropped rather than carried through.
 
+Some fields a caller may not supply at all. Every client writes the framing
+and connection-control fields itself from the request it was given:
+`Content-Length` and `Transfer-Encoding` frame the body, `Host` comes from the
+URL, and `Connection` and `Upgrade` belong to the client's own connection
+handling. A caller copy would put a second framing header on the wire beside
+the client's, and RFC 9112 §6.3 forbids a sender emitting both a
+`Content-Length` and a `Transfer-Encoding`: a front end that honours one and a
+back end that honours the other disagree about where the message ends, which
+is request smuggling. The WebSocket client additionally reserves the
+`Sec-WebSocket-*` set, whose values it derives per connection from the
+cryptographic source. Naming any of them is refused with `framing header`.
+
+The agent clients on libcurl, NSURLSession and WinHTTP require a full
+absolute `http://` or `https://` URL. A URL carrying non-ASCII, `{`, `|`, `^`
+or a fragment is refused there rather than handed to the transport, so the
+same program text can be refused by those clients and accepted by the raw
+socket client, which parses a narrower set of URLs of its own.
+
 ### SSE streaming
 
 | Procedure | Signature |
@@ -67,6 +86,26 @@ else. Blank lines in the input are dropped rather than carried through.
 | `http-stream-done?` | `(http-stream-done? stream)` |
 | `http-stream-close` | `(http-stream-close stream)` |
 | `sse-event-type` / `sse-event-data` / `sse-event-free` | event accessors |
+
+### What the response side does, and does not, do
+
+The validation above is **request-side**. On the response side the two client
+layers differ, and a program should know which one it is on.
+
+- The agent clients on libcurl, NSURLSession and WinHTTP parse responses
+  through those libraries: `Content-Length`, chunked transfer coding,
+  duplicate and conflicting framing fields and truncation are the transport's
+  business and are handled there.
+- The raw socket client behind the core `(http-request ...)` builtin and the
+  bytecode VM reads whatever arrives within a 64 KiB cap and returns it. It
+  does not consult `Content-Length`, does not implement chunked decoding — a
+  chunked response is returned with its chunk-size lines inside the body — and
+  cannot distinguish a response truncated by a reset from a complete one. Its
+  allocation is bounded, so this is a completeness limit rather than a safety
+  one, but a program parsing those bytes must not assume a framed message.
+
+Response-side grammar for the raw socket client is its own piece of work and
+is not part of this client today.
 
 ### Implementation status
 
@@ -136,6 +175,33 @@ the client owes the protocol.
 SHA-1 appears in Eshkol for this one purpose: it is the function RFC 6455
 names for the handshake value. It is not offered as a hash for anything else;
 for digests use [`agent.crypto`](crypto.md).
+
+### What a received frame must be
+
+`ws-receive` judges a frame's header before it reads a byte of payload, and
+any refusal **fails the connection**: a close frame carrying the RFC 6455 §7.4
+code, then the socket closed and the handle marked closed. Returning with the
+stream sitting mid-frame is what must not happen — a later read would parse
+attacker-chosen payload bytes as a frame header, putting the frame type and
+length under the peer's control.
+
+| Rule | RFC 6455 | Close code |
+|------|----------|------------|
+| a frame from a server is never masked | §5.1 | 1002 |
+| RSV1-3 are zero; this client negotiates no extension | §5.2 | 1002 |
+| opcodes 3-7 and 11-15 are reserved | §5.2 | 1002 |
+| a control frame carries at most 125 bytes and is never fragmented | §5.5 | 1002 |
+| a continuation arrives only inside a fragment sequence, and a new data frame only outside one | §5.4 | 1002 |
+| a payload, or a gathered message, within the frame budget | — | 1009 |
+| a text message is well-formed UTF-8, rejecting overlong forms, surrogates and values above U+10FFFF | §8.1 | 1007 |
+
+A fragmented message is gathered and delivered only when `FIN` arrives, so a
+fragment is never surfaced as though it were a whole message; `ws-receive`
+returns `#f` for the fragments in between. A `ping` is answered with the
+`pong` the protocol requires and also reported to the program.
+
+The frame budget is `ESHKOL_WS_MAX_FRAME_BYTES`, default `65536`, and it
+bounds both one frame's payload and the total of a gathered message.
 
 Frame-type constants, the `frame-type` half of the pair `ws-receive` returns
 (the values are the RFC 6455 opcodes):

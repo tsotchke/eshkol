@@ -13077,6 +13077,20 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
     set_tests_properties(websocket_handshake_test PROPERTIES TIMEOUT 120)
 endif()
 
+# The shipped server binary answering real connections, so handle_client's
+# own read loop, refusal branches and budgets are what answer rather than a
+# reimplementation of them.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-server AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_handle_client_test.cpp")
+    add_executable(eshkol_server_handle_client_test
+        tests/toolchain/eshkol_server_handle_client_test.cpp)
+    target_compile_features(eshkol_server_handle_client_test PRIVATE cxx_std_17)
+    add_test(
+        NAME eshkol_server_handle_client_test
+        COMMAND eshkol_server_handle_client_test "$<TARGET_FILE:eshkol-server>")
+    set_tests_properties(eshkol_server_handle_client_test PROPERTIES TIMEOUT 300)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_request_handling_test.cpp")
     add_executable(eshkol_server_request_handling_test
@@ -14801,8 +14815,9 @@ endif()
 # drifting independently.
 # image-read/image-write/image-to-grayscale through compiled Eshkol code.
 # Merkle leaf/interior domain separation: a node cannot be presented as a
-# leaf. Run on the JIT and on the bytecode VM, since core.merkle is pure
-# Eshkol and both engines evaluate it.
+# leaf. Run on the JIT and on the AOT path. There is no bytecode-VM lane:
+# core.merkle reaches the VM through an extern the VM does not admit today,
+# so the VM lane would measure that gap rather than the domain separation.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME merkle_domain_separation_jit
@@ -14823,6 +14838,44 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 600
         PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
         FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+# The request grammar as a program sees it: hostile methods, URLs, header
+# lines and reserved framing fields driven through (http-request ...) and
+# (websocket-connect ...), asserting the refusal is a catchable Eshkol error.
+# The C++ grammar tests link the header; these run the engines, so the
+# JIT/AOT/VM parity claim rests on execution rather than on inspection.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME http_hostile_input_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/agent/http_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(http_hostile_input_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME http_hostile_input_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/http_hostile_input_aot' tests/agent/http_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/http_hostile_input_aot'"
+    )
+    set_tests_properties(http_hostile_input_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME http_hostile_input_vm
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/http_hostile_input_test.esk")
+    set_tests_properties(http_hostile_input_vm PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|ERROR: VM terminated|fatal signal")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
