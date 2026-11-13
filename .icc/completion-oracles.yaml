@@ -2798,6 +2798,49 @@ oracles:
         label: 'core.theory (ADR-0039): signatures, terms, equational theories and models as data; the catalogue (semigroups, monoids, groups, abelian groups, rings, commutative rings, R-modules, lattices, distributive lattices, Boolean and Heyting algebras); laws exhaustive on finite models (the fourteen groups of order <= 8, Z/n, M2(Z/2), modules, lattices, Omega_J(c) of core.topos) and seeded on infinite ones; homomorphisms, products, congruences, quotients; free models with the word problem decided for every catalogue theory; the Lawvere theory with composition by substitution and finite products; core.ring carriers as models of commutative-ring-theory with ring-law-violations on the shared law check; theory_jit/aot, theory_topos_jit/aot, ring_jit/aot and the reference-page examples all pass'
         action: ./scripts/run_theory_gate.sh
 
+      # ── Protocol validation at the network surfaces (v1.4 networking) ──
+      # One grammar in inc/eshkol/core/http_syntax.h decides what a request
+      # line and a header block may contain, and every client path reads it:
+      # the core builtins, the bytecode VM's own opcodes, the agent HTTP
+      # client on libcurl / NSURLSession / WinHTTP, and the Scheme wrapper.
+      # A caller's header block is re-rendered from the validated parse, so
+      # the bytes on the wire are the lines the grammar admitted.
+      - id: v14_http_request_grammar
+        test_evidence: true
+        severity: high
+        label: 'HTTP request grammar: the RFC 9110 method and field-name token, the field-value subset Eshkol sends, the four RFC 9112 request-target forms, the absolute-URL and authority shapes, and the header block; a satisfying and a refusing case for every rule, with the injected request target and injected URL from the external audit verbatim'
+        required_names: [http_protocol_syntax_test]
+        action: ctest --test-dir build --output-on-failure -R '^http_protocol_syntax_test$'
+
+      # RFC 6455 section 4.1 and 5.3 for the WebSocket client, shared by the
+      # native runtime and the bytecode VM through
+      # inc/eshkol/core/websocket_handshake.h.
+      - id: v14_websocket_handshake
+        test_evidence: true
+        severity: high
+        label: 'WebSocket opening handshake (RFC 6455): a 16-byte Sec-WebSocket-Key per handshake from the operating system cryptographic source, Sec-WebSocket-Accept computed as base64(SHA-1(key || GUID)) and compared against the key this connection sent, the 101 status and the Upgrade and Connection fields, and a fresh 4-byte masking key per client frame; the handshake runs over loopback against peers answering with the derived value, with a value from another key, with 200, with 101 only in a reason phrase, and without the Upgrade or Accept field'
+        required_names: [websocket_handshake_test]
+        action: ctest --test-dir build --output-on-failure -R '^websocket_handshake_test$'
+
+      # One reading of the header section decides a request's framing, and
+      # the same answer serves the read loop and the handler; the budgets
+      # bound what one connection can cost.
+      - id: v14_server_request_limits
+        test_evidence: true
+        severity: high
+        label: 'Server request handling: framing from one reading of the header section, with Content-Length admitted at most once (RFC 9112 section 6.3), Transfer-Encoding refused beside it, field names matched only at line starts, and accumulation by exact byte count so a NUL-carrying body arrives whole; the header, body and per-request-deadline budgets answer 431, 413 and 408 with documented defaults and environment overrides, and a drip client does not delay an honest one over real loopback sockets'
+        required_names: [eshkol_server_request_handling_test]
+        action: ctest --test-dir build --output-on-failure -R '^eshkol_server_request_handling_test$'
+
+      # Merkle leaf and interior hashes live in separate domains
+      # (RFC 6962 section 2.1), so a node cannot be presented as a leaf.
+      - id: v14_merkle_domain_separation
+        test_evidence: true
+        severity: medium
+        label: 'core.merkle domain separation (RFC 6962 section 2.1): a leaf hashes 0x00 followed by its data and an interior node hashes 0x01 followed by its two child renderings, so an interior node offered as leaf data verifies against no root; the version-1 computation is the control and stays available by name for roots recorded under it'
+        required_names: [merkle_domain_separation_jit, merkle_domain_separation_aot]
+        action: ctest --test-dir build --output-on-failure -R '^merkle_domain_separation_(jit|aot)$'
+
   # -----------------------------------------------------------------
   # v1.9.0-types readiness -- the type system becomes a proof system.
   # -----------------------------------------------------------------
