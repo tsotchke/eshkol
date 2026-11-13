@@ -9,6 +9,7 @@
 #define ESHKOL_PLATFORM_RUNTIME_H
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -155,6 +156,33 @@ std::vector<InstallSearchRoot> install_module_roots();
 ResolvedInstallArtifact resolve_install_artifact(
     const std::vector<InstallSearchRoot>& roots,
     const std::vector<std::string>& leaf_names);
+
+/** @brief Answers whether the artifact at a path was produced by the build
+ *         the running compiler belongs to. */
+using InstallArtifactAdmission = std::function<bool(const std::string& path)>;
+
+/**
+ * @brief Probe @p roots in order, admitting a system-prefix candidate only
+ *        when it belongs to this build.
+ *
+ * Same location-major order as the two-argument form. A candidate found in
+ * the env, `-L`, co-located or working-tree tiers is returned as it is: those
+ * tiers name the install the compiler was pointed at, and the caller's own
+ * validation decides whether to use or refuse it. A candidate found only in
+ * the SystemFallback tier was not chosen by anyone; it is another install's
+ * file unless @p belongs_to_this_build says otherwise, so one that does not
+ * belong is passed over and the search continues, exactly as if that prefix
+ * did not carry the artifact.
+ *
+ * @param roots                 Ordered roots to probe.
+ * @param leaf_names            Accepted file names, most preferred first.
+ * @param belongs_to_this_build Admission test for SystemFallback candidates.
+ * @return The resolved artifact, or one whose found() is false.
+ */
+ResolvedInstallArtifact resolve_install_artifact(
+    const std::vector<InstallSearchRoot>& roots,
+    const std::vector<std::string>& leaf_names,
+    const InstallArtifactAdmission& belongs_to_this_build);
 
 /** @brief Human-readable name of a precedence tier, for diagnostics. */
 const char* install_origin_name(InstallOrigin origin);

@@ -113,13 +113,15 @@ case "$FLAT" in
 esac
 
 # Exact equality, deliberately. Each of these is representable.
-expect C1 "#(0 0 0)"
-expect C3 "#(0 0 0)"
-expect C4 "#(-5 0 -3)"
-expect D1 "0"
-expect D2 "0"
-expect D3 "12"
-expect D4 "0"
+# The evaluation point P is inexact, so every answer is an inexact number and
+# prints with its decimal point: the zero of a vanishing curl is `0.0`.
+expect C1 "#(0.0 0.0 0.0)"
+expect C3 "#(0.0 0.0 0.0)"
+expect C4 "#(-5.0 0.0 -3.0)"
+expect D1 "0.0"
+expect D2 "0.0"
+expect D3 "12.0"
+expect D4 "0.0"
 expect FD "0"
 
 # curl F2 is (0 0 2); the x and y components may carry a signed zero, which is
@@ -127,7 +129,7 @@ expect FD "0"
 # load-bearing one and must be exactly 2 — the difference quotient returned
 # 1.9999999995023998.
 case "$FLAT" in
-    *"C2=#(0 0 2)"*|*"C2=#(0 -0.0 2)"*|*"C2=#(-0.0 0 2)"*|*"C2=#(-0.0 -0.0 2)"*)
+    *"C2=#(0.0 0.0 2.0)"*|*"C2=#(0.0 -0.0 2.0)"*|*"C2=#(-0.0 0.0 2.0)"*|*"C2=#(-0.0 -0.0 2.0)"*)
         echo "  ok  C2 z-component = 2 exactly" ;;
     *)
         got=$(printf '%s' "$FLAT" | sed -n 's/.*C2=\(.*\)/\1/p' | sed 's/|.*//')

@@ -513,8 +513,14 @@ std::filesystem::path resolveSelfPath(const char* argv0) {
 // cache entry survive a stdlib change. Both sides therefore go through the one
 // shared, location-major root list.
 std::filesystem::path findBuildArtifact(const std::string& name) {
-    const auto resolved = eshkol::platform::resolve_install_artifact(
-        eshkol::platform::install_library_roots(), {name});
+    // stdlib.bc and stdlib.o take the stdlib resolution, so the key names the
+    // copy the loader admits; any other artifact has no identity to consult.
+    const bool is_stdlib_artifact = name == "stdlib.bc" || name == "stdlib.o";
+    const auto resolved = is_stdlib_artifact
+        ? eshkol::stdlib_identity::resolve_artifact(
+              eshkol::platform::install_library_roots(), name)
+        : eshkol::platform::resolve_install_artifact(
+              eshkol::platform::install_library_roots(), {name});
     return resolved.found() ? std::filesystem::path(resolved.path)
                             : std::filesystem::path{};
 }
@@ -6633,9 +6639,9 @@ static llvm::Error validate_stdlib_object_file(const std::string& path)
 static llvm::Expected<std::string> find_stdlib_object(
     const std::vector<char*>& lib_paths)
 {
-    const auto resolved = eshkol::platform::resolve_install_artifact(
+    const auto resolved = eshkol::stdlib_identity::resolve_artifact(
         eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
-        {"stdlib.o"});
+        "stdlib.o");
     if (resolved.found()) {
         if (llvm::Error error = validate_stdlib_object_file(resolved.path))
             return error;
@@ -6679,14 +6685,14 @@ static llvm::Error validate_resolved_stdlib_artifacts(
 {
     const auto roots = eshkol::platform::install_library_roots(
         explicit_library_dirs(lib_paths));
-    const auto bitcode = eshkol::platform::resolve_install_artifact(
-        roots, {"stdlib.bc"});
+    const auto bitcode = eshkol::stdlib_identity::resolve_artifact(
+        roots, "stdlib.bc");
     if (bitcode.found()) {
         if (llvm::Error error = validate_stdlib_bitcode_file(bitcode.path))
             return error;
     }
-    const auto object = eshkol::platform::resolve_install_artifact(
-        roots, {"stdlib.o"});
+    const auto object = eshkol::stdlib_identity::resolve_artifact(
+        roots, "stdlib.o");
     if (object.found()) {
         if (llvm::Error error = validate_stdlib_object_file(object.path))
             return error;

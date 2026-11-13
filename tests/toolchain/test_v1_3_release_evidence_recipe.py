@@ -348,7 +348,12 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
                 return subprocess.run(
                     [sys.executable, str(ROOT / "scripts/verify_v1_3_release_evidence.py"),
                      "--repo-root", str(repo), "--trace-dir", str(trace)],
-                    capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(ROOT / "scripts")})
+                    capture_output=True, text=True,
+                    # scripts/ goes in front of the caller's module path, which
+                    # may be where this interpreter's PyYAML lives.
+                    env={**os.environ, "PYTHONPATH": os.pathsep.join(
+                        [str(ROOT / "scripts")] +
+                        [p for p in [os.environ.get("PYTHONPATH", "")] if p])})
 
             verifier_fixture(repo, trace, "v1.3.5-evolve")
             result = check()
