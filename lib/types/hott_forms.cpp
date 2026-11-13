@@ -10,6 +10,7 @@
  * the whole compilation (and across REPL inputs).
  */
 
+#include <eshkol/core/stack_guard.h>
 #include "eshkol/types/hott_forms.h"
 #include "eshkol/types/hott_cubical.h"
 #include "eshkol/frontend/syntax_datum.h"
@@ -25,6 +26,13 @@ namespace eshkol::hott {
 namespace {
 
 bool toSx(const SyntaxDatum& d, cubical::Sx& out, std::string& err) {
+    // Bounded and reported: this walk is recursive, so it checks the native
+    // stack headroom at each level and says so rather than descending past
+    // what the platform carries.  Reading has no depth limit of its own.
+    if (!eshkol_stack_headroom_ok()) {
+        err = "the form nests deeper than this platform's stack carries";
+        return false;
+    }
     using K = SyntaxDatum::Kind;
     out = cubical::Sx{};
     out.line = d.line;
