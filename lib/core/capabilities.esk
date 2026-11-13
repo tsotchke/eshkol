@@ -7,7 +7,7 @@
 ;;; every capability not present in the list is denied by default.
 ;;;
 ;;; The capability vocabulary is file-read, file-write, env-read, env-write,
-;;; subprocess, shell, network, ffi and keychain. Installing a policy mirrors
+;;; subprocess, shell, network, ffi, keychain, display, audio and midi. Installing a policy mirrors
 ;;; the allow-list into the runtime policy store (lib/core/capability_policy.cpp),
 ;;; which every engine reads, so the policy holds for the code-generated paths,
 ;;; the bytecode VM and the runtime entry points beneath them alike — not only

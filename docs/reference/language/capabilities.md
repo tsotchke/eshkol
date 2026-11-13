@@ -57,6 +57,9 @@ Core hosted capability symbols:
 | `network` | creating a socket: connecting, listening, or sending a request |
 | `ffi` | loading foreign code into the process |
 | `keychain` | reading and writing host keychain entries |
+| `display` | opening a window (`platform.window`) |
+| `audio` | opening an audio device (`platform.audio`) |
+| `midi` | opening a MIDI port (`platform.midi`) |
 
 ### What each capability gates
 

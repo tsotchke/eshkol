@@ -5,9 +5,9 @@
 (load "tests/platform/platform_check.esk")
 
 (check "display backend is offscreen" (equal? (platform-backend 'display) "offscreen"))
-(capability-install-policy! '(network))
-(check "a policy without 'display refuses windows"
-       (raises? (lambda () (window-create "denied" 10 10))))
+;; A policy only narrows, so this walks down one chain: the capability is
+;; granted first, the body runs under it, and the refusal is checked at the end
+;; under a policy that no longer holds it.
 (capability-install-policy! '(display))
 
 (define w (window-create "eshkol" 64 48))
@@ -76,4 +76,10 @@
 (check "select offscreen by name" (equal? (platform-select-backend! 'display "offscreen") "offscreen"))
 (check "unknown backend name raises"
        (raises? (lambda () (platform-select-backend! 'display "teletype"))))
+
+;; Narrowed: the capability the body used is no longer granted.
+(capability-install-policy! '(network))
+(check "a policy without 'display refuses windows"
+       (raises? (lambda () (window-create "denied" 10 10))))
+
 (report "platform window")

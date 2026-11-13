@@ -35,7 +35,7 @@ that native-side checks see the same policy.
 ## Core capability symbols
 
 `file-read`, `file-write`, `env-read`, `env-write`, `subprocess`, `shell`,
-`network`, `ffi`, `keychain`.
+`network`, `ffi`, `keychain`, `display`, `audio`, `midi`.
 
 See [the language reference page](../language/capabilities.md) for what each one
 gates, operation by operation.
