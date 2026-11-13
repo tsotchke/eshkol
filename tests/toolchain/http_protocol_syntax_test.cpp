@@ -174,8 +174,14 @@ int main() {
                  "a method carrying CRLF names the method");
     expect_field("GET", "/a HTTP/1.1\r\nX: 1", "", "request-target",
                  "a target carrying CRLF names the request target");
-    expect_field("GET", "/health", "X: a\r\nInjected: 1", "header",
-                 "a header line carrying CR names the header");
+    expect_field("GET", "/health", "X: a\rInjected: 1", "header",
+                 "a bare CR inside a header line names the header");
+    expect(!eshkol_http_valid_header_line("X: a\r\nInjected: 1"),
+           "CRLF inside one field value is refused");
+    expect(!eshkol_http_valid_field_value("a\rb", 3),
+           "a bare CR is not a field value byte");
+    expect_field("GET", "/health", "X: a\r\nInjected: 1", nullptr,
+                 "CRLF separates two header lines, each validated on its own");
     expect_field("GET", "/health", "Bad Header: 1", "header",
                  "a field name with a space names the header");
 
