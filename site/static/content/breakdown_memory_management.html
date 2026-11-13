@@ -846,7 +846,7 @@ Check g_buffer_pool[bucket] for available buffer
 #endif</code></pre>
 <p><code>call_thunk_closure</code> is used by <code>call_thunk_from_tagged</code> (line ~3975) which is called during <code>call/cc</code> continuation unwinding and dynamic-wind before/after thunk invocation. See also <a href="https://github.com/tsotchke/eshkol/blob/master/docs/breakdown/CONTINUATIONS.md" target="_blank" rel="noopener noreferrer">CONTINUATIONS.md</a> for the call/cc and dynamic-wind implementation that depends on this trampoline.</p>
 <h3 id="windows-x64-struct-by-value-parameter-fix-region_escape_tagged_value_into">Windows x64 Struct-by-Value Parameter Fix (<code>region_escape_tagged_value_into</code>)</h3>
-<p><strong>File:</strong> <code>lib/core/runtime_regions.cpp</code></p>
+<p><strong>File:</strong> <code>lib/core/runtime_regions_evacuation.cpp</code></p>
 <p>The Windows x64 ABI requires that structs larger than 8 bytes be passed by pointer, not by value. <code>region_escape_tagged_value_into</code> previously took <code>eshkol_tagged_value_t val</code> by value (16 bytes), violating this convention and causing misaligned stack frames on Windows.</p>
 <p>The fix changes the signature:</p>
 <pre class="c"><code>// Before:
@@ -920,7 +920,7 @@ void     arena_merge_to_parent(arena_t* dest, arena_t* src);
 int      arena_is_worker_thread(void);
 void     eshkol_thread_init_worker(size_t arena_size_hint);
 void     eshkol_thread_shutdown_worker(void);</code></pre>
-<p><code>arena_create_thread_local</code> (§224–230 in <code>lib/core/runtime_regions.cpp</code>):</p>
+<p><code>arena_create_thread_local</code> (in <code>lib/core/runtime_regions.cpp</code>, the region lifecycle unit):</p>
 <pre class="c"><code>arena_t* arena_create_thread_local(size_t size_hint) {
     if (__thread_local_arena) return __thread_local_arena;   // idempotent
     size_t block_size = size_hint &gt; 0 ? size_hint : (1024 * 1024);

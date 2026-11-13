@@ -29,6 +29,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   straight-through Gumbel, Bernoulli and score-function estimators that
   compose with `gradient`. Reverse mode through a named-let loop that keeps AD
   nodes only inside a list now records each iteration's own node.
+
+### Fixed
+
+- Preserve signed-curvature geometry across VM and AD engines, including
+  flat-curvature continuity and manifold primitive output contracts. (#912)
+
+- **Native cross-entropy preserves reverse derivatives.** Record its tensor
+  tape node, retain logit edges and consume the actual upstream cotangent.
+  Constant probability and class-index labels are supported; differentiable
+  labels and the 13 numeric-only loss builtins refuse unsupported reverse
+  differentiation explicitly. Four native execution/lowering gates check
+  analytical derivatives, every MLP weight slope and a wrong-zero canary. (#871)
+
+- Restore saved native continuation stacks on Windows x64 without running the
+  CRT unwinder over overwritten frames. The hosted runtime uses the documented
+  Windows context-restoration API after stack copying, preserving ordinary
+  exception and escape-only unwinding. Add repeated returned-frame, captured
+  guard-handler, and parallel-callback continuation regressions. (#869)
+- Register native Windows x64 JIT unwind tables with the operating system and
+  unregister them before unloading each module, so native nonlocal exits can
+  walk generated frames. Keep runtime exports available without optional agent
+  modules and register VM-only tests only when their target exists. (#869)
+- Give each native JIT module a resolvable parallel-worker initializer while
+  preserving Windows AOT internal linkage. Rebuild stdlib JIT object caches
+  with the same initializer contract instead of reusing objects whose local
+  initializer cannot be found by the JIT. (#869)
+
+### Added
+
+- Add exact-rational affine solution families with particular solutions and
+  complete nullspace bases, including explicit ambient dimensions for empty
+  systems. Add JIT/AOT acceptance and determinant-oracle tests, plus negative
+  controls for the AOT test harness. (#785)
 - **One chart for every sign of the curvature (ADR-0018).** Every
   constant-curvature op evaluates the kappa-stereographic chart in the
   canonical-flat gauge `alpha = 1`: the ball of radius `2/sqrt(-K)`, Euclidean
@@ -40,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `core.curvature` module exposes the shared core to JIT and AOT programs, and
   an independent binary128 reference checks it at every finite binade of `K`
   of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
-  (`migrate-legacy-ball-point`); distances are unchanged by the migration.
+  (`migrate-legacy-ball-point`); distances are unchanged by the migration. (#854)
 - **Sockets and TLS sessions are resource leases.** TCP and UDP sockets are
   owned through the shared runtime handle registry: one operation per handle,
   one monotonic deadline per operation, waits on the event loop, cancellation
@@ -154,6 +187,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with temporary-looking names survive successful and failed links. (#836)
 - Preserve R7RS inexactness when finite integral doubles, including positive
   zero, round-trip through `number->string` and `string->number`.
+- **Static quantum circuits export a validated OpenQASM 3 subset.**
+  Add opt-in `core.quantum.circuit` with 25 standard gate kinds, measurement,
+  reset, barriers, explicit zero-state initialization and logical resource
+  counts. A portable AOT contract gate and optional independent OpenQASM/Qiskit
+  oracle cover all gate kinds and 100 deterministic generated circuits.
+  This module exports descriptions; it does not simulate or submit hardware jobs. (#872)
+
+- Windows in-process JIT regression probes with exact-output checks, native
+  AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases
+  cover immediate and repeated continuations, guard-handler restoration,
+  parallel callbacks, and forward AD; harness negative controls reject crashes,
+  incorrect output, silent errors, timeouts, and missing AOT evidence. Enable
+  the gate by default on Windows x64 and bind its five CTest events to a
+  separate platform-specific completion oracle. (#869)
+
+### Documentation
+
+- Correct the Linux download instructions, native REPL command, RK4 accuracy
+  description, and exact-rational power reference. Qualify AD overhead and
+  arena-memory timing claims on the website. (#870)
+- Clarify ownership and runtime limits, synchronous region traversal costs,
+  and the VM’s supported AD algorithms and operation limits. (#883, #899)
 
 ## [1.3.6-evolve] - 2026-10-15
 

@@ -4449,6 +4449,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 endif()
 
+# Scoped sblc-cost-sensitivities consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/sblc-cost-sensitivities/CTest.cmake")
+
 # Shared exact cyclotomic arithmetic; the two consumers remain gated below.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(NAME cyclotomic_jit
@@ -4462,6 +4465,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "PASS: cyclotomic_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|error:|Unhandled exception|LLVM module verification failed|fatal signal")
 endif()
+
+# Scoped hawkes-forecast consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-forecast/CTest.cmake")
 
 # core.sheaf: finite sites, sieves, presheaves, gluing, sheafification and
 # cohomology (ADR-0033), with core.integer_linalg. The suite cross-checks
@@ -4972,6 +4978,36 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     endif()
 endif()
 
+# Static admission never executes submitted lambda programs.
+if(ESHKOL_BUILD_TESTS)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME blc_corpus_review
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/examples/blc-corpus/review.py" check)
+        add_test(NAME blc_corpus_review_controls
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/examples/blc-corpus/review_self_test.py")
+        set_tests_properties(blc_corpus_review blc_corpus_review_controls PROPERTIES
+            TIMEOUT 30 LABELS "blc;admission;security")
+    endif()
+endif()
+
+# Classical BLC finite byte observation, with explicit collector/resource gates.
+option(ESHKOL_BLC_CORPUS_TESTS "Register the slow seven-program BLC transfer gate" OFF)
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(NAME blc_bytes_gate
+        COMMAND ${CMAKE_COMMAND} -E env "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_blc_bytes_gate.sh")
+    set_tests_properties(blc_bytes_gate PROPERTIES TIMEOUT 600
+        LABELS "stdlib;blc;parity" PASS_REGULAR_EXPRESSION "BLC-BYTES GATE: PASS")
+    if(ESHKOL_BLC_CORPUS_TESTS)
+        add_test(NAME blc_bytes_corpus_gate
+            COMMAND ${CMAKE_COMMAND} -E env "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_blc_bytes_gate.sh" --corpus)
+        set_tests_properties(blc_bytes_corpus_gate PROPERTIES TIMEOUT 7200
+            LABELS "stdlib;blc;parity;slow" PASS_REGULAR_EXPRESSION "BLC-BYTES CORPUS: PASS")
+    endif()
+endif()
+
 # Stochastic Binary Lambda Calculus (ADR-0017): the gate runs the core.sblc
 # suite on JIT and AOT, requires every oracle on both engines and
 # byte-identical output (fixed-seed parity), and writes its ICC trace into
@@ -4987,6 +5023,24 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         LABELS "stdlib;sblc;parity"
         PASS_REGULAR_EXPRESSION "SBLC GATE: PASS"
         FAIL_REGULAR_EXPRESSION "SBLC GATE: FAIL|LLVM module verification failed|fatal signal")
+    if(UNIX)
+        add_test(NAME sblc_resume_gate
+            COMMAND ${CMAKE_COMMAND} -E env
+                "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_resume_gate.sh")
+        set_tests_properties(sblc_resume_gate PROPERTIES
+            TIMEOUT 600 LABELS "stdlib;sblc;parity")
+        add_test(NAME sblc_checkpoint_gate
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_checkpoint_gate.sh")
+        set_tests_properties(sblc_checkpoint_gate PROPERTIES
+            TIMEOUT 1800 LABELS "stdlib;sblc;parity")
+        add_test(NAME sblc_update_gate
+            COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+                bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_update_gate.sh")
+        set_tests_properties(sblc_update_gate PROPERTIES
+            TIMEOUT 1800 LABELS "stdlib;sblc;dbsp;parity")
+    endif()
 endif()
 
 # Mathematics examples with exact verdicts: the incompressible porous media
@@ -5112,6 +5166,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         endif()
     endforeach()
 endif()
+
+# Scoped hawkes-live consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-live/CTest.cmake")
 
 # Maintained named-axis DBSP tensor examples, with exact verdicts in JIT/AOT.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
@@ -7426,7 +7483,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates_aot'"
     )
-    add_test(
+    if(TARGET eshkol-vm-standalone-test)
+      add_test(
         NAME exact_collection_intermediates_vm_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk"
@@ -7436,11 +7494,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_collection_intermediates_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/exact_collection_intermediates.eskb'"
     )
+      set_tests_properties(
+        exact_collection_intermediates_vm_smoke
+        exact_collection_intermediates_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    endif()
     set_tests_properties(
         exact_collection_intermediates_runtime_smoke
         exact_collection_intermediates_aot_smoke
-        exact_collection_intermediates_vm_smoke
-        exact_collection_intermediates_vm_eskb_smoke
         PROPERTIES
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: exact derivative through collection intermediates"
@@ -7459,7 +7523,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor_aot'"
     )
-    add_test(
+    if(TARGET eshkol-vm-standalone-test)
+      add_test(
         NAME nested_level_through_tensor_vm_smoke
         COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk"
@@ -7469,11 +7534,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         COMMAND sh -c
             "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/nested_level_through_tensor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/nested_level_through_tensor.eskb'"
     )
+      set_tests_properties(
+        nested_level_through_tensor_vm_smoke
+        nested_level_through_tensor_vm_eskb_smoke
+        PROPERTIES
+            TIMEOUT 900
+            PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|fatal runtime error|Unhandled exception")
+    endif()
     set_tests_properties(
         nested_level_through_tensor_runtime_smoke
         nested_level_through_tensor_aot_smoke
-        nested_level_through_tensor_vm_smoke
-        nested_level_through_tensor_vm_eskb_smoke
         PROPERTIES
             TIMEOUT 900
             PASS_REGULAR_EXPRESSION "PASS: nested level carrier through tensors"
@@ -9801,6 +9872,29 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/abi_lay
     add_test(NAME abi_layout_pin_test COMMAND abi_layout_pin_test)
 endif()
 
+# Native CE gradient values and loss refusal contracts on both tape lowerings.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME cross_entropy_gradient_harness_selftest
+            COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/cross_entropy_gradient_test.py"
+                --self-test)
+        foreach(ce_mode jit aot)
+            foreach(ce_dense 0 1)
+                add_test(NAME cross_entropy_gradient_${ce_mode}_dense${ce_dense}
+                    COMMAND ${Python3_EXECUTABLE}
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/cross_entropy_gradient_test.py"
+                        --compiler $<TARGET_FILE:eshkol-run>
+                        --build-dir "${CMAKE_CURRENT_BINARY_DIR}"
+                        --mode ${ce_mode} --dense ${ce_dense})
+                set_tests_properties(cross_entropy_gradient_${ce_mode}_dense${ce_dense}
+                    PROPERTIES TIMEOUT 900)
+            endforeach()
+        endforeach()
+    endif()
+endif()
+
 # The layout-dependence ratchet. Regenerable machine inventory of every site
 # that depends on the current object header, baselined at .icc/abi-header-baseline.json;
 # fails when a commit introduces a new one outside the accessor.
@@ -10757,6 +10851,49 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_VULKAN_COMPUTE_ENABLED)
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_vulkan_spirv.sh --check)
     set_tests_properties(gpu_vulkan_abi_layout gpu_vulkan_spirv_current PROPERTIES
         SKIP_RETURN_CODE 77 TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS)
+    add_executable(jit_parallel_init_test tests/toolchain/jit_parallel_init_test.cpp)
+    target_compile_features(jit_parallel_init_test PRIVATE cxx_std_17)
+    target_include_directories(jit_parallel_init_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_parallel_init_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_parallel_init_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_parallel_init_test PRIVATE
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME jit_parallel_init_test COMMAND jit_parallel_init_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND WIN32 AND
+   (CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$" OR
+    CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64" OR
+    MSVC_CXX_ARCHITECTURE_ID STREQUAL "x64" OR
+    CMAKE_VS_PLATFORM_NAME STREQUAL "x64"))
+    add_executable(jit_windows_x64_unwind_test
+        tests/toolchain/jit_windows_x64_unwind_test.cpp
+        lib/repl/jit_windows_x64_memory_manager.cpp)
+    target_compile_features(jit_windows_x64_unwind_test PRIVATE cxx_std_17)
+    target_include_directories(jit_windows_x64_unwind_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_windows_x64_unwind_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_windows_x64_unwind_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_windows_x64_unwind_test PRIVATE
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME jit_windows_x64_unwind_test COMMAND jit_windows_x64_unwind_test)
+    set_tests_properties(jit_windows_x64_unwind_test PROPERTIES TIMEOUT 30)
+    add_executable(windows_x64_continuation_restore_test
+        tests/toolchain/windows_x64_continuation_restore_test.cpp)
+    target_compile_features(windows_x64_continuation_restore_test PRIVATE cxx_std_17)
+    target_include_directories(windows_x64_continuation_restore_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+    add_test(NAME windows_x64_continuation_restore_test
+        COMMAND windows_x64_continuation_restore_test)
+    set_tests_properties(windows_x64_continuation_restore_test PROPERTIES TIMEOUT 30)
 endif()
 
 if((ESHKOL_BUILD_TESTS OR ESHKOL_GPU_BACKEND STREQUAL "CUDA") AND
@@ -13116,6 +13253,9 @@ if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/too
     endif()
 endif()
 
+# Scoped sdnc-holes consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/sdnc-holes/CTest.cmake")
+
 # ===== SDNC Paper Artifact: weight_matrices ============================# The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
 # transformer (d_model=128, n_layers=6, FFN=1024) whose weights ARE the Eshkol
@@ -13219,6 +13359,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET weight_matrices AND TARGET eshkol-run AND
         PASS_REGULAR_EXPRESSION "Results: 16 passed, 0 failed"
         TIMEOUT 1200)
 endif()
+
+# Scoped hawkes-staging consumer.
+include("${CMAKE_CURRENT_SOURCE_DIR}/repro/hawkes-staging/CTest.cmake")
 
 # ===== SDNC training-mode module: weight-matrix backward pass ==========# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
 # analytical forward constructor in weight_matrices.c: it differentiates the
@@ -14662,6 +14805,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
     endif()
 endif()
 
+# Export core JIT symbols even when the optional agent FFI is disabled. Register
+# each table once, after the optional archive is known, for both Windows driver
+# families. Previously the MSVC/ClangCL call lived inside the agent-only block.
+if(WIN32)
+    if(TARGET eshkol-run)
+        eshkol_windows_export_runtime(eshkol-run)
+    endif()
+    if(TARGET eshkol-repl)
+        eshkol_windows_export_runtime(eshkol-repl)
+    endif()
+endif()
+
 # SQLite's byte-preserving column contract is tested against the same agent
 # archive consumed by AOT programs. Keep this test beside the archive wiring so
 # it cannot silently become a standalone system-SQLite test.
@@ -15266,6 +15421,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
 endif()
 
 include(cmake/AllocationHardeningTests.cmake)
+include(cmake/QuantumCircuitTests.cmake)
+include(cmake/NativeJitRegressionTests.cmake)
 
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run)
     set(_program_entry_vm_args)
@@ -15338,6 +15495,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PASS_REGULAR_EXPRESSION "PASS: exact_affine_test"
         FAIL_REGULAR_EXPRESSION "FAIL:|RESULT: FAIL|LLVM module verification failed|fatal signal")
 
+# Source-tree native acceptance for the signed-curvature module.
     # core.curvature (ADR-0018) on both native modes, through the shared core.
     add_test(NAME signed_curvature_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/geometry/signed_curvature_test.esk" "-L${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME signed_curvature_aot COMMAND ${CMAKE_COMMAND}
@@ -16196,6 +16354,13 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
+    add_executable(net_deadline_ready_test tests/network/net_deadline_ready_test.c
+        lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+    target_include_directories(net_deadline_ready_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(net_deadline_ready_test PRIVATE Threads::Threads)
+    add_test(NAME net_deadline_ready_test COMMAND net_deadline_ready_test)
+    set_tests_properties(net_deadline_ready_test PROPERTIES TIMEOUT 30
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
     add_executable(net_close_concurrency_test tests/network/net_close_concurrency_test.c
         lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_close_concurrency_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -16862,6 +17027,89 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE)
     endif()
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND UNIX)
+    add_test(NAME sblc_rng_parity_gate
+        COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            "VM_BIN=$<TARGET_FILE:eshkol-vm-standalone-test>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_rng_parity_gate.sh")
+    set_tests_properties(sblc_rng_parity_gate PROPERTIES TIMEOUT 1800 LABELS "stdlib;sblc;vm;parity")
+endif()
+
+# Source-specific stochastic resource laws and independent native replay.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME sblc_resource_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_sblc_resource_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(sblc_resource_gate PROPERTIES TIMEOUT 1000)
+    endif()
+    add_test(NAME sblc_resource_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sblc_resource_gate_self_test.py")
+    set_tests_properties(sblc_resource_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Complete finite-class Busy Beaver proof replay (follow-up source donation).
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME bb_maximality_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/run_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>
+                --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(bb_maximality_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME bb_maximality_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-maximality/self_test.py")
+    set_tests_properties(bb_maximality_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Standalone source-bound cost proof: require clean JIT/AOT exits and a red control.
+if(UNIX AND ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND Python3_Interpreter_FOUND)
+    add_test(NAME busy_beaver_certificates
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/run_gate.py"
+            --eshkol-bin "$<TARGET_FILE:eshkol-run>"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME busy_beaver_certificates_self_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/repro/busy-beaver-certificates/self_test.py")
+    set_tests_properties(busy_beaver_certificates busy_beaver_certificates_self_test
+        PROPERTIES TIMEOUT 480 LABELS "stdlib;exact")
+endif()
+
+# Selected finite-field source donation: exact independent native oracle.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME extension_field_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_extension_field_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(extension_field_gate PROPERTIES TIMEOUT 600)
+    endif()
+    add_test(NAME extension_field_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/extension_field_gate_self_test.py")
+    set_tests_properties(extension_field_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
+# Exact observable-space compiler and independent source replay.
+if(ESHKOL_BUILD_TESTS AND UNIX AND ESHKOL_PYTHON3_EXECUTABLE)
+    if(TARGET eshkol-run)
+        add_test(NAME observable_closure_gate
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_observable_closure_gate.py"
+                --eshkol-bin $<TARGET_FILE:eshkol-run>)
+        set_tests_properties(observable_closure_gate PROPERTIES TIMEOUT 1000)
+    endif()
+    add_test(NAME observable_closure_gate_readiness
+        COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/observable_closure_gate_self_test.py")
+    set_tests_properties(observable_closure_gate_readiness PROPERTIES TIMEOUT 45)
+endif()
+
 # Platform layer tests (ADR-0053).
 set(ESHKOL_PLATFORM_STAGE tests)
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EshkolPlatform.cmake")
@@ -16876,3 +17124,19 @@ foreach(ESHKOL_REGISTERED_TEST IN LISTS ESHKOL_REGISTERED_TESTS)
     set_property(TEST "${ESHKOL_REGISTERED_TEST}" APPEND PROPERTY
                  ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
 endforeach()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    add_test(NAME mix_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mix_gate.sh")
+    set_tests_properties(mix_gate PROPERTIES TIMEOUT 3600 LABELS "stdlib;compiler;parity")
+    add_test(NAME mix_verify_gate
+        COMMAND ${CMAKE_COMMAND} -E env
+            "ESHKOL_BIN=$<TARGET_FILE:eshkol-run>"
+            bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_mix_verify_gate.sh")
+    set_tests_properties(mix_verify_gate PROPERTIES TIMEOUT 600 LABELS "stdlib;compiler;parity")
+endif()
+include(repro/quantum-qec/CTest.cmake)
+include(repro/nonlinear-observability/CTest.cmake)
+include(repro/sparse-solves/CTest.cmake)
+include(repro/sat-proof-admission/CTest.cmake)

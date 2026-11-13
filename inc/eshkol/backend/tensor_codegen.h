@@ -1311,6 +1311,9 @@ private:
 
     // === Internal Helpers ===
 
+    /** Reject reverse differentiation through loss kernels without a tape rule. */
+    void refuseUnsupportedLossAD(const char* name);
+
     /**
      * Convert a raw tensor element slot to an AD node pointer.
      *

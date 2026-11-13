@@ -15,8 +15,8 @@ pages and lets them fan out to their siblings.
 - [QUICKSTART](QUICKSTART.md) — 15-minute hands-on tutorial (lists to closures to tensors to gradients)
 - [Tutorials index](tutorials/README.md) — all 27 tutorials, from first program through full projects
 - [First 5 Minutes](tutorials/00_FIRST_5_MINUTES.md) — install, hello world, five wow moments
-- [Complete example catalogue](EXAMPLES.md) — source-backed descriptions, prerequisites, checks and run scope for every tracked program; 67 tracked examples (46 mathematics), each entry naming the published result it reproduces, its references, and its measured outcome at the release SHA ([docs/examples/measurements.json](examples/measurements.json))
-- [Mathematics example catalogue](MATHEMATICS_EXAMPLES.md) — algorithms, domains, arithmetic and limits, plus the authored JIT/AOT matrix, for the 46 mathematics programs among the 67 tracked examples
+- [Complete example catalogue](EXAMPLES.md) — source-backed descriptions, prerequisites, checks and run scope for every tracked program; 68 tracked examples (46 mathematics), each entry naming the published result it reproduces, its references, and its measured outcome at the release SHA ([docs/examples/measurements.json](examples/measurements.json))
+- [Mathematics example catalogue](MATHEMATICS_EXAMPLES.md) — algorithms, domains, arithmetic and limits, plus the authored JIT/AOT matrix, for the 46 mathematics programs among the 68 tracked examples
 - [Examples](../examples/README.md) — the runnable example collection (AD, parallelism, consciousness engine, streaming, simulation, quantum chemistry, and exact mathematics)
 - [AI-driven mathematics examples](AI_MATHEMATICS_EXAMPLES.md) — exact and AD-verified public witnesses, including the Jacobian counterexample, AlphaTensor factorizations, and a FunSearch cap set
 - [Navier-Stokes examples](NAVIER_STOKES_EXAMPLES.md) — residuals, scaling laws and similarity profiles; the authored 12-program/14-criteria/28-CTest matrix with native JIT and AOT variants
@@ -38,6 +38,8 @@ pages and lets them fan out to their siblings.
 - [WGSL artifact guide](guide/WGSL_ARTIFACT.md) — derive a bounded polynomial with AD and compose its standalone evaluator with browser WebGPU kernels
 - [Standard Library API index](reference/stdlib/INDEX.md) — module-by-function map of the standard library (63 modules)
 - [Standard Library API (v1.2 surface notes)](STDLIB_V1_2_API.md) — stdlib module surfaces, including infrastructure modules
+- [Static quantum circuits](reference/stdlib/quantum_circuit.md) - validated operation lists, a defined OpenQASM 3 export subset, logical counts, and independent oracle checks
+- [Quantum landscape and roadmap](reports/quantum-2026-10-25/quantum-landscape.md) - historical 2026-10-25 source review of 25 systems and 100 measurable engineering or research targets; a baseline specification, not a completed feature list
 - [Design Document](DESIGN.md) — architecture and design rationale (last revised for v1.3.0-evolve)
 - [Feature Matrix](FEATURE_MATRIX.md) — implementation status table
 - [Known Issues](KNOWN_ISSUES.md) — current limitations and tracked open items

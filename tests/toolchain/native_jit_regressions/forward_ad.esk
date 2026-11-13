@@ -1,0 +1,3 @@
+;; Positive control: both execution engines should print 12.
+(display (derivative (lambda (x) (* x x x)) 2.0))
+(newline)
