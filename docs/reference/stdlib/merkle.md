@@ -17,6 +17,42 @@ Tree representation:
 Odd levels duplicate the last node (Bitcoin convention) so every inode has two
 children.
 
+## Domain separation and format versions
+
+A leaf hash and an interior hash are computed over different domains, as
+RFC 6962 §2.1 prescribes:
+
+- a **leaf** hashes the byte `0x00` followed by its data;
+- an **interior node** hashes the byte `0x01` followed by the hex renderings
+  of its two child hashes.
+
+`(merkle-leaf-domain)` and `(merkle-node-domain)` are those one-byte prefixes.
+Without them, leaf and interior hashes share one value space, and the hex
+concatenation of two child hashes is itself data whose leaf hash equals their
+parent's: a proof for a subtree reads as a proof for a leaf. With them, no
+leaf hash is an interior hash of anything, and an interior node offered as
+leaf data verifies against no root.
+
+`(merkle-format-version)` is `2`: the domain-separated tree, and what
+`merkle-tree`, `merkle-tree-with-hash`, `merkle-proof` and `merkle-verify`
+compute. Version 1 was the same tree shape without the prefixes, so a root
+recorded under version 1 differs from the version-2 root over the same data.
+Version 1 therefore remains available by name, for reading what was written
+under it:
+
+| Version 2 | Version 1 |
+|-----------|-----------|
+| `(merkle-tree data-list)` | `(merkle-tree-v1 data-list)` |
+| `(merkle-tree-with-hash data-list hash-fn)` | `(merkle-tree-with-hash-v1 data-list hash-fn)` |
+| `(merkle-proof tree index)` | `(merkle-proof-v1 tree index)` |
+| `(merkle-verify root data proof [hash-fn])` | `(merkle-verify-v1 root data proof [hash-fn])` |
+
+Keep a stored root with the version that produced it; build new trees under
+version 2.
+
+Content-addressable storage is unaffected: `cas-put!` hashes the content
+itself rather than a leaf, so a CAS key is the same value it always was.
+
 ## Hash
 
 ### `(fnv1a-64 str)`
