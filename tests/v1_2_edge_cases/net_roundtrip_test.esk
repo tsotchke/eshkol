@@ -64,6 +64,5 @@
 (check (code? (udp-recvfrom u1 32 0) -4) "closed UDP refuses")
 (capability-install-policy! '())
 (check (guard (e (#t #t)) (tcp-listen "127.0.0.1" 0) #f) "network capability denied")
-(capability-clear-policy!)
 (display "PASS: UDP roundtrip") (newline)
 (display "RESULT: PASS") (newline)

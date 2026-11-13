@@ -28293,6 +28293,7 @@ private:
         if (!real_name) return false;
         static const char* const kPolicyEntryPoints[] = {
             "eshkol_capability_runtime_clear",
+            "eshkol_capability_runtime_host_reset",
             "eshkol_capability_runtime_begin_install",
             "eshkol_capability_runtime_allow",
             "eshkol_capability_runtime_deny",

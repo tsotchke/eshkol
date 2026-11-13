@@ -1898,7 +1898,7 @@ static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
      * never install one — and the engine's own capability gates would have
      * nothing to consult. They reach the same process-wide policy store the
      * native runtime uses (lib/core/capability_policy.cpp). */
-    {"capability-runtime-clear-raw", "void", {NULL}, 0, "eshkol_capability_runtime_clear", 2253},
+    {"capability-runtime-clear-raw", "i32", {NULL}, 0, "eshkol_capability_runtime_clear", 2253},
     {"capability-runtime-begin-install-raw", "void", {NULL}, 0, "eshkol_capability_runtime_begin_install", 2254},
     {"capability-runtime-allow-raw", "void", {"ptr"}, 1, "eshkol_capability_runtime_allow", 2255},
     {"sha256-raw", "i32", {"ptr", "i64", "ptr", "i64"}, 4, "eshkol_sha256", VM_NATIVE_SHA256_EXTERN},

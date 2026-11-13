@@ -1421,6 +1421,7 @@ class EshkolRuntime {
         // why a program that installs none is unaffected.
         this._capabilityPolicyActive = false;
         this._capabilityAllowed = new Set();
+        this._capabilityCeiling = null;
         this.handles = new Map();
         this.nextHandle = 1;
         this.documentHandle = this.createHandle(document);       // 1
@@ -2684,17 +2685,31 @@ class EshkolRuntime {
                 // program gets, and that answer is now the same one the native
                 // runtime gives.
                 eshkol_capability_runtime_begin_install: () => {
+                    // A second install narrows the first: the names that follow
+                    // are kept only if the active policy already held them.
+                    rt._capabilityCeiling = rt._capabilityPolicyActive
+                        ? rt._capabilityAllowed : null;
                     rt._capabilityPolicyActive = true;
                     rt._capabilityAllowed = new Set();
                 },
                 eshkol_capability_runtime_allow: (namePtr) => {
-                    if (rt._capabilityPolicyActive) {
-                        rt._capabilityAllowed.add(rt.readString(namePtr));
-                    }
+                    if (!rt._capabilityPolicyActive) return;
+                    const name = rt.readString(namePtr);
+                    if (rt._capabilityCeiling && !rt._capabilityCeiling.has(name)) return;
+                    rt._capabilityAllowed.add(name);
                 },
                 eshkol_capability_runtime_clear: () => {
+                    // Refused while a policy is active: a policy the governed
+                    // code can remove is not a policy.
+                    if (rt._capabilityPolicyActive) return 0;
+                    rt._capabilityAllowed = new Set();
+                    rt._capabilityCeiling = null;
+                    return 1;
+                },
+                eshkol_capability_runtime_host_reset: () => {
                     rt._capabilityPolicyActive = false;
                     rt._capabilityAllowed = new Set();
+                    rt._capabilityCeiling = null;
                 },
                 eshkol_capability_runtime_is_active: () =>
                     rt._capabilityPolicyActive ? 1 : 0,

@@ -20,6 +20,30 @@ Once a policy is active, every capability it does not name is refused, and that
 holds on all three engines — the LLVM JIT, an ahead-of-time executable, and the
 bytecode VM — because they consult one policy store.
 
+**A policy only ever narrows.** Installing one while another is active keeps the
+capabilities both name and drops the rest, so a program cannot widen what it was
+given; and `(capability-clear-policy!)` is refused while a policy is active,
+raising a catchable capability error, because a policy the governed code can
+switch off is not a policy. With no policy installed, clearing is a no-op that
+succeeds. A host embedding Eshkol that needs to return to the unrestricted
+state — after running a guest computation, or between test cases — uses the C
+entry point `eshkol_capability_runtime_host_reset()`, which no Eshkol program
+can name: declaring any of the policy's own entry points in an `(extern …)` is
+refused when the program compiles.
+
+```scheme
+(capability-install-policy! '(file-read file-write))
+(capability-install-policy! '(file-read network))   ; narrows
+(capability-allowed? 'file-read)                    ; => #t
+(capability-allowed? 'file-write)                   ; => #f, dropped
+(capability-allowed? 'network)                      ; => #f, never held
+```
+
+**Granting `subprocess` grants everything the host can do.** The policy lives in
+this process's memory, so a child process started with `subprocess` begins with
+no policy at all; only a `(fork)` child inherits one. Granting `subprocess` to
+code you want to confine is granting it the whole machine by way of a child.
+
 Core hosted capability symbols:
 
 | Symbol | Governs |
@@ -56,8 +80,14 @@ the core `(http-request method url headers body timeout)` builtin and the
 and the server listen path, `(http-server-create port)` and the accept that
 follows it.
 
-`ffi` — `(dlopen path)` and `(dlsym handle name)`, and the runtime's own
-loading of an optional platform library.
+`ffi` — a program's own `(extern … :real symbol)`, which is the construct that
+reaches outside the language: on the native engines the declared name is bound
+to a gate that asks for `ffi` and then calls the symbol. Modules shipped with
+Eshkol are exempt, since their declarations are how the standard library reaches
+the runtime entry points it is built on and each of those carries its own gate.
+Also `(dlopen path)`, `(dlsym handle name)`, the runtime's own loading of an
+optional platform library, and the library loaders whose path an environment
+variable can choose (Vulkan, PJRT, cuBLAS).
 
 `keychain` — the host keychain entry points.
 
@@ -65,8 +95,8 @@ loading of an optional platform library.
 
 | Procedure | Effect |
 |-----------|--------|
-| `(capability-install-policy! allow-list)` | Activate a policy from a list of capability **symbols**. Errors if the argument is not a list of symbols. |
-| `(capability-clear-policy!)` | Deactivate the policy; checks allow by default again. |
+| `(capability-install-policy! allow-list)` | Activate a policy from a list of capability **symbols**. Errors if the argument is not a list of symbols. While a policy is active this narrows it: the result is the names both hold. |
+| `(capability-clear-policy!)` | Deactivate the policy. Refused while one is active (raises); a no-op that returns `#t` when there is none. |
 | `(capability-policy)` | Return the current allow-list, or `#f` if inactive. |
 | `(capability-policy-active?)` | `#t` iff a policy is currently active. |
 | `(capability-allowed? cap)` | `#t` if `cap` is permitted under the current policy (always `#t` when inactive). |
@@ -146,7 +176,12 @@ Granting `env-read` restores access:
 The environment and file surfaces keep the shape they have always had: the
 runtime reports the denial on stderr and the call returns a benign value
 (`#f` or the empty result), and execution continues, so a program written
-against those return values keeps working under a policy.
+against those return values keeps working under a policy. Three more entry
+points answer the same way, because their callers already handle the value they
+return: the platform's library loading, which answers "nothing loadable"; the
+platform's external-program launch, which answers `-1`; and the socket layer
+under `core.net` and `core.tls`, which answers the lease outcome
+`ESHKOL_IO_DENIED` (`-12`, the symbolic reason `denied`).
 
 The process, shell, socket and foreign-code sinks refuse by raising instead,
 because every value they could return — a pid, an exit status, a descriptor, a

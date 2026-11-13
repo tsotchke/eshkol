@@ -245,17 +245,36 @@ int eshkol_stat(const char* path, void* buf);
 void* eshkol_opendir(const char* path);
 
 /**
- * @brief Resets the capability runtime to its default state: policy
- *        inactive and the allow-list cleared, so eshkol_capability_runtime_allows()
- *        permits everything.
+ * @brief Deactivates the capability policy, so
+ *        eshkol_capability_runtime_allows() permits everything again.
+ *
+ * Refused while a policy is active: a policy that the code it governs can
+ * remove is not a policy. With no policy installed this is a no-op that
+ * succeeds.
+ *
+ * @return 1 when there is no policy left, 0 when an active policy refused.
  * @note Thread-safe.
  */
-void eshkol_capability_runtime_clear();
+int eshkol_capability_runtime_clear();
 
 /**
- * @brief Activates capability enforcement and clears any previously
- *        installed allow-list, in preparation for a fresh set of
+ * @brief Drops any active policy, for the host that owns the process.
+ *
+ * The reset an embedder needs after running a guest computation under a
+ * policy, and that a test harness needs between cases. No Eshkol program can
+ * reach it: naming it in an `(extern ...)` declaration is refused at compile
+ * time along with the policy's other entry points.
+ * @note Thread-safe.
+ */
+void eshkol_capability_runtime_host_reset();
+
+/**
+ * @brief Begins installing a policy, in preparation for a fresh set of
  *        eshkol_capability_runtime_allow() calls.
+ *
+ * When a policy is already active the new one narrows it: a capability the
+ * active policy did not grant cannot be granted now, so an install only ever
+ * takes away.
  * @note Thread-safe.
  */
 void eshkol_capability_runtime_begin_install();
@@ -267,7 +286,8 @@ void eshkol_capability_runtime_begin_install();
  * called after eshkol_capability_runtime_begin_install()).
  *
  * @param capability Capability name to grant (e.g. "file-read",
- *        "file-write", "env-read", "env-write"). NULL or empty is ignored.
+ *        "file-write", "env-read", "env-write"). NULL or empty is ignored,
+ *        and so is a name the policy being narrowed did not itself grant.
  * @note Thread-safe.
  */
 void eshkol_capability_runtime_allow(const char* capability);
