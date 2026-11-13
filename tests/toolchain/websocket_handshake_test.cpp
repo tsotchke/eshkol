@@ -436,29 +436,105 @@ int main() {
     expect(!eshkol_ws_valid_utf8("\xe2\x82", 2), "a truncated sequence is refused");
     expect(!eshkol_ws_valid_utf8("\x80", 1), "a bare continuation byte is refused");
 
-    // ─── The masking a client owes every frame it sends (section 5.3) ───────
-    // The send path draws a fresh key per frame and masks the payload with
-    // mask[(offset + i) % 4]. The property that keeps a chunked send correct
-    // is that the index follows the payload offset, not the chunk offset.
+    // ─── The masking a client owes every frame it sends (section 5.3) ──────
+    // This drives the function both send paths call, rather than restating
+    // the rule here: the point of the test is that the product masks, and
+    // that the key index follows the payload offset rather than restarting
+    // at each 4096-byte chunk.
     {
         const unsigned char mask[4] = {0x37, 0xfa, 0x21, 0x3d};
-        std::string payload(9000, 'A');
-        std::string masked = payload;
-        for (size_t i = 0; i < masked.size(); ++i)
-            masked[i] = (char)(masked[i] ^ mask[i % 4]);
-        bool differs = masked != payload;
-        bool round_trips = true;
-        for (size_t i = 0; i < masked.size(); ++i) {
-            if ((char)(masked[i] ^ mask[i % 4]) != payload[i]) round_trips = false;
+        const size_t total = 9000;  // more than two 4096-byte chunks
+        std::string payload;
+        for (size_t i = 0; i < total; ++i)
+            payload.push_back((char)('A' + (int)(i % 23)));
+
+        // Masked the way the senders do it: chunk by chunk, carrying the
+        // offset. A sender that restarted the count would differ here.
+        std::string chunked = payload;
+        for (size_t offset = 0; offset < total; offset += 4096) {
+            size_t span = total - offset;
+            if (span > 4096) span = 4096;
+            eshkol_ws_mask_payload((unsigned char*)&chunked[offset], span,
+                                   offset, mask);
         }
-        expect(differs, "masking changes the bytes that leave");
-        expect(round_trips, "unmasking with the same key restores the payload");
-        // Across a 4096-byte chunk boundary the key index must still follow
-        // the payload offset: byte 4096 takes mask[0], not mask[4096 % 4] of
-        // a restarted count. Both are 0 here, so check a boundary that is not
-        // a multiple of four as well.
-        expect((4096 % 4) == 0 && (4097 % 4) == 1,
-               "the key index follows the payload offset across a chunk edge");
+
+        bool differs = chunked != payload;
+        bool matches_whole_payload_rule = true;
+        for (size_t i = 0; i < total; ++i) {
+            const unsigned char expected =
+                (unsigned char)(payload[i] ^ mask[i % 4]);
+            if ((unsigned char)chunked[i] != expected)
+                matches_whole_payload_rule = false;
+        }
+        expect(differs, "the payload leaves masked");
+        expect(matches_whole_payload_rule,
+               "chunked masking equals masking the whole payload at once");
+
+        // And it is an involution: the peer unmasks with the same key.
+        std::string restored = chunked;
+        eshkol_ws_mask_payload((unsigned char*)&restored[0], total, 0, mask);
+        expect(restored == payload, "unmasking restores the payload");
+
+        // The offset argument has to be load-bearing, or none of the above
+        // would distinguish a correct sender from a broken one. It cannot be
+        // shown at a 4096-byte chunk, because 4096 is a multiple of four and
+        // restarting the count there gives the same bytes; the senders are
+        // correct for that reason as much as any other. So state it at a
+        // chunk size that is not a multiple of four: carrying the offset
+        // still equals masking the payload whole, and dropping it does not.
+        const size_t odd_chunk = 1023;
+        std::string carried = payload;
+        for (size_t offset = 0; offset < total; offset += odd_chunk) {
+            size_t span = total - offset;
+            if (span > odd_chunk) span = odd_chunk;
+            eshkol_ws_mask_payload((unsigned char*)&carried[offset], span,
+                                   offset, mask);
+        }
+        expect(carried == chunked,
+               "carrying the offset is chunk-size independent");
+
+        std::string dropped = payload;
+        for (size_t offset = 0; offset < total; offset += odd_chunk) {
+            size_t span = total - offset;
+            if (span > odd_chunk) span = odd_chunk;
+            eshkol_ws_mask_payload((unsigned char*)&dropped[offset], span, 0,
+                                   mask);
+        }
+        expect(dropped != chunked,
+               "dropping the offset is a different, wrong result");
+    }
+
+    // ─── The frame header the senders write (section 5.2) ──────────────────
+    {
+        const unsigned char mask[4] = {0x01, 0x02, 0x03, 0x04};
+        unsigned char header[14];
+
+        int written = eshkol_ws_write_frame_header(header, 1, 5, mask);
+        expect(written == 6, "a short payload uses the 7-bit length");
+        expect(header[0] == 0x81, "FIN and the text opcode");
+        expect(header[1] == (0x80 | 5), "the MASK bit and the length");
+
+        written = eshkol_ws_write_frame_header(header, 2, 65535, mask);
+        expect(written == 8, "a 16-bit length adds two bytes");
+        expect(header[1] == (0x80 | 126), "126 introduces the 16-bit length");
+        expect(header[2] == 0xff && header[3] == 0xff,
+               "the 16-bit length is big-endian");
+
+        written = eshkol_ws_write_frame_header(header, 2, 65536, mask);
+        expect(written == 14, "a 64-bit length adds eight bytes");
+        expect(header[1] == (0x80 | 127), "127 introduces the 64-bit length");
+        expect(header[2] == 0 && header[3] == 0 && header[4] == 0 &&
+                   header[5] == 0 && header[6] == 0 && header[7] == 1 &&
+                   header[8] == 0 && header[9] == 0,
+               "the 64-bit length is big-endian");
+        expect(header[10] == 0x01 && header[13] == 0x04,
+               "the masking key follows the length");
+
+        // The boundaries between the three encodings.
+        expect(eshkol_ws_write_frame_header(header, 1, 125, mask) == 6,
+               "125 is the last 7-bit length");
+        expect(eshkol_ws_write_frame_header(header, 1, 126, mask) == 8,
+               "126 is the first 16-bit length");
     }
 
     if (g_failures == 0) {

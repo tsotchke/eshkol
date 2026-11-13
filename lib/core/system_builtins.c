@@ -4725,23 +4725,10 @@ static int sys_ws_send_all(int fd, const void* data, size_t len) {
  * to prevent. */
 static int sys_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     unsigned char header[14];
-    int hlen = 0;
-    header[hlen++] = (unsigned char)(0x80 | (opcode & 0x0f));
-    if (len < 126) {
-        header[hlen++] = (unsigned char)(0x80 | len);
-    } else if (len <= 65535) {
-        header[hlen++] = 0x80 | 126;
-        header[hlen++] = (unsigned char)((len >> 8) & 0xff);
-        header[hlen++] = (unsigned char)(len & 0xff);
-    } else {
-        header[hlen++] = 0x80 | 127;
-        for (int i = 7; i >= 0; i--)
-            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
-    }
+    int hlen;
     unsigned char mask[4];
     if (!eshkol_ws_generate_mask(mask)) return 0;
-    memcpy(header + hlen, mask, sizeof(mask));
-    hlen += 4;
+    hlen = eshkol_ws_write_frame_header(header, opcode, len, mask);
     if (!sys_ws_send_all(fd, header, (size_t)hlen)) return 0;
     if (len == 0) return 1;
 
@@ -4751,8 +4738,10 @@ static int sys_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     while (offset < len) {
         size_t span = len - offset;
         if (span > sizeof(chunk)) span = sizeof(chunk);
-        for (size_t i = 0; i < span; i++)
-            chunk[i] = (unsigned char)(payload[offset + i] ^ mask[(offset + i) % 4]);
+        memcpy(chunk, payload + offset, span);
+        /* The key index follows the payload offset, not the chunk's, so a
+         * payload larger than one chunk is masked correctly. */
+        eshkol_ws_mask_payload(chunk, span, offset, mask);
         if (!sys_ws_send_all(fd, chunk, span)) return 0;
         offset += span;
     }

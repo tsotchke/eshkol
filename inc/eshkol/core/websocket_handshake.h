@@ -420,6 +420,68 @@ static inline const char* eshkol_ws_handshake_refusal(const char* response,
 #endif
 
 
+/**
+ * @brief Masks `length` bytes of a client frame payload in place.
+ *
+ * RFC 6455 section 5.3: every frame a client sends is masked with that
+ * frame's key, byte i of the payload against key byte `i % 4`. A sender that
+ * copies the payload out in chunks must keep counting from the payload's
+ * start, not from the chunk's: restarting the count at each chunk would mask
+ * correctly only when the chunk length happens to be a multiple of four, and
+ * silently corrupt every frame larger than one chunk otherwise.
+ *
+ * `payload_offset` is the index, within the whole payload, of the first byte
+ * in `bytes`, which is what makes the chunked caller correct.
+ *
+ * @param bytes          Buffer to mask in place.
+ * @param length         Bytes in `bytes`.
+ * @param payload_offset Offset of `bytes[0]` within the whole payload.
+ * @param mask           The frame's 4-byte masking key.
+ */
+static inline void eshkol_ws_mask_payload(unsigned char* bytes, size_t length,
+                                          size_t payload_offset,
+                                          const unsigned char mask[4]) {
+    size_t i;
+    if (!bytes || !mask) return;
+    for (i = 0; i < length; ++i) {
+        bytes[i] = (unsigned char)(bytes[i] ^ mask[(payload_offset + i) % 4]);
+    }
+}
+
+/**
+ * @brief Writes the RFC 6455 section 5.2 frame header for a masked client
+ *        frame, choosing the 7-bit, 16-bit or 64-bit length encoding.
+ *
+ * @param header Buffer of at least 14 bytes.
+ * @param opcode Frame opcode.
+ * @param length Payload length.
+ * @param mask   The frame's masking key, copied into the header.
+ * @return Bytes written to `header`.
+ */
+static inline int eshkol_ws_write_frame_header(unsigned char* header,
+                                               int opcode, size_t length,
+                                               const unsigned char mask[4]) {
+    int written = 0;
+    header[written++] = (unsigned char)(0x80 | (opcode & 0x0f));
+    if (length < 126) {
+        header[written++] = (unsigned char)(0x80 | length);
+    } else if (length <= 65535) {
+        header[written++] = (unsigned char)(0x80 | 126);
+        header[written++] = (unsigned char)((length >> 8) & 0xff);
+        header[written++] = (unsigned char)(length & 0xff);
+    } else {
+        int i;
+        header[written++] = (unsigned char)(0x80 | 127);
+        for (i = 7; i >= 0; --i)
+            header[written++] = (unsigned char)((length >> (i * 8)) & 0xff);
+    }
+    {
+        int i;
+        for (i = 0; i < 4; ++i) header[written++] = mask[i];
+    }
+    return written;
+}
+
 /* ─── Received frames (RFC 6455 section 5) ────────────────────────────────── */
 
 /**
@@ -433,13 +495,21 @@ static inline const char* eshkol_ws_handshake_refusal(const char* response,
  * attacker-chosen payload bytes as a frame header.
  */
 static inline size_t eshkol_ws_max_frame_bytes(void) {
-    const char* raw = getenv("ESHKOL_WS_MAX_FRAME_BYTES");
-    if (raw && *raw) {
-        char* end = NULL;
-        unsigned long long parsed = strtoull(raw, &end, 10);
-        if (end && *end == '\0' && parsed > 0) return (size_t)parsed;
+    /* Read once, like the server's three budgets: a budget that changed
+     * mid-connection would mean two frames of one message were judged by
+     * different rules, and a getenv per frame is a cost per frame. */
+    static size_t cached = 0;
+    if (cached == 0) {
+        const char* raw = getenv("ESHKOL_WS_MAX_FRAME_BYTES");
+        size_t value = 65536u;
+        if (raw && *raw) {
+            char* end = NULL;
+            unsigned long long parsed = strtoull(raw, &end, 10);
+            if (end && *end == '\0' && parsed > 0) value = (size_t)parsed;
+        }
+        cached = value;
     }
-    return 65536u;
+    return cached;
 }
 
 /** @brief What a received frame header is, once judged. */
