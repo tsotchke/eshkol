@@ -13049,6 +13049,49 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/es
     )
 endif()
 
+# ── Protocol validation: the request grammar, the WebSocket handshake and the
+# server's request handling. Each is a self-contained binary over the headers
+# that carry the rules, so the rules are exercised on every platform that
+# builds the tests, with no compiler or network dependency beyond loopback.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/http_protocol_syntax_test.cpp")
+    add_executable(http_protocol_syntax_test
+        tests/toolchain/http_protocol_syntax_test.cpp)
+    target_compile_features(http_protocol_syntax_test PRIVATE cxx_std_17)
+    target_include_directories(http_protocol_syntax_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    add_test(NAME http_protocol_syntax_test COMMAND http_protocol_syntax_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/websocket_handshake_test.cpp")
+    add_executable(websocket_handshake_test
+        tests/toolchain/websocket_handshake_test.cpp)
+    target_compile_features(websocket_handshake_test PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_include_directories(websocket_handshake_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    # eshkol_random_bytes: the platform cryptographic source.
+    target_link_libraries(websocket_handshake_test PRIVATE
+        eshkol-runtime Threads::Threads)
+    add_test(NAME websocket_handshake_test COMMAND websocket_handshake_test)
+    set_tests_properties(websocket_handshake_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_request_handling_test.cpp")
+    add_executable(eshkol_server_request_handling_test
+        tests/toolchain/eshkol_server_request_handling_test.cpp)
+    target_compile_features(eshkol_server_request_handling_test PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_include_directories(eshkol_server_request_handling_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    target_link_libraries(eshkol_server_request_handling_test PRIVATE
+        Threads::Threads)
+    add_test(NAME eshkol_server_request_handling_test
+             COMMAND eshkol_server_request_handling_test)
+    set_tests_properties(eshkol_server_request_handling_test PROPERTIES TIMEOUT 180)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/macos_build_surface_test.cpp")
     add_executable(macos_build_surface_test
         tests/toolchain/macos_build_surface_test.cpp)
@@ -14757,6 +14800,31 @@ endif()
 # vm-src and emitted ESKB; these native tests keep the JIT and AOT paths from
 # drifting independently.
 # image-read/image-write/image-to-grayscale through compiled Eshkol code.
+# Merkle leaf/interior domain separation: a node cannot be presented as a
+# leaf. Run on the JIT and on the bytecode VM, since core.merkle is pure
+# Eshkol and both engines evaluate it.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME merkle_domain_separation_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/merkle_domain_separation_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(merkle_domain_separation_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME merkle_domain_separation_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/merkle_domain_separation_aot' tests/core/merkle_domain_separation_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/merkle_domain_separation_aot'"
+    )
+    set_tests_properties(merkle_domain_separation_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME image_io_language_test

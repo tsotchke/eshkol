@@ -253,34 +253,13 @@ std::string build_response(int status, const std::string& content_type,
     return response.str() + body;
 }
 
-// JSON escape helper
-std::string json_escape(const std::string& s) {
-    std::string result;
-    for (char c : s) {
-        switch (c) {
-            case '"': result += "\\\""; break;
-            case '\\': result += "\\\\"; break;
-            case '\n': result += "\\n"; break;
-            case '\r': result += "\\r"; break;
-            case '\t': result += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    // Escape control characters as \u00XX
-                    char buf[8];
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    result += buf;
-                } else {
-                    result += c;
-                }
-                break;
-        }
-    }
-    return result;
-}
+// JSON strings are built by the one serializer in
+// <eshkol/http_request_utils.h>, which both this server and its tests use.
+std::string json_escape(const std::string& s) { return eshkol_json_escape(s); }
 
 // Build JSON error response
 std::string json_error(const std::string& message) {
-    return "{\"success\":false,\"error\":\"" + json_escape(message) + "\"}";
+    return "{\"success\":false,\"error\":" + eshkol_json_string(message) + "}";
 }
 
 // Build JSON success response with WASM (base64 encoded)
@@ -305,7 +284,7 @@ std::string json_success_wasm(const std::string& session_id, const uint8_t* wasm
     // a value the client chose, so it is escaped on the way out exactly as
     // every other string value is.
     std::ostringstream json;
-    json << "{\"success\":true,\"session_id\":\"" << json_escape(session_id) << "\",";
+    json << "{\"success\":true,\"session_id\":" << eshkol_json_string(session_id) << ",";
     json << "\"wasm\":\"" << encoded << "\",";
     json << "\"size\":" << size << "}";
     return json.str();

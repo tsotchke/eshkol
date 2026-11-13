@@ -533,3 +533,48 @@ private:
     int refusal_status_ = 400;
     std::string refusal_message_;
 };
+
+// ─── JSON strings ───────────────────────────────────────────────────────────
+//
+// Every string that goes into a JSON document goes through here. A value the
+// client chose — a session identifier, an error detail, a file name — is a
+// string like any other, and the one way a string becomes JSON is
+// eshkol_json_string(). Concatenating a value between two quote characters is
+// not a second way of doing it; it is a way of letting the value decide where
+// the string ends.
+
+/** @brief Escapes a string's contents for a JSON string literal: the two
+ *         characters JSON reserves, the five with short escapes, and every
+ *         remaining control character as \\u00XX. */
+inline std::string eshkol_json_escape(const std::string& text) {
+    std::string result;
+    result.reserve(text.size());
+    for (char c : text) {
+        switch (c) {
+            case '"':  result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            case '\b': result += "\\b"; break;
+            case '\f': result += "\\f"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    static const char* hex = "0123456789abcdef";
+                    const unsigned char byte = static_cast<unsigned char>(c);
+                    result += "\\u00";
+                    result += hex[(byte >> 4) & 0x0f];
+                    result += hex[byte & 0x0f];
+                } else {
+                    result += c;
+                }
+                break;
+        }
+    }
+    return result;
+}
+
+/** @brief Renders a string as a complete JSON string literal, quotes and all. */
+inline std::string eshkol_json_string(const std::string& text) {
+    return "\"" + eshkol_json_escape(text) + "\"";
+}
