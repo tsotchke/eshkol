@@ -18,6 +18,7 @@
  *      exactly-once enforcement of every linear binder through the
  *      TypeChecker's own linear judgment in strict mode.
  */
+#include <eshkol/core/stack_guard.h>
 #include "eshkol/types/structural_checker.h"
 
 #include "eshkol/types/hott_types.h"
@@ -74,6 +75,11 @@ struct TypeSyntax {
 };
 
 TypeSyntax syntaxOf(const hott_type_expr_t* t) {
+    // Bounded and reported: this walk is recursive, so it checks the native
+    // stack headroom at each level and answers conservatively rather than
+    // descending past what the platform carries.  Reading itself has no
+    // depth limit (inc/eshkol/core/reader_limits.h).
+    if (!eshkol_stack_headroom_ok()) return TypeSyntax::mkAtom("any");
     if (!t) return TypeSyntax::mkAtom("any");
     switch (t->kind) {
         case HOTT_TYPE_INTEGER:
@@ -367,6 +373,11 @@ void forEachChild(const eshkol_ast_t* e, const std::function<void(const eshkol_a
 }
 
 void collectMentions(const eshkol_ast_t* e, std::set<std::string>& out) {
+    // Bounded and reported: this walk is recursive, so it checks the native
+    // stack headroom at each level and answers conservatively rather than
+    // descending past what the platform carries.  Reading itself has no
+    // depth limit (inc/eshkol/core/reader_limits.h).
+    if (!eshkol_stack_headroom_ok()) return ;
     if (!e) return;
     if (const char* n = varName(e)) {
         out.insert(n);
@@ -376,6 +387,11 @@ void collectMentions(const eshkol_ast_t* e, std::set<std::string>& out) {
 }
 
 bool assignsVar(const eshkol_ast_t* e, const std::string& name) {
+    // Bounded and reported: this walk is recursive, so it checks the native
+    // stack headroom at each level and answers conservatively rather than
+    // descending past what the platform carries.  Reading itself has no
+    // depth limit (inc/eshkol/core/reader_limits.h).
+    if (!eshkol_stack_headroom_ok()) return false;
     if (!e) return false;
     if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_SET_OP && e->operation.set_op.name &&
         name == e->operation.set_op.name) {
