@@ -741,7 +741,7 @@ __test_modules_mod_a__helper</code></pre>
 <p><strong>stdlib.o linking</strong>: - Compiler detects <code>(require stdlib)</code> or <code>(require core.*)</code> - Auto-links pre-compiled stdlib.o if found - Skips recompiling modules present in .o file - External declarations for exported symbols</p>
 <hr />
 <h2 id="repljit-system">REPL/JIT System</h2>
-<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,831 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,754 lines)</p>
+<p><strong>Implementation</strong>: <a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> (4,894 lines), <a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-repl.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-repl.cpp</code></a> (1,819 lines)</p>
 <h3 id="architecture-1">Architecture</h3>
 <pre><code>┌─────────────────────────────────────────────────────────────────┐
 │                    Interactive REPL                             │
@@ -1246,7 +1246,7 @@ target_link_options(eshkol-static PUBLIC
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/core/runtime_arena_core.cpp" target="_blank" rel="noopener noreferrer"><code>lib/core/runtime_arena_core.cpp</code></a> - Arena runtime core (1,391 lines; 6,212 across the same 8 arena, region, and allocation source files)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/frontend/parser.cpp" target="_blank" rel="noopener noreferrer"><code>lib/frontend/parser.cpp</code></a> - S-expr parser (11,698 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_checker.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_checker.cpp</code></a> - Type inference (6,087 lines)</li>
-<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,831 lines)</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/repl/repl_jit.cpp" target="_blank" rel="noopener noreferrer"><code>lib/repl/repl_jit.cpp</code></a> - JIT compiler (4,894 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/exe/eshkol-run.cpp" target="_blank" rel="noopener noreferrer"><code>exe/eshkol-run.cpp</code></a> - Compiler executable (6,186 lines)</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/lib/types/type_relation.cpp" target="_blank" rel="noopener noreferrer"><code>lib/types/type_relation.cpp</code></a> - Gradual type relation (433 lines)</li>
 </ul>

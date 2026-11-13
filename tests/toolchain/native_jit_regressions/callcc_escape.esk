@@ -1,0 +1,3 @@
+;; The continuation escapes to the call/cc result, preserving the outer +.
+(display (+ 1 (call/cc (lambda (k) (k 41) 999))))
+(newline)

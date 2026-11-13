@@ -1,0 +1,18 @@
+;;; Copyright (C) 2026 Richard Hoekstra. SPDX-License-Identifier: MIT
+;;; Print a standalone module computing x*x+4. All cleanup executes in object Mix.
+(require core.compiler.mix)
+(require core.list.higher_order)
+(define source '(program () (prim + (prim * (var x) (var x)) 4)))
+(define r (mix-compile source (mix-options 4096 512) (mix-limits 20000000 4096 2000000 300000)))
+(if (not (eq? (mix-result-status r) 'normal))
+    (begin (display "FAIL: self-specialization ") (write (mix-result-status r)) (newline) (exit 1)))
+(define emitted (mix-emit-eshkol r 'mix-generated))
+(if (not (eq? (vector-ref emitted 1) 'normal)) (begin (display "FAIL: emission") (newline) (exit 1)))
+(for-each (lambda (form) (write form) (newline)) (vector-ref emitted 2))
+;; This second entry must keep x's integer contract after its read disappears.
+(define erased (mix-compile '(program () (prim * (var x) 0)) (mix-options 4096 512)
+                           (mix-limits 20000000 4096 2000000 300000)))
+(if (not (eq? (mix-result-status erased) 'normal)) (begin (display "FAIL: erased-input compilation") (newline) (exit 1)))
+(define erased-emission (mix-emit-eshkol erased 'mix-erased))
+(if (not (eq? (vector-ref erased-emission 1) 'normal)) (begin (display "FAIL: erased-input emission") (newline) (exit 1)))
+(for-each (lambda (form) (write form) (newline)) (vector-ref erased-emission 2))

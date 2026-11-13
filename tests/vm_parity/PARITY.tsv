@@ -75,15 +75,6 @@ asin	vm-supported	a complex operand routes to the shared complex core (principal
 asinh	vm-supported	SW-220: first-class VM builtin on every number kind; carriers keep every derivative order (tests/ad/vm_math_first_class_test.esk)
 assq	gap	R7RS 6.4: native resolves it from the Scheme stdlib (lib/core/list/search.esk); the VM's prelude does not define it and the VM has no builtin, so `(assq 'a '((a 1)))` prints WARNING: undefined variable and then aborts with 'calling non-function'. Found by scripts/run_surface_parity.py, which probes name resolution on BOTH engines -- vm_parity_audit.py could not see it because its surface is the C++ codegen dispatch table and assq is a Scheme-level define
 assv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
-coroutine-raise	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-coroutine-release!	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-coroutine-resume	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-coroutine-stats	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-coroutine-status	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-coroutine-yield	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-coroutine?	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-current-coroutine	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
-make-coroutine	gap	stackful coroutines (inc/eshkol/core/coroutine.h) switch native machine stacks; the bytecode VM keeps top-level bindings and control in one operand array, so a suspended coroutine's control segment needs its own VM stack first - Planned for v1.4.1 (core.fibers runs on JIT and AOT)
 memv	gap	R7RS 6.4: same shape as assq -- stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 partition	gap	SRFI-1: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
 string-contains	gap	SRFI-13: stdlib-defined natively, absent from the VM prelude and builtins, aborts on use
@@ -475,7 +466,7 @@ make-event-loop	vm-supported	ESH-0011: integer handle on both surfaces; #f where
 make-parameter	gap	no VM name binding
 make-pipe	vm-supported	
 make-polar	vm-supported	
-make-prng	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+make-prng	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
 make-promise	gap	no VM name binding
 make-rational	gap	no VM name binding
 make-rectangular	vm-supported	
@@ -524,7 +515,7 @@ op:BORROW	native-only-justified	OALR ownership — native-arena construct
 op:CALL	vm-supported	core call opcode
 op:CALL_CC	vm-supported	escape continuations verified 2026-07
 op:CALL_WITH_VALUES	vm-supported	verified 2026-07
-op:CASE	vm-supported	vm_compiler special-form dispatch uses existing eqv? (not numeric =); symbol/captured closure and mixed-datum coverage in corpus/case_datum_dispatch.esk
+op:CASE	vm-supported	vm_compiler special-form dispatch
 op:CASE_LAMBDA	vm-supported	VM dispatches clauses in source order by exact/minimum arity; unmatched calls fail through clause arity checks (corpus/case_lambda_wrong_clause.esk)
 op:COMPOSE	gap	compose undefined in VM
 op:COND	vm-supported	vm_compiler special-form dispatch
@@ -672,9 +663,9 @@ positional-encoding	gap	ml faculty has no VM fid coverage
 positive?	vm-supported	
 pow	vm-supported	
 prevent-sleep	vm-supported	
-prng-random	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
-prng-random-integer	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
-prng?	gap	PRNG surface has no VM binding; Planned for v1.4.1 (core.ml.diffopt perturbation-noise draws its seeded noise from it)
+prng-random	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
+prng-random-integer	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
+prng?	vm-supported	isolated int64-seeded drand48-msb-v1 state; shared native/VM state operations, owned region-safe leaf; corpus/59_isolated_prng.esk and scripts/run_sblc_rng_parity_gate.sh
 procedure-arity	gap	no VM name binding
 procedure?	vm-supported	
 process-kill	vm-supported	
@@ -735,12 +726,6 @@ right?	gap	no VM name binding
 rmsprop-step	gap	ml faculty has no VM fid coverage
 rotary-embedding	gap	ml faculty has no VM fid coverage
 round	vm-supported	
-sblc-coins-from-prng	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-condition	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM. sblc-condition needs the PRNG for the seeded witness runs its receipt carries.
-sblc-sample	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-sample-closed-program	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-sample-prng	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
-sblc-sample-program	gap	Planned for v1.4.1: core.sblc (lib/core/sblc.esk) draws its coins from make-prng / prng-random-integer, which have no VM binding (see the make-prng row); the VM compiler reports the unbound name and the call stops with an error instead of substituting another generator. The exact path (codec, enumeration, counts, sblc-distribution, sblc-run-coins) runs on the VM.
 scaled-dot-attention	vm-supported	forward dual carrier and scalar scaled-dot-attention path agree with native for issue #551; corpus/551_tensor_transformer_dual.esk
 scheme-report-environment	gap	port/file IO surface missing in VM
 sdnc-improve!	gap	core.sdnc has no VM fids
