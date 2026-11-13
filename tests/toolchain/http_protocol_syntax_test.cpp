@@ -89,6 +89,18 @@ int main() {
                "Host: 10.0.0.5"),
            "a target carrying a whole second request is refused");
 
+    // ─── Authority: what may appear in a Host field ─────────────────────────
+    expect(eshkol_http_valid_authority("example.test"), "a host name");
+    expect(eshkol_http_valid_authority("example.test:8080"), "a host and port");
+    expect(eshkol_http_valid_authority("127.0.0.1"), "an IPv4 literal");
+    expect(eshkol_http_valid_authority("[::1]:443"),
+           "a bracketed IPv6 literal and port");
+    expect(!eshkol_http_valid_authority(""), "an empty authority is refused");
+    expect(!eshkol_http_valid_authority("a b"),
+           "a space in an authority is refused");
+    expect(!eshkol_http_valid_authority("evil\r\nX: 1"),
+           "CRLF in an authority is refused");
+
     // ─── Absolute URLs, the shape the clients take ──────────────────────────
     expect(eshkol_http_valid_absolute_url("https://example.test/a?b=c"),
            "an https URL is absolute");

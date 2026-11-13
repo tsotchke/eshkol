@@ -193,6 +193,21 @@ static inline int eshkol_http_valid_request_target(const char* target) {
 }
 
 /**
+ * @brief True when `host` is admissible as the authority of a request: one or
+ *        more request-target bytes, which admits a name, an IPv4 or bracketed
+ *        IPv6 literal and a port, and refuses a space, a CR, an LF, a NUL and
+ *        every other control byte.
+ */
+static inline int eshkol_http_valid_authority(const char* host) {
+    size_t i = 0;
+    if (!host || !*host) return 0;
+    for (; host[i]; ++i) {
+        if (!eshkol_http_is_target_char((unsigned char)host[i])) return 0;
+    }
+    return 1;
+}
+
+/**
  * @brief True when `url` is an absolute-form target: a scheme, `://`, an
  *        authority and an optional path, built only of target bytes.
  *

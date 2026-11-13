@@ -4587,7 +4587,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
         return sys_make_bool(0);
     if (!eshkol_http_valid_request_target(path))
         sys_protocol_refusal("http-request", "request-target");
-    if (!eshkol_http_valid_field_value(host, strlen(host)))
+    if (!eshkol_http_valid_authority(host))
         sys_protocol_refusal("http-request", "Host header");
 
     /* Re-render the caller's header block from the validated parse, with
@@ -4771,7 +4771,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_websocket_connect_v(
         return sys_make_bool(0);
     if (!eshkol_http_valid_request_target(path))
         sys_protocol_refusal("websocket-connect", "request-target");
-    if (!eshkol_http_valid_field_value(host, strlen(host)))
+    if (!eshkol_http_valid_authority(host))
         sys_protocol_refusal("websocket-connect", "Host header");
 
     char rendered_headers[2048];

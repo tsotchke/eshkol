@@ -15270,7 +15270,7 @@ tensor_inverse_done:
                     "http-request: request-target does not fit the protocol grammar");
                 break;
             }
-            if (!eshkol_http_valid_field_value(host, strlen(host))) {
+            if (!eshkol_http_valid_authority(host)) {
                 vm_raise_error_msg(vm,
                     "http-request: Host header does not fit the protocol grammar");
                 break;
@@ -15373,7 +15373,7 @@ tensor_inverse_done:
                     "websocket-connect: request-target does not fit the protocol grammar");
                 break;
             }
-            if (!eshkol_http_valid_field_value(host, strlen(host))) {
+            if (!eshkol_http_valid_authority(host)) {
                 vm_raise_error_msg(vm,
                     "websocket-connect: Host header does not fit the protocol grammar");
                 break;
