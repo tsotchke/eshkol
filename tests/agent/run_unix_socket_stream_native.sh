@@ -38,6 +38,7 @@ records = []
 sources = [
     'tests/agent/run_unix_socket_stream_native.sh', '.github/workflows/unix-socket-native.yml',
     'tests/agent/unix_socket_stream_test.c', 'tests/agent/unix_socket_cleanup_test.c',
+    'tests/agent/unix_socket_test_directory.h',
     'tests/agent/unix_socket_stream_fixture_support.c',
     'tests/agent/unix_socket_stream_pending_control.c',
     'tests/core/resource_explicit_loop_test.c',
@@ -149,7 +150,7 @@ try:
     if system == 'Linux':
         target, executable = output / 'regression.o', output / 'socket-regressions'
         run('compile-regressions', [cc, *cflags, '-c', root / 'tests/agent/unix_socket_stream_regression_test.c', '-o', target])
-        wraps = ['-Wl,--wrap=' + name for name in ('socket', 'accept4', 'recv', 'send', 'fchmodat', 'unlinkat', 'connect')]
+        wraps = ['-Wl,--wrap=' + name for name in ('socket', 'accept4', 'recv', 'send', 'fchmodat', 'unlinkat', 'connect', 'close')]
         run('link-regressions', [cxx, '-pthread', *sanflags, target, *objects, *wraps, '-o', executable])
         run('socket-regressions', [executable])
     process_env = env.copy()

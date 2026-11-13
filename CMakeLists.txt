@@ -9071,7 +9071,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
         target_link_libraries(eshkol-unix-socket-regression-test PRIVATE Threads::Threads)
         target_link_options(eshkol-unix-socket-regression-test PRIVATE
             -Wl,--wrap=socket -Wl,--wrap=accept4 -Wl,--wrap=recv -Wl,--wrap=send
-            -Wl,--wrap=fchmodat -Wl,--wrap=unlinkat -Wl,--wrap=connect)
+            -Wl,--wrap=fchmodat -Wl,--wrap=unlinkat -Wl,--wrap=connect -Wl,--wrap=close)
         add_test(NAME agent-unix-socket-regressions COMMAND eshkol-unix-socket-regression-test)
         set_tests_properties(agent-unix-socket-regressions PROPERTIES
             TIMEOUT 30 LABELS "resource;socket;regression")

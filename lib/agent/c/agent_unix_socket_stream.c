@@ -57,7 +57,7 @@ enum { UNIX_LISTENER = 8, UNIX_STREAM = 9 };
 #define UNIX_MASK ((UINT32_C(1) << UNIX_LISTENER) | (UINT32_C(1) << UNIX_STREAM))
 #define MASK(tag) (UINT32_C(1) << (tag))
 typedef struct {
-    int fd, directory_fd, listener, connected, retry_connect, close_error, path_failures;
+    int fd, directory_fd, listener, connected, retry_connect, close_error, path_failures, path_error;
     int64_t loop, deadline;
     struct sockaddr_un address;
     dev_t device;
@@ -121,20 +121,24 @@ static int cleanup(uintptr_t native, void *data, eshkol_resource_cleanup_result_
     }
     if (s->listener && s->directory_fd >= 0) {
         struct stat st;
+        int path_error = 0;
         if (fstatat(s->directory_fd, s->basename, &st, AT_SYMLINK_NOFOLLOW) == 0) {
-            if (!S_ISSOCK(st.st_mode) || st.st_dev != s->device || st.st_ino != s->inode) {
-                if (!error) { error = ESTALE; stage = ESHKOL_CLEANUP_PATH; }
-            } else if (unlinkat(s->directory_fd, s->basename, 0)) {
-                error = errno; stage = ESHKOL_CLEANUP_PATH;
-            }
+            if (!S_ISSOCK(st.st_mode) || st.st_dev != s->device || st.st_ino != s->inode)
+                path_error = ESTALE;
+            else if (unlinkat(s->directory_fd, s->basename, 0))
+                path_error = errno;
         } else if (errno != ENOENT) {
-            error = errno; stage = ESHKOL_CLEANUP_PATH;
+            path_error = errno;
         }
+        s->path_error = path_error;
+        /* Keep the earlier descriptor error as the primary outcome. Retryable
+         * below describes remaining pathname work, never another close of fd:
+         * its uncertain close has already retired it to -1. */
+        if (path_error && !error) { error = path_error; stage = ESHKOL_CLEANUP_PATH; }
         /* The callback owns terminality: allow one explicit repair/retry, then
-         * surrender the remaining pathname with a terminal PATH result. The
-         * shared layer neither times out nor silently retries this decision. */
-        if (error && stage == ESHKOL_CLEANUP_PATH && error != ESTALE &&
-            ++s->path_failures < 2) {
+         * surrender the remaining pathname with a terminal result. The shared
+         * layer neither times out nor silently retries this decision. */
+        if (path_error && path_error != ESTALE && ++s->path_failures < 2) {
             result->state = ESHKOL_CLEANUP_FAILED; result->stage = stage;
             result->os_error = error; result->retryable = 1; return ESHKOL_IO_SYSTEM;
         }
@@ -157,7 +161,7 @@ static void rollback(UnixSocket *s) {
         /* The caller still has its supplied path. Report failed unpublished
          * removal separately from the primary acquisition error; it may repair
          * that path explicitly, without gaining authority over a replacement. */
-        socket_path_error = ignored.os_error;
+        socket_path_error = s->path_error;
         if (s->directory_fd >= 0) close(s->directory_fd);
         free(s);
     }

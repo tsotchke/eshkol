@@ -2,6 +2,7 @@
 #define _GNU_SOURCE 1
 #include "eshkol/core/unix_socket_stream.h"
 #include "eshkol/core/event_loop.h"
+#include "unix_socket_test_directory.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -20,6 +21,20 @@ int eshkol_capability_runtime_allows(const char *name) { return !strcmp(name,"ne
  * keeping all descriptor creation, real I/O and exhaustion in the OS. */
 static int interrupt_read, interrupt_write, fail_mode, fail_unlink;
 static int atomic_sockets, atomic_accepts, connect_calls;
+static int fail_close_once, failed_close_fd = -1, failed_close_calls;
+int __real_close(int);
+int __wrap_close(int fd) {
+    if (fd == failed_close_fd) ++failed_close_calls;
+    if (fail_close_once) {
+        fail_close_once = 0;
+        failed_close_fd = fd; failed_close_calls = 1;
+        /* Model an uncertain close: the OS descriptor is gone even though
+         * the caller receives an error, as may happen on an interrupted close. */
+        CHECK(__real_close(fd) == 0);
+        errno = EIO; return -1;
+    }
+    return __real_close(fd);
+}
 int __real_connect(int,const struct sockaddr*,socklen_t);
 int __wrap_connect(int fd,const struct sockaddr *address,socklen_t size) {
     ++connect_calls; return __real_connect(fd,address,size);
@@ -56,6 +71,36 @@ int __real_unlinkat(int,const char*,int);
 int __wrap_unlinkat(int fd,const char *path,int flags) {
     if(fail_unlink) { errno=EACCES;return -1; }
     return __real_unlinkat(fd,path,flags);
+}
+static void combined_cleanup_failure(const char *path, int repair) {
+    int64_t loop = eshkol_event_loop_open_handle(8); CHECK(loop > 0);
+    int64_t listener = eshkol_unix_stream_socket_listen(loop, path); CHECK(listener > 0);
+    fail_close_once = fail_unlink = 1;
+    int64_t ticket = eshkol_unix_stream_socket_close_request(listener); CHECK(ticket > 0);
+    eshkol_resource_cleanup_result_t result;
+    CHECK(eshkol_resource_cleanup_result(ticket, &result) == 0);
+    CHECK(result.state == ESHKOL_CLEANUP_FAILED &&
+          result.stage == ESHKOL_CLEANUP_DESCRIPTOR && result.os_error == EIO && result.retryable);
+    CHECK(failed_close_calls == 1);
+    CHECK(eshkol_resource_cleanup_release(ticket) == ESHKOL_IO_BUSY);
+    CHECK(eshkol_event_loop_close_handle(loop) == ESHKOL_EVENT_LOOP_EBUSY);
+    int reused = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    CHECK(reused >= 0 && reused == failed_close_fd);
+    if (repair) fail_unlink = 0;
+    CHECK(eshkol_resource_cleanup_retry(ticket) == 0);
+    CHECK(eshkol_resource_cleanup_result(ticket, &result) == 0);
+    CHECK(result.state == ESHKOL_CLEANUP_FAILED &&
+          result.stage == ESHKOL_CLEANUP_DESCRIPTOR && result.os_error == EIO && !result.retryable);
+    CHECK(failed_close_calls == 1 && fcntl(reused, F_GETFD) >= 0);
+    CHECK(eshkol_resource_cleanup_retry(ticket) == ESHKOL_IO_INVALID);
+    CHECK(eshkol_resource_cleanup_release(ticket) == 0);
+    CHECK(eshkol_event_loop_close_handle(loop) == 0);
+    CHECK(fcntl(reused, F_GETFD) >= 0);
+    failed_close_fd = -1;
+    CHECK(close(reused) == 0);
+    fail_unlink = 0;
+    if (repair) CHECK(access(path, F_OK) < 0 && errno == ENOENT);
+    else CHECK(unlink(path) == 0);
 }
 static int64_t milliseconds(clockid_t clock) {
     struct timespec t;CHECK(clock_gettime(clock,&t)==0);
@@ -111,17 +156,20 @@ static void exhaustion_child(const char *path) {
     _exit(0);
 }
 int main(void) {
-    char directory[]="/tmp/eshkol-socket-regression-XXXXXX",path[108];
-    CHECK(mkdtemp(directory));CHECK(snprintf(path,sizeof(path),"%s/s.sock",directory)<(int)sizeof(path));
+    char directory[80],path[108];
+    CHECK(eshkol_test_socket_directory(directory,sizeof(directory),"eshkol-socket-regression-"));
+    CHECK(snprintf(path,sizeof(path),"%s/s.sock",directory)<(int)sizeof(path));
+    fprintf(stderr,"SCRATCH: %s\n",directory);
     int64_t loop=eshkol_event_loop_open_handle(16);CHECK(loop>0);
     CHECK(eshkol_unix_stream_socket_listen(loop,"@abstract")==ESHKOL_IO_INVALID);
     CHECK(eshkol_unix_stream_socket_connect_begin(loop,"@abstract",0)==ESHKOL_IO_INVALID);
     const char abstract[]={'\0','a',0};
     CHECK(eshkol_unix_stream_socket_listen(loop,abstract)==ESHKOL_IO_INVALID);
-    fail_mode=fail_unlink=1;
+    fail_mode=fail_unlink=fail_close_once=1;
     CHECK(eshkol_unix_stream_socket_listen(loop,path)==ESHKOL_IO_SYSTEM);
     CHECK(eshkol_unix_stream_socket_last_os_error()==EIO);
     CHECK(eshkol_unix_stream_socket_last_path_error()==EACCES);
+    CHECK(failed_close_calls==1);failed_close_fd=-1;
     struct stat entry;CHECK(lstat(path,&entry)==0 && S_ISSOCK(entry.st_mode));
     fail_mode=fail_unlink=0;CHECK(unlink(path)==0);
     int64_t listener=eshkol_unix_stream_socket_listen(loop,path);CHECK(listener>0);
@@ -142,6 +190,8 @@ int main(void) {
     CHECK(eshkol_unix_stream_socket_close(peer)==0);
     CHECK(eshkol_unix_stream_socket_close(client)==0);
     CHECK(eshkol_unix_stream_socket_close(listener)==0);
+    combined_cleanup_failure(path,1);
+    combined_cleanup_failure(path,0);
     bounded_connect_backoff(loop,path);
     CHECK(eshkol_event_loop_close_handle(loop)==0);
     pid_t child=fork();CHECK(child>=0);
@@ -149,6 +199,6 @@ int main(void) {
     int status;CHECK(waitpid(child,&status,0)==child);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status)==0);
     CHECK(rmdir(directory)==0);
-    puts("PASS: atomic socket/accept flags, EINTR retry, rollback path status, abstract refusal, bounded connect backoff, EMFILE recovery");
+    puts("PASS: atomic socket/accept flags, EINTR retry, rollback path status, abstract refusal, bounded connect backoff, descriptor/path error priority, EMFILE recovery");
     return 0;
 }

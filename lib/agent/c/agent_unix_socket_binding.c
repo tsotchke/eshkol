@@ -3,10 +3,9 @@
 #include <string.h>
 #include "eshkol/eshkol.h"
 #include "eshkol/core/unix_socket_stream.h"
+#include "eshkol/core/resource_lease.h"
 
 extern void eshkol_unix_stream_socket_clear_os_error(void);
-/* Scope-only recovery handoff; not part of the public resource ABI. */
-#include "../../core/resource_handle_internal.h"
 
 /* Align the private Scheme outcome names when shared native codes change. */
 _Static_assert(ESHKOL_IO_TIMEOUT == -2, "update Scheme Unix timeout outcome");

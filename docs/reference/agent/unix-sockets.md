@@ -1,10 +1,10 @@
 # `agent.unix_stream_socket` — Unix-domain stream sockets
 
 Filesystem Unix stream sockets use the shared resource lease and explicit
-caller-owned event loop. Native Linux JIT/AOT support is implemented; the
-implementation evidence records the exact source and platform exercised.
-macOS requires separate qualification. Windows and the bytecode VM explicitly
-refuse this bridge until their adapters are available.
+caller-owned event loop. The implementation evidence records the exact native,
+JIT/AOT and platform routes exercised. macOS public JIT/AOT requires separate
+qualification from native execution. Windows, WASM and the bytecode VM
+explicitly refuse this bridge until their adapters are available.
 
 ```scheme
 (require agent.unix_stream_socket)
@@ -26,7 +26,7 @@ Sources: `lib/agent/unix_stream_socket.esk`,
 | `unix-stream-socket-connect-finish! id` | Complete within begin's remaining budget, without renewal. A published failed attempt remains owned until close. |
 | `unix-stream-socket-read! id bv start count` | Nonblocking positive checked range; `#(data count #f)`, `#(would-block 0 #f)`, `#(eof 0 #f)`, or an operation-labelled error. |
 | `unix-stream-socket-write! id bv start count` | Exact partial byte count, would-block, or an operation-labelled error. SIGPIPE is suppressed per socket/send. |
-| `unix-stream-socket-poll id interests timeout-ms` | Mask 1=read, 2=write, 3=both. Returns a ready mask, timeout or error. Pending connect is capped by begin's deadline. |
+| `unix-stream-socket-poll id interests timeout-ms` | Mask 1=read, 2=write, 3=both. Returns a ready mask, timeout, cancellation or error. Pending connect is capped by begin's deadline. |
 | `unix-stream-socket-cancel! id` | Idempotent thread-safe sticky cancellation. Ownership remains until close. |
 | `unix-stream-socket-close! id` | Accept close, retire the identity and queue teardown after active borrows release. |
 | `unix-stream-socket-close-request! id` | Accept close and return an independently owned cleanup-result ticket. |
@@ -92,11 +92,33 @@ is never retried, even if the OS later reuses its number. Successful detached
 convenience-close results are discarded automatically; failed results remain
 recoverable. The old socket identity never regains I/O authority.
 
+The strict ownership contract classifies cleanup retry as an observation:
+the operation borrows the same owned ticket and does not consume it, create a
+replacement or change its handle kind. Observation here does not mean pure or
+effect-free: retry can perform filesystem cleanup. Pending, failed and terminal
+are runtime result-snapshot states, so inspect the result again after retry;
+the checker does not infer completion from the retry call. Cancel is a protocol
+transition because it changes which socket operations remain admissible.
+
+## Scoped helpers and cleanup errors
+
 `call-with-unix-stream-listener`, `call-with-unix-stream-connection` and
-`call-with-unix-stream-accept` close on normal return, exception and
-continuation escape, preserving the body result. Re-entering a finished scope
-raises before the receiver runs again. Failed detached cleanup can be observed
-using a retained socket identity and `unix-stream-socket-cleanup-ticket`.
+`call-with-unix-stream-accept` accept close on normal return, exception and
+continuation escape. They privately own the cleanup ticket, perform one bounded
+cleanup retry and release a terminal result. Normal return preserves the body
+value when cleanup succeeds; a cleanup failure raises with plain context,
+retired identity and result-snapshot data after the terminal ticket is released.
+
+An exception or continuation escape preserves its original control and
+**does not report the cleanup result**. Use explicit ticket ownership through
+`unix-stream-socket-close-request!`, result inspection, retry and terminal release
+when cleanup-error inspection must be guaranteed on those paths.
+
+A genuinely pending or retryable watch failure remains safely detached and
+retained; unresolved ownership is never discarded. Its result can be recovered
+with a retained socket identity and `unix-stream-socket-cleanup-ticket`, but a
+scoped non-local exit does not guarantee delivery of that identity or result.
+Re-entering a finished scope raises before the receiver runs again.
 
 ## Paths and platforms
 
@@ -111,9 +133,11 @@ Linux abstract names and descriptor passing are outside this slice. The VM
 refuses the imported bridge before bytecode emission. Native Linux and macOS
 results are reported separately. Darwin pending-connect controls use labelled
 private-path EAGAIN injection; Linux fixtures use a real full backlog. The
-fixture helper provides observations and those labelled controls, not a
-replacement socket implementation or agent archive. The JIT loads that helper
-into its process to resolve observation symbols; AOT links the same helper.
+observation helper does not interpose connect or replace a socket implementation
+or agent archive. A separate Darwin pending-control library supplies the
+labelled private-path injection only for its three control cases and native
+self-test. The JIT loads the observation helper into its process to resolve
+symbols; AOT links the same observation helper.
 
 ## Qualification
 

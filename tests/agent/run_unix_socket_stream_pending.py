@@ -12,6 +12,10 @@ import sys
 import tempfile
 import time
 
+COMPILE_LIMIT_SECONDS = 90
+VM_ADMISSION_LIMIT_SECONDS = 20
+PEER_LIMIT_MS = 300000
+
 
 def group_alive(pid):
     try:
@@ -47,7 +51,7 @@ def stop_group(process):
     raise RuntimeError("owned test process group did not stop")
 
 
-def run_owned(argv, log, env, timeout=45):
+def run_owned(argv, log, env, *, timeout):
     with log.open("xb") as stream:
         process = subprocess.Popen([str(x) for x in argv], stdout=stream, stderr=subprocess.STDOUT,
                                    env=env, start_new_session=True, restore_signals=True)
@@ -75,7 +79,8 @@ def socket_scratch():
 
 def transfer_budget(compile_seconds):
     # Compilation under contention measures available throughput for this run.
-    # Keep both the caller's transfer loop and the outer process bound finite.
+    # Every public execution uses this bound, including ordinary JIT cases.
+    # The large-transfer caller also uses it for its finite I/O progress loop.
     return min(180, max(45, 30 + 4 * compile_seconds))
 
 
@@ -101,7 +106,7 @@ def main():
     env = os.environ.copy()
     for name in ["LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]:
         env.pop(name, None)
-    env.update(ESHKOL_JIT_CACHE="0", ESHKOL_UNIX_SOCKET_PEER_BUDGET_MS="300000",
+    env.update(ESHKOL_JIT_CACHE="0", ESHKOL_UNIX_SOCKET_PEER_BUDGET_MS=str(PEER_LIMIT_MS),
                ESHKOL_UNIX_STREAM_SOCKET_SCENARIO=args.scenario,
                ESHKOL_UNIX_STREAM_SOCKET_SCRATCH=str(sockets),
                ESHKOL_PATH=str(args.source.resolve().parents[2] / "lib"),
@@ -113,7 +118,8 @@ def main():
             output = work / "unsupported.eskb"
             argv = [args.runner, "--profile", "hosted-vm", "--emit-eskb", output, args.source]
             result["commands"].append([str(x) for x in argv])
-            code, text = run_owned(argv, work / "vm.log", env)
+            code, text = run_owned(argv, work / "vm.log", env,
+                                   timeout=VM_ADMISSION_LIMIT_SECONDS)
             if code != 1 or "unsupported or malformed VM extern declaration" not in text or output.exists():
                 raise RuntimeError("expected explicit pre-emission VM unsupported result")
         else:
@@ -160,32 +166,43 @@ def main():
                     raise RuntimeError("peer readiness does not confirm its controlled state")
                 result["peer_ready_state"] = ready
             base = [args.runner, "-L", build, "-L", library.parent, "-l", link_name]
-            budget = 45
-            if args.scenario == "nul_and_large_payload" and args.mode == "jit":
+            if args.mode == "jit":
                 # A compiler-only pass measures this exact fixture without
-                # running it. JIT execution still compiles and runs normally.
-                probe = [*base, "-O0", "-c", "-o", work / "compile-probe", args.source]
+                # running it, for every scenario. JIT execution still compiles
+                # and runs normally under one bound derived from this pass.
+                probe_output = work / "compile-probe.o"
+                probe = [*base, "-O0", "-c", "-o", probe_output, args.source]
                 result["commands"].append([str(x) for x in probe])
                 started = time.monotonic()
-                code, _ = run_owned(probe, work / "compile-probe.log", env, timeout=90)
-                if code:
+                code, text = run_owned(probe, work / "compile-probe.log", env,
+                                       timeout=COMPILE_LIMIT_SECONDS)
+                if (code or not probe_output.exists() or not probe_output.stat().st_size or
+                        re.search(r"^FAIL:|JIT session error|LLVM ERROR:", text, re.M)):
                     raise RuntimeError("fixture compile-time measurement did not complete")
                 result["measured_compile_seconds"] = time.monotonic() - started
-                budget = transfer_budget(result["measured_compile_seconds"])
-            if args.mode == "jit":
+                result["compile_measurement"] = "same-fixture object compilation"
                 argv = [*base, "-r", args.source]
             else:
                 executable = work / "socket-acceptance"
                 argv = [*base, "-O0", "-o", executable, args.source]
                 result["commands"].append([str(x) for x in argv])
                 started = time.monotonic()
-                code, text = run_owned(argv, work / "compile.log", env, timeout=90)
-                if code:
+                code, text = run_owned(argv, work / "compile.log", env,
+                                       timeout=COMPILE_LIMIT_SECONDS)
+                if (code or not executable.exists() or not executable.stat().st_size or
+                        re.search(r"^FAIL:|JIT session error|LLVM ERROR:", text, re.M)):
                     raise RuntimeError("AOT compilation did not complete")
                 result["measured_compile_seconds"] = time.monotonic() - started
-                if args.scenario == "nul_and_large_payload":
-                    budget = transfer_budget(result["measured_compile_seconds"])
+                result["compile_measurement"] = "same-fixture AOT compilation"
                 argv = [executable]
+            budget = transfer_budget(result["measured_compile_seconds"])
+            result["owned_execution_budget_seconds"] = budget
+            result["compile_limit_seconds"] = COMPILE_LIMIT_SECONDS
+            result["peer_limit_ms"] = PEER_LIMIT_MS
+            # Even at both hard ceilings, the peer outlives compilation and
+            # execution plus readiness/teardown grace. Its budget never renews.
+            if COMPILE_LIMIT_SECONDS + budget + 10 >= PEER_LIMIT_MS / 1000:
+                raise RuntimeError("controlled peer budget does not cover this execution")
             if args.scenario == "nul_and_large_payload":
                 result["transfer_budget_seconds"] = budget
                 env["ESHKOL_UNIX_SOCKET_TRANSFER_BUDGET_MS"] = str(int(budget * 1000))

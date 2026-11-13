@@ -6,6 +6,7 @@
 #include <eshkol/core/unix_socket_stream.h>
 #include <eshkol/core/event_loop.h>
 #include "unix_socket_stream_fixture_support.h"
+#include "unix_socket_test_directory.h"
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -50,8 +51,7 @@ static void nap(int ms) {
 static char directory[80], path[104];
 static int64_t loop_handle;
 static void setup(void) {
-    strcpy(directory, "/tmp/eshkol-unix-XXXXXX");
-    CHECK(mkdtemp(directory) != NULL);
+    CHECK(eshkol_test_socket_directory(directory, sizeof(directory), "eshkol-unix-") != NULL);
     CHECK(chmod(directory, 0700) == 0);
     CHECK(snprintf(path, sizeof(path), "%s/stream.sock", directory) < (int)sizeof(path));
     fprintf(stderr, "SCRATCH: %s\n", directory);

@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "eshkol/core/unix_socket_stream.h"
 #include "eshkol/core/event_loop.h"
+#include "unix_socket_test_directory.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -23,8 +24,10 @@ static void *request_close(void *unused) {
     return NULL;
 }
 int main(void) {
-    char directory[]="/tmp/eshkol-cleanup-XXXXXX",path[108];
-    CHECK(mkdtemp(directory));snprintf(path,sizeof(path),"%s/s.sock",directory);
+    char directory[80],path[108];
+    CHECK(eshkol_test_socket_directory(directory,sizeof(directory),"eshkol-cleanup-"));
+    CHECK(snprintf(path,sizeof(path),"%s/s.sock",directory)<(int)sizeof(path));
+    fprintf(stderr,"SCRATCH: %s\n",directory);
     int64_t loop=eshkol_event_loop_open_handle(16);CHECK(loop>0);
     int64_t listener=eshkol_unix_stream_socket_listen(loop,path);CHECK(listener>0);
     eshkol_resource_lease_t lease;
