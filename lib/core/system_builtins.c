@@ -253,15 +253,20 @@ static int sys_require_capability(const char* capability) {
 
 /* The runtime's catchable-error entry (lib/core/runtime_errors_hosted.cpp,
  * linked in the same archive as this file). Raises an R7RS condition the
- * program's own handler can take; it does not return. */
-extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+ * program's own handler can take; it does not return. The first parameter is
+ * eshkol_exception_type_t, spelled `int` here for the reason given at the
+ * event-loop section's own forward declaration of the same symbol: runtime.h
+ * pulls in tagged-value typedefs this C11 TU does not use.
+ * ESHKOL_EXCEPTION_ERROR is 0. */
+extern void eshkol_runtime_fatal(int type, const char* fmt, ...);
+#define SYS_PROTOCOL_EXC_ERROR 0
 
 /** Refuse a network operation because one of its fields does not fit the
  *  protocol grammar, naming the operation and the field. The refusal happens
  *  before any byte of the request reaches a socket, and it is an ordinary
  *  Eshkol error, so a program can catch it and choose what to do. */
 static void sys_protocol_refusal(const char* operation, const char* field) {
-    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+    eshkol_runtime_fatal(SYS_PROTOCOL_EXC_ERROR,
                          "%s: %s does not fit the protocol grammar",
                          operation, field);
 }
