@@ -33,6 +33,27 @@ WORK_DIR="$(mktemp -d "$BUILD_DIR/process-exit-child.XXXXXX")"
 
 failures=0
 
+# The children. A script spawned by path with no arguments is the one spelling
+# that means the same thing to the native engines, which hand a command string
+# to /bin/sh, and to the bytecode VM, which execs it directly.
+make_survivor_script() {   # <path> <marker>
+    cat > "$1" <<SCRIPT
+#!/bin/sh
+sleep 3
+printf child-survived > '$2'
+SCRIPT
+    chmod +x "$1"
+}
+
+make_stubborn_script() {   # <path>
+    cat > "$1" <<'SCRIPT'
+#!/bin/sh
+trap '' TERM
+sleep 25
+SCRIPT
+    chmod +x "$1"
+}
+
 report_work_dir() {
     echo "NOTE: lane logs are under $WORK_DIR" >&2
 }
@@ -66,7 +87,9 @@ check_survives() {
     engine="$1"; probe="$2"; label="$3"
     marker="$WORK_DIR/marker-$label-$engine.txt"
     tag="survives-$label-$engine"
-    ESHKOL_EXIT_CHILD_MODE=survives ESHKOL_EXIT_CHILD_MARKER="$marker" \
+    script="$WORK_DIR/survivor-$label-$engine.sh"
+    make_survivor_script "$script" "$marker"
+    ESHKOL_EXIT_CHILD_SCRIPT="$script" \
         run_engine "$engine" "$probe" "$tag" 30
     rc=$?
     if [ "$rc" -eq 2 ]; then
@@ -100,8 +123,10 @@ check_survives() {
 check_no_hang() {
     engine="$1"
     tag="stubborn-$engine"
+    script="$WORK_DIR/stubborn-$engine.sh"
+    make_stubborn_script "$script"
     started=$(date +%s)
-    ESHKOL_EXIT_CHILD_MODE=stubborn ESHKOL_EXIT_CHILD_MARKER="$WORK_DIR/unused" \
+    ESHKOL_EXIT_CHILD_SCRIPT="$script" \
         run_engine "$engine" process_exit_child_probe.esk "$tag" 20
     rc=$?
     elapsed=$(( $(date +%s) - started ))
@@ -139,8 +164,9 @@ echo "=== a pseudo-terminal child does not hold the program open either ==="
 for engine in jit aot vm; do
     tag="pty-exit-$engine"
     checks_started=$(date +%s)
-    ESHKOL_EXIT_CHILD_MODE=survives \
-    ESHKOL_EXIT_CHILD_MARKER="$WORK_DIR/pty-marker-$engine.txt" \
+    script="$WORK_DIR/pty-child-$engine.sh"
+    make_survivor_script "$script" "$WORK_DIR/pty-marker-$engine.txt"
+    ESHKOL_EXIT_CHILD_SCRIPT="$script" \
         run_engine "$engine" process_exit_child_probe_pty.esk "$tag" 30
     rc=$?
     elapsed=$(( $(date +%s) - checks_started ))

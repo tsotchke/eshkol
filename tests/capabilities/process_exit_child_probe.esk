@@ -1,32 +1,20 @@
 ;;; A program that ends while a child it started is still running leaves that
 ;;; child running, and its own exit does not wait for the child.
 ;;;
-;;; MODE picks which half to exercise:
-;;;   survives   the child writes a marker a little after the parent is gone;
-;;;              the driver looks for the marker afterwards
-;;;   stubborn   the child ignores SIGTERM and outlives the parent by a long
-;;;              way; the driver times the parent's exit
+;;; The child is a script the driver wrote, spawned by path with no arguments:
+;;; the native engines hand a command string to /bin/sh and the bytecode VM
+;;; execs it directly, and a bare path is the one spelling that means the same
+;;; thing to both.
+;;;
+;;; ESHKOL_EXIT_CHILD_SCRIPT names it. In the "survives" case it writes a
+;;; marker a little after the parent is gone, which the driver looks for; in
+;;; the "stubborn" case it ignores SIGTERM and outlives the parent by a long
+;;; way, and the driver times the parent's exit.
 (require stdlib)
 
-(define mode (getenv "ESHKOL_EXIT_CHILD_MODE"))
-(define marker (getenv "ESHKOL_EXIT_CHILD_MARKER"))
+(define script (getenv "ESHKOL_EXIT_CHILD_SCRIPT"))
 
-(define command
-  (if (string=? mode "stubborn")
-      (string-append "trap '' TERM; sleep 25 >/dev/null 2>&1")
-      (string-append "sleep 3; printf child-survived > '" marker "' 2>/dev/null")))
-
-;; The native engines hand a command string to /bin/sh; the bytecode VM execs
-;; an argv directly and takes a list for it. Offer the list first — the native
-;; builtin reads a non-string first argument as a failure and answers -1, so
-;; the string form is what runs there — and the same child runs on all three.
-(define (spawn-through-shell command-string)
-  (let ((argv-pid (process-spawn (list "/bin/sh" "-c" command-string) ".")))
-    (if (and (number? argv-pid) (> argv-pid 0))
-        argv-pid
-        (process-spawn command-string ""))))
-
-(define pid (spawn-through-shell command))
+(define pid (process-spawn script ""))
 (display "spawned:")
 (display (if (and (number? pid) (> pid 0)) "yes" "no"))
 (newline)
