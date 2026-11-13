@@ -58,7 +58,8 @@
   merkle-proof merkle-verify
   ;; Version 1: the pre-domain-separation computation, kept so roots
   ;; recorded under it stay readable
-  merkle-tree-v1 merkle-tree-with-hash-v1 merkle-proof-v1 merkle-verify-v1
+  merkle-leaf-v1 merkle-tree-v1 merkle-tree-with-hash-v1
+  merkle-proof-v1 merkle-verify-v1
   ;; Content-addressable store
   make-cas make-cas-with-hash cas? cas-put! cas-get cas-has? cas-size cas-keys)
 

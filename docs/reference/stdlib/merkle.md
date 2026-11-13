@@ -42,6 +42,7 @@ under it:
 
 | Version 2 | Version 1 |
 |-----------|-----------|
+| `(merkle-leaf data [hash-fn])` | `(merkle-leaf-v1 data [hash-fn])` |
 | `(merkle-tree data-list)` | `(merkle-tree-v1 data-list)` |
 | `(merkle-tree-with-hash data-list hash-fn)` | `(merkle-tree-with-hash-v1 data-list hash-fn)` |
 | `(merkle-proof tree index)` | `(merkle-proof-v1 tree index)` |
