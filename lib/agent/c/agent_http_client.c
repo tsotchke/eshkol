@@ -415,7 +415,7 @@ qllm_http_response_t* qllm_http_post(const char* url,
     struct curl_slist* slist = NULL;
     for (int64_t i = 0; i < header_count && headers; i++) {
         if (headers[i] &&
-            (!eshkol_http_valid_header_line(headers[i]) ||
+            (!eshkol_http_header_line_admissible(headers[i]) ||
              !slist_append_checked(&slist, headers[i]))) {
             curl_slist_free_all(slist);
             curl_easy_cleanup(curl);
@@ -479,7 +479,7 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
      * so it's safe to inject auth_header verbatim into the slist. We
      * still skip empty/NULL to avoid sending a blank header line. */
     if (auth_header && auth_header[0] != '\0') {
-        if (!eshkol_http_valid_header_line(auth_header) ||
+        if (!eshkol_http_header_line_admissible(auth_header) ||
             !slist_append_checked(&slist, auth_header)) goto post_json_oom;
     }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);

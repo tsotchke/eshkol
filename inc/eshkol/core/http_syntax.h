@@ -35,6 +35,7 @@
 #define ESHKOL_CORE_HTTP_SYNTAX_H
 
 #include <stddef.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -200,9 +201,41 @@ static inline int eshkol_http_valid_request_target(const char* target) {
  */
 static inline int eshkol_http_valid_authority(const char* host) {
     size_t i = 0;
+    size_t length = 0;
     if (!host || !*host) return 0;
-    for (; host[i]; ++i) {
-        if (!eshkol_http_is_target_char((unsigned char)host[i])) return 0;
+    while (host[length]) length++;
+
+    /* A bracketed IPv6 literal, optionally followed by ":" port. */
+    if (host[0] == '[') {
+        size_t close = 1;
+        while (close < length && host[close] != ']') {
+            const unsigned char c = (unsigned char)host[close];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                  (c >= 'A' && c <= 'F') || c == ':' || c == '.' || c == '%'))
+                return 0;
+            close++;
+        }
+        if (close == 1 || close >= length) return 0;
+        i = close + 1;
+    } else {
+        /* A registered name or an IPv4 literal: no "/", "?", "#", "@", "[",
+         * "]" or ":" among them, so `evil.test/x?y` is not a host and a
+         * userinfo cannot be smuggled in front of one. */
+        while (i < length && host[i] != ':') {
+            const unsigned char c = (unsigned char)host[i];
+            if (!eshkol_http_is_target_char(c)) return 0;
+            if (c == '/' || c == '?' || c == '@' || c == '[' || c == ']')
+                return 0;
+            i++;
+        }
+        if (i == 0) return 0;  /* an empty host */
+    }
+
+    if (i == length) return 1;          /* no port */
+    if (host[i] != ':') return 0;
+    if (i + 1 == length) return 0;      /* a colon with no port */
+    for (i = i + 1; i < length; ++i) {
+        if (host[i] < '0' || host[i] > '9') return 0;
     }
     return 1;
 }
@@ -322,6 +355,164 @@ static inline int eshkol_http_render_header_block(const char* block,
     return 1;
 }
 
+/* ─── Length-aware forms ──────────────────────────────────────────────────── */
+/*
+ * A header section may contain a NUL: the server accumulates bytes by count
+ * and scans only for the blank line. Validating through a NUL-terminated
+ * pointer would then check the bytes before the first NUL and silently ignore
+ * the rest, so `G\0ET` would validate as the method `G`. These forms take the
+ * length the caller actually holds and refuse an embedded NUL outright, which
+ * is also what the grammar says: NUL is neither a tchar nor a target char.
+ *
+ * Each requires `text` to be NUL-terminated at `length`, which is what
+ * std::string::data() and a C string both give.
+ */
+
+/** @brief eshkol_http_valid_method() over exactly `length` bytes. */
+static inline int eshkol_http_valid_method_n(const char* text, size_t length) {
+    return eshkol_http_valid_token(text, length);
+}
+
+/* The two forms below copy `length` bytes into a local buffer and terminate
+ * it there, so the terminated check sees exactly those bytes and not whatever
+ * follows them in the caller's buffer. A NUL among them refuses the input: it
+ * is neither a target char nor a field-value byte. */
+
+/** @brief eshkol_http_valid_request_target() over exactly `length` bytes. */
+static inline int eshkol_http_valid_request_target_n(const char* text,
+                                                     size_t length) {
+    char buffer[8192];
+    size_t i;
+    if (!text || length == 0 || length >= sizeof(buffer)) return 0;
+    for (i = 0; i < length; ++i) {
+        if (text[i] == '\0') return 0;
+        buffer[i] = text[i];
+    }
+    buffer[length] = '\0';
+    return eshkol_http_valid_request_target(buffer);
+}
+
+/**
+ * @brief eshkol_http_valid_header_line() over exactly `length` bytes.
+ *
+ * Length-aware throughout rather than by copying, so a legal field line of
+ * any length is judged on its own bytes: the server's header budget, not a
+ * buffer here, is what bounds a header section.
+ */
+static inline int eshkol_http_valid_header_line_n(const char* text,
+                                                  size_t length) {
+    size_t name_length = 0;
+    size_t value_start;
+    size_t value_length;
+    if (!text || length == 0) return 0;
+    while (name_length < length && text[name_length] != ':') name_length++;
+    if (name_length == length) return 0;  /* no colon: not a field line */
+    value_start = name_length + 1;
+    value_length = length - value_start;
+    while (value_length && text[value_start] == ' ') {
+        value_start++;
+        value_length--;
+    }
+    return eshkol_http_valid_token(text, name_length) &&
+           eshkol_http_valid_field_value(text + value_start, value_length);
+}
+
+/* ─── Fields the client sets itself ───────────────────────────────────────── */
+
+/**
+ * @brief True when `length` bytes at `name` name a field an Eshkol client
+ *        writes itself, so a caller may not also supply it.
+ *
+ * Two kinds of field are reserved. The framing and connection-control fields
+ * (`Content-Length`, `Transfer-Encoding`, `Host`, `Connection`, `Upgrade`) are
+ * emitted by every client from the request it was given; a caller-supplied
+ * second copy puts two framing headers on the wire, and RFC 9112 section 6.3
+ * forbids a sender emitting both a `Content-Length` and a `Transfer-Encoding`.
+ * A front end honouring one and a back end honouring the other desynchronise,
+ * which is request smuggling. The handshake fields (`Sec-WebSocket-Key`,
+ * `-Version`, `-Accept`, `-Extensions`, `-Protocol`) are derived per connection
+ * from the CSPRNG and must not be forced by a caller.
+ *
+ * @param name       Field name, not NUL-terminated.
+ * @param length     Length of `name` in bytes.
+ * @param websocket  Non-zero to reserve the `Sec-WebSocket-*` set as well.
+ * @return 1 when the name is reserved, 0 otherwise.
+ */
+static inline int eshkol_http_reserved_field_name(const char* name,
+                                                  size_t length,
+                                                  int websocket) {
+    static const char* const framing[] = {
+        "content-length", "transfer-encoding", "host", "connection", "upgrade"
+    };
+    static const char* const handshake[] = {
+        "sec-websocket-key", "sec-websocket-version", "sec-websocket-accept",
+        "sec-websocket-extensions", "sec-websocket-protocol"
+    };
+    size_t set;
+    if (!name) return 0;
+    for (set = 0; set < 2; ++set) {
+        const char* const* names = set == 0 ? framing : handshake;
+        size_t count = set == 0 ? sizeof(framing) / sizeof(framing[0])
+                                : sizeof(handshake) / sizeof(handshake[0]);
+        size_t n;
+        if (set == 1 && !websocket) break;
+        for (n = 0; n < count; ++n) {
+            size_t i;
+            if (strlen(names[n]) != length) continue;
+            for (i = 0; i < length; ++i) {
+                unsigned char c = (unsigned char)name[i];
+                if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+                if ((char)c != names[n][i]) break;
+            }
+            if (i == length) return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief True when any line of `block` names a reserved field.
+ *
+ * The block is walked the same way eshkol_http_valid_header_block() walks it,
+ * so a name is recognised only at a line start: a reserved name appearing
+ * inside another field's value is not a match.
+ *
+ * @param block      Header block; NULL or empty names nothing.
+ * @param websocket  Non-zero to reserve the `Sec-WebSocket-*` set as well.
+ * @param line_index When a line is refused and this is non-NULL, receives the
+ *                   zero-based index of that line.
+ * @return 1 when a reserved field is named, 0 otherwise.
+ */
+static inline int eshkol_http_block_names_reserved_field(const char* block,
+                                                         int websocket,
+                                                         size_t* line_index) {
+    size_t pos = 0;
+    size_t index = 0;
+    if (!block || !*block) return 0;
+    while (block[pos]) {
+        size_t len = 0;
+        size_t content;
+        while (block[pos + len] && block[pos + len] != '\n') len++;
+        content = len;
+        if (content > 0 && block[pos + content - 1] == '\r') content--;
+        if (content > 0) {
+            size_t name_length = 0;
+            while (name_length < content && block[pos + name_length] != ':')
+                name_length++;
+            if (name_length < content &&
+                eshkol_http_reserved_field_name(block + pos, name_length,
+                                                websocket)) {
+                if (line_index) *line_index = index;
+                return 1;
+            }
+            index++;
+        }
+        pos += len;
+        if (block[pos] == '\n') pos++;
+    }
+    return 0;
+}
+
 /* ─── One answer for a whole request line ─────────────────────────────────── */
 
 /**
@@ -331,16 +522,30 @@ static inline int eshkol_http_render_header_block(const char* block,
  * @param target       Request target, or NULL to skip the target check.
  * @param header_block Newline-delimited extra headers, or NULL for none.
  * @return NULL when the request line and headers are admissible; otherwise a
- *         static string naming the field: "method", "request-target" or
- *         "header". The string is stable and safe to put in an error message.
+ *         static string naming the field: "method", "request-target",
+ *         "header" or "framing header". The string is stable and safe to put
+ *         in an error message.
+ * @param websocket    Non-zero to reserve the `Sec-WebSocket-*` set as well.
  */
-static inline const char* eshkol_http_request_offending_field(
-    const char* method, const char* target, const char* header_block) {
+static inline const char* eshkol_http_request_offending_field_ex(
+    const char* method, const char* target, const char* header_block,
+    int websocket) {
     if (method && !eshkol_http_valid_method(method)) return "method";
     if (target && !eshkol_http_valid_request_target(target))
         return "request-target";
     if (!eshkol_http_valid_header_block(header_block, NULL)) return "header";
+    if (eshkol_http_block_names_reserved_field(header_block, websocket, NULL))
+        return "framing header";
     return NULL;
+}
+
+/**
+ * @brief eshkol_http_request_offending_field_ex() for a plain HTTP request.
+ */
+static inline const char* eshkol_http_request_offending_field(
+    const char* method, const char* target, const char* header_block) {
+    return eshkol_http_request_offending_field_ex(method, target, header_block,
+                                                  0);
 }
 
 #ifdef __cplusplus

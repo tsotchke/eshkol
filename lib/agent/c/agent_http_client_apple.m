@@ -237,7 +237,8 @@ qllm_http_response_t* qllm_http_post(const char* url,
         NSMutableString* lines = [[NSMutableString alloc] init];
         for (int64_t i = 0; headers && i < header_count; ++i) {
             if (headers[i]) {
-                if (!eshkol_http_valid_header_line(headers[i])) return NULL;
+                if (!eshkol_http_header_line_admissible(headers[i]))
+                    return NULL;
                 [lines appendFormat:@"%s\n", headers[i]];
             }
         }
@@ -254,7 +255,7 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
         NSMutableString* headers =
             [NSMutableString stringWithString:@"Content-Type: application/json\nAccept: application/json\n"];
         if (auth_header && *auth_header) {
-            if (!eshkol_http_valid_header_line(auth_header)) return NULL;
+            if (!eshkol_http_header_line_admissible(auth_header)) return NULL;
             [headers appendFormat:@"%s\n", auth_header];
         }
         return eshkol_http_request("POST", url, headers.UTF8String, body, timeout_ms);

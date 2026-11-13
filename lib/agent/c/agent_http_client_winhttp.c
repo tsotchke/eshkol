@@ -256,7 +256,8 @@ static qllm_http_response_t* perform_request(const wchar_t* method,
         (uint64_t)body_len > UINT32_MAX ||
         (!body && body_len != 0)) return NULL;
     for (int64_t i = 0; headers && i < header_count; ++i) {
-        if (headers[i] && !eshkol_http_valid_header_line(headers[i])) return NULL;
+        if (headers[i] && !eshkol_http_header_line_admissible(headers[i]))
+            return NULL;
     }
     const int timeout = timeout_ms > 0 ? timeout_ms : ESHKOL_HTTP_DEFAULT_TIMEOUT_MS;
     ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeout;

@@ -183,6 +183,33 @@
               (http-url-has-scheme? url "https://"))
     (error "http: URL must be an absolute http:// or https:// URL" url)))
 
+(define http-reserved-field-names
+  ;; The client writes these itself from the request it was given. A caller
+  ;; copy would put a second framing header on the wire, and RFC 9112 section
+  ;; 6.3 forbids a sender emitting both a Content-Length and a
+  ;; Transfer-Encoding: a front end honouring one and a back end honouring the
+  ;; other desynchronise, which is request smuggling.
+  '("content-length" "transfer-encoding" "host" "connection" "upgrade"))
+
+(define (http-downcase-string s)
+  (let loop ((i 0) (out ""))
+    (if (= i (string-length s))
+        out
+        (let* ((c (string-ref s i))
+               (n (char->integer c)))
+          (loop (+ i 1)
+                (string-append out
+                               (string (if (and (>= n 65) (<= n 90))
+                                           (integer->char (+ n 32))
+                                           c))))))))
+
+(define (http-reserved-field-name? name)
+  (let ((lowered (http-downcase-string name)))
+    (let loop ((rest http-reserved-field-names))
+      (and (pair? rest)
+           (or (string=? lowered (car rest))
+               (loop (cdr rest)))))))
+
 (define (http-check-headers headers)
   (for-each (lambda (pair)
               (let ((name (if (pair? pair) (car pair) ""))
@@ -190,7 +217,10 @@
                 (unless (and (http-token-string? name)
                              (http-safe-string? val))
                   (error "http: invalid RFC 9110 header name or unsafe control byte in value"
-                         pair))))
+                         pair))
+                (when (http-reserved-field-name? name)
+                  (error "http: this client sets that framing header itself; supplying it would put two on the wire"
+                         name))))
             headers))
 
 (define (http-headers->block headers)

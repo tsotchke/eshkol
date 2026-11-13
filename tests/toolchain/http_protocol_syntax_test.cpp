@@ -100,6 +100,22 @@ int main() {
            "a space in an authority is refused");
     expect(!eshkol_http_valid_authority("evil\r\nX: 1"),
            "CRLF in an authority is refused");
+    // A Host is host[:port] and nothing else, so a path, a query, a userinfo
+    // or a non-numeric port cannot ride along in one.
+    expect(!eshkol_http_valid_authority("evil.test/x?y"),
+           "a path in an authority is refused");
+    expect(!eshkol_http_valid_authority("evil.test?y"),
+           "a query in an authority is refused");
+    expect(!eshkol_http_valid_authority("user@evil.test"),
+           "a userinfo in an authority is refused");
+    expect(!eshkol_http_valid_authority("example.test:http"),
+           "a non-numeric port is refused");
+    expect(!eshkol_http_valid_authority("example.test:"),
+           "a colon with no port is refused");
+    expect(!eshkol_http_valid_authority("[::1"),
+           "an unterminated IPv6 literal is refused");
+    expect(eshkol_http_valid_authority("[::1]"),
+           "a bracketed IPv6 literal with no port");
 
     // ─── Absolute URLs, the shape the clients take ──────────────────────────
     expect(eshkol_http_valid_absolute_url("https://example.test/a?b=c"),
@@ -184,6 +200,48 @@ int main() {
                  "CRLF separates two header lines, each validated on its own");
     expect_field("GET", "/health", "Bad Header: 1", "header",
                  "a field name with a space names the header");
+
+    // ─── Fields the client sets itself (RFC 9112 section 6.3) ──────────────
+    // The reviewer's input: every byte inside the grammar, and the request it
+    // would have produced carries both a Transfer-Encoding and the client's
+    // own Content-Length.
+    expect_field("POST", "/x", "Transfer-Encoding: chunked", "framing header",
+                 "a caller Transfer-Encoding names the framing header");
+    expect_field("POST", "/x", "Content-Length: 0", "framing header",
+                 "a caller Content-Length names the framing header");
+    expect_field("GET", "/x", "Host: internal", "framing header",
+                 "a caller Host names the framing header");
+    expect_field("GET", "/x", "Connection: keep-alive", "framing header",
+                 "a caller Connection names the framing header");
+    expect_field("GET", "/x", "Upgrade: h2c", "framing header",
+                 "a caller Upgrade names the framing header");
+    expect_field("POST", "/x", "transfer-ENCODING: chunked", "framing header",
+                 "the match is case-insensitive");
+    expect_field("POST", "/x", "Accept: text/plain\nContent-Length: 5",
+                 "framing header",
+                 "a reserved field on a later line is found");
+    expect_field("GET", "/x", "X-Note: Content-Length: 5", nullptr,
+                 "a reserved name inside another value is not a match");
+    expect_field("GET", "/x", "Content-Length-Note: 5", nullptr,
+                 "a longer name that starts with a reserved one is admitted");
+
+    // The Sec-WebSocket-* set is reserved only for the WebSocket client, which
+    // derives those values per connection from the CSPRNG.
+    expect(eshkol_http_request_offending_field_ex(
+               "GET", "/x", "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==", 1) !=
+               nullptr,
+           "a caller WebSocket key is refused on the WebSocket path");
+    expect(eshkol_http_request_offending_field_ex(
+               "GET", "/x", "Sec-WebSocket-Version: 13", 1) != nullptr,
+           "a caller WebSocket version is refused on the WebSocket path");
+    expect(eshkol_http_request_offending_field_ex(
+               "GET", "/x", "Sec-WebSocket-Protocol: chat", 0) == nullptr,
+           "the WebSocket set is not reserved on the plain HTTP path");
+
+    expect(eshkol_http_reserved_field_name("Content-Length", 14, 0),
+           "the predicate matches a reserved name");
+    expect(!eshkol_http_reserved_field_name("Accept", 6, 0),
+           "the predicate admits an ordinary name");
 
     if (g_failures == 0) {
         std::cout << "http_protocol_syntax_test: all cases pass" << std::endl;
