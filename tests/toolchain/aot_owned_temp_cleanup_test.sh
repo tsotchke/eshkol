@@ -81,7 +81,7 @@ abandoned=""
 for attempt in $(seq 1 25); do
     "$ESHKOL_RUN" -n -o "$stopped_out" "$WORK/program.esk" \
         "$WORK/eshkol_named/stdlib.o" "$WORK/eshkol_named/my_eshkol_helpers.o" \
-        >"$WORK/stopped.log" 2>&1 &
+        >"$WORK/stopped-compile.log" 2>&1 &
     compiler=$!
     while kill -0 "$compiler" 2>/dev/null; do
         if [ -n "$(scratch_objects "$stopped_out")" ]; then
