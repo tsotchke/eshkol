@@ -123,6 +123,47 @@ inline std::string captureDiagnosticLocation(const eshkol_ast_t* ast) {
 }
 
 /**
+ * @brief The number of capture slots a closure call passes by address.
+ *
+ * A closure call passes the user arguments followed by the addresses of the
+ * first this-many capture slots. A procedure body with at most this many
+ * captures is entered directly; a larger one is entered through an entry
+ * function that receives the address of slot 0 and forwards every slot
+ * address to the body.
+ */
+inline constexpr size_t kClosureCallCaptureSlots = 64;
+
+/**
+ * @brief True when a direct call to @p body with @p num_user_args tagged
+ *        arguments followed by its closure's slot addresses is exactly what
+ *        a closure call would deliver.
+ *
+ * That holds when the body takes @p num_user_args tagged values and then
+ * only capture-slot pointers (`captured_<var>`), none or up to
+ * kClosureCallCaptureSlots of them. A body with a rest parameter, another
+ * parameter shape, or more captures is entered through the closure-call
+ * protocol instead.
+ */
+inline bool closureBodyTakesSlotsDirectly(const llvm::Function* body, size_t num_user_args,
+                                          const llvm::Type* tagged_ty) {
+    if (!body) return false;
+    const size_t num_params = body->arg_size();
+    if (num_params < num_user_args) return false;
+    if (num_params - num_user_args > kClosureCallCaptureSlots) return false;
+    size_t index = 0;
+    for (const llvm::Argument& arg : body->args()) {
+        if (index < num_user_args) {
+            if (arg.getType() != tagged_ty) return false;
+        } else if (!arg.getType()->isPointerTy() ||
+                   !arg.getName().starts_with("captured_")) {
+            return false;
+        }
+        ++index;
+    }
+    return true;
+}
+
+/**
  * @brief Emit the capture-pointer arguments for a direct call to @p callee,
  *        reading them from the environment of the closure at @p closure_ptr.
  *

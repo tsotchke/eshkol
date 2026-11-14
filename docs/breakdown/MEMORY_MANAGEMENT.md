@@ -953,7 +953,7 @@ typedef void (*eshkol_thunk_caller_t)(const eshkol_tagged_value_t* thunk,
                                       eshkol_tagged_value_t* result);
 ```
 
-`call_wind_thunk` passes the thunk by address and receives its value through an out-pointer. The generated caller (`__eshkol_call_thunk`) performs an ordinary closure call, so the aggregate return, the capture layout (one pointer per capture, or one environment pointer for a closure with more than 64 captures), rest parameters and the arity check are all handled by generated code — the same protocol as any other procedure call. See also [CONTINUATIONS.md](CONTINUATIONS.md) for the call/cc and dynamic-wind implementation built on it.
+`call_wind_thunk` passes the thunk by address and receives its value through an out-pointer. The generated caller (`__eshkol_call_thunk`) performs an ordinary closure call, so the aggregate return, the passing of capture-slot addresses, rest parameters and the arity check are all handled by generated code — the same protocol as any other procedure call. See also [CONTINUATIONS.md](CONTINUATIONS.md) for the call/cc and dynamic-wind implementation built on it.
 
 ### Windows x64 Struct-by-Value Parameter Fix (`region_escape_tagged_value_into`)
 

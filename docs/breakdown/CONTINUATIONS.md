@@ -240,10 +240,8 @@ Its body is a single `codegenClosureCall` with zero arguments — the same
 closure-call protocol used for `before()`, `thunk()` and `after()` on the
 normal-return path and for every other procedure call. A thunk entered while a
 continuation or a raise crosses the extent therefore behaves exactly like one
-called from generated code: it may capture any number of variables, in either
-closure layout (one pointer per capture, or a single environment pointer for
-a closure with more than 64 captures), may take a rest parameter, and is
-subject to the same arity check.
+called from generated code: it may capture any number of variables, may take
+a rest parameter, and is subject to the same arity check.
 
 **Platform ABI note:** only pointers cross the C boundary — the thunk by
 address, the result through an out-pointer — so the runtime side is the same

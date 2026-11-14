@@ -11,6 +11,7 @@
 #include "../../inc/eshkol/eshkol.h"
 #include "../../inc/eshkol/core/coroutine.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <csetjmp>
@@ -676,22 +677,40 @@ extern "C" void* eshkol_make_continuation_closure(void* arena_void, void* state_
     return (void*)closure;
 }
 
+// The wind entry is written by generated code's runtime calls and read here;
+// its field offsets are part of that contract on every 64-bit target.
+static_assert(sizeof(void*) != 8 ||
+              (offsetof(eshkol_dynamic_wind_entry_t, before) == 0 &&
+               offsetof(eshkol_dynamic_wind_entry_t, after) == 16 &&
+               offsetof(eshkol_dynamic_wind_entry_t, prev) == 32 &&
+               offsetof(eshkol_dynamic_wind_entry_t, native_after) == 40 &&
+               offsetof(eshkol_dynamic_wind_entry_t, native_after_arg) == 48 &&
+               offsetof(eshkol_dynamic_wind_entry_t, call_thunk) == 56 &&
+               sizeof(eshkol_dynamic_wind_entry_t) == 64),
+              "eshkol_dynamic_wind_entry_t layout: before, after, prev, "
+              "native_after, native_after_arg, call_thunk");
+
+// An entry that holds a procedure always holds the caller that enters it.
+// eshkol_push_dynamic_wind establishes this when the entry is created, so an
+// extent can never be left with an exit thunk the runtime is unable to run.
+[[noreturn]] static void wind_thunk_caller_missing(const char* where) {
+    eshkol_error("dynamic-wind: %s holds a procedure but no thunk caller; "
+                 "the entry cannot run its before/after thunk", where);
+    abort();
+}
+
 // Enter the `before` or `after` thunk of a dynamic-wind entry.
 //
 // The runtime does not call a procedure's code address itself: how a procedure
-// receives its captured variables (one pointer per capture, or a single
-// environment pointer for a large closure), whether it takes a rest list, and
-// what a continuation or a parameter object does when applied are all decided
-// by the compiler. The entry therefore carries the thunk caller the compiler
-// emitted next to the `dynamic-wind` form, and every thunk -- whatever it
-// captures -- is entered through it, exactly as on the normal-return path.
+// receives its captured variables, whether it takes a rest list, and what a
+// continuation or a parameter object does when applied are all decided by the
+// compiler. The entry therefore carries the thunk caller the compiler emitted
+// next to the `dynamic-wind` form, and every thunk -- whatever it captures --
+// is entered through it, exactly as on the normal-return path.
 static void call_wind_thunk(const eshkol_dynamic_wind_entry_t* entry,
                             const eshkol_tagged_value_t* thunk) {
     if (!entry || !thunk || thunk->type != ESHKOL_VALUE_CALLABLE) return;
-    if (!entry->call_thunk) {
-        eshkol_error("dynamic-wind: entry holds a procedure but no thunk caller");
-        return;
-    }
+    if (!entry->call_thunk) wind_thunk_caller_missing("a wind entry");
     eshkol_tagged_value_t result;
     memset(&result, 0, sizeof(result));
     result.type = ESHKOL_VALUE_NULL;
@@ -714,6 +733,11 @@ extern "C" void eshkol_push_dynamic_wind(void* arena_void,
     const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after,
     eshkol_thunk_caller_t call_thunk) {
     arena_t* arena = (arena_t*)arena_void;
+    if (!call_thunk &&
+        ((before && before->type == ESHKOL_VALUE_CALLABLE) ||
+         (after && after->type == ESHKOL_VALUE_CALLABLE))) {
+        wind_thunk_caller_missing("eshkol_push_dynamic_wind");
+    }
     eshkol_dynamic_wind_entry_t* entry = (eshkol_dynamic_wind_entry_t*)
         arena_allocate_aligned(arena, sizeof(eshkol_dynamic_wind_entry_t), 8);
     if (!entry) return;

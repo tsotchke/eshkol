@@ -7307,9 +7307,6 @@ private:
         Value* address;
     };
 
-    // The number of capture slots a closure call passes by address.
-    static constexpr size_t kClosureCallCaptureSlots = 64;
-
     // The code address stored in a closure object for @p body, a function
     // whose trailing @p num_captures parameters are capture-slot pointers.
     //
@@ -7323,18 +7320,28 @@ private:
     // call site is therefore identical for every capture count, and inside
     // the body every captured variable is an ordinary capture parameter.
     Function* closureEntryPoint(Function* body, size_t num_captures) {
-        if (!body || num_captures <= kClosureCallCaptureSlots) return body;
+        if (!body || num_captures <= eshkol::kClosureCallCaptureSlots) return body;
         const std::string name = body->getName().str() + ".slots";
-        if (Function* existing = module->getFunction(name)) return existing;
         FunctionType* body_type = body->getFunctionType();
         const size_t leading = body_type->getNumParams() - num_captures;
         Type* pointer_type = PointerType::getUnqual(*context);
         std::vector<Type*> types(body_type->param_begin(),
                                  body_type->param_begin() + leading);
         types.push_back(pointer_type);
+        FunctionType* entry_type =
+            FunctionType::get(body_type->getReturnType(), types, false);
+        if (Function* existing = module->getFunction(name)) {
+            // The name is derived from the body's, so an existing function is
+            // this body's entry; its signature is checked all the same, since
+            // a call through a mismatched entry would misplace every argument.
+            if (existing->getFunctionType() == entry_type) return existing;
+            eshkol_error("closure entry '%s' exists with a different signature",
+                         name.c_str());
+            markFatalCodegenError();
+            return existing;
+        }
         Function* entry = Function::Create(
-            FunctionType::get(body_type->getReturnType(), types, false),
-            Function::InternalLinkage, name, module.get());
+            entry_type, Function::InternalLinkage, name, module.get());
         IRBuilder<> ir(*context);
         ir.SetInsertPoint(BasicBlock::Create(*context, "entry", entry));
         std::vector<Value*> forwarded;
@@ -7390,8 +7397,9 @@ private:
             std::vector<Value*> values;
             for (; parameter != thunk->arg_end(); ++parameter) values.push_back(&*parameter);
             BasicBlock* invalid = BasicBlock::Create(*context, "captures_base_only", thunk);
-            SwitchInst* dispatch = ir.CreateSwitch(count, invalid, 65);
-            for (unsigned n = 0; n <= 64; ++n) {
+            const unsigned direct_slots = (unsigned)eshkol::kClosureCallCaptureSlots;
+            SwitchInst* dispatch = ir.CreateSwitch(count, invalid, direct_slots + 1);
+            for (unsigned n = 0; n <= direct_slots; ++n) {
                 BasicBlock* arm = BasicBlock::Create(*context, "captures_" + std::to_string(n), thunk);
                 dispatch->addCase(ConstantInt::get(int64_type, n), arm);
                 ir.SetInsertPoint(arm);
@@ -7898,7 +7906,7 @@ private:
         // arguments -- enters both with the same call, after the same arity
         // check and rest-list construction. The capture count never selects
         // a path.
-        const int MAX_CLOSURE_DISPATCH_CAPTURES = (int)kClosureCallCaptureSlots;
+        const int MAX_CLOSURE_DISPATCH_CAPTURES = (int)eshkol::kClosureCallCaptureSlots;
 
         // THE CALL PROTOCOL (SW-216): a procedure is entered only with an
         // argument count its declaration accepts -- exactly fixed_params, or
@@ -24994,7 +25002,12 @@ private:
                                             kName, module.get());
         caller->getArg(0)->setName("thunk");
         caller->getArg(1)->setName("result");
+        // The caller is emitted while another function is being generated:
+        // the insertion point and the function the generator considers
+        // current both move to the caller for its body and are put back.
         IRBuilderBase::InsertPoint saved = builder->saveIP();
+        Function* prev_function = current_function;
+        current_function = caller;
         builder->SetInsertPoint(BasicBlock::Create(*context, "entry", caller));
         Value* thunk = builder->CreateLoad(tagged_value_type, caller->getArg(0), "thunk_value");
         std::vector<Value*> no_args;
@@ -25003,6 +25016,7 @@ private:
             builder->CreateStore(ensureTaggedValue(result), caller->getArg(1));
             builder->CreateRetVoid();
         }
+        current_function = prev_function;
         builder->restoreIP(saved);
         return caller;
     }
@@ -34808,8 +34822,9 @@ private:
 
         // Create polymorphic function type - all parameters and return type are tagged_value
         // CLOSURE FIX: Include captures as additional parameters after declared params.
-        // Large closures use one environment pointer instead of an ABI argument
-        // per capture; this keeps the call ABI lossless for arbitrary counts.
+        // The body takes one pointer per capture for any count; a closure
+        // with more captures than a call passes slot addresses for is entered
+        // through closureEntryPoint.
         // VARIADIC FIX: For variadic lambdas, add an extra parameter for the rest list
         std::vector<Type*> param_types;
         for (uint64_t i = 0; i < op->lambda_op.num_params; i++) {
@@ -35373,13 +35388,23 @@ private:
         // CLOSURE FIX: If there are captures, allocate a closure at runtime
         if (!free_vars.empty()) {
             // Get function pointer as intptr_t (i32 on wasm32, i64 on native)
-            Value* func_ptr = builder->CreatePtrToInt(
-                closureEntryPoint(lambda_func, free_vars.size()), intptr_type);
+            Function* closure_entry = closureEntryPoint(lambda_func, free_vars.size());
+            Value* func_ptr = builder->CreatePtrToInt(closure_entry, intptr_type);
 
             // HOMOICONICITY FIX: Generate S-expression at closure creation time
             // We're past restoreIP so control flow disruption is acceptable - we'll end up
             // in the merge block and continue from there
             Value* sexpr_ptr = codegenLambdaToSExpr(op);
+
+            // The display registry is keyed by the code address a closure
+            // object stores. When that address is the body's entry function
+            // rather than the body, the entry is registered under the same
+            // source form, so a lookup by either address finds it.
+            if (closure_entry != lambda_func && eshkol_lambda_registry_add_func) {
+                builder->CreateCall(eshkol_lambda_registry_add_func,
+                    {func_ptr, toIntPtr(sexpr_ptr),
+                     builder->CreateGlobalString(lambda_name)});
+            }
 
             // Store to global variable so display code can also find it
             std::string closure_sexpr_key = lambda_name + "_sexpr";
