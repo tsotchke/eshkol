@@ -153,9 +153,11 @@ bytevector ranges. Zero-timeout polling never sleeps or starts cancellation.
 
 The common native registry owns one exclusive process lease covering both output
 pipes. A session retains its loop until detachment; closing that loop early is
-rejected. On return, exception, or continuation escape, the scope unregisters and
-closes pipe endpoints, ends the lease, and runs bounded teardown. Re-entry raises
-before acquiring another child. Exceptions keep their original value.
+rejected. On return, exception, or continuation escape, the scope requests watch
+removal and bounded teardown. Pipe descriptors, the loop retain and the lease
+remain owned until watch removal succeeds; a genuine removal failure preserves
+them for repair/retry. Re-entry raises before acquiring another child. Exceptions
+keep their original value.
 
 If reap is not confirmed before teardown expires, a pre-reserved native record
 retains sole ownership. Its ticket survives closure of the original loop, and
@@ -164,13 +166,20 @@ terminal records can be consumed. Unconsumed records remain budgeted against
 the subprocess limit. Cleanup remains available after capability revocation.
 
 This slice exposes per-session readiness through the existing native loop. A
-loop used here accepts managed subprocess watches only; unrelated registrations
-are rejected rather than consumed by the per-session poller. A
-general resource-event polling API, native strict-resource checker contracts for
-these scopes, Windows streaming, nonblocking stdin, and VM adapters remain
-separate integration work. The helper does not add `io-mode` dispatch to the
+caller loop may carry verified PROCESS and shared managed socket watches;
+unmanaged or tampered registrations are rejected rather than consumed by the
+per-session poller. A
+general resource-event polling API, Windows streaming, nonblocking stdin, and
+VM adapters remain separate integration work. The helper does not add `io-mode` dispatch to the
 legacy `process-spawn-argv-options` procedure, which rejects event-loop mode;
 use the scoped entry point above.
+
+Native `--strict-resources` uses reviewed contracts for all 40 module exports
+and a matching source pin. Scoped callbacks borrow a PROCESS_STREAM owner.
+Cleanup IDs inside aggregate results remain explicitly unsupported in strict
+mode; the checker does not treat these as tracked cleanup ownership. See the
+[current followup evidence](../../development/evidence/subprocess-review-followup-2026-11-13.md)
+for own-branch native checks and separate combined-source public CLI results.
 
 Focused checks: `tests/agent/run_subprocess_stream_test.sh` exercises native
 lifecycle and byte-preservation behavior; `scripts/test_subprocess_stream_public.py`

@@ -74,7 +74,7 @@ the support compilation commands. The minimal archive is test-only and belongs
 in that separate build directory. Running the public test command with
 `--evidence-dir ../checks/public-final` retains its execution logs.
 
-## Remaining integration
+## Remaining integration as of 2026-11-04
 
 General resource-event polling, native strict-resource checker contracts for
 these scopes, nonblocking stdin, process groups, Windows streaming, and a VM
@@ -113,3 +113,16 @@ Darwin linkage adjustment and retain the results above. macOS JIT/AOT and the
 complete packaged-agent build remain unvalidated.
 
 Public API details are in [the subprocess reference](../reference/agent/subprocess.md).
+
+## Review followup — 2026-11-13
+
+The historical results and remaining-work list above describe the November 4
+slice. The reviewed followup now supplies source-pinned strict-resource contracts
+for all 40 module exports and scoped PROCESS_STREAM callback borrows. Cleanup
+IDs inside aggregate results remain explicitly unsupported in strict mode.
+
+The [current followup evidence](evidence/subprocess-review-followup-2026-11-13.md)
+separates fresh own-branch native/scoped qualification from the combined
+production CLI's 23 public checks in each of JIT and AOT and hosted native
+Linux/macOS qualification. These newer results do not rewrite historical evidence
+or establish installed-package, macOS public JIT/AOT or release acceptance.
