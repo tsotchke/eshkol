@@ -4,6 +4,7 @@
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
       "lib/agent/c/agent_pqc.c": 1,
+      "lib/agent/c/agent_subprocess_stream_binding.c": 1,
       "lib/core/bignum.cpp": 1,
       "lib/core/dnc_api.c": 2,
       "lib/core/i128_runtime.cpp": 2,
@@ -272,17 +273,20 @@
     },
     "S1_clang_header_member": {
       "inc/eshkol/eshkol.h": 1,
+      "lib/agent/c/agent_subprocess_stream_binding.c": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
       "tests/ffi/sqlite_column_roundtrip_test.c": 4
     },
     "S2_clang_sizeof": {
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 3,
+      "lib/agent/c/agent_subprocess_stream_binding.c": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
       "tests/ffi/sqlite_column_roundtrip_test.c": 4
     },
     "S3_clang_header_cast": {
       "inc/eshkol/eshkol.h": 1,
+      "lib/agent/c/agent_subprocess_stream_binding.c": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
       "tests/ffi/sqlite_column_roundtrip_test.c": 4
     }
@@ -515,11 +519,50 @@
         "scripts/abi_header_inventory.py check",
         "scripts/run_fibers_gate.py"
       ]
+    },
+    {
+      "additions": [
+        {
+          "class": "A_macro_api",
+          "from": 0,
+          "path": "lib/agent/c/agent_subprocess_stream_binding.c",
+          "source_sha256": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+          "to": 1
+        },
+        {
+          "class": "S1_clang_header_member",
+          "from": 0,
+          "path": "lib/agent/c/agent_subprocess_stream_binding.c",
+          "source_sha256": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+          "to": 1
+        },
+        {
+          "class": "S2_clang_sizeof",
+          "from": 0,
+          "path": "lib/agent/c/agent_subprocess_stream_binding.c",
+          "source_sha256": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+          "to": 1
+        },
+        {
+          "class": "S3_clang_header_cast",
+          "from": 0,
+          "path": "lib/agent/c/agent_subprocess_stream_binding.c",
+          "source_sha256": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+          "to": 1
+        }
+      ],
+      "control_scan_sha256": "46d90e71d925cdf53446fcafca61859dcf163f7b26a3132ccaab30f98ecd9724",
+      "control_scan_source": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+      "core_scan_sha256": "894f7a1d982c82ddfbe7f7b222c20a73573d4d73f50ba4e19d06315c51ecd395",
+      "core_scan_source": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+      "reason": "Scoped native FFI bytevector type-validation registration: these guards reject non-bytevector heap payloads through the sanctioned ESHKOL_GET_SUBTYPE accessor before length/range access. Central accessor redefinition migrates these sites with the active object-header ABI. Only the reviewed binding file/class counts and matching totals are admitted; unrelated existing control violations remain unadmitted.",
+      "scanner_manifest_sha256": "7bb72ca2bdd60579d2ef5cfe824644923a85a9feb9cce6024a4da6698556c00d",
+      "source_commit": "bceb97b2f35d7ee1711f0d0f237d74abe22583a7"
     }
   ],
   "schema": 1,
   "totals": {
-    "A_macro_api": 135,
+    "A_macro_api": 136,
     "B_header_type": 78,
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
@@ -531,8 +574,8 @@
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,
-    "S1_clang_header_member": 6,
-    "S2_clang_sizeof": 10,
-    "S3_clang_header_cast": 6
+    "S1_clang_header_member": 7,
+    "S2_clang_sizeof": 11,
+    "S3_clang_header_cast": 7
   }
 }

@@ -68,6 +68,7 @@
 #include <llvm/Support/xxhash.h>                 // For content-hashing stdlib.bc
 #include <llvm/Support/FileSystem.h>             // For atomic cache writes
 #include <llvm/ADT/StringExtras.h>               // For utohexstr
+#include <llvm/ADT/SmallString.h>
 #include <llvm/Object/ObjectFile.h>              // For reading an object's ABI guard symbol
 
 #include <iostream>
@@ -685,6 +686,18 @@ extern "C" {
     void qllm_process_kill(void* proc, int32_t signal) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_destroy(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_free_buffer(char* buf) ESHKOL_OPTIONAL_AGENT_FFI;
+
+    int64_t eshkol_process_stream_open(int64_t, const char*, const char*, const char*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_process_stream_read_bytevector(int64_t, int32_t, void*, int64_t, int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_poll(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_exit_code(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_cancel(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_close(int64_t, int32_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_process_cleanup_next(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_cleanup_status(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_cleanup_drain(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_cleanup_consume(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_runtime_shutdown(void) ESHKOL_OPTIONAL_AGENT_FFI;
 
     void* qllm_ffi_linear_create(int64_t in_dim, int64_t out_dim)
         ESHKOL_OPTIONAL_AGENT_FFI;
@@ -1639,6 +1652,17 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_kill);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_destroy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_free_buffer);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_open);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_read_bytevector);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_poll);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_exit_code);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_cancel);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_next);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_status);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_drain);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_consume);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_runtime_shutdown);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_create);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_destroy);
@@ -3220,23 +3244,32 @@ llvm::Error ReplJITContext::loadStdlib() {
                                     eshkol::expose_jit_parallel_initializer(
                                         **emit_mod,
                                         eshkol::kJitStdlibParallelInitializer);
-                                    std::filesystem::path tmp_o = cache_o;
-                                    tmp_o += ".tmp";
-                                    std::error_code wec;
-                                    raw_fd_ostream os(tmp_o.string(), wec,
-                                                      sys::fs::OF_None);
+                                    // Each process owns its temporary inode. A shared
+                                    // .tmp lets another writer truncate a published object.
+                                    SmallString<256> tmp_o;
+                                    int tmp_fd = -1;
+                                    std::error_code wec = sys::fs::createUniqueFile(
+                                        cache_o.string() + ".%%%%%%.tmp", tmp_fd, tmp_o);
                                     if (!wec) {
+                                        raw_fd_ostream os(tmp_fd, true);
                                         legacy::PassManager pm;
-                                        if (!(*emit_tm)->addPassesToEmitFile(
+                                        bool emitted = !(*emit_tm)->addPassesToEmitFile(
                                                 pm, os, nullptr,
-                                                CodeGenFileType::ObjectFile)) {
+                                                CodeGenFileType::ObjectFile);
+                                        if (emitted) {
                                             pm.run(**emit_mod);
                                             os.flush();
-                                            os.close();
-                                            std::filesystem::rename(tmp_o, cache_o, ec);
-                                            have_obj = !ec &&
-                                                       std::filesystem::exists(cache_o, ec);
                                         }
+                                        os.close();
+                                        if (emitted && !os.has_error()) {
+                                                std::filesystem::rename(
+                                                    tmp_o.c_str(), cache_o, ec);
+                                                // Another process may have published first.
+                                                have_obj = std::filesystem::exists(cache_o, ec);
+                                        } else if (os.has_error()) {
+                                            os.clear_error();
+                                        }
+                                        sys::fs::remove(tmp_o);
                                     }
                                 } else {
                                     consumeError(emit_tm.takeError());

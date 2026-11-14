@@ -4290,6 +4290,10 @@ private:
                 if (returned) recordReturnedHandle(contract.produces, initialFactoryState(contract.produces));
                 return;
             }
+            case sr::Role::UNSUPPORTED:
+                reportResourceError(function_name +
+                    ": ownership of aggregate cleanup records is unsupported in this profile");
+                break;
             case sr::Role::CLOSE:
                 if (const eshkol_ast_t* handle = arg(contract.handle_args[0].index))
                     closeHandle(handle, contract, function_name);

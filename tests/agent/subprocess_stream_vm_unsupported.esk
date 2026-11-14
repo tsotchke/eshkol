@@ -1,0 +1,4 @@
+;; The standalone VM must explicitly reject the new stream ABI until adapted.
+(require stdlib)
+(require "./subprocess_stream_vm_bridge.esk")
+(display "stream ABI unexpectedly admitted") (newline)

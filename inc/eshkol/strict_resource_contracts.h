@@ -43,6 +43,7 @@ enum class Kind : uint8_t {
     SEMAPHORE,
     BARRIER,
     PROCESS,
+    PROCESS_STREAM,
     COUNT
 };
 
@@ -70,6 +71,7 @@ inline const char* kindName(Kind kind) {
         case Kind::SEMAPHORE: return "semaphore";
         case Kind::BARRIER: return "barrier";
         case Kind::PROCESS: return "process";
+        case Kind::PROCESS_STREAM: return "subprocess stream scope";
         default: return "value";
     }
 }
@@ -120,6 +122,7 @@ enum class Role : uint8_t {
     OBSERVE,          // borrows the handles at handle_args for the call only
     ERROR_PREDICATE,  // refines a failure value of family `family`
     ERROR_OBSERVE,    // reads a failure value on the failed branch only
+    UNSUPPORTED,     // aggregate cleanup ownership is not modeled; strict calls are refused
     LEND              // opens or takes a handle, lends it to a procedure, closes it on every exit
 };
 
@@ -318,6 +321,25 @@ inline constexpr Contract kAgentSubprocessContracts[] = {
     {"run-command-capture", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
     {"run-argv", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
     {"run-argv-capture", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    // Aggregate PROCESS cleanup IDs remain owned by the runtime. Their
+    // extraction/consumption needs container ownership support; strict calls
+    // are refused explicitly rather than silently treated as effect-free.
+    {"call-with-subprocess-streams", Role::LEND, Kind::PROCESS_STREAM, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {P(3, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-read!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-poll", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-status", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cancel!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-read-status", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-read-count", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-read-error", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-result-value", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-result-cleanup-status", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-result-cleanup-ticket", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-tickets", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-status", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-consume!", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-runtime-shutdown!", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-drain!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
 };
 
 struct ModuleContract {
@@ -341,7 +363,7 @@ inline constexpr ModuleContract kModuleContracts[] = {
      "79612384c29b0fdf28b738f6588062a1916cd589588b3e9a617c112ac7de572b",
      kCoreThreadsContracts, sizeof(kCoreThreadsContracts) / sizeof(kCoreThreadsContracts[0])},
     {"agent.subprocess", "agent/subprocess.esk",
-     "4691729a42034d3be81f5d64385ae65cdb5a8009f6c647c0c8ceffe509da403e",
+     "f31051e751d6323fd1d61016f74e776b2fc9f823fe3005d2d0764bebbf1ee5bb",
      kAgentSubprocessContracts,
      sizeof(kAgentSubprocessContracts) / sizeof(kAgentSubprocessContracts[0])},
 };

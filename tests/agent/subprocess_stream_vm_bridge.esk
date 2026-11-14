@@ -1,0 +1,3 @@
+;; Isolate the new ABI from unsupported legacy agent externs.
+(extern i64 stream-open-raw i64 ptr ptr ptr :real eshkol_process_stream_open)
+(provide stream-open-raw)

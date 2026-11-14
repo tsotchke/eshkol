@@ -1,0 +1,8 @@
+(require agent.subprocess)
+(define loop (make-event-loop 8))
+(if loop
+    (begin
+      (call-with-subprocess-streams loop (list "true") '()
+        (lambda (session) (process-stream-poll session 0)))
+      (event-loop-close loop))
+    #f)

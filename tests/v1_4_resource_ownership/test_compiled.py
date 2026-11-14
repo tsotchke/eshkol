@@ -49,6 +49,7 @@ POSITIVE = (
     "positive-process",
     "positive-callee-closes-then-exits",
     "positive-constructor-closure-unused",
+    "positive-process-stream-scope",
 )
 NEGATIVE = (
     "negative-leak",
@@ -144,11 +145,13 @@ NEGATIVE = (
     "negative-constructor-closure-vector",
     "negative-constructor-closure-returned",
     "negative-constructor-closure-exported",
+    "negative-process-cleanup-aggregate",
 )
 
 # Every handle-family falsifier must fail for its own reason, not for an
 # unrelated diagnostic: the expected text is part of the contract.
 EXPECTED_DIAGNOSTIC = {
+    "negative-process-cleanup-aggregate": "ownership of aggregate cleanup records is unsupported",
     "negative-file-unclosed": "resource 'in' may still be live at scope exit",
     "negative-file-one-branch-unclosed": "resource 'in' may still be live at scope exit",
     "negative-file-two-arm-if": "resource 'in' may still be live at scope exit",
@@ -224,7 +227,8 @@ def main():
         def compile_case(name):
             source = FIXTURES / f"{name}.esk"
             artifact = out_dir / f"{name}.o"
-            command = [runner, "--strict-resources", "-c", "-o", str(artifact), str(source), "-L", lib_dir]
+            # Ownership is a frontend contract; optimizer latency is a separate gate.
+            command = [runner, "--strict-resources", "-O0", "-c", "-o", str(artifact), str(source), "-L", lib_dir]
             completed = subprocess.run(command, env=env, stdout=subprocess.PIPE,
                                        stderr=subprocess.STDOUT, text=True, timeout=180)
             is_negative = name in NEGATIVE

@@ -104,6 +104,69 @@ int eshkol_resource_cancel(int64_t id, eshkol_handle_kind_t kind, uint32_t tag_m
  */
 int eshkol_resource_wait(const eshkol_resource_lease_t *lease, int fd, int events,
                          int64_t deadline);
+/* Explicit-loop owners use the same registry and deadline/outcome machinery.
+ * The loop is retained until owner-thread cleanup completes. */
+#define ESHKOL_CLEANUP_PENDING 0
+#define ESHKOL_CLEANUP_COMPLETE 1
+#define ESHKOL_CLEANUP_FAILED 2
+#define ESHKOL_CLEANUP_STAGE_NONE 0
+#define ESHKOL_CLEANUP_STAGE_WATCH 1
+#define ESHKOL_CLEANUP_STAGE_DESCRIPTOR 2
+#define ESHKOL_CLEANUP_STAGE_PATH 3
+#define ESHKOL_CLEANUP_STAGE_LOOP 4
+/* Source-compatible spellings from the initial shared-layer proposal. */
+#define ESHKOL_CLEANUP_WATCH ESHKOL_CLEANUP_STAGE_WATCH
+#define ESHKOL_CLEANUP_DESCRIPTOR ESHKOL_CLEANUP_STAGE_DESCRIPTOR
+#define ESHKOL_CLEANUP_PATH ESHKOL_CLEANUP_STAGE_PATH
+#define ESHKOL_CLEANUP_LOOP ESHKOL_CLEANUP_STAGE_LOOP
+
+typedef struct {
+    int32_t state;
+    int32_t stage;
+    int32_t os_error;
+    int32_t retryable;
+} eshkol_resource_cleanup_result_t;
+/* Return 0 after disposing native/data. On failure fill state/stage/os_error
+ * and retryable; retain native/data when retryable, dispose them otherwise.
+ * The callback is called only on the adopting thread, outside shared locks. */
+typedef int (*eshkol_resource_cleanup_fn)(uintptr_t native, void *data,
+                                         eshkol_resource_cleanup_result_t *result);
+int64_t eshkol_resource_adopt_on_loop(eshkol_handle_kind_t kind, uint32_t tag,
+    uintptr_t native, eshkol_resource_cleanup_fn cleanup_fn, void *data,
+    int64_t loop, int sticky_cancel);
+/* Check immediately before a native I/O attempt. */
+int eshkol_resource_check(const eshkol_resource_lease_t *lease);
+/* Positive requested readiness mask, or a shared error. A spent deadline
+ * returns TIMEOUT before watch registration or polling; cancellation wins. */
+int eshkol_resource_wait_on_loop(const eshkol_resource_lease_t *lease,
+    int fd, int events, int64_t deadline);
+/* Accept close and retire its identity; return a separately owned result ticket.
+ * The ticket is reserved at adoption, so accepting close never allocates.
+ * Result inspection may drive queued cleanup on the adopting thread. */
+int64_t eshkol_resource_close_request(int64_t id, eshkol_handle_kind_t kind,
+                                    uint32_t tag_mask);
+int eshkol_resource_cleanup_result(int64_t ticket,
+                                  eshkol_resource_cleanup_result_t *out);
+int eshkol_resource_cleanup_retry(int64_t ticket);
+int eshkol_resource_cleanup_release(int64_t ticket);
+/**
+ * @brief Transfer an owned cleanup ticket to detached runtime management.
+ *
+ * Completed results release automatically. Pending work retains its ownership
+ * until owner-thread maintenance completes it; failed results remain
+ * recoverable through eshkol_resource_cleanup_ticket(retired_id). This handoff
+ * grants no new I/O authority and does not execute foreign-thread teardown.
+ * @return 0 after accepted transfer, or ESHKOL_IO_INVALID for an invalid ticket.
+ */
+int eshkol_resource_cleanup_detach(int64_t ticket);
+/* Transfer ownership of a retained FAILED ticket from detached convenience
+ * close. Pending/successful tickets cannot be recovered or race auto-release. */
+int64_t eshkol_resource_cleanup_ticket(int64_t retired_id);
+/* Drive pending cleanup belonging to this thread/loop, without reading a clock. */
+int eshkol_resource_pump(int64_t loop);
+/* Count and validate common wait registrations for mixed PROCESS/SOCKET loops. */
+int eshkol_resource_managed_registration_count(int64_t loop);
+
 /**
  * @brief Validate [start, start + count) inside an Eshkol bytevector object
  * (an exact length word followed by its bytes) and return its first byte.
