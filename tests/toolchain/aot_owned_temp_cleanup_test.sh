@@ -111,9 +111,56 @@ rm -f "$stopped_out"
     }
 test -x "$stopped_out" || { echo "FAIL: compile after a stopped compile produced no executable" >&2; exit 1; }
 "$stopped_out" || { echo "FAIL: executable built after a stopped compile did not run" >&2; exit 1; }
-test -z "$(scratch_objects "$stopped_out")" || {
-    echo "FAIL: scratch object of a stopped compile was not reclaimed: $(scratch_objects "$stopped_out")" >&2
+leftovers="$(compgen -G "$stopped_out.*" || true)"
+test -z "$leftovers" || {
+    echo "FAIL: files of a stopped compile were not reclaimed: $leftovers" >&2
     exit 1
 }
+
+# Two compiles of one output at the same moment. The output path has one
+# owner at a time: whichever compile holds it finishes and publishes a whole
+# executable in one step; the other either is told the output is owned and
+# stops, or runs after the first has finished. The executable on disk is
+# always one complete link, and nothing of either compile is left beside it.
+shared_out="$WORK/shared"
+mkdir -p "$WORK/reference"
+"$ESHKOL_RUN" -n -o "$WORK/reference/shared" "$WORK/program.esk" \
+    "$WORK/eshkol_named/stdlib.o" "$WORK/eshkol_named/my_eshkol_helpers.o" \
+    >"$WORK/reference.log" 2>&1 || { cat "$WORK/reference.log" >&2; echo "FAIL: reference link" >&2; exit 1; }
+reference_size="$(wc -c < "$WORK/reference/shared")"
+refused_rounds=0
+for round in 1 2 3 4; do
+    pids=()
+    for who in a b c; do
+        "$ESHKOL_RUN" -n -o "$shared_out" "$WORK/program.esk" \
+            "$WORK/eshkol_named/stdlib.o" "$WORK/eshkol_named/my_eshkol_helpers.o" \
+            >"$WORK/shared-$who.log" 2>&1 &
+        pids+=("$!")
+    done
+    succeeded=0
+    refused=0
+    index=0
+    for who in a b c; do
+        if wait "${pids[$index]}"; then
+            succeeded=$((succeeded + 1))
+        elif grep -q "Another compile is producing" "$WORK/shared-$who.log"; then
+            refused=$((refused + 1))
+        else
+            cat "$WORK/shared-$who.log" >&2
+            echo "FAIL: a concurrent compile ended for a reason other than the output being owned" >&2
+            exit 1
+        fi
+        index=$((index + 1))
+    done
+    [ "$succeeded" -ge 1 ] || { echo "FAIL: no concurrent compile produced the output" >&2; exit 1; }
+    [ "$refused" -gt 0 ] && refused_rounds=$((refused_rounds + 1))
+    test -x "$shared_out" || { echo "FAIL: concurrent compiles left no executable" >&2; exit 1; }
+    [ "$(wc -c < "$shared_out")" = "$reference_size" ] || {
+        echo "FAIL: executable from concurrent compiles is not one complete link" >&2; exit 1; }
+    "$shared_out" || { echo "FAIL: executable from concurrent compiles did not run" >&2; exit 1; }
+    leftovers="$(compgen -G "$shared_out.*" || true)"
+    test -z "$leftovers" || { echo "FAIL: concurrent compiles left files beside the output: $leftovers" >&2; exit 1; }
+done
+echo "concurrent rounds in which a compile was told the output is owned: $refused_rounds of 4"
 
 echo "PASS: aot_owned_temp_cleanup_test"

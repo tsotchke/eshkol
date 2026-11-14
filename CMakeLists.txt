@@ -12999,6 +12999,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-repl AND ESHKOL_PYTHON3_EXECUTABLE AND
         FAIL_REGULAR_EXPRESSION "^FAIL:")
 endif()
 
+# Naming, liveness, claim and publication rules for the files the driver keeps
+# beside a native output. Header-only subject, no compiler: every platform.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/driver_output_ownership_test.cpp")
+    add_executable(driver_output_ownership_test tests/toolchain/driver_output_ownership_test.cpp)
+    target_compile_features(driver_output_ownership_test PRIVATE cxx_std_17)
+    target_include_directories(driver_output_ownership_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(
+        NAME driver_output_ownership_test
+        COMMAND driver_output_ownership_test "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(driver_output_ownership_test PROPERTIES
+        TIMEOUT 60 PASS_REGULAR_EXPRESSION "PASS: driver output ownership")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
     add_executable(windows_suite_surface_test tests/toolchain/windows_suite_surface_test.cpp)
     target_compile_features(windows_suite_surface_test PRIVATE cxx_std_17)

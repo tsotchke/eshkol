@@ -48,6 +48,7 @@
 #include <errno.h>
 #include <filesystem>
 #include <eshkol/backend/link_probe.h>
+#include <eshkol/driver_output_ownership.h>
 
 #include <fstream>
 #include <iterator>
@@ -8346,92 +8347,57 @@ static char** intern_driver_module_name_array(const std::string& name) {
     return storage.back().data();
 }
 
-// Own only scratch objects that this driver creates for a later native link.
-// In particular, entries in compiled_files may be caller-owned object files.
-//
-// The scratch object belongs to one driver process, so its name carries that
-// process: `<output>.<pid>.<n>.tmp.o`, created exclusively. Two consequences
-// follow from the name alone. A file a caller keeps beside the output, whatever
-// it is called, is never opened by the driver. And a driver that is stopped
-// before it can clean up (a deadline delivers a signal no process can handle)
-// leaves a file that only it would ever have reused, so the next compile of
-// the same output is not held up by it. That next compile also reclaims such
-// a leftover once the process named in it is gone.
+// Whether a native artifact is linked in a staging directory and renamed onto
+// its output. A Windows debug build is linked in place: its debug database is
+// named and located from the link's own output path.
+static bool native_output_uses_staging(bool debug_info) {
+#ifdef _WIN32
+    return !debug_info;
+#else
+    (void)debug_info;
+    return true;
+#endif
+}
+
+// Own only the files this driver creates for a native build: the scratch
+// object it compiles before the link and the staging directory the linker
+// writes into. Entries in compiled_files may be caller-owned object files.
+// Naming, liveness and reclaim rules live in driver_output_ownership.h.
 struct OwnedLinkTemporaryObjects {
     std::vector<std::string> paths;
+    eshkol::driver::OutputClaim claim;
+    eshkol::driver::StagedOutput staged;
 
-    static uint64_t current_process_id() {
-#ifdef _WIN32
-        return static_cast<uint64_t>(_getpid());
-#else
-        return static_cast<uint64_t>(getpid());
-#endif
-    }
-
-    // Parse `<stem>.<pid>.<n>.tmp.o`; answers the pid, or nothing when the
-    // name is not one this driver family produces for @p stem.
-    static std::optional<uint64_t> scratch_owner(const std::string& name,
-                                                 const std::string& stem) {
-        static const std::string suffix = ".tmp.o";
-        if (name.size() <= stem.size() + suffix.size() + 1 ||
-            name.compare(0, stem.size(), stem) != 0 ||
-            name[stem.size()] != '.' ||
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
-            return std::nullopt;
+    // Take ownership of @p output for this build and clear what a driver that
+    // no longer exists left beside it. Answers false, with the reason logged,
+    // when another live driver is producing the same output.
+    bool claim_output(const std::string& output) {
+        using Result = eshkol::driver::OutputClaim::Result;
+        const Result result = claim.acquire(output);
+        if (result == Result::HeldElsewhere) {
+            eshkol_error("Another compile is producing %s; it owns that output until it finishes",
+                         output.c_str());
+            return false;
         }
-        const std::string middle = name.substr(
-            stem.size() + 1, name.size() - stem.size() - 1 - suffix.size());
-        const auto dot = middle.find('.');
-        if (dot == std::string::npos || dot == 0 || dot + 1 == middle.size() ||
-            dot > 19 || middle.size() - dot - 1 > 19) {
-            return std::nullopt;
+        if (result == Result::Unavailable) {
+            eshkol_error("Cannot claim output %s: its directory does not admit a new file",
+                         output.c_str());
+            return false;
         }
-        uint64_t pid = 0;
-        for (size_t i = 0; i < middle.size(); ++i) {
-            if (i == dot) continue;
-            if (!std::isdigit(static_cast<unsigned char>(middle[i]))) return std::nullopt;
-            if (i < dot) pid = pid * 10 + static_cast<uint64_t>(middle[i] - '0');
-        }
-        return pid;
-    }
-
-    // Remove scratch objects for this output whose driver no longer exists.
-    // A pid that is alive (this process included, or an unrelated process the
-    // system gave the same number) keeps its file; only a certain absence
-    // reclaims. Without a portable liveness query the leftovers are kept.
-    static void reclaim_abandoned(const std::filesystem::path& output) {
-#ifndef _WIN32
-        std::error_code ec;
-        std::filesystem::path dir = output.parent_path();
-        if (dir.empty()) dir = ".";
-        const std::string stem = output.filename().string();
-        for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end;
-             it.increment(ec)) {
-            const auto owner = scratch_owner(it->path().filename().string(), stem);
-            if (!owner || *owner == 0 || *owner == current_process_id() ||
-                *owner > static_cast<uint64_t>(INT32_MAX)) {
-                continue;
-            }
-            if (::kill(static_cast<pid_t>(*owner), 0) == -1 && errno == ESRCH) {
-                std::error_code remove_ec;
-                std::filesystem::remove(it->path(), remove_ec);
-            }
-        }
-#else
-        (void)output;
-#endif
+        eshkol::driver::reclaim_abandoned(output);
+        return true;
     }
 
     // Create this process's scratch object for @p output. Answers its path,
     // or an empty string when the directory does not admit a new file.
     std::string reserve_for(const std::string& output) {
-        static std::atomic<uint64_t> sequence{0};
-        reclaim_abandoned(output);
+        const std::filesystem::path out(output);
         for (int attempt = 0; attempt < 16; ++attempt) {
-            const std::string path = output + "." +
-                std::to_string(current_process_id()) + "." +
-                std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)) +
-                ".tmp.o";
+            std::filesystem::path candidate = out;
+            candidate.replace_filename(eshkol::driver::scratch_object_name(
+                out.filename().string(), eshkol::driver::current_process_id(),
+                eshkol::driver::detail::next_sequence()));
+            const std::string path = candidate.generic_string();
             // Exclusive creation: an existing file of this name is not ours.
             FILE* file = std::fopen(path.c_str(), "wbx");
             if (file) {
@@ -8444,12 +8410,33 @@ struct OwnedLinkTemporaryObjects {
         return {};
     }
 
+    // Where the linker should write so that @p output appears in one step.
+    // Answers @p output itself when staging is not used for this build.
+    std::string stage_for(const std::string& output, bool use_staging) {
+        if (!use_staging) return output;
+        staged = eshkol::driver::stage_output(output);
+        if (!staged.valid()) return {};
+        paths.push_back(staged.directory.generic_string());
+        return staged.artifact.generic_string();
+    }
+
+    // Move the staged artifact onto its output. True when nothing was staged.
+    bool publish() {
+        if (!staged.valid()) return true;
+        const bool ok = eshkol::driver::publish_staged_output(staged);
+        staged = {};
+        return ok;
+    }
+
+    // Remove the scratch files. The claim stays until the driver is done with
+    // the output; the destructor gives it up on every return path.
     void cleanup() {
         for (const auto& path : paths) {
             std::error_code ec;
-            std::filesystem::remove(path, ec);
+            std::filesystem::remove_all(path, ec);
         }
         paths.clear();
+        staged = {};
     }
 
     ~OwnedLinkTemporaryObjects() { cleanup(); }
@@ -10154,6 +10141,9 @@ int main(int argc, char **argv)
             const std::string library_path =
                 shared_library_output_path(output, module_name);
             shared_library_path = library_path;
+            if (!owned_link_temp_objects.claim_output(library_path)) {
+                return 1;
+            }
             const std::string temp_obj = owned_link_temp_objects.reserve_for(library_path);
             if (temp_obj.empty()) {
                 eshkol_error("Cannot create a temporary object beside %s", library_path.c_str());
@@ -10195,6 +10185,10 @@ int main(int argc, char **argv)
                 output ? std::filesystem::path(output) : std::filesystem::path("a.out")
             ).generic_string();
 
+            if (!owned_link_temp_objects.claim_output(exe_name)) {
+                return 1;
+            }
+
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
                 std::string temp_obj = owned_link_temp_objects.reserve_for(exe_name);
@@ -10228,13 +10222,30 @@ int main(int argc, char **argv)
                     linked_lib_ptrs = const_cast<const char**>(linked_libs.data());
                 }
 
-                if (eshkol_compile_llvm_ir_to_executable(llvm_module, exe_name.c_str(),
+                // Build in this process's staging directory and move the
+                // finished executable onto its name in one step.
+                // A debug build is linked in place: this backend writes the
+                // debug companion beside the path it links.
+                const std::string staged_exe = owned_link_temp_objects.stage_for(
+                    exe_name, !debug_info && native_output_uses_staging(debug_info));
+                if (staged_exe.empty()) {
+                    eshkol_error("Cannot create a staging directory beside %s", exe_name.c_str());
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                if (eshkol_compile_llvm_ir_to_executable(llvm_module, staged_exe.c_str(),
                                                        lib_path_ptrs, lib_paths.size(),
                                                        linked_lib_ptrs, linked_libs.size()) != 0) {
                     eshkol_error("Executable compilation failed");
                     eshkol_dispose_llvm_module(llvm_module);
                     return 1;
                 }
+                if (!owned_link_temp_objects.publish()) {
+                    eshkol_error("Cannot move the finished executable onto %s", exe_name.c_str());
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                owned_link_temp_objects.cleanup();
 
                 // Bug X (Noesis 2026-04-30): the link-branch path below
                 // already prints "[eshkol-run] compiled to a.out — run
@@ -10480,9 +10491,17 @@ int main(int argc, char **argv)
 #endif
         }
 
-        // Add output
+        // Add output. The linker writes into this process's staging
+        // directory; the artifact is moved onto its name after the link.
+        const std::string link_target = owned_link_temp_objects.stage_for(
+            output, native_output_uses_staging(debug_info));
+        if (link_target.empty()) {
+            eshkol_error("Cannot create a staging directory beside %s", output);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
         link_args.emplace_back("-o");
-        link_args.emplace_back(output);
+        link_args.emplace_back(link_target);
 #if !defined(_WIN32) && !defined(__APPLE__)
         link_args.emplace_back("-lm");
         // libdl: see lib/backend/llvm_codegen.cpp for rationale
@@ -10539,9 +10558,14 @@ int main(int argc, char **argv)
         // have.
         {
             std::error_code artifact_ec;
-            if (!std::filesystem::is_regular_file(output, artifact_ec)) {
+            if (!std::filesystem::is_regular_file(link_target, artifact_ec)) {
                 eshkol_error("Link reported success but no artifact was written "
                              "at '%s'", output);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return link_failure_exit;
+            }
+            if (!owned_link_temp_objects.publish()) {
+                eshkol_error("Cannot move the linked artifact onto '%s'", output);
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                 return link_failure_exit;
             }
