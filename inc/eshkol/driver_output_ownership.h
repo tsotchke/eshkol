@@ -50,6 +50,10 @@
  *
  * Header-only and free of compiler dependencies so the naming and liveness
  * rules can be exercised on their own on every platform.
+ *
+ * The Windows branches below were written against the documented behaviour of
+ * the Win32 calls they use; the Windows lanes of CI are their first build and
+ * their first run, through driver_output_ownership_test.
  */
 
 #include <atomic>
@@ -230,6 +234,26 @@ inline std::vector<std::filesystem::path> reclaim_abandoned(
 }
 
 /**
+ * @brief Whether @p leaf is one of the device names Windows reserves in every
+ *        directory: NUL, CON, PRN, AUX, COM1-COM9, LPT1-LPT9, in any letter
+ *        case, with or without an extension or a trailing colon.
+ *
+ * A pure string test, so it is the same answer on every platform; it is
+ * consulted only on Windows, where such a name is a device wherever it
+ * appears and the filesystem's own report about it is not dependable.
+ */
+inline bool is_windows_device_name(const std::string& leaf) {
+    std::string base = leaf.substr(0, leaf.find('.'));
+    while (!base.empty() && (base.back() == ':' || base.back() == ' ')) base.pop_back();
+    for (char& c : base) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (base == "NUL" || base == "CON" || base == "PRN" || base == "AUX") return true;
+    if (base.size() == 4 && (base.compare(0, 3, "COM") == 0 || base.compare(0, 3, "LPT") == 0)) {
+        return base[3] >= '1' && base[3] <= '9';
+    }
+    return false;
+}
+
+/**
  * @brief Whether @p output is a place where a claim and a staged artifact
  *        make sense: a name that is free, or that leads to a regular file.
  *
@@ -237,6 +261,9 @@ inline std::vector<std::filesystem::path> reclaim_abandoned(
  * directly; nothing can be staged beside it and renamed onto it.
  */
 inline bool output_admits_ownership(const std::filesystem::path& output) {
+#ifdef _WIN32
+    if (is_windows_device_name(output.filename().string())) return false;
+#endif
     std::error_code ec;
     const auto status = std::filesystem::status(output, ec);
     if (!std::filesystem::exists(status)) return true;
@@ -257,6 +284,7 @@ public:
         HeldElsewhere,///< A live process owns it.
         Unavailable,  ///< The claim file could not be created or opened.
         NotSupported, ///< This filesystem offers no file lock; nobody can claim here.
+        TryAgain,     ///< The system had no lock to give just now; ask again.
     };
 
     /**
@@ -264,15 +292,30 @@ public:
      *        locks" rather than "the lock is taken" or "something is wrong".
      *
      * Network and user-space filesystems answer a lock request with one of
-     * these, and a full system lock table answers ENOLCK. None of them says
-     * anything about another compile, so the build goes on without a claim.
+     * these. None of them says anything about another compile, and none can
+     * be true while some process holds a lock on the same file, so the build
+     * goes on without a claim.
      */
     static bool lock_error_means_unsupported(int error) {
 #ifdef _WIN32
         return error == ERROR_NOT_SUPPORTED || error == ERROR_INVALID_FUNCTION;
 #else
-        return error == ENOTSUP || error == EOPNOTSUPP || error == ENOLCK ||
-               error == EINVAL || error == ENOSYS;
+        return error == ENOTSUP || error == EOPNOTSUPP || error == EINVAL ||
+               error == ENOSYS;
+#endif
+    }
+
+    /**
+     * @brief Whether a failed lock request is a passing shortage: the system's
+     *        lock table is full. Locks exist here and another process may well
+     *        hold this one, so the claimant waits and asks again; the claim
+     *        file is left exactly as it is.
+     */
+    static bool lock_error_is_transient(int error) {
+#ifdef _WIN32
+        return error == ERROR_LOCK_VIOLATION || error == ERROR_TOO_MANY_OPEN_FILES;
+#else
+        return error == ENOLCK;
 #endif
     }
 
@@ -284,6 +327,7 @@ public:
 #else
         if (error == EWOULDBLOCK || error == EAGAIN) return Result::HeldElsewhere;
 #endif
+        if (lock_error_is_transient(error)) return Result::TryAgain;
         return lock_error_means_unsupported(error) ? Result::NotSupported
                                                    : Result::Unavailable;
     }

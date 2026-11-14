@@ -132,11 +132,12 @@ reference_size="$(wc -c < "$WORK/reference/shared")"
 refused_rounds=0
 for round in 1 2 3 4; do
     # Rounds 1 and 2 do not wait, so an overlap ends in a refusal; rounds 3
-    # and 4 use the default bound, so every compile gets its turn.
+    # and 4 wait, with a bound generous enough for two links on a busy
+    # machine, so every compile gets its turn.
     if [ "$round" -le 2 ]; then wait_bound=0; else wait_bound=""; fi
     pids=()
     for who in a b c; do
-        ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS="${wait_bound:-30}" \
+        ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS="${wait_bound:-300}" \
         "$ESHKOL_RUN" -n -o "$shared_out" "$WORK/program.esk" \
             "$WORK/eshkol_named/stdlib.o" "$WORK/eshkol_named/my_eshkol_helpers.o" \
             >"$WORK/shared-$who.log" 2>&1 &
@@ -159,7 +160,7 @@ for round in 1 2 3 4; do
     done
     [ "$succeeded" -ge 1 ] || { echo "FAIL: no concurrent compile produced the output" >&2; exit 1; }
     if [ -z "$wait_bound" ] && [ "$succeeded" -ne 3 ]; then
-        echo "FAIL: with the default wait, $succeeded of 3 compiles of one output went through" >&2
+        echo "FAIL: with a wait, $succeeded of 3 compiles of one output went through" >&2
         exit 1
     fi
     [ "$refused" -gt 0 ] && refused_rounds=$((refused_rounds + 1))

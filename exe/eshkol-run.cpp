@@ -8400,9 +8400,9 @@ struct OwnedLinkTemporaryObjects {
                               std::chrono::seconds(claim_wait_seconds());
         Result result = claim.acquire(output);
         bool announced = false;
-        while (result == Result::HeldElsewhere &&
+        while ((result == Result::HeldElsewhere || result == Result::TryAgain) &&
                std::chrono::steady_clock::now() < deadline) {
-            if (!announced) {
+            if (!announced && result == Result::HeldElsewhere) {
                 eshkol_info("Waiting for another compile that is producing %s", output.c_str());
                 announced = true;
             }
@@ -8411,6 +8411,11 @@ struct OwnedLinkTemporaryObjects {
         }
         if (result == Result::HeldElsewhere) {
             eshkol_error("Another compile is producing %s; it owns that output until it finishes",
+                         output.c_str());
+            return false;
+        }
+        if (result == Result::TryAgain) {
+            eshkol_error("Cannot claim output %s: the system had no file lock to give within the wait",
                          output.c_str());
             return false;
         }

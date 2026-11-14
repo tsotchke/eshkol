@@ -165,12 +165,16 @@ int main(int argc, char** argv) {
               "invalid-function means no locks here");
         check(OutputClaim::result_for_lock_error(ERROR_PATH_NOT_FOUND) == Result::Unavailable,
               "missing path means unavailable");
+        check(OutputClaim::result_for_lock_error(ERROR_LOCK_VIOLATION) == Result::TryAgain,
+              "a lock violation means ask again");
+        check(!OutputClaim::lock_error_means_unsupported(ERROR_LOCK_VIOLATION),
+              "a lock violation is not an unsupported lock");
 #else
         check(OutputClaim::result_for_lock_error(EWOULDBLOCK) == Result::HeldElsewhere,
               "EWOULDBLOCK means held");
         check(OutputClaim::result_for_lock_error(EAGAIN) == Result::HeldElsewhere,
               "EAGAIN means held");
-        for (int error : {ENOTSUP, EOPNOTSUPP, ENOLCK, EINVAL, ENOSYS}) {
+        for (int error : {ENOTSUP, EOPNOTSUPP, EINVAL, ENOSYS}) {
             check(OutputClaim::result_for_lock_error(error) == Result::NotSupported,
                   "an unsupported-lock error means no locks here");
             check(OutputClaim::lock_error_means_unsupported(error),
@@ -182,6 +186,17 @@ int main(int argc, char** argv) {
         }
         check(!OutputClaim::lock_error_means_unsupported(EWOULDBLOCK),
               "a taken lock is not an unsupported lock");
+        // A full lock table is a passing shortage: locks exist here and the
+        // claim may be held, so the claimant asks again and the claim file
+        // is not touched.
+        check(OutputClaim::result_for_lock_error(ENOLCK) == Result::TryAgain,
+              "ENOLCK means ask again");
+        check(OutputClaim::lock_error_is_transient(ENOLCK), "ENOLCK is transient");
+        check(!OutputClaim::lock_error_means_unsupported(ENOLCK),
+              "ENOLCK is not an unsupported lock");
+        for (int error : {ENOTSUP, EOPNOTSUPP, EINVAL, ENOSYS, EWOULDBLOCK, EACCES}) {
+            check(!OutputClaim::lock_error_is_transient(error), "only ENOLCK is transient");
+        }
 #endif
     }
 
@@ -192,8 +207,19 @@ int main(int argc, char** argv) {
         touch(work / "regular");
         check(output_admits_ownership(work / "regular"), "a regular file admits ownership");
         check(!output_admits_ownership(work), "a directory does not admit ownership");
+        // The reserved Windows device names are recognised from the name
+        // alone, on every platform; only Windows consults the answer.
+        for (const char* name : {"NUL", "nul", "CON", "con.txt", "PRN", "AUX", "COM1", "com9",
+                                 "LPT1", "lpt9.log", "NUL:", "nul.exe"}) {
+            check(is_windows_device_name(name), "a reserved device name is recognised");
+        }
+        for (const char* name : {"null", "console", "COM0", "COM10", "LPT", "prog", "nul_file",
+                                 "a.nul", "COMX"}) {
+            check(!is_windows_device_name(name), "an ordinary name is not a device");
+        }
 #ifdef _WIN32
         check(!output_admits_ownership("NUL"), "the null device does not admit ownership");
+        check(!output_admits_ownership(work / "nul.exe"), "a device name in any directory does not admit ownership");
 #else
         check(!output_admits_ownership("/dev/null"), "the null device does not admit ownership");
 #endif
