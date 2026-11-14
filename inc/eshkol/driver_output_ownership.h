@@ -18,9 +18,15 @@
  *    holds it from before it compiles until it has published or given up. The
  *    hold is an operating-system file lock, so it ends with the process on
  *    every exit path, including one the process cannot observe; a claim file
- *    left behind by a process that is gone is simply taken over. A second
- *    driver that asks for the same output while the first is alive is told
- *    so and stops.
+ *    left behind by a process that is gone is simply taken over by the next
+ *    compile of that output, which is also the only thing that removes it:
+ *    the file names no process, and only a claimant can tell a leftover from
+ *    a live claim. A second driver that asks for the same output while the
+ *    first is alive waits for it, for a bounded time, and is then told the
+ *    output is owned. Where the filesystem has no file locks, the build goes
+ *    on without a claim (staging still applies). Where the output is not a
+ *    regular file (a device such as `/dev/null`), there is no claim and no
+ *    staging: the build proceeds in place.
  *  - `<output>.<pid>.<n>.tmp.o` is the scratch object the driver compiles
  *    before the link.
  *  - `<output>.link-<pid>-<n>.d/` is the staging directory the linker writes
@@ -32,6 +38,15 @@
  * that is stopped before it can clean up leaves them behind; the next driver
  * for the same output removes those whose process no longer exists. A process
  * that is alive, or whose state cannot be determined, keeps its files.
+ *
+ * Staging is the caller's choice per build. The driver links in place, still
+ * under the claim, where a debug companion is named from the link path: every
+ * Windows debug build, and on any platform a debug build of a program with no
+ * objects to link.
+ *
+ * Publication is a rename onto the output name. An output name that is a
+ * symbolic link is therefore replaced by the artifact; the file the link
+ * pointed at is left as it was.
  *
  * Header-only and free of compiler dependencies so the naming and liveness
  * rules can be exercised on their own on every platform.
@@ -215,6 +230,20 @@ inline std::vector<std::filesystem::path> reclaim_abandoned(
 }
 
 /**
+ * @brief Whether @p output is a place where a claim and a staged artifact
+ *        make sense: a name that is free, or that leads to a regular file.
+ *
+ * A device, pipe or directory under that name is written by whoever links,
+ * directly; nothing can be staged beside it and renamed onto it.
+ */
+inline bool output_admits_ownership(const std::filesystem::path& output) {
+    std::error_code ec;
+    const auto status = std::filesystem::status(output, ec);
+    if (!std::filesystem::exists(status)) return true;
+    return std::filesystem::is_regular_file(status);
+}
+
+/**
  * @brief The claim one driver holds on an output path.
  *
  * Not copyable. Releasing (or leaving scope) removes the claim file and ends
@@ -227,7 +256,37 @@ public:
         Acquired,     ///< This process now owns the output path.
         HeldElsewhere,///< A live process owns it.
         Unavailable,  ///< The claim file could not be created or opened.
+        NotSupported, ///< This filesystem offers no file lock; nobody can claim here.
     };
+
+    /**
+     * @brief Whether a failed lock request means "this filesystem has no
+     *        locks" rather than "the lock is taken" or "something is wrong".
+     *
+     * Network and user-space filesystems answer a lock request with one of
+     * these, and a full system lock table answers ENOLCK. None of them says
+     * anything about another compile, so the build goes on without a claim.
+     */
+    static bool lock_error_means_unsupported(int error) {
+#ifdef _WIN32
+        return error == ERROR_NOT_SUPPORTED || error == ERROR_INVALID_FUNCTION;
+#else
+        return error == ENOTSUP || error == EOPNOTSUPP || error == ENOLCK ||
+               error == EINVAL || error == ENOSYS;
+#endif
+    }
+
+    /** @brief Map a failed lock request's error to a claim result. */
+    static Result result_for_lock_error(int error) {
+#ifdef _WIN32
+        if (error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED)
+            return Result::HeldElsewhere;
+#else
+        if (error == EWOULDBLOCK || error == EAGAIN) return Result::HeldElsewhere;
+#endif
+        return lock_error_means_unsupported(error) ? Result::NotSupported
+                                                   : Result::Unavailable;
+    }
 
     OutputClaim() = default;
     OutputClaim(const OutputClaim&) = delete;
@@ -255,10 +314,7 @@ public:
                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE,
                                     nullptr);
         if (handle == INVALID_HANDLE_VALUE) {
-            const DWORD error = GetLastError();
-            return (error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED)
-                       ? Result::HeldElsewhere
-                       : Result::Unavailable;
+            return result_for_lock_error(static_cast<int>(GetLastError()));
         }
         handle_ = handle;
 #else
@@ -267,8 +323,14 @@ public:
             if (fd < 0) return Result::Unavailable;
             if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
                 const int error = errno;
+                const Result result = result_for_lock_error(error);
+                if (result == Result::NotSupported) {
+                    // Nobody can hold a claim here, so the file just made
+                    // serves no one; leave the directory as it was found.
+                    ::unlink(claim.c_str());
+                }
                 ::close(fd);
-                return error == EWOULDBLOCK ? Result::HeldElsewhere : Result::Unavailable;
+                return result;
             }
             // The previous holder removes the file as it lets go. Make sure
             // the name still leads to the file that was just locked; if not,

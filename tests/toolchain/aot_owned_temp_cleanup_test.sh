@@ -117,11 +117,12 @@ test -z "$leftovers" || {
     exit 1
 }
 
-# Two compiles of one output at the same moment. The output path has one
-# owner at a time: whichever compile holds it finishes and publishes a whole
-# executable in one step; the other either is told the output is owned and
-# stops, or runs after the first has finished. The executable on disk is
-# always one complete link, and nothing of either compile is left beside it.
+# Compiles of one output at the same moment. The output path has one owner at
+# a time: whichever compile holds it finishes and publishes a whole executable
+# in one step; another waits for it (30 s unless
+# ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS says otherwise) and then takes its turn, or
+# is told the output is owned and stops. The executable on disk is always one
+# complete link, and nothing of any compile is left beside it.
 shared_out="$WORK/shared"
 mkdir -p "$WORK/reference"
 "$ESHKOL_RUN" -n -o "$WORK/reference/shared" "$WORK/program.esk" \
@@ -130,8 +131,12 @@ mkdir -p "$WORK/reference"
 reference_size="$(wc -c < "$WORK/reference/shared")"
 refused_rounds=0
 for round in 1 2 3 4; do
+    # Rounds 1 and 2 do not wait, so an overlap ends in a refusal; rounds 3
+    # and 4 use the default bound, so every compile gets its turn.
+    if [ "$round" -le 2 ]; then wait_bound=0; else wait_bound=""; fi
     pids=()
     for who in a b c; do
+        ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS="${wait_bound:-30}" \
         "$ESHKOL_RUN" -n -o "$shared_out" "$WORK/program.esk" \
             "$WORK/eshkol_named/stdlib.o" "$WORK/eshkol_named/my_eshkol_helpers.o" \
             >"$WORK/shared-$who.log" 2>&1 &
@@ -153,6 +158,10 @@ for round in 1 2 3 4; do
         index=$((index + 1))
     done
     [ "$succeeded" -ge 1 ] || { echo "FAIL: no concurrent compile produced the output" >&2; exit 1; }
+    if [ -z "$wait_bound" ] && [ "$succeeded" -ne 3 ]; then
+        echo "FAIL: with the default wait, $succeeded of 3 compiles of one output went through" >&2
+        exit 1
+    fi
     [ "$refused" -gt 0 ] && refused_rounds=$((refused_rounds + 1))
     test -x "$shared_out" || { echo "FAIL: concurrent compiles left no executable" >&2; exit 1; }
     [ "$(wc -c < "$shared_out")" = "$reference_size" ] || {
@@ -161,6 +170,26 @@ for round in 1 2 3 4; do
     leftovers="$(compgen -G "$shared_out.*" || true)"
     test -z "$leftovers" || { echo "FAIL: concurrent compiles left files beside the output: $leftovers" >&2; exit 1; }
 done
-echo "concurrent rounds in which a compile was told the output is owned: $refused_rounds of 4"
+echo "no-wait rounds in which a compile was told the output is owned: $refused_rounds of 2"
+
+# A second compile started while the first holds the output waits and then
+# succeeds: both exit 0 and the output is a complete link.
+ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS=120 "$ESHKOL_RUN" -n -o "$shared_out" "$WORK/program.esk" \
+    "$WORK/eshkol_named/stdlib.o" "$WORK/eshkol_named/my_eshkol_helpers.o" \
+    >"$WORK/first.log" 2>&1 &
+first=$!
+for _ in $(seq 1 400); do
+    [ -e "$shared_out.eshkol-link.lock" ] && break
+    kill -0 "$first" 2>/dev/null || break
+    sleep 0.05
+done
+ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS=120 "$ESHKOL_RUN" -n -o "$shared_out" "$WORK/program.esk" \
+    "$WORK/eshkol_named/stdlib.o" "$WORK/eshkol_named/my_eshkol_helpers.o" \
+    >"$WORK/second.log" 2>&1 || { cat "$WORK/second.log" >&2; echo "FAIL: second compile did not succeed after the first" >&2; exit 1; }
+wait "$first" || { cat "$WORK/first.log" >&2; echo "FAIL: first compile did not succeed" >&2; exit 1; }
+[ "$(wc -c < "$shared_out")" = "$reference_size" ] || { echo "FAIL: output after two sequential owners is not one complete link" >&2; exit 1; }
+"$shared_out" || { echo "FAIL: output after two sequential owners did not run" >&2; exit 1; }
+leftovers="$(compgen -G "$shared_out.*" || true)"
+test -z "$leftovers" || { echo "FAIL: sequential owners left files beside the output: $leftovers" >&2; exit 1; }
 
 echo "PASS: aot_owned_temp_cleanup_test"

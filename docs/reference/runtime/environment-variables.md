@@ -31,6 +31,7 @@ invalidation and the stdlib object cache.
 | `ESHKOL_PATH` | Module/include search path for `require`. Searched after the requiring file's own directory and the project root, and **before** the installed `lib/` tree, so a path you name overrides a module that ships with the compiler. `-I` directories are merged into it. |
 | `ESHKOL_LIB_DIR` | Directory holding the precompiled stdlib (`stdlib.o`, `stdlib.bc`) and the runtime archives (`libeshkol-runtime.a`, or the legacy `libeshkol-static.a`). Highest precedence of all: it is searched — together with its `eshkol/` subdirectory — before `-L` paths, before the compiler's own install, and before any system location. |
 | `ESHKOL_SYSTEM_PREFIXES` | Replaces the built-in list of system install prefixes searched as a last resort (`/usr/local`, `/usr`, `/opt/homebrew`). Path-list syntax; each entry contributes `<prefix>/lib`, `<prefix>/lib/eshkol` and `<prefix>/share/eshkol/lib`. For unusual installs and for packaging tests that must not read the host's real system directories. |
+| `ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS` | How long a compile waits for another live compile that is producing the same native output path before it reports that the output is owned. Default `30`; `0` does not wait. |
 | `ESHKOL_PROJECT_ROOT` | Project root used for relative paths in exception/backtrace reporting. |
 
 ### Resolution precedence

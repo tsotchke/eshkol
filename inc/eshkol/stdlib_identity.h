@@ -15,6 +15,7 @@
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
 
+#include <mutex>
 #include <set>
 #include <string>
 
@@ -176,8 +177,14 @@ inline platform::ResolvedInstallArtifact resolve_artifact(
             if (file_belongs_to_this_build(path, &reason)) return true;
             // Say it once per file: an operator with an older install in a
             // system prefix can see why it is not being used.
+            static std::mutex reported_guard;
             static std::set<std::string> reported;
-            if (reported.insert(path).second) {
+            bool first_report = false;
+            {
+                std::lock_guard<std::mutex> lock(reported_guard);
+                first_report = reported.insert(path).second;
+            }
+            if (first_report) {
                 eshkol_info(
                     "Passing over system stdlib %s: %s; this compiler expects %s. "
                     "The standard library is taken from the next location or from source",

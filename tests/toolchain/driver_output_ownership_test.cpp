@@ -152,6 +152,53 @@ int main(int argc, char** argv) {
               "a missing directory is reported");
     }
 
+    // A failed lock request is read three ways: the lock is taken, this
+    // filesystem has no locks, or the claim file itself is the difficulty.
+    {
+        using Result = OutputClaim::Result;
+#ifdef _WIN32
+        check(OutputClaim::result_for_lock_error(ERROR_SHARING_VIOLATION) == Result::HeldElsewhere,
+              "sharing violation means held");
+        check(OutputClaim::result_for_lock_error(ERROR_NOT_SUPPORTED) == Result::NotSupported,
+              "not-supported means no locks here");
+        check(OutputClaim::result_for_lock_error(ERROR_INVALID_FUNCTION) == Result::NotSupported,
+              "invalid-function means no locks here");
+        check(OutputClaim::result_for_lock_error(ERROR_PATH_NOT_FOUND) == Result::Unavailable,
+              "missing path means unavailable");
+#else
+        check(OutputClaim::result_for_lock_error(EWOULDBLOCK) == Result::HeldElsewhere,
+              "EWOULDBLOCK means held");
+        check(OutputClaim::result_for_lock_error(EAGAIN) == Result::HeldElsewhere,
+              "EAGAIN means held");
+        for (int error : {ENOTSUP, EOPNOTSUPP, ENOLCK, EINVAL, ENOSYS}) {
+            check(OutputClaim::result_for_lock_error(error) == Result::NotSupported,
+                  "an unsupported-lock error means no locks here");
+            check(OutputClaim::lock_error_means_unsupported(error),
+                  "an unsupported-lock error is recognised");
+        }
+        for (int error : {EACCES, EIO, EBADF, ENOENT, EROFS}) {
+            check(OutputClaim::result_for_lock_error(error) == Result::Unavailable,
+                  "any other error means unavailable");
+        }
+        check(!OutputClaim::lock_error_means_unsupported(EWOULDBLOCK),
+              "a taken lock is not an unsupported lock");
+#endif
+    }
+
+    // Ownership applies to a free name or a regular file, not to a device or
+    // a directory.
+    {
+        check(output_admits_ownership(work / "not-there-yet"), "a free name admits ownership");
+        touch(work / "regular");
+        check(output_admits_ownership(work / "regular"), "a regular file admits ownership");
+        check(!output_admits_ownership(work), "a directory does not admit ownership");
+#ifdef _WIN32
+        check(!output_admits_ownership("NUL"), "the null device does not admit ownership");
+#else
+        check(!output_admits_ownership("/dev/null"), "the null device does not admit ownership");
+#endif
+    }
+
     // Publication replaces the output in one step and leaves no staging.
     {
         const fs::path out = work / "artifact";

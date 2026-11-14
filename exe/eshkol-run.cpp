@@ -68,6 +68,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <optional>
 #ifdef _WIN32
 #include <process.h>
@@ -8368,16 +8369,57 @@ struct OwnedLinkTemporaryObjects {
     eshkol::driver::OutputClaim claim;
     eshkol::driver::StagedOutput staged;
 
+    // False once a build is known to have no claim and no staging: the output
+    // is a device or other non-regular file, written in place.
+    bool owns_output = true;
+
+    // How long a compile waits for another live compile of the same output.
+    // ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS overrides the bound; 0 does not wait.
+    static unsigned claim_wait_seconds() {
+        if (const char* text = std::getenv("ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS")) {
+            char* end = nullptr;
+            const unsigned long value = std::strtoul(text, &end, 10);
+            if (end != text && *end == '\0' && value <= 86400ul) {
+                return static_cast<unsigned>(value);
+            }
+        }
+        return 30;
+    }
+
     // Take ownership of @p output for this build and clear what a driver that
-    // no longer exists left beside it. Answers false, with the reason logged,
-    // when another live driver is producing the same output.
+    // no longer exists left beside it. Another live compile of the same output
+    // is waited for, up to the bound; answers false, with the reason logged,
+    // when it still owns the output after that.
     bool claim_output(const std::string& output) {
         using Result = eshkol::driver::OutputClaim::Result;
-        const Result result = claim.acquire(output);
+        if (!eshkol::driver::output_admits_ownership(output)) {
+            owns_output = false;
+            return true;
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(claim_wait_seconds());
+        Result result = claim.acquire(output);
+        bool announced = false;
+        while (result == Result::HeldElsewhere &&
+               std::chrono::steady_clock::now() < deadline) {
+            if (!announced) {
+                eshkol_info("Waiting for another compile that is producing %s", output.c_str());
+                announced = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            result = claim.acquire(output);
+        }
         if (result == Result::HeldElsewhere) {
             eshkol_error("Another compile is producing %s; it owns that output until it finishes",
                          output.c_str());
             return false;
+        }
+        if (result == Result::NotSupported) {
+            // Staging and the single rename still apply: the artifact is whole.
+            eshkol_info("No file lock is available beside %s; compiling without an output claim",
+                        output.c_str());
+            eshkol::driver::reclaim_abandoned(output);
+            return true;
         }
         if (result == Result::Unavailable) {
             eshkol_error("Cannot claim output %s: its directory does not admit a new file",
@@ -8413,7 +8455,7 @@ struct OwnedLinkTemporaryObjects {
     // Where the linker should write so that @p output appears in one step.
     // Answers @p output itself when staging is not used for this build.
     std::string stage_for(const std::string& output, bool use_staging) {
-        if (!use_staging) return output;
+        if (!use_staging || !owns_output) return output;
         staged = eshkol::driver::stage_output(output);
         if (!staged.valid()) return {};
         paths.push_back(staged.directory.generic_string());
