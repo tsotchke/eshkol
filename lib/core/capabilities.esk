@@ -6,8 +6,17 @@
 ;;; running unchanged. Installing an allow-list makes the policy active and
 ;;; every capability not present in the list is denied by default.
 ;;;
-;;; Core hosted capabilities include file-read, file-write, env-read,
-;;; env-write, subprocess, shell, and network.
+;;; The capability vocabulary is file-read, file-write, env-read, env-write,
+;;; subprocess, shell, network, ffi, keychain, display, audio and midi. Installing a policy mirrors
+;;; the allow-list into the runtime policy store (lib/core/capability_policy.cpp),
+;;; which every engine reads, so the policy holds for the code-generated paths,
+;;; the bytecode VM and the runtime entry points beneath them alike — not only
+;;; for the Scheme wrappers that call capability-require! themselves.
+;;;
+;;; The file and environment surfaces report a denial and return a benign value.
+;;; The process, shell, socket and foreign-code sinks raise instead, because
+;;; every value they could return is also a legitimate one; those refusals are
+;;; catchable and name the capability. See docs/reference/language/capabilities.md.
 
 (provide capability-install-policy!
          capability-clear-policy!
@@ -16,7 +25,7 @@
          capability-allowed?
          capability-require!)
 
-(extern void capability-runtime-clear-raw :real eshkol_capability_runtime_clear)
+(extern i32 capability-runtime-clear-raw :real eshkol_capability_runtime_clear)
 (extern void capability-runtime-begin-install-raw :real eshkol_capability_runtime_begin_install)
 (extern void capability-runtime-allow-raw ptr :real eshkol_capability_runtime_allow)
 
@@ -45,20 +54,36 @@
           (capability-runtime-allow-raw (symbol->string (car remaining)))
           (loop (cdr remaining))))))
 
+(define (capability-intersect allow-list current)
+  "The names in ALLOW-LIST that CURRENT also holds, in ALLOW-LIST's order."
+  (if (null? allow-list)
+      '()
+      (if (memq (car allow-list) current)
+          (cons (car allow-list) (capability-intersect (cdr allow-list) current))
+          (capability-intersect (cdr allow-list) current))))
+
 (define (capability-install-policy! allow-list)
-  "Install an allow-list of capability symbols. Active policies deny by default."
+  "Install an allow-list of capability symbols. An active policy denies every
+capability it does not name. Installing one while another is active narrows it:
+the result is the names both hold, so a policy can only ever take away."
   (if (and (list? allow-list) (capability-symbol-list? allow-list))
-      (begin
+      (let ((effective (if (eq? *capability-policy-active* #t)
+                           (capability-intersect allow-list *capability-allow-list*)
+                           allow-list)))
         (set! *capability-policy-active* #t)
-        (set! *capability-allow-list* allow-list)
-        (capability-sync-runtime! allow-list))
+        (set! *capability-allow-list* effective)
+        (capability-sync-runtime! effective))
       (error "capability-install-policy!: expected a list of symbols" allow-list)))
 
 (define (capability-clear-policy!)
-  "Clear the active policy. With no policy, capability checks allow by default."
-  (set! *capability-policy-active* #f)
-  (set! *capability-allow-list* '())
-  (capability-runtime-clear-raw))
+  "Clear the policy. Refused while one is active: a policy is not something the
+code it governs can remove. With no policy installed this is a no-op."
+  (if (eq? *capability-policy-active* #t)
+      (error "capability denied: the active policy cannot be cleared" 'policy)
+      (begin
+        (set! *capability-allow-list* '())
+        (capability-runtime-clear-raw)
+        #t)))
 
 (define (capability-allowed? capability . _context)
   "Return #t when CAPABILITY is allowed under the current policy."

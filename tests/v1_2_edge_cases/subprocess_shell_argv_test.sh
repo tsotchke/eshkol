@@ -64,12 +64,6 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
             (cons 'stdout "")
             (cons 'stderr "spawn failed"))))
 
-(capability-install-policy! (list 'subprocess))
-(check "shell denied without shell capability"
-       (raises? (lambda () (process-spawn-shell "echo should-not-run" ".")))
-       #t)
-(capability-clear-policy!)
-
 (define shell-result
   (run-command-capture "echo out; echo err >&2; exit 42" "." 5000 4096))
 
@@ -297,6 +291,14 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 (check "process-destroy kills running child"
        (cdr (assoc 'exit-code destroy-kill-check))
        1)
+
+;; Last, because a policy only narrows and is not the program's to remove:
+;; everything above runs unrestricted, and this installs the policy that the
+;; rest of the program would not be able to undo.
+(capability-install-policy! (list 'subprocess))
+(check "shell denied without shell capability"
+       (raises? (lambda () (process-spawn-shell "echo should-not-run" ".")))
+       #t)
 
 (if (> failed 0)
     (exit 1)

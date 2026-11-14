@@ -42,6 +42,10 @@ ESHKOL_WASM_VM_SOURCES=(
     "$REPO_ROOT/lib/backend/gpu/gpu_memory_webgpu.cpp"
     # eshkol_printf, which the GPU backend reports allocation failures through.
     "$REPO_ROOT/lib/core/logger.cpp"
+    # The capability policy store. The browser bundle links the same store as
+    # the native runtime, so a policy a program installs holds on every engine
+    # rather than only where the store happened to be compiled in.
+    "$REPO_ROOT/lib/core/capability_policy.cpp"
 )
 
 # Compile/link flags every WASM VM build uses (both consumers above).
@@ -65,7 +69,6 @@ ESHKOL_WASM_VM_FLAGS=(
 # newly introduced runtime dependency has to be either linked or consciously
 # added, never silently turned into an abort.
 ESHKOL_WASM_ALLOWED_UNDEFINED=(
-    eshkol_capability_require
     eshkol_qrng_double
     eshkol_qrng_uint64
 )

@@ -39,6 +39,8 @@
 #include <wchar.h>
 #endif
 
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
+
 /* ── Subprocess handle ──
  * stdout_buf / stderr_buf accumulate what qllm_process_wait's poll loop
  * reads from the child's stdout/stderr pipes while the child is still
@@ -985,6 +987,26 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
                                                             int force_shell) {
     const char* cwd = cwd_arg;
     if (!command) return NULL;
+    /* The gate for this layer. The Scheme wrappers in lib/agent/subprocess.esk
+     * ask for the same capabilities, and this is the same question one level
+     * down, at the point where the child is actually created, so a caller that
+     * reaches the C entry point directly meets it too.
+     *
+     * `shell` is asked for exactly when a command interpreter will see the
+     * command. On POSIX that is when the caller asked for a shell, and also
+     * when the command carries shell grammar the direct-exec path cannot
+     * reproduce — the fork fallback below reaches /bin/sh either way, so the
+     * question is settled here, before the child exists, rather than in a
+     * branch the child is already in. On Windows the command always goes to
+     * ComSpec. */
+    eshkol_capability_enforce("subprocess", "process-spawn");
+#if !defined(_WIN32)
+    if (force_shell || !command_is_shell_safe(command)) {
+        eshkol_capability_enforce("shell", "process-spawn-shell");
+    }
+#else
+    eshkol_capability_enforce("shell", "process-spawn-shell");
+#endif
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
@@ -1310,6 +1332,8 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
     const char* tab_packed_argv, const char* cwd_arg, int64_t flags,
     const char* packed_env) {
     if (!tab_packed_argv || !tab_packed_argv[0]) return NULL;
+    /* No shell is involved on this path: argv is exec'd directly. */
+    eshkol_capability_enforce("subprocess", "process-spawn-argv");
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;

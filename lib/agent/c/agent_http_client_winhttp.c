@@ -23,6 +23,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Every request path of this client passes through the gate below before a
+ * connection is attempted: an HTTP request is a network operation, and under a
+ * policy that does not grant `network` it raises a catchable capability-denied
+ * error instead of reaching the host. */
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
+
 #define ESHKOL_HTTP_DEFAULT_TIMEOUT_MS 30000
 #define ESHKOL_HTTP_CONNECT_TIMEOUT_MS 10000
 #define ESHKOL_HTTP_MAX_RESPONSE_BYTES ((size_t)256 * 1024 * 1024)
@@ -252,6 +258,7 @@ static qllm_http_response_t* perform_request(const wchar_t* method,
                                              const char* body,
                                              int64_t body_len,
                                              int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     if (!url || body_len < 0 || (uint64_t)body_len > UINT32_MAX ||
         (!body && body_len != 0)) return NULL;
     for (int64_t i = 0; headers && i < header_count; ++i) {
@@ -557,6 +564,7 @@ void* eshkol_http_stream_open_bytes(const char* method,
                                     const char* body,
                                     int64_t body_len,
                                     int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
         (uint64_t)body_len > UINT32_MAX || (!body && body_len != 0)) return NULL;
     const int timeout = timeout_ms > 0 ? timeout_ms : ESHKOL_HTTP_DEFAULT_TIMEOUT_MS;

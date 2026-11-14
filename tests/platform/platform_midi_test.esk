@@ -4,9 +4,9 @@
 (require platform.midi)
 (load "tests/platform/platform_check.esk")
 
-(capability-install-policy! '(audio))
-(check "a policy without 'midi refuses ports"
-       (raises? (lambda () (midi-open-output "eshkol-esk-out"))))
+;; A policy only narrows, so this walks down one chain: the capability is
+;; granted first, the body runs under it, and the refusal is checked at the end
+;; under a policy that no longer holds it.
 (capability-install-policy! '(midi))
 
 (define out (midi-open-output "eshkol-esk-out"))
@@ -38,4 +38,10 @@
 (midi-close! in)
 (midi-close! out)
 (check "closed port raises" (raises? (lambda () (midi-receive in))))
+
+;; Narrowed: the capability the body used is no longer granted.
+(capability-install-policy! '(audio))
+(check "a policy without 'midi refuses ports"
+       (raises? (lambda () (midi-open-output "eshkol-esk-out"))))
+
 (report "platform midi")

@@ -90,6 +90,12 @@ static int eshkol_socket_recv(eshkol_socket_t socket_value, void* data,
 }
 #endif
 
+/* The capability gate for creating a socket: listening on a port and
+ * connecting to a Unix socket both require the network capability, and under a
+ * policy that withholds it the call raises a catchable capability-denied error
+ * rather than opening the socket. */
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
+
 /* Socket writes are allowed to complete partially on every supported OS.
  * Framed protocols cannot tolerate silent truncation, so HTTP and WebSocket
  * writers use one exact-length primitive. */
@@ -359,6 +365,7 @@ static int64_t http_content_length(const char* headers, size_t header_bytes) {
  * @return Server handle (>= 1) on success, -1 on socket/bind/listen failure or if all server slots are in use.
  */
 int64_t eshkol_http_server_create(int32_t port) {
+    eshkol_capability_enforce("network", "http-server-create");
     if (!ensure_sockets()) return -1;
     int slot = -1;
     for (int i = 1; i < MAX_HTTP_SERVERS; i++) {
@@ -633,6 +640,7 @@ void eshkol_http_server_close(int64_t handle) {
  * @return Connected file descriptor (>= 0) on success, -1 on error or if @p path is NULL.
  */
 int64_t eshkol_unix_socket_connect(const char* path) {
+    eshkol_capability_enforce("network", "unix-socket-connect");
     if (!path || !ensure_sockets()) return -1;
     eshkol_socket_t fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd == ESHKOL_INVALID_SOCKET) return -1;

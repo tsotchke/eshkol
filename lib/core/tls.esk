@@ -48,6 +48,7 @@
           ((= code -4) 'invalid) ((= code -5) 'busy) ((= code -6) 'cancelled)
           ((= code -7) 'reset) ((= code -9) 'refused)
           ((= code -10) 'untrusted-certificate) ((= code -11) 'identity-mismatch)
+          ((= code -12) 'denied)
           (else 'failure))))
 (define (-tls-result n op)
   (if (< n 0) (vector 'tls-error (inexact->exact n) op) (inexact->exact n)))

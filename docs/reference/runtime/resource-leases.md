@@ -47,6 +47,7 @@ every kind:
 | `-9` | `ESHKOL_IO_REFUSED` | Connection refused. |
 | `-10` | `ESHKOL_IO_UNTRUSTED` | TLS peer certificate failed verification. |
 | `-11` | `ESHKOL_IO_IDENTITY` | TLS peer certificate names another host. |
+| `-12` | `ESHKOL_IO_DENIED` | The capability policy does not permit the operation. |
 
 ## Registry operations behind the layer
 

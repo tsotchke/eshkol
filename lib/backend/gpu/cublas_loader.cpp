@@ -19,7 +19,12 @@
 
 #if !defined(ESHKOL_CUBLAS_LOADER_TESTING)
 #include <cuda_runtime_api.h>
+
 #endif
+
+/* A candidate path can come from the environment, so loading it is a
+ * foreign-code sink: under a policy without `ffi` the library reads as absent. */
+extern "C" int eshkol_capability_require(const char* capability);
 
 namespace eshkol::cuda {
 namespace {
@@ -223,6 +228,7 @@ bool CublasLoader::admit_locked(const char* test_path, std::string* diagnostic) 
         if (diagnostic) *diagnostic = diagnostic_;
         return false;
     }
+    if (!eshkol_capability_require("ffi")) return {};
     for (const auto& path : wide_candidates) {
         const bool absolute = std::filesystem::path(path).is_absolute();
         DWORD flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
@@ -238,6 +244,7 @@ bool CublasLoader::admit_locked(const char* test_path, std::string* diagnostic) 
             continue;
         }
 #else
+    if (!eshkol_capability_require("ffi")) return {};
     for (const auto& path : candidates) {
         dlerror();
         Module module = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);

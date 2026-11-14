@@ -50,7 +50,11 @@ endif()
 
 if(ESHKOL_PLATFORM_STAGE STREQUAL "tests" AND ESHKOL_BUILD_TESTS AND ESHKOL_PLATFORM_LAYER_ENABLED)
     find_package(Threads REQUIRED)
-    set(_platform_test_sources tests/platform/platform_test.c ${ESHKOL_PLATFORM_SOURCES}
+    # platform.c consults the capability policy before it loads a shared
+    # library, so this executable links the one policy store too.
+    set(_platform_test_sources tests/platform/platform_test.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/core/capability_policy.cpp
+        ${ESHKOL_PLATFORM_SOURCES}
         lib/core/runtime_handle.cpp)
     if(APPLE)
         list(APPEND _platform_test_sources tests/platform/cocoa_event_inject.m)

@@ -22,6 +22,20 @@ int eshkol_resolve_module_source_path_c(const char* module_name,
                                         char* output,
                                         size_t output_size);
 
+/*
+ * Whether a source file lies inside the Eshkol module tree — the directory
+ * carrying stdlib.esk — as opposed to being a program's own source.
+ *
+ * The capability policy asks this about an `(extern …)` declaration: a module
+ * shipped with the language declares the runtime entry points it is built on
+ * and carries its own gates, while a program's own foreign declaration is the
+ * program reaching outside the language, which the `ffi` capability governs.
+ *
+ * Compares canonical paths. A NULL, empty or unplaceable path answers 0, so a
+ * file the runtime cannot place is treated as the program's own.
+ */
+int eshkol_path_is_stdlib_module(const char* host_path);
+
 #ifdef __cplusplus
 }
 #endif

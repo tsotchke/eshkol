@@ -1,0 +1,53 @@
+;;; The environment overlay `(process-spawn cmd env)` takes applies to the
+;;; child and to nothing else: the child's environment carries it, and the
+;;; spawning program's own environment is unchanged afterwards — so a second
+;;; spawn does not inherit the first one's overlay.
+(require stdlib)
+
+(define dump (getenv "ESHKOL_CHILD_ENV_DUMP"))
+;; Two names: one the parent does not have, and one it does — the second
+;; is what tells an overlay that overrides from one that is ignored.
+(define overlay "ESHKOL_CHILD_ENV_PROBE=child-only ESHKOL_CHILD_ENV_OVERRIDE=child-value")
+
+;; `cmd /c` on Windows, the POSIX shell elsewhere: both honour a redirection,
+;; and each spells a variable reference its own way.
+(define windows? (string=? (os-type) "windows"))
+(define command
+  (if windows?
+      (string-append "echo %ESHKOL_CHILD_ENV_PROBE%;%ESHKOL_CHILD_ENV_OVERRIDE% > \"" dump "\"")
+      (string-append "printf '%s;%s' \"$ESHKOL_CHILD_ENV_PROBE\" "
+                     "\"$ESHKOL_CHILD_ENV_OVERRIDE\" > '" dump "'")))
+
+(define pid (process-spawn command overlay))
+(if (and (number? pid) (> pid 0)) (process-wait pid) #t)
+
+(display "spawned:")
+(display (if (and (number? pid) (> pid 0)) "yes" "no"))
+(newline)
+
+(display "child-saw-overlay:")
+(display
+  (if (file-exists? dump)
+      (if (string-contains? (read-file dump) "child-only") "yes" "no")
+      "no-dump"))
+(newline)
+
+;; The parent already has ESHKOL_CHILD_ENV_OVERRIDE set to something else, so
+;; this is the half that catches an overlay appended where the parent's own
+;; entry still wins.
+(display "child-saw-override:")
+(display
+  (if (file-exists? dump)
+      (if (string-contains? (read-file dump) "child-value") "yes" "no")
+      "no-dump"))
+(newline)
+
+;; The spawning program's own environment must not have gained the overlay.
+(display "parent-unchanged:")
+(display (if (getenv "ESHKOL_CHILD_ENV_PROBE") "no" "yes"))
+(newline)
+
+(display "parent-override-intact:")
+(display (if (string=? (getenv "ESHKOL_CHILD_ENV_OVERRIDE") "parent-value")
+             "yes" "no"))
+(newline)

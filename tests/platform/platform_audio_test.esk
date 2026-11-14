@@ -4,9 +4,9 @@
 (require platform.audio)
 (load "tests/platform/platform_check.esk")
 
-(capability-install-policy! '(display))
-(check "a policy without 'audio refuses devices"
-       (raises? (lambda () (audio-open-output 48000 2 256))))
+;; A policy only narrows, so this walks down one chain: the capability is
+;; granted first, the body runs under it, and the refusal is checked at the end
+;; under a policy that no longer holds it.
 (capability-install-policy! '(audio))
 
 (define out (audio-open 'output 48000 1 'f32 256 4096))
@@ -48,4 +48,10 @@
 (audio-close! in)
 (check "unknown format raises" (raises? (lambda () (audio-open 'output 48000 2 'f64 256 0))))
 (check "invalid rate raises" (raises? (lambda () (audio-open 'output 10 2 'f32 256 0))))
+
+;; Narrowed: the capability the body used is no longer granted.
+(capability-install-policy! '(display))
+(check "a policy without 'audio refuses devices"
+       (raises? (lambda () (audio-open-output 48000 2 256))))
+
 (report "platform audio")

@@ -1,0 +1,17 @@
+;;; Subprocess capability: `(process-spawn cmd env)` creates a child process.
+(require stdlib)
+(require core.capabilities)
+
+(define mode (getenv "ESHKOL_CAP_MODE"))
+(if (string=? mode "deny") (capability-install-policy! (list 'file-read)) #t)
+(if (string=? mode "grant")
+    (capability-install-policy! (list 'file-read 'subprocess 'shell))
+    #t)
+
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((pid (process-spawn "exit 0" "")))
+      (if (and (number? pid) (> pid 0))
+          (begin (process-wait pid) "ran:spawned")
+          "ran:unavailable"))))
+(newline)

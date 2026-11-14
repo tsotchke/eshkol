@@ -46,6 +46,8 @@
 
 extern "C" {
 #include "pjrt_c_api.h"
+
+extern "C" int eshkol_capability_require(const char* capability);
 }
 
 namespace eshkol {
@@ -230,6 +232,12 @@ std::unique_ptr<PjrtPlugin> PjrtPlugin::load(const std::string& library_path,
     // RTLD_LOCAL so a plugin's symbols do not leak into the global namespace
     // and collide with the LLVM/MLIR we are already linked against — libtpu is
     // 359 MB and statically contains much of XLA.
+    // The plugin path can come from the environment, so loading it is a
+    // foreign-code sink like any other: under a policy without `ffi` nothing is
+    // loaded and this reads as an unavailable plugin.
+    if (!eshkol_capability_require("ffi")) {
+        return fail("the capability policy does not permit loading a PJRT plugin");
+    }
     dlerror();  // clear any stale error
     void* handle = dlopen(library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!handle) {

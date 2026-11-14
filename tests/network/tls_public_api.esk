@@ -19,18 +19,9 @@
 
 (define cert "tests/network/fixtures/localhost-cert.pem")
 (define key "tests/network/fixtures/localhost-key.pem")
-(capability-install-policy! '(network))
-(check "explicit client CA path requires file-read before native loading"
-       (raises? (lambda () (tls-client-context "/definitely/missing/ca.pem"))))
-(check "explicit server certificate and key require file-read"
-       (raises? (lambda ()
-                  (tls-server-context "/definitely/missing/cert.pem"
-                                      "/definitely/missing/key.pem"))))
-(define default-trust-context (tls-client-context #f))
-(check "default system trust uses network without explicit file-read"
-       (not (tls-error? default-trust-context)))
-(check "default trust context closes under the network policy"
-       (= (tls-context-close default-trust-context) 0))
+;; A policy only narrows, so this walks down one chain: network and file-read
+;; first, for the part that reads a certificate off disk, then network alone for
+;; the part that must not have file-read, then nothing at all.
 (capability-install-policy! '(network file-read))
 (define (text-a) (string (integer->char 65) (integer->char 0) (integer->char 233)))
 (define payload (text-a))
@@ -86,6 +77,21 @@
             (string=? (vector-ref server-result 1) payload)
             (= (vector-ref server-result 2) (string-byte-length payload))
             (= (vector-ref server-result 3) 0)))
+;; Narrowed to network alone: file-read is gone, so an explicit path must be
+;; refused before anything is loaded, while the default system trust still works.
+(capability-install-policy! '(network))
+(check "explicit client CA path requires file-read before native loading"
+       (raises? (lambda () (tls-client-context "/definitely/missing/ca.pem"))))
+(check "explicit server certificate and key require file-read"
+       (raises? (lambda ()
+                  (tls-server-context "/definitely/missing/cert.pem"
+                                      "/definitely/missing/key.pem"))))
+(define default-trust-context (tls-client-context #f))
+(check "default system trust uses network without explicit file-read"
+       (not (tls-error? default-trust-context)))
+(check "default trust context closes under the network policy"
+       (= (tls-context-close default-trust-context) 0))
+
 (capability-install-policy! '())
 (define client-session-close (tls-session-close client-session))
 (check "TLS client session closes after capability revocation"
