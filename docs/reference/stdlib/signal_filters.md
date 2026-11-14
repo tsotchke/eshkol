@@ -15,7 +15,7 @@ Length-`N` Hamming window, `w[n] = 0.54 − 0.46·cos(2πn/(N−1))`.
 (display (hamming-window 5)) (newline)
 ```
 ```
-#(0.08000000000000002 0.54 1 0.5400000000000001 0.08000000000000002)
+#(0.08000000000000002 0.54 1.0 0.5400000000000001 0.08000000000000002)
 ```
 
 ### `(hann-window N)`
@@ -25,7 +25,7 @@ Length-`N` Hann (Hanning) window, `w[n] = 0.5·(1 − cos(2πn/(N−1)))`.
 (display (hann-window 5)) (newline)
 ```
 ```
-#(0 0.49999999999999994 1 0.5000000000000001 0)
+#(0.0 0.49999999999999994 1.0 0.5000000000000001 0.0)
 ```
 
 ### `(blackman-window N)`
@@ -45,7 +45,7 @@ Length-`N` Kaiser window with shape parameter `beta`; uses an internal 25-term s
 (display (kaiser-window 5 4.0)) (newline)
 ```
 ```
-#(0.08848052607644988 0.6334317797559347 1 0.6334317797559347 0.08848052607644988)
+#(0.08848052607644988 0.6334317797559347 1.0 0.6334317797559347 0.08848052607644988)
 ```
 
 ### `(apply-window signal window)`
@@ -55,7 +55,7 @@ Element-wise product of `signal` and `window` (they should be the same length; t
 (display (apply-window #(1.0 1.0 1.0 1.0 1.0) (hamming-window 5))) (newline)
 ```
 ```
-#(0.08000000000000002 0.54 1 0.5400000000000001 0.08000000000000002)
+#(0.08000000000000002 0.54 1.0 0.5400000000000001 0.08000000000000002)
 ```
 
 ## Convolution
@@ -67,7 +67,7 @@ Direct time-domain convolution. Output length `len(a) + len(b) − 1`.
 (display (convolve #(1.0 2.0 3.0) #(1.0 1.0))) (newline)
 ```
 ```
-#(1 3 5 3)
+#(1.0 3.0 5.0 3.0)
 ```
 
 ### `(fast-convolve a b)`
@@ -77,7 +77,7 @@ FFT-based convolution, O(N log N): zero-pads both signals to the next power of 2
 (display (fast-convolve #(1.0 2.0 3.0) #(1.0 1.0))) (newline)
 ```
 ```
-#(1 3 5 3)
+#(1.0 3.0 5.0 3.0)
 ```
 
 ## FIR / IIR filters
@@ -100,7 +100,7 @@ IIR filter, Direct Form I: `y[n] = (1/a[0])·(Σ_k b[k]·x[n−k] − Σ_{k≥1}
 (display (iir-filter #(1.0) #(1.0 -0.5) #(1.0 0.0 0.0 0.0))) (newline)
 ```
 ```
-#(1 0.5 0.25 0.125)
+#(1.0 0.5 0.25 0.125)
 ```
 
 ## Butterworth design
@@ -114,7 +114,7 @@ Design an `order`-th Butterworth lowpass (bilinear transform of the analog proto
 (display (butterworth-lowpass 2 0.5)) (newline)
 ```
 ```
-(#(0.2928932188134524 0.5857864376269049 0.2928932188134524) . #(1 -1.3877787807814457e-16 0.17157287525380988))
+(#(0.2928932188134524 0.5857864376269049 0.2928932188134524) . #(1.0 -1.3877787807814457e-16 0.17157287525380988))
 ```
 
 ### `(butterworth-highpass order cutoff)`
@@ -124,7 +124,7 @@ Highpass via the lowpass-to-highpass spectral inversion (`z → −z` on the num
 (display (butterworth-highpass 2 0.5)) (newline)
 ```
 ```
-(#(0.2928932188134524 -0.5857864376269049 0.2928932188134524) . #(1 -1.3877787807814457e-16 0.17157287525380988))
+(#(0.2928932188134524 -0.5857864376269049 0.2928932188134524) . #(1.0 -1.3877787807814457e-16 0.17157287525380988))
 ```
 
 ### `(butterworth-bandpass order low-cutoff high-cutoff)`

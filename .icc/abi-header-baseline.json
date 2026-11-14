@@ -1,5 +1,5 @@
 {
-  "commit": "e301e277cfcc8afc5b7923419860e01e056d687e",
+  "commit": "794ed16d6e7cb8d2de7e1cbef5a40b5795d6fa54",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -18,8 +18,8 @@
       "lib/core/runtime_display_hosted.cpp": 3,
       "lib/core/runtime_exceptions_hosted.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
-      "lib/core/runtime_list_helpers.cpp": 3,
-      "lib/core/runtime_regions_evacuation.cpp": 1,
+      "lib/core/runtime_list_helpers.cpp": 4,
+      "lib/core/runtime_regions_evacuation.cpp": 2,
       "lib/core/runtime_taylor.c": 12,
       "lib/core/runtime_tensor_alloc.cpp": 5,
       "lib/core/runtime_tensor_fill.cpp": 1,
@@ -60,8 +60,10 @@
       "lib/core/runtime_tensor_index.cpp": 7,
       "lib/core/sexp_to_ast.cpp": 1,
       "lib/core/symbol_intern.cpp": 1,
+      "lib/frontend/compiler_pass_values.h": 1,
       "tests/backend/vm_model_io_fail_closed_test.c": 1,
       "tests/core/abi_layout_pin_test.cpp": 10,
+      "tests/core/dbsp_resident_owner_test.cpp": 1,
       "tests/core/memory_abi_v2_test.cpp": 7,
       "tests/ffi/sqlite_column_roundtrip_test.c": 3
     },
@@ -127,7 +129,7 @@
       "lib/core/onnx_export.c": 1,
       "lib/core/prng.cpp": 2,
       "lib/core/rational.cpp": 7,
-      "lib/core/runtime_autodiff.cpp": 6,
+      "lib/core/runtime_autodiff.cpp": 11,
       "lib/core/runtime_bytevector.cpp": 3,
       "lib/core/runtime_closure_alloc.cpp": 1,
       "lib/core/runtime_closure_reflection.cpp": 1,
@@ -137,22 +139,24 @@
       "lib/core/runtime_exceptions_hosted.cpp": 7,
       "lib/core/runtime_gensym.cpp": 1,
       "lib/core/runtime_hash_table.cpp": 3,
-      "lib/core/runtime_list_helpers.cpp": 7,
+      "lib/core/runtime_list_helpers.cpp": 8,
       "lib/core/runtime_object_alloc.cpp": 7,
       "lib/core/runtime_parameters_hosted.cpp": 2,
       "lib/core/runtime_reader_hosted.cpp": 3,
       "lib/core/runtime_regions_evacuation.cpp": 1,
       "lib/core/runtime_string.cpp": 2,
       "lib/core/runtime_string_ports_hosted.cpp": 3,
-      "lib/core/runtime_taylor.c": 8,
+      "lib/core/runtime_taylor.c": 9,
       "lib/core/runtime_tensor_alloc.cpp": 2,
       "lib/core/runtime_tensor_math.cpp": 4,
       "lib/core/sdnc_api.c": 3,
       "lib/core/system_builtins.c": 12,
       "lib/core/workspace.cpp": 3,
+      "lib/frontend/compiler_pass_values.h": 1,
       "lib/repl/repl_jit.cpp": 9,
       "tests/core/abi_layout_pin_test.cpp": 1,
       "tests/core/constructor_allocation_shim.cpp": 9,
+      "tests/core/dbsp_resident_owner_test.cpp": 4,
       "tests/core/eskm_v2_runtime_test.cpp": 1,
       "tests/core/model_io_test.cpp": 2,
       "tests/core/parameter_region_barrier_test.cpp": 1,
@@ -162,11 +166,13 @@
       "tests/core/runtime_deep_equal_test.cpp": 4,
       "tests/core/runtime_object_alloc_test.cpp": 10,
       "tests/core/runtime_regions_test.cpp": 1,
+      "tests/core/string_to_list_runtime_test.cpp": 1,
       "tests/fuzz/eskm_model_fuzz_probe.cpp": 1
     },
     "F_parallel_header_decl": {
       "inc/eshkol/eshkol.h": 1,
-      "lib/backend/vm_arena.h": 1
+      "lib/backend/vm_arena.h": 1,
+      "lib/backend/vm_native.c": 1
     },
     "G_header_field_write": {
       "inc/eshkol/eshkol.h": 1,
@@ -193,7 +199,7 @@
       "lib/core/runtime_exceptions_hosted.cpp": 4,
       "lib/core/runtime_hash_table.cpp": 4,
       "lib/core/runtime_object_alloc.cpp": 20,
-      "lib/core/runtime_regions_evacuation.cpp": 4,
+      "lib/core/runtime_regions_evacuation.cpp": 5,
       "lib/core/runtime_regions_handles.cpp": 1,
       "lib/core/runtime_string.cpp": 2,
       "lib/core/runtime_taylor.c": 22,
@@ -207,17 +213,19 @@
       "lib/core/symbol_intern.cpp": 4,
       "lib/core/system_builtins.c": 2,
       "lib/core/workspace.cpp": 1,
+      "lib/frontend/compiler_pass_values.h": 2,
       "tests/core/runtime_closure_alloc_test.cpp": 3,
       "tests/core/runtime_object_alloc_test.cpp": 4,
       "tests/ffi/sqlite_column_roundtrip_test.c": 5
     },
     "H_wasm_glue": {
       "scripts/wasm_exact_imports.fragment.js": 2,
-      "scripts/wasm_exact_runtime.fragment.js": 22,
-      "site/static/eshkol-runtime.js": 39,
-      "tests/toolchain/wasm_exact_runtime_test.js": 7,
+      "scripts/wasm_exact_runtime.fragment.js": 28,
+      "site/static/eshkol-runtime.js": 45,
+      "tests/toolchain/wasm_closure_runtime_test.js": 2,
+      "tests/toolchain/wasm_exact_runtime_test.js": 15,
       "tests/toolchain/wasm_tensor_jet_runtime_test.js": 3,
-      "web/eshkol-repl.js": 39
+      "web/eshkol-repl.js": 45
     },
     "J_secondary_prefix_abi": {
       "lib/core/arena_memory.h": 5,
@@ -273,17 +281,156 @@
     "S1_clang_header_member": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
+      "lib/backend/vm_arena.h": 4,
+      "lib/backend/vm_bytevector.c": 1,
+      "lib/backend/vm_error.c": 1,
+      "lib/backend/vm_hashtable.c": 1,
+      "lib/backend/vm_logic.c": 3,
+      "lib/backend/vm_multivalue.c": 1,
+      "lib/backend/vm_parameter.c": 1,
+      "lib/core/bignum.cpp": 3,
+      "lib/core/dnc_api.c": 3,
+      "lib/core/i128_runtime.cpp": 3,
+      "lib/core/inference.cpp": 7,
+      "lib/core/introspection.cpp": 7,
+      "lib/core/kb_persistence.cpp": 7,
+      "lib/core/logic.cpp": 15,
+      "lib/core/model_io.cpp": 4,
+      "lib/core/runtime_arena_core.cpp": 2,
+      "lib/core/runtime_autodiff.cpp": 8,
+      "lib/core/runtime_closure_alloc.cpp": 4,
+      "lib/core/runtime_continuations.cpp": 1,
+      "lib/core/runtime_deep_equal.cpp": 7,
+      "lib/core/runtime_display_hosted.cpp": 8,
+      "lib/core/runtime_exceptions_hosted.cpp": 5,
+      "lib/core/runtime_hash_table.cpp": 7,
+      "lib/core/runtime_list_helpers.cpp": 6,
+      "lib/core/runtime_object_alloc.cpp": 20,
+      "lib/core/runtime_regions_evacuation.cpp": 8,
+      "lib/core/runtime_regions_handles.cpp": 1,
+      "lib/core/runtime_string.cpp": 2,
+      "lib/core/runtime_taylor.c": 23,
+      "lib/core/runtime_tensor_alloc.cpp": 16,
+      "lib/core/runtime_tensor_fill.cpp": 1,
+      "lib/core/runtime_tensor_index.cpp": 8,
+      "lib/core/runtime_tensor_math.cpp": 2,
+      "lib/core/runtime_type_name.cpp": 6,
+      "lib/core/runtime_vector_mutation.cpp": 1,
+      "lib/core/sdnc_api.c": 5,
+      "lib/core/sexp_to_ast.cpp": 5,
+      "lib/core/symbol_intern.cpp": 4,
+      "lib/core/system_builtins.c": 2,
+      "lib/core/workspace.cpp": 1,
+      "tests/backend/vm_model_io_fail_closed_test.c": 1,
+      "tests/core/abi_layout_pin_test.cpp": 2,
+      "tests/core/region_promotion_failure_test.cpp": 1,
+      "tests/core/runtime_closure_alloc_test.cpp": 3,
+      "tests/core/runtime_object_alloc_test.cpp": 4,
+      "tests/core/runtime_regions_test.cpp": 1,
       "tests/ffi/sqlite_column_roundtrip_test.c": 4
     },
     "S2_clang_sizeof": {
+      "inc/eshkol/abi_fingerprint.h": 2,
       "inc/eshkol/eshkol.h": 2,
       "inc/eshkol/memory_abi_v2.h": 3,
       "lib/agent/c/agent_system_builtins.c": 1,
+      "lib/backend/vm_arena.h": 3,
+      "lib/backend/vm_bytevector.c": 1,
+      "lib/backend/vm_error.c": 1,
+      "lib/backend/vm_hashtable.c": 1,
+      "lib/backend/vm_logic.c": 4,
+      "lib/backend/vm_multivalue.c": 1,
+      "lib/backend/vm_parameter.c": 1,
+      "lib/core/bignum.cpp": 3,
+      "lib/core/dnc_api.c": 2,
+      "lib/core/i128_runtime.cpp": 2,
+      "lib/core/inference.cpp": 5,
+      "lib/core/introspection.cpp": 7,
+      "lib/core/kb_persistence.cpp": 4,
+      "lib/core/logic.cpp": 10,
+      "lib/core/model_io.cpp": 4,
+      "lib/core/runtime_arena_core.cpp": 5,
+      "lib/core/runtime_autodiff.cpp": 4,
+      "lib/core/runtime_closure_alloc.cpp": 2,
+      "lib/core/runtime_continuations.cpp": 1,
+      "lib/core/runtime_deep_equal.cpp": 7,
+      "lib/core/runtime_display_hosted.cpp": 3,
+      "lib/core/runtime_exceptions_hosted.cpp": 3,
+      "lib/core/runtime_hash_table.cpp": 5,
+      "lib/core/runtime_list_helpers.cpp": 4,
+      "lib/core/runtime_object_alloc.cpp": 15,
+      "lib/core/runtime_regions_evacuation.cpp": 6,
+      "lib/core/runtime_regions_handles.cpp": 1,
+      "lib/core/runtime_string.cpp": 1,
+      "lib/core/runtime_taylor.c": 18,
+      "lib/core/runtime_tensor_alloc.cpp": 12,
+      "lib/core/runtime_tensor_fill.cpp": 1,
+      "lib/core/runtime_tensor_index.cpp": 8,
+      "lib/core/runtime_tensor_math.cpp": 2,
+      "lib/core/runtime_type_name.cpp": 2,
+      "lib/core/runtime_vector_mutation.cpp": 1,
+      "lib/core/sdnc_api.c": 4,
+      "lib/core/sexp_to_ast.cpp": 5,
+      "lib/core/symbol_intern.cpp": 3,
+      "lib/core/system_builtins.c": 1,
+      "lib/core/workspace.cpp": 1,
+      "tests/core/abi_layout_pin_test.cpp": 9,
+      "tests/core/memory_abi_v2_test.cpp": 5,
+      "tests/core/region_promotion_failure_test.cpp": 1,
+      "tests/core/runtime_closure_alloc_test.cpp": 2,
+      "tests/core/runtime_object_alloc_test.cpp": 1,
+      "tests/core/runtime_regions_test.cpp": 1,
       "tests/ffi/sqlite_column_roundtrip_test.c": 4
     },
     "S3_clang_header_cast": {
       "inc/eshkol/eshkol.h": 1,
       "lib/agent/c/agent_system_builtins.c": 1,
+      "lib/backend/vm_arena.h": 1,
+      "lib/backend/vm_bytevector.c": 1,
+      "lib/backend/vm_error.c": 1,
+      "lib/backend/vm_hashtable.c": 1,
+      "lib/backend/vm_logic.c": 4,
+      "lib/backend/vm_multivalue.c": 1,
+      "lib/backend/vm_parameter.c": 1,
+      "lib/core/bignum.cpp": 3,
+      "lib/core/dnc_api.c": 2,
+      "lib/core/i128_runtime.cpp": 2,
+      "lib/core/inference.cpp": 5,
+      "lib/core/introspection.cpp": 7,
+      "lib/core/kb_persistence.cpp": 4,
+      "lib/core/logic.cpp": 10,
+      "lib/core/model_io.cpp": 4,
+      "lib/core/runtime_arena_core.cpp": 3,
+      "lib/core/runtime_autodiff.cpp": 3,
+      "lib/core/runtime_closure_alloc.cpp": 1,
+      "lib/core/runtime_continuations.cpp": 1,
+      "lib/core/runtime_deep_equal.cpp": 7,
+      "lib/core/runtime_display_hosted.cpp": 3,
+      "lib/core/runtime_exceptions_hosted.cpp": 2,
+      "lib/core/runtime_hash_table.cpp": 4,
+      "lib/core/runtime_list_helpers.cpp": 4,
+      "lib/core/runtime_object_alloc.cpp": 5,
+      "lib/core/runtime_regions_evacuation.cpp": 4,
+      "lib/core/runtime_regions_handles.cpp": 1,
+      "lib/core/runtime_string.cpp": 1,
+      "lib/core/runtime_taylor.c": 14,
+      "lib/core/runtime_tensor_alloc.cpp": 11,
+      "lib/core/runtime_tensor_fill.cpp": 1,
+      "lib/core/runtime_tensor_index.cpp": 8,
+      "lib/core/runtime_tensor_math.cpp": 2,
+      "lib/core/runtime_type_name.cpp": 2,
+      "lib/core/runtime_vector_mutation.cpp": 1,
+      "lib/core/sdnc_api.c": 4,
+      "lib/core/sexp_to_ast.cpp": 5,
+      "lib/core/symbol_intern.cpp": 1,
+      "lib/core/system_builtins.c": 1,
+      "lib/core/workspace.cpp": 1,
+      "tests/backend/vm_model_io_fail_closed_test.c": 1,
+      "tests/core/abi_layout_pin_test.cpp": 4,
+      "tests/core/region_promotion_failure_test.cpp": 1,
+      "tests/core/runtime_closure_alloc_test.cpp": 2,
+      "tests/core/runtime_object_alloc_test.cpp": 1,
+      "tests/core/runtime_regions_test.cpp": 1,
       "tests/ffi/sqlite_column_roundtrip_test.c": 4
     }
   },
@@ -515,24 +662,567 @@
         "scripts/abi_header_inventory.py check",
         "scripts/run_fibers_gate.py"
       ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_list_helpers.cpp": 4
+      },
+      "before": {
+        "lib/core/runtime_list_helpers.cpp": 3
+      },
+      "class": "A_macro_api",
+      "reason": "The tensor-to-vector conversion that carries exact tensor elements into a Scheme vector reads the operand's subtype through ESHKOL_GET_SUBTYPE and allocates its result with arena_allocate_vector_with_header. Both go through the accessor family; no offset is computed and no header field is written by hand.",
+      "source": "exact tensor elements",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_list_helpers.cpp": 8
+      },
+      "before": {
+        "lib/core/runtime_list_helpers.cpp": 7
+      },
+      "class": "E_alloc_with_header",
+      "reason": "The tensor-to-vector conversion that carries exact tensor elements into a Scheme vector reads the operand's subtype through ESHKOL_GET_SUBTYPE and allocates its result with arena_allocate_vector_with_header. Both go through the accessor family; no offset is computed and no header field is written by hand.",
+      "source": "exact tensor elements",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_list_helpers.cpp": 6
+      },
+      "before": {},
+      "class": "S1_clang_header_member",
+      "reason": "The tensor-to-vector conversion that carries exact tensor elements into a Scheme vector reads the operand's subtype through ESHKOL_GET_SUBTYPE and allocates its result with arena_allocate_vector_with_header. Both go through the accessor family; no offset is computed and no header field is written by hand.",
+      "source": "exact tensor elements",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_list_helpers.cpp": 4
+      },
+      "before": {},
+      "class": "S2_clang_sizeof",
+      "reason": "The tensor-to-vector conversion that carries exact tensor elements into a Scheme vector reads the operand's subtype through ESHKOL_GET_SUBTYPE and allocates its result with arena_allocate_vector_with_header. Both go through the accessor family; no offset is computed and no header field is written by hand.",
+      "source": "exact tensor elements",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_list_helpers.cpp": 4
+      },
+      "before": {},
+      "class": "S3_clang_header_cast",
+      "reason": "The tensor-to-vector conversion that carries exact tensor elements into a Scheme vector reads the operand's subtype through ESHKOL_GET_SUBTYPE and allocates its result with arena_allocate_vector_with_header. Both go through the accessor family; no offset is computed and no header field is written by hand.",
+      "source": "exact tensor elements",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_autodiff.cpp": 11
+      },
+      "before": {
+        "lib/core/runtime_autodiff.cpp": 6
+      },
+      "class": "E_alloc_with_header",
+      "reason": "The linearization that lets an outer reverse pass see an inner derivative records constant, product, sum and offset nodes on the tape. Each node comes from arena_allocate_ad_node_with_header, the canonical allocator; the header is never touched directly.",
+      "source": "nested differentiation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_autodiff.cpp": 8
+      },
+      "before": {},
+      "class": "S1_clang_header_member",
+      "reason": "The linearization that lets an outer reverse pass see an inner derivative records constant, product, sum and offset nodes on the tape. Each node comes from arena_allocate_ad_node_with_header, the canonical allocator; the header is never touched directly.",
+      "source": "nested differentiation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_autodiff.cpp": 4
+      },
+      "before": {},
+      "class": "S2_clang_sizeof",
+      "reason": "The linearization that lets an outer reverse pass see an inner derivative records constant, product, sum and offset nodes on the tape. Each node comes from arena_allocate_ad_node_with_header, the canonical allocator; the header is never touched directly.",
+      "source": "nested differentiation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_autodiff.cpp": 3
+      },
+      "before": {},
+      "class": "S3_clang_header_cast",
+      "reason": "The linearization that lets an outer reverse pass see an inner derivative records constant, product, sum and offset nodes on the tape. Each node comes from arena_allocate_ad_node_with_header, the canonical allocator; the header is never touched directly.",
+      "source": "nested differentiation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_taylor.c": 9
+      },
+      "before": {
+        "lib/core/runtime_taylor.c": 8
+      },
+      "class": "E_alloc_with_header",
+      "reason": "The Hessian and Jacobian matrix store allocates its result tensor on first use with arena_allocate_tensor_with_header, the canonical allocator.",
+      "source": "matrix-valued derivatives",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_taylor.c": 23
+      },
+      "before": {},
+      "class": "S1_clang_header_member",
+      "reason": "The Hessian and Jacobian matrix store allocates its result tensor on first use with arena_allocate_tensor_with_header, the canonical allocator.",
+      "source": "matrix-valued derivatives",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_taylor.c": 18
+      },
+      "before": {},
+      "class": "S2_clang_sizeof",
+      "reason": "The Hessian and Jacobian matrix store allocates its result tensor on first use with arena_allocate_tensor_with_header, the canonical allocator.",
+      "source": "matrix-valued derivatives",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_taylor.c": 14
+      },
+      "before": {},
+      "class": "S3_clang_header_cast",
+      "reason": "The Hessian and Jacobian matrix store allocates its result tensor on first use with arena_allocate_tensor_with_header, the canonical allocator.",
+      "source": "matrix-valued derivatives",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_regions_evacuation.cpp": 2
+      },
+      "before": {
+        "lib/core/runtime_regions_evacuation.cpp": 1
+      },
+      "class": "A_macro_api",
+      "reason": "Evacuation moved into its own translation unit and gained subtype coverage for the reasoning and workspace objects. The added sites are one subtype read through ESHKOL_GET_SUBTYPE and one read of the declared size field of the canonical header type while validating an object before it is copied.",
+      "source": "region evacuation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_regions_evacuation.cpp": 5
+      },
+      "before": {
+        "lib/core/runtime_regions_evacuation.cpp": 4
+      },
+      "class": "G_header_field_write",
+      "reason": "Evacuation moved into its own translation unit and gained subtype coverage for the reasoning and workspace objects. The added sites are one subtype read through ESHKOL_GET_SUBTYPE and one read of the declared size field of the canonical header type while validating an object before it is copied.",
+      "source": "region evacuation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_regions_evacuation.cpp": 8
+      },
+      "before": {},
+      "class": "S1_clang_header_member",
+      "reason": "Evacuation moved into its own translation unit and gained subtype coverage for the reasoning and workspace objects. The added sites are one subtype read through ESHKOL_GET_SUBTYPE and one read of the declared size field of the canonical header type while validating an object before it is copied.",
+      "source": "region evacuation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_regions_evacuation.cpp": 6
+      },
+      "before": {},
+      "class": "S2_clang_sizeof",
+      "reason": "Evacuation moved into its own translation unit and gained subtype coverage for the reasoning and workspace objects. The added sites are one subtype read through ESHKOL_GET_SUBTYPE and one read of the declared size field of the canonical header type while validating an object before it is copied.",
+      "source": "region evacuation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/core/runtime_regions_evacuation.cpp": 4
+      },
+      "before": {},
+      "class": "S3_clang_header_cast",
+      "reason": "Evacuation moved into its own translation unit and gained subtype coverage for the reasoning and workspace objects. The added sites are one subtype read through ESHKOL_GET_SUBTYPE and one read of the declared size field of the canonical header type while validating an object before it is copied.",
+      "source": "region evacuation",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/frontend/compiler_pass_values.h": 1
+      },
+      "before": {},
+      "class": "B_header_type",
+      "reason": "Values cross between the host compiler and a compiled Eshkol pass as Scheme vectors. The host builds one with arena_allocate_vector_with_header and, on the way back, checks the returned vector's subtype and size through the canonical eshkol_object_header_t before reading any element.",
+      "source": "self-hosted compiler passes",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/frontend/compiler_pass_values.h": 1
+      },
+      "before": {},
+      "class": "E_alloc_with_header",
+      "reason": "Values cross between the host compiler and a compiled Eshkol pass as Scheme vectors. The host builds one with arena_allocate_vector_with_header and, on the way back, checks the returned vector's subtype and size through the canonical eshkol_object_header_t before reading any element.",
+      "source": "self-hosted compiler passes",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/frontend/compiler_pass_values.h": 2
+      },
+      "before": {},
+      "class": "G_header_field_write",
+      "reason": "Values cross between the host compiler and a compiled Eshkol pass as Scheme vectors. The host builds one with arena_allocate_vector_with_header and, on the way back, checks the returned vector's subtype and size through the canonical eshkol_object_header_t before reading any element.",
+      "source": "self-hosted compiler passes",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "tests/core/dbsp_resident_owner_test.cpp": 1
+      },
+      "before": {},
+      "class": "B_header_type",
+      "reason": "Unit tests for resident circuit ownership and string-to-list decoding build their fixtures with the canonical cons, string and closure allocators, and one fixture embeds the canonical header type. They consume the layout only through the public names.",
+      "source": "runtime unit tests",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "tests/core/dbsp_resident_owner_test.cpp": 4,
+        "tests/core/string_to_list_runtime_test.cpp": 1
+      },
+      "before": {},
+      "class": "E_alloc_with_header",
+      "reason": "Unit tests for resident circuit ownership and string-to-list decoding build their fixtures with the canonical cons, string and closure allocators, and one fixture embeds the canonical header type. They consume the layout only through the public names.",
+      "source": "runtime unit tests",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/backend/vm_native.c": 1
+      },
+      "before": {},
+      "class": "F_parallel_header_decl",
+      "reason": "The VM passes text to the shared SQLite entry points, which read the byte length from the object header in front of the characters. The VM is built without the native runtime headers, so it declares the eight-byte header once, guarded by a static size assertion, and uses it only for the transient copy handed to that call. The declaration is inventoried here so a layout change finds it.",
+      "source": "bytecode VM SQLite text",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "scripts/wasm_exact_runtime.fragment.js": 28,
+        "site/static/eshkol-runtime.js": 45,
+        "tests/toolchain/wasm_closure_runtime_test.js": 2,
+        "tests/toolchain/wasm_exact_runtime_test.js": 15,
+        "web/eshkol-repl.js": 45
+      },
+      "before": {
+        "scripts/wasm_exact_runtime.fragment.js": 22,
+        "site/static/eshkol-runtime.js": 39,
+        "tests/toolchain/wasm_exact_runtime_test.js": 7,
+        "web/eshkol-repl.js": 39
+      },
+      "class": "H_wasm_glue",
+      "reason": "The browser runtime implements the tagged cons arena, string splitting and tensor checks in JavaScript, where the C accessor is not available, so it reads the subtype and size bytes of the header directly; the two generated copies mirror the fragment. The Node suites call the header allocators and read the subtype byte to check what the runtime built.",
+      "source": "browser runtime",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/backend/vm_arena.h": 4,
+        "lib/backend/vm_bytevector.c": 1,
+        "lib/backend/vm_error.c": 1,
+        "lib/backend/vm_hashtable.c": 1,
+        "lib/backend/vm_logic.c": 3,
+        "lib/backend/vm_multivalue.c": 1,
+        "lib/backend/vm_parameter.c": 1,
+        "lib/core/bignum.cpp": 3,
+        "lib/core/dnc_api.c": 3,
+        "lib/core/i128_runtime.cpp": 3,
+        "lib/core/inference.cpp": 7,
+        "lib/core/introspection.cpp": 7,
+        "lib/core/kb_persistence.cpp": 7,
+        "lib/core/logic.cpp": 15,
+        "lib/core/model_io.cpp": 4,
+        "lib/core/runtime_arena_core.cpp": 2,
+        "lib/core/runtime_closure_alloc.cpp": 4,
+        "lib/core/runtime_continuations.cpp": 1,
+        "lib/core/runtime_deep_equal.cpp": 7,
+        "lib/core/runtime_display_hosted.cpp": 8,
+        "lib/core/runtime_exceptions_hosted.cpp": 5,
+        "lib/core/runtime_hash_table.cpp": 7,
+        "lib/core/runtime_object_alloc.cpp": 20,
+        "lib/core/runtime_regions_handles.cpp": 1,
+        "lib/core/runtime_string.cpp": 2,
+        "lib/core/runtime_tensor_alloc.cpp": 16,
+        "lib/core/runtime_tensor_fill.cpp": 1,
+        "lib/core/runtime_tensor_index.cpp": 8,
+        "lib/core/runtime_tensor_math.cpp": 2,
+        "lib/core/runtime_type_name.cpp": 6,
+        "lib/core/runtime_vector_mutation.cpp": 1,
+        "lib/core/sdnc_api.c": 5,
+        "lib/core/sexp_to_ast.cpp": 5,
+        "lib/core/symbol_intern.cpp": 4,
+        "lib/core/system_builtins.c": 2,
+        "lib/core/workspace.cpp": 1,
+        "tests/backend/vm_model_io_fail_closed_test.c": 1,
+        "tests/core/abi_layout_pin_test.cpp": 2,
+        "tests/core/region_promotion_failure_test.cpp": 1,
+        "tests/core/runtime_closure_alloc_test.cpp": 3,
+        "tests/core/runtime_object_alloc_test.cpp": 4,
+        "tests/core/runtime_regions_test.cpp": 1
+      },
+      "before": {},
+      "class": "S1_clang_header_member",
+      "reason": "The libclang layer resolves every use of the canonical header type after macro expansion: member reads, sizeof and pointer casts. This section records the complete scan over the build's compile database; the section it replaces came from a scan that reached only a few translation units. Every file listed here is also in the lexical inventory, where the same sites are counted as accessor-macro, header-type, sizeof and field uses, so the semantic counts are the typed view of sites the lexical ratchet already holds and reviews. Against the last complete semantic baseline, the growth is the split of region evacuation, region handles, type naming and arena core into their own translation units, the VM object files that now share the native arena header, and the reviewed lexical additions recorded above.",
+      "source": "complete libclang scan",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "inc/eshkol/abi_fingerprint.h": 2,
+        "lib/backend/vm_arena.h": 3,
+        "lib/backend/vm_bytevector.c": 1,
+        "lib/backend/vm_error.c": 1,
+        "lib/backend/vm_hashtable.c": 1,
+        "lib/backend/vm_logic.c": 4,
+        "lib/backend/vm_multivalue.c": 1,
+        "lib/backend/vm_parameter.c": 1,
+        "lib/core/bignum.cpp": 3,
+        "lib/core/dnc_api.c": 2,
+        "lib/core/i128_runtime.cpp": 2,
+        "lib/core/inference.cpp": 5,
+        "lib/core/introspection.cpp": 7,
+        "lib/core/kb_persistence.cpp": 4,
+        "lib/core/logic.cpp": 10,
+        "lib/core/model_io.cpp": 4,
+        "lib/core/runtime_arena_core.cpp": 5,
+        "lib/core/runtime_closure_alloc.cpp": 2,
+        "lib/core/runtime_continuations.cpp": 1,
+        "lib/core/runtime_deep_equal.cpp": 7,
+        "lib/core/runtime_display_hosted.cpp": 3,
+        "lib/core/runtime_exceptions_hosted.cpp": 3,
+        "lib/core/runtime_hash_table.cpp": 5,
+        "lib/core/runtime_object_alloc.cpp": 15,
+        "lib/core/runtime_regions_handles.cpp": 1,
+        "lib/core/runtime_string.cpp": 1,
+        "lib/core/runtime_tensor_alloc.cpp": 12,
+        "lib/core/runtime_tensor_fill.cpp": 1,
+        "lib/core/runtime_tensor_index.cpp": 8,
+        "lib/core/runtime_tensor_math.cpp": 2,
+        "lib/core/runtime_type_name.cpp": 2,
+        "lib/core/runtime_vector_mutation.cpp": 1,
+        "lib/core/sdnc_api.c": 4,
+        "lib/core/sexp_to_ast.cpp": 5,
+        "lib/core/symbol_intern.cpp": 3,
+        "lib/core/system_builtins.c": 1,
+        "lib/core/workspace.cpp": 1,
+        "tests/core/abi_layout_pin_test.cpp": 9,
+        "tests/core/memory_abi_v2_test.cpp": 5,
+        "tests/core/region_promotion_failure_test.cpp": 1,
+        "tests/core/runtime_closure_alloc_test.cpp": 2,
+        "tests/core/runtime_object_alloc_test.cpp": 1,
+        "tests/core/runtime_regions_test.cpp": 1
+      },
+      "before": {},
+      "class": "S2_clang_sizeof",
+      "reason": "The libclang layer resolves every use of the canonical header type after macro expansion: member reads, sizeof and pointer casts. This section records the complete scan over the build's compile database; the section it replaces came from a scan that reached only a few translation units. Every file listed here is also in the lexical inventory, where the same sites are counted as accessor-macro, header-type, sizeof and field uses, so the semantic counts are the typed view of sites the lexical ratchet already holds and reviews. Against the last complete semantic baseline, the growth is the split of region evacuation, region handles, type naming and arena core into their own translation units, the VM object files that now share the native arena header, and the reviewed lexical additions recorded above.",
+      "source": "complete libclang scan",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
+    },
+    {
+      "after": {
+        "lib/backend/vm_arena.h": 1,
+        "lib/backend/vm_bytevector.c": 1,
+        "lib/backend/vm_error.c": 1,
+        "lib/backend/vm_hashtable.c": 1,
+        "lib/backend/vm_logic.c": 4,
+        "lib/backend/vm_multivalue.c": 1,
+        "lib/backend/vm_parameter.c": 1,
+        "lib/core/bignum.cpp": 3,
+        "lib/core/dnc_api.c": 2,
+        "lib/core/i128_runtime.cpp": 2,
+        "lib/core/inference.cpp": 5,
+        "lib/core/introspection.cpp": 7,
+        "lib/core/kb_persistence.cpp": 4,
+        "lib/core/logic.cpp": 10,
+        "lib/core/model_io.cpp": 4,
+        "lib/core/runtime_arena_core.cpp": 3,
+        "lib/core/runtime_closure_alloc.cpp": 1,
+        "lib/core/runtime_continuations.cpp": 1,
+        "lib/core/runtime_deep_equal.cpp": 7,
+        "lib/core/runtime_display_hosted.cpp": 3,
+        "lib/core/runtime_exceptions_hosted.cpp": 2,
+        "lib/core/runtime_hash_table.cpp": 4,
+        "lib/core/runtime_object_alloc.cpp": 5,
+        "lib/core/runtime_regions_handles.cpp": 1,
+        "lib/core/runtime_string.cpp": 1,
+        "lib/core/runtime_tensor_alloc.cpp": 11,
+        "lib/core/runtime_tensor_fill.cpp": 1,
+        "lib/core/runtime_tensor_index.cpp": 8,
+        "lib/core/runtime_tensor_math.cpp": 2,
+        "lib/core/runtime_type_name.cpp": 2,
+        "lib/core/runtime_vector_mutation.cpp": 1,
+        "lib/core/sdnc_api.c": 4,
+        "lib/core/sexp_to_ast.cpp": 5,
+        "lib/core/symbol_intern.cpp": 1,
+        "lib/core/system_builtins.c": 1,
+        "lib/core/workspace.cpp": 1,
+        "tests/backend/vm_model_io_fail_closed_test.c": 1,
+        "tests/core/abi_layout_pin_test.cpp": 4,
+        "tests/core/region_promotion_failure_test.cpp": 1,
+        "tests/core/runtime_closure_alloc_test.cpp": 2,
+        "tests/core/runtime_object_alloc_test.cpp": 1,
+        "tests/core/runtime_regions_test.cpp": 1
+      },
+      "before": {},
+      "class": "S3_clang_header_cast",
+      "reason": "The libclang layer resolves every use of the canonical header type after macro expansion: member reads, sizeof and pointer casts. This section records the complete scan over the build's compile database; the section it replaces came from a scan that reached only a few translation units. Every file listed here is also in the lexical inventory, where the same sites are counted as accessor-macro, header-type, sizeof and field uses, so the semantic counts are the typed view of sites the lexical ratchet already holds and reviews. Against the last complete semantic baseline, the growth is the split of region evacuation, region handles, type naming and arena core into their own translation units, the VM object files that now share the native arena header, and the reviewed lexical additions recorded above.",
+      "source": "complete libclang scan",
+      "verification": [
+        "scripts/abi_header_inventory.py check",
+        "scripts/abi_header_inventory.py check --clang",
+        "scripts/abi_header_inventory.py selftest"
+      ]
     }
   ],
   "schema": 1,
+  "semantic_scan": {
+    "commit": "794ed16d6e7cb8d2de7e1cbef5a40b5795d6fa54",
+    "path": ".icc/abi-header-semantic-scan.json",
+    "sha256": "58f80875f853b7a80e4df7eef581e1a398b4a8aae730ccd59500709e74d6c7b3"
+  },
   "totals": {
-    "A_macro_api": 135,
-    "B_header_type": 78,
+    "A_macro_api": 137,
+    "B_header_type": 80,
     "C_sizeof_header": 71,
     "D2_ir_field_offset": 10,
     "D_ir_const_offset": 47,
-    "E_alloc_with_header": 221,
-    "F_parallel_header_decl": 2,
-    "G_header_field_write": 186,
-    "H_wasm_glue": 112,
+    "E_alloc_with_header": 234,
+    "F_parallel_header_decl": 3,
+    "G_header_field_write": 189,
+    "H_wasm_glue": 140,
     "J_secondary_prefix_abi": 33,
     "K_raw_byte_offset": 10,
     "L_layout_in_prose": 86,
-    "S1_clang_header_member": 6,
-    "S2_clang_sizeof": 10,
-    "S3_clang_header_cast": 6
+    "S1_clang_header_member": 232,
+    "S2_clang_sizeof": 195,
+    "S3_clang_header_cast": 153
   }
 }

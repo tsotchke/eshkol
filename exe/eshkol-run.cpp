@@ -48,6 +48,7 @@
 #include <errno.h>
 #include <filesystem>
 #include <eshkol/backend/link_probe.h>
+#include <eshkol/driver_output_ownership.h>
 
 #include <fstream>
 #include <iterator>
@@ -67,10 +68,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <optional>
 #ifdef _WIN32
 #include <process.h>
 #else
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -513,8 +516,14 @@ std::filesystem::path resolveSelfPath(const char* argv0) {
 // cache entry survive a stdlib change. Both sides therefore go through the one
 // shared, location-major root list.
 std::filesystem::path findBuildArtifact(const std::string& name) {
-    const auto resolved = eshkol::platform::resolve_install_artifact(
-        eshkol::platform::install_library_roots(), {name});
+    // stdlib.bc and stdlib.o take the stdlib resolution, so the key names the
+    // copy the loader admits; any other artifact has no identity to consult.
+    const bool is_stdlib_artifact = name == "stdlib.bc" || name == "stdlib.o";
+    const auto resolved = is_stdlib_artifact
+        ? eshkol::stdlib_identity::resolve_artifact(
+              eshkol::platform::install_library_roots(), name)
+        : eshkol::platform::resolve_install_artifact(
+              eshkol::platform::install_library_roots(), {name});
     return resolved.found() ? std::filesystem::path(resolved.path)
                             : std::filesystem::path{};
 }
@@ -6633,9 +6642,9 @@ static llvm::Error validate_stdlib_object_file(const std::string& path)
 static llvm::Expected<std::string> find_stdlib_object(
     const std::vector<char*>& lib_paths)
 {
-    const auto resolved = eshkol::platform::resolve_install_artifact(
+    const auto resolved = eshkol::stdlib_identity::resolve_artifact(
         eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
-        {"stdlib.o"});
+        "stdlib.o");
     if (resolved.found()) {
         if (llvm::Error error = validate_stdlib_object_file(resolved.path))
             return error;
@@ -6679,14 +6688,14 @@ static llvm::Error validate_resolved_stdlib_artifacts(
 {
     const auto roots = eshkol::platform::install_library_roots(
         explicit_library_dirs(lib_paths));
-    const auto bitcode = eshkol::platform::resolve_install_artifact(
-        roots, {"stdlib.bc"});
+    const auto bitcode = eshkol::stdlib_identity::resolve_artifact(
+        roots, "stdlib.bc");
     if (bitcode.found()) {
         if (llvm::Error error = validate_stdlib_bitcode_file(bitcode.path))
             return error;
     }
-    const auto object = eshkol::platform::resolve_install_artifact(
-        roots, {"stdlib.o"});
+    const auto object = eshkol::stdlib_identity::resolve_artifact(
+        roots, "stdlib.o");
     if (object.found()) {
         if (llvm::Error error = validate_stdlib_object_file(object.path))
             return error;
@@ -8339,28 +8348,142 @@ static char** intern_driver_module_name_array(const std::string& name) {
     return storage.back().data();
 }
 
-// Own only scratch objects that this driver creates for a later native link.
-// In particular, entries in compiled_files may be caller-owned object files.
+// Whether a native artifact is linked in a staging directory and renamed onto
+// its output. A Windows debug build is linked in place: its debug database is
+// named and located from the link's own output path.
+static bool native_output_uses_staging(bool debug_info) {
+#ifdef _WIN32
+    return !debug_info;
+#else
+    (void)debug_info;
+    return true;
+#endif
+}
+
+// Own only the files this driver creates for a native build: the scratch
+// object it compiles before the link and the staging directory the linker
+// writes into. Entries in compiled_files may be caller-owned object files.
+// Naming, liveness and reclaim rules live in driver_output_ownership.h.
 struct OwnedLinkTemporaryObjects {
     std::vector<std::string> paths;
+    eshkol::driver::OutputClaim claim;
+    eshkol::driver::StagedOutput staged;
 
-    bool reserve(const std::string& path) {
-        // Exclusive creation also protects a caller's pre-existing <output>.tmp.o.
-        FILE* file = std::fopen(path.c_str(), "wbx");
-        if (!file) {
+    // False once a build is known to have no claim and no staging: the output
+    // is a device or other non-regular file, written in place.
+    bool owns_output = true;
+
+    // How long a compile waits for another live compile of the same output.
+    // ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS overrides the bound; 0 does not wait.
+    static unsigned claim_wait_seconds() {
+        if (const char* text = std::getenv("ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS")) {
+            char* end = nullptr;
+            const unsigned long value = std::strtoul(text, &end, 10);
+            if (end != text && *end == '\0' && value <= 86400ul) {
+                return static_cast<unsigned>(value);
+            }
+        }
+        return 30;
+    }
+
+    // Take ownership of @p output for this build and clear what a driver that
+    // no longer exists left beside it. Another live compile of the same output
+    // is waited for, up to the bound; answers false, with the reason logged,
+    // when it still owns the output after that.
+    bool claim_output(const std::string& output) {
+        using Result = eshkol::driver::OutputClaim::Result;
+        if (!eshkol::driver::output_admits_ownership(output)) {
+            owns_output = false;
+            return true;
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(claim_wait_seconds());
+        Result result = claim.acquire(output);
+        bool announced = false;
+        while ((result == Result::HeldElsewhere || result == Result::TryAgain) &&
+               std::chrono::steady_clock::now() < deadline) {
+            if (!announced && result == Result::HeldElsewhere) {
+                eshkol_info("Waiting for another compile that is producing %s", output.c_str());
+                announced = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            result = claim.acquire(output);
+        }
+        if (result == Result::HeldElsewhere) {
+            eshkol_error("Another compile is producing %s; it owns that output until it finishes",
+                         output.c_str());
             return false;
         }
-        paths.push_back(path);
-        std::fclose(file);
+        if (result == Result::TryAgain) {
+            eshkol_error("Cannot claim output %s: the system had no file lock to give within the wait",
+                         output.c_str());
+            return false;
+        }
+        if (result == Result::NotSupported) {
+            // Staging and the single rename still apply: the artifact is whole.
+            eshkol_info("No file lock is available beside %s; compiling without an output claim",
+                        output.c_str());
+            eshkol::driver::reclaim_abandoned(output);
+            return true;
+        }
+        if (result == Result::Unavailable) {
+            eshkol_error("Cannot claim output %s: its directory does not admit a new file",
+                         output.c_str());
+            return false;
+        }
+        eshkol::driver::reclaim_abandoned(output);
         return true;
     }
 
+    // Create this process's scratch object for @p output. Answers its path,
+    // or an empty string when the directory does not admit a new file.
+    std::string reserve_for(const std::string& output) {
+        const std::filesystem::path out(output);
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            std::filesystem::path candidate = out;
+            candidate.replace_filename(eshkol::driver::scratch_object_name(
+                out.filename().string(), eshkol::driver::current_process_id(),
+                eshkol::driver::detail::next_sequence()));
+            const std::string path = candidate.generic_string();
+            // Exclusive creation: an existing file of this name is not ours.
+            FILE* file = std::fopen(path.c_str(), "wbx");
+            if (file) {
+                paths.push_back(path);
+                std::fclose(file);
+                return path;
+            }
+            if (errno != EEXIST) break;
+        }
+        return {};
+    }
+
+    // Where the linker should write so that @p output appears in one step.
+    // Answers @p output itself when staging is not used for this build.
+    std::string stage_for(const std::string& output, bool use_staging) {
+        if (!use_staging || !owns_output) return output;
+        staged = eshkol::driver::stage_output(output);
+        if (!staged.valid()) return {};
+        paths.push_back(staged.directory.generic_string());
+        return staged.artifact.generic_string();
+    }
+
+    // Move the staged artifact onto its output. True when nothing was staged.
+    bool publish() {
+        if (!staged.valid()) return true;
+        const bool ok = eshkol::driver::publish_staged_output(staged);
+        staged = {};
+        return ok;
+    }
+
+    // Remove the scratch files. The claim stays until the driver is done with
+    // the output; the destructor gives it up on every return path.
     void cleanup() {
         for (const auto& path : paths) {
             std::error_code ec;
-            std::filesystem::remove(path, ec);
+            std::filesystem::remove_all(path, ec);
         }
         paths.clear();
+        staged = {};
     }
 
     ~OwnedLinkTemporaryObjects() { cleanup(); }
@@ -10065,9 +10188,12 @@ int main(int argc, char **argv)
             const std::string library_path =
                 shared_library_output_path(output, module_name);
             shared_library_path = library_path;
-            const std::string temp_obj = library_path + ".tmp.o";
-            if (!owned_link_temp_objects.reserve(temp_obj)) {
-                eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+            if (!owned_link_temp_objects.claim_output(library_path)) {
+                return 1;
+            }
+            const std::string temp_obj = owned_link_temp_objects.reserve_for(library_path);
+            if (temp_obj.empty()) {
+                eshkol_error("Cannot create a temporary object beside %s", library_path.c_str());
                 return 1;
             }
 
@@ -10106,11 +10232,15 @@ int main(int argc, char **argv)
                 output ? std::filesystem::path(output) : std::filesystem::path("a.out")
             ).generic_string();
 
+            if (!owned_link_temp_objects.claim_output(exe_name)) {
+                return 1;
+            }
+
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
-                std::string temp_obj = exe_name + ".tmp.o";
-                if (!owned_link_temp_objects.reserve(temp_obj)) {
-                    eshkol_error("Cannot reserve temporary object %s; existing files are not overwritten", temp_obj.c_str());
+                std::string temp_obj = owned_link_temp_objects.reserve_for(exe_name);
+                if (temp_obj.empty()) {
+                    eshkol_error("Cannot create a temporary object beside %s", exe_name.c_str());
                     return 1;
                 }
                 eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
@@ -10139,13 +10269,30 @@ int main(int argc, char **argv)
                     linked_lib_ptrs = const_cast<const char**>(linked_libs.data());
                 }
 
-                if (eshkol_compile_llvm_ir_to_executable(llvm_module, exe_name.c_str(),
+                // Build in this process's staging directory and move the
+                // finished executable onto its name in one step.
+                // A debug build is linked in place: this backend writes the
+                // debug companion beside the path it links.
+                const std::string staged_exe = owned_link_temp_objects.stage_for(
+                    exe_name, !debug_info && native_output_uses_staging(debug_info));
+                if (staged_exe.empty()) {
+                    eshkol_error("Cannot create a staging directory beside %s", exe_name.c_str());
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                if (eshkol_compile_llvm_ir_to_executable(llvm_module, staged_exe.c_str(),
                                                        lib_path_ptrs, lib_paths.size(),
                                                        linked_lib_ptrs, linked_libs.size()) != 0) {
                     eshkol_error("Executable compilation failed");
                     eshkol_dispose_llvm_module(llvm_module);
                     return 1;
                 }
+                if (!owned_link_temp_objects.publish()) {
+                    eshkol_error("Cannot move the finished executable onto %s", exe_name.c_str());
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                owned_link_temp_objects.cleanup();
 
                 // Bug X (Noesis 2026-04-30): the link-branch path below
                 // already prints "[eshkol-run] compiled to a.out — run
@@ -10391,9 +10538,17 @@ int main(int argc, char **argv)
 #endif
         }
 
-        // Add output
+        // Add output. The linker writes into this process's staging
+        // directory; the artifact is moved onto its name after the link.
+        const std::string link_target = owned_link_temp_objects.stage_for(
+            output, native_output_uses_staging(debug_info));
+        if (link_target.empty()) {
+            eshkol_error("Cannot create a staging directory beside %s", output);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
         link_args.emplace_back("-o");
-        link_args.emplace_back(output);
+        link_args.emplace_back(link_target);
 #if !defined(_WIN32) && !defined(__APPLE__)
         link_args.emplace_back("-lm");
         // libdl: see lib/backend/llvm_codegen.cpp for rationale
@@ -10450,9 +10605,14 @@ int main(int argc, char **argv)
         // have.
         {
             std::error_code artifact_ec;
-            if (!std::filesystem::is_regular_file(output, artifact_ec)) {
+            if (!std::filesystem::is_regular_file(link_target, artifact_ec)) {
                 eshkol_error("Link reported success but no artifact was written "
                              "at '%s'", output);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return link_failure_exit;
+            }
+            if (!owned_link_temp_objects.publish()) {
+                eshkol_error("Cannot move the linked artifact onto '%s'", output);
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                 return link_failure_exit;
             }

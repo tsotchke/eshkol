@@ -798,9 +798,9 @@ at any depth and any order, through the evaluation point or a captured variable
 (display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
 ```
 ```
-192
-216
-2
+192.0
+216.0
+2.0
 (0 12 24)
 ```
 
@@ -1031,7 +1031,7 @@ finite-difference fallback anywhere in the gradient path.
 (define (apply-grad f pt) (gradient f pt))
 (apply-grad loss (vector 3.0 4.0))   ; through a wrapper
 ((gradient loss) (vector 3.0 4.0))   ; curried
-;; => #(6 8) — identical to (gradient loss (vector 3.0 4.0))
+;; => #(6.0 8.0) — identical to (gradient loss (vector 3.0 4.0))
 ```
 
 See [../reference/ad/architecture.md](../reference/ad/architecture.md#callable-arity-recovery--gradient-through-wrappers-and-curried-forms)

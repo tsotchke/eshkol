@@ -89,7 +89,7 @@ See [`space_form.h`](../../../inc/eshkol/bridge/space_form.h) and the
 Forward mode (4-component Taylor jet). Best for one input / many outputs.
 
 ```scheme
-(derivative (lambda (x) (* x x)) 3.0)       ;; => 6
+(derivative (lambda (x) (* x x)) 3.0)       ;; => 6.0
 (derivative (lambda (x) (sin (* x x))) 1.0) ;; => 1.0806046117362795
 ```
 
@@ -101,7 +101,7 @@ double** (R7RS 6.2.6), so the second result shows every digit that is there:
 A **vector- or tensor-valued** function (ℝ → ℝⁿ) differentiates componentwise:
 
 ```scheme
-(derivative (lambda (x) (vector (* x x) (* x x x))) 2.0)  ;; => #(4 12)
+(derivative (lambda (x) (vector (* x x) (* x x x))) 2.0)  ;; => #(4.0 12.0)
 ```
 
 `jacobian` remains the operator for a vector-valued map of a *vector* point.
@@ -131,7 +131,7 @@ Second derivative by nesting two `derivative` calls (two perturbation slots,
 exact — see architecture):
 
 ```scheme
-(derivative (lambda (y) (derivative (lambda (z) (* z z z)) y)) 3.0)  ;; => 18
+(derivative (lambda (y) (derivative (lambda (z) (* z z z)) y)) 3.0)  ;; => 18.0
 ```
 
 ---
@@ -150,14 +150,14 @@ mode; best for many inputs / one output (loss functions, training).
             (let ((x (vref v 0)) (y (vref v 1)))
               (+ (* x x) (* y y))))
           (vector 3.0 4.0))
-;; => #(6 8)
+;; => #(6.0 8.0)
 ```
 
 A scalar point is also accepted (treated as a 1-D gradient, returning a
 scalar):
 
 ```scheme
-(gradient (lambda (x) (* x x)) 3.0)   ;; => 6
+(gradient (lambda (x) (* x x)) 3.0)   ;; => 6.0
 ```
 
 The gradient has the shape of the point. At a rank-2 (or higher) tensor point
@@ -169,7 +169,7 @@ parameter in an update step:
 (define g (gradient (lambda (w) (tensor-sum (tensor-mul w w))) W))
 (tensor-shape g)                  ;; => (2 3)
 (tensor-sub W (tensor-scale g 0.1))
-;; => #((0.8 1.6 2.4) (3.2 4 4.8))
+;; => #((0.8 1.6 2.4) (3.2 4.0 4.8))
 ```
 
 A vector, list, rank-1 tensor or scalar point keeps the result described
@@ -197,7 +197,7 @@ checks this through named functions and a closure factory.
             (let ((x (vref v 0)) (y (vref v 1)))
               (vector (* x x) (* y y))))
           (vector 3.0 4.0))
-;; => #((6 0) (0 8))
+;; => #((6.0 0.0) (0.0 8.0))
 ```
 
 The result is a vector of row vectors. Note the display form: the outer level
@@ -216,12 +216,12 @@ prints with `#(…)` and inner rows print as bare `(…)` — `#((6 0) (0 8))` i
 ;; f(x) = x⁴, f''(2) = 12·2² = 48
 (hessian (lambda (v) (let ((x (vref v 0))) (* x (* x (* x x)))))
          (vector 2.0))
-;; => #((48))
+;; => #((48.0))
 
 ;; f(x,y) = x² + xy
 (hessian (lambda (v) (let ((x (vref v 0)) (y (vref v 1))) (+ (* x x) (* x y))))
          (vector 1.0 2.0))
-;; => #((2 1) (1 0))
+;; => #((2.0 1.0) (1.0 0.0))
 ```
 
 A loss that reshapes its point and runs `tensor-matmul` or elementwise
@@ -232,7 +232,7 @@ those operators, keeping the mixed second-order coefficient.
 ```scheme
 (hessian (lambda (v) (tensor-sum (tensor-mul (reshape v 2 2) (reshape v 2 2))))
          (vector 1.0 2.0 3.0 4.0))
-;; => #((2 0 0 0) (0 2 0 0) (0 0 2 0) (0 0 0 2))
+;; => #((2.0 0.0 0.0 0.0) (0.0 2.0 0.0 0.0) (0.0 0.0 2.0 0.0) (0.0 0.0 0.0 2.0))
 ```
 
 A nested `gradient` whose outer level is forward mode and whose inner level
@@ -256,7 +256,7 @@ them (#343, closing ESH-0095). See support-matrix.md.
 ```scheme
 (laplacian (lambda (v) (let ((x (vref v 0)) (y (vref v 1))) (+ (* x x) (* y y))))
            (vector 3.0 4.0))
-;; => 4
+;; => 4.0
 ```
 
 `laplacian` shares the fixed `hessian` path (it is the trace of the Hessian),
@@ -274,7 +274,7 @@ so it too accepts `vector`, `tensor` and `#(…)` points interchangeably.
 (directional-derivative
    (lambda (v) (let ((x (vref v 0)) (y (vref v 1))) (+ (* x x) (* y y))))
    (vector 3.0 4.0) (vector 1.0 0.0))
-;; => 6
+;; => 6.0
 ```
 
 ---
@@ -290,7 +290,7 @@ so it too accepts `vector`, `tensor` and `#(…)` points interchangeably.
               (vector (* (vref v 0) (vref v 0))
                       (* (vref v 1) (vref v 1))))
             (vector 3.0 4.0))
-;; => 14           ; 2x + 2y = 6 + 8
+;; => 14.0           ; 2x + 2y = 6 + 8
 ```
 
 ---
@@ -307,7 +307,7 @@ so it too accepts `vector`, `tensor` and `#(…)` points interchangeably.
                 (* (vref v 0) (vref v 2))     ; x·z
                 (* (vref v 0) (vref v 1))))   ; x·y
       (vector 1.0 2.0 3.0))
-;; => #(0 0 0)
+;; => #(0.0 0.0 0.0)
 ```
 
 That field is `grad(xyz)`, and the curl of a gradient vanishes identically —
@@ -318,10 +318,10 @@ A field with a curl that does not vanish, in all four accepted spellings:
 
 ```scheme
 ;; R = (-y, x, 0) — the textbook rotational field. curl R = (0, 0, 2).
-(curl (lambda (v)   (vector (- 0.0 (vref v 1)) (vref v 0) 0.0)) (vector 1.0 1.0 0.0))  ; => #(0 0 2)
-(curl (lambda (v)   (list   (- 0.0 (vref v 1)) (vref v 0) 0.0)) (vector 1.0 1.0 0.0))  ; => #(0 0 2)
-(curl (lambda (x y z) (vector (- 0.0 y) x 0.0))                 (vector 1.0 1.0 0.0))  ; => #(0 0 2)
-(curl (lambda (x y z) (list   (- 0.0 y) x 0.0))                 (vector 1.0 1.0 0.0))  ; => #(0 0 2)
+(curl (lambda (v)   (vector (- 0.0 (vref v 1)) (vref v 0) 0.0)) (vector 1.0 1.0 0.0))  ; => #(0.0 0.0 2.0)
+(curl (lambda (v)   (list   (- 0.0 (vref v 1)) (vref v 0) 0.0)) (vector 1.0 1.0 0.0))  ; => #(0.0 0.0 2.0)
+(curl (lambda (x y z) (vector (- 0.0 y) x 0.0))                 (vector 1.0 1.0 0.0))  ; => #(0.0 0.0 2.0)
+(curl (lambda (x y z) (list   (- 0.0 y) x 0.0))                 (vector 1.0 1.0 0.0))  ; => #(0.0 0.0 2.0)
 ```
 
 For `n = 2` the result is the generalized 2-form embedded in 3-space — the
@@ -330,7 +330,7 @@ field is taken to have `F₃ = 0` and no `z` dependence, so
 
 ```scheme
 (curl (lambda (v) (vector (- 0.0 (vref v 1)) (vref v 0))) (vector 1.0 1.0))
-;; => #(0 0 2)
+;; => #(0.0 0.0 2.0)
 ```
 
 ---
@@ -346,10 +346,10 @@ a symbol, a list) is returned unchanged. Native backend, bytecode VM and
 browser lane agree.
 
 ```scheme
-(derivative (lambda (x) (* x (stop-gradient x))) 3.0)          ;; => 3
+(derivative (lambda (x) (* x (stop-gradient x))) 3.0)          ;; => 3.0
 (derivative (lambda (x) (* x (stop-gradient x))) 1/3)          ;; => 1/3
-(derivative-n (lambda (x) (* x x (stop-gradient x))) 2.0 2)    ;; => 4
-(gradient (lambda (v) (* (vref v 0) (stop-gradient (vref v 0)))) #(3.0))  ;; => #(3)
+(derivative-n (lambda (x) (* x x (stop-gradient x))) 2.0 2)    ;; => 4.0
+(gradient (lambda (v) (* (vref v 0) (stop-gradient (vref v 0)))) #(3.0))  ;; => #(3.0)
 ```
 
 The straight-through identity `s + (stop-gradient (- h s))` has the value `h`
@@ -521,15 +521,15 @@ first-order operators:
 
 ```scheme
 ;; 1. inline lambda
-(gradient (lambda (v) (* (vref v 0) (vref v 0))) (vector 3.0))   ;; => #(6)
+(gradient (lambda (v) (* (vref v 0) (vref v 0))) (vector 3.0))   ;; => #(6.0)
 
 ;; 2. named define
 (define (sq v) (* (vref v 0) (vref v 0)))
-(gradient sq (vector 3.0))                                        ;; => #(6)
+(gradient sq (vector 3.0))                                        ;; => #(6.0)
 
 ;; 3. lambda bound to a variable
 (define sqv (lambda (v) (* (vref v 0) (vref v 0))))
-(gradient sqv (vector 3.0))                                       ;; => #(6)
+(gradient sqv (vector 3.0))                                       ;; => #(6.0)
 ```
 
 > **Nesting through a named inner function works (formerly ESH-0078).** The
@@ -538,8 +538,8 @@ first-order operators:
 >
 > ```scheme
 > (define (L z) (* z (* z z)))
-> (gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18  inline
-> (gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18  named
+> (gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18.0  inline
+> (gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18.0  named
 > ```
 >
 > The *curried* route — `(define g (gradient f))` then `(jacobian g point)` —
@@ -573,11 +573,11 @@ Verified examples:
 ;; GLOBAL capture — works in both modes
 (define a 8.0) (define t 5.0)
 (define (loss x) (let ((d (- x t))) (* a (* d d))))
-(derivative loss 7.0)                                    ;; => 32
+(derivative loss 7.0)                                    ;; => 32.0
 
 (define g 1.7)
 (gradient (lambda (v) (* g (vref v 0) (vref v 0))) (vector 1.3 -0.7))
-;; => #(4.42 0)
+;; => #(4.42 0.0)
 
 ;; LOCAL capture under `derivative` — works (forward mode)
 (define (step a t w0) (derivative (lambda (x) (loss2 a t x)) w0))
@@ -585,7 +585,7 @@ Verified examples:
 
 ;; LOCAL capture under `gradient` — works (ESH-0072 / ESH-0097, fixed)
 (define (mk a) (gradient (lambda (x) (* a x x)) 3.0))
-(mk 2.0)                                                 ;; => 12
+(mk 2.0)                                                 ;; => 12.0
 ```
 
 No workaround is needed. The reverse-mode vector path funnels a value-typed
@@ -716,7 +716,7 @@ inner `derivative` that depends on captured tape parameters. For example:
 ;; f(x;p0)=p0·x², ∂/∂p0 [ d/dx f @2 ] = 4
 (gradient (lambda (p) (derivative (lambda (x) (* (vref p 0) (* x x))) 2.0))
           (vector 3.0))
-;; => #(4)
+;; => #(4.0)
 ```
 
 ---

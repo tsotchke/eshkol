@@ -32,7 +32,7 @@ Multiple `.esk`/`.o` inputs may be given and are linked together.
 
 | Flag | Alias | Meaning |
 |------|-------|---------|
-| `--output FILE` | `-o` | Output path (executable, object, `.so`, `.wasm`, per mode) |
+| `--output FILE` | `-o` | Output path (executable, object, `.so`, `.wasm`, per mode). A native executable or shared library is linked beside `FILE` and moved onto it in one step, so `FILE` is always a whole artifact; if `FILE` is a symbolic link, the link is replaced and its target is left as it was. Two compiles of the same `FILE` take turns: the second waits up to 30 s (`ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS`) |
 | `--compile-only` | `-c` | Compile to an intermediate object file (no link) |
 | `--emit-object` | | Alias for `--compile-only` |
 | `--shared-lib` | `-s` | Compile to a shared library |

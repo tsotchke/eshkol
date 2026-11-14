@@ -146,11 +146,11 @@ Verified on this build:
 (display (taylor (lambda (t) (* t (derivative-n h (+ 1 t) 2))) 0 2)) (newline)
 ```
 ```
-1
-192
+1.0
+192.0
 2
-216
-2
+216.0
+2.0
 (0 12 24)
 ```
 
@@ -193,20 +193,20 @@ Verified on this build:
 ```scheme
 ;; ESH-0078 — inline and named forms now agree
 (define (L z) (* z (* z z)))
-(gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18
-(gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18
+(gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0)  ;; => 18.0
+(gradient (lambda (y) (gradient L y)) 3.0)                   ;; => 18.0
 
 ;; ESH-0096 — vector-param gradient-of-gradient
 (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
-          (vector 2.0))                                       ;; => #(12)
+          (vector 2.0))                                       ;; => #(12.0)
 
 ;; ESH-0095 — second-order operator at a tensor point
 (hessian (lambda (v) (let ((x (vref v 0)) (y (vref v 1))) (+ (* x x) (* x y))))
-         (tensor 1.0 2.0))                                    ;; => #((2 1) (1 0))
+         (tensor 1.0 2.0))                                    ;; => #((2.0 1.0) (1.0 0.0))
 
 ;; ESH-0072 / ESH-0097 — local capture under a reverse-mode operator
 (define (mk a) (gradient (lambda (x) (* a x x)) 3.0))
-(mk 2.0)                                                      ;; => 12
+(mk 2.0)                                                      ;; => 12.0
 ```
 
 ---

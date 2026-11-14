@@ -566,7 +566,7 @@ This is exercised end-to-end by
 ;; f(x;p0)=p0·x²  ->  ∂/∂p0 [ d/dx f @2 ] = 4
 (gradient (lambda (p) (derivative (lambda (x) (* (vref p 0) (* x x))) 2.0))
           (vector 3.0))
-;; => #(4)
+;; => #(4.0)
 ```
 
 Reverse-**over-reverse** is covered as well. `gradient` of `gradient` at a
@@ -578,7 +578,7 @@ where each used to return zeros:
 (gradient (lambda (v)
             (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
           (vector 2.0))
-;; => #(12)
+;; => #(12.0)
 ```
 
 The **curried** route — `(define g (gradient f))` then `(jacobian g point)` —
@@ -597,8 +597,8 @@ composition `(hessian f point)` performs, and it agrees with it entry-for-entry:
 ```scheme
 (define (f v) (* (vref v 0) (vref v 0) (vref v 1)))
 (define g (gradient f))
-(jacobian g (vector 2.0 3.0))   ;; => #((6 4) (4 0))
-(hessian  f (vector 2.0 3.0))   ;; => #((6 4) (4 0))
+(jacobian g (vector 2.0 3.0))   ;; => #((6.0 4.0) (4.0 0.0))
+(hessian  f (vector 2.0 3.0))   ;; => #((6.0 4.0) (4.0 0.0))
 ```
 
 The forward evaluation records its local linearisation against the point's
@@ -724,7 +724,7 @@ direct/indirect/curried equivalence.
 (define (apply-grad f pt) (gradient f pt))
 (apply-grad loss (vector 3.0 4.0))          ; through a parameter
 ((gradient loss) (vector 3.0 4.0))          ; curried
-;; => #(6 8) in every case
+;; => #(6.0 8.0) in every case
 ```
 
 A **variadic** callable is called with every coordinate of the point: its
@@ -740,8 +740,8 @@ so `(gradient + point)` is the gradient of the sum.
 (display (gw + (list 2.0 5.0))) (newline)
 ```
 ```
-#(15 6 10)
-#(1 1)
+#(15.0 6.0 10.0)
+#(1.0 1.0)
 ```
 
 A related fix follows transitive closure captures in a **custom vector-Jacobian

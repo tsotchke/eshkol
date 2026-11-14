@@ -49,22 +49,21 @@ part is omitted and an imaginary part of `+1` or `-1` is printed as `+i` or
 `-i`; other imaginary parts include their explicit sign (for example,
 `2+3i`).
 
-> **Display convention:** an inexact value with no fractional part prints without a
-> decimal point — `(+ 1.0 2)` prints `3`, and `(+ 1/2 0.5)` prints `1` — but it is
-> still inexact (`(inexact? (+ 1/2 0.5))` ⇒ `#t`).
+> **Display convention:** an inexact value prints as an inexact value. One with
+> no fractional part keeps its decimal point — `(+ 1.0 2)` prints `3.0`, and
+> `(+ 1/2 0.5)` prints `1.0` — so the printed text reads back inexact
+> (`(inexact? (+ 1/2 0.5))` ⇒ `#t`), while the exact integer three prints `3`.
 >
-> **Negative zero is the one exception:** `-0.0` prints `-0.0`, not `-0`. `-0`
-> would read back as the *exact* integer zero, which has no sign, so both the
-> inexactness and the sign bit would be lost — and the sign is observable
-> (`(/ 1.0 -0.0)` ⇒ `-inf.0`, `(/ 1.0 0.0)` ⇒ `+inf.0`). Positive zero prints
-> `0` like every other integral-valued double, since reading `0` back recovers
-> the same numeric value.
+> **Zero follows the same rule, with its sign:** `0.0` prints `0.0` and `-0.0`
+> prints `-0.0`. `-0` would read back as the *exact* integer zero, which has no
+> sign, so both the inexactness and the sign bit would be lost — and the sign is
+> observable (`(/ 1.0 -0.0)` ⇒ `-inf.0`, `(/ 1.0 0.0)` ⇒ `+inf.0`).
 
 > **Shortest round-trip printing (R7RS 6.2.6):** `display`, `write`, and
 > `number->string` emit the **shortest decimal string that reads back as the
 > identical `double`**. No digits are lost and none are fabricated: `(sqrt 2.0)`
 > prints `1.4142135623730951`, and reading that string back yields the same bit
-> pattern. Integral doubles keep the no-`.0` form described above. The native
+> pattern. An integral double is written with its `.0`, as described above. The native
 > compiler and the bytecode VM share one portable-C conversion routine, so their
 > printed output is byte-identical.
 
@@ -122,7 +121,7 @@ makes the result inexact:
 ```
 ```
 (1 422550200076076467165567735125)
-(1 2 1)
+(1.0 2.0 1.0)
 (1.5 1.5)
 (#t #f)
 ```
@@ -307,7 +306,7 @@ default. See
 (display (sqrt 16)) (display " ") (display (sqrt 2)) (newline)
 ```
 ```
-(3 4 2 -3)
+(3.0 4.0 2.0 -3.0)
 4 1.4142135623730951
 ```
 `(round 2.5)` ⇒ `2`: rounding is round-half-to-even (banker's rounding).
@@ -320,8 +319,8 @@ default. See
 (display (sqrt -1)) (newline)
 ```
 ```
-3+4i
-5
+3.0+4.0i
+5.0
 +i
 ```
 
@@ -355,8 +354,8 @@ sign: `+2i` is a number, `2i` is an identifier.
 (display (read (open-input-string "+i"))) (newline)
 ```
 ```
-(1+2i -i 0.5+0.75i 2 3/2 0.25 255)
-(1-2i 255 #f)
+(1.0+2.0i -i 0.5+0.75i 2 3/2 0.25 255)
+(1.0-2.0i 255 #f)
 +i
 ```
 
@@ -386,8 +385,8 @@ contagion): exact + inexact → inexact.
 (display (+ 1/2 0.5)) (newline)   ; 1 (inexact)
 ```
 ```
-3
-1
+3.0
+1.0
 ```
 
 ## Engine agreement
