@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/backend/codegen_context.h>
+#include <eshkol/backend/noreturn_blocks.h>
 #include <eshkol/backend/llvm_compat.h>
 #include <eshkol/eshkol.h>  // HEAP_SUBTYPE_SYMBOL, etc.
 #include "../core/arena_memory.h"  // eshkol_slot_store_status_t, tensor dtypes
@@ -243,6 +244,10 @@ void CodegenContext::emitConstructorAllocationCheck(llvm::Value* pointer) {
 // on lookupFunction("printf")/("exit") compiled to a bare `unreachable`, which
 // let LLVM delete the guarding branch outright. These two helpers are the single
 // implementation every codegen module uses to close a guard's failure block.
+
+llvm::BasicBlock* CodegenContext::continueAfterNoReturn(const char* name) {
+    return eshkol::continueAfterNoReturn(builder_, name);
+}
 
 void CodegenContext::emitRaise(const char* message) {
     llvm::Value* msg = builder_.CreateGlobalString(message ? message : "runtime error");
