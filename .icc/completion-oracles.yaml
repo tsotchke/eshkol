@@ -1818,22 +1818,6 @@ oracles:
         label: 'parse_quoted_data_with_token dispatches every quoted-datum kind (vector, quasiquote, unquote), not only list and quote; compile_quote preserves is_char/is_inexact reader flags'
         action: ctest -R v1_3_quoted_datum_kinds_runtime_smoke
 
-      # and/or over every operand kind and position, held to one answer on
-      # the JIT, the AOT build and the bytecode VM.
-      - id: and_or_operand_kinds_three_engines
-        test_evidence: true
-        severity: high
-        label: 'and/or answer the R7RS value for every operand kind (empty list, empty vector, #f, calls, zero operands) and body position on JIT, AOT and VM'
-        action: ctest -R 'and_or_operand_kinds_(jit|aot|vm)'
-
-      # A form that never returns builds and behaves the same in every
-      # position on the JIT, the AOT build, the bytecode VM and the REPL.
-      - id: noreturn_position_four_engines
-        test_evidence: true
-        severity: high
-        label: 'raise, error, exit and statically ill-typed operands verify and agree in every position (top level, guard, after defines, begin, operands) on JIT, AOT, VM and REPL'
-        action: ctest -R noreturn_position_engine_test
-
       # #458/audit H1: NumPy capsule keeps the tensor buffer alive.
       - test_evidence: true
         severity: high
@@ -2170,6 +2154,30 @@ oracles:
   - name: v1.4-connection
     aliases: [v1.4, v1.4-release, release-1.4, connection]
     requires:
+      - id: and_or_operand_kinds_jit
+        test_evidence: true
+        severity: high
+        label: and/or answer the R7RS value for every operand kind (empty list, empty vector, #f, calls, zero operands) and body position under the JIT
+        required_names: [and_or_operand_kinds_jit]
+        action: ctest --test-dir build --output-on-failure -R '^and_or_operand_kinds_jit$'
+      - id: and_or_operand_kinds_aot
+        test_evidence: true
+        severity: high
+        label: and/or answer the R7RS value for every operand kind (empty list, empty vector, #f, calls, zero operands) and body position under the AOT
+        required_names: [and_or_operand_kinds_aot]
+        action: ctest --test-dir build --output-on-failure -R '^and_or_operand_kinds_aot$'
+      - id: and_or_operand_kinds_vm
+        test_evidence: true
+        severity: high
+        label: and/or answer the R7RS value for every operand kind (empty list, empty vector, #f, calls, zero operands) and body position under the bytecode VM
+        required_names: [and_or_operand_kinds_vm]
+        action: ctest --test-dir build --output-on-failure -R '^and_or_operand_kinds_vm$'
+      - id: noreturn_position_engine_test
+        test_evidence: true
+        severity: high
+        label: raise, error, exit and statically ill-typed operands verify and agree in every position (top level, guard, after defines, begin, operands) on JIT, AOT, VM and REPL
+        required_names: [noreturn_position_engine_test]
+        action: ctest --test-dir build --output-on-failure -R '^noreturn_position_engine_test$'
       # ADR-0058 exact tensor element type (v1.4.0 item: exact linear algebra
       # over tensor storage, cross-checked against core.exact_linalg).
       - test_evidence: true
