@@ -11,7 +11,6 @@
     "platform": "Linux x86_64 epoll",
     "compiler": "Clang 22.1.8; LLVM21 for CMake configuration",
     "build_type": "Release",
-    "release_assertions_active": true,
     "ctest": {
       "passed": 10,
       "failed": 0,
@@ -60,7 +59,8 @@
       "cmake-build.log": "1c0585e4744ac9e77a1403a2ba89f43a6073df4bf3d55b00f1ba1bc4f07ef1f9",
       "ctest.log": "f88c54e2816897bc2cca9646e61c842bbc2c4acb4fb51aae1ce881d2df733e60",
       "junit.xml": "0bbb7d174f8b31b9e8cc5c171bea6feb8328e7cf5e07d94e7c75009dd0765490"
-    }
+    },
+    "explicit_loop_release_assertions_active": true
   },
   "combined_hosted_native": {
     "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
