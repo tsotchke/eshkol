@@ -34,7 +34,10 @@ t                               ;; => #(1.0 2.0 3.0)
 > `display` alone does not tell them apart — use `tensor-dtype`/`tensor-shape`
 > (defined only for tensors) or the surrounding context. An exact integer prints
 > as `3` and a whole double as `3.0`, so a tensor's f64 elements always show
-> their decimal point; strings print without quotes.
+> their decimal point; strings print without quotes. A numeric literal written
+> with integers, `#(1 2 3)`, is read as an f64 tensor and prints
+> `#(1.0 2.0 3.0)`; `(vector 1 2 3)` keeps its exact integers and prints
+> `#(1 2 3)`, as does an exact tensor made with `(tensor-cast … 'exact)`.
 
 ---
 

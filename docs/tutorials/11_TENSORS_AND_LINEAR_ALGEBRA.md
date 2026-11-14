@@ -31,9 +31,9 @@ automatic SIMD vectorisation and optional GPU dispatch.
 ```scheme
 (define v #(10 20 30 40 50))
 
-(display (vector-ref v 2))    ;; => 30
+(display (vector-ref v 2))    ;; => 30.0
 (vector-set! v 0 99)
-(display v)                   ;; => #(99 20 30 40 50)
+(display v)                   ;; => #(99.0 20.0 30.0 40.0 50.0)
 (display (vector-length v))   ;; => 5
 ```
 
@@ -82,13 +82,13 @@ automatic SIMD vectorisation and optional GPU dispatch.
 
 ```scheme
 ;; Dot product
-(display (tensor-dot #(1 2 3) #(4 5 6)))  ;; => 32
+(display (tensor-dot #(1 2 3) #(4 5 6)))  ;; => 32.0
 
 ;; Matrix multiplication — auto-dispatches SIMD -> BLAS -> GPU
 (define A (reshape #(1 2 3 4) 2 2))
 (define B (reshape #(5 6 7 8) 2 2))
 (define C (matmul A B))
-(display C)  ;; => #((19 22) (43 50))
+(display C)  ;; => #((19.0 22.0) (43.0 50.0))
 
 ;; Transpose
 (display (transpose A))
@@ -98,7 +98,7 @@ automatic SIMD vectorisation and optional GPU dispatch.
 (display (trace (eye 4)))     ;; => 4.0
 
 ;; Outer product
-(display (outer #(1 2) #(3 4)))  ;; => #((3 4) (6 8))
+(display (outer #(1 2) #(3 4)))  ;; => #((3.0 4.0) (6.0 8.0))
 ```
 
 ---

@@ -38,7 +38,7 @@ index down (so the result order matches the vector). Returns a proper list.
 (display (vector->list #())) (newline)
 ```
 ```
-(4 5 6)
+(4.0 5.0 6.0)
 ()
 ```
 

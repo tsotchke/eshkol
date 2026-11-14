@@ -121,7 +121,7 @@ makes the result inexact:
 ```
 ```
 (1 422550200076076467165567735125)
-(1 2 1)
+(1.0 2.0 1.0)
 (1.5 1.5)
 (#t #f)
 ```
@@ -306,7 +306,7 @@ default. See
 (display (sqrt 16)) (display " ") (display (sqrt 2)) (newline)
 ```
 ```
-(3 4 2 -3)
+(3.0 4.0 2.0 -3.0)
 4 1.4142135623730951
 ```
 `(round 2.5)` ⇒ `2`: rounding is round-half-to-even (banker's rounding).
@@ -319,8 +319,8 @@ default. See
 (display (sqrt -1)) (newline)
 ```
 ```
-3+4i
-5
+3.0+4.0i
+5.0
 +i
 ```
 
@@ -354,8 +354,8 @@ sign: `+2i` is a number, `2i` is an identifier.
 (display (read (open-input-string "+i"))) (newline)
 ```
 ```
-(1+2i -i 0.5+0.75i 2 3/2 0.25 255)
-(1-2i 255 #f)
+(1.0+2.0i -i 0.5+0.75i 2 3/2 0.25 255)
+(1.0-2.0i 255 #f)
 +i
 ```
 
@@ -385,8 +385,8 @@ contagion): exact + inexact → inexact.
 (display (+ 1/2 0.5)) (newline)   ; 1 (inexact)
 ```
 ```
-3
-1
+3.0
+1.0
 ```
 
 ## Engine agreement

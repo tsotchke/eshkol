@@ -46,11 +46,11 @@ Print a frequency histogram of `data` split into `n-bins` equal-width buckets be
 (histogram (list 1 2 2 3 3 3 4 4 5) 5)
 ```
 ```
-[1, 1.8) █ 1
+[1.0, 1.8) █ 1
 [1.8, 2.6) ██ 2
 [2.6, 3.4) ███ 3
 [3.4, 4.2) ██ 2
-[4.2, 5) █ 1
+[4.2, 5.0) █ 1
 ```
 
 Edge cases: `sparkline` on `'()` → `""`. `bar-chart`/`histogram` on `'()` → `'()` (nothing printed). `histogram` with `n-bins <= 0` → `'()`. Ranges are formatted to ~6 characters via truncation, so very precise bounds are shortened. Min/max use non-tail recursion (safe up to ~10K elements per the source note).

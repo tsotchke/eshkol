@@ -257,22 +257,22 @@ N-dimensional arrays for numerical computing.
 ; Tensor creation functions
 (zeros 5)           ; => #(0.0 0.0 0.0 0.0 0.0)
 (ones 2 3)          ; => #((1.0 1.0 1.0) (1.0 1.0 1.0))
-(eye 3)             ; => #((1 0 0) (0 1 0) (0 0 1))  (a 3x3 identity matrix)
-(arange 0.0 1.0 0.2) ; => #(0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
+(eye 3)             ; => #((1.0 0.0 0.0) (0.0 1.0 0.0) (0.0 0.0 1.0))  (a 3x3 identity matrix)
+(arange 0.0 1.0 0.2) ; => #(0.0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
 
 ; Element access
 (vref v 0)          ; => 1.0
-(tensor-get M 1 2)  ; => 6
+(tensor-get M 1 2)  ; => 6.0
 
 ; Arithmetic (element-wise)
-(tensor-add #(1 2 3) #(4 5 6))  ; => #(5 7 9)
+(tensor-add #(1 2 3) #(4 5 6))  ; => #(5.0 7.0 9.0)
 (tensor-mul v v)                ; => #(1.0 4.0 9.0)
 
 ; Linear algebra
 (define A #(#(1 2) #(3 4)))
 (define B #(#(5 6) #(7 8)))
-(matmul A B)        ; => #((19 22) (43 50))
-(transpose A)       ; => #((1 3) (2 4))
+(matmul A B)        ; => #((19.0 22.0) (43.0 50.0))
+(transpose A)       ; => #((1.0 3.0) (2.0 4.0))
 (trace A)           ; => 5.0
 
 ; Reductions
@@ -783,7 +783,7 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 
 (define data '(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
 
-(display (median data))         ; => 8
+(display (median data))         ; => 8.0
 (display (std-dev data))        ; => 4.181432170919432
 (display (percentile data 75))  ; => 11.5   (linear interpolation between order
                                 ;            statistics, as NumPy's default)
@@ -1022,16 +1022,16 @@ under the bytecode VM — bignum-backed rationals included.
 ```scheme
 ;; Create complex numbers
 (define z (make-rectangular 3.0 4.0))
-(magnitude z)       ; => 5
+(magnitude z)       ; => 5.0
 (angle z)           ; => 0.9272952180016122
 
 ;; Complex arithmetic
-(+ z (make-rectangular 1.0 -1.0))  ; => 4+3i
-(* z z)             ; => -7+24i
+(+ z (make-rectangular 1.0 -1.0))  ; => 4.0+3.0i
+(* z z)             ; => -7.0+24.0i
 
 ;; Smith's formula for numerical stability
 (/ (make-rectangular 1e300 1e300)
-   (make-rectangular 1e300 1e300))  ; => 1 (no overflow; the zero imaginary
+   (make-rectangular 1e300 1e300))  ; => 1.0 (no overflow; the zero imaginary
                                     ;    part is not printed)
 ```
 

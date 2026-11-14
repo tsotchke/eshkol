@@ -89,7 +89,7 @@ cmake .. && make -j8
 ```scheme
 ;; Compute derivative of f(x) = x^2 at x = 3
 (define f (lambda (x) (* x x)))
-(display (derivative f 3.0))  ;; -> 6
+(display (derivative f 3.0))  ;; -> 6.0
 ```
 
 ---
@@ -220,7 +220,7 @@ Numerical derivatives using dual numbers:
 
 ```scheme
 (define f (lambda (x) (* x x x)))  ;; f(x) = x^3
-(derivative f 2.0)                  ;; -> 12 (f'(x) = 3x^2)
+(derivative f 2.0)                  ;; -> 12.0 (f'(x) = 3x^2)
 
 (define g (lambda (x) (sin (* x x))))
 (derivative g 1.0)                  ;; -> 1.0806046117362795 (2x*cos(x^2))
@@ -263,21 +263,21 @@ Built-in operators for physics and engineering:
 ```scheme
 ;; Divergence: div(F)
 (define F (lambda (v) (vector (* 2 (vref v 0)) (* 3 (vref v 1)))))
-(divergence F (vector 1.0 1.0))  ;; -> 5
+(divergence F (vector 1.0 1.0))  ;; -> 5.0
 
 ;; Curl: curl(F) (3D only)
 (define rotating (lambda (v)
   (vector (- 0 (vref v 1)) (vref v 0) 0.0)))
-(curl rotating (vector 1.0 1.0 0.0))  ;; -> #(0 0 2)
+(curl rotating (vector 1.0 1.0 0.0))  ;; -> #(0.0 0.0 2.0)
 
 ;; Laplacian: laplacian(f)
 (define harmonic (lambda (v)
   (- (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
-(laplacian harmonic (vector 1.0 1.0))  ;; -> 0 (it's harmonic!)
+(laplacian harmonic (vector 1.0 1.0))  ;; -> 0.0 (it's harmonic!)
 
 ;; Directional derivative: D_u f
-(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6
+(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6.0
 ```
 
 ### Arbitrary-Order AD: Taylor Towers
@@ -294,7 +294,7 @@ numerics).
 
 ```scheme
 ;; The k-th derivative of f at x, for any order k -- no require needed
-(derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -> 27 (f'(x) = 3x^2 at x=3)
+(derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -> 27.0 (f'(x) = 3x^2 at x=3)
 
 ;; All K+1 Taylor coefficients c[0..K] where c[n] = f^(n)(x)/n!
 (taylor (lambda (x) (exp x)) 0.5 4)
@@ -314,7 +314,7 @@ partial derivatives of a multivariate function:
 (define (f xs) (* (vref xs 0) (* (vref xs 1) (vref xs 1))))  ;; f(x,y) = x*y^2
 
 ;; d^3f/dx dy^2 at (2.0, 3.0) -- idxs is a multi-index with repetition
-(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -> 2
+(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -> 2.0
 
 ;; The full order->=3 symmetric derivative tensor, as (multi-index . value) pairs
 (gradient-n f (vector 2.0 3.0) 3)
@@ -539,9 +539,9 @@ a unit imaginary part is elided.
 ```scheme
 (define z (make-rectangular 3.0 4.0))
 
-(real-part z)      ;; -> 3
-(imag-part z)      ;; -> 4
-(magnitude z)      ;; -> 5
+(real-part z)      ;; -> 3.0
+(imag-part z)      ;; -> 4.0
+(magnitude z)      ;; -> 5.0
 (angle z)          ;; -> 0.9272952180016122 (radians)
 ```
 
@@ -550,10 +550,10 @@ a unit imaginary part is elided.
 ```scheme
 ;; All standard arithmetic works on complex numbers
 (+ (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -> 4+6i
+   (make-rectangular 3.0 4.0))     ;; -> 4.0+6.0i
 
 (* (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -> -5+10i
+   (make-rectangular 3.0 4.0))     ;; -> -5.0+10.0i
 
 ;; Division uses Smith's formula (overflow-safe)
 (/ (make-rectangular 1.0 0.0)

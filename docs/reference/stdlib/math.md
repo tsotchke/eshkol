@@ -23,7 +23,7 @@ Element at `(row, col)` of a matrix `M` stored flat with `cols` columns. Compute
 (display (mat-ref #(1.0 2.0 3.0 4.0) 2 1 0)) (newline)
 ```
 ```
-3
+3.0
 ```
 
 ### `(tensor-copy T)`
@@ -33,7 +33,7 @@ Returns a fresh mutable `make-vector` copy of tensor/vector `T` (used internally
 (display (tensor-copy #(1.0 2.0 3.0))) (newline)
 ```
 ```
-#(1 2 3)
+#(1.0 2.0 3.0)
 ```
 
 ### `(det M n)`

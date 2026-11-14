@@ -111,7 +111,7 @@ The decision record is
 (10 15 15 (3 6 9))
 (11 12)
 -2
-(1)
+(1.0)
 ```
 Identical on the JIT (`-r`) and as an AOT binary. Bindings that are never
 reassigned keep direct-call resolution; only a binding that can change takes the

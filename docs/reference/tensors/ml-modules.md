@@ -38,7 +38,7 @@ tensor builtins of the same name inside the module).
 
 (gradient-descent f (vector 0.0 0.0))       ;; => #(2.9999999949510996 4.999999991585162)
 (adam f (vector 0.0 0.0) 0.1)               ;; => #(3.0000000034504235 5.000000002423529)   (lr=0.1)
-(tensor-dot (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0))  ;; => 32
+(tensor-dot (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0))  ;; => 32.0
 ```
 
 > `adam`'s default learning rate is `0.001`; with the fixed 1000-iteration cap
@@ -76,7 +76,7 @@ tensor builtins of the same name inside the module).
 (define h (make-hyperbolic-manifold 2))
 (manifold-type e)         ;; => euclidean
 (manifold-dimension e)    ;; => 3
-(manifold-curvature h)    ;; => -1
+(manifold-curvature h)    ;; => -1.0
 ```
 
 Curvatures: euclidean `0`, hyperbolic `-1`, spherical `1`. The module also
@@ -98,8 +98,8 @@ Radix-2 Cooley-Tukey. `fft` accepts a real or complex `vector` whose length is a
 
 ```scheme
 (define s (vector 1.0 2.0 3.0 4.0))
-(fft s)          ;; => #(10 -2+2i -2 -1.9999999999999998-2i)
-(ifft (fft s))   ;; => #(1 2+5.721188726109833e-18i 3 4-5.721188726109833e-18i)
+(fft s)          ;; => #(10.0 -2.0+2.0i -2.0 -1.9999999999999998-2.0i)
+(ifft (fft s))   ;; => #(1.0 2.0+5.721188726109833e-18i 3.0 4.0-5.721188726109833e-18i)
 ```
 
 The forward transform is exact; the inverse round-trips to the input up to a

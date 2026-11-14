@@ -16,9 +16,9 @@ still decide whether a GPU kernel runs.
 
 ```scheme
 (define A (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2)))
-(gpu-matmul A A)             ;; => #((7 10) (15 22))
-(gpu-elementwise + A A)      ;; => #((2 4) (6 8))
-(gpu-reduce + (tensor 1.0 2.0 3.0 4.0))  ;; => 10
+(gpu-matmul A A)             ;; => #((7.0 10.0) (15.0 22.0))
+(gpu-elementwise + A A)      ;; => #((2.0 4.0) (6.0 8.0))
+(gpu-reduce + (tensor 1.0 2.0 3.0 4.0))  ;; => 10.0
 ```
 
 `gpu-elementwise` accepts a bare `+`, `-`, `*`, or `/` operator (also the

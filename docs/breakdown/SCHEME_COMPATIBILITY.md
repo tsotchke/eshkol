@@ -572,7 +572,7 @@ int64 → bignum → rational → double → complex
 **complex** (complex number): Heap-allocated struct containing two doubles (real and imaginary parts). Type tag `ESHKOL_VALUE_COMPLEX` (7). Division uses Smith's formula to avoid overflow.
 
 ```scheme
-(make-rectangular 3 4)               ; => 3+4i
+(make-rectangular 3 4)               ; => 3.0+4.0i
 (magnitude 3+4i)                     ; => 5.0
 (angle 0+1i)                         ; => 1.5707963267948966
 (real-part 3+4i)                     ; => 3.0

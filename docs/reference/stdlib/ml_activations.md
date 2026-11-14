@@ -25,8 +25,8 @@ Two families: **scalar** activations that operate on a single number (`relu-scal
 (display (relu-scalar 3.0)) (newline)
 ```
 ```
-0
-3
+0.0
+3.0
 ```
 
 ### `(sigmoid-scalar x)`

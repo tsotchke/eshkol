@@ -38,10 +38,10 @@ independently. Scalar broadcast is a **separate operator**, `tensor-scale`.
   `Type error in tensor-mul: expected tensor, got integer`.
 - A pair the broadcast computation refuses raises
   `Shape mismatch in tensor-mul: shapes (3) and (2) are not broadcast-compatible`.
-- A length-1 operand still broadcasts: `(* #(2.0) #(1.0 2.0 3.0))` is `#(2 4 6)`.
+- A length-1 operand still broadcasts: `(* #(2.0) #(1.0 2.0 3.0))` is `#(2.0 4.0 6.0)`.
 - A vector and a rank-1 tensor are two spellings of one value, so a mixed pair
   is the element-wise result: `(* (vector 1.0 2.0) (tensor 3.0 4.0))` is
-  `#(3 8)`.
+  `#(3.0 8.0)`.
 
 Every one of those was previously a silent wrong answer or an uncatchable fatal
 signal (ledger LE-18, LE-19, LE-22). Element-wise arithmetic over

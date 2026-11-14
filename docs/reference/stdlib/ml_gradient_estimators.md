@@ -30,7 +30,7 @@ Return a hard one-hot vector with `1.0` at the argmax position (length = input l
 ```
 softmax #(0.23122389762214907 0.6285317192117624 0.14024438316608848)
 pick 1
-onehot #(0 1 0)
+onehot #(0.0 1.0 0.0)
 ```
 
 ### `(softmax-vjp y g)`
@@ -78,7 +78,7 @@ Stochastic variant of the above — draws fresh Gumbel noise internally (matchin
 ```
 ```
 #(0.17462771023134466 0.7081502847403103 0.09583771935941783 0.021384285668927173)
-sum=1
+sum=1.0
 ```
 
 ### `(straight-through t est-node hard-value)`
@@ -109,8 +109,8 @@ Straight-through on categorical argmax: forward `= argmax-onehot` of the (soft) 
 (display "round(2.3) ")(display r)(newline)
 ```
 ```
-onehot #(0 1 0)
-round(2.3) 2
+onehot #(0.0 1.0 0.0)
+round(2.3) 2.0
 ```
 
 ## Native-AD estimators

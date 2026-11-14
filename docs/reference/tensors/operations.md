@@ -4,8 +4,7 @@ Signatures and outputs below are verified on the v1.3.5-evolve compiler. Every t
 operation is a **codegen builtin** — no `(require …)` is needed for anything on
 this page (the library modules are separate; see
 [ml-modules.md](ml-modules.md)). Outputs are pasted as printed by `display`
-(a whole double prints with its decimal point, e.g. `3.0`; outputs on this page
-recorded in the shorter `3` spelling denote the same f64 values).
+(a whole double prints with its decimal point, e.g. `3.0`).
 
 Known-broken operations are called out inline with a **⚠ BUG** marker and
 summarized in [Known limitations](#known-limitations).
@@ -49,12 +48,12 @@ All binary elementwise ops require two tensors with broadcast-compatible shapes
 and return a new tensor:
 
 ```scheme
-(tensor-add (tensor 1.0 2.0) (tensor 3.0 4.0))   ;; => #(4 6)
-(tensor-sub (tensor 5.0 5.0) (tensor 1.0 2.0))   ;; => #(4 3)
-(tensor-mul (tensor 2.0 3.0) (tensor 4.0 5.0))   ;; => #(8 15)
-(tensor-div (tensor 8.0 6.0) (tensor 2.0 2.0))   ;; => #(4 3)
-(tensor-maximum (tensor 1.0 5.0) (tensor 3.0 2.0)) ;; => #(3 5)
-(tensor-minimum (tensor 1.0 5.0) (tensor 3.0 2.0)) ;; => #(1 2)
+(tensor-add (tensor 1.0 2.0) (tensor 3.0 4.0))   ;; => #(4.0 6.0)
+(tensor-sub (tensor 5.0 5.0) (tensor 1.0 2.0))   ;; => #(4.0 3.0)
+(tensor-mul (tensor 2.0 3.0) (tensor 4.0 5.0))   ;; => #(8.0 15.0)
+(tensor-div (tensor 8.0 6.0) (tensor 2.0 2.0))   ;; => #(4.0 3.0)
+(tensor-maximum (tensor 1.0 5.0) (tensor 3.0 2.0)) ;; => #(3.0 5.0)
+(tensor-minimum (tensor 1.0 5.0) (tensor 3.0 2.0)) ;; => #(1.0 2.0)
 ```
 
 Inexact `tensor-div` follows IEEE 754 on native, VM, and WebGPU: a nonzero
@@ -66,14 +65,14 @@ has the same inexact rule; division by exact zero with exact operands raises.
 Scalar-broadcast and unary:
 
 ```scheme
-(tensor-scale (tensor 1.0 2.0 3.0) 10.0)   ;; => #(10 20 30)
-(tensor-neg (tensor 1.0 -2.0))             ;; => #(-1 2)
-(tensor-abs (tensor -1.0 2.0 -3.0))        ;; => #(1 2 3)
-(tensor-exp (tensor 0.0 1.0))              ;; => #(1 2.718281828459045)
-(tensor-log (tensor 1.0 2.71828))          ;; => #(0 0.999999327347282)
-(tensor-sqrt (tensor 4.0 9.0))             ;; => #(2 3)
-(tensor-sin (tensor 0.0))                  ;; => #(0)
-(tensor-cos (tensor 0.0))                  ;; => #(1)
+(tensor-scale (tensor 1.0 2.0 3.0) 10.0)   ;; => #(10.0 20.0 30.0)
+(tensor-neg (tensor 1.0 -2.0))             ;; => #(-1.0 2.0)
+(tensor-abs (tensor -1.0 2.0 -3.0))        ;; => #(1.0 2.0 3.0)
+(tensor-exp (tensor 0.0 1.0))              ;; => #(1.0 2.718281828459045)
+(tensor-log (tensor 1.0 2.71828))          ;; => #(0.0 0.999999327347282)
+(tensor-sqrt (tensor 4.0 9.0))             ;; => #(2.0 3.0)
+(tensor-sin (tensor 0.0))                  ;; => #(0.0)
+(tensor-cos (tensor 0.0))                  ;; => #(1.0)
 ```
 
 > **`tensor-pow` is the exception: it accepts either a tensor exponent
@@ -81,8 +80,8 @@ Scalar-broadcast and unary:
 > dispatches on the exponent's runtime type, so both spellings answer:
 >
 > ```scheme
-> (tensor-pow (tensor 2.0 3.0) (tensor 2.0 2.0))  ;; => #(4 9)
-> (tensor-pow (tensor 2.0 3.0) 2.0)               ;; => #(4 9)
+> (tensor-pow (tensor 2.0 3.0) (tensor 2.0 2.0))  ;; => #(4.0 9.0)
+> (tensor-pow (tensor 2.0 3.0) 2.0)               ;; => #(4.0 9.0)
 > ```
 >
 > `tensor-maximum` / `tensor-minimum` and the four `tensor-add`/`-sub`/`-mul`/
@@ -96,8 +95,8 @@ Scalar-broadcast and unary:
 > spellings of one value, so a mixed pair is the element-wise result.
 >
 > ```scheme
-> (* #(1 2) #(3 4))                     ;; => #(3 8)
-> (* #(1.0 2.0) (tensor 3.0 4.0))       ;; => #(3 8)
+> (* #(1 2) #(3 4))                     ;; => #(3.0 8.0)
+> (* #(1.0 2.0) (tensor 3.0 4.0))       ;; => #(3.0 8.0)
 > (* #(1 2) 2)                          ;; ERROR: Type error in tensor-mul: expected tensor, got integer
 > (* 2 #(1 2))                          ;; ERROR: the same error
 > ```
@@ -109,7 +108,7 @@ Scalar-broadcast and unary:
 > whichever spelling it is written in.
 >
 > ```scheme
-> (* #(2.0) #(1.0 2.0 3.0))             ;; => #(2 4 6)
+> (* #(2.0) #(1.0 2.0 3.0))             ;; => #(2.0 4.0 6.0)
 > (* #(1.0 2.0 3.0) #(4.0 5.0))         ;; ERROR: Shape mismatch in tensor-mul:
 >                                       ;;        shapes (3) and (2) are not
 >                                       ;;        broadcast-compatible
@@ -186,7 +185,7 @@ returning a wrong answer.
 ```scheme
 (tensor-matmul (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2))
                (reshape (tensor 5.0 6.0 7.0 8.0) (list 2 2)))
-;; => #((19 22) (43 50))
+;; => #((19.0 22.0) (43.0 50.0))
 ```
 
 ---
@@ -225,7 +224,7 @@ returning a wrong answer.
 ;; 3×3 ⊛ 2×2 diagonal kernel, stride 1, VALID padding
 (conv2d (reshape (make-tensor (list 3 3) 1.0) (list 3 3))
         (reshape (tensor 1.0 0.0 0.0 1.0) (list 2 2)) 1)
-;; => #((2 2) (2 2))
+;; => #((2.0 2.0) (2.0 2.0))
 ```
 
 The pooling ops are named `max-pool2d` / `avg-pool2d` (with the `2d` suffix).
@@ -283,11 +282,11 @@ Most activations are **tensor-only** and raise a catchable type error on a
 scalar argument:
 
 ```scheme
-(relu (tensor -1.0 2.0 -3.0))    ;; => #(0 2 0)
+(relu (tensor -1.0 2.0 -3.0))    ;; => #(0.0 2.0 0.0)
 (sigmoid (tensor 0.0))           ;; => #(0.5)
-(gelu (tensor 0.0 1.0))          ;; => #(0 0.8411919906082768)
-(leaky-relu (tensor -2.0 3.0))   ;; => #(-0.02 3)   (α = 0.01)
-(silu (tensor 0.0 1.0))          ;; => #(0 0.7310585786300049)
+(gelu (tensor 0.0 1.0))          ;; => #(0.0 0.8411919906082768)
+(leaky-relu (tensor -2.0 3.0))   ;; => #(-0.02 3.0)   (α = 0.01)
+(silu (tensor 0.0 1.0))          ;; => #(0.0 0.7310585786300049)
 (relu -5.0)                      ;; ERROR: Type error in relu: expected tensor
 ```
 

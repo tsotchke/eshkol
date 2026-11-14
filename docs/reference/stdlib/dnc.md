@@ -48,7 +48,7 @@ NTM-style erase/add write (mutates `mem`). `wvec` is length-`N` (where to write)
 (display (dnc-read mem (dnc-loc-address 3 beta N)))(newline)
 ```
 ```
-#(1 2 3 4)
+#(1.0 2.0 3.0 4.0)
 ```
 
 ### `(dnc-alloc-weights mem beta)`
