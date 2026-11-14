@@ -259,6 +259,23 @@ def callback_fixture() -> str:
                  {1 + s} {2 + s})
            (sites-{n}))
 """)
+    # A capture assigned inside a map lambda: the assignment made for each
+    # element is visible to the next element and to the enclosing scope after
+    # the map returns. The mapped values do not depend on traversal order.
+    for n in (1, 64, 66):
+        s = tri(n)
+        out.append(f"""
+(define (map-assigns-capture-{n})
+  {let_open(n)}
+    (let ((mapped (map (lambda (x)
+                         (set! v{n} (+ v{n} x))
+                         (+ (* 2 x) (* 0 {total(n)})))
+                       (list 1 2 3))))
+      (list mapped v{n} {total(n)}))))
+(test-case "map lambda assigning one of its {n} captures"
+           (list (list 2 4 6) {n + 6} {s + 6})
+           (map-assigns-capture-{n}))
+""")
     out.append(FOOTER.format(tag="runtime-called procedure capture counts"))
     return "".join(out)
 

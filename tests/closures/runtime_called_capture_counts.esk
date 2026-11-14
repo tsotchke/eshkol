@@ -460,6 +460,39 @@
                  2212 2213)
            (sites-66))
 
+(define (map-assigns-capture-1)
+  (let ((v1 1))
+    (let ((mapped (map (lambda (x)
+                         (set! v1 (+ v1 x))
+                         (+ (* 2 x) (* 0 (+ 0 v1))))
+                       (list 1 2 3))))
+      (list mapped v1 (+ 0 v1)))))
+(test-case "map lambda assigning one of its 1 captures"
+           (list (list 2 4 6) 7 7)
+           (map-assigns-capture-1))
+
+(define (map-assigns-capture-64)
+  (let ((v1 1) (v2 2) (v3 3) (v4 4) (v5 5) (v6 6) (v7 7) (v8 8) (v9 9) (v10 10) (v11 11) (v12 12) (v13 13) (v14 14) (v15 15) (v16 16) (v17 17) (v18 18) (v19 19) (v20 20) (v21 21) (v22 22) (v23 23) (v24 24) (v25 25) (v26 26) (v27 27) (v28 28) (v29 29) (v30 30) (v31 31) (v32 32) (v33 33) (v34 34) (v35 35) (v36 36) (v37 37) (v38 38) (v39 39) (v40 40) (v41 41) (v42 42) (v43 43) (v44 44) (v45 45) (v46 46) (v47 47) (v48 48) (v49 49) (v50 50) (v51 51) (v52 52) (v53 53) (v54 54) (v55 55) (v56 56) (v57 57) (v58 58) (v59 59) (v60 60) (v61 61) (v62 62) (v63 63) (v64 64))
+    (let ((mapped (map (lambda (x)
+                         (set! v64 (+ v64 x))
+                         (+ (* 2 x) (* 0 (+ 0 v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24 v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36 v37 v38 v39 v40 v41 v42 v43 v44 v45 v46 v47 v48 v49 v50 v51 v52 v53 v54 v55 v56 v57 v58 v59 v60 v61 v62 v63 v64))))
+                       (list 1 2 3))))
+      (list mapped v64 (+ 0 v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24 v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36 v37 v38 v39 v40 v41 v42 v43 v44 v45 v46 v47 v48 v49 v50 v51 v52 v53 v54 v55 v56 v57 v58 v59 v60 v61 v62 v63 v64)))))
+(test-case "map lambda assigning one of its 64 captures"
+           (list (list 2 4 6) 70 2086)
+           (map-assigns-capture-64))
+
+(define (map-assigns-capture-66)
+  (let ((v1 1) (v2 2) (v3 3) (v4 4) (v5 5) (v6 6) (v7 7) (v8 8) (v9 9) (v10 10) (v11 11) (v12 12) (v13 13) (v14 14) (v15 15) (v16 16) (v17 17) (v18 18) (v19 19) (v20 20) (v21 21) (v22 22) (v23 23) (v24 24) (v25 25) (v26 26) (v27 27) (v28 28) (v29 29) (v30 30) (v31 31) (v32 32) (v33 33) (v34 34) (v35 35) (v36 36) (v37 37) (v38 38) (v39 39) (v40 40) (v41 41) (v42 42) (v43 43) (v44 44) (v45 45) (v46 46) (v47 47) (v48 48) (v49 49) (v50 50) (v51 51) (v52 52) (v53 53) (v54 54) (v55 55) (v56 56) (v57 57) (v58 58) (v59 59) (v60 60) (v61 61) (v62 62) (v63 63) (v64 64) (v65 65) (v66 66))
+    (let ((mapped (map (lambda (x)
+                         (set! v66 (+ v66 x))
+                         (+ (* 2 x) (* 0 (+ 0 v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24 v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36 v37 v38 v39 v40 v41 v42 v43 v44 v45 v46 v47 v48 v49 v50 v51 v52 v53 v54 v55 v56 v57 v58 v59 v60 v61 v62 v63 v64 v65 v66))))
+                       (list 1 2 3))))
+      (list mapped v66 (+ 0 v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11 v12 v13 v14 v15 v16 v17 v18 v19 v20 v21 v22 v23 v24 v25 v26 v27 v28 v29 v30 v31 v32 v33 v34 v35 v36 v37 v38 v39 v40 v41 v42 v43 v44 v45 v46 v47 v48 v49 v50 v51 v52 v53 v54 v55 v56 v57 v58 v59 v60 v61 v62 v63 v64 v65 v66)))))
+(test-case "map lambda assigning one of its 66 captures"
+           (list (list 2 4 6) 72 2217)
+           (map-assigns-capture-66))
+
 (newline)
 (display "runtime-called procedure capture counts passed: ") (display tests-passed) (newline)
 (display "runtime-called procedure capture counts failed: ") (display tests-failed) (newline)

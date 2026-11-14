@@ -4,12 +4,13 @@
 // caller that enters them. When a transfer of control leaves the extent the
 // runtime hands the after procedure to that caller; it never calls a
 // procedure's code address itself. An entry that holds a procedure therefore
-// always holds a caller: eshkol_push_dynamic_wind refuses, by terminating the
+// always holds a caller: eshkol_push_dynamic_wind refuses, by aborting the
 // process with a diagnostic, to create one that does not, so no extent can be
 // left with an exit thunk that would not run.
 
 #include "../../lib/core/arena_memory.h"
 
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -102,8 +103,8 @@ int main() {
     int status = 0;
     check(child > 0 && waitpid(child, &status, 0) == child,
           "the refusing process can be observed");
-    check(!(WIFEXITED(status) && WEXITSTATUS(status) == 0),
-          "a procedure without a thunk caller terminates the process at push time");
+    check(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+          "a procedure without a thunk caller aborts the process (SIGABRT) at push time");
 
     arena_destroy(arena);
     if (g_failures == 0) {
