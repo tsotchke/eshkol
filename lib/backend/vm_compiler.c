@@ -6793,7 +6793,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "do") && node->n_children >= 3) { compile_form_do(c, node, tail); return; }
 
     /* (and e1 e2 ...) — short circuit */
-    if (is_sym(head, "and") && node->n_children >= 2) {
+    if (is_sym(head, "and") && node->n_children >= 1) {
+        /* (and) is the identity of conjunction: #t (R7RS 4.2.1). */
+        if (node->n_children == 1) { chunk_emit(c, OP_TRUE, 0); return; }
         /* With one operand, and is just that operand and therefore preserves
          * the surrounding tail position. With multiple operands the first
          * operand must return normally so the short-circuit branch can test it. */
@@ -6810,7 +6812,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /* (or e1 e2 ...) — short circuit */
-    if (is_sym(head, "or") && node->n_children >= 2) {
+    if (is_sym(head, "or") && node->n_children >= 1) {
+        /* (or) is the identity of disjunction: #f (R7RS 4.2.1). */
+        if (node->n_children == 1) { chunk_emit(c, OP_FALSE, 0); return; }
         compile_expr(c, node->children[1], tail && node->n_children == 2);
         for (int i = 2; i < node->n_children; i++) {
             chunk_emit(c, OP_DUP, 0);

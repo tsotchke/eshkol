@@ -12478,7 +12478,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * the last, reduces that axis. -1 used to mean both, so a full
          * reduction answered a 1-element tensor on a vector and a row of
          * partial results on a matrix. */
-        int full = axis_val.type != VAL_INT && axis_val.type != VAL_FLOAT;
+        /* The axis is structural: an exact integer selects it and #f (no
+         * axis) selects the full reduction. Any other value is a type error,
+         * as on the native engines, never a truncated or ignored axis. */
+        int full = axis_val.type == VAL_BOOL && !axis_val.as.b;
+        if (!full && axis_val.type != VAL_INT) {
+            vm_raise_error_msg(vm, "Type error in tensor-reduce-axis: expected integer axis");
+            break;
+        }
         int axis = full ? -1 : (int)as_number(axis_val);
         if (!full && axis < 0) axis += t->n_dims;
         if (!full && (axis < 0 || axis >= t->n_dims)) {

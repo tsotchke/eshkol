@@ -18,18 +18,6 @@ goals:
     reason: sync HTTP shipped 2026-05-06; streaming is still stubbed. Without it the agent must batch-poll, which breaks the conversational UX
     tags: [http, streaming, agent]
 
-  - id: or-null-miscompile-root-cause
-    priority: high
-    goal: Find and fix the codegen path that replaces a function body containing `(or X null-literal)` with "return null"
-    reason: real agent code (services/mcp-client.esk, services/mcp-transport.esk) hit this; the workaround `(if X X '())` is everywhere and needs cleanup. Repro and notes in memory/project_229_or_null_repro.md
-    tags: [codegen, agent, regression]
-
-  - id: repl-no-return-verifier
-    priority: high
-    goal: Fix REPL/JIT %entry getting setup IR appended after `(raise …)` emits unreachable
-    reason: AOT path is fixed (#244 partial). REPL still trips "Terminator found in middle of basic block %entry" which forces agent tests onto the slower compile-link-run harness. Trace plan in memory/project_244_partial_fix.md
-    tags: [codegen, repl, jit]
-
   - id: parallel-test-fork-exhaustion
     priority: medium
     goal: "Diagnose and fix subprocess fork-exhaustion under heavy ctest load (`/bin/sh: fork: Resource temporarily unavailable`)"

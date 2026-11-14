@@ -1,0 +1,208 @@
+;; 103_and_or_operand_kinds.esk — `and` / `or` over every operand kind.
+;;
+;; `or` answers its first true operand and otherwise its last operand; `and`
+;; answers its first false operand and otherwise its last operand (R7RS
+;; 4.2.1). Only #f is false: the empty list, the empty vector, 0 and "" are
+;; all true values, and a literal of any of those kinds in any operand
+;; position leaves the rest of the enclosing body intact.
+;;
+;; Every row states the exact value, so the native JIT, the native AOT build
+;; and the bytecode VM are each held to the same answer; the file is also part
+;; of the VM-vs-native transcript differential.
+
+(define passed 0)
+(define failed 0)
+(define (check name got expected)
+  (if (equal? got expected)
+      (set! passed (+ passed 1))
+      (begin (display "FAIL: ") (display name)
+             (display " got ") (write got)
+             (display " expected ") (write expected) (newline)
+             (set! failed (+ failed 1)))))
+
+;; --- the empty list as the fallback operand ---------------------------------
+(define (or-null x) (or x '()))
+(check "or x '() / true x"        (or-null 42) 42)
+(check "or x '() / false x"       (or-null #f) '())
+(check "or x '() / null x"        (or-null '()) '())
+(check "or x '() / string x"      (or-null "s") "s")
+
+(define (or-quote-form x) (or x (quote ())))
+(check "or x (quote ())"          (list (or-quote-form 1) (or-quote-form #f)) '(1 ()))
+
+(define (or-list-call x) (or x (list)))
+(check "or x (list)"              (list (or-list-call 1) (or-list-call #f)) '(1 ()))
+
+(define (or-begin-null x) (or x (begin '())))
+(check "or x (begin '())"         (list (or-begin-null 1) (or-begin-null #f)) '(1 ()))
+
+(define (or-three x) (or x #f '()))
+(check "or x #f '()"              (list (or-three 1) (or-three #f)) '(1 ()))
+
+(define (or-mid x) (or #f x '()))
+(check "or #f x '()"              (list (or-mid 1) (or-mid #f)) '(1 ()))
+
+(define (or-two-vars x y) (or x y '()))
+(check "or x y '()"               (list (or-two-vars 1 2) (or-two-vars #f 2) (or-two-vars #f #f))
+                                  '(1 2 ()))
+
+(define (or-null-first x) (or '() x))
+(check "or '() x: () is true"     (list (or-null-first 1) (or-null-first #f)) '(() ()))
+
+(define (or-null-then-more x) (or x '() 'never))
+(check "or x '() never"           (list (or-null-then-more 1) (or-null-then-more #f)) '(1 ()))
+
+;; --- other literal kinds in the same position -------------------------------
+(define (or-false x) (or x #f))
+(check "or x #f"                  (list (or-false 1) (or-false #f)) '(1 #f))
+(define (or-zero x) (or x 0))
+(check "or x 0"                   (list (or-zero 1) (or-zero #f)) '(1 0))
+(define (or-string x) (or x ""))
+(check "or x \"\""                (list (or-string 1) (or-string #f)) '(1 ""))
+(define (or-char x) (or x #\a))
+(check "or x #\\a"                (list (or-char 1) (or-char #f)) (list 1 #\a))
+(define (or-symbol x) (or x 'sym))
+(check "or x 'sym"                (list (or-symbol 1) (or-symbol #f)) '(1 sym))
+(define (or-quoted-list x) (or x '(1 2)))
+(check "or x '(1 2)"              (list (or-quoted-list 1) (or-quoted-list #f)) '(1 (1 2)))
+(define (or-nested-null x) (or x '(())))
+(check "or x '(())"               (list (or-nested-null 1) (or-nested-null #f)) '(1 (())))
+(define (or-quasi x) (or x `(a ,x)))
+(check "or x `(a ,x)"             (list (or-quasi 1) (or-quasi #f)) '(1 (a #f)))
+
+(define (or-empty-vector x) (or x '#()))
+(check "or x '#() / true x"       (or-empty-vector 7) 7)
+(check "or x '#() / kind"         (vector? (or-empty-vector #f)) #t)
+(check "or x '#() / length"       (vector-length (or-empty-vector #f)) 0)
+(define (or-vector x) (or x '#(1 2)))
+(check "or x '#(1 2)"             (vector-ref (or-vector #f) 1) 2)
+(define (or-vector-call x) (or x (vector)))
+(check "or x (vector)"            (vector-length (or-vector-call #f)) 0)
+
+;; --- `and` -----------------------------------------------------------------
+(define (and-null x) (and x '()))
+(check "and x '()"                (list (and-null 1) (and-null #f)) '(() #f))
+(define (and-null-first x) (and '() x))
+(check "and '() x"                (list (and-null-first 1) (and-null-first #f)) '(1 #f))
+(define (and-null-mid x) (and x '() x))
+(check "and x '() x"              (list (and-null-mid 1) (and-null-mid #f)) '(1 #f))
+(define (and-empty-vector x) (and x '#()))
+(check "and x '#()"               (list (vector? (and-empty-vector 1)) (and-empty-vector #f)) '(#t #f))
+
+;; --- operand count: zero and one --------------------------------------------
+(check "(or)"                     (or) #f)
+(check "(and)"                    (and) #t)
+(define (or-none x) (or))
+(define (and-none x) (and))
+(check "(or) in a body"           (or-none 1) #f)
+(check "(and) in a body"          (and-none 1) #t)
+(define (or-one x) (or x))
+(define (and-one x) (and x))
+(check "(or x)"                   (list (or-one 1) (or-one #f)) '(1 #f))
+(check "(and x)"                  (list (and-one 1) (and-one #f)) '(1 #f))
+(check "(if (or) ..)"             (if (or) 'yes 'no) 'no)
+(check "(if (and) ..)"            (if (and) 'yes 'no) 'yes)
+(check "(or (or) (and))"          (or (or) (and)) #t)
+(check "(and (and) (or))"         (and (and) (or)) #f)
+
+;; --- the operand is a call --------------------------------------------------
+(define (pos-list x) (if (> x 0) (list x) #f))
+(define (or-call x) (or (pos-list x) '()))
+(check "or (f x) '()"             (list (or-call 3) (or-call -3)) '((3) ()))
+(define (pos x) (if (> x 0) x #f))
+(define (or-two-calls x) (or (pos x) (pos (- x)) '()))
+(check "or (f x) (f -x) '()"      (list (or-two-calls 3) (or-two-calls -3) (or-two-calls 0)) '(3 3 ()))
+(define (or-memq x) (or (memq x '(a b c)) '()))
+(check "or (memq ..) '()"         (list (or-memq 'b) (or-memq 'z)) '((b c) ()))
+(define (or-assq x) (or (assq x '((a . 1))) '()))
+(check "or (assq ..) '()"         (list (or-assq 'a) (or-assq 'z)) '((a . 1) ()))
+
+;; --- position in the enclosing body -----------------------------------------
+(define side 0)
+(define (or-after-effect x) (set! side (+ side 1)) (or x '()))
+(define effect-true (or-after-effect 1))
+(define effect-false (or-after-effect #f))
+(check "effect before or"         (list effect-true effect-false side) '(1 () 2))
+
+(define (or-in-let x) (let ((r (or x '()))) (if (null? r) 'empty r)))
+(check "or in let init"           (list (or-in-let 1) (or-in-let #f)) '(1 empty))
+(define (or-in-let* x) (let* ((a 1) (r (or x '()))) (cons a r)))
+(check "or in let* init"          (list (or-in-let* 2) (or-in-let* #f)) '((1 . 2) (1)))
+(define (or-in-loop-tail x) (let loop ((i 0)) (if (< i 3) (loop (+ i 1)) (or x '()))))
+(check "or in named-let tail"     (list (or-in-loop-tail 1) (or-in-loop-tail #f)) '(1 ()))
+(define (or-in-loop-init x)
+  (let loop ((i 0) (acc (or x '())))
+    (if (< i 2) (loop (+ i 1) (cons i acc)) acc)))
+(check "or in named-let init"     (list (or-in-loop-init '(9)) (or-in-loop-init #f)) '((1 0 9) (1 0)))
+(define or-lambda (lambda (x) (or x '())))
+(check "or in lambda"             (list (or-lambda 1) (or-lambda #f)) '(1 ()))
+(check "or in mapped lambda"      (map (lambda (x) (or x '())) (list 1 #f 3)) '(1 () 3))
+(define (or-closure x) (lambda () (or x '())))
+(check "or in returned closure"   (list ((or-closure 1)) ((or-closure #f))) '(1 ()))
+(define (or-letrec x)
+  (letrec ((g (lambda (n) (if (= n 0) (or x '()) (g (- n 1)))))) (g 3)))
+(check "or in letrec"             (list (or-letrec 1) (or-letrec #f)) '(1 ()))
+(define (or-do x) (do ((i 0 (+ i 1)) (acc '() (cons i acc))) ((= i 2) (or x acc))))
+(check "or in do result"          (list (or-do 1) (or-do #f)) '(1 (1 0)))
+(define (or-set x) (set! x (or x '())) x)
+(check "or in set!"               (list (or-set 1) (or-set #f)) '(1 ()))
+(define (or-rest . xs) (or (and (pair? xs) (car xs)) '()))
+(check "or in variadic body"      (list (or-rest 1) (or-rest) (or-rest #f)) '(1 () ()))
+
+;; --- as an operand of another form ------------------------------------------
+(define (or-as-test x) (if (or x '()) 'truthy 'falsy))
+(check "or as if test"            (list (or-as-test 1) (or-as-test #f)) '(truthy truthy))
+(define (or-as-cond x) (cond ((or x '()) => (lambda (v) v)) (else 'no)))
+(check "or as cond => test"       (list (or-as-cond 1) (or-as-cond #f)) '(1 ()))
+(define (or-in-case x)
+  (case x ((1) (or #f '())) ((2) (and #t '(two))) (else (or x '()))))
+(check "or in case arms"          (list (or-in-case 1) (or-in-case 2) (or-in-case 3) (or-in-case #f))
+                                  '(() (two) 3 ()))
+(define (or-as-arg x) (cons 1 (or x '())))
+(check "or as cons argument"      (list (or-as-arg '(2)) (or-as-arg #f)) '((1 2) (1)))
+(define (or-as-append x) (append (or x '()) '(z)))
+(check "or as append argument"    (list (or-as-append '(2)) (or-as-append #f)) '((2 z) (z)))
+(define (or-as-length x) (length (or x '())))
+(check "or as length argument"    (list (or-as-length '(2 3)) (or-as-length #f)) '(2 0))
+(define (or-as-null x) (null? (or x '())))
+(check "or as null? argument"     (list (or-as-null 1) (or-as-null #f)) '(#f #t))
+(define (or-as-not x) (not (or x '())))
+(check "or as not argument"       (list (or-as-not 1) (or-as-not #f)) '(#f #f))
+(define (or-as-apply x) (apply list (or x '())))
+(check "or as apply argument"     (list (or-as-apply '(1 2)) (or-as-apply #f)) '((1 2) ()))
+
+;; --- nesting ----------------------------------------------------------------
+(define (or-of-and x) (or (and x (+ x 1)) '()))
+(check "or (and ..) '()"          (list (or-of-and 41) (or-of-and #f)) '(42 ()))
+(define (and-of-or x) (and (or x '()) 7))
+(check "and (or x '()) 7"         (list (and-of-or 41) (and-of-or #f)) '(7 7))
+(define (or-of-and-null x) (or (and x '()) 'z))
+(check "or (and x '()) 'z"        (list (or-of-and-null 41) (or-of-and-null #f)) '(() z))
+(define (or-of-or x) (or (or x '()) 'z))
+(check "or (or x '()) 'z"         (list (or-of-or 41) (or-of-or #f)) '(41 ()))
+
+;; --- with handlers and escapes ----------------------------------------------
+(define (or-guard-body x) (guard (e (#t '())) (or x (raise 'boom))))
+(check "or with raising operand"  (list (or-guard-body 1) (or-guard-body #f)) '(1 ()))
+(define (or-guard-clause x) (guard (e (#t (or x '()))) (raise 'boom)))
+(check "or in guard clause"       (list (or-guard-clause 1) (or-guard-clause #f)) '(1 ()))
+(define (or-callcc x) (call/cc (lambda (k) (or x '()))))
+(check "or under call/cc"         (list (or-callcc 1) (or-callcc #f)) '(1 ()))
+
+;; --- at top level -----------------------------------------------------------
+(define top-or-false (or #f '()))
+(define top-or-true (or 7 '()))
+(check "top-level define"         (list top-or-false top-or-true) '(() 7))
+(define toggled #f)
+(define (or-global) (or toggled '()))
+(define before-toggle (or-global))
+(set! toggled 5)
+(check "or over a mutated global" (list before-toggle (or-global)) '(() 5))
+(define-syntax or-null-macro (syntax-rules () ((_ a) (or a '()))))
+(define (or-via-macro x) (or-null-macro x))
+(check "or from a macro template" (list (or-via-macro 1) (or-via-macro #f)) '(1 ()))
+
+(display passed) (display " passed, ") (display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: and_or_operand_kinds") (newline))
+    (begin (display "FAIL: and_or_operand_kinds") (newline)))

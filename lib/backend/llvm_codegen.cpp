@@ -527,6 +527,71 @@ static void normalizeDebugLocations(llvm::Module& module, llvm::LLVMContext& ctx
     }
 }
 
+/* Close every basic block at its first `unreachable`.
+ *
+ * A no-return emission (raise, error, exit, a statically ill-typed operand)
+ * ends its block with `unreachable`. The emitter is rarely the last writer:
+ * its caller goes on to lower the rest of the enclosing form through the same
+ * builder, and that IR lands behind the terminator. Everything behind an
+ * `unreachable` is dead by construction, so the module finalizer owns the
+ * block boundary instead of asking each of the many emitters and callers to
+ * re-seat the builder individually:
+ *
+ *   * instructions behind the first `unreachable` are removed; any value they
+ *     defined can only be named from code that is itself unreachable, and is
+ *     replaced by poison there;
+ *   * a branch removed this way no longer makes its block a predecessor of the
+ *     branch targets, so their PHI nodes drop the matching incoming entries.
+ *
+ * Only `unreachable` opens this rule. A block that continues past a `ret` or
+ * a branch is still reported by the verifier.
+ */
+static void sealBlocksAtUnreachable(llvm::Module& module) {
+    using namespace llvm;
+    for (Function& F : module) {
+        for (BasicBlock& BB : F) {
+            Instruction* seal = nullptr;
+            for (Instruction& I : BB) {
+                if (isa<UnreachableInst>(I)) { seal = &I; break; }
+                if (I.isTerminator()) break;
+            }
+            if (!seal || &BB.back() == seal) continue;
+
+            SmallVector<BasicBlock*, 4> lost_successors;
+            for (Instruction* I = seal->getNextNode(); I; I = I->getNextNode()) {
+                if (!I->isTerminator()) continue;
+                for (unsigned s = 0, n = I->getNumSuccessors(); s < n; ++s) {
+                    lost_successors.push_back(I->getSuccessor(s));
+                }
+            }
+
+            while (&BB.back() != seal) {
+                Instruction& dead = BB.back();
+                if (!dead.use_empty()) {
+                    dead.replaceAllUsesWith(PoisonValue::get(dead.getType()));
+                }
+                dead.eraseFromParent();
+            }
+
+            for (BasicBlock* succ : lost_successors) {
+                SmallVector<PHINode*, 4> phis;
+                for (PHINode& phi : succ->phis()) phis.push_back(&phi);
+                for (PHINode* phi : phis) {
+                    for (int idx = phi->getBasicBlockIndex(&BB); idx >= 0;
+                         idx = phi->getBasicBlockIndex(&BB)) {
+                        if (phi->getNumIncomingValues() == 1) {
+                            phi->replaceAllUsesWith(PoisonValue::get(phi->getType()));
+                            phi->eraseFromParent();
+                            break;
+                        }
+                        phi->removeIncomingValue(static_cast<unsigned>(idx), false);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Optimizer diagnostic policy.
 //
@@ -3720,6 +3785,11 @@ public:
 
             pruneUnusedFreestandingDeclarations();
             markFreestandingNoUnwind();
+
+            // A no-return emission leaves `unreachable` in the block its
+            // caller keeps writing to; close each block there before any
+            // other finalization step or the verifier reads the module.
+            sealBlocksAtUnreachable(*module);
 
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
