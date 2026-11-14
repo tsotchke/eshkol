@@ -1,0 +1,9 @@
+{
+  "description": "move of a name bound in neither the local nor the module scope: one 'Undefined variable' diagnostic per operand at its own span, a nonzero compile exit, no binary, and no fatal signal from the compiler.",
+  "compile": "fail",
+  "diagnostics": [
+    {"contains": "Undefined variable: nowhere", "span": {"file": "input.esk", "line": 6, "col": 21}},
+    {"contains": "Undefined variable: elsewhere", "span": {"file": "input.esk", "line": 7, "col": 32}}
+  ],
+  "forbidden": ["fatal signal", "Stack dump"]
+}
