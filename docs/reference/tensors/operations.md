@@ -4,7 +4,8 @@ Signatures and outputs below are verified on the v1.3.5-evolve compiler. Every t
 operation is a **codegen builtin** — no `(require …)` is needed for anything on
 this page (the library modules are separate; see
 [ml-modules.md](ml-modules.md)). Outputs are pasted as printed by `display`
-(whole doubles print without a decimal point, e.g. `3.0` → `3`).
+(a whole double prints with its decimal point, e.g. `3.0`; outputs on this page
+recorded in the shorter `3` spelling denote the same f64 values).
 
 Known-broken operations are called out inline with a **⚠ BUG** marker and
 summarized in [Known limitations](#known-limitations).

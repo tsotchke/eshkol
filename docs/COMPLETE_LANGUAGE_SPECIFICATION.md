@@ -1462,8 +1462,8 @@ naming both shapes.
 
 <!-- doc-example: skip pseudo-code: demonstrates both successful broadcasts and the intentional errors in the trailing comments; the error lines terminate the program before later lines run -->
 ```scheme
-(* #(1 2) #(3 4))         ; => #(3 8)
-(* #(2.0) #(1.0 2.0 3.0)) ; => #(2 4 6)      (a dimension of 1 broadcasts)
+(* #(1 2) #(3 4))         ; => #(3.0 8.0)
+(* #(2.0) #(1.0 2.0 3.0)) ; => #(2.0 4.0 6.0)  (a dimension of 1 broadcasts)
 (* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
 (* 2 #(1 2))              ; ERROR: the same error, same wording
 (* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
@@ -1473,8 +1473,8 @@ naming both shapes.
 **Examples:**
 ```scheme
 (+ 1 2)        ; => 3
-(+ 1.5 2.5)    ; => 4    (inexact; a double with no fractional part prints
-               ;          without a decimal point — see 3.1 Numeric Tower)
+(+ 1.5 2.5)    ; => 4.0  (inexact; a double with no fractional part prints
+               ;          with its decimal point — see 3.1 Numeric Tower)
 (+ 1 2 3 4 5)  ; => 15
 ```
 

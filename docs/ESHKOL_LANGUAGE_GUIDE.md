@@ -236,7 +236,7 @@ Computation graph-based differentiation for multivariate functions:
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
 
-(gradient f (vector 3.0 4.0))  ;; -> #(6 8)
+(gradient f (vector 3.0 4.0))  ;; -> #(6.0 8.0)
 
 ;; Jacobian matrix for vector-valued functions
 (define polar->cartesian (lambda (v)
@@ -245,15 +245,15 @@ Computation graph-based differentiation for multivariate functions:
             (* r (sin theta))))))
 
 (jacobian polar->cartesian (vector 1.0 0.0))
-;; -> #((1 0) (0 1))
+;; -> #((1.0 0.0) (0.0 1.0))
 
 ;; Hessian matrix (second derivatives)
-(hessian f (vector 1.0 1.0))  ;; -> #((2 0) (0 2))
+(hessian f (vector 1.0 1.0))  ;; -> #((2.0 0.0) (0.0 2.0))
 ```
 
-An inexact result with no fractional part prints without a decimal point, so
-the `6`, `8` and `2` above are the doubles 6.0, 8.0 and 2.0 — ask `exact?` if
-the distinction matters. See [the numeric tower
+An inexact result with no fractional part prints with its decimal point, so
+the derivatives above, taken at inexact points, show as `6.0`, `8.0` and
+`2.0`. See [the numeric tower
 reference](reference/language/numeric-tower.md).
 
 ### Vector Calculus Operators
@@ -523,16 +523,16 @@ Eshkol supports complex numbers as a first-class numeric type, with heap-allocat
 
 ```scheme
 ;; Rectangular form
-(make-rectangular 3.0 4.0)     ;; -> 3+4i
+(make-rectangular 3.0 4.0)     ;; -> 3.0+4.0i
 
 ;; Polar form
 (make-polar 5.0 0.9273)        ;; -> 2.9999808719721477+4.000014345949428i
-                               ;;    (3+4i, up to the rounding of the angle)
+                               ;;    (3.0+4.0i, up to the rounding of the angle)
 ```
 
-A component with no fractional part prints without a decimal point, and a zero
-real part or a unit imaginary part is elided, so `3+4i` above is the pair of
-doubles 3.0 and 4.0.
+An inexact component with no fractional part prints with its decimal point, so
+the pair of doubles 3.0 and 4.0 above shows as `3.0+4.0i`; a zero real part or
+a unit imaginary part is elided.
 
 ### Accessors
 

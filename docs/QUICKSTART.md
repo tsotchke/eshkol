@@ -5,10 +5,10 @@
 This hands-on tutorial introduces Eshkol's core features through practical examples. You'll learn functions, lists, tensors, and automatic differentiation - the tools for scientific computing and AI systems programming.
 
 > **Reading the `; =>` annotations.** They give an expression's **value**. An
-> inexact value is sometimes written with its `.0` (`6.0`) for clarity, but what
-> the compiler *prints* for an integral double omits the decimal point — `6`,
-> not `6.0` — and the value is still inexact. `-0.0` is the one exception and
-> prints in full. Text inside a fenced result block is the exact printed
+> inexact value is written with its `.0` (`6.0`), which is also what the
+> compiler *prints* for an integral double, so an exact `6` and an inexact
+> `6.0` are told apart on sight. `-0.0` prints in full, keeping its
+> sign. Text inside a fenced result block is the exact printed
 > output. See
 > [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
 
@@ -137,8 +137,9 @@ eshkol-run hello.esk -o hello
 
 **Type System**: Polymorphic arithmetic with automatic promotion (exact integer
 → rational → double, promoting only when a value actually requires it). An
-inexact value with no fractional part prints without a decimal point, so `4`
-above may be either exact or inexact — ask `exact?` if it matters. See
+inexact value with no fractional part prints with its decimal point, so the `4`
+above is the exact integer (`(sqrt 16)` of an exact square is exact) and an
+inexact four would print `4.0`. See
 [the numeric tower reference](reference/language/numeric-tower.md).
 
 ---
@@ -994,8 +995,8 @@ ar rcs libmylib.a mylib.o
 (+ r r)             ; => 2/3 (exact)
 
 ;; R7RS: exact + inexact → inexact
-(+ big 0.5)         ; => 9223372036854776000 (a double, printed without a
-                    ;    decimal point because it has no fractional part)
+(+ big 0.5)         ; => 9223372036854776000.0 (a double: its decimal
+                    ;    point marks it inexact)
 
 ;; Exact roots and exact expt: exactness follows the VALUE, not the operator
 (sqrt 4/9)          ; => 2/3   exact

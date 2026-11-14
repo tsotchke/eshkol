@@ -9,11 +9,10 @@ The generated language-surface inventory and the AD support matrix distinguish
 implemented operations, engine-specific restrictions, and measured parity.
 
 > **Reading the `; =>` annotations.** They give an expression's **value**, and
-> an inexact value is written with its `.0` (`6.0`) where that is what makes the
-> example clear. What the compiler **prints** for an integral double omits the
-> decimal point — `(derivative (lambda (x) (* x x)) 3.0)` displays `6`, not
-> `6.0`, and it is still inexact. The one exception is `-0.0`, which prints in
-> full because reading `-0` back would lose both the inexactness and the sign.
+> an inexact value is written with its `.0` (`6.0`). That is also what the
+> compiler **prints** for an integral double —
+> `(derivative (lambda (x) (* x x)) 3.0)` displays `6.0` — so printed text reads
+> back inexact; `-0.0` likewise prints in full, keeping its sign.
 > Output shown inside a fenced result block is always the exact printed text.
 > See
 > [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
@@ -1895,7 +1894,7 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 (number->string 42)         ; => "42"
 (string->number "3.14")     ; => 3.14
 (number->string (sqrt 2.0)) ; => "1.4142135623730951"
-(number->string 3.0)        ; => "3"      (integral double, still inexact)
+(number->string 3.0)        ; => "3.0"    (integral double, reads back inexact)
 (number->string -0.0)       ; => "-0.0"   (sign and inexactness both survive)
 ```
 
@@ -3498,21 +3497,21 @@ co-adaptation of feature detectors.
 
 ```scheme
 (define x #(-2.0 -1.0 0.0 1.0 2.0))
-(relu x)               ; => #(0 0 0 1 2)
+(relu x)               ; => #(0.0 0.0 0.0 1.0 2.0)
 (sigmoid x)            ; => #(0.11920292202211755 0.2689414213699951 0.5 0.7310585786300049 0.8807970779778823)
 (softmax x)            ; => #(0.011656230956039605 0.03168492079612427 0.0861285444362687 0.23412165725273662 0.6364086465588308)
-(gelu x)               ; => #(-0.04540230591222494 -0.15880800939172324 0 0.8411919906082768 1.954597694087775)
-(leaky-relu x)         ; => #(-0.02 -0.01 0 1 2)
-(silu x)               ; => #(-0.2384058440442351 -0.2689414213699951 0 0.7310585786300049 1.7615941559557646)
-(elu x)                ; => #(-0.8646647167633873 -0.6321205588285577 0 1 2)
-(mish x)               ; => #(-0.2525014826957091 -0.30340146137410895 0 0.8650983882673103 1.9439589595339946)
+(gelu x)               ; => #(-0.04540230591222494 -0.15880800939172324 0.0 0.8411919906082768 1.954597694087775)
+(leaky-relu x)         ; => #(-0.02 -0.01 0.0 1.0 2.0)
+(silu x)               ; => #(-0.2384058440442351 -0.2689414213699951 0.0 0.7310585786300049 1.7615941559557646)
+(elu x)                ; => #(-0.8646647167633873 -0.6321205588285577 0.0 1.0 2.0)
+(mish x)               ; => #(-0.2525014826957091 -0.30340146137410895 0.0 0.8650983882673103 1.9439589595339946)
 (dropout x 0.5 #t)     ; => #(0.0 -2.0 0.0 2.0 0.0) (varies, scaled by 2)
 (dropout x 0.5 #f)     ; => #(-2.0 -1.0 0.0 1.0 2.0) (unchanged in inference)
 ```
 
-(An integral double prints without a decimal point — see
-[the numeric tower](reference/language/numeric-tower.md#exactness). `#(0 0 0 1 2)`
-above is five inexact values, not five exact integers.)
+(An integral double prints with its decimal point — see
+[the numeric tower](reference/language/numeric-tower.md#exactness). `#(0.0 0.0 0.0 1.0 2.0)`
+above is five inexact values.)
 
 > **Known limitation — `leaky-relu`'s α argument is ignored (build item).**
 > `(leaky-relu x 0.1)` and `(leaky-relu x 0.5)` both answer
