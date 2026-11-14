@@ -54,8 +54,7 @@ bool valid_kind(eshkol_handle_kind_t kind) {
            kind == ESHKOL_HANDLE_KIND_CLEANUP ||
            kind == ESHKOL_HANDLE_KIND_WINDOW ||
            kind == ESHKOL_HANDLE_KIND_AUDIO_DEVICE ||
-           kind == ESHKOL_HANDLE_KIND_MIDI_PORT ||
-           kind == ESHKOL_HANDLE_KIND_PROCESS;
+           kind == ESHKOL_HANDLE_KIND_MIDI_PORT;
 }
 } // namespace
 
