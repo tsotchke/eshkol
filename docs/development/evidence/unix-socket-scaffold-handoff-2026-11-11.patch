@@ -1,0 +1,2167 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 63435cf9a..c5f74ecf9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -8055,2 +8055,4 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
+-        lib/agent/c/agent_unix_socket_stream.c)
+-    target_compile_features(eshkol-unix-stream-socket-stream-test PRIVATE c_std_11)
++        lib/agent/c/agent_unix_socket_stream.c
++        lib/core/resource_lease.c lib/core/runtime_handle.cpp
++        lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
++    target_compile_features(eshkol-unix-stream-socket-stream-test PRIVATE c_std_11 cxx_std_17)
+@@ -8060,0 +8063,28 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
++    # Observations only; no socket implementation or replacement FFI archive.
++    add_library(eshkol-unix-socket-fixture SHARED tests/agent/unix_socket_stream_fixture_support.c)
++    target_compile_features(eshkol-unix-socket-fixture PRIVATE c_std_11)
++    target_link_libraries(eshkol-unix-socket-fixture PRIVATE ${CMAKE_DL_LIBS})
++    target_link_libraries(eshkol-unix-stream-socket-stream-test PRIVATE eshkol-unix-socket-fixture)
++    find_program(ESHKOL_SOCKET_CHIBI_SCHEME NAMES chibi-scheme)
++    if(ESHKOL_SOCKET_CHIBI_SCHEME)
++        add_test(NAME agent-unix-stream-socket-wrapper-unit
++            COMMAND ${ESHKOL_SOCKET_CHIBI_SCHEME} -q
++                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/unix_socket_stream_wrapper_contract_test.scm
++                ${CMAKE_CURRENT_SOURCE_DIR})
++        set_tests_properties(agent-unix-stream-socket-wrapper-unit PROPERTIES
++            TIMEOUT 20 LABELS "resource;socket;wrapper-unit")
++    endif()
++    find_package(Python3 QUIET COMPONENTS Interpreter)
++    if(Python3_Interpreter_FOUND)
++        add_test(NAME agent-unix-stream-socket-runner-oracle
++            COMMAND ${Python3_EXECUTABLE}
++                ${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/unix_socket_stream_runner_contract_test.py
++                --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
++                --work-root ${CMAKE_CURRENT_BINARY_DIR}/qualification/socket-runner-oracle)
++        set_tests_properties(agent-unix-stream-socket-runner-oracle PROPERTIES
++            TIMEOUT 30 LABELS "resource;socket;metadata")
++    endif()
++    add_test(NAME agent-unix-stream-socket-peer-fixture
++        COMMAND eshkol-unix-stream-socket-stream-test --peer-fixture-selftest)
++    set_tests_properties(agent-unix-stream-socket-peer-fixture PROPERTIES
++        TIMEOUT 10 LABELS "resource;socket;fixture")
+@@ -8064 +8094,2 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
+-        capability_denial path_lifecycle)
++        capability_denial path_lifecycle destination_errors connect_cancellation
++        capability_revocation loop_lifetime zero_budget)
+@@ -8066,3 +8097,6 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
+-    # One native C fixture plus a JIT and an AOT .esk case per acceptance
+-    # case, plus one VM-unsupported .esk case.
+-    math(EXPR ESHKOL_IPC_UNIX_PENDING_TOTAL "${ESHKOL_IPC_UNIX_PENDING_N} * 3 + 1")
++    # Public cases each have native/JIT/AOT coverage. Direct native borrow
++    # manipulation has one C-only case; VM has one explicit refusal case.
++    math(EXPR ESHKOL_IPC_UNIX_PENDING_TOTAL "${ESHKOL_IPC_UNIX_PENDING_N} + 1")
++    if(ESHKOL_BUILD_AGENT_FFI AND TARGET eshkol-run)
++        math(EXPR ESHKOL_IPC_UNIX_PENDING_TOTAL "${ESHKOL_IPC_UNIX_PENDING_N} * 3 + 2")
++    endif()
+@@ -8077,0 +8112,5 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
++    add_test(NAME ipc-unix-pending-borrowed_close
++        COMMAND eshkol-unix-stream-socket-stream-test borrowed_close)
++    set_tests_properties(ipc-unix-pending-borrowed_close PROPERTIES
++        LABELS "ipc-unix-pending" DISABLED TRUE TIMEOUT 60)
++
+@@ -13214,4 +13253,8 @@ if(ESHKOL_BUILD_AGENT_FFI)
+-                        COMMAND bash ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.sh
+-                            $<TARGET_FILE:eshkol-run> ${mode} ${case_name}
+-                            ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch/${case_name}-${mode}
+-                            ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_pending.esk)
++                        COMMAND ${Python3_EXECUTABLE}
++                            ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.py
++                            --runner $<TARGET_FILE:eshkol-run> --mode ${mode} --scenario ${case_name}
++                            --work-root ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch
++                            --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_pending.esk
++                            --peer $<TARGET_FILE:eshkol-unix-stream-socket-stream-test>
++                            --fixture-library $<TARGET_FILE:eshkol-unix-socket-fixture>
++                            --build-dir ${CMAKE_BINARY_DIR})
+@@ -13223,3 +13266,5 @@ if(ESHKOL_BUILD_AGENT_FFI)
+-                COMMAND $<TARGET_FILE:eshkol-run> --profile hosted-vm --emit-eskb
+-                    ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch/vm-unsupported.eskb
+-                    ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_vm_unsupported.esk)
++                COMMAND ${Python3_EXECUTABLE}
++                    ${CMAKE_SOURCE_DIR}/tests/agent/run_unix_socket_stream_pending.py
++                    --runner $<TARGET_FILE:eshkol-run> --mode vm --scenario vm-unsupported
++                    --work-root ${CMAKE_BINARY_DIR}/ipc-unix-pending-scratch
++                    --source ${CMAKE_SOURCE_DIR}/tests/agent/unix_socket_stream_vm_unsupported.esk)
+diff --git a/docs/reference/agent/unix-sockets.md b/docs/reference/agent/unix-sockets.md
+index e68960e84..18b7425eb 100644
+--- a/docs/reference/agent/unix-sockets.md
++++ b/docs/reference/agent/unix-sockets.md
+@@ -1 +1 @@
+-# `agent.unix_stream_socket` — Unix-Domain Stream Sockets (blueprint)
++# `agent.unix_stream_socket` — Unix-domain stream socket contract candidate
+@@ -3,7 +3,7 @@
+-**Status: Planned for v1.4.0.** This page is a skeleton for the paired build
+-described in Selene `apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md`
+-("Later Unix streams" row): a lane writes the acceptance tests and the API
+-scaffolding below, and Gabe Kahen writes the socket core that makes them
+-pass. Nothing on this page is implemented yet. `lib/agent/unix_socket.esk`
+-currently raises `"Planned for v1.4.0"` from every operation, via the
+-scaffold in `lib/agent/c/agent_unix_socket_stream.c`.
++**Status: agreed integration contract; declarations and core remain under
++review.** The [agreed addendum](https://github.com/Gabriel-Kahen/eshkol/blob/1e8d900b359128354b086ff334e7267a9a02561e/notes/SOCKET_DESIGN_ADDENDUM-2026-11-10.md)
++and [shared-layer decision](https://github.com/tsotchke/eshkol/pull/917#issuecomment-6806485060)
++record the ownership split: Gabe Kahen implements the common lease/wait
++extensions and Unix socket core; the scaffold lane amends declarations and
++acceptance tests. Well-formed operational calls still report `Planned for
++v1.4.0`; this scaffold implements no socket I/O.
+@@ -15,2 +15,5 @@ scaffold in `lib/agent/c/agent_unix_socket_stream.c`.
+-Source: `lib/agent/unix_socket.esk`. C header: `inc/eshkol/core/unix_socket_stream.h`.
+-C symbols: `eshkol_unix_stream_socket_*`.
++Source: `lib/agent/unix_stream_socket.esk`. Native declarations:
++`inc/eshkol/core/unix_socket_stream.h`. The common lease/outcome layer is
++[`resource_lease.h`](../../../inc/eshkol/core/resource_lease.h), from the
++shared network lease work. This candidate combines the public scaffold and
++shared-lease sources for review; it does not select a release baseline.
+@@ -18 +21 @@ C symbols: `eshkol_unix_stream_socket_*`.
+-## Surface (blueprint)
++## Surface
+@@ -22,62 +25,99 @@ C symbols: `eshkol_unix_stream_socket_*`.
+-| `unix-stream-socket-listen path` | Bind and listen on a filesystem path on the existing event loop. Owns the path: close unlinks it. Refuses a pre-existing path that nothing is listening on, rather than unlinking and reusing it. |
+-| `unix-stream-socket-accept listener deadline-ms` | Accept one connection within one bounded, monotonic deadline. Zero makes one nonblocking pass and never sleeps. |
+-| `unix-stream-socket-connect path deadline-ms` | Connect within one monotonic deadline shared across retries. |
+-| `unix-stream-socket-read! id buffer start count` | Byte-counted nonblocking read into a caller bytevector. Returns a result vector distinguishing data, EOF, would-block, and an operation-labelled error. NUL bytes and payloads over 16 MiB survive unmodified; reads may be partial. |
+-| `unix-stream-socket-write! id buffer start count` | Byte-counted nonblocking write, possibly partial. A closed peer reports an operation-labelled error; SIGPIPE is suppressed by the write path itself. |
+-| `unix-stream-socket-cancel! id` | Request cancellation of an outstanding accept, connect, read, or write. |
+-| `unix-stream-socket-close! id` | Close a listener, an accepted peer, or an outbound connection exactly once. A listener close unlinks the path it bound. |
+-
+-Result accessors: `unix-stream-socket-read-status`/`-count`/`-error` and
+-`unix-stream-socket-write-status`/`-count`/`-error`, mirroring the subprocess stream
+-contract in [subprocess](subprocess.md).
+-
+-## Ownership rules (blueprint)
+-
+-Following the same pattern as the `PROCESS` session in
+-[subprocess](subprocess.md#ownership--cleanup-contract-94):
+-
+-- Each socket identity is a `SOCKET`-kind lease in the existing handle
+-  registry (`inc/eshkol/core/handle.h`): acquire, exclusive borrow, release,
+-  close — the same rules as the `PROCESS` kind, and the shape the v1.4.0
+-  compile-time linear handles will consume.
+-- A listener owns the filesystem path it bound; its close unlinks that path.
+-  A path left on disk with nothing listening on it must be refused by a new
+-  `unix-stream-socket-listen`, never silently unlinked and reused.
+-- Close with an active borrow returns busy, the same as every other leased
+-  resource; release the borrow before closing.
+-- A closed peer on the write side is reported through the byte-counted
+-  result (an operation-labelled error), never a raised `SIGPIPE`.
+-- `network` is the capability that gates every operation above, reusing the
+-  existing policy (`docs/reference/agent/capabilities.md`), the same gate
+-  TCP/UDP sockets use in `lib/core/net.esk`.
+-- The VM needs a matching adapter or must report an explicit unsupported
+-  result; it must not silently admit the ABI.
+-
+-## Acceptance list (blueprint)
+-
+-The scaffold registers one native C fixture plus JIT and AOT `.esk` cases per
+-item below, under CTest label `ipc-unix-pending` (excluded from the default
+-suite until the core implementation lands):
+-
+-1. connect/accept round trip
+-2. partial reads/writes with a slow peer
+-3. peer close mid-stream (an operation-labelled error, with `SIGPIPE`
+-   suppressed)
+-4. deadline expiry on accept and on connect
+-5. cancellation
+-6. NUL and >16 MiB payloads
+-7. a descriptor-count check over 1,000 open/close cycles
+-8. `network` capability denial
+-9. socket-path lifecycle (unlink on close, refusal on an existing unlistened path)
+-10. VM: an explicit unsupported result
+-
+-A small check in the default suite (`agent-unix-stream-socket-stub-contract`)
+-confirms these cases are registered and that every scaffold entry point
+-still reports the planned result.
+-
+-## Status
+-
+-Planned for v1.4.0 (ladder: v1.4.0-connection, v1.4.1, v1.4.2, v1.4.3,
+-v1.4.4, v1.4.5-accelerate, v1.5.0). This page moves from blueprint to shipped
+-text in the same change that moves the acceptance cases out of
+-`ipc-unix-pending` and into the default suite.
++| `unix-stream-socket-listen loop path` | Require an explicit live loop; zero is invalid. Retain the loop, bind an owned private pathname and publish the listener. |
++| `unix-stream-socket-accept listener deadline-ms` | Accept within one monotonic budget; zero makes one nonblocking pass. The accepted peer inherits and retains the listener's loop. |
++| `unix-stream-socket-connect-begin loop path deadline-ms` | Capture one acquisition deadline and publish a connecting owner before any readiness wait. Zero returns an immediately connected owner or rolls back with would-block. |
++| `unix-stream-socket-connect-finish! id` | Complete using begin's remaining budget; do not renew it. The returned identity remains owned after timeout/cancellation until close. |
++| `unix-stream-socket-read! id buffer start count` | Positive checked range; exact partial count, would-block, EOF, or operation-labelled error. Requires connected state. |
++| `unix-stream-socket-write! id buffer start count` | Positive checked range and exact partial count. Preserve NULs and large payloads; suppress SIGPIPE per socket/send. |
++| `unix-stream-socket-poll id interests timeout-ms` | Interests1=read,2=write,3=both; result distinguishes readiness, timeout and error. Zero never waits. While connecting, begin's deadline caps the wait. Connected I/O has independent poll budgets. |
++| `unix-stream-socket-cancel! id` | Idempotent sticky cancellation plus shared wakeup. Further I/O observes cancellation; ownership remains. |
++| `unix-stream-socket-close! id` | Public deferred close through the common lease layer: after acceptance the identity is unusable; descriptor close runs once after active borrows release. |
++
++Read/write result accessors are `-status`, `-count`, `-error`; poll has
++`-status`, `-interests`, `-error`. Error records expose `-error-operation`,
++`-error-code`, `-error-os-code`. Portable codes come from the common
++`ESHKOL_IO_*` table. Native `last_os_error()` is calling-thread metadata read
++immediately after the corresponding negative outcome. The planned sentinel
++is separate from every shared outcome and is never acceptance evidence.
++
++## Loop, ownership and cleanup
++
++- The caller supplies the loop. Every listener and peer retains it until
++  watch removal and descriptor teardown complete. Loop close refuses active
++  retains; releasing a socket's retain does not close the caller's loop.
++- Use common lease adoption, exclusive borrow/release, close and outcome
++  machinery. **The common wait facility still needs explicit-loop support**
++  that dispatches SOCKET and PROCESS readiness together with generation/cookie
++  validation. This is a core integration prerequisite, not a facility supplied
++  by these stubs. Do not add a private socket registry or polling loop.
++- A generation-validated, lifetime-safe cancellation request may arrive from
++  another thread. It sets sticky socket state and signals the shared wakeup;
++  I/O and watch mutation remain on the owner thread. The common layer's
++  consumable interrupt is the wake transport, not the socket's lifetime state.
++- Distinguish low-level registry close, which can report a busy borrow, from
++  public lease close, which retires the identity and defers teardown until
++  release. Acceptance is not completed teardown: the shared extension must
++  provide observable watch-removal and pathname-cleanup outcomes before core
++  implementation. That completion interface remains to be specified by the
++  common-layer owner; this scaffold does not invent another ownership table.
++  Watch-removal failure retains safe ownership for retry. Once descriptor
++  close is attempted, never retry an uncertain descriptor identity.
++- Acquisition and I/O require `network` in both native and Scheme paths.
++  Already-owned cancel/close do not reacquire that capability or consult a
++  clock. Runtime, kind, tag and generation checks remain mandatory after
++  revocation. Scoped cleanup must use the same cleanup path.
++
++## Paths and platforms
++
++Use absolute NUL-free paths fitting `sun_path` in encoded bytes, inside a
++verified owned private directory with mode 0700. Refuse all existing entries, including
++restart leftovers. Bind, set mode 0600, then listen/publish; roll back unpublished
++setup errors. Only remove the listener's recorded entry; preserve replacement
++entries and report cleanup errors. Never change the process umask.
++
++Linux abstract namespace and descriptor passing are outside this slice.
++Windows requires a distinct AF_UNIX availability check and a readiness adapter;
++family availability alone is insufficient. The VM must explicitly reject the
++bridge before bytecode emission until an adapter exists. Linux and macOS need
++separate runtime evidence.
++
++## Acceptance and integration
++
++The public list has 15 native/JIT/AOT case groups, plus a native-only direct
++borrow/deferred-close case and one explicit VM-refusal case: 47 pending cases
++when the agent FFI and runner are enabled,16 native cases with the FFI disabled.
++The groups cover round trips; real slow-peer partial transfers; default
++SIGPIPE peer closure; measured accept/original-connect deadlines; cancellation
++including a published pending connect; binary payloads beyond 16 MiB; measured
++1,000-cycle descriptor counts; native/Scheme capability denial; cleanup after
++revocation; pathname restart/replacement; loop lifetime; and zero budgets.
++Native cases also exercise direct active-borrow teardown. Scheme cases verify
++public errors by operation/code, never by an arbitrary exception.
++
++The raw peer executable creates only controlled external backlogs/leftover
++paths; it does not implement the socket API. The helper DSO observes
++monotonic time, descriptor counts and platform errno constants. For Darwin's
++pending-connect controls it also injects EAGAIN at exactly the designated
++private fixture path; Darwin's real full-queue outcome is immediate refusal.
++Linux uses a real full backlog. The receipt distinguishes this deterministic
++syscall-error control from an OS-pending connection. All other connect calls
++reach the real syscall. The DSO supplies no socket core, registry or replacement
++agent archive. The public runner
++retains unique fixture/log directories, bounds execution and stops only its
++owned process groups. SIGPIPE uses the normal default disposition.
++
++Pending cases remain explicitly disabled under `ipc-unix-pending`. Default
++checks cover argument/planned behavior, the actual controlled peer fixture,
++and registration counts. Neither those checks nor a passing metadata-only
++inventory qualifies the socket core. As each facility lands, replace its
++planned assertions with the corresponding enabled default-suite acceptance
++cases in the same change. Required acceptance failures then block integration.
++
++Before promotion, mixed PROCESS/SOCKET identity and readiness tests are also
++required. The subprocess stream source still has its own registry while the
++shared network layer has another. A source-representative allocation probe can
++produce the same integer in both domains. Main integration must reconcile
++those domains so a token from one cannot address an unrelated resource in the
++other. This candidate does not migrate Gabe's subprocess implementation.
++
++The scaffold does not certify compiler-enforced linearity, packaged consumers,
++portable release artifacts, or the complete v1.4.0 release.
+diff --git a/inc/eshkol/core/unix_socket_stream.h b/inc/eshkol/core/unix_socket_stream.h
+index 515b31cb4..578d1b458 100644
+--- a/inc/eshkol/core/unix_socket_stream.h
++++ b/inc/eshkol/core/unix_socket_stream.h
+@@ -4,0 +5 @@
++#include "eshkol/core/resource_lease.h"
+@@ -9,16 +10,3 @@ extern "C" {
+-/**
+- * Unix-domain stream sockets on the existing event loop. This header is the
+- * paired-build scaffold described in
+- * Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md ("Later Unix
+- * streams" row) and the week's socket design addendum. Every entry point
+- * below validates the arguments it can check without touching a socket, and
+- * otherwise returns ESHKOL_UNIX_STREAM_SOCKET_PLANNED. No socket is created, bound,
+- * connected, read, written, or closed by this file.
+- *
+- * The core implementation (listen/accept/connect/read/write/cancel/close over
+- * epoll/kqueue, with a SOCKET-kind lease in the existing handle registry,
+- * following the same acquire/borrow/release/close rules as the PROCESS
+- * session in inc/eshkol/core/subprocess_stream.h) is owned by Gabe Kahen and
+- * lands in a follow-on PR stacked on this scaffold branch.
+- */
+-
++/* Paired-build scaffold: these declarations are an agreed contract scaffold, not
++ * socket I/O. Gabe Kahen owns the common lease/wait extensions and follow-on core. Shared outcome aliases
++ * below use resource_lease.h; there is no second registry or outcome table. */
+@@ -26,14 +14,12 @@ enum {
+-    ESHKOL_UNIX_STREAM_SOCKET_EINVAL = -1,
+-    ESHKOL_UNIX_STREAM_SOCKET_WOULD_BLOCK = -2,
+-    ESHKOL_UNIX_STREAM_SOCKET_ENOTSUP = -3,
+-    ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM = -4,
+-    ESHKOL_UNIX_STREAM_SOCKET_EBUSY = -5,
+-    ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT = -6,
+-    ESHKOL_UNIX_STREAM_SOCKET_EDENIED = -7,
+-    ESHKOL_UNIX_STREAM_SOCKET_ECANCELED = -8,
+-    /* A listen path that already exists and is not confirmed to have nothing listening on it. */
+-    ESHKOL_UNIX_STREAM_SOCKET_EEXIST = -9,
+-    /* Returned by every entry point below until the core implementation
+-     * replaces this scaffold. Distinct from every other negative result so
+-     * callers and tests can tell "planned" apart from a real failure. */
+-    ESHKOL_UNIX_STREAM_SOCKET_PLANNED = -100
++    ESHKOL_UNIX_STREAM_SOCKET_EINVAL = ESHKOL_IO_INVALID,
++    ESHKOL_UNIX_STREAM_SOCKET_WOULD_BLOCK = ESHKOL_IO_TIMEOUT,
++    ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT = ESHKOL_IO_TIMEOUT,
++    ESHKOL_UNIX_STREAM_SOCKET_ENOTSUP = ESHKOL_IO_UNSUPPORTED,
++    ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM = ESHKOL_IO_SYSTEM,
++    ESHKOL_UNIX_STREAM_SOCKET_EBUSY = ESHKOL_IO_BUSY,
++    ESHKOL_UNIX_STREAM_SOCKET_ECANCELED = ESHKOL_IO_CANCELLED,
++    ESHKOL_UNIX_STREAM_SOCKET_ERESET = ESHKOL_IO_RESET,
++    ESHKOL_UNIX_STREAM_SOCKET_EREFUSED = ESHKOL_IO_REFUSED,
++    ESHKOL_UNIX_STREAM_SOCKET_PLANNED = -100,
++    ESHKOL_UNIX_STREAM_SOCKET_READABLE = 1,
++    ESHKOL_UNIX_STREAM_SOCKET_WRITABLE = 2
+@@ -42,3 +28,12 @@ enum {
+-/* Bind and listen on a filesystem path on the given event loop. A listener
+- * owns the path: close unlinks it. A pre-existing path that nothing is
+- * listening on it must be refused, not silently unlinked and reused. */
++/* loop is an exact positive EVENT_LOOP handle; zero has no implicit meaning.
++ * Acquisition retains it; accepted peers inherit/retain it. Close releases
++ * the retain only after watch removal and descriptor teardown. Loop close
++ * refuses while retained. Use the shared lease adoption/borrow/release/close
++ * machinery and a common wait extension for explicit loops; never a private
++ * socket registry or polling implementation. That wait extension is a
++ * prerequisite for the core, not implemented by this scaffold.
++ *
++ * Paths must be absolute/NUL-free, fit sun_path in encoded bytes, and live
++ * in a verified owned private directory with mode 0700. Refuse every existing entry.
++ * Bind, set mode 0600, then listen/publish; undo unpublished setup on failure.
++ * Only remove the listener's recorded entry, never a replacement. */
+@@ -46,2 +40,0 @@ int64_t eshkol_unix_stream_socket_listen(int64_t loop, const char *path);
+-/* Accept one connection within one bounded, monotonic deadline. Zero makes
+- * one nonblocking pass; it never sleeps. */
+@@ -49,5 +42,14 @@ int64_t eshkol_unix_stream_socket_accept(int64_t listener, int32_t deadline_ms);
+-/* Connect within one monotonic deadline shared across retries. */
+-int64_t eshkol_unix_stream_socket_connect(int64_t loop, const char *path, int32_t deadline_ms);
+-/* Byte-counted nonblocking read: a positive count, zero for EOF,
+- * ESHKOL_UNIX_STREAM_SOCKET_WOULD_BLOCK, or another negative error. NUL bytes and
+- * payloads over 16 MiB survive unmodified; reads may be partial. */
++
++/* begin captures one monotonic deadline and publishes a connecting owner
++ * before any readiness wait. Immediate errors roll back unpublished state.
++ * Zero budget never waits: return a connected owner or WOULD_BLOCK with
++ * complete rollback. finish returns 0 when connected or a shared error,
++ * waiting only within begin's remaining budget. A failed/cancelled published
++ * attempt remains owned until close. Read/write require connected state. */
++int64_t eshkol_unix_stream_socket_connect_begin(int64_t loop, const char *path,
++                                               int32_t deadline_ms);
++int32_t eshkol_unix_stream_socket_connect_finish(int64_t id);
++
++/* Nonblocking exact byte counts; positive request sizes only. Read0 is EOF;
++ * short counts are progress; WOULD_BLOCK is not EOF/error. SIGPIPE is
++ * suppressed per socket/send, without changing process signal disposition. */
+@@ -55,3 +56,0 @@ int64_t eshkol_unix_stream_socket_read(int64_t id, void *buffer, int64_t capacit
+-/* Byte-counted nonblocking write, possibly partial. A closed peer is
+- * reported as ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM; SIGPIPE is suppressed by the
+- * write path itself, never left for the caller's process-wide disposition. */
+@@ -59,2 +58,10 @@ int64_t eshkol_unix_stream_socket_write(int64_t id, const void *buffer, int64_t
+-/* Request cancellation of an outstanding accept, connect, read, or write on
+- * this identity. Idempotent; never restarts a deadline. */
++
++/* Return a positive requested readiness mask, TIMEOUT, CANCELLED or another
++ * shared error. Zero timeout makes one nonblocking pass. While connecting,
++ * the stored acquisition deadline caps this wait. Connected I/O has its own
++ * poll budget. Preserve other PROCESS/SOCKET owners' readiness cookies. */
++int32_t eshkol_unix_stream_socket_poll(int64_t id, int32_t interests, int32_t timeout_ms);
++
++/* Sticky, idempotent cancellation: a lifetime-safe generation-checked request
++ * and shared wakeup may arrive from another thread; further I/O is cancelled.
++ * I/O and watch mutation stay owner-thread confined. Ownership remains. */
+@@ -62,3 +69,7 @@ int32_t eshkol_unix_stream_socket_cancel(int64_t id);
+-/* Close a listener, an accepted peer, or an outbound connection exactly
+- * once. A listener close unlinks the path it bound. A repeated or invalid
+- * close returns ESHKOL_UNIX_STREAM_SOCKET_EINVAL rather than touching memory again. */
++/* Public close follows the shared lease's deferred-close contract: once
++ * accepted, invalidate the identity and wake its borrower; descriptor close
++ * runs once after release. Remove watches before committing teardown; if
++ * removal fails, retain ownership for retry. Never retry uncertain fd close.
++ * Cancel/close require neither renewed network capability nor a clock;
++ * runtime/kind/tag/generation checks remain mandatory. Acquisition and I/O
++ * require native and Scheme network admission. */
+@@ -66 +77,3 @@ int32_t eshkol_unix_stream_socket_close(int64_t id);
+-
++/* Calling-thread OS detail for the last operation; read immediately after a
++ * shared negative outcome. Zero means no OS detail. The scaffold returns 0. */
++int32_t eshkol_unix_stream_socket_last_os_error(void);
+diff --git a/lib/agent/c/agent_unix_socket_stream.c b/lib/agent/c/agent_unix_socket_stream.c
+index fdad7346f..80250c91a 100644
+--- a/lib/agent/c/agent_unix_socket_stream.c
++++ b/lib/agent/c/agent_unix_socket_stream.c
+@@ -3,10 +3,15 @@
+-
+-/*
+- * Scaffold only. No socket is created, bound, connected, read, written, or
+- * closed by this file. Every entry point validates the arguments it can
+- * check without touching a socket, then reports ESHKOL_UNIX_STREAM_SOCKET_PLANNED
+- * so a caller gets a stable, documented "Planned for v1.4.0" result instead
+- * of silent success or a hang. Gabe Kahen's core implementation (socket
+- * core, paired with this scaffold) replaces this file.
+- */
+-
++#include <string.h>
++#if defined(__unix__) || defined(__APPLE__)
++#include <sys/un.h>
++#endif
++
++/* Argument validation only. No socket, lease, watch, clock or policy
++ * operation is performed here. All well-formed operational calls report
++ * PLANNED until Gabe Kahen supplies the core. */
++static int path_valid(const char *path) {
++    if (!path || path[0] != '/') return 0;
++#if defined(__unix__) || defined(__APPLE__)
++    if (strlen(path) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return 0;
++#endif
++    return 1;
++}
+@@ -14,2 +19 @@ int64_t eshkol_unix_stream_socket_listen(int64_t loop, const char *path) {
+-    (void)loop;
+-    if (!path || !path[0]) return ESHKOL_UNIX_STREAM_SOCKET_EINVAL;
++    if (loop <= 0 || !path_valid(path)) return ESHKOL_IO_INVALID;
+@@ -18,3 +22,2 @@ int64_t eshkol_unix_stream_socket_listen(int64_t loop, const char *path) {
+-
+-int64_t eshkol_unix_stream_socket_accept(int64_t listener, int32_t deadline_ms) {
+-    if (listener <= 0 || deadline_ms < 0) return ESHKOL_UNIX_STREAM_SOCKET_EINVAL;
++int64_t eshkol_unix_stream_socket_accept(int64_t id, int32_t timeout) {
++    if (id <= 0 || timeout < 0) return ESHKOL_IO_INVALID;
+@@ -23,4 +26,2 @@ int64_t eshkol_unix_stream_socket_accept(int64_t listener, int32_t deadline_ms)
+-
+-int64_t eshkol_unix_stream_socket_connect(int64_t loop, const char *path, int32_t deadline_ms) {
+-    (void)loop;
+-    if (!path || !path[0] || deadline_ms < 0) return ESHKOL_UNIX_STREAM_SOCKET_EINVAL;
++int64_t eshkol_unix_stream_socket_connect_begin(int64_t loop, const char *path, int32_t timeout) {
++    if (loop <= 0 || !path_valid(path) || timeout < 0) return ESHKOL_IO_INVALID;
+@@ -29,3 +30,6 @@ int64_t eshkol_unix_stream_socket_connect(int64_t loop, const char *path, int32_
+-
+-int64_t eshkol_unix_stream_socket_read(int64_t id, void *buffer, int64_t capacity) {
+-    if (id <= 0 || !buffer || capacity <= 0) return ESHKOL_UNIX_STREAM_SOCKET_EINVAL;
++int32_t eshkol_unix_stream_socket_connect_finish(int64_t id) {
++    if (id <= 0) return ESHKOL_IO_INVALID;
++    return ESHKOL_UNIX_STREAM_SOCKET_PLANNED;
++}
++int64_t eshkol_unix_stream_socket_read(int64_t id, void *buffer, int64_t count) {
++    if (id <= 0 || !buffer || count <= 0) return ESHKOL_IO_INVALID;
+@@ -34 +37,0 @@ int64_t eshkol_unix_stream_socket_read(int64_t id, void *buffer, int64_t capacit
+-
+@@ -36 +39,5 @@ int64_t eshkol_unix_stream_socket_write(int64_t id, const void *buffer, int64_t
+-    if (id <= 0 || !buffer || count < 0) return ESHKOL_UNIX_STREAM_SOCKET_EINVAL;
++    if (id <= 0 || !buffer || count <= 0) return ESHKOL_IO_INVALID;
++    return ESHKOL_UNIX_STREAM_SOCKET_PLANNED;
++}
++int32_t eshkol_unix_stream_socket_poll(int64_t id, int32_t interests, int32_t timeout) {
++    if (id <= 0 || interests <= 0 || (interests & ~3) || timeout < 0) return ESHKOL_IO_INVALID;
+@@ -39 +45,0 @@ int64_t eshkol_unix_stream_socket_write(int64_t id, const void *buffer, int64_t
+-
+@@ -41 +47 @@ int32_t eshkol_unix_stream_socket_cancel(int64_t id) {
+-    if (id <= 0) return ESHKOL_UNIX_STREAM_SOCKET_EINVAL;
++    if (id <= 0) return ESHKOL_IO_INVALID;
+@@ -44 +49,0 @@ int32_t eshkol_unix_stream_socket_cancel(int64_t id) {
+-
+@@ -46 +51 @@ int32_t eshkol_unix_stream_socket_close(int64_t id) {
+-    if (id <= 0) return ESHKOL_UNIX_STREAM_SOCKET_EINVAL;
++    if (id <= 0) return ESHKOL_IO_INVALID;
+@@ -48,0 +54 @@ int32_t eshkol_unix_stream_socket_close(int64_t id) {
++int32_t eshkol_unix_stream_socket_last_os_error(void) { return 0; }
+diff --git a/lib/agent/unix_stream_socket.esk b/lib/agent/unix_stream_socket.esk
+index 6b7d91de0..698314085 100644
+--- a/lib/agent/unix_stream_socket.esk
++++ b/lib/agent/unix_stream_socket.esk
+@@ -1,10 +1,2 @@
+-;; Unix-domain stream sockets on the event loop -- paired-build scaffold.
+-;;
+-;; API shape follows Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md
+-;; ("Later Unix streams" row) and the week's socket design addendum. Every
+-;; operation below checks its arguments, requires the `network` capability
+-;; (reusing the existing policy, same as lib/core/net.esk), and then raises
+-;; "Planned for v1.4.0" from the native scaffold in
+-;; lib/core/unix_socket_stream_stub.c. This file never performs socket I/O;
+-;; Gabe Kahen's core implementation replaces the native stub underneath this
+-;; same surface.
++;; Paired-build scaffold; operational native calls still report Planned.
++;; Explicit loops, two-stage connect and shared resource_lease.h outcomes.
+@@ -13,2 +5,4 @@
+-(provide unix-stream-socket-listen unix-stream-socket-accept unix-stream-socket-connect
+-         unix-stream-socket-read! unix-stream-socket-write! unix-stream-socket-cancel! unix-stream-socket-close!
++(provide unix-stream-socket-listen unix-stream-socket-accept
++         unix-stream-socket-connect-begin unix-stream-socket-connect-finish!
++         unix-stream-socket-read! unix-stream-socket-write! unix-stream-socket-poll
++         unix-stream-socket-cancel! unix-stream-socket-close!
+@@ -16,0 +11,2 @@
++         unix-stream-socket-poll-status unix-stream-socket-poll-interests unix-stream-socket-poll-error
++         unix-stream-socket-error-operation unix-stream-socket-error-code unix-stream-socket-error-os-code
+@@ -21 +17,2 @@
+-(extern i64 -unix-stream-socket-connect-raw i64 ptr i32 :real eshkol_unix_stream_socket_connect)
++(extern i64 -unix-stream-socket-connect-begin-raw i64 ptr i32 :real eshkol_unix_stream_socket_connect_begin)
++(extern i32 -unix-stream-socket-connect-finish-raw i64 :real eshkol_unix_stream_socket_connect_finish)
+@@ -23,0 +21 @@
++(extern i32 -unix-stream-socket-poll-raw i64 i32 i32 :real eshkol_unix_stream_socket_poll)
+@@ -25,0 +24 @@
++(extern i32 -unix-stream-socket-os-error-raw :real eshkol_unix_stream_socket_last_os_error)
+@@ -27,4 +26 @@
+-(define -unix-stream-socket-planned-code -100)
+-
+-(define (unix-stream-socket-planned? n) (= n -unix-stream-socket-planned-code))
+-
++(define (unix-stream-socket-planned? n) (= n -100))
+@@ -34 +29,0 @@
+-
+@@ -38 +33,9 @@
+-
++(define (-unix-stream-socket-path! who path)
++  (unless (and (string? path) (> (string-length path) 0)
++               (char=? (string-ref path 0) #\/))
++    (error who "expected absolute filesystem path"))
++  (let scan ((i 0))
++    (when (< i (string-length path))
++      (when (= (char->integer (string-ref path i)) 0)
++        (error who "path contains NUL"))
++      (scan (+ i 1)))))
+@@ -41 +44,2 @@
+-        ((< n 0) (error who "native unix-socket operation failed" n))
++        ((< n 0) (error who "native Unix stream socket outcome" (inexact->exact n)
++                       (inexact->exact (-unix-stream-socket-os-error-raw))))
+@@ -42,0 +47,2 @@
++(define (-unix-stream-socket-error who n)
++  (vector who (inexact->exact n) (inexact->exact (-unix-stream-socket-os-error-raw))))
+@@ -44,2 +50,4 @@
+-(define (unix-stream-socket-listen path)
+-  "Bind and listen on a filesystem path. Refuses a pre-existing path that nothing is listening on."
++(define (unix-stream-socket-listen loop path)
++  "Listen on an explicit retained loop, in an owned private directory."
++  (-unix-stream-socket-id! "unix-stream-socket-listen" loop)
++  (-unix-stream-socket-path! "unix-stream-socket-listen" path)
+@@ -47,4 +55 @@
+-  (unless (and (string? path) (> (string-length path) 0))
+-    (error "unix-stream-socket-listen: expected a non-empty path"))
+-  (-unix-stream-socket-checked "unix-stream-socket-listen" (-unix-stream-socket-listen-raw 0 path)))
+-
++  (-unix-stream-socket-checked "unix-stream-socket-listen" (-unix-stream-socket-listen-raw loop path)))
+@@ -52,3 +56,0 @@
+-  "Accept one connection within one monotonic deadline; zero makes one
+-   nonblocking pass and never sleeps."
+-  (capability-require! 'network)
+@@ -56,0 +59 @@
++  (capability-require! 'network)
+@@ -58,3 +61,5 @@
+-
+-(define (unix-stream-socket-connect path deadline-ms)
+-  "Connect within one monotonic deadline shared across retries."
++(define (unix-stream-socket-connect-begin loop path deadline-ms)
++  "Publish before waiting; one acquisition deadline. Zero never waits."
++  (-unix-stream-socket-id! "unix-stream-socket-connect-begin" loop)
++  (-unix-stream-socket-path! "unix-stream-socket-connect-begin" path)
++  (-unix-stream-socket-bound! "unix-stream-socket-connect-begin" deadline-ms)
+@@ -62,10 +67,5 @@
+-  (unless (and (string? path) (> (string-length path) 0))
+-    (error "unix-stream-socket-connect: expected a non-empty path"))
+-  (-unix-stream-socket-bound! "unix-stream-socket-connect" deadline-ms)
+-  (-unix-stream-socket-checked "unix-stream-socket-connect" (-unix-stream-socket-connect-raw 0 path deadline-ms)))
+-
+-(define (unix-stream-socket-read! id buffer start count)
+-  "Read bytes into a caller bytevector. Returns a result vector; use the
+-   accessors below to distinguish data, EOF, would-block, and an
+-   operation-labelled error. NUL bytes and payloads over 16 MiB survive
+-   unmodified; reads may be partial."
++  (-unix-stream-socket-checked "unix-stream-socket-connect-begin"
++    (-unix-stream-socket-connect-begin-raw loop path deadline-ms)))
++(define (unix-stream-socket-connect-finish! id)
++  "Finish using begin's remaining budget; retain ownership on failure."
++  (-unix-stream-socket-id! "unix-stream-socket-connect-finish!" id)
+@@ -73,3 +73,6 @@
+-  (-unix-stream-socket-id! "unix-stream-socket-read!" id)
+-  (-unix-stream-socket-bound! "unix-stream-socket-read! start" start)
+-  (-unix-stream-socket-bound! "unix-stream-socket-read! count" count)
++  (-unix-stream-socket-checked "unix-stream-socket-connect-finish!" (-unix-stream-socket-connect-finish-raw id)))
++
++(define (-unix-stream-socket-range! who id buffer start count)
++  (-unix-stream-socket-id! who id)
++  (-unix-stream-socket-bound! who start)
++  (-unix-stream-socket-bound! who count)
+@@ -79 +82,4 @@
+-    (error "unix-stream-socket-read!: invalid bytevector range"))
++    (error who "invalid bytevector range")))
++(define (unix-stream-socket-read! id buffer start count)
++  (-unix-stream-socket-range! "unix-stream-socket-read!" id buffer start count)
++  (capability-require! 'network)
+@@ -85,2 +91 @@
+-          (else (vector 'error 0 (vector 'unix-stream-socket-read! (inexact->exact n)))))))
+-
++          (else (vector 'error 0 (-unix-stream-socket-error 'unix-stream-socket-read! n))))))
+@@ -88 +93 @@
+-  "Write bytes from a caller bytevector; the byte count may be partial."
++  (-unix-stream-socket-range! "unix-stream-socket-write!" id buffer start count)
+@@ -90,7 +94,0 @@
+-  (-unix-stream-socket-id! "unix-stream-socket-write!" id)
+-  (-unix-stream-socket-bound! "unix-stream-socket-write! start" start)
+-  (-unix-stream-socket-bound! "unix-stream-socket-write! count" count)
+-  (unless (and (bytevector? buffer) (> count 0)
+-               (<= start (bytevector-length buffer))
+-               (<= count (- (bytevector-length buffer) start)))
+-    (error "unix-stream-socket-write!: invalid bytevector range"))
+@@ -99 +97 @@
+-          ((>= n 0) (vector 'data (inexact->exact n) #f))
++          ((> n 0) (vector 'data (inexact->exact n) #f))
+@@ -101,8 +99,24 @@
+-          (else (vector 'error 0 (vector 'unix-stream-socket-write! (inexact->exact n)))))))
+-
+-(define (unix-stream-socket-read-status result) (vector-ref result 0))
+-(define (unix-stream-socket-read-count result) (vector-ref result 1))
+-(define (unix-stream-socket-read-error result) (vector-ref result 2))
+-(define (unix-stream-socket-write-status result) (vector-ref result 0))
+-(define (unix-stream-socket-write-count result) (vector-ref result 1))
+-(define (unix-stream-socket-write-error result) (vector-ref result 2))
++          (else (vector 'error 0 (-unix-stream-socket-error 'unix-stream-socket-write! n))))))
++(define (unix-stream-socket-poll id interests timeout-ms)
++  (-unix-stream-socket-id! "unix-stream-socket-poll" id)
++  (-unix-stream-socket-bound! "unix-stream-socket-poll" timeout-ms)
++  (unless (and (integer? interests) (exact? interests) (>= interests 1) (<= interests 3))
++    (error "unix-stream-socket-poll" "expected read1/write2 interest mask"))
++  (capability-require! 'network)
++  (let ((n (-unix-stream-socket-poll-raw id interests timeout-ms)))
++    (cond ((unix-stream-socket-planned? n) (error "unix-stream-socket-poll" "Planned for v1.4.0" n))
++          ((> n 0) (vector 'ready (inexact->exact n) #f))
++          ((= n -2) (vector 'timeout 0 #f))
++          (else (vector 'error 0 (-unix-stream-socket-error 'unix-stream-socket-poll n))))))
++(define (unix-stream-socket-read-status r) (vector-ref r 0))
++(define (unix-stream-socket-read-count r) (vector-ref r 1))
++(define (unix-stream-socket-read-error r) (vector-ref r 2))
++(define (unix-stream-socket-write-status r) (vector-ref r 0))
++(define (unix-stream-socket-write-count r) (vector-ref r 1))
++(define (unix-stream-socket-write-error r) (vector-ref r 2))
++(define (unix-stream-socket-poll-status r) (vector-ref r 0))
++(define (unix-stream-socket-poll-interests r) (vector-ref r 1))
++(define (unix-stream-socket-poll-error r) (vector-ref r 2))
++(define (unix-stream-socket-error-operation e) (vector-ref e 0))
++(define (unix-stream-socket-error-code e) (vector-ref e 1))
++(define (unix-stream-socket-error-os-code e) (vector-ref e 2))
+@@ -109,0 +124,2 @@
++;; Cleanup does not reacquire network or consult a clock. Native ownership,
++;; kind, tag and generation checks remain required even after revocation.
+@@ -111,2 +126,0 @@
+-  "Request cancellation of an outstanding accept, connect, read, or write."
+-  (capability-require! 'network)
+@@ -115 +128,0 @@
+-
+@@ -117,3 +129,0 @@
+-  "Close a listener, an accepted peer, or an outbound connection exactly
+-   once. A listener close unlinks the path it bound."
+-  (capability-require! 'network)
+diff --git a/tests/agent/run_unix_socket_stream_pending.py b/tests/agent/run_unix_socket_stream_pending.py
+new file mode 100644
+index 000000000..dcfc9db39
+--- /dev/null
++++ b/tests/agent/run_unix_socket_stream_pending.py
+@@ -0,0 +1,168 @@
++#!/usr/bin/env python3
++"""Run one bounded socket acceptance case; retain commands, logs and fixtures."""
++import argparse
++import json
++import os
++from pathlib import Path
++import signal
++import subprocess
++import sys
++import tempfile
++import time
++
++
++def group_alive(pid):
++    try:
++        os.killpg(pid, 0)
++        return True
++    except ProcessLookupError:
++        return False
++    except PermissionError:
++        # Some host/interpreter profiles deny signal0 after the leader exits.
++        # Do not equate denial with absence: require a successful read-only
++        # process-group inventory, or fail closed.
++        observed = subprocess.run(["ps", "-axo", "pgid="], capture_output=True,
++                                  text=True, timeout=2)
++        tokens = observed.stdout.split()
++        if observed.returncode or any(not x.isdigit() for x in tokens):
++            raise RuntimeError("cannot verify owned process-group membership")
++        return pid in {int(x) for x in tokens}
++
++
++def stop_group(process):
++    for sig, seconds in [(signal.SIGTERM, 2), (signal.SIGKILL, 2)]:
++        if not group_alive(process.pid):
++            process.wait()
++            return
++        os.killpg(process.pid, sig)
++        deadline = time.monotonic() + seconds
++        while time.monotonic() < deadline:
++            process.poll()
++            if not group_alive(process.pid):
++                process.wait()
++                return
++            time.sleep(0.01)
++    raise RuntimeError("owned test process group did not stop")
++
++
++def run_owned(argv, log, env, timeout=45):
++    with log.open("xb") as stream:
++        process = subprocess.Popen([str(x) for x in argv], stdout=stream, stderr=subprocess.STDOUT,
++                                   env=env, start_new_session=True, restore_signals=True)
++        try:
++            code = process.wait(timeout=timeout)
++        except subprocess.TimeoutExpired:
++            stop_group(process)
++            raise RuntimeError("owned test deadline exceeded: " + str(log))
++        if group_alive(process.pid):
++            stop_group(process)
++            raise RuntimeError("test returned with owned descendants: " + str(log))
++    if log.stat().st_size > 8 * 1024 * 1024:
++        raise RuntimeError("test output exceeds retained display budget")
++    return code, log.read_text(errors="replace")
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--runner", type=Path, required=True)
++    parser.add_argument("--mode", choices=["jit", "aot", "vm"], required=True)
++    parser.add_argument("--scenario", required=True)
++    parser.add_argument("--work-root", type=Path, required=True)
++    parser.add_argument("--source", type=Path, required=True)
++    parser.add_argument("--peer", type=Path)
++    parser.add_argument("--fixture-library", type=Path)
++    parser.add_argument("--build-dir", type=Path)
++    args = parser.parse_args()
++    args.work_root.mkdir(parents=True, exist_ok=True)
++    work = Path(tempfile.mkdtemp(prefix=args.scenario + "-" + args.mode + "-", dir=args.work_root)).resolve()
++    sockets = Path(tempfile.mkdtemp(prefix="eshkol-unix-", dir="/tmp"))
++    sockets.chmod(0o700)
++    result = {"status": "FAIL", "mode": args.mode, "scenario": args.scenario,
++              "socket_directory": str(sockets), "work": str(work), "commands": [],
++              "group_verification": "signal0; successful ps group inventory on permission denial"}
++    env = os.environ.copy()
++    for name in ["LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]:
++        env.pop(name, None)
++    env.update(ESHKOL_JIT_CACHE="0", ESHKOL_UNIX_STREAM_SOCKET_SCENARIO=args.scenario,
++               ESHKOL_UNIX_STREAM_SOCKET_SCRATCH=str(sockets),
++               ESHKOL_PATH=str(args.source.resolve().parents[2] / "lib"),
++               ESHKOL_LIB_DIR=str(args.runner.resolve().parent))
++    peer = None
++    peer_log = None
++    try:
++        if args.mode == "vm":
++            output = work / "unsupported.eskb"
++            argv = [args.runner, "--profile", "hosted-vm", "--emit-eskb", output, args.source]
++            result["commands"].append([str(x) for x in argv])
++            code, text = run_owned(argv, work / "vm.log", env)
++            if code != 1 or "unsupported or malformed VM extern declaration" not in text or output.exists():
++                raise RuntimeError("expected explicit pre-emission VM unsupported result")
++        else:
++            if not args.fixture_library or not args.peer:
++                parser.error("public cases require --fixture-library and --peer")
++            library = args.fixture_library.resolve(strict=True)
++            name = library.name
++            if not name.startswith("lib") or not name.endswith((".so", ".dylib")):
++                raise RuntimeError("unexpected fixture library name")
++            link_name = name[3:].rsplit(".", 1)[0]
++            build = args.build_dir.resolve() if args.build_dir else library.parent
++            env["ESHKOL_LIB_DIR"] = str(build)
++            env["LD_LIBRARY_PATH"] = str(library.parent)
++            env["DYLD_LIBRARY_PATH"] = str(library.parent)
++            if sys.platform == "darwin" and args.scenario in ["deadline_connect", "connect_cancellation", "zero_budget"]:
++                env["ESHKOL_UNIX_SOCKET_TEST_PENDING_PATH"] = str(sockets / "stream.sock")
++                env["DYLD_INSERT_LIBRARIES"] = str(library)
++                result["pending_control"] = "deterministic EAGAIN injection; not OS-pending evidence"
++            else:
++                env.pop("ESHKOL_UNIX_SOCKET_TEST_PENDING_PATH", None)
++            if args.scenario in ["deadline_connect", "connect_cancellation", "zero_budget", "destination_errors"]:
++                peer_log = (work / "peer.log").open("xb")
++                mode = "--leftover-peer" if args.scenario == "destination_errors" else "--backlog-peer"
++                argv = [str(args.peer.resolve(strict=True)), mode, str(sockets)]
++                result["commands"].append(argv)
++                peer = subprocess.Popen(argv, stdout=peer_log, stderr=subprocess.STDOUT, env=env,
++                                        start_new_session=True, restore_signals=True)
++                deadline = time.monotonic() + 5
++                while not (sockets / "ready").exists():
++                    if peer.poll() is not None or time.monotonic() >= deadline:
++                        raise RuntimeError("controlled peer did not become ready")
++                    time.sleep(0.01)
++            base = [args.runner, "-L", build, "-L", library.parent, "-l", link_name]
++            if args.mode == "jit":
++                argv = [*base, "-r", args.source]
++            else:
++                executable = work / "socket-acceptance"
++                argv = [*base, "-O0", "-o", executable, args.source]
++                result["commands"].append([str(x) for x in argv])
++                code, text = run_owned(argv, work / "compile.log", env)
++                if code:
++                    raise RuntimeError("AOT compilation did not complete")
++                argv = [executable]
++            result["commands"].append([str(x) for x in argv])
++            code, text = run_owned(argv, work / "run.log", env)
++            marker = "PASS: unix-socket " + args.scenario
++            if code != 0 or text.splitlines().count(marker) != 1 or "FAIL:" in text:
++                raise RuntimeError("public socket contract not met; see retained run.log")
++        result["status"] = "PASS"
++    except (OSError, RuntimeError) as error:
++        result["reason"] = str(error)
++    finally:
++        if peer is not None:
++            (sockets / "stop").write_text("stop\n")
++            try:
++                code = peer.wait(timeout=2)
++                if code or group_alive(peer.pid):
++                    result.update(status="FAIL", reason="controlled peer did not finish cleanly")
++                    stop_group(peer)
++            except subprocess.TimeoutExpired:
++                stop_group(peer)
++                result.update(status="FAIL", reason="controlled peer required termination")
++        if peer_log:
++            peer_log.close()
++        (work / "RESULT.json").write_text(json.dumps(result, indent=2) + "\n")
++    print(json.dumps(result))
++    return 0 if result["status"] == "PASS" else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/agent/run_unix_socket_stream_pending.sh b/tests/agent/run_unix_socket_stream_pending.sh
+index 6a5118aaf..05f25c282 100755
+--- a/tests/agent/run_unix_socket_stream_pending.sh
++++ b/tests/agent/run_unix_socket_stream_pending.sh
+@@ -2,2 +2 @@
+-# Run one ipc-unix-pending .esk acceptance case under JIT or AOT. Never uses
+-# /tmp: the scratch directory is a build-tree path passed in by CMake.
++# Compatibility entry point; the Python driver owns deadlines and peer cleanup.
+@@ -5,2 +4,2 @@ set -euo pipefail
+-if [ "$#" -ne 5 ]; then
+-    echo "usage: $0 <eshkol-run> <jit|aot> <scenario> <scratch-dir> <esk-file>" >&2
++if [ "$#" -ne 7 ]; then
++    echo "usage: $0 runner mode scenario work-root source peer fixture-library" >&2
+@@ -9,23 +8,3 @@ fi
+-RUNNER="$1"
+-MODE="$2"
+-SCENARIO="$3"
+-SCRATCH="$4"
+-ESK="$5"
+-mkdir -p "$SCRATCH"
+-export ESHKOL_UNIX_STREAM_SOCKET_SCRATCH="$SCRATCH"
+-export ESHKOL_UNIX_STREAM_SOCKET_SCENARIO="$SCENARIO"
+-export ESHKOL_JIT_CACHE=0
+-case "$MODE" in
+-    jit)
+-        exec "$RUNNER" -r "$ESK"
+-        ;;
+-    aot)
+-        exe="$SCRATCH/${SCENARIO}-aot"
+-        "$RUNNER" -O0 -o "$exe" "$ESK"
+-        exec "$exe"
+-        ;;
+-    *)
+-        echo "unknown mode: $MODE" >&2
+-        exit 2
+-        ;;
+-esac
++exec python3 "$(dirname "$0")/run_unix_socket_stream_pending.py" \
++    --runner "$1" --mode "$2" --scenario "$3" --work-root "$4" \
++    --source "$5" --peer "$6" --fixture-library "$7"
+diff --git a/tests/agent/unix_socket_stream_fixture_support.c b/tests/agent/unix_socket_stream_fixture_support.c
+new file mode 100644
+index 000000000..7eaa2e519
+--- /dev/null
++++ b/tests/agent/unix_socket_stream_fixture_support.c
+@@ -0,0 +1,100 @@
++/* SPDX-License-Identifier: MIT */
++#define _POSIX_C_SOURCE 200809L
++#include <dirent.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <time.h>
++
++/* Test-only observations and a private-path syscall-error control; no socket
++ * ownership implementation or replacement agent archive. */
++int32_t eshkol_unix_socket_test_fd_count(void) {
++#if defined(__APPLE__)
++    DIR *d = opendir("/dev/fd");
++#else
++    DIR *d = opendir("/proc/self/fd");
++#endif
++    if (!d) return -1;
++    int own = dirfd(d), count = 0; struct dirent *e;
++    while ((e = readdir(d))) {
++        char *end; long fd = strtol(e->d_name, &end, 10);
++        if (e->d_name[0] && !*end && fd != own) ++count;
++    }
++    if (closedir(d)) return -1;
++    return count;
++}
++int64_t eshkol_unix_socket_test_monotonic_ms(void) {
++    struct timespec t;
++    if (clock_gettime(CLOCK_MONOTONIC, &t)) return -1;
++    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
++}
++#include <errno.h>
++int32_t eshkol_unix_socket_test_sleep_ms(int32_t ms) {
++    if (ms < 0) return -1;
++    struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
++    while (nanosleep(&t, &t)) if (errno != EINTR) return -1;
++    return 0;
++}
++int32_t eshkol_unix_socket_test_errno(int32_t which) {
++    switch (which) {
++        case 1: return ENOENT;
++        case 2: return ECONNREFUSED;
++        case 3: return EEXIST;
++        case 4: return EACCES;
++        case 5: return EPIPE;
++        case 6: return ECONNRESET;
++        default: return 0;
++    }
++}
++#include <stddef.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#if !defined(__APPLE__)
++#include <dlfcn.h>
++#endif
++
++/* Darwin reports a full Unix listen queue as immediate ECONNREFUSED. For
++ * pending-connect controls only, inject EAGAIN at this one private path.
++ * All other calls reach the real syscall. This is an explicit test seam,
++ * not a socket implementation or evidence of an OS-pending connection. */
++int32_t eshkol_unix_socket_test_pending_path(const char *path) {
++#if defined(__APPLE__)
++    if (!path || strncmp(path, "/tmp/eshkol-unix-", 17) != 0) return -1;
++    return setenv("ESHKOL_UNIX_SOCKET_TEST_PENDING_PATH", path, 1);
++#else
++    (void)path;
++    return 0;
++#endif
++}
++static int fixture_connect(int fd, const struct sockaddr *address, socklen_t length) {
++    const char *target = getenv("ESHKOL_UNIX_SOCKET_TEST_PENDING_PATH");
++    size_t offset = offsetof(struct sockaddr_un, sun_path);
++    if (target && address && length > offset && address->sa_family == AF_UNIX) {
++        const struct sockaddr_un *un = (const struct sockaddr_un *)address;
++        size_t n = strlen(target), available = (size_t)length - offset;
++        if (n < available && n < sizeof(un->sun_path) && un->sun_path[n] == 0 &&
++            memcmp(un->sun_path, target, n) == 0) {
++            errno = EAGAIN;
++            return -1;
++        }
++    }
++#if defined(__APPLE__)
++    /* dyld does not interpose the original reference in this image itself. */
++    return connect(fd, address, length);
++#else
++    int (*real_connect)(int, const struct sockaddr *, socklen_t) =
++        (int (*)(int, const struct sockaddr *, socklen_t))dlsym(RTLD_NEXT, "connect");
++    if (!real_connect) { errno = ENOSYS; return -1; }
++    return real_connect(fd, address, length);
++#endif
++}
++#if defined(__APPLE__)
++__attribute__((used, section("__DATA,__interpose")))
++static const struct { const void *replacement; const void *original; } connect_interpose = {
++    (const void *)fixture_connect, (const void *)connect
++};
++#else
++int connect(int fd, const struct sockaddr *address, socklen_t length) {
++    return fixture_connect(fd, address, length);
++}
++#endif
+diff --git a/tests/agent/unix_socket_stream_fixture_support.h b/tests/agent/unix_socket_stream_fixture_support.h
+new file mode 100644
+index 000000000..f16eff8f1
+--- /dev/null
++++ b/tests/agent/unix_socket_stream_fixture_support.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef ESHKOL_UNIX_SOCKET_FIXTURE_SUPPORT_H
++#define ESHKOL_UNIX_SOCKET_FIXTURE_SUPPORT_H
++#include <stdint.h>
++int32_t eshkol_unix_socket_test_fd_count(void);
++int64_t eshkol_unix_socket_test_monotonic_ms(void);
++int32_t eshkol_unix_socket_test_sleep_ms(int32_t ms);
++int32_t eshkol_unix_socket_test_errno(int32_t which);
++int32_t eshkol_unix_socket_test_pending_path(const char *path);
++#endif
+diff --git a/tests/agent/unix_socket_stream_pending.esk b/tests/agent/unix_socket_stream_pending.esk
+index c817118b1..aedd35744 100644
+--- a/tests/agent/unix_socket_stream_pending.esk
++++ b/tests/agent/unix_socket_stream_pending.esk
+@@ -1,10 +1,3 @@
+-;; ipc-unix-pending acceptance scaffold (JIT and AOT).
+-;;
+-;; Each CTest entry sets ESHKOL_UNIX_STREAM_SOCKET_SCENARIO to pick one case from
+-;; Gabe Kahen's design (Selene apprentice/gabe-kahen/notes/IPC_DESIGN-2026-11-02.md,
+-;; "Later Unix streams" row) and ESHKOL_UNIX_STREAM_SOCKET_SCRATCH to a writable
+-;; scratch directory. Every scenario below calls the real surface in
+-;; lib/agent/unix_stream_socket.esk, which currently raises "Planned for v1.4.0"
+-;; from lib/agent/c/agent_unix_socket_stream.c. This file stays out of the
+-;; default suite (CTest label ipc-unix-pending) until the core implementation
+-;; replaces the stub and these scenarios start to pass for real.
++;; Pending public acceptance. The helper observes clock/fd/errno and supplies
++;; the labelled Darwin private-path EAGAIN control. Socket ownership and I/O
++;; use agent.unix_stream_socket and the product FFI.
+@@ -14,2 +7,5 @@
+-
+-(define scratch (get-environment-variable "ESHKOL_UNIX_STREAM_SOCKET_SCRATCH"))
++(extern i32 -fixture-fds :real eshkol_unix_socket_test_fd_count)
++(extern i64 -fixture-now :real eshkol_unix_socket_test_monotonic_ms)
++(extern i32 -fixture-sleep i32 :real eshkol_unix_socket_test_sleep_ms)
++(extern i32 -fixture-errno i32 :real eshkol_unix_socket_test_errno)
++(extern i32 -loop-close-code i64 :real eshkol_event_loop_close_handle)
+@@ -17,127 +13,173 @@
+-
+-(define (socket-path name) (string-append scratch "/" name "-esk.sock"))
+-
+-(define (raises? thunk)
+-  (guard (e (#t #t)) (thunk) #f))
+-
+-(define (run-connect-accept)
+-  (let* ((p (socket-path "connect-accept"))
+-         (listener (unix-stream-socket-listen p))
+-         (client (unix-stream-socket-connect p 1000))
+-         (accepted (unix-stream-socket-accept listener 1000)))
+-    (unix-stream-socket-close! accepted)
+-    (unix-stream-socket-close! client)
+-    (unix-stream-socket-close! listener)
+-    (display "PASS: unix-socket connect/accept round trip") (newline)))
+-
+-(define (run-partial-slow-peer)
+-  (let* ((p (socket-path "partial-slow"))
+-         (listener (unix-stream-socket-listen p))
+-         (client (unix-stream-socket-connect p 1000))
+-         (accepted (unix-stream-socket-accept listener 1000))
+-         (payload (make-bytevector 4096 7))
+-         (result (unix-stream-socket-write! client payload 0 4096)))
+-    (unless (eq? (unix-stream-socket-write-status result) 'data)
+-      (error "run-partial-slow-peer: expected a byte-counted partial write"))
+-    (unix-stream-socket-close! accepted) (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+-    (display "PASS: unix-socket partial read/write with a slow peer") (newline)))
+-
+-(define (run-peer-close-epipe)
+-  (let* ((p (socket-path "peer-close"))
+-         (listener (unix-stream-socket-listen p))
+-         (client (unix-stream-socket-connect p 1000))
+-         (accepted (unix-stream-socket-accept listener 1000)))
+-    (unix-stream-socket-close! accepted)
+-    (let ((result (unix-stream-socket-write! client (make-bytevector 16 0) 0 16)))
+-      (unless (eq? (unix-stream-socket-write-status result) 'error)
+-        (error "run-peer-close-epipe: expected an operation-labelled error after peer close")))
+-    (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+-    (display "PASS: unix-socket peer close mid-stream") (newline)))
+-
+-(define (run-deadline-accept)
+-  (let ((listener (unix-stream-socket-listen (socket-path "deadline-accept"))))
+-    (unless (raises? (lambda () (unix-stream-socket-accept listener 50)))
+-      (error "run-deadline-accept: expected a deadline error"))
+-    (unix-stream-socket-close! listener)
+-    (display "PASS: unix-socket deadline expiry on accept") (newline)))
+-
+-(define (run-deadline-connect)
+-  ;; Called unguarded, like run-deadline-accept and run-cancellation: a
+-  ;; generic (guard (e (#t #t)) ...) would also accept the stub's "Planned
+-  ;; for v1.4.0" error as if it were the real deadline error it is meant to
+-  ;; check for, masking the gap instead of reporting it.
+-  (let* ((p (socket-path "deadline-connect"))
+-         (start (current-time-ns))
+-         (client (unix-stream-socket-connect p 50))
+-         (elapsed-ms (/ (- (current-time-ns) start) 1000000)))
+-    (unless (< elapsed-ms 2000)
+-      (error "run-deadline-connect: deadline not honored" elapsed-ms))
+-    (unix-stream-socket-close! client)
+-    (display "PASS: unix-socket deadline expiry on connect") (newline)))
+-
+-(define (run-cancellation)
+-  (let ((listener (unix-stream-socket-listen (socket-path "cancel"))))
+-    (unless (raises? (lambda () (unix-stream-socket-cancel! listener)))
+-      (error "run-cancellation: expected cancellation to report through the checked surface"))
+-    (display "PASS: unix-socket cancellation") (newline)))
+-
+-(define (run-nul-and-large-payload)
+-  (let* ((p (socket-path "large"))
+-         (listener (unix-stream-socket-listen p))
+-         (client (unix-stream-socket-connect p 1000))
+-         (accepted (unix-stream-socket-accept listener 1000))
+-         (size (+ (* 16 1024 1024) 37))
+-         (payload (make-bytevector size 0)))
+-    (bytevector-u8-set! payload 5 0)
+-    (bytevector-u8-set! payload (- size 1) 255)
+-    (let ((result (unix-stream-socket-write! client payload 0 size)))
+-      (unless (eq? (unix-stream-socket-write-status result) 'data)
+-        (error "run-nul-and-large-payload: expected a byte-counted write")))
+-    (unix-stream-socket-close! accepted) (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+-    (display "PASS: unix-socket NUL and >16 MiB payloads") (newline)))
+-
+-(define (run-descriptor-count-check)
+-  (let ((p (socket-path "descriptor-count")))
+-    (let loop ((i 0))
+-      (when (< i 1000)
+-        (let* ((listener (unix-stream-socket-listen p))
+-               (client (unix-stream-socket-connect p 1000))
+-               (accepted (unix-stream-socket-accept listener 1000)))
+-          (unix-stream-socket-close! accepted) (unix-stream-socket-close! client) (unix-stream-socket-close! listener)
+-          (loop (+ i 1)))))
+-    (display "PASS: unix-socket descriptor-count check over 1000 cycles") (newline)))
+-
+-(define (run-capability-denial)
+-  ;; Unlike every other case in this file, this one is expected to pass
+-  ;; against the stub, not just fail cleanly: capability-require! 'network
+-  ;; runs before unix-stream-socket-listen ever reaches the native scaffold
+-  ;; (see lib/agent/unix_stream_socket.esk), so the policy gate is real,
+-  ;; already-shipped infrastructure, not part of Gabe Kahen's pending socket
+-  ;; core. It stays listed under ipc-unix-pending only to keep the full
+-  ;; acceptance list together; moving it into the default suite is tracked
+-  ;; separately so this scaffold branch stays review-sized.
+-  (capability-install-policy! '())
+-  (unless (raises? (lambda () (unix-stream-socket-listen (socket-path "denied"))))
+-    (error "run-capability-denial: expected network capability denial"))
+-  (display "PASS: unix-socket network capability denial") (newline))
+-
+-(define (run-path-lifecycle)
+-  (let* ((p (socket-path "lifecycle"))
+-         (listener (unix-stream-socket-listen p)))
+-    (unix-stream-socket-close! listener)
+-    (unless (raises? (lambda () (unix-stream-socket-listen p)))
+-      (error "run-path-lifecycle: expected refusal on an existing unlistened path"))
+-    (display "PASS: unix-socket socket-path lifecycle") (newline)))
+-
+-(cond
+-  ((equal? scenario "connect_accept") (run-connect-accept))
+-  ((equal? scenario "partial_slow_peer") (run-partial-slow-peer))
+-  ((equal? scenario "peer_close_epipe") (run-peer-close-epipe))
+-  ((equal? scenario "deadline_accept") (run-deadline-accept))
+-  ((equal? scenario "deadline_connect") (run-deadline-connect))
+-  ((equal? scenario "cancellation") (run-cancellation))
+-  ((equal? scenario "nul_and_large_payload") (run-nul-and-large-payload))
+-  ((equal? scenario "descriptor_count_check") (run-descriptor-count-check))
+-  ((equal? scenario "capability_denial") (run-capability-denial))
+-  ((equal? scenario "path_lifecycle") (run-path-lifecycle))
+-  (else (error "unix_socket_stream_pending.esk: unknown scenario" scenario)))
++(define scratch (get-environment-variable "ESHKOL_UNIX_STREAM_SOCKET_SCRATCH"))
++(define path (string-append scratch "/public.sock"))
++(define peer-path (string-append scratch "/stream.sock"))
++(define loop (make-event-loop 64))
++(define owners '())
++(define checks 0)
++(define (check what ok)
++  (set! checks (+ checks 1)) (unless ok (error "Unix stream acceptance" what)))
++(define (remember id) (set! owners (cons id owners)) id)
++(define (close! id)
++  (check "close accepted" (= (unix-stream-socket-close! id) 0))
++  (set! owners (filter (lambda (other) (not (= id other))) owners)))
++(define (outcome? thunk operation code . os-code)
++  (guard (e
++          ((error-object? e)
++           (let ((args (error-object-irritants e)))
++             (and (equal? (error-object-message e) operation)
++                  (pair? args) (pair? (cdr args)) (= (cadr args) code)
++                  (or (null? os-code)
++                      (and (pair? (cddr args))
++                           (= (caddr args) (car os-code))))))))
++    (thunk)
++    #f))
++(define (denied? thunk)
++  (guard (e ((error-object? e)
++             (and (equal? (error-object-message e) "capability denied")
++                  (equal? (error-object-irritants e) '(network)))))
++    (thunk) #f))
++(define (open-pair)
++  (let* ((listener (remember (unix-stream-socket-listen loop path)))
++         (client (remember (unix-stream-socket-connect-begin loop path 1000)))
++         (accepted (remember (unix-stream-socket-accept listener 1000))))
++    (check "connect finished" (= (unix-stream-socket-connect-finish! client) 0))
++    (vector listener client accepted)))
++(define (close-pair p) (close! (vector-ref p 2)) (close! (vector-ref p 1)) (close! (vector-ref p 0)))
++(define (poll! id interests timeout)
++  (let* ((r (unix-stream-socket-poll id interests timeout)) (status (unix-stream-socket-poll-status r)))
++    (check "readiness or timeout" (or (eq? status 'ready) (eq? status 'timeout)))
++    (check "requested readiness only"
++      (if (eq? status 'ready)
++          (= (unix-stream-socket-poll-interests r) interests)
++          (= (unix-stream-socket-poll-interests r) 0)))
++    r))
++(define (transfer size slow?)
++  (let* ((p (open-pair)) (client (vector-ref p 1)) (accepted (vector-ref p 2))
++         (sent (make-bytevector size 7)) (got (make-bytevector size 170))
++         (deadline (+ (-fixture-now) 30000)))
++    (bytevector-u8-set! sent 5 0) (bytevector-u8-set! sent (- size 1) 255)
++    (let progress ((written 0) (received 0) (short 0) (blocked 0))
++      (check "finite transfer deadline" (< (-fixture-now) deadline))
++      (if (= received size)
++          (begin
++            (check "all sent bytes received" (and (= written size) (equal? sent got)))
++            (when slow? (check "observed partial progress" (> (+ short blocked) 0)))
++            (display "MEASURE: bytes=") (display received)
++            (display " short-writes=") (display short) (display " would-block=") (display blocked) (newline))
++          (let ((next-written written) (next-short short) (next-blocked blocked))
++            (when (< written size)
++              (let* ((want (min 65536 (- size written)))
++                     (r (unix-stream-socket-write! client sent written want))
++                     (status (unix-stream-socket-write-status r)) (n (unix-stream-socket-write-count r)))
++                (cond ((eq? status 'data)
++                       (check "positive bounded write" (and (> n 0) (<= n want)))
++                       (set! next-written (+ written n))
++                       (when (< n want) (set! next-short (+ short 1))))
++                      ((eq? status 'would-block) (set! next-blocked (+ blocked 1)) (poll! client 2 0))
++                      (else (error "write outcome" (unix-stream-socket-write-error r))))))
++            (let* ((want (min 4096 (- size received)))
++                   (r (unix-stream-socket-read! accepted got received want))
++                   (status (unix-stream-socket-read-status r)) (n (unix-stream-socket-read-count r)))
++              (cond ((eq? status 'data)
++                     (check "positive bounded read" (and (> n 0) (<= n want)))
++                     (when slow? (-fixture-sleep 1))
++                     (progress next-written (+ received n) next-short next-blocked))
++                    ((eq? status 'would-block) (poll! accepted 1 25)
++                     (progress next-written received next-short next-blocked))
++                    (else (error "read outcome" (unix-stream-socket-read-error r))))))))
++    (close-pair p)))
++(define (run-case)
++  (cond
++    ((equal? scenario "connect_accept") (transfer 257 #f))
++    ((equal? scenario "partial_slow_peer") (transfer (* 2 1024 1024) #t))
++    ((equal? scenario "nul_and_large_payload") (transfer (+ (* 16 1024 1024) 37) #t))
++    ((equal? scenario "deadline_accept")
++     (let ((listener (remember (unix-stream-socket-listen loop path))) (start (-fixture-now)))
++       (check "specific accept timeout" (outcome? (lambda () (unix-stream-socket-accept listener 150)) "unix-stream-socket-accept" -2))
++       (let ((elapsed (- (-fixture-now) start))) (check "measured accept deadline" (and (>= elapsed 140) (< elapsed 1500))))))
++    ((equal? scenario "deadline_connect")
++     (let* ((start (-fixture-now)) (id (remember (unix-stream-socket-connect-begin loop peer-path 250))))
++       (check "begin publishes before wait" (< (- (-fixture-now) start) 150))
++       (-fixture-sleep 350)
++       (let ((finish (-fixture-now)))
++         (check "specific original deadline" (outcome? (lambda () (unix-stream-socket-connect-finish! id)) "unix-stream-socket-connect-finish!" -2))
++         (check "finish does not renew deadline" (< (- (-fixture-now) finish) 150)))))
++    ((equal? scenario "destination_errors")
++     (check "missing destination is not timeout"
++       (outcome? (lambda () (unix-stream-socket-connect-begin loop path 1000)) "unix-stream-socket-connect-begin" -1 (-fixture-errno 1)))
++     (check "refused destination is not timeout"
++       (or (outcome? (lambda () (unix-stream-socket-connect-begin loop peer-path 1000)) "unix-stream-socket-connect-begin" -9)
++           (outcome? (lambda () (unix-stream-socket-connect-begin loop peer-path 1000)) "unix-stream-socket-connect-begin" -1 (-fixture-errno 2)))))
++    ((equal? scenario "cancellation")
++     (let ((id (remember (unix-stream-socket-listen loop path))))
++       (check "cancel accepted" (= (unix-stream-socket-cancel! id) 0))
++       (check "cancel idempotent" (= (unix-stream-socket-cancel! id) 0))
++       (check "next accept observes sticky cancellation" (outcome? (lambda () (unix-stream-socket-accept id 0)) "unix-stream-socket-accept" -6))))
++    ((equal? scenario "connect_cancellation")
++     (let ((id (remember (unix-stream-socket-connect-begin loop peer-path 2500))))
++       (check "pending-connect cancellation accepted" (= (unix-stream-socket-cancel! id) 0))
++       (check "pending-connect cancellation idempotent" (= (unix-stream-socket-cancel! id) 0))
++       (check "published pending operation cancelled" (outcome? (lambda () (unix-stream-socket-connect-finish! id)) "unix-stream-socket-connect-finish!" -6))
++       (let* ((r (unix-stream-socket-poll id 2 0)) (e (unix-stream-socket-poll-error r)))
++         (check "later waits stay cancelled" (and (eq? (unix-stream-socket-poll-status r) 'error)
++           (eq? (unix-stream-socket-error-operation e) 'unix-stream-socket-poll) (= (unix-stream-socket-error-code e) -6))))))
++    ((equal? scenario "capability_denial")
++     (capability-install-policy! '())
++     (check "network denial identified" (denied? (lambda () (unix-stream-socket-listen loop path)))))
++    ((equal? scenario "capability_revocation")
++     (let ((p (open-pair)))
++       (capability-install-policy! '())
++       (check "I/O remains denied" (denied? (lambda () (unix-stream-socket-read! (vector-ref p 2) (make-bytevector 1 0) 0 1))))
++       (check "cancel survives revocation" (= (unix-stream-socket-cancel! (vector-ref p 1)) 0))
++       (close-pair p)))
++    ((equal? scenario "loop_lifetime")
++     (let ((p (open-pair)))
++       (check "retained loop refuses close" (= (-loop-close-code loop) -7))
++       (close! (vector-ref p 0))
++       (check "accepted peers retain inherited loop" (= (-loop-close-code loop) -7))
++       (close! (vector-ref p 1)) (close! (vector-ref p 2))))
++    ((equal? scenario "zero_budget")
++     (let ((id (remember (unix-stream-socket-listen loop path))) (start (-fixture-now)))
++       (check "zero accept is a specific timeout" (outcome? (lambda () (unix-stream-socket-accept id 0)) "unix-stream-socket-accept" -2))
++       (check "zero accept never waits" (< (- (-fixture-now) start) 150)))
++     (let ((before (-fixture-fds)) (start (-fixture-now)))
++       (check "zero pending begin rolls back" (outcome? (lambda () (unix-stream-socket-connect-begin loop peer-path 0)) "unix-stream-socket-connect-begin" -2))
++       (check "zero begin never waits" (< (- (-fixture-now) start) 150))
++       (check "zero rollback retains no descriptor" (= before (-fixture-fds)))))
++    ((equal? scenario "descriptor_count_check")
++     (close-pair (open-pair))
++     (let ((before (-fixture-fds)))
++       (check "descriptor observation available" (>= before 0))
++       (do ((i 0 (+ i 1))) ((= i 1000)) (close-pair (open-pair)))
++       (check "actual descriptor count unchanged" (= before (-fixture-fds)))))
++    ((equal? scenario "path_lifecycle")
++     (let ((id (remember (unix-stream-socket-listen loop path)))) (close! id))
++     (check "listener path removed" (not (file-exists? path)))
++     (let ((id (remember (unix-stream-socket-listen loop path)))) (close! id)))
++    ((equal? scenario "peer_close_epipe")
++     (let* ((p (open-pair)) (client (vector-ref p 1)) (deadline (+ (-fixture-now) 1500)) (bytes (make-bytevector 4096 0)))
++       (close! (vector-ref p 2))
++       (let observe ()
++         (check "finite peer-close observation" (< (-fixture-now) deadline))
++         (let* ((r (unix-stream-socket-write! client bytes 0 4096)) (status (unix-stream-socket-write-status r)))
++           (cond ((eq? status 'error)
++                  (let ((e (unix-stream-socket-write-error r)))
++                    (check "operation-labelled peer-close outcome"
++                      (and (eq? (unix-stream-socket-error-operation e) 'unix-stream-socket-write!)
++                        (or (= (unix-stream-socket-error-code e) -7)
++                            (and (= (unix-stream-socket-error-code e) -1)
++                              (or (= (unix-stream-socket-error-os-code e) (-fixture-errno 5))
++                                  (= (unix-stream-socket-error-os-code e) (-fixture-errno 6)))))))))
++                 ((eq? status 'would-block) (poll! client 2 25) (observe))
++                 (else (check "positive peer-close progress" (> (unix-stream-socket-write-count r) 0)) (observe)))))
++       (close! client) (close! (vector-ref p 0))))
++    (else (error "unknown Unix stream acceptance case" scenario))))
++(dynamic-wind
++  (lambda () #t)
++  run-case
++  (lambda ()
++    (for-each (lambda (id) (unix-stream-socket-close! id)) owners)
++    (set! owners '())
++    (check "caller releases loop" (= (-loop-close-code loop) 0))))
++(display "PASS: unix-socket ") (display scenario) (newline)
++(display "CHECKS: ") (display checks) (newline)
+diff --git a/tests/agent/unix_socket_stream_runner_contract_test.py b/tests/agent/unix_socket_stream_runner_contract_test.py
+new file mode 100644
+index 000000000..466d4c3dc
+--- /dev/null
++++ b/tests/agent/unix_socket_stream_runner_contract_test.py
+@@ -0,0 +1,108 @@
++#!/usr/bin/env python3
++"""Reject false success in the public acceptance driver, using synthetic executables."""
++import argparse
++import importlib.util
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import time
++from types import SimpleNamespace
++
++
++def main():
++    p = argparse.ArgumentParser(description=__doc__)
++    p.add_argument("--work-root", type=Path, required=True)
++    p.add_argument("--source-dir", type=Path, default=Path(__file__).resolve().parents[2])
++    args = p.parse_args()
++    args.work_root.mkdir(parents=True, exist_ok=True)
++    work = Path(tempfile.mkdtemp(prefix="socket-runner-contract-", dir=args.work_root)).resolve()
++    source = args.source_dir.resolve()
++    driver = source / "tests/agent/run_unix_socket_stream_pending.py"
++    rows = []
++    fixture = work / "libobservation.dylib"
++    fixture.write_text("not loaded by synthetic executable\n")
++    fake = work / "synthetic-runner"
++    fake.write_text("#!" + sys.executable + r'''
++import os,sys,pathlib
++mode=os.environ['SOCKET_RUNNER_CONTROL']
++marker='PASS: unix-socket capability_denial'
++if '--emit-eskb' in sys.argv:
++ if mode=='vm-artifact':pathlib.Path(sys.argv[sys.argv.index('--emit-eskb')+1]).write_bytes(b'partial')
++ print('unrelated parser error' if mode=='vm-unrelated' else 'unsupported or malformed VM extern declaration')
++ raise SystemExit(1)
++if '-o' in sys.argv:
++ path=pathlib.Path(sys.argv[sys.argv.index('-o')+1])
++ path.write_text('#!'+sys.executable+'\nprint('+repr(marker)+')\n')
++ path.chmod(0o700)
++ raise SystemExit(0)
++if mode!='missing':print(marker)
++if mode=='duplicate':print(marker)
++if mode=='failure-marker':print('FAIL: unrelated failure')
++raise SystemExit(3 if mode=='nonzero' else 0)
++''')
++    fake.chmod(0o700)
++    for control, mode, good in [
++        ("success", "jit", True), ("missing", "jit", False),
++        ("duplicate", "jit", False), ("failure-marker", "jit", False),
++        ("nonzero", "jit", False), ("success", "aot", True),
++        ("vm-specific", "vm", True), ("vm-unrelated", "vm", False),
++        ("vm-artifact", "vm", False),
++    ]:
++        argv = [sys.executable, str(driver), "--runner", str(fake), "--mode", mode,
++                "--scenario", "capability_denial", "--work-root", str(work / "retained"),
++                "--source", str(source / "tests/agent/unix_socket_stream_pending.esk"),
++                "--peer", str(fake), "--fixture-library", str(fixture)]
++        r = subprocess.run(argv, capture_output=True, text=True, timeout=10,
++                           env={**os.environ, "SOCKET_RUNNER_CONTROL": control})
++        (work / (mode + "-" + control + ".stdout")).write_text(r.stdout)
++        (work / (mode + "-" + control + ".stderr")).write_text(r.stderr)
++        assert r.returncode == (0 if good else 1), (mode, control, r.stdout, r.stderr)
++        result = json.loads(r.stdout)
++        assert (result["status"] == "PASS") == good
++        rows.append({"case": mode + ":" + control, "expected_pass": good, "status": result["status"]})
++    # Exercise timeout cleanup directly with one owned, isolated child.
++    sys.dont_write_bytecode = True
++    spec = importlib.util.spec_from_file_location("socket_runner", driver)
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    original_killpg, original_run = module.os.killpg, module.subprocess.run
++    def denied_probe(pid, sig):
++        raise PermissionError("controlled visibility denial")
++    try:
++        module.os.killpg = denied_probe
++        module.subprocess.run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="12345\n")
++        assert module.group_alive(12345)
++        rows.append({"case": "denied-probe-live-group", "status": "LIVE_AS_EXPECTED"})
++        module.subprocess.run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="12346\n")
++        assert not module.group_alive(12345)
++        rows.append({"case": "denied-probe-absent-group", "status": "ABSENT_AS_OBSERVED"})
++        module.subprocess.run = lambda *a, **k: SimpleNamespace(returncode=1, stdout="")
++        try:
++            module.group_alive(12345)
++            raise AssertionError("unreadable group state accepted")
++        except RuntimeError:
++            rows.append({"case": "unreadable-group-state", "status": "REFUSED_AS_EXPECTED"})
++    finally:
++        module.os.killpg, module.subprocess.run = original_killpg, original_run
++    pid_file = work / "timed-child.pid"
++    code = "import os,pathlib,time;pathlib.Path(" + repr(str(pid_file)) + ").write_text(str(os.getpid()));time.sleep(10)"
++    start = time.monotonic()
++    try:
++        module.run_owned([sys.executable, "-c", code], work / "timeout.log", os.environ.copy(), timeout=0.5)
++        raise AssertionError("timeout accepted")
++    except RuntimeError as e:
++        assert "deadline exceeded" in str(e)
++    assert time.monotonic() - start < 5
++    assert not module.group_alive(int(pid_file.read_text()))
++    rows.append({"case": "timeout-cleanup", "expected_pass": False, "status": "FAIL_AS_EXPECTED"})
++    result = {"status": "PASS_RUNNER_ORACLE_CONTROLS", "controls": len(rows), "rows": rows,
++              "product_executions": 0, "work": str(work)}
++    (work / "RESULT.json").write_text(json.dumps(result, indent=2) + "\n")
++    print(json.dumps(result))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/agent/unix_socket_stream_stub_contract_test.c b/tests/agent/unix_socket_stream_stub_contract_test.c
+index 953cc6d4e..14e2d4e64 100644
+--- a/tests/agent/unix_socket_stream_stub_contract_test.c
++++ b/tests/agent/unix_socket_stream_stub_contract_test.c
+@@ -5,0 +6,5 @@
++#include <ctype.h>
++#include <errno.h>
++#include <spawn.h>
++#include <sys/wait.h>
++#include <unistd.h>
+@@ -34,2 +39,7 @@ static void check_stub_contract(void) {
+-    CHECK(eshkol_unix_stream_socket_listen(0, "/eshkol-scaffold/does-not-exist.sock")
+-          == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
++    const char *path = "/tmp/eshkol-scaffold.sock";
++    CHECK(ESHKOL_UNIX_STREAM_SOCKET_EINVAL == ESHKOL_IO_INVALID);
++    CHECK(ESHKOL_UNIX_STREAM_SOCKET_ECANCELED == ESHKOL_IO_CANCELLED);
++    CHECK(eshkol_unix_stream_socket_listen(1, path) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
++    CHECK(eshkol_unix_stream_socket_listen(0, path) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_listen(1, "relative") == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_listen(1, NULL) == ESHKOL_IO_INVALID);
+@@ -37,2 +47,5 @@ static void check_stub_contract(void) {
+-    CHECK(eshkol_unix_stream_socket_connect(0, "/eshkol-scaffold/does-not-exist.sock", 0)
+-          == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
++    CHECK(eshkol_unix_stream_socket_accept(1, -1) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_connect_begin(1, path, 0) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
++    CHECK(eshkol_unix_stream_socket_connect_begin(0, path, 0) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_connect_finish(1) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
++    CHECK(eshkol_unix_stream_socket_connect_finish(0) == ESHKOL_IO_INVALID);
+@@ -40,0 +54,6 @@ static void check_stub_contract(void) {
++    CHECK(eshkol_unix_stream_socket_read(1, buf, 0) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_write(1, buf, 0) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_poll(1, 3, 0) == ESHKOL_UNIX_STREAM_SOCKET_PLANNED);
++    CHECK(eshkol_unix_stream_socket_poll(1, 0, 0) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_poll(1, 4, 0) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_poll(1, 1, -1) == ESHKOL_IO_INVALID);
+@@ -42,0 +62,3 @@ static void check_stub_contract(void) {
++    CHECK(eshkol_unix_stream_socket_cancel(0) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_close(0) == ESHKOL_IO_INVALID);
++    CHECK(eshkol_unix_stream_socket_last_os_error() == 0);
+@@ -44,0 +67 @@ static void check_stub_contract(void) {
++extern char **environ;
+@@ -46,6 +69,14 @@ static int count_pending_tests(const char *ctest_bin, const char *build_dir) {
+-    char command[1024];
+-    int n = snprintf(command, sizeof(command),
+-        "%s --test-dir %s -L ipc-unix-pending -N 2>/dev/null", ctest_bin, build_dir);
+-    if (n < 0 || (size_t)n >= sizeof(command)) return -1;
+-    FILE *pipe = popen(command, "r");
+-    if (!pipe) return -1;
++    int fds[2];
++    if (pipe(fds) != 0) return -1;
++    posix_spawn_file_actions_t actions;
++    if (posix_spawn_file_actions_init(&actions) != 0) { close(fds[0]); close(fds[1]); return -1; }
++    int error = posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
++    if (!error) error = posix_spawn_file_actions_addclose(&actions, fds[0]);
++    if (!error) error = posix_spawn_file_actions_addclose(&actions, fds[1]);
++    char *const args[] = {(char *)ctest_bin, "--test-dir", (char *)build_dir,
++                         "-L", "ipc-unix-pending", "-N", NULL};
++    pid_t pid = -1;
++    if (!error) error = posix_spawn(&pid, ctest_bin, &actions, NULL, args, environ);
++    posix_spawn_file_actions_destroy(&actions); close(fds[1]);
++    if (error) { close(fds[0]); return -1; }
++    FILE *stream = fdopen(fds[0], "r");
+@@ -53,5 +84,14 @@ static int count_pending_tests(const char *ctest_bin, const char *build_dir) {
+-    char line[512];
+-    while (fgets(line, sizeof(line), pipe)) {
+-        if (strstr(line, "Test #")) ++count;
+-    }
+-    pclose(pipe);
++    if (stream) {
++        char line[1024];
++        while (fgets(line, sizeof(line), stream)) {
++            char *p = strstr(line, "Test");
++            if (!p) continue;
++            p += 4;
++            while (isspace((unsigned char)*p)) ++p;
++            if (*p == '#' && isdigit((unsigned char)p[1])) ++count;
++        }
++        fclose(stream);
++    } else close(fds[0]);
++    int status;
++    while (waitpid(pid, &status, 0) < 0) if (errno != EINTR) return -1;
++    if (!stream || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+diff --git a/tests/agent/unix_socket_stream_test.c b/tests/agent/unix_socket_stream_test.c
+index 0a614284b..7a8bdad92 100644
+--- a/tests/agent/unix_socket_stream_test.c
++++ b/tests/agent/unix_socket_stream_test.c
+@@ -7 +7,3 @@
+-
++#include <eshkol/core/event_loop.h>
++#include "unix_socket_stream_fixture_support.h"
++#include <dirent.h>
+@@ -8,0 +11 @@
++#include <fcntl.h>
+@@ -11 +14 @@
+-#include <stdint.h>
++#include <stdatomic.h>
+@@ -14,0 +18 @@
++#include <sys/resource.h>
+@@ -17 +20,0 @@
+-#include <sys/types.h>
+@@ -18,0 +22 @@
++#include <sys/wait.h>
+@@ -22,17 +26,12 @@
+-/*
+- * Native acceptance fixtures for Unix-domain stream sockets, in the order
+- * listed for the v1.4.0 socket-scaffold lane. These exercise the real
+- * contract from Gabe Kahen's design (notes/IPC_DESIGN-2026-11-02.md, "Later
+- * Unix streams" row): every call below goes through eshkol_unix_stream_socket_*,
+- * which is currently a scaffold (lib/core/unix_socket_stream_stub.c) that
+- * reports ESHKOL_UNIX_STREAM_SOCKET_PLANNED for everything. Each scenario is
+- * therefore expected to fail its first real-behavior CHECK -- that clean,
+- * reported failure (not a hang or a fault) is the acceptance signal that the
+- * stub is wired to the real contract. The suite stays out of the default run
+- * (CTest label ipc-unix-pending, DISABLED) until the core implementation
+- * lands and these checks start to pass for real.
+- */
+-
+-static unsigned int checks;
+-
+-static void check(int ok, const char *expr, int line) {
++/* Pending core acceptance, not a second implementation. Raw sockets below
++ * only create controlled external peers/backlogs. Every tested operation
++ * uses the public Unix-stream API. Each invocation gets a fresh private
++ * directory; failures retain it. No pre-existing pathname is removed. */
++static unsigned checks;
++static atomic_int network_allowed = 1;
++static atomic_int policy_calls;
++int eshkol_capability_runtime_allows(const char *capability) {
++    atomic_fetch_add(&policy_calls, 1);
++    return strcmp(capability, "network") == 0 && atomic_load(&network_allowed);
++}
++static void check(int ok, const char *what, int line) {
+@@ -40,4 +39 @@ static void check(int ok, const char *expr, int line) {
+-    if (!ok) {
+-        fprintf(stderr, "FAIL: unix_socket_stream_test:%d: %s\n", line, expr);
+-        exit(1);
+-    }
++    if (!ok) { fprintf(stderr, "FAIL: unix-stream:%d: %s (errno=%d %s)\n", line, what, errno, strerror(errno)); exit(1); }
+@@ -45,2 +41 @@ static void check(int ok, const char *expr, int line) {
+-#define CHECK(expr) check(!!(expr), #expr, __LINE__)
+-
++#define CHECK(x) check(!!(x), #x, __LINE__)
+@@ -48,3 +43,2 @@ static int64_t now_ms(void) {
+-    struct timespec ts;
+-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) abort();
+-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
++    struct timespec t; CHECK(clock_gettime(CLOCK_MONOTONIC, &t) == 0);
++    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+@@ -52,6 +46,3 @@ static int64_t now_ms(void) {
+-
+-static char g_path[512];
+-
+-static void make_path(const char *scratch_dir, const char *name) {
+-    snprintf(g_path, sizeof(g_path), "%s/%s.sock", scratch_dir, name);
+-    unlink(g_path);
++static void nap(int ms) {
++    struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
++    while (nanosleep(&t, &t) && errno == EINTR) {}
+@@ -59,12 +50,9 @@ static void make_path(const char *scratch_dir, const char *name) {
+-
+-static void scenario_connect_accept(const char *scratch_dir) {
+-    make_path(scratch_dir, "connect-accept");
+-    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(listener > 0);
+-    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
+-    CHECK(client > 0);
+-    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
+-    CHECK(accepted > 0);
+-    CHECK(eshkol_unix_stream_socket_close(accepted) == 0);
+-    CHECK(eshkol_unix_stream_socket_close(client) == 0);
+-    CHECK(eshkol_unix_stream_socket_close(listener) == 0);
++static char directory[80], path[104];
++static int64_t loop_handle;
++static void setup(void) {
++    strcpy(directory, "/tmp/eshkol-unix-XXXXXX");
++    CHECK(mkdtemp(directory) != NULL);
++    CHECK(chmod(directory, 0700) == 0);
++    CHECK(snprintf(path, sizeof(path), "%s/stream.sock", directory) < (int)sizeof(path));
++    fprintf(stderr, "SCRATCH: %s\n", directory);
++    loop_handle = eshkol_event_loop_open_handle(64); CHECK(loop_handle > 0);
+@@ -72,25 +60,49 @@ static void scenario_connect_accept(const char *scratch_dir) {
+-
+-static void scenario_partial_slow_peer(const char *scratch_dir) {
+-    make_path(scratch_dir, "partial-slow");
+-    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(listener > 0);
+-    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
+-    CHECK(client > 0);
+-    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
+-    CHECK(accepted > 0);
+-    unsigned char payload[4096];
+-    for (size_t i = 0; i < sizeof(payload); ++i) payload[i] = (unsigned char)i;
+-    int64_t written = 0;
+-    while (written < (int64_t)sizeof(payload)) {
+-        int64_t n = eshkol_unix_stream_socket_write(client, payload + written,
+-            (int64_t)sizeof(payload) - written);
+-        CHECK(n >= 0);
+-        written += n;
+-    }
+-    unsigned char got[4096];
+-    int64_t read_total = 0;
+-    while (read_total < (int64_t)sizeof(payload)) {
+-        int64_t n = eshkol_unix_stream_socket_read(accepted, got + read_total,
+-            (int64_t)sizeof(got) - read_total);
+-        CHECK(n >= 0);
+-        read_total += n;
++static void finish_loop(void) { CHECK(eshkol_event_loop_close_handle(loop_handle) == 0); }
++static void close_socket(int64_t id) { CHECK(eshkol_unix_stream_socket_close(id) == 0); }
++typedef struct { int64_t listener, client, peer; } pair_t;
++static pair_t pair_open(void) {
++    pair_t p;
++    p.listener = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(p.listener > 0);
++    p.client = eshkol_unix_stream_socket_connect_begin(loop_handle, path, 1000); CHECK(p.client > 0);
++    p.peer = eshkol_unix_stream_socket_accept(p.listener, 1000); CHECK(p.peer > 0);
++    CHECK(eshkol_unix_stream_socket_connect_finish(p.client) == 0);
++    return p;
++}
++static void pair_close(pair_t p) { close_socket(p.peer); close_socket(p.client); close_socket(p.listener); }
++static void ready(int64_t id, int mask, int64_t deadline) {
++    int64_t left = deadline - now_ms(); CHECK(left > 0);
++    int n = eshkol_unix_stream_socket_poll(id, mask, (int32_t)(left > 50 ? 50 : left));
++    CHECK(n == ESHKOL_IO_TIMEOUT || (n > 0 && (n & mask) && !(n & ~mask)));
++}
++static long peak_kib(void) {
++    struct rusage r; CHECK(getrusage(RUSAGE_SELF, &r) == 0);
++#if defined(__APPLE__)
++    return r.ru_maxrss / 1024;
++#else
++    return r.ru_maxrss;
++#endif
++}
++static void transfer(pair_t p, size_t size, int slow) {
++    unsigned char *sent = malloc(size), *got = malloc(size); CHECK(sent && got);
++    for (size_t i = 0; i < size; ++i) sent[i] = (unsigned char)(i % 7 ? i * 31 : 0);
++    memset(got, 0xaa, size); /* fault in fixture buffers before core RSS measurement */
++    long before = peak_kib();
++    size_t written = 0, read_total = 0; unsigned short_writes = 0, blocked = 0;
++    int64_t deadline = now_ms() + 20000;
++    while (read_total < size) {
++        CHECK(now_ms() < deadline);
++        if (written < size) {
++            size_t want = size - written; if (want > 65536) want = 65536;
++            int64_t n = eshkol_unix_stream_socket_write(p.client, sent + written, (int64_t)want);
++            if (n == ESHKOL_IO_TIMEOUT) {
++                ++blocked;
++                int mask = eshkol_unix_stream_socket_poll(p.client, 2, 0);
++                CHECK(mask == ESHKOL_IO_TIMEOUT || mask == 2);
++            }
++            else { CHECK(n > 0 && (uint64_t)n <= want); short_writes += (size_t)n < want; written += (size_t)n; }
++        }
++        size_t want = size - read_total; if (want > 4096) want = 4096;
++        int64_t n = eshkol_unix_stream_socket_read(p.peer, got + read_total, (int64_t)want);
++        if (n == ESHKOL_IO_TIMEOUT) ready(p.peer, 1, deadline);
++        else { CHECK(n > 0 && (uint64_t)n <= want); read_total += (size_t)n; }
++        if (slow) nap(1);
+@@ -98,4 +110,6 @@ static void scenario_partial_slow_peer(const char *scratch_dir) {
+-    CHECK(memcmp(payload, got, sizeof(payload)) == 0);
+-    eshkol_unix_stream_socket_close(accepted);
+-    eshkol_unix_stream_socket_close(client);
+-    eshkol_unix_stream_socket_close(listener);
++    CHECK(written == size && memcmp(sent, got, size) == 0);
++    if (slow) CHECK(short_writes + blocked > 0);
++    long growth = peak_kib() - before;
++    CHECK(growth <= 8192); /* fixture's two touched buffers excluded above */
++    fprintf(stderr, "MEASURE: bytes=%zu short_writes=%u would_block=%u core_peak_growth_kib=%ld\n", size, short_writes, blocked, growth);
++    free(got); free(sent);
+@@ -103,17 +117,2 @@ static void scenario_partial_slow_peer(const char *scratch_dir) {
+-
+-static void scenario_peer_close_epipe(const char *scratch_dir) {
+-    make_path(scratch_dir, "peer-close");
+-    signal(SIGPIPE, SIG_IGN); /* guards this harness only; the core must
+-                                 suppress SIGPIPE on the write path itself. */
+-    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(listener > 0);
+-    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
+-    CHECK(client > 0);
+-    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
+-    CHECK(accepted > 0);
+-    CHECK(eshkol_unix_stream_socket_close(accepted) == 0);
+-    unsigned char payload[16] = {0};
+-    int64_t n = eshkol_unix_stream_socket_write(client, payload, sizeof(payload));
+-    CHECK(n == ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM);
+-    eshkol_unix_stream_socket_close(client);
+-    eshkol_unix_stream_socket_close(listener);
++static int descriptor_count(void) {
++    int count = eshkol_unix_socket_test_fd_count(); CHECK(count >= 0); return count;
+@@ -121,5 +120,5 @@ static void scenario_peer_close_epipe(const char *scratch_dir) {
+-
+-static void scenario_deadline_accept(const char *scratch_dir) {
+-    make_path(scratch_dir, "deadline-accept");
+-    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(listener > 0);
++static void scenario_connect_accept(void) { pair_t p = pair_open(); transfer(p, 257, 0); pair_close(p); }
++static void scenario_partial_slow_peer(void) { pair_t p = pair_open(); transfer(p, 2u * 1024u * 1024u, 1); pair_close(p); }
++static void scenario_nul_and_large_payload(void) { pair_t p = pair_open(); transfer(p, 16u * 1024u * 1024u + 37u, 1); pair_close(p); }
++static void scenario_deadline_accept(void) {
++    int64_t listener = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(listener > 0);
+@@ -127,5 +126,3 @@ static void scenario_deadline_accept(const char *scratch_dir) {
+-    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 150);
+-    int64_t elapsed = now_ms() - start;
+-    CHECK(accepted == ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT);
+-    CHECK(elapsed >= 140 && elapsed < 2000);
+-    eshkol_unix_stream_socket_close(listener);
++    CHECK(eshkol_unix_stream_socket_accept(listener, 150) == ESHKOL_IO_TIMEOUT);
++    int64_t elapsed = now_ms() - start; CHECK(elapsed >= 140 && elapsed < 1500);
++    fprintf(stderr, "MEASURE: accept_150_ms_elapsed=%lld\n", (long long)elapsed); close_socket(listener);
+@@ -133,9 +130,30 @@ static void scenario_deadline_accept(const char *scratch_dir) {
+-
+-static void scenario_deadline_connect(const char *scratch_dir) {
+-    make_path(scratch_dir, "deadline-connect");
+-    /* nothing listens on this path */
+-    int64_t start = now_ms();
+-    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 150);
+-    int64_t elapsed = now_ms() - start;
+-    CHECK(client == ESHKOL_UNIX_STREAM_SOCKET_ETIMEDOUT || client == ESHKOL_UNIX_STREAM_SOCKET_ESYSTEM);
+-    CHECK(elapsed < 2000);
++/* A genuinely full OS listen queue, distinct from missing/refused paths.
++ * The finite fill loop keeps all peer descriptors alive until after the
++ * tested operation. Platforms that cannot establish it fail explicitly. */
++typedef struct { int listener, peers[128], count; } backlog_t;
++static backlog_t full_backlog(int probe_core) {
++    /* With the scaffold, fail before constructing any raw socket fixture. */
++    if (probe_core) { int64_t probe = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(probe > 0); close_socket(probe); }
++    backlog_t b = {.listener = -1, .count = 0};
++    b.listener = socket(AF_UNIX, SOCK_STREAM, 0); CHECK(b.listener >= 0);
++    struct sockaddr_un a; memset(&a, 0, sizeof(a)); a.sun_family = AF_UNIX;
++    CHECK(strlen(path) < sizeof(a.sun_path)); strcpy(a.sun_path, path);
++    CHECK(bind(b.listener, (struct sockaddr *)&a, sizeof(a)) == 0); CHECK(listen(b.listener, 1) == 0);
++    CHECK(eshkol_unix_socket_test_pending_path(path) == 0);
++#if defined(__APPLE__)
++    fprintf(stderr, "MEASURE: pending_control=deterministic_EAGAIN_not_OS_pending\n");
++#else
++    fprintf(stderr, "MEASURE: pending_control=real_OS_backlog\n");
++#endif
++    int full = 0; int64_t limit = now_ms() + 1000;
++    while (b.count < 128 && now_ms() < limit) {
++        int fd = socket(AF_UNIX, SOCK_STREAM, 0); CHECK(fd >= 0);
++        CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0); b.peers[b.count++] = fd;
++        if (connect(fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
++            if (errno == EAGAIN || errno == EWOULDBLOCK) { full = 1; break; }
++            CHECK(errno == EINPROGRESS);
++            struct sockaddr_un peer; socklen_t length = sizeof(peer);
++            if (getpeername(fd, (struct sockaddr *)&peer, &length) != 0) { full = 1; break; }
++        }
++    }
++    CHECK(full); return b;
+@@ -143 +161,23 @@ static void scenario_deadline_connect(const char *scratch_dir) {
+-
++static void backlog_close(backlog_t b) {
++    for (int i = 0; i < b.count; ++i) CHECK(close(b.peers[i]) == 0);
++    CHECK(close(b.listener) == 0); CHECK(unlink(path) == 0);
++}
++static void scenario_deadline_connect(void) {
++    backlog_t b = full_backlog(1); int64_t start = now_ms();
++    int64_t id = eshkol_unix_stream_socket_connect_begin(loop_handle, path, 250); CHECK(id > 0);
++    CHECK(now_ms() - start < 150); nap(350);
++    int64_t finish = now_ms(); CHECK(eshkol_unix_stream_socket_connect_finish(id) == ESHKOL_IO_TIMEOUT);
++    CHECK(now_ms() - finish < 150); CHECK(now_ms() - start >= 350);
++    close_socket(id); backlog_close(b);
++}
++static void scenario_destination_errors(void) {
++    CHECK(eshkol_unix_stream_socket_connect_begin(loop_handle, path, 1000) == ESHKOL_IO_SYSTEM);
++    CHECK(eshkol_unix_stream_socket_last_os_error() == ENOENT);
++    int fd = socket(AF_UNIX, SOCK_STREAM, 0); CHECK(fd >= 0);
++    struct sockaddr_un a; memset(&a, 0, sizeof(a)); a.sun_family = AF_UNIX; strcpy(a.sun_path, path);
++    CHECK(bind(fd, (struct sockaddr *)&a, sizeof(a)) == 0); CHECK(close(fd) == 0);
++    int64_t n = eshkol_unix_stream_socket_connect_begin(loop_handle, path, 1000);
++    CHECK(n == ESHKOL_IO_REFUSED || (n == ESHKOL_IO_SYSTEM && eshkol_unix_stream_socket_last_os_error() == ECONNREFUSED));
++    CHECK(unlink(path) == 0);
++}
++typedef struct { int64_t id; int first, second; } cancel_t;
+@@ -145,5 +185,2 @@ static void *cancel_after(void *arg) {
+-    int64_t id = *(int64_t *)arg;
+-    struct timespec ts = {0, 50 * 1000000};
+-    nanosleep(&ts, &ts);
+-    eshkol_unix_stream_socket_cancel(id);
+-    return NULL;
++    cancel_t *c = arg; nap(50);
++    c->first = eshkol_unix_stream_socket_cancel(c->id); c->second = eshkol_unix_stream_socket_cancel(c->id); return NULL;
+@@ -151,11 +188,6 @@ static void *cancel_after(void *arg) {
+-
+-static void scenario_cancellation(const char *scratch_dir) {
+-    make_path(scratch_dir, "cancel");
+-    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(listener > 0);
+-    pthread_t canceller;
+-    CHECK(pthread_create(&canceller, NULL, cancel_after, &listener) == 0);
+-    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 5000);
+-    pthread_join(canceller, NULL);
+-    CHECK(accepted == ESHKOL_UNIX_STREAM_SOCKET_ECANCELED);
+-    eshkol_unix_stream_socket_close(listener);
++static void scenario_cancellation(void) {
++    int64_t id = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(id > 0);
++    cancel_t c = {.id = id}; pthread_t thread; CHECK(pthread_create(&thread, NULL, cancel_after, &c) == 0);
++    int64_t start = now_ms(); CHECK(eshkol_unix_stream_socket_accept(id, 2500) == ESHKOL_IO_CANCELLED);
++    CHECK(pthread_join(thread, NULL) == 0); CHECK(c.first == 0 && c.second == 0); CHECK(now_ms() - start < 1500);
++    CHECK(eshkol_unix_stream_socket_accept(id, 0) == ESHKOL_IO_CANCELLED); close_socket(id);
+@@ -163,36 +195,6 @@ static void scenario_cancellation(const char *scratch_dir) {
+-
+-static void scenario_nul_and_large_payload(const char *scratch_dir) {
+-    make_path(scratch_dir, "large");
+-    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(listener > 0);
+-    int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
+-    CHECK(client > 0);
+-    int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
+-    CHECK(accepted > 0);
+-    size_t size = 16u * 1024u * 1024u + 37u;
+-    unsigned char *payload = malloc(size);
+-    CHECK(payload != NULL);
+-    for (size_t i = 0; i < size; ++i)
+-        payload[i] = (unsigned char)((i % 7 == 0) ? 0 : (i * 31));
+-    size_t written = 0;
+-    while (written < size) {
+-        int64_t n = eshkol_unix_stream_socket_write(client, payload + written,
+-            (int64_t)(size - written));
+-        CHECK(n >= 0);
+-        written += (size_t)n;
+-    }
+-    unsigned char *got = malloc(size);
+-    CHECK(got != NULL);
+-    size_t read_total = 0;
+-    while (read_total < size) {
+-        int64_t n = eshkol_unix_stream_socket_read(accepted, got + read_total,
+-            (int64_t)(size - read_total));
+-        CHECK(n >= 0);
+-        read_total += (size_t)n;
+-    }
+-    CHECK(memcmp(payload, got, size) == 0);
+-    free(payload);
+-    free(got);
+-    eshkol_unix_stream_socket_close(accepted);
+-    eshkol_unix_stream_socket_close(client);
+-    eshkol_unix_stream_socket_close(listener);
++static void scenario_connect_cancellation(void) {
++    backlog_t b = full_backlog(1); int64_t id = eshkol_unix_stream_socket_connect_begin(loop_handle, path, 2500); CHECK(id > 0);
++    cancel_t c = {.id = id}; pthread_t thread; CHECK(pthread_create(&thread, NULL, cancel_after, &c) == 0);
++    int64_t start = now_ms(); CHECK(eshkol_unix_stream_socket_connect_finish(id) == ESHKOL_IO_CANCELLED);
++    CHECK(pthread_join(thread, NULL) == 0); CHECK(c.first == 0 && c.second == 0); CHECK(now_ms() - start < 1500);
++    CHECK(eshkol_unix_stream_socket_poll(id, 2, 0) == ESHKOL_IO_CANCELLED); close_socket(id); backlog_close(b);
+@@ -200,14 +202,12 @@ static void scenario_nul_and_large_payload(const char *scratch_dir) {
+-
+-static void scenario_descriptor_count_check(const char *scratch_dir) {
+-    make_path(scratch_dir, "descriptor-count");
+-    for (int i = 0; i < 1000; ++i) {
+-        unlink(g_path);
+-        int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-        CHECK(listener > 0);
+-        int64_t client = eshkol_unix_stream_socket_connect(0, g_path, 1000);
+-        CHECK(client > 0);
+-        int64_t accepted = eshkol_unix_stream_socket_accept(listener, 1000);
+-        CHECK(accepted > 0);
+-        CHECK(eshkol_unix_stream_socket_close(accepted) == 0);
+-        CHECK(eshkol_unix_stream_socket_close(client) == 0);
+-        CHECK(eshkol_unix_stream_socket_close(listener) == 0);
++static void peer_close_child(void) {
++    CHECK(signal(SIGPIPE, SIG_DFL) != SIG_ERR);
++    pair_t p = pair_open(); close_socket(p.peer);
++    unsigned char bytes[4096] = {0}; int observed = 0; int64_t deadline = now_ms() + 1000;
++    while (!observed && now_ms() < deadline) {
++        int64_t n = eshkol_unix_stream_socket_write(p.client, bytes, sizeof(bytes));
++        if (n == ESHKOL_IO_TIMEOUT) ready(p.client, 2, deadline);
++        else if (n < 0) {
++            int detail = eshkol_unix_stream_socket_last_os_error();
++            CHECK(n == ESHKOL_IO_RESET || (n == ESHKOL_IO_SYSTEM && (detail == EPIPE || detail == ECONNRESET)));
++            observed = 1;
++        } else CHECK(n > 0 && n <= (int64_t)sizeof(bytes));
+@@ -214,0 +215 @@ static void scenario_descriptor_count_check(const char *scratch_dir) {
++    CHECK(observed); close_socket(p.client); close_socket(p.listener);
+@@ -216,23 +217,4 @@ static void scenario_descriptor_count_check(const char *scratch_dir) {
+-
+-static void scenario_path_lifecycle(const char *scratch_dir) {
+-    make_path(scratch_dir, "path-lifecycle");
+-    int64_t listener = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(listener > 0);
+-    struct stat st;
+-    CHECK(stat(g_path, &st) == 0);
+-    CHECK(eshkol_unix_stream_socket_close(listener) == 0);
+-    CHECK(stat(g_path, &st) != 0); /* unlinked on close */
+-
+-    /* A path left on disk with nothing listening must be refused,
+-     * never silently unlinked and reused. */
+-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+-    CHECK(fd >= 0);
+-    struct sockaddr_un addr;
+-    memset(&addr, 0, sizeof(addr));
+-    addr.sun_family = AF_UNIX;
+-    strncpy(addr.sun_path, g_path, sizeof(addr.sun_path) - 1);
+-    CHECK(bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+-    close(fd); /* leaves a path on disk, bound once, never listened on */
+-    int64_t second = eshkol_unix_stream_socket_listen(0, g_path);
+-    CHECK(second == ESHKOL_UNIX_STREAM_SOCKET_EEXIST);
+-    unlink(g_path);
++static void scenario_peer_close_epipe(void) {
++    pid_t child = fork(); CHECK(child >= 0);
++    if (!child) { loop_handle = eshkol_event_loop_open_handle(64); CHECK(loop_handle > 0); peer_close_child(); finish_loop(); _exit(0); }
++    int status; CHECK(waitpid(child, &status, 0) == child); CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+@@ -240,13 +222,65 @@ static void scenario_path_lifecycle(const char *scratch_dir) {
+-
+-static void scenario_capability_denial(const char *scratch_dir) {
+-    /* Unlike every other scenario in this file, this one is expected to
+-     * pass against the stub, not fail: the capability gate lives in
+-     * lib/agent/unix_stream_socket.esk's (capability-require! 'network ...),
+-     * which runs before any native call, so denial is already real,
+-     * shipped behavior, not part of Gabe Kahen's pending socket core. The
+-     * native scaffold itself has no policy layer and never attempts I/O, so
+-     * there is nothing more to check here; see
+-     * tests/agent/unix_socket_stream_pending.esk capability_denial for the
+-     * gated half of this acceptance case. */
+-    (void)scratch_dir;
+-    CHECK(1);
++static void scenario_descriptor_count_check(void) {
++    pair_close(pair_open()); /* warm lazy common bookkeeping before baseline */
++    int before = descriptor_count();
++    for (int i = 0; i < 1000; ++i) pair_close(pair_open());
++    int after = descriptor_count(); CHECK(after == before);
++    fprintf(stderr, "MEASURE: fd_before=%d fd_after=%d cycles=1000\n", before, after);
++}
++static void scenario_capability_denial(void) {
++    int before = descriptor_count(); atomic_store(&network_allowed, 0); atomic_store(&policy_calls, 0);
++    CHECK(eshkol_unix_stream_socket_listen(loop_handle, path) == ESHKOL_IO_SYSTEM);
++    int detail = eshkol_unix_stream_socket_last_os_error(); CHECK(detail == EACCES || detail == EPERM);
++    CHECK(atomic_load(&policy_calls) > 0); CHECK(descriptor_count() == before);
++    struct stat st; CHECK(lstat(path, &st) < 0 && errno == ENOENT); atomic_store(&network_allowed, 1);
++}
++static void scenario_capability_revocation(void) {
++    pair_t p = pair_open(); atomic_store(&network_allowed, 0);
++    char byte; CHECK(eshkol_unix_stream_socket_read(p.peer, &byte, 1) == ESHKOL_IO_SYSTEM);
++    int detail = eshkol_unix_stream_socket_last_os_error(); CHECK(detail == EACCES || detail == EPERM);
++    CHECK(eshkol_unix_stream_socket_cancel(p.client) == 0); CHECK(eshkol_unix_stream_socket_cancel(p.client) == 0);
++    pair_close(p); CHECK(eshkol_unix_stream_socket_close(loop_handle) == ESHKOL_IO_INVALID);
++    atomic_store(&network_allowed, 1);
++}
++static void scenario_path_lifecycle(void) {
++    int64_t id = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(id > 0);
++    struct stat st; CHECK(lstat(path, &st) == 0 && S_ISSOCK(st.st_mode) && (st.st_mode & 0777) == 0600);
++    close_socket(id); CHECK(lstat(path, &st) < 0 && errno == ENOENT);
++    id = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(id > 0); close_socket(id);
++    int fd = socket(AF_UNIX, SOCK_STREAM, 0); CHECK(fd >= 0);
++    struct sockaddr_un a; memset(&a, 0, sizeof(a)); a.sun_family = AF_UNIX; strcpy(a.sun_path, path);
++    CHECK(bind(fd, (struct sockaddr *)&a, sizeof(a)) == 0); CHECK(close(fd) == 0);
++    CHECK(lstat(path, &st) == 0); ino_t inode = st.st_ino;
++    CHECK(eshkol_unix_stream_socket_listen(loop_handle, path) == ESHKOL_IO_SYSTEM);
++    CHECK(eshkol_unix_stream_socket_last_os_error() == EEXIST);
++    CHECK(lstat(path, &st) == 0 && st.st_ino == inode); CHECK(unlink(path) == 0);
++    id = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(id > 0);
++    CHECK(unlink(path) == 0); FILE *replacement = fopen(path, "wx"); CHECK(replacement != NULL); CHECK(fclose(replacement) == 0);
++    CHECK(lstat(path, &st) == 0); inode = st.st_ino;
++    int result = eshkol_unix_stream_socket_close(id);
++    CHECK(result == 0 || result == ESHKOL_IO_SYSTEM);
++    CHECK(lstat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_ino == inode);
++    CHECK(eshkol_unix_stream_socket_close(id) == ESHKOL_IO_INVALID);
++}
++static void scenario_loop_lifetime(void) {
++    pair_t p = pair_open();
++    CHECK(eshkol_event_loop_close_handle(loop_handle) == ESHKOL_EVENT_LOOP_EBUSY);
++    close_socket(p.listener); /* inherited peer retains remain */
++    CHECK(eshkol_event_loop_close_handle(loop_handle) == ESHKOL_EVENT_LOOP_EBUSY);
++    close_socket(p.client); close_socket(p.peer);
++}
++static void scenario_borrowed_close(void) {
++    pair_t p = pair_open(); eshkol_resource_lease_t lease, other;
++    CHECK(eshkol_resource_borrow(p.client, ESHKOL_HANDLE_KIND_SOCKET, 0, &lease) == 0);
++    close_socket(p.client);
++    CHECK(eshkol_resource_borrow(p.client, ESHKOL_HANDLE_KIND_SOCKET, 0, &other) == ESHKOL_IO_INVALID);
++    eshkol_resource_release(&lease);
++    CHECK(eshkol_unix_stream_socket_close(p.client) == ESHKOL_IO_INVALID);
++    close_socket(p.peer); close_socket(p.listener);
++}
++static void scenario_zero_budget(void) {
++    int64_t id = eshkol_unix_stream_socket_listen(loop_handle, path); CHECK(id > 0);
++    int64_t start = now_ms(); CHECK(eshkol_unix_stream_socket_accept(id, 0) == ESHKOL_IO_TIMEOUT);
++    CHECK(now_ms() - start < 150); close_socket(id);
++    backlog_t b = full_backlog(1); int before = descriptor_count(); start = now_ms();
++    CHECK(eshkol_unix_stream_socket_connect_begin(loop_handle, path, 0) == ESHKOL_IO_TIMEOUT);
++    CHECK(now_ms() - start < 150); CHECK(descriptor_count() == before); backlog_close(b);
+@@ -254 +287,0 @@ static void scenario_capability_denial(const char *scratch_dir) {
+-
+@@ -256,3 +289,21 @@ int main(int argc, char **argv) {
+-    if (argc < 3) {
+-        fprintf(stderr, "usage: %s <scenario> <scratch-dir>\n", argv[0]);
+-        return 2;
++    if (argc < 2) { fprintf(stderr, "usage: %s scenario [evidence-dir]\n", argv[0]); return 2; }
++    if (!strcmp(argv[1], "--backlog-peer") || !strcmp(argv[1], "--leftover-peer")) {
++        CHECK(argc == 3);
++        CHECK(snprintf(path, sizeof(path), "%s/stream.sock", argv[2]) < (int)sizeof(path));
++        struct stat st; CHECK(lstat(argv[2], &st) == 0 && S_ISDIR(st.st_mode));
++        CHECK(st.st_uid == getuid() && (st.st_mode & 0777) == 0700);
++        int leftover = !strcmp(argv[1], "--leftover-peer");
++        backlog_t b = {.listener = -1, .count = 0};
++        if (leftover) {
++            int fd = socket(AF_UNIX, SOCK_STREAM, 0); CHECK(fd >= 0);
++            struct sockaddr_un a; memset(&a, 0, sizeof(a)); a.sun_family = AF_UNIX; strcpy(a.sun_path, path);
++            CHECK(bind(fd, (struct sockaddr *)&a, sizeof(a)) == 0); CHECK(close(fd) == 0);
++        } else b = full_backlog(0);
++        char ready_path[128], stop_path[128];
++        CHECK(snprintf(ready_path, sizeof(ready_path), "%s/ready", argv[2]) < (int)sizeof(ready_path));
++        CHECK(snprintf(stop_path, sizeof(stop_path), "%s/stop", argv[2]) < (int)sizeof(stop_path));
++        FILE *ready_file = fopen(ready_path, "wx"); CHECK(ready_file != NULL); CHECK(fclose(ready_file) == 0);
++        int64_t deadline = now_ms() + 30000;
++        while (access(stop_path, F_OK) != 0 && now_ms() < deadline) nap(10);
++        if (leftover) CHECK(unlink(path) == 0); else backlog_close(b);
++        fprintf(stderr, "PASS: bounded raw peer\n"); return 0;
+@@ -260,18 +311,24 @@ int main(int argc, char **argv) {
+-    const char *scenario = argv[1];
+-    const char *scratch_dir = argv[2];
+-    mkdir(scratch_dir, 0700); /* ignore EEXIST */
+-
+-    if (strcmp(scenario, "connect_accept") == 0) scenario_connect_accept(scratch_dir);
+-    else if (strcmp(scenario, "partial_slow_peer") == 0) scenario_partial_slow_peer(scratch_dir);
+-    else if (strcmp(scenario, "peer_close_epipe") == 0) scenario_peer_close_epipe(scratch_dir);
+-    else if (strcmp(scenario, "deadline_accept") == 0) scenario_deadline_accept(scratch_dir);
+-    else if (strcmp(scenario, "deadline_connect") == 0) scenario_deadline_connect(scratch_dir);
+-    else if (strcmp(scenario, "cancellation") == 0) scenario_cancellation(scratch_dir);
+-    else if (strcmp(scenario, "nul_and_large_payload") == 0) scenario_nul_and_large_payload(scratch_dir);
+-    else if (strcmp(scenario, "descriptor_count_check") == 0) scenario_descriptor_count_check(scratch_dir);
+-    else if (strcmp(scenario, "path_lifecycle") == 0) scenario_path_lifecycle(scratch_dir);
+-    else if (strcmp(scenario, "capability_denial") == 0) scenario_capability_denial(scratch_dir);
+-    else { fprintf(stderr, "unknown scenario: %s\n", scenario); return 2; }
+-
+-    fprintf(stderr, "PASS: unix_socket_stream_test %s (%u checks)\n", scenario, checks);
+-    return 0;
++    if (!strcmp(argv[1], "--peer-fixture-selftest")) {
++        setup(); backlog_t b = full_backlog(0); backlog_close(b);
++        /* The injected private path must not affect real connects elsewhere. */
++        char real_path[104]; CHECK(snprintf(real_path, sizeof(real_path), "%s/real.sock", directory) < (int)sizeof(real_path));
++        int server = socket(AF_UNIX, SOCK_STREAM, 0), client = socket(AF_UNIX, SOCK_STREAM, 0);
++        CHECK(server >= 0 && client >= 0);
++        struct sockaddr_un address; memset(&address, 0, sizeof(address)); address.sun_family = AF_UNIX; strcpy(address.sun_path, real_path);
++        CHECK(bind(server, (struct sockaddr *)&address, sizeof(address)) == 0); CHECK(listen(server, 1) == 0);
++        CHECK(connect(client, (struct sockaddr *)&address, sizeof(address)) == 0);
++        int accepted = accept(server, NULL, NULL); CHECK(accepted >= 0);
++        CHECK(close(accepted) == 0 && close(client) == 0 && close(server) == 0); CHECK(unlink(real_path) == 0);
++        finish_loop();
++        fprintf(stderr, "PASS: controlled pending-connect fixture (%u checks)\n", checks); return 0;
++    }
++    setup(); const char *name = argv[1];
++#define CASE(n) if (!strcmp(name, #n)) scenario_##n(); else
++    CASE(connect_accept) CASE(partial_slow_peer) CASE(peer_close_epipe)
++    CASE(deadline_accept) CASE(deadline_connect) CASE(destination_errors)
++    CASE(cancellation) CASE(connect_cancellation) CASE(nul_and_large_payload)
++    CASE(descriptor_count_check) CASE(capability_denial) CASE(capability_revocation)
++    CASE(path_lifecycle) CASE(loop_lifetime) CASE(borrowed_close) CASE(zero_budget)
++    { fprintf(stderr, "unknown scenario: %s\n", name); return 2; }
++#undef CASE
++    finish_loop(); fprintf(stderr, "PASS: unix_socket_stream_test %s (%u checks)\n", name, checks); return 0;
+diff --git a/tests/agent/unix_socket_stream_wrapper_contract_test.scm b/tests/agent/unix_socket_stream_wrapper_contract_test.scm
+new file mode 100644
+index 000000000..2b1210fcf
+--- /dev/null
++++ b/tests/agent/unix_socket_stream_wrapper_contract_test.scm
+@@ -0,0 +1,74 @@
++;; R7RS wrapper unit checks. Native externs are controlled test doubles;
++;; these checks do not qualify Eshkol JIT/AOT or a socket implementation.
++(import (scheme base) (scheme cxr) (scheme char) (scheme file) (scheme load)
++        (scheme process-context) (scheme read) (scheme repl) (scheme eval) (scheme write))
++(define root (cadr (command-line)))
++(define calls '())
++(define reply 0)
++(define (fake-native name args)
++  (set! calls (cons name calls))
++  (cond ((eq? name '-unix-stream-socket-os-error-raw) 77)
++        ((memq name '(capability-runtime-clear-raw capability-runtime-begin-install-raw capability-runtime-allow-raw)) 0)
++        (else reply)))
++(define-syntax require (syntax-rules () ((_ x ...) #t)))
++(define-syntax provide (syntax-rules () ((_ x ...) #t)))
++(define-syntax extern
++  (syntax-rules () ((_ type name rest ...)
++                    (define (name . args) (fake-native 'name args)))))
++(define (inexact->exact x) (exact x))
++(load (string-append root "/lib/core/capabilities.esk"))
++(load (string-append root "/lib/agent/unix_stream_socket.esk"))
++;; Evaluate the actual public fixture's error predicates, not copies of them.
++(call-with-input-file (string-append root "/tests/agent/unix_socket_stream_pending.esk")
++  (lambda (port)
++    (let scan ()
++      (let ((form (read port)))
++        (unless (eof-object? form)
++          (when (and (pair? form) (eq? (car form) 'define) (pair? (cadr form))
++                     (memq (caadr form) '(outcome? denied?)))
++            (eval form (interaction-environment)))
++          (scan))))))
++(define count 0)
++(define (assert name value)
++  (set! count (+ count 1))
++  (unless value (error "wrapper contract assertion" name)))
++(capability-install-policy! '(network))
++(set! calls '())
++(assert "loop zero rejected" (guard (e ((error-object? e) (equal? (error-object-message e) "unix-stream-socket-listen")))
++                               (unix-stream-socket-listen 0 "/tmp/socket") #f))
++(assert "loop validation precedes native" (null? calls))
++(assert "relative path rejected" (guard (e ((error-object? e) #t)) (unix-stream-socket-listen 1 "relative") #f))
++(assert "NUL path rejected" (guard (e ((error-object? e) #t)) (unix-stream-socket-listen 1 (string #\/ #\a (integer->char 0) #\b)) #f))
++(assert "bad deadline rejected" (guard (e ((error-object? e) #t)) (unix-stream-socket-connect-begin 1 "/tmp/socket" 2147483648) #f))
++(assert "invalid interest rejected" (guard (e ((error-object? e) #t)) (unix-stream-socket-poll 1 4 0) #f))
++(assert "argument controls do not call native" (null? calls))
++(set! reply -100)
++(assert "planned is not timeout" (not (outcome? (lambda () (unix-stream-socket-listen 1 "/tmp/socket")) "unix-stream-socket-listen" -2)))
++(assert "unrelated error is not timeout" (not (outcome? (lambda () (error "unrelated" -2)) "unix-stream-socket-accept" -2)))
++(set! reply -2)
++(assert "specific accept timeout recognized" (outcome? (lambda () (unix-stream-socket-accept 1 10)) "unix-stream-socket-accept" -2 77))
++(set! reply -6)
++(assert "specific finish cancellation recognized" (outcome? (lambda () (unix-stream-socket-connect-finish! 1)) "unix-stream-socket-connect-finish!" -6 77))
++(let* ((r (unix-stream-socket-read! 1 (make-bytevector 4 0) 0 4)) (e (unix-stream-socket-read-error r)))
++  (assert "read carries shared code" (and (eq? (unix-stream-socket-read-status r) 'error) (= (unix-stream-socket-error-code e) -6)))
++  (assert "read carries operation/OS code" (and (eq? (unix-stream-socket-error-operation e) 'unix-stream-socket-read!) (= (unix-stream-socket-error-os-code e) 77))))
++(set! reply -2)
++(assert "would-block remains distinct from EOF" (eq? (unix-stream-socket-read-status (unix-stream-socket-read! 1 (make-bytevector 1 0) 0 1)) 'would-block))
++(set! reply 0)
++(assert "read zero means EOF" (eq? (unix-stream-socket-read-status (unix-stream-socket-read! 1 (make-bytevector 1 0) 0 1)) 'eof))
++(set! reply 2)
++(let ((r (unix-stream-socket-poll 1 3 0)))
++  (assert "poll reports exact readiness" (and (eq? (unix-stream-socket-poll-status r) 'ready) (= (unix-stream-socket-poll-interests r) 2))))
++(set! reply -2)
++(let ((r (unix-stream-socket-poll 1 1 0)))
++  (assert "poll timeout has no readiness" (and (eq? (unix-stream-socket-poll-status r) 'timeout) (= (unix-stream-socket-poll-interests r) 0))))
++(set! reply 0)
++(capability-install-policy! '())
++(set! calls '())
++(assert "revoked read denied specifically" (denied? (lambda () (unix-stream-socket-read! 1 (make-bytevector 1 0) 0 1))))
++(assert "denied I/O never reaches native" (null? calls))
++(assert "cleanup cancellation survives revocation" (= (unix-stream-socket-cancel! 1) 0))
++(assert "cleanup close survives revocation" (= (unix-stream-socket-close! 1) 0))
++(assert "cleanup uses only ownership operations" (equal? calls '(-unix-stream-socket-close-raw -unix-stream-socket-cancel-raw)))
++(assert "invalid cleanup handle still rejected" (guard (e ((error-object? e) #t)) (unix-stream-socket-close! 0) #f))
++(display "PASS: Unix stream Scheme wrapper unit contract (") (display count) (display " checks)") (newline)

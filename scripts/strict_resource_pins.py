@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / "inc" / "eshkol" / "strict_resource_contracts.h"
-ENTRY = re.compile(r'\{"(?P<module>[a-z.]+)", "(?P<source>[a-z_/]+\.esk)",\s*"(?P<sha>[0-9a-f]{64})",\s*'
+ENTRY = re.compile(r'\{"(?P<module>[a-z._]+)", "(?P<source>[a-z_/]+\.esk)",\s*"(?P<sha>[0-9a-f]{64})",\s*'
                    r'(?P<table>k[A-Za-z]+Contracts)', re.S)
 
 

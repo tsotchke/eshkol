@@ -43,6 +43,13 @@ enum class Kind : uint8_t {
     SEMAPHORE,
     BARRIER,
     PROCESS,
+    PROCESS_STREAM,
+    UNIX_LISTENER,
+    UNIX_CONNECTING,
+    UNIX_STREAM,
+    UNIX_CANCELLED,
+    CLEANUP_TICKET,
+    CLEANUP_RECOVERY,
     COUNT
 };
 
@@ -51,6 +58,22 @@ constexpr uint32_t bit(Kind kind) { return 1u << static_cast<unsigned>(kind); }
 constexpr uint32_t kAnySocket =
     bit(Kind::TCP_LISTENER) | bit(Kind::TCP_STREAM) | bit(Kind::UDP_SOCKET);
 constexpr uint32_t kAnyTcp = bit(Kind::TCP_LISTENER) | bit(Kind::TCP_STREAM);
+constexpr uint32_t kAnyUnix = bit(Kind::UNIX_LISTENER) | bit(Kind::UNIX_CONNECTING) |
+    bit(Kind::UNIX_STREAM) | bit(Kind::UNIX_CANCELLED);
+constexpr uint32_t kUnixPeer = bit(Kind::UNIX_CONNECTING) | bit(Kind::UNIX_STREAM);
+// A branch that may have cancelled remains owned but can no longer prove I/O
+// admissible. A branch that may still be connecting must finish before I/O.
+constexpr Kind joinProtocolKind(Kind a, Kind b) {
+    if (a == b) return a;
+    if ((bit(a) & kAnyUnix) && (bit(b) & kAnyUnix)) {
+        if (a == Kind::UNIX_CANCELLED || b == Kind::UNIX_CANCELLED)
+            return Kind::UNIX_CANCELLED;
+        if ((bit(a) & kUnixPeer) && (bit(b) & kUnixPeer))
+            return Kind::UNIX_CONNECTING;
+    }
+    return Kind::NONE;
+}
+constexpr uint32_t kAnyCleanup = bit(Kind::CLEANUP_TICKET) | bit(Kind::CLEANUP_RECOVERY);
 constexpr uint32_t kAnyPort = bit(Kind::INPUT_PORT) | bit(Kind::OUTPUT_PORT);
 
 inline const char* kindName(Kind kind) {
@@ -70,6 +93,13 @@ inline const char* kindName(Kind kind) {
         case Kind::SEMAPHORE: return "semaphore";
         case Kind::BARRIER: return "barrier";
         case Kind::PROCESS: return "process";
+        case Kind::PROCESS_STREAM: return "subprocess stream scope";
+        case Kind::UNIX_LISTENER: return "Unix listener";
+        case Kind::UNIX_CONNECTING: return "connecting Unix stream";
+        case Kind::UNIX_STREAM: return "open Unix stream";
+        case Kind::UNIX_CANCELLED: return "cancelled Unix socket";
+        case Kind::CLEANUP_TICKET:
+        case Kind::CLEANUP_RECOVERY: return "cleanup ticket";
         default: return "value";
     }
 }
@@ -97,6 +127,7 @@ inline Failure failureOf(Kind kind) {
         case Kind::TLS_SESSION:
             return Failure::TLS_ERROR;
         case Kind::EVENT_LOOP:
+        case Kind::CLEANUP_RECOVERY:
         case Kind::PROCESS:
             return Failure::FALSE_VALUE;
         default:
@@ -120,6 +151,8 @@ enum class Role : uint8_t {
     OBSERVE,          // borrows the handles at handle_args for the call only
     ERROR_PREDICATE,  // refines a failure value of family `family`
     ERROR_OBSERVE,    // reads a failure value on the failed branch only
+    TRANSITION,      // retains ownership, changes the protocol kind to `produces`
+    UNSUPPORTED,     // no sound ownership summary yet; strict compilation refuses the call
     LEND              // opens or takes a handle, lends it to a procedure, closes it on every exit
 };
 
@@ -140,6 +173,7 @@ struct HandleArg {
     // only thing that may close it. The caller's owner becomes moved-from, so a
     // later use or close of it is reported.
     bool consumed = false;
+    bool retired = false;  // recovery consumes an already-closed identity, never I/O authority
 };
 
 struct ProcArg {
@@ -164,6 +198,9 @@ constexpr HandleArg H(int8_t index, uint32_t accepts, bool optional = false) {
 /** A handle argument whose ownership moves into the operation's result. */
 constexpr HandleArg HMOVE(int8_t index, uint32_t accepts) {
     return HandleArg{index, accepts, false, true};
+}
+constexpr HandleArg HRETIRED(int8_t index, uint32_t accepts) {
+    return HandleArg{index, accepts, false, true, true};
 }
 constexpr HandleArg NOH() { return HandleArg{}; }
 constexpr ProcArg P(int8_t index, ProcMode mode) { return ProcArg{index, mode}; }
@@ -318,6 +355,66 @@ inline constexpr Contract kAgentSubprocessContracts[] = {
     {"run-command-capture", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
     {"run-argv", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
     {"run-argv-capture", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    // Aggregate PROCESS cleanup IDs remain owned by the runtime. Their
+    // extraction/consumption needs container ownership support; strict calls
+    // are refused explicitly rather than silently treated as effect-free.
+    {"call-with-subprocess-streams", Role::LEND, Kind::PROCESS_STREAM, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {P(3, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-read!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-poll", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-status", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cancel!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::PROCESS_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-read-status", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-read-count", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-read-error", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-result-value", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-result-cleanup-status", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"process-stream-result-cleanup-ticket", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-tickets", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-status", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-consume!", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-stream-runtime-shutdown!", Role::UNSUPPORTED, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"process-cleanup-drain!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+};
+
+// Unix acquisition publishes connecting ownership before readiness. Cancellation
+// changes the protocol kind but does not consume ownership. Accepted close
+// consumes that owner; an explicit close request produces a separate ticket.
+// Runtime completion/retryability gates ticket release and loop teardown.
+inline constexpr Contract kAgentUnixStreamSocketContracts[] = {
+    {"unix-stream-socket-listen", Role::FACTORY, Kind::UNIX_LISTENER, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-connect-begin", Role::FACTORY, Kind::UNIX_CONNECTING, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-accept", Role::FACTORY, Kind::UNIX_STREAM, {H(0, bit(Kind::UNIX_LISTENER)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-connect-finish!", Role::TRANSITION, Kind::UNIX_STREAM, {H(0, kUnixPeer), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-read!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::UNIX_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-write!", Role::OBSERVE, Kind::NONE, {H(0, bit(Kind::UNIX_STREAM)), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-poll", Role::OBSERVE, Kind::NONE, {H(0, kAnyUnix), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-cancel!", Role::TRANSITION, Kind::UNIX_CANCELLED, {H(0, kAnyUnix), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-close!", Role::CLOSE, Kind::NONE, {H(0, kAnyUnix), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-close-request!", Role::FACTORY, Kind::CLEANUP_TICKET, {HMOVE(0, kAnyUnix), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-cleanup-result", Role::OBSERVE, Kind::NONE, {H(0, kAnyCleanup), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-cleanup-retry!", Role::OBSERVE, Kind::NONE, {H(0, kAnyCleanup), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-cleanup-release!", Role::CLOSE, Kind::NONE, {H(0, kAnyCleanup), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-cleanup-ticket", Role::FACTORY, Kind::CLEANUP_RECOVERY, {HRETIRED(0, kAnyUnix), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, true},
+    {"unix-stream-socket-cleanup-state", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-cleanup-stage", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-cleanup-os-error", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-cleanup-retryable?", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-read-status", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-read-count", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-read-error", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-write-status", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-write-count", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-write-error", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-poll-status", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-poll-interests", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-poll-error", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-error-operation", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-error-code", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-error-os-code", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"unix-stream-socket-planned?", Role::SAFE, Kind::NONE, {NOH(), NOH()}, {NOP(), NOP()}, false, Failure::RAISES, false},
+    {"call-with-unix-stream-listener", Role::LEND, Kind::UNIX_LISTENER, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {P(2, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-unix-stream-connection", Role::LEND, Kind::UNIX_STREAM, {H(0, bit(Kind::EVENT_LOOP)), NOH()}, {P(3, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
+    {"call-with-unix-stream-accept", Role::LEND, Kind::UNIX_STREAM, {H(0, bit(Kind::UNIX_LISTENER)), NOH()}, {P(2, ProcMode::ONCE), NOP()}, false, Failure::RAISES, true},
 };
 
 struct ModuleContract {
@@ -341,9 +438,13 @@ inline constexpr ModuleContract kModuleContracts[] = {
      "79612384c29b0fdf28b738f6588062a1916cd589588b3e9a617c112ac7de572b",
      kCoreThreadsContracts, sizeof(kCoreThreadsContracts) / sizeof(kCoreThreadsContracts[0])},
     {"agent.subprocess", "agent/subprocess.esk",
-     "4691729a42034d3be81f5d64385ae65cdb5a8009f6c647c0c8ceffe509da403e",
+     "f31051e751d6323fd1d61016f74e776b2fc9f823fe3005d2d0764bebbf1ee5bb",
      kAgentSubprocessContracts,
      sizeof(kAgentSubprocessContracts) / sizeof(kAgentSubprocessContracts[0])},
+    {"agent.unix_stream_socket", "agent/unix_stream_socket.esk",
+     "404eef05d9cbfe281b4326c2c0ad2904309f8bef497e8b603b5139b685b4ae11",
+     kAgentUnixStreamSocketContracts,
+     sizeof(kAgentUnixStreamSocketContracts) / sizeof(kAgentUnixStreamSocketContracts[0])},
 };
 
 // ── compiler builtins (apply only when the name is not lexically rebound) ──

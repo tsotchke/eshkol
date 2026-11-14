@@ -1,0 +1,183 @@
+{
+  "schema": 1,
+  "evidence_date": "2026-11-13",
+  "pull_request": 914,
+  "status": "PASS_SCOPED_QUALIFICATION",
+  "publication_state": "COMPLETE_SOURCE_BOUND_RESULTS",
+  "sources": {
+    "canonical_integration": "53220efc1638c77d108ab009d4a5e6939c488c7b",
+    "shared_foundation": "b682c40c4fbb4bb0944226ff2d49b0928c1fa785",
+    "tested_process_adapter": "d1814038877bc4fc416f588041382a34c59a83ba",
+    "combined_public_cli": "8d99676f6467e362da34122bbe7f36d7e6e63907"
+  },
+  "own_branch": {
+    "platform": "Linux x86_64 epoll",
+    "compiler": "Clang 22.1.8",
+    "build_type": "Release",
+    "agent_ffi": false,
+    "completed_utc": "2026-11-14T02:17:31.180602+00:00",
+    "ctest": {
+      "passed": 4,
+      "failed": 0,
+      "skipped": 0,
+      "tests": [
+        "agent-subprocess-stream",
+        "agent-subprocess-stream-watch-failure",
+        "resource_explicit_loop_test",
+        "strict_resource_contract_pins"
+      ]
+    },
+    "native": {
+      "normal": "PASS",
+      "ASan_UBSan_leak": "PASS",
+      "controls": [
+        "byte preservation and bounded backpressure with more than 16 MiB on each output stream",
+        "owner-thread confinement, deadlines, immutable cancellation grace and direct-child reaping",
+        "missing capability checker denies acquisition",
+        "clock failure retains discoverable cleanup ownership",
+        "watch-removal failure retains descriptors, loop and lease until repair/retry",
+        "PROCESS/SOCKET kind/tag checks and PROCESS-only shutdown"
+      ]
+    },
+    "source_sha256": {
+      "inc/eshkol/core/subprocess_stream.h": "5d122f008cd56ba619f3d6f120a0c16269e731082cdba910bbe7ade11de4611b",
+      "lib/agent/c/agent_subprocess.c": "172e643be2376803b614c8fb78527f3339b5677cc178969f0ef94b0d9b60a935",
+      "lib/core/resource_lease.c": "a1623538d776fa31ff0071efdb20d70544adf9b5f00c86b05921d11223ade3cb",
+      "lib/core/event_loop.c": "0a2406de7648cb5004556e85a5dd2a92c757564fcbd64e7f2a6f43cff5e18f46",
+      "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+      "tests/core/resource_explicit_loop_test.c": "c6d27711780b3a1ec487e621191206cab9cb8f213386c286fef6562b8afad370",
+      "tests/agent/subprocess_stream_test.c": "9891aa04998c4905b89a84830b60784f17221338dcc78d9c9d9b43a1b809307a",
+      "tests/agent/subprocess_stream_clock_test.c": "395aa0a3ae51a4f1c416966b9a4fb4a13f19cfd83f4caa7f4f51862051dd1ef2",
+      "tests/agent/subprocess_stream_watch_failure_test.c": "17f0fa986d9bdc0f53de9d5373f29f6fab7a35707f1655e9854fb24fbde2d5e0",
+      "tests/agent/run_subprocess_stream_test.sh": "e746eef2fbf1663c621fd80ca9c73488cfdbadaf1882e546b96dc823caaa9961"
+    },
+    "original_result_sha256": "35f6924c6314c0994b556243ec505d9f45d143fbb25aac21cd60d9ed63018b4c",
+    "original_log_sha256": {
+      "build-scoped-targets.log": "a25ab578d0241cb4356fcdc95cb2edbcfecf3bcf5e3b11af9f2ca35755c0f6ae",
+      "ctest-four.log": "d669b1476c544cf10d8f8cd94065f794c116e662a3ee1f6a96425213687829ac",
+      "native-normal.log": "ed124ec883de128ece9372c8351bc22517a4301bee103fccc3383f7a2b471828",
+      "native-sanitized.log": "71ccdd25c0f0b600fdbab632e86ca7ef31a6e3a4ee08517e533cbeaba9b30ea2",
+      "ctest-four.xml": "d8cfc3f730fc623550eeffc28fc43cdcf30a239fd18719365270da951497013c"
+    }
+  },
+  "combined_public_cli": {
+    "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+    "status": "PASS",
+    "agent_ffi": true,
+    "command": [
+      "python3.14",
+      "<source>/scripts/test_subprocess_stream_public.py",
+      "--runner",
+      "<build>/eshkol-run",
+      "--child",
+      "<build>/eshkol-subprocess-stream-test",
+      "--source",
+      "<source>",
+      "--build-dir",
+      "<build>"
+    ],
+    "support_library_argument": false,
+    "production_archive": "libeshkol-agent-ffi.a (whole-archive linked into runner)",
+    "public_checks": {
+      "jit": 23,
+      "aot": 23
+    },
+    "large_stream_bytes": {
+      "stdout": 17825829,
+      "stderr": 17825829
+    },
+    "reentry": {
+      "jit": "PASS",
+      "aot": "PASS"
+    },
+    "standalone_vm_bridge": "Explicit unsupported rejection passed",
+    "original_captured_public_stdout_sha256": "2ed50d3d6cfaa25a5f2ce266a2dc005e57179c1e7d9bf7bad770e000db5c09b2",
+    "original_captured_evidence_sha256": "ace41d45d30dab88850d4d6c455b3c31a4099ce18f830d4adfb5404593fa834b",
+    "scope": "Combined frozen core production CLI, not a fresh own-PROCESS compiler qualification and not a staged installation."
+  },
+  "combined_hosted_native": {
+    "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+    "run_url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710",
+    "jobs": [
+      {
+        "name": "Linux epoll",
+        "conclusion": "success",
+        "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121490796"
+      },
+      {
+        "name": "Linux ASan and UBSan",
+        "conclusion": "success",
+        "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121491203"
+      },
+      {
+        "name": "macOS kqueue",
+        "conclusion": "success",
+        "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121491287"
+      }
+    ],
+    "receipts": [
+      {
+        "platform": "Darwin arm64",
+        "backend": "kqueue",
+        "sanitizers": [],
+        "leak_detection": false,
+        "commands_passed": 37,
+        "original_receipt_sha256": "91b78bd760b0a46e4861ce9a777368b07e9a5f26c68cf273c671191bb649c850"
+      },
+      {
+        "platform": "Linux x86_64",
+        "backend": "epoll",
+        "sanitizers": [],
+        "leak_detection": false,
+        "commands_passed": 39,
+        "original_receipt_sha256": "260bc8e30532e71b6a742003a5571761e9418a9690c9cf95c1ba3b3bc071bf7a"
+      },
+      {
+        "platform": "Linux x86_64",
+        "backend": "epoll",
+        "sanitizers": [
+          "address",
+          "undefined"
+        ],
+        "leak_detection": true,
+        "commands_passed": 39,
+        "original_receipt_sha256": "13f07e1bb68e657f07b589f5dbb8fd6390cc8146a5305867c54cc1672a10130e"
+      }
+    ],
+    "original_run_metadata_sha256": "0e39f253749af1f35877d8f0bbe14e92cad01d6a4ebc45ce06ed536694f5c317",
+    "scope": "Combined socket/common/PROCESS standalone native source on Linux epoll, Linux ASan/UBSan, and macOS arm64 kqueue. Separate from own-branch qualification; no macOS public JIT/AOT, net/TLS, package or release qualification."
+  },
+  "contract_scope": {
+    "reviewed_module_exports": 40,
+    "pin_test": "PASS",
+    "scoped_callbacks": "Borrow a PROCESS_STREAM owner",
+    "aggregate_cleanup_ids": "Explicitly unsupported in strict mode"
+  },
+  "limits": [
+    "Own-PROCESS qualification used agent FFI OFF and standalone native/scoped tests; public CLI evidence comes from the separate combined source.",
+    "Hosted macOS is native only. No macOS public JIT/AOT, installed-package or release acceptance is claimed.",
+    "Original full-suite baseline failures remain recorded in the combined socket qualification; these scoped passes do not make that raw suite green.",
+    "The tested final PROCESS source removes the redundant PROCESS disjunct and adopts the exact qualified shared/core registry bytes. The other 528 previously recorded native source hashes remain unchanged; these final-source scoped/native passes were rerun after that amendment.",
+    "No maintainer approval or merge is asserted."
+  ],
+  "evidence_policy": "Portable summaries and original-byte SHA-256 values only. Raw local logs and machine-specific paths are omitted. Documentation/metadata-only followups do not represent another runtime execution.",
+  "inventory_registration": {
+    "binding": "lib/agent/c/agent_subprocess_stream_binding.c",
+    "binding_sha256": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+    "lexical_macro_count": 1,
+    "semantic_counts": {
+      "S1_clang_header_member": 1,
+      "S2_clang_sizeof": 1,
+      "S3_clang_header_cast": 1
+    },
+    "semantic_disappearance_allowances": "Exact class/path/from1/to0 with configuration reason; checker matches tuple and reason, not FFI option itself.",
+    "paired_scan_sources": {
+      "control": "5d09f4aef21abe329d7dc6a6a5fcaae7a1e21839",
+      "combined": "8d99676f6467e362da34122bbe7f36d7e6e63907"
+    },
+    "checker_controls": 28,
+    "checker_controls_scope": "Report-level controls across PROCESS and Unix proposals, not native execution or a passing full-source gate.",
+    "checker_controls_receipt_sha256": "601c0a78d2514a8e3e5c48adf1c9ce87a57eb0b7bf261df1970990b1315451cb",
+    "combined_unrelated_violations_retained": 157
+  }
+}

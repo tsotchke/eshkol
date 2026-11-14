@@ -1,0 +1,246 @@
+;; Explicit loops, two-stage connect and shared resource_lease.h outcomes.
+(require stdlib)
+(require core.capabilities)
+(provide unix-stream-socket-listen unix-stream-socket-accept
+         unix-stream-socket-connect-begin unix-stream-socket-connect-finish!
+         unix-stream-socket-read! unix-stream-socket-write! unix-stream-socket-poll
+         unix-stream-socket-cancel! unix-stream-socket-close! unix-stream-socket-close-request!
+         unix-stream-socket-cleanup-result unix-stream-socket-cleanup-state
+         unix-stream-socket-cleanup-stage unix-stream-socket-cleanup-os-error
+         unix-stream-socket-cleanup-retryable? unix-stream-socket-cleanup-retry!
+         unix-stream-socket-cleanup-release! unix-stream-socket-cleanup-ticket
+         call-with-unix-stream-listener call-with-unix-stream-connection call-with-unix-stream-accept
+         unix-stream-socket-read-status unix-stream-socket-read-count unix-stream-socket-read-error
+         unix-stream-socket-write-status unix-stream-socket-write-count unix-stream-socket-write-error
+         unix-stream-socket-poll-status unix-stream-socket-poll-interests unix-stream-socket-poll-error
+         unix-stream-socket-error-operation unix-stream-socket-error-code unix-stream-socket-error-os-code
+         unix-stream-socket-planned?)
+
+(extern i64 -unix-stream-socket-listen-raw i64 ptr :real eshkol_unix_stream_socket_listen)
+(extern i64 -unix-stream-socket-accept-raw i64 i32 :real eshkol_unix_stream_socket_accept)
+(extern i64 -unix-stream-socket-connect-begin-raw i64 ptr i32 :real eshkol_unix_stream_socket_connect_begin)
+(extern i32 -unix-stream-socket-connect-finish-raw i64 :real eshkol_unix_stream_socket_connect_finish)
+(extern i64 -unix-stream-socket-read-bv-raw i64 ptr i64 i64 :real eshkol_unix_stream_socket_read_bytevector)
+(extern i64 -unix-stream-socket-write-bv-raw i64 ptr i64 i64 :real eshkol_unix_stream_socket_write_bytevector)
+(extern i32 -unix-stream-socket-poll-raw i64 i32 i32 :real eshkol_unix_stream_socket_poll)
+(extern i32 -unix-stream-socket-cancel-raw i64 :real eshkol_unix_stream_socket_cancel)
+(extern i32 -unix-stream-socket-close-raw i64 :real eshkol_unix_stream_socket_close)
+(extern i64 -unix-stream-socket-close-request-raw i64 :real eshkol_unix_stream_socket_close_request)
+(extern i64 -unix-stream-socket-cleanup-result-raw i64 :real eshkol_unix_stream_socket_cleanup_result_packed)
+(extern i32 -unix-stream-socket-cleanup-retry-raw i64 :real eshkol_unix_stream_socket_cleanup_retry)
+(extern i32 -unix-stream-socket-cleanup-release-raw i64 :real eshkol_unix_stream_socket_cleanup_release)
+(extern i32 -unix-stream-socket-cleanup-detach-raw i64 :real eshkol_unix_stream_socket_cleanup_detach)
+(extern i64 -unix-stream-socket-cleanup-ticket-raw i64 :real eshkol_unix_stream_socket_cleanup_ticket)
+(extern i32 -unix-stream-socket-os-error-raw :real eshkol_unix_stream_socket_last_os_error)
+(extern i32 -unix-stream-socket-path-error-raw :real eshkol_unix_stream_socket_last_path_error)
+
+;; Keep the shared outcome names together. The binding translation unit asserts
+;; these spellings against resource_lease.h so a C change requires alignment.
+(define -unix-io-timeout -2)
+(define -unix-io-invalid -4)
+(define -unix-io-cancelled -6)
+(define -unix-io-reset -7)
+(define -unix-io-planned -100)
+(define (unix-stream-socket-planned? n) (= n -unix-io-planned))
+(define (-unix-stream-socket-id! who n)
+  (unless (and (integer? n) (exact? n) (> n 0) (<= n 9007199254740991))
+    (error who "expected exact positive resource identity" n)))
+(define (-unix-stream-socket-bound! who n)
+  (unless (and (integer? n) (exact? n) (>= n 0) (<= n 2147483647))
+    (error who "expected exact nonnegative signed-word bound" n)))
+(define (-unix-stream-socket-path! who path)
+  (unless (and (string? path) (> (string-length path) 0)
+               (char=? (string-ref path 0) #\/))
+    (error who "expected absolute filesystem path"))
+  (let scan ((i 0))
+    (when (< i (string-length path))
+      (when (= (char->integer (string-ref path i)) 0)
+        (error who "path contains NUL"))
+      (scan (+ i 1)))))
+(define (-unix-stream-socket-checked who n)
+  (cond ((unix-stream-socket-planned? n) (error who "Planned for v1.4.0" n))
+        ((< n 0) (error who "native Unix stream socket outcome" (inexact->exact n)
+                       (inexact->exact (-unix-stream-socket-os-error-raw))))
+        (else (inexact->exact n))))
+(define (-unix-stream-socket-error who n)
+  (vector who (inexact->exact n) (inexact->exact (-unix-stream-socket-os-error-raw))))
+
+(define (unix-stream-socket-listen loop path)
+  "Listen on an explicit retained loop, in an owned private directory."
+  (-unix-stream-socket-id! "unix-stream-socket-listen" loop)
+  (-unix-stream-socket-path! "unix-stream-socket-listen" path)
+  (capability-require! 'network path)
+  (let ((n (-unix-stream-socket-listen-raw loop path)))
+    (when (and (< n 0) (> (-unix-stream-socket-path-error-raw) 0))
+      (error "unix-stream-socket-listen" "listener setup failed; socket pathname remains"
+             (inexact->exact n) (inexact->exact (-unix-stream-socket-os-error-raw))
+             path (inexact->exact (-unix-stream-socket-path-error-raw))))
+    (-unix-stream-socket-checked "unix-stream-socket-listen" n)))
+(define (unix-stream-socket-accept listener deadline-ms)
+  (-unix-stream-socket-id! "unix-stream-socket-accept" listener)
+  (-unix-stream-socket-bound! "unix-stream-socket-accept" deadline-ms)
+  (capability-require! 'network)
+  (-unix-stream-socket-checked "unix-stream-socket-accept" (-unix-stream-socket-accept-raw listener deadline-ms)))
+(define (unix-stream-socket-connect-begin loop path deadline-ms)
+  "Publish before waiting; one acquisition deadline. Zero never waits."
+  (-unix-stream-socket-id! "unix-stream-socket-connect-begin" loop)
+  (-unix-stream-socket-path! "unix-stream-socket-connect-begin" path)
+  (-unix-stream-socket-bound! "unix-stream-socket-connect-begin" deadline-ms)
+  (capability-require! 'network path)
+  (-unix-stream-socket-checked "unix-stream-socket-connect-begin"
+    (-unix-stream-socket-connect-begin-raw loop path deadline-ms)))
+(define (unix-stream-socket-connect-finish! id)
+  "Finish using begin's remaining budget; retain ownership on failure."
+  (-unix-stream-socket-id! "unix-stream-socket-connect-finish!" id)
+  (capability-require! 'network)
+  (-unix-stream-socket-checked "unix-stream-socket-connect-finish!" (-unix-stream-socket-connect-finish-raw id)))
+
+(define (-unix-stream-socket-range! who id buffer start count)
+  (-unix-stream-socket-id! who id)
+  (-unix-stream-socket-bound! who start)
+  (-unix-stream-socket-bound! who count)
+  (unless (and (bytevector? buffer) (> count 0)
+               (<= start (bytevector-length buffer))
+               (<= count (- (bytevector-length buffer) start)))
+    (error who "invalid bytevector range")))
+(define (unix-stream-socket-read! id buffer start count)
+  (-unix-stream-socket-range! "unix-stream-socket-read!" id buffer start count)
+  (capability-require! 'network)
+  (let ((n (-unix-stream-socket-read-bv-raw id buffer start count)))
+    (cond ((unix-stream-socket-planned? n) (error "unix-stream-socket-read!" "Planned for v1.4.0" n))
+          ((> n 0) (vector 'data (inexact->exact n) #f))
+          ((= n 0) (vector 'eof 0 #f))
+          ((= n -unix-io-timeout) (vector 'would-block 0 #f))
+          (else (vector 'error 0 (-unix-stream-socket-error 'unix-stream-socket-read! n))))))
+(define (unix-stream-socket-write! id buffer start count)
+  (-unix-stream-socket-range! "unix-stream-socket-write!" id buffer start count)
+  (capability-require! 'network)
+  (let ((n (-unix-stream-socket-write-bv-raw id buffer start count)))
+    (cond ((unix-stream-socket-planned? n) (error "unix-stream-socket-write!" "Planned for v1.4.0" n))
+          ((> n 0) (vector 'data (inexact->exact n) #f))
+          ((= n -unix-io-timeout) (vector 'would-block 0 #f))
+          (else (vector 'error 0 (-unix-stream-socket-error 'unix-stream-socket-write! n))))))
+(define (unix-stream-socket-poll id interests timeout-ms)
+  (-unix-stream-socket-id! "unix-stream-socket-poll" id)
+  (-unix-stream-socket-bound! "unix-stream-socket-poll" timeout-ms)
+  (unless (and (integer? interests) (exact? interests) (>= interests 1) (<= interests 3))
+    (error "unix-stream-socket-poll" "expected read1/write2 interest mask"))
+  (capability-require! 'network)
+  (let ((n (-unix-stream-socket-poll-raw id interests timeout-ms)))
+    (cond ((unix-stream-socket-planned? n) (error "unix-stream-socket-poll" "Planned for v1.4.0" n))
+          ((> n 0) (vector 'ready (inexact->exact n) #f))
+          ((= n -unix-io-timeout) (vector 'timeout 0 #f))
+          ((= n -unix-io-cancelled)
+           (vector 'cancelled 0 (-unix-stream-socket-error 'unix-stream-socket-poll n)))
+          (else (vector 'error 0 (-unix-stream-socket-error 'unix-stream-socket-poll n))))))
+(define (unix-stream-socket-read-status r) (vector-ref r 0))
+(define (unix-stream-socket-read-count r) (vector-ref r 1))
+(define (unix-stream-socket-read-error r) (vector-ref r 2))
+(define (unix-stream-socket-write-status r) (vector-ref r 0))
+(define (unix-stream-socket-write-count r) (vector-ref r 1))
+(define (unix-stream-socket-write-error r) (vector-ref r 2))
+(define (unix-stream-socket-poll-status r) (vector-ref r 0))
+(define (unix-stream-socket-poll-interests r) (vector-ref r 1))
+(define (unix-stream-socket-poll-error r) (vector-ref r 2))
+(define (unix-stream-socket-error-operation e) (vector-ref e 0))
+(define (unix-stream-socket-error-code e) (vector-ref e 1))
+(define (unix-stream-socket-error-os-code e) (vector-ref e 2))
+
+;; Cleanup does not reacquire network or consult a clock. Native ownership,
+;; kind, tag and generation checks remain required even after revocation.
+(define (unix-stream-socket-cancel! id)
+  (-unix-stream-socket-id! "unix-stream-socket-cancel!" id)
+  (-unix-stream-socket-checked "unix-stream-socket-cancel!" (-unix-stream-socket-cancel-raw id)))
+(define (unix-stream-socket-close! id)
+  (-unix-stream-socket-id! "unix-stream-socket-close!" id)
+  (-unix-stream-socket-checked "unix-stream-socket-close!" (-unix-stream-socket-close-raw id)))
+
+(define (unix-stream-socket-close-request! id)
+  "Retire the socket and return an owned cleanup-result ticket."
+  (-unix-stream-socket-id! "unix-stream-socket-close-request!" id)
+  (-unix-stream-socket-checked "unix-stream-socket-close-request!" (-unix-stream-socket-close-request-raw id)))
+(define (unix-stream-socket-cleanup-result ticket)
+  "Inspect one cleanup snapshot; owner-thread inspection drives queued cleanup."
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-result" ticket)
+  (-unix-stream-socket-decode-cleanup
+    (-unix-stream-socket-checked "unix-stream-socket-cleanup-result"
+      (-unix-stream-socket-cleanup-result-raw ticket))))
+(define (-unix-stream-socket-decode-cleanup bits)
+  (let ((state (modulo bits 4)) (stage (modulo (quotient bits 4) 8)))
+    (vector (cond ((= state 0) 'pending) ((= state 1) 'complete) (else 'failed))
+            (cond ((= stage 0) 'none) ((= stage 1) 'watch) ((= stage 2) 'descriptor)
+                  ((= stage 3) 'path) (else 'loop))
+            (quotient bits 64) (= (modulo (quotient bits 32) 2) 1))))
+(define (unix-stream-socket-cleanup-state result) (vector-ref result 0))
+(define (unix-stream-socket-cleanup-stage result) (vector-ref result 1))
+(define (unix-stream-socket-cleanup-os-error result) (vector-ref result 2))
+(define (unix-stream-socket-cleanup-retryable? result) (vector-ref result 3))
+(define (unix-stream-socket-cleanup-retry! ticket)
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-retry!" ticket)
+  (-unix-stream-socket-checked "unix-stream-socket-cleanup-retry!" (-unix-stream-socket-cleanup-retry-raw ticket)))
+(define (unix-stream-socket-cleanup-release! ticket)
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-release!" ticket)
+  (-unix-stream-socket-checked "unix-stream-socket-cleanup-release!" (-unix-stream-socket-cleanup-release-raw ticket)))
+(define (unix-stream-socket-cleanup-ticket retired-id)
+  "Recover a retained convenience-close failure ticket, or return #f."
+  (-unix-stream-socket-id! "unix-stream-socket-cleanup-ticket" retired-id)
+  (let ((ticket (-unix-stream-socket-cleanup-ticket-raw retired-id)))
+    (if (= ticket -unix-io-invalid) #f
+        (-unix-stream-socket-checked "unix-stream-socket-cleanup-ticket" ticket))))
+
+;; The scope owns its internal ticket. Path cleanup gets one bounded retry,
+;; then its terminal ticket is released even on non-local exit. A normal return
+;; reports a failed cleanup snapshot after release. Non-local exits preserve
+;; their original control; callers requiring guaranteed error inspection on
+;; those paths use explicit ticket ownership. A genuinely pending/watch failure
+;; remains detached and recoverable; unresolved native ownership is never freed.
+(define (-unix-stream-socket-scoped-cleanup id)
+  (let ((ticket (-unix-stream-socket-close-request-raw id)))
+    (if (< ticket 0)
+        (vector 'failed 'request 0 #t (inexact->exact ticket))
+        (let ((bits (-unix-stream-socket-cleanup-result-raw ticket)))
+          (when (and (>= bits 0) (= (modulo (quotient bits 32) 2) 1))
+            (-unix-stream-socket-cleanup-retry-raw ticket)
+            (set! bits (-unix-stream-socket-cleanup-result-raw ticket)))
+          (if (< bits 0)
+              (begin
+                (-unix-stream-socket-cleanup-detach-raw ticket)
+                (vector 'failed 'observation 0 #t (inexact->exact bits)))
+              (let ((result (-unix-stream-socket-decode-cleanup bits)))
+                (if (or (eq? (vector-ref result 0) 'pending) (vector-ref result 3))
+                    (begin (-unix-stream-socket-cleanup-detach-raw ticket) result)
+                    (let ((released (-unix-stream-socket-cleanup-release-raw ticket)))
+                      (if (< released 0)
+                          (begin
+                            (-unix-stream-socket-cleanup-detach-raw ticket)
+                            (vector 'failed 'release 0 #t (inexact->exact released)))
+                          (if (eq? (vector-ref result 0) 'failed) result #f))))))))))
+(define (-unix-stream-socket-scoped id who context proc)
+  ;; One shared cell survives closure capture and continuation hops.
+  (let ((state (vector 'fresh #f)))
+    (let ((value
+      (dynamic-wind
+        (lambda ()
+          (if (eq? (vector-ref state 0) 'fresh) (vector-set! state 0 'open)
+              (error who "closed socket scope re-entry" -unix-io-invalid)))
+        (lambda () (proc id))
+        (lambda ()
+          (when (eq? (vector-ref state 0) 'open)
+            (vector-set! state 0 'closed)
+            (vector-set! state 1 (-unix-stream-socket-scoped-cleanup id)))))))
+      (when (vector-ref state 1)
+        (error who "socket cleanup failed" context id (vector-ref state 1)))
+      value)))
+(define (call-with-unix-stream-listener loop path proc)
+  "Call proc with a listener and close it on return, exception or escape."
+  (-unix-stream-socket-scoped (unix-stream-socket-listen loop path)
+    "call-with-unix-stream-listener" path proc))
+(define (call-with-unix-stream-connection loop path timeout-ms proc)
+  "Finish a published connection inside its scope, then call proc."
+  (-unix-stream-socket-scoped (unix-stream-socket-connect-begin loop path timeout-ms)
+    "call-with-unix-stream-connection" path
+    (lambda (id) (unix-stream-socket-connect-finish! id) (proc id))))
+(define (call-with-unix-stream-accept listener timeout-ms proc)
+  "Call proc with an accepted peer and close it on every exit."
+  (-unix-stream-socket-scoped (unix-stream-socket-accept listener timeout-ms)
+    "call-with-unix-stream-accept" 'accepted-peer proc))
