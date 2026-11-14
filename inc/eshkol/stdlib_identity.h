@@ -1,6 +1,7 @@
 #ifndef ESHKOL_STDLIB_IDENTITY_H
 #define ESHKOL_STDLIB_IDENTITY_H
 
+#include <eshkol/logger.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/stdlib_identity_config.h>
 
@@ -14,6 +15,7 @@
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
 
+#include <set>
 #include <string>
 
 namespace eshkol::stdlib_identity {
@@ -126,10 +128,15 @@ inline bool matches_module(const llvm::Module& module, std::string& found) {
  * @param path Path of a `stdlib.bc` or `stdlib.o` candidate.
  * @return true only when the file is readable and carries the expected marker.
  */
-inline bool file_belongs_to_this_build(const std::string& path) {
+inline bool file_belongs_to_this_build(const std::string& path,
+                                       std::string* reason = nullptr) {
+    std::string local;
+    std::string& found = reason ? *reason : local;
     auto buffer = llvm::MemoryBuffer::getFile(path);
-    if (!buffer) return false;
-    std::string found;
+    if (!buffer) {
+        found = "unreadable file";
+        return false;
+    }
     if (llvm::StringRef(path).ends_with(".bc")) {
         llvm::LLVMContext context;
         auto module = llvm::getLazyBitcodeModule(
@@ -137,6 +144,7 @@ inline bool file_belongs_to_this_build(const std::string& path) {
             /*ShouldLazyLoadMetadata=*/true);
         if (!module) {
             llvm::consumeError(module.takeError());
+            found = "unreadable bitcode";
             return false;
         }
         return matches_module(**module, found);
@@ -163,7 +171,21 @@ inline platform::ResolvedInstallArtifact resolve_artifact(
     const std::vector<platform::InstallSearchRoot>& roots,
     const std::string& leaf) {
     return platform::resolve_install_artifact(
-        roots, {leaf}, file_belongs_to_this_build);
+        roots, {leaf}, [](const std::string& path) {
+            std::string reason;
+            if (file_belongs_to_this_build(path, &reason)) return true;
+            // Say it once per file: an operator with an older install in a
+            // system prefix can see why it is not being used.
+            static std::set<std::string> reported;
+            if (reported.insert(path).second) {
+                eshkol_info(
+                    "Passing over system stdlib %s: %s; this compiler expects %s. "
+                    "The standard library is taken from the next location or from source",
+                    path.c_str(), reason.empty() ? "another build's identity" : reason.c_str(),
+                    static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+            }
+            return false;
+        });
 }
 
 } // namespace eshkol::stdlib_identity
