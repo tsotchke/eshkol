@@ -297,14 +297,16 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 ;; rest of the program would not be able to undo.
 (capability-install-policy! (list 'subprocess))
 (check "shell denied without shell capability"
-       (let ((message
-               (guard (condition (#t (if (error-object? condition)
-                                         (error-object-message condition)
-                                         "")))
-                 (begin (process-spawn-shell "echo should-not-run" ".") ""))))
-         (and (string? message)
-              (string-contains? message "capability denied")
-              (string-contains? message "shell")))
+       ;; The refusal names the capability either in the message or as an
+       ;; irritant, depending on which layer produced it; both count, any other
+       ;; raise does not.
+       (guard (condition
+               (#t (and (error-object? condition)
+                        (string-contains? (error-object-message condition)
+                                          "capability denied")
+                        (or (string-contains? (error-object-message condition) "shell")
+                            (and (memq 'shell (error-object-irritants condition)) #t)))))
+         (begin (process-spawn-shell "echo should-not-run" ".") #f))
        #t)
 
 (if (> failed 0)

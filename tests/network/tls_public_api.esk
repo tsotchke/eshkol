@@ -19,14 +19,25 @@
 
 ;; A refusal by the capability policy, told apart from any other raise.
 (define (refuses-capability? capability thunk)
-  (let ((message
-          (guard (condition (#t (if (error-object? condition)
-                                    (error-object-message condition)
-                                    "")))
-            (begin (thunk) ""))))
-    (and (string? message)
-         (string-contains? message "capability denied")
-         (string-contains? message (symbol->string capability)))))
+  "Whether THUNK was refused by the capability policy for CAPABILITY.
+
+The condition says so in one of two shapes: the runtime entry points put the
+capability in the message (\"capability denied: shell (system)\"), while the
+module wrappers raise \"capability denied\" with the capability as an irritant.
+Both are read here, so the check is about the refusal and not about which layer
+produced it."
+  (let ((named
+          (guard (condition
+                  (#t (and (error-object? condition)
+                           (string-contains? (error-object-message condition)
+                                             "capability denied")
+                           (or (string-contains? (error-object-message condition)
+                                                 (symbol->string capability))
+                               (and (memq capability
+                                          (error-object-irritants condition))
+                                    #t)))))
+            (begin (thunk) #f))))
+    (and named #t)))
 
 (define cert "tests/network/fixtures/localhost-cert.pem")
 (define key "tests/network/fixtures/localhost-key.pem")

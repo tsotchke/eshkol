@@ -57,7 +57,9 @@ the runtime entry points put it in the message; this reads both."
 (refused? "tcp-connect" 'network (lambda () (tcp-connect "127.0.0.1" 9 500)))
 (refused? "udp-bind" 'network (lambda () (udp-bind "127.0.0.1" 0)))
 (refused? "tls-client-context" 'network (lambda () (tls-client-context #f)))
-(refused? "run-command" 'shell (lambda () (run-command "echo should-not-run")))
+;; run-command asks for subprocess before it asks for shell, so under a
+;; policy that grants neither this is the one it names.
+(refused? "run-command" 'subprocess (lambda () (run-command "echo should-not-run")))
 (refused? "process-spawn-argv" 'subprocess
           (lambda () (process-spawn-argv (list "/bin/true") ".")))
 (refused? "http-get" 'network (lambda () (http-get "http://127.0.0.1:1/")))
