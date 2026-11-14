@@ -1,5 +1,7 @@
 # Socket design answers and review decisions
 
+The [November 13 review followup](../docs/development/evidence/unix-socket-review-followup-2026-11-13.md) records the updated branches, review corrections and source-bound test results.
+
 Draft answers to the [design questions](https://github.com/tsotchke/eshkol/pull/922#issuecomment-6833436073) and [review](https://github.com/tsotchke/eshkol/pull/922#pullrequestreview-5880625342). Socket decisions below describe this slice; shared API migrations and future work are proposals for coordination.
 
 ## A. Socket decisions

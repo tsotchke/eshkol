@@ -699,9 +699,8 @@ extern "C" {
     int32_t eshkol_process_cleanup_consume(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
     int32_t eshkol_process_stream_runtime_shutdown(void) ESHKOL_OPTIONAL_AGENT_FFI;
 
-    /* Unix-domain stream socket scaffold (ipc-unix-pending): every call
-     * below reaches lib/core/unix_socket_stream_stub.c, which performs no
-     * socket I/O and reports ESHKOL_UNIX_STREAM_SOCKET_PLANNED. */
+    /* Optional Unix-domain stream socket bridge, implemented by the native
+     * agent FFI socket and bytevector bindings. */
     int64_t eshkol_unix_stream_socket_listen(int64_t, const char*) ESHKOL_OPTIONAL_AGENT_FFI;
     int64_t eshkol_unix_stream_socket_accept(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
     int64_t eshkol_unix_stream_socket_connect(int64_t, const char*, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;

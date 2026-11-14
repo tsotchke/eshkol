@@ -63,6 +63,27 @@
       "from": 1,
       "to": 0,
       "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S1_clang_header_member",
+      "path": "lib/agent/c/agent_unix_socket_binding.c",
+      "from": 2,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S2_clang_sizeof",
+      "path": "lib/agent/c/agent_unix_socket_binding.c",
+      "from": 2,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "S3_clang_header_cast",
+      "path": "lib/agent/c/agent_unix_socket_binding.c",
+      "from": 2,
+      "to": 0,
+      "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
     }
   ]
 }

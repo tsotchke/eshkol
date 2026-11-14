@@ -1,11 +1,11 @@
 # Decision: Unix-domain stream sockets
 
-**Status:** Socket integration contract agreed; cleanup-completion interface proposed; implementation under review. **Updated:** 2026-11-12.
+**Status:** Socket integration contract agreed; cleanup-completion interface proposed; implementation under review. **Updated:** 2026-11-13.
 **Basis:** [IPC design](https://github.com/Gabriel-Kahen/eshkol/blob/93c02a9679b9476c58296bfeb6e229d251a21224/weeks/IPC_DESIGN-2026-11-02.md); [#916 at `da7005c7f`](https://github.com/tsotchke/eshkol/pull/916). Agreed design behavior; Native Linux/macOS and public Linux validation are recorded in the [review revision evidence](../docs/development/evidence/unix-socket-review-revision-2026-11-12.md).
 
 **Companion review:** [#916 scaffold findings and proposed resolutions](SOCKET_DESIGN_REVIEW-2026-11-10.md) explain the contract gaps and acceptance-test issues behind this decision.
 
-**Implementation:** [#922](https://github.com/tsotchke/eshkol/pull/922).
+**Implementation:** [#922](https://github.com/tsotchke/eshkol/pull/922). The [November 13 followup](../docs/development/evidence/unix-socket-review-followup-2026-11-13.md) records the latest review corrections, full comparison and qualification limits.
 
 **Review decisions:** [November 12 design answers](SOCKET_DESIGN_ANSWERS-2026-11-12.md), including capabilities, typestate and ticket tradeoffs.
 
