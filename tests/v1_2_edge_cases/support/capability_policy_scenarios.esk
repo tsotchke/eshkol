@@ -104,12 +104,13 @@
                   (not (capability-allowed? 'network))))
       (check "the policy is still active"
              (capability-policy-active?))
-      ;; The runtime's staged grant is not part of this module's surface, and a
-      ;; settled policy has no open install for it to act on either way.
-      (check "reaching the staged grant by name does not widen the policy"
+      ;; The runtime's staged grant is not part of this module's surface at
+      ;; all — a program that names it does not compile, which
+      ;; tests/capabilities/capability_raw_allow_negative.esk pins.
+      (check "a third install cannot restore what the second dropped"
              (begin
-               (guard (e (#t #t)) (capability-runtime-allow-raw "shell"))
-               (not (capability-allowed? 'shell)))))
+               (capability-install-policy! (list 'file-write))
+               (not (capability-allowed? 'file-write)))))
     #f)
 
 ;; ── An active policy cannot be cleared by the code it governs ─────────

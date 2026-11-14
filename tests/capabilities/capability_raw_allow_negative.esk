@@ -1,0 +1,13 @@
+;;; The runtime's staged grant is not part of core.capabilities' surface.
+;;;
+;;; A program that names it does not compile — which is the strongest form the
+;;; refusal can take, and the reason the no-widening probe does not try to catch
+;;; this one at run time.
+(require stdlib)
+(require core.capabilities)
+
+(capability-install-policy! (list 'file-read))
+(capability-runtime-allow-raw "shell")
+(display "widened:")
+(display (capability-allowed? 'shell))
+(newline)

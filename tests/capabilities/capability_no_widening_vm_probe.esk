@@ -11,9 +11,6 @@
 
 (capability-install-policy! (list 'file-read))
 
-(display "raw-allow:")
-(display (attempt (lambda () (capability-runtime-allow-raw "subprocess"))))
-(newline)
 
 (display "second-install:")
 (display (attempt (lambda () (capability-install-policy! (list 'file-read 'subprocess 'shell)))))

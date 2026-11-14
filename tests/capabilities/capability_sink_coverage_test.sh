@@ -150,6 +150,31 @@ for engine in jit aot; do
     done
 done
 
+# The runtime's staged grant is not part of the module's surface: a program that
+# names it does not compile, on any engine.
+echo "=== the staged grant is not reachable by name ==="
+for engine in jit aot vm; do
+    tag="raw-allow-$engine"
+    checks=$((checks + 1))
+    case "$engine" in
+        jit) ESHKOL_JIT_CACHE=0 "$ESH" -r "$TEST_DIR/capability_raw_allow_negative.esk" \
+                 -L"$BUILD_DIR" >"$WORK_DIR/$tag.out" 2>"$WORK_DIR/$tag.err" ;;
+        aot) "$ESH" "$TEST_DIR/capability_raw_allow_negative.esk" \
+                 -o "$WORK_DIR/$tag.bin" -L"$BUILD_DIR" \
+                 >"$WORK_DIR/$tag.out" 2>"$WORK_DIR/$tag.err" ;;
+        vm)  ESHKOL_VM_NO_DISASM=1 "$VM" "$TEST_DIR/capability_raw_allow_negative.esk" \
+                 >"$WORK_DIR/$tag.out" 2>"$WORK_DIR/$tag.err" ;;
+    esac
+    rc=$?
+    if [ "$rc" -ne 0 ] && ! grep -q "widened:#t" "$WORK_DIR/$tag.out"; then
+        echo "  ok  raw-allow/$engine refused (exit $rc)"
+    else
+        echo "FAIL: raw-allow/$engine accepted the staged grant (exit $rc)" >&2
+        echo "  stdout: $(cat "$WORK_DIR/$tag.out")" >&2
+        failures=$((failures + 1))
+    fi
+done
+
 # The policy's own entry points are not declarable by the program it governs.
 echo "=== a program cannot declare the policy's own entry points ==="
 for engine in jit aot; do

@@ -1,13 +1,12 @@
 ;;; A settled policy cannot be widened, by any route a program has.
 ;;;
-;;; Two attempts, both of which must leave the policy as it was:
-;;;   1. reach the runtime's staged grant directly by the name core.capabilities
-;;;      used to bind — `capability-runtime-allow-raw`
-;;;   2. install a second policy naming a capability the first withheld
+;;; The attempt here is the one a program can actually compile: install a second
+;;; policy naming a capability the first withheld. Reaching the runtime's staged
+;;; grant by name is refused when the program compiles, so it has its own case
+;;; (capability_raw_allow_negative.esk) rather than a branch in this one.
 ;;;
-;;; Either attempt may fail outright (the name is not part of the module's
-;;; surface, or the grant is refused); what this asserts is the property, not
-;;; the spelling of the failure: `shell` stays denied and the shell stays shut.
+;;; What this asserts is the property, not the spelling of any failure: the
+;;; capability stays denied and the sink stays shut.
 (require stdlib)
 (require core.capabilities)
 
@@ -19,13 +18,7 @@
 
 (capability-install-policy! (list 'file-read))
 
-(display "raw-allow:")
-(display (attempt (lambda () (capability-runtime-allow-raw "shell"))))
-(newline)
 
-(display "shell-after-raw-allow:")
-(display (if (capability-allowed? 'shell) "GRANTED" "denied"))
-(newline)
 
 ;; A second install naming what the first withheld.
 (display "second-install:")

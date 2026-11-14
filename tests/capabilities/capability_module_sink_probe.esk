@@ -15,11 +15,21 @@
 
 (define failures 0)
 
+(define (condition-text e capability)
+  "The condition as one string, message and irritants together. The module
+wrappers raise \"capability denied\" with the capability as an irritant, while
+the runtime entry points put it in the message; this reads both."
+  (if (error-object? e)
+      (string-append (error-object-message e)
+                     " "
+                     (if (memq capability (error-object-irritants e))
+                         (symbol->string capability)
+                         ""))
+      "non-error-object"))
+
 (define (refused? name capability thunk)
   (let ((outcome
-          (guard (e (#t (if (error-object? e)
-                            (error-object-message e)
-                            "non-error-object")))
+          (guard (e (#t (condition-text e capability)))
             (let ((value (thunk)))
               ;; core.net and core.tls answer in outcome vectors as well as by
               ;; raising; a refusal reported that way reads as 'denied.
@@ -30,7 +40,8 @@
                   "ran")))))
     (display name)
     (display ":")
-    (if (or (string-contains? outcome (string-append "capability denied: " capability))
+    (if (or (and (string-contains? outcome "capability denied")
+                 (string-contains? outcome (symbol->string capability)))
             (string=? outcome "outcome:denied"))
         (display "refused")
         (begin
@@ -42,14 +53,14 @@
 
 (capability-install-policy! (list 'file-read))
 
-(refused? "tcp-listen" "network" (lambda () (tcp-listen "127.0.0.1" 0)))
-(refused? "tcp-connect" "network" (lambda () (tcp-connect "127.0.0.1" 9 500)))
-(refused? "udp-bind" "network" (lambda () (udp-bind "127.0.0.1" 0)))
-(refused? "tls-client-context" "network" (lambda () (tls-client-context #f)))
-(refused? "run-command" "shell" (lambda () (run-command "echo should-not-run")))
-(refused? "process-spawn-argv" "subprocess"
-          (lambda () (process-spawn-argv "/bin/true" ".")))
-(refused? "http-get" "network" (lambda () (http-get "http://127.0.0.1:1/")))
+(refused? "tcp-listen" 'network (lambda () (tcp-listen "127.0.0.1" 0)))
+(refused? "tcp-connect" 'network (lambda () (tcp-connect "127.0.0.1" 9 500)))
+(refused? "udp-bind" 'network (lambda () (udp-bind "127.0.0.1" 0)))
+(refused? "tls-client-context" 'network (lambda () (tls-client-context #f)))
+(refused? "run-command" 'shell (lambda () (run-command "echo should-not-run")))
+(refused? "process-spawn-argv" 'subprocess
+          (lambda () (process-spawn-argv (list "/bin/true") ".")))
+(refused? "http-get" 'network (lambda () (http-get "http://127.0.0.1:1/")))
 
 (display "failures:")
 (display failures)

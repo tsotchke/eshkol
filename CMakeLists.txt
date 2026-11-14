@@ -12454,6 +12454,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         set_tests_properties(process_exit_child_test
             PROPERTIES
                 TIMEOUT 600
+                # It measures how long an exit takes, so it needs the machine to
+                # itself: sharing one makes the measurement, not the behaviour,
+                # decide the verdict.
+                RUN_SERIAL TRUE
                 PASS_REGULAR_EXPRESSION "PASS: process_exit_child_test"
                 FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
     endif()
