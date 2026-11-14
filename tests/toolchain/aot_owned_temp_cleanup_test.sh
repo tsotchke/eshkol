@@ -88,6 +88,7 @@ for attempt in $(seq 1 25); do
             kill -KILL "$compiler" 2>/dev/null || true
             break
         fi
+        sleep 0.05
     done
     wait "$compiler" 2>/dev/null || true
     abandoned="$(scratch_objects "$stopped_out")"
