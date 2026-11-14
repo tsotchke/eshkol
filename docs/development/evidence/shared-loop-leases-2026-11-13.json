@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "evidence_date": "2026-11-13",
+  "pull_request": 926,
+  "status": "PASS_SCOPED_QUALIFICATION",
+  "sources": {
+    "canonical_integration": "53220efc1638c77d108ab009d4a5e6939c488c7b",
+    "tested_shared_foundation": "b682c40c4fbb4bb0944226ff2d49b0928c1fa785"
+  },
+  "own_branch": {
+    "platform": "Linux x86_64 epoll",
+    "compiler": "Clang 22.1.8; LLVM21 for CMake configuration",
+    "build_type": "Release",
+    "release_assertions_active": true,
+    "ctest": {
+      "passed": 10,
+      "failed": 0,
+      "tests": [
+        "handle_lifecycle_test",
+        "handle_c_api_test",
+        "net_clock_failure_test",
+        "net_runtime_test",
+        "tls_test_pki",
+        "tls_lease_test",
+        "net_deadline_ready_test",
+        "net_close_concurrency_test",
+        "net_lease_test",
+        "resource_explicit_loop_test"
+      ]
+    },
+    "standalone": {
+      "normal": "PASS",
+      "ASan_UBSan_leak": "PASS"
+    },
+    "regression_controls": [
+      "expired ready deadline causes zero watch additions and zero loop polls",
+      "foreign existing watch unchanged on expired wait",
+      "sticky cancellation takes precedence over expired budget",
+      "empty unbounded poll returns after last managed owner completes while terminal ticket remains held",
+      "new adoption on previously emptied loop still wakes for foreign close",
+      "legacy readiness deadline rule from current base passes unchanged"
+    ],
+    "source_sha256": {
+      "inc/eshkol/core/resource_lease.h": "2615325bc66d6d66d11f67eaba7cf264409d09994617f7547e180f677123f688",
+      "inc/eshkol/core/event_loop.h": "bbda399b29e6212d2c4d09504b0a8ad8179c798df01f5cddfa4eb7fcbad75c2b",
+      "lib/core/resource_lease.c": "a1623538d776fa31ff0071efdb20d70544adf9b5f00c86b05921d11223ade3cb",
+      "lib/core/resource_handle_internal.h": "654931e32df93f4b151bd70e3eefd2369625884f195c9b4db4852825ce2045ce",
+      "lib/core/event_loop.c": "0a2406de7648cb5004556e85a5dd2a92c757564fcbd64e7f2a6f43cff5e18f46",
+      "lib/core/event_loop_internal.h": "eaa4cd34fb51d55ad3006cf14a77454db4f19c934350b765ac553f98b87845e6",
+      "lib/core/runtime_handle.cpp": "e7dee2ad3b16b26f9224fc91cbab70fa783704baf9486dfbf90b34112588407e",
+      "lib/core/event_loop_epoll.c": "c2225a34d7d1c7b8ea1526e1d8a675d07a303c9b481bd5bcddd7e7f4209a6602",
+      "tests/core/resource_explicit_loop_test.c": "c6d27711780b3a1ec487e621191206cab9cb8f213386c286fef6562b8afad370",
+      "tests/network/net_deadline_ready_test.c": "54895d58ff74ef18e13554ff5020490fda7d44b628fea1fbe392940096acf607"
+    },
+    "original_result_sha256": "e7595988d49894b1cabf58e2e6259de9bb341ef6aca39e64b766a8edffb689e3",
+    "original_log_sha256": {
+      "normal.log": "a69dd5225661f6f08ca60553e70fdbbd992fcbd700e912ec2edc15e2ffd95c69",
+      "sanitized.log": "a69dd5225661f6f08ca60553e70fdbbd992fcbd700e912ec2edc15e2ffd95c69",
+      "driver.log": "5b1d01f07b130c0ef908c9c384be8f8e942a7ca1f2585c79976c0dde19d449c4",
+      "cmake-build.log": "1c0585e4744ac9e77a1403a2ba89f43a6073df4bf3d55b00f1ba1bc4f07ef1f9",
+      "ctest.log": "f88c54e2816897bc2cca9646e61c842bbc2c4acb4fb51aae1ce881d2df733e60",
+      "junit.xml": "0bbb7d174f8b31b9e8cc5c171bea6feb8328e7cf5e07d94e7c75009dd0765490"
+    }
+  },
+  "combined_hosted_native": {
+    "source_commit": "8d99676f6467e362da34122bbe7f36d7e6e63907",
+    "run_url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710",
+    "jobs": [
+      {
+        "name": "Linux epoll",
+        "conclusion": "success",
+        "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121490796"
+      },
+      {
+        "name": "Linux ASan and UBSan",
+        "conclusion": "success",
+        "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121491203"
+      },
+      {
+        "name": "macOS kqueue",
+        "conclusion": "success",
+        "url": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43493801710/job/132121491287"
+      }
+    ],
+    "receipts": [
+      {
+        "platform": "Darwin arm64",
+        "backend": "kqueue",
+        "sanitizers": [],
+        "leak_detection": false,
+        "commands_passed": 37,
+        "original_receipt_sha256": "91b78bd760b0a46e4861ce9a777368b07e9a5f26c68cf273c671191bb649c850"
+      },
+      {
+        "platform": "Linux x86_64",
+        "backend": "epoll",
+        "sanitizers": [],
+        "leak_detection": false,
+        "commands_passed": 39,
+        "original_receipt_sha256": "260bc8e30532e71b6a742003a5571761e9418a9690c9cf95c1ba3b3bc071bf7a"
+      },
+      {
+        "platform": "Linux x86_64",
+        "backend": "epoll",
+        "sanitizers": [
+          "address",
+          "undefined"
+        ],
+        "leak_detection": true,
+        "commands_passed": 39,
+        "original_receipt_sha256": "13f07e1bb68e657f07b589f5dbb8fd6390cc8146a5305867c54cc1672a10130e"
+      }
+    ],
+    "original_run_metadata_sha256": "0e39f253749af1f35877d8f0bbe14e92cad01d6a4ebc45ce06ed536694f5c317",
+    "scope": "Combined socket/common/PROCESS standalone native source on Linux epoll, Linux ASan/UBSan, and macOS arm64 kqueue. Separate from own-branch qualification; no macOS public JIT/AOT, net/TLS, package or release qualification."
+  },
+  "limits": [
+    "Own-source qualification is Linux shared/handle/net/TLS scope; it does not claim compiler/JIT/AOT or package/release acceptance.",
+    "Terminal cleanup tickets retain result data only; pending/retryable owners retain loop lifetime and maintenance wakeability.",
+    "Accepted deferred close and sticky cancellation are explicit-loop adapter choices. Existing TCP/UDP/TLS consumable cancellation and readiness policy remain covered by the scoped regressions.",
+    "No maintainer approval or merge is asserted."
+  ],
+  "evidence_policy": "Portable summaries and original-byte SHA-256 values only. Raw local logs and machine-specific paths are omitted. Documentation/metadata-only followups do not represent another runtime execution."
+}
