@@ -1,5 +1,5 @@
 {
-  "commit": "e301e277cfcc8afc5b7923419860e01e056d687e",
+  "commit": "794ed16d6e7cb8d2de7e1cbef5a40b5795d6fa54",
   "counts": {
     "A_macro_api": {
       "inc/eshkol/eshkol.h": 33,
@@ -1203,6 +1203,11 @@
     }
   ],
   "schema": 1,
+  "semantic_scan": {
+    "commit": "794ed16d6e7cb8d2de7e1cbef5a40b5795d6fa54",
+    "path": ".icc/abi-header-semantic-scan.json",
+    "sha256": "58f80875f853b7a80e4df7eef581e1a398b4a8aae730ccd59500709e74d6c7b3"
+  },
   "totals": {
     "A_macro_api": 137,
     "B_header_type": 80,
