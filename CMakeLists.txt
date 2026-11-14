@@ -12402,6 +12402,43 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
                 FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
     endif()
 
+    # The ffi exemption belongs to Eshkol's own module tree and to nothing that
+    # merely looks like it: a project's own library directory does not confer it.
+    if(NOT WIN32 AND TARGET eshkol-run AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/stdlib_exemption_test.sh")
+        add_test(
+            NAME stdlib_exemption_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/capabilities/stdlib_exemption_test.sh"
+                    "$<TARGET_FILE:eshkol-run>"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(stdlib_exemption_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: stdlib_exemption_test"
+                FAIL_REGULAR_EXPRESSION "^FAIL:|fatal signal")
+    endif()
+
+    # Every (extern ...) a module in the tree declares is exempt from the ffi
+    # capability, so none of them may name a host sink symbol directly without
+    # checking the capability for its class.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_stdlib_extern_sinks.py")
+        add_test(
+            NAME stdlib_extern_sink_audit
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_stdlib_extern_sinks.py"
+                    --check
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(stdlib_extern_sink_audit
+            PROPERTIES
+                TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "PASS: every host sink a module names"
+                FAIL_REGULAR_EXPRESSION "^FAIL:")
+    endif()
+
     # With no policy in sight: a child started before the program ends keeps
     # running, and a child that ignores SIGTERM does not hold the program open.
     if(NOT WIN32 AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test AND

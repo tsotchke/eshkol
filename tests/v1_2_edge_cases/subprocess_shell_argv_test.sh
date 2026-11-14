@@ -297,7 +297,14 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
 ;; rest of the program would not be able to undo.
 (capability-install-policy! (list 'subprocess))
 (check "shell denied without shell capability"
-       (raises? (lambda () (process-spawn-shell "echo should-not-run" ".")))
+       (let ((message
+               (guard (condition (#t (if (error-object? condition)
+                                         (error-object-message condition)
+                                         "")))
+                 (begin (process-spawn-shell "echo should-not-run" ".") ""))))
+         (and (string? message)
+              (string-contains? message "capability denied")
+              (string-contains? message "shell")))
        #t)
 
 (if (> failed 0)

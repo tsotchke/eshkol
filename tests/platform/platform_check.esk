@@ -5,6 +5,17 @@
   (let ((raised #f))
     (guard (condition (#t (set! raised #t))) (thunk))
     raised))
+;; A refusal by the capability policy, told apart from any other raise: the
+;; condition's message names the capability that was withheld.
+(define (refuses-capability? capability thunk)
+  (let ((message
+          (guard (condition (#t (if (error-object? condition)
+                                    (error-object-message condition)
+                                    "")))
+            (begin (thunk) ""))))
+    (and (string? message)
+         (string-contains? message "capability denied")
+         (string-contains? message (symbol->string capability)))))
 (define (check name condition)
   (if condition
       (begin (set! tests-passed (+ tests-passed 1))

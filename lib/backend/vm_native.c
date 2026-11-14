@@ -46,8 +46,7 @@ static double vm_prng_next(void) {
  * this C TU stays free of the C++ export header. */
 extern int eshkol_capability_require(const char* capability);
 extern int eshkol_capability_runtime_clear(void);
-extern void eshkol_capability_runtime_begin_install(void);
-extern void eshkol_capability_runtime_allow(const char* capability);
+extern int eshkol_capability_runtime_install(const char* names);
 /* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
  * rather than included: this translation unit is C and does not pull in the
  * hosted arena header, but the handle table, its generation-tagged validation
@@ -16560,16 +16559,14 @@ tensor_inverse_done:
         vm_push(vm, INT_VAL((int64_t)eshkol_capability_runtime_clear()));
         break;
     }
-    case 2254: { /* capability-runtime-begin-install-raw: activate it, empty */
-        eshkol_capability_runtime_begin_install();
-        vm_push(vm, (Value){.type = VAL_VOID});
-        break;
-    }
-    case 2255: { /* capability-runtime-allow-raw(name): grant one capability */
-        Value name_val = vm_pop(vm);
-        VmString* name = vm_value_as_string(vm, name_val);
-        if (name && name->data) eshkol_capability_runtime_allow(name->data);
-        vm_push(vm, (Value){.type = VAL_VOID});
+    case 2254: { /* capability-runtime-install-raw(names): install the whole set
+                  * at once. The runtime intersects it with any active policy
+                  * and swaps under one lock, so there is no window in which a
+                  * policy is active with its set half-assembled. */
+        Value names_val = vm_pop(vm);
+        VmString* names = vm_value_as_string(vm, names_val);
+        vm_push(vm, INT_VAL((int64_t)eshkol_capability_runtime_install(
+            names && names->data ? names->data : "")));
         break;
     }
     case 681: { /* bytevector-length */

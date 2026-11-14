@@ -28295,7 +28295,9 @@ private:
             "eshkol_capability_runtime_clear",
             "eshkol_capability_runtime_host_reset",
             "eshkol_capability_runtime_begin_install",
+            "eshkol_capability_runtime_end_install",
             "eshkol_capability_runtime_allow",
+            "eshkol_capability_runtime_install",
             "eshkol_capability_runtime_deny",
             "eshkol_capability_require",
             "eshkol_capability_enforce",
@@ -28350,7 +28352,11 @@ private:
         CallInst* call = gate_builder.CreateCall(target_type, target, forwarded);
         if (target_type->isVarArg()) {
             // A variadic callee cannot be forwarded by re-packing arguments;
-            // a guaranteed tail call hands the frame over unchanged.
+            // a guaranteed tail call hands the frame over unchanged. "thunk" is
+            // what the language reference asks of a function that forwards its
+            // arguments this way, and it is what tells the backends to keep the
+            // variadic registers intact across the call.
+            wrapper->addFnAttr("thunk");
             call->setTailCallKind(CallInst::TCK_MustTail);
         }
         if (target_type->getReturnType()->isVoidTy()) {

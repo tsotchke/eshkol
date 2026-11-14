@@ -1,0 +1,31 @@
+;;; The same property on the bytecode VM, whose sink for the shell is the
+;;; command-string form of process-spawn rather than (system ...).
+(require stdlib)
+(require core.capabilities)
+
+(define marker (getenv "ESHKOL_CAP_WIDEN_MARKER"))
+
+(define (attempt thunk)
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (begin (thunk) "returned")))
+
+(capability-install-policy! (list 'file-read))
+
+(display "raw-allow:")
+(display (attempt (lambda () (capability-runtime-allow-raw "subprocess"))))
+(newline)
+
+(display "second-install:")
+(display (attempt (lambda () (capability-install-policy! (list 'file-read 'subprocess 'shell)))))
+(newline)
+
+(display "subprocess-after:")
+(display (if (capability-allowed? 'subprocess) "GRANTED" "denied"))
+(newline)
+
+(display "spawn-sink:")
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((pid (process-spawn (string-append "printf widened > '" marker "'") "")))
+      (if (and (number? pid) (> pid 0)) (begin (process-wait pid) "ran") "ran-failed"))))
+(newline)

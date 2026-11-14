@@ -17,6 +17,17 @@
       (begin (set! tests-failed (+ tests-failed 1))
              (display "FAIL: ") (display name) (newline))))
 
+;; A refusal by the capability policy, told apart from any other raise.
+(define (refuses-capability? capability thunk)
+  (let ((message
+          (guard (condition (#t (if (error-object? condition)
+                                    (error-object-message condition)
+                                    "")))
+            (begin (thunk) ""))))
+    (and (string? message)
+         (string-contains? message "capability denied")
+         (string-contains? message (symbol->string capability)))))
+
 (define cert "tests/network/fixtures/localhost-cert.pem")
 (define key "tests/network/fixtures/localhost-key.pem")
 ;; A policy only narrows, so this walks down one chain: network and file-read
@@ -81,11 +92,12 @@
 ;; refused before anything is loaded, while the default system trust still works.
 (capability-install-policy! '(network))
 (check "explicit client CA path requires file-read before native loading"
-       (raises? (lambda () (tls-client-context "/definitely/missing/ca.pem"))))
+       (refuses-capability? 'file-read
+         (lambda () (tls-client-context "/definitely/missing/ca.pem"))))
 (check "explicit server certificate and key require file-read"
-       (raises? (lambda ()
-                  (tls-server-context "/definitely/missing/cert.pem"
-                                      "/definitely/missing/key.pem"))))
+       (refuses-capability? 'file-read
+         (lambda () (tls-server-context "/definitely/missing/cert.pem"
+                                        "/definitely/missing/key.pem"))))
 (define default-trust-context (tls-client-context #f))
 (check "default system trust uses network without explicit file-read"
        (not (tls-error? default-trust-context)))

@@ -1437,6 +1437,8 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_capability_runtime_clear);
     ADD_SYMBOL(eshkol_capability_runtime_host_reset);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
+    ADD_SYMBOL(eshkol_capability_runtime_end_install);
+    ADD_SYMBOL(eshkol_capability_runtime_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
     // core.curvature: the ADR-0018 signed-curvature chart (lib/core/curvature_runtime.c)
     ADD_SYMBOL(eshkol_curvature_last_error);

@@ -1,0 +1,45 @@
+;;; A settled policy cannot be widened, by any route a program has.
+;;;
+;;; Two attempts, both of which must leave the policy as it was:
+;;;   1. reach the runtime's staged grant directly by the name core.capabilities
+;;;      used to bind — `capability-runtime-allow-raw`
+;;;   2. install a second policy naming a capability the first withheld
+;;;
+;;; Either attempt may fail outright (the name is not part of the module's
+;;; surface, or the grant is refused); what this asserts is the property, not
+;;; the spelling of the failure: `shell` stays denied and the shell stays shut.
+(require stdlib)
+(require core.capabilities)
+
+(define marker (getenv "ESHKOL_CAP_WIDEN_MARKER"))
+
+(define (attempt thunk)
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (begin (thunk) "returned")))
+
+(capability-install-policy! (list 'file-read))
+
+(display "raw-allow:")
+(display (attempt (lambda () (capability-runtime-allow-raw "shell"))))
+(newline)
+
+(display "shell-after-raw-allow:")
+(display (if (capability-allowed? 'shell) "GRANTED" "denied"))
+(newline)
+
+;; A second install naming what the first withheld.
+(display "second-install:")
+(display (attempt (lambda () (capability-install-policy! (list 'file-read 'shell 'network)))))
+(newline)
+
+(display "shell-after-second-install:")
+(display (if (capability-allowed? 'shell) "GRANTED" "denied"))
+(newline)
+
+;; And the sink itself, which is the only thing that really matters.
+(display "shell-sink:")
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((rc (system (string-append "printf widened > '" marker "'"))))
+      (string-append "ran:" (number->string rc)))))
+(newline)

@@ -275,6 +275,58 @@ for engine in jit aot; do
     fi
 done
 
+# The module layers a program actually calls — core.net, core.tls and the agent
+# subprocess and HTTP layers — above the runtime entry points the table covers.
+# core.net and core.tls are not carried by the bytecode VM, so this is the
+# native engines.
+echo "=== the module layers, under a policy that withholds their capability ==="
+for engine in jit aot; do
+    tag="modules-$engine"
+    checks=$((checks + 1))
+    run_engine "$engine" "$TEST_DIR/capability_module_sink_probe.esk" "$tag"
+    [ "$?" -eq 200 ] && continue
+    if grep -q "^failures:0" "$WORK_DIR/$tag.out" && \
+       ! grep -q "NOT-REFUSED" "$WORK_DIR/$tag.out"; then
+        echo "  ok  modules/$engine ($(grep -c ':refused' "$WORK_DIR/$tag.out") entry points refused)"
+    else
+        echo "FAIL: modules/$engine did not refuse every module entry point" >&2
+        grep -E "NOT-REFUSED|^failures:" "$WORK_DIR/$tag.out" >&2
+        tail -10 "$WORK_DIR/$tag.err" >&2
+        failures=$((failures + 1))
+    fi
+done
+
+# A settled policy cannot be widened, by any route a program has: neither the
+# runtime's staged grant reached by name, nor a second install naming what the
+# first withheld.
+echo "=== a settled policy cannot be widened ==="
+for engine in jit aot vm; do
+    marker="$WORK_DIR/widen-$engine.txt"
+    tag="widen-$engine"
+    probe=capability_no_widening_probe.esk
+    sink_line="shell-sink:"
+    [ "$engine" = vm ] && { probe=capability_no_widening_vm_probe.esk; sink_line="spawn-sink:"; }
+    checks=$((checks + 1))
+    ESHKOL_CAP_WIDEN_MARKER="$marker" \
+        run_engine "$engine" "$TEST_DIR/$probe" "$tag"
+    [ "$?" -eq 200 ] && continue
+    out="$WORK_DIR/$tag.out"
+    ok=1
+    grep -q "GRANTED" "$out" && { echo "FAIL: widen/$engine a capability was added to a settled policy" >&2; ok=0; }
+    grep -q "$sink_line.*capability denied" "$out" || {
+        echo "FAIL: widen/$engine the sink was not refused after the attempts" >&2; ok=0; }
+    if [ -e "$marker" ]; then
+        echo "FAIL: widen/$engine the sink ran: the marker exists" >&2
+        ok=0
+    fi
+    if [ "$ok" -eq 1 ]; then
+        echo "  ok  widen/$engine"
+    else
+        echo "  stdout: $(cat "$out")" >&2
+        failures=$((failures + 1))
+    fi
+done
+
 echo "checks: $checks, failures: $failures"
 if [ "$failures" -ne 0 ]; then
     echo "FAIL: capability_sink_coverage_test" >&2
