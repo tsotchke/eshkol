@@ -655,7 +655,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-trace", action="store_true", help="grade only, write no trace")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     parser.add_argument("--self-test", action="store_true", help="run built-in red/green fixtures and exit")
+    parser.add_argument("--case", action="append", default=[], metavar="NAME",
+                        help="grade only the named case directory (repeatable); implies --no-trace, "
+                             "since the trace records the verdict of the whole corpus")
     args = parser.parse_args(argv)
+    if args.case:
+        args.no_trace = True
 
     if args.self_test:
         return 0 if self_test() else 1
@@ -672,6 +677,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     case_dirs = discover_cases(corpus_dir)
+    if args.case:
+        wanted = set(args.case)
+        missing = sorted(wanted - {p.name for p in case_dirs})
+        if missing:
+            print(f"{PROBE_ID}: FAIL — no such case: {', '.join(missing)}", file=sys.stderr)
+            return 1
+        case_dirs = [p for p in case_dirs if p.name in wanted]
     if not case_dirs:
         snippet = f"no cases found under {corpus_dir} (expected.json missing everywhere) — the gate fails closed"
         if not args.no_trace:

@@ -4,4 +4,4 @@
 ;; and the compiler finishes normally after the diagnostics.
 
 (define taken (move nowhere))
-(define (f) (let ((local (move elsewhere))) local))
+(define (f) (let ((local (move elsewhere))) (move local)))
