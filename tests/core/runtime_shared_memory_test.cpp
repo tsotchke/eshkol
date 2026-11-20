@@ -1,8 +1,10 @@
 #include "../../lib/core/arena_memory.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <thread>
 
 namespace {
 
@@ -54,6 +56,21 @@ int main() {
     if (shared_ref_count(raw) != 2) return fail("release upgraded ref failed");
     shared_release(raw);
     if (shared_ref_count(raw) != 1) return fail("release retained ref failed");
+
+    auto share = [raw] {
+        shared_retain(raw);
+        auto* observer = weak_ref_create(raw);
+        void* owned = weak_ref_upgrade(observer);
+        if (owned != raw) std::abort();
+        shared_release(owned);
+        weak_ref_release(observer);
+        shared_release(raw);
+    };
+    std::thread first(share);
+    std::thread second(share);
+    first.join();
+    second.join();
+    if (shared_ref_count(raw) != 1) return fail("concurrent owners did not balance");
 
     shared_release(raw);
     if (destructor_calls != 1) return fail("destructor was not called once");

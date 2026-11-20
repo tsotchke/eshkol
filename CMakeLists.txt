@@ -9222,6 +9222,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_shutdown_teardown_race_test COMMAND runtime_shutdown_teardown_race_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    set(_shared_ffi "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/shared_ownership.esk")
+    add_test(NAME shared_ownership_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${_shared_ffi}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME shared_ownership_aot COMMAND sh -c
+        "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/shared_ownership' '${_shared_ffi}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/shared_ownership'")
+    set_tests_properties(shared_ownership_jit shared_ownership_aot PROPERTIES
+        TIMEOUT 120 PASS_REGULAR_EXPRESSION "PASS: shared ownership")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shared_memory_test.cpp")
     add_executable(runtime_shared_memory_test tests/core/runtime_shared_memory_test.cpp)
     target_compile_features(runtime_shared_memory_test PRIVATE cxx_std_17)

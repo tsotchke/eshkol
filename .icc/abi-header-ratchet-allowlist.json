@@ -42,6 +42,13 @@
       "from": 3,
       "to": 2,
       "reason": "make-string moved into this file (eshkol_make_string_checked); rather than add a fourth call of arena_allocate_string_with_header, every string allocation of the file now goes through one helper, eshkol_string_buffer, leaving the extern declaration and that helper as the only header-aware sites."
+    },
+    {
+      "class": "J_secondary_prefix_abi",
+      "path": "lib/core/runtime_shared_memory.cpp",
+      "from": 26,
+      "to": 13,
+      "reason": "Shared lifetime operations centralize atomic count access and final header reclamation."
     }
   ]
 }
