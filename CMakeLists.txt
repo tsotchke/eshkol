@@ -4229,6 +4229,12 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
+    add_executable(eval_datum_graph tests/core/eval_datum_graph.cpp)
+    target_compile_features(eval_datum_graph PRIVATE cxx_std_17)
+    target_include_directories(eval_datum_graph PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eval_datum_graph PRIVATE eshkol-runtime)
+    add_test(NAME eval_datum_graph COMMAND eval_datum_graph)
+
     add_executable(tensor_validation_test tests/core/tensor_validation_test.cpp)
     target_compile_features(tensor_validation_test PRIVATE cxx_std_17)
     target_include_directories(tensor_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
