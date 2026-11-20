@@ -182,12 +182,20 @@ conv1d	gap	ml faculty has no VM fid coverage
 conv2d	gap	ml faculty has no VM fid coverage
 conv3d	gap	ml faculty has no VM fid coverage
 convolve	gap	signal faculty has no VM fid coverage
+coroutine-raise	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-release!	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-resume	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-stats	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-status	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine-yield	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
+coroutine?	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
 cos	vm-supported	a complex operand routes to the shared complex core rather than collapsing to cos(0) (corpus/54_complex_transcendentals.esk)
 cosh	vm-supported	a complex operand routes to the shared complex core rather than collapsing to cosh(0) (corpus/54_complex_transcendentals.esk)
 cosine-annealing-lr	gap	ml faculty has no VM fid coverage
 cosine-embedding-loss	gap	ml faculty has no VM fid coverage
 cpu-count	vm-supported	
 cross-entropy-loss	vm-supported	corpus/73_cross_entropy_targets.esk covers indexed, one-hot, probability, shape, range, and value validation on both engines
+current-coroutine	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
 current-directory	vm-supported	
 current-environment	gap	eval/environment reflection has no VM binding
 current-error-port	vm-supported	
@@ -453,6 +461,7 @@ lru-size	vm-supported
 mae-loss	gap	ml faculty has no VM fid coverage
 magnitude	vm-supported	
 make-bytevector	vm-supported	
+make-coroutine	gap	stackful coroutines (ADR-0030) run on native JIT and AOT; the bytecode VM has no coroutine binding yet (docs/reference/runtime/coroutines.md)
 make-dataloader	gap	ml faculty has no VM fid coverage
 make-directory	gap	port/file IO surface missing in VM
 make-dnc-memory	gap	core.dnc has no VM fids
@@ -557,6 +566,7 @@ op:FREE_ENERGY	vm-supported	BUILTINS fid 525
 op:GRADIENT	vm-supported	forward-mode dual gradient, arity-resolved (scalar / N-arg spread / arity-1 whole-vector) plus curried form; scalar exact integer/bignum/rational points now return exact gradients through the SW-85 hybrid carrier and inexact/transcendental paths retain their prior behavior. Exact vector points remain inexact because neither substrate has an exact vector carrier.
 op:GUARD	vm-supported	guard/raise verified 2026-07
 op:HESSIAN	vm-supported	scalar points are the order-2 tower pass; vector points use hyper-duals un-nested and two nested levels per entry inside a live pass (ADR-0027; resolved/ad_gradient_wrong.esk)
+op:HOTT	vm-supported	vm_compiler compile_hott_form: (hott decl...) is checked by the installed cubical kernel and emits no code, (hott-eval term) compiles to the quoted normal form; scripts/run_hott_gate.sh runs tests/hott programs on the VM
 op:IF	vm-supported	vm_compiler special-form dispatch
 op:IMPORT	vm-supported	R7RS (import <import-set> …): the VM compiler resolves each set against the libraries this compilation unit defines with define-library BEFORE the module search path, the same order the native front end uses; only/except need no code because the VM has one global top level and therefore no visibility boundary, while rename/prefix lower to plain define aliases (corpus/53_define_library_same_unit.esk)
 op:INCLUDE	native-only-justified	parse-time form handled by the native front-end
