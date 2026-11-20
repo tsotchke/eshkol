@@ -714,13 +714,30 @@ ResolvedInstallArtifact resolve_install_artifact(
     const std::vector<InstallSearchRoot>& roots,
     const std::vector<std::string>& leaf_names
 ) {
+    return resolve_install_artifact(roots, leaf_names, InstallArtifactAdmission{});
+}
+
+ResolvedInstallArtifact resolve_install_artifact(
+    const std::vector<InstallSearchRoot>& roots,
+    const std::vector<std::string>& leaf_names,
+    const InstallArtifactAdmission& belongs_to_this_build
+) {
     // Location-major: a root is exhausted before the next one is opened.
     for (const auto& root : roots) {
         for (const auto& leaf : leaf_names) {
             auto resolved = canonical_if_exists(root.path / leaf);
-            if (!resolved.empty()) {
-                return {resolved.string(), root.origin, root.path};
+            if (resolved.empty()) {
+                continue;
             }
+            // A system prefix is searched because it might hold this build's
+            // install, not because anyone named it. A file there that another
+            // build produced is not this compiler's artifact.
+            if (root.origin == InstallOrigin::SystemFallback &&
+                belongs_to_this_build &&
+                !belongs_to_this_build(resolved.string())) {
+                continue;
+            }
+            return {resolved.string(), root.origin, root.path};
         }
     }
     return {};
