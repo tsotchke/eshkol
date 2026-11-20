@@ -16967,6 +16967,17 @@ if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND AND TARGET eshkol-run AND TA
         ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
         PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 
+    add_test(NAME metadata_name_collision_vm
+        COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_metadata_name_source}")
+    set_tests_properties(metadata_name_collision_vm PROPERTIES
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+        PASS_REGULAR_EXPRESSION "RESULT: PASS" FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+    add_test(NAME procedure_metadata_aot_ir
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/procedure_metadata_ir.py"
+            $<TARGET_FILE:eshkol-run> "${_metadata_name_source}" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(procedure_metadata_aot_ir PROPERTIES TIMEOUT 120
+        ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+
     foreach(_vm_case IN ITEMS bytevector_constructor logic_registry_reset utf8_case_capacity reverse_gradient_real_tape_surface)
         set(_vm_case_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/${_vm_case}_regression.esk")
         if(_vm_case STREQUAL "logic_registry_reset")

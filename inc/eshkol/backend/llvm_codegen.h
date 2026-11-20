@@ -918,6 +918,8 @@ private:
 
     void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) __attribute__((noinline));
 
+    void emitPendingLambdaRegistrations(Value* arena);
+
     Function* createLibraryLambdaSExprChunkFunction(
         FunctionType* init_type,
         size_t chunk_index,

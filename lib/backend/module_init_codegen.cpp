@@ -7,6 +7,20 @@ constexpr size_t LIB_INIT_AST_CHUNK_SIZE = 4;
 constexpr size_t LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE = 4;
 }
 
+// Keep procedure-source construction in small functions on both executable
+// and library entry paths. Registration order matters for nested lambdas.
+void EshkolLLVMCodeGen::emitPendingLambdaRegistrations(Value* arena) {
+    auto& pending = eshkol::llvm_codegen_detail::pendingLambdaSExprs();
+    auto* init_type = FunctionType::get(void_type, {arena->getType()}, false);
+    for (size_t begin = 0; begin < pending.size(); begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE) {
+        size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, pending.size());
+        Function* chunk = createLibraryLambdaSExprChunkFunction(
+            init_type, begin / LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, begin, end);
+        builder->CreateCall(chunk, {arena});
+    }
+    pending.clear();
+}
+
 void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         using namespace eshkol::hott;
 
@@ -628,22 +642,7 @@ void EshkolLLVMCodeGen::createLibraryInitFunction(const eshkol_ast_t* asts, size
         eshkol_debug("Library init: initialized lambda registry");
 
         // Generate S-expressions for lambdas and register them
-        if (!eshkol::llvm_codegen_detail::pendingLambdaSExprs().empty()) {
-            std::vector<Function*> sexpr_chunks;
-            for (size_t begin = 0, chunk_index = 0;
-                 begin < eshkol::llvm_codegen_detail::pendingLambdaSExprs().size();
-                 begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, chunk_index++) {
-                size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE,
-                                      eshkol::llvm_codegen_detail::pendingLambdaSExprs().size());
-                sexpr_chunks.push_back(createLibraryLambdaSExprChunkFunction(
-                    init_type, chunk_index, begin, end));
-            }
-            for (Function* chunk_func : sexpr_chunks) {
-                builder->CreateCall(chunk_func, {arena_param});
-            }
-
-            eshkol::llvm_codegen_detail::pendingLambdaSExprs().clear();
-        }
+        emitPendingLambdaRegistrations(arena_param);
 
         // Return void
         builder->CreateRetVoid();

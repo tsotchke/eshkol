@@ -3622,33 +3622,7 @@ public:
 
                 // Step 4: Generate S-expressions for lambdas
                 if (!pending_lambda_sexprs.empty()) {
-                    for (size_t j = 0; j < pending_lambda_sexprs.size(); j++) {
-                        const auto& meta = pending_lambda_sexprs[j];
-                        Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-                        std::string sexpr_key = meta.lambda_name + "_sexpr";
-                        GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                        if (!sexpr_global) {
-                            sexpr_global = new GlobalVariable(
-                                *module, int64_type, false,
-                                sexprGlobalLinkage(library_mode),
-                                ConstantInt::get(int64_type, 0),
-                                sexpr_key
-                            );
-                        }
-                        builder->CreateStore(sexpr_ptr, sexpr_global);
-                        global_symbol_table[sexpr_key] = sexpr_global;
-
-                        // Register this lambda in the registry for homoiconic display
-                        Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                        if (lambda_func) {
-                            Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                            Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                            builder->CreateCall(eshkol_lambda_registry_add_func,
-                                {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                            eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
-                        }
-                    }
-                    pending_lambda_sexprs.clear();
+                    emitPendingLambdaRegistrations(arena_ptr);
 
                     // CRITICAL: Create S-expression aliases for variable-bound lambdas
                     // This copies lambda_sexpr values to var_sexpr globals AFTER they're populated
@@ -4891,6 +4865,8 @@ private:
         }
     }
 
+    void emitPendingLambdaRegistrations(Value* arena);
+
     Function* createLibraryLambdaSExprChunkFunction(
         FunctionType* init_type,
         size_t chunk_index,
@@ -4903,11 +4879,11 @@ private:
         chunk_func->addFnAttr(Attribute::NoInline);
 
         BasicBlock* entry = BasicBlock::Create(*context, "entry", chunk_func);
-        BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", chunk_func);
-        IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+        IRBuilderBase::InsertPointGuard insertion_guard(*builder);
         Function* saved_function = current_function;
 
         builder->SetInsertPoint(entry);
+        builder->SetCurrentDebugLocation(DebugLoc());
         current_function = chunk_func;
 
         Value* arena_param = chunk_func->arg_begin();
@@ -4917,11 +4893,7 @@ private:
             emitLambdaSExprRegistration(pending_lambda_sexprs[i]);
         }
 
-        builder->CreateBr(sexpr_continue);
-        builder->SetInsertPoint(sexpr_continue);
         builder->CreateRetVoid();
-
-        builder->restoreIP(saved_point);
         current_function = saved_function;
         return chunk_func;
     }
@@ -5718,44 +5690,7 @@ private:
                 builder->CreateCall(eshkol_lambda_registry_init_func);
                 eshkol_debug("Initialized lambda registry for homoiconic display");
 
-                // Generate S-expressions now that arena is ready
-
-                for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
-                    const auto& meta = pending_lambda_sexprs[i];
-                    
-                    Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-                    
-                    // Create or get global variable for this lambda's S-expression
-                    // Use ExternalLinkage for runtime resolution by display code
-                    std::string sexpr_key = meta.lambda_name + "_sexpr";
-                    GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                    if (!sexpr_global) {
-                        sexpr_global = new GlobalVariable(
-                            *module, int64_type, false,
-                            sexprGlobalLinkage(library_mode),
-                            ConstantInt::get(int64_type, 0),
-                            sexpr_key
-                        );
-                    }
-                    builder->CreateStore(sexpr_ptr, sexpr_global);
-
-                    // Add to global symbol table for display lookup
-                    global_symbol_table[sexpr_key] = sexpr_global;
-                    eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
-
-                    // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                    if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                        Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                        builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                        eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
-                    }
-                }
-
-                // Clear pending list after generation
-                pending_lambda_sexprs.clear();
+                emitPendingLambdaRegistrations(arena_ptr);
 
                 // CRITICAL: Create S-expression aliases for variable-bound lambdas
                 // Scan symbol_table for lambda function references (var_func) and create var_sexpr aliases
@@ -5996,54 +5931,8 @@ private:
                 eshkol_debug("Called library init function for stdlib");
             }
 
-            // Generate S-expressions for pending lambdas (function definitions compiled in Step 2)
-            // NOTE: codegenLambdaToSExpr creates basic blocks, so we need a continuation block
-            if (!pending_lambda_sexprs.empty()) {
-                // Create a continuation block for after all S-expression generation
-                BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", main_func);
-
-                for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
-                    const auto& meta = pending_lambda_sexprs[i];
-
-                    Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-
-                    // Create or get global variable for this lambda's S-expression
-                    std::string sexpr_key = meta.lambda_name + "_sexpr";
-                    GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                    if (!sexpr_global) {
-                        sexpr_global = new GlobalVariable(
-                            *module, int64_type, false,
-                            sexprGlobalLinkage(library_mode),
-                            ConstantInt::get(int64_type, 0),
-                            sexpr_key
-                        );
-                    }
-                    builder->CreateStore(sexpr_ptr, sexpr_global);
-
-                    // Add to global symbol table for display lookup
-                    global_symbol_table[sexpr_key] = sexpr_global;
-                    eshkol_debug("Generated S-expression for lambda %s (top-level case)", meta.lambda_name.c_str());
-
-                    // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                    if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                        Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                        builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                        eshkol_debug("Registered lambda '%s' in homoiconic registry (top-level case)", meta.lambda_name.c_str());
-                    }
-                }
-
-                // Branch to continuation and set it as the new insertion point
-                builder->CreateBr(sexpr_continue);
-                builder->SetInsertPoint(sexpr_continue);
-
-                // Update main_entry to point to the continuation block for generateIR
-                main_entry = sexpr_continue;
-
-                pending_lambda_sexprs.clear();
-            }
+            emitPendingLambdaRegistrations(arena_ptr);
+            main_entry = builder->GetInsertBlock();
         }
     }
 
@@ -6984,8 +6873,7 @@ private:
     // ROBUST SOLUTION: Create cons cell directly from tagged_value with type preservation
     // This stores the VALUE from tagged_value into the cons cell car, preserving the type
     Value* codegenTaggedArenaConsCellFromTaggedValue(Value* car_tagged, Value* cdr_tagged) {
-        Value* arena_ptr = getArenaPtr();
-        if (!arena_ptr) {
+        if (!global_arena) {
             eshkol_error("Arena not initialized for tagged cons cell allocation");
             return nullptr;
         }
@@ -6999,7 +6887,7 @@ private:
         if (outlining_metadata_cons) {
             const char* name = "__eshkol_metadata_cons";
             auto* helper_type = FunctionType::get(int64_type,
-                {arena_ptr->getType(), tagged_value_type, tagged_value_type}, false);
+                {tagged_value_type, tagged_value_type}, false);
             // A source procedure can legitimately have the helper's spelling.
             // Cache its compiler identity in module metadata, independently of
             // the user-visible symbol namespace. LLVM uniquifies its name.
@@ -7029,10 +6917,10 @@ private:
                 builder->SetCurrentDebugLocation(DebugLoc());
                 current_function = helper;
                 Value* cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(),
-                                                {helper->getArg(0)});
+                                                {getArenaPtr()});
                 ctx_->emitConstructorAllocationCheck(cell);
-                tagged_->storeConsSlot(cell, false, helper->getArg(1));
-                tagged_->storeConsSlot(cell, true, helper->getArg(2));
+                tagged_->storeConsSlot(cell, false, helper->getArg(0));
+                tagged_->storeConsSlot(cell, true, helper->getArg(1));
                 builder->CreateRet(builder->CreatePtrToInt(cell, int64_type));
                 helper_cache->addOperand(MDNode::get(*context,
                     {ValueAsMetadata::get(helper)}));
@@ -7040,11 +6928,11 @@ private:
                 builder->restoreIP(saved_ip);
                 builder->SetCurrentDebugLocation(saved_loc);
             }
-            return builder->CreateCall(helper, {arena_ptr, car_tagged, cdr_tagged});
+            return builder->CreateCall(helper, {car_tagged, cdr_tagged});
         }
 
         // Allocate tagged cons cell with object header (consolidated pointer format)
-        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {getArenaPtr()});
         ctx_->emitConstructorAllocationCheck(cons_ptr);
 
         // Both slots are stored whole (SW-183); see TaggedValueCodegen::storeConsSlot.
