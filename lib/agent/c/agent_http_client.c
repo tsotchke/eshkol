@@ -347,7 +347,7 @@ int32_t qllm_http_has_ssl(void) {
  * @return Newly allocated response (caller must call qllm_http_response_free()), or NULL if @p url is NULL or the easy handle could not be created.
  */
 qllm_http_response_t* qllm_http_get(const char* url, int32_t timeout_ms) {
-    if (!url) return NULL;
+    if (!eshkol_http_valid_absolute_url(url)) return NULL;
     /* Lazy-init: the agent may forget to call http-init before its first
      * request. One-shot init+leak is cheaper than a hard error here. */
     if (!acquire_curl_global()) return NULL;
@@ -391,7 +391,8 @@ qllm_http_response_t* qllm_http_post(const char* url,
                                      const char* body,
                                      int64_t body_len,
                                      int32_t timeout_ms) {
-    if (!url || body_len < 0 || (!body && body_len != 0)) return NULL;
+    if (!eshkol_http_valid_absolute_url(url) || body_len < 0 ||
+        (!body && body_len != 0)) return NULL;
     if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
@@ -414,7 +415,7 @@ qllm_http_response_t* qllm_http_post(const char* url,
     struct curl_slist* slist = NULL;
     for (int64_t i = 0; i < header_count && headers; i++) {
         if (headers[i] &&
-            (!eshkol_http_valid_header_line(headers[i]) ||
+            (!eshkol_http_header_line_admissible(headers[i]) ||
              !slist_append_checked(&slist, headers[i]))) {
             curl_slist_free_all(slist);
             curl_easy_cleanup(curl);
@@ -449,7 +450,7 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
                                           const char* body,
                                           const char* auth_header,
                                           int32_t timeout_ms) {
-    if (!url) return NULL;
+    if (!eshkol_http_valid_absolute_url(url)) return NULL;
     if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
@@ -478,7 +479,7 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
      * so it's safe to inject auth_header verbatim into the slist. We
      * still skip empty/NULL to avoid sending a blank header line. */
     if (auth_header && auth_header[0] != '\0') {
-        if (!eshkol_http_valid_header_line(auth_header) ||
+        if (!eshkol_http_header_line_admissible(auth_header) ||
             !slist_append_checked(&slist, auth_header)) goto post_json_oom;
     }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
@@ -513,7 +514,8 @@ qllm_http_response_t* eshkol_http_request_bytes(const char* method,
                                                 const char* body,
                                                 int64_t body_len,
                                                 int32_t timeout_ms) {
-    if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
+    if (!eshkol_http_valid_method(method) ||
+        !eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (!body && body_len != 0)) return NULL;
     if (!acquire_curl_global()) return NULL;
 
@@ -690,7 +692,8 @@ void* eshkol_http_stream_open_bytes(const char* method,
                                     const char* body,
                                     int64_t body_len,
                                     int32_t timeout_ms) {
-    if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
+    if (!eshkol_http_valid_method(method) ||
+        !eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (!body && body_len != 0)) return NULL;
     if (!acquire_curl_global()) return NULL;
     eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)calloc(1, sizeof(*stream));
