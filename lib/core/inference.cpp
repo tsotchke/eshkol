@@ -19,6 +19,8 @@
 #include <math.h>
 #include <float.h>
 
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+
 /* ===== Arena Forward Declarations ===== */
 
 extern "C" void* arena_allocate_with_header(arena_t* arena, size_t data_size,
@@ -859,8 +861,14 @@ void eshkol_fg_add_factor_tagged(arena_t* arena,
     eshkol_factor_graph_t* fg = (eshkol_factor_graph_t*)fg_tv->data.ptr_val;
 
     /* Extract var_indices from a tensor (#(…)) OR a runtime vector ((vector …)). */
-    double idx_buf[32];
-    uint32_t num_vars = fg_read_numeric(var_indices_tv, idx_buf, 32);
+    constexpr uint32_t max_factor_vars = 32;
+    double idx_buf[max_factor_vars + 1];
+    uint32_t num_vars = fg_read_numeric(var_indices_tv, idx_buf, max_factor_vars + 1);
+    if (num_vars > max_factor_vars) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "fg-add-factor!: supports at most 32 variables per factor");
+        return;
+    }
     if (num_vars == 0) return;
 
     uint32_t* var_indices = (uint32_t*)alloca(num_vars * sizeof(uint32_t));

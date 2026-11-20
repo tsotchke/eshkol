@@ -23,6 +23,9 @@
 #include <stdbool.h>    /* bool */
 #include <string.h>
 #include <float.h>
+#include <limits.h>
+
+enum { VM_FACTOR_MAX_ARITY = 32, VM_FACTOR_MAX_STATES = 256 };
 
 /* ========================================================================
  * Log-space arithmetic
@@ -109,6 +112,9 @@ static VmFactorGraph* vm_make_factor_graph(VmRegionStack* rs,
 {
     if (!rs || num_vars <= 0 || !var_dims) return NULL;
 
+    for (int i = 0; i < num_vars; ++i)
+        if (var_dims[i] <= 0 || var_dims[i] > VM_FACTOR_MAX_STATES) return NULL;
+
     VmFactorGraph* fg = (VmFactorGraph*)vm_alloc_object(rs,
         VM_SUBTYPE_FG, sizeof(VmFactorGraph));
     if (!fg) return NULL;
@@ -161,7 +167,7 @@ static VmFactor* vm_make_factor(VmRegionStack* rs,
     const int* var_indices, int num_vars,
     const double* cpt_data, const int* dims)
 {
-    if (!rs || !var_indices || !cpt_data || !dims || num_vars <= 0) return NULL;
+    if (!rs || !var_indices || !cpt_data || !dims || num_vars <= 0 || num_vars > VM_FACTOR_MAX_ARITY) return NULL;
 
     VmFactor* f = (VmFactor*)vm_alloc(rs, sizeof(VmFactor));
     if (!f) return NULL;
@@ -170,7 +176,10 @@ static VmFactor* vm_make_factor(VmRegionStack* rs,
 
     /* Compute CPT size = product of dimensions */
     int cpt_size = 1;
-    for (int i = 0; i < num_vars; i++) cpt_size *= dims[i];
+    for (int i = 0; i < num_vars; i++) {
+        if (dims[i] <= 0 || dims[i] > VM_FACTOR_MAX_STATES || cpt_size > INT_MAX / dims[i]) return NULL;
+        cpt_size *= dims[i];
+    }
     f->cpt_size = cpt_size;
 
     /* Allocate and copy var_indices */
@@ -294,8 +303,7 @@ static void compute_f2v_message(const VmFactorGraph* fg, int fi, int target_vi,
     int total_configs = f->cpt_size;
 
     /* We need per-variable states. Use stack allocation (safe: num_vars small). */
-    int state[32]; /* max 32 vars per factor */
-    if (f->num_vars > 32) return; /* safety */
+    int state[VM_FACTOR_MAX_ARITY];
 
     for (int config = 0; config < total_configs; config++) {
         /* Decode config into per-variable states (big-endian: var 0 is most significant) */
@@ -376,7 +384,7 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
     if (!allocate_messages(rs, fg)) return 0;
 
     int converged = 0;
-    double new_msg[256]; /* max 256 states per variable — stack allocated */
+    double new_msg[VM_FACTOR_MAX_STATES];
 
     for (int iter = 0; iter < max_iterations; iter++) {
         double max_delta = 0.0;
@@ -388,7 +396,6 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
                 int msg_idx = get_msg_idx(fg, fi, vi);
                 int var_id = f->var_indices[vi];
                 int dim = fg->var_dims[var_id];
-                if (dim > 256) continue; /* safety */
 
                 compute_v2f_message(fg, fi, vi, new_msg);
 
@@ -408,7 +415,6 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
                 int msg_idx = get_msg_idx(fg, fi, vi);
                 int var_id = f->var_indices[vi];
                 int dim = fg->var_dims[var_id];
-                if (dim > 256) continue; /* safety */
 
                 compute_f2v_message(fg, fi, vi, new_msg);
 
@@ -492,8 +498,7 @@ static double vm_free_energy(const VmFactorGraph* fg,
         const VmFactor* f = fg->factors[fi];
         int total_configs = f->cpt_size;
 
-        int state[32];
-        if (f->num_vars > 32) continue;
+        int state[VM_FACTOR_MAX_ARITY];
 
         for (int config = 0; config < total_configs; config++) {
             int remaining = config;
@@ -573,8 +578,7 @@ static double vm_expected_free_energy(VmRegionStack* rs,
         if (!involves_action) continue;
 
         int total_configs = f->cpt_size;
-        int state[32];
-        if (f->num_vars > 32) continue;
+        int state[VM_FACTOR_MAX_ARITY];
 
         for (int config = 0; config < total_configs; config++) {
             /* Decode config */

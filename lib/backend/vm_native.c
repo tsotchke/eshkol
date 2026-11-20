@@ -13054,7 +13054,12 @@ tensor_inverse_done:
      * ══════════════════════════════════════════════════════════════════════ */
     case 520: { /* make-factor-graph(num_vars, var_dims) */
         Value dims_val = vm_pop(vm), nvars_val = vm_pop(vm);
-        int nv = (int)as_number(nvars_val);
+        double count = as_number_vm(vm, nvars_val);
+        if (!isfinite(count) || count != floor(count) || count < 1 || count > 64) {
+            vm_raise_error_msg(vm, "make-factor-graph: supports at most 64 variables");
+            break;
+        }
+        int nv = (int)count;
         int var_dims[64]; int nd = 0;
         /* var-dims is read by the one factor-graph sequence reader, so the
          * documented `#(2 2 2)` literal (a VECTOR in the VM, a TENSOR
@@ -13065,28 +13070,41 @@ tensor_inverse_done:
          * became single-variable and inference/free-energy went degenerate. */
         int dseq_n = 0;
         const double* dseq = vm_fg_seq_doubles(vm, dims_val, &dseq_n);
-        for (int i = 0; i < dseq_n && nd < 64; i++) {
-            int d = (int)dseq[i];
-            var_dims[nd++] = (d > 0) ? d : 2;   /* a non-positive dim is not a
-                                                 * variable domain; binary is
-                                                 * the documented default */
+        if (dseq_n > 64) {
+            vm_raise_error_msg(vm, "make-factor-graph: supports at most 64 dimensions");
+            break;
+        }
+        int valid_dims = 1;
+        for (int i = 0; i < dseq_n; ++i) {
+            double extent = dseq[i];
+            if (!isfinite(extent) || extent > VM_FACTOR_MAX_STATES) {
+                valid_dims = 0;
+                break;
+            }
+            var_dims[nd++] = extent >= 1.0 ? (int)extent : 2;
+        }
+        if (!valid_dims) {
+            vm_raise_error_msg(vm, "make-factor-graph: supports at most 256 states per variable");
+            break;
         }
         /* A BARE SCALAR dims argument means "every variable has this many
          * states", so `(make-factor-graph 2 2)` is a two-variable graph and
          * `(fg-marginal fg 1)` is a marginal rather than `()`.  Read as a
          * one-element sequence it hits the clamp below and cuts num_vars to 1,
          * where the native engine broadcasts — SW-07's own reproducer.  Only a
-         * genuine scalar LEAF broadcasts: a short sequence is an operand
-         * mismatch, not a broadcast, and still clamps. */
+         * genuine scalar leaf broadcasts. A dimension sequence supplies one
+         * entry per variable. */
         if (nd == 1 && nv > 1 && vm_tensor_collection_len(vm, dims_val) < 0) {
-            for (int i = 1; i < nv && i < 64; i++) var_dims[i] = var_dims[0];
-            nd = (nv < 64) ? nv : 64;
+            for (int i = 1; i < nv; i++) var_dims[i] = var_dims[0];
+            nd = nv;
         }
         if (nd == 0) {                          /* dims omitted/unreadable */
-            int want = (nv > 0 && nv < 64) ? nv : 0;
-            for (int i = 0; i < want; i++) var_dims[nd++] = 2;
+            for (int i = 0; i < nv; i++) var_dims[nd++] = 2;
         }
-        if (nd < nv) nv = nd;
+        if (nd < nv) {
+            vm_raise_error_msg(vm, "make-factor-graph: supply one dimension per variable");
+            break;
+        }
         VmFactorGraph* fg = vm_make_factor_graph(&vm->heap.regions, nv, var_dims);
         if (!fg) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_FACTOR_GRAPH, VAL_FACTOR_GRAPH, fg);
@@ -13109,22 +13127,38 @@ tensor_inverse_done:
                  * reader this replaces silently dropped every factor added
                  * with the documented literal form (n_vars stayed 0), which
                  * left beliefs uniform and free-energy at -0.0. */
-                int var_idx[8], n_vars = 0;
+                int var_idx[VM_FACTOR_MAX_ARITY], n_vars = 0;
                 int vseq_n = 0;
                 const double* vseq = vm_fg_seq_doubles(vm, vars, &vseq_n);
-                for (int i = 0; i < vseq_n && n_vars < 8; i++)
-                    var_idx[n_vars++] = (int)vseq[i];
+                if (vseq_n > VM_FACTOR_MAX_ARITY) {
+                    vm_raise_error_msg(vm, "fg-add-factor!: supports at most 32 variables per factor");
+                    break;
+                }
+                for (int i = 0; i < vseq_n; ++i) {
+                    double index = vseq[i];
+                    if (!isfinite(index) || index != floor(index) || index < 0 || index >= fg->num_vars)
+                        break;
+                    var_idx[n_vars++] = (int)index;
+                }
+                if (n_vars != vseq_n) {
+                    vm_raise_error_msg(vm, "fg-add-factor!: invalid variable index");
+                    break;
+                }
 
                 int cpt_n = 0;
                 const double* cpt_data = vm_fg_seq_doubles(vm, cpt, &cpt_n);
 
                 if (n_vars > 0 && cpt_data) {
                     /* Build dims array from factor graph's var_dims */
-                    int dims[8];
+                    int dims[VM_FACTOR_MAX_ARITY];
                     int need = 1;
                     for (int i = 0; i < n_vars; i++) {
                         int vi = var_idx[i];
-                        dims[i] = (vi >= 0 && vi < fg->num_vars) ? fg->var_dims[vi] : 2;
+                        if (need > INT_MAX / fg->var_dims[vi]) {
+                            need = 0;
+                            break;
+                        }
+                        dims[i] = fg->var_dims[vi];
                         need *= dims[i];
                     }
                     /* vm_make_factor() copies exactly `need` doubles out of
@@ -13134,6 +13168,10 @@ tensor_inverse_done:
                      * reports the mismatch without aborting the program
                      * (lib/core/inference.cpp, eshkol_fg_add_factor_tagged);
                      * mirror both halves of that contract. */
+                    if (need == 0) {
+                        vm_raise_error_msg(vm, "fg-add-factor!: invalid variables or configuration count");
+                        break;
+                    }
                     if (cpt_n == need) {
                         VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
                         if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);

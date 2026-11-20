@@ -1,0 +1,20 @@
+(define fg (make-factor-graph 33 1))
+(define wide
+  (guard (e (#t (equal? (error-object-message e)
+                         "fg-add-factor!: supports at most 32 variables per factor")))
+    (fg-add-factor! fg
+      #(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)
+      #(0.7))
+    #f))
+(define large-domain
+  (guard (e (#t (equal? (error-object-message e)
+                         "make-factor-graph: supports at most 256 states per variable")))
+    (let ((m (fg-marginal (make-factor-graph 1 257) 0)))
+      (and (= (tensor-length m) 257)
+           (< (abs (- (tensor-ref m 256) (/ 1.0 257.0))) 1e-9)))))
+(fg-add-factor! fg
+  #(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31)
+  #(-0.7))
+(define boundary-factor (< (abs (- (free-energy fg #()) 0.7)) 1e-9))
+(display (if (and wide large-domain boundary-factor) "PASS factor_graph_capacity" "FAIL factor_graph_capacity"))
+(newline)
