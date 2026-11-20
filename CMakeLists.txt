@@ -11645,6 +11645,11 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     # filed reproducer in tests/vm_parity/corpus/58_rng_seed_parity.esk.
     if(TARGET eshkol-run AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/seed_parity_test.sh")
+        add_test(NAME rng_automatic_seed_cross_engine
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/automatic_stream.py"
+                $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/automatic_stream.esk")
+        set_tests_properties(rng_automatic_seed_cross_engine PROPERTIES TIMEOUT 300)
         add_test(
             NAME rng_seed_parity_cross_engine
             COMMAND bash

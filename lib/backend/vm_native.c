@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "eshkol/core/gensym_sequence.h"
 #include "eshkol/core/prng_state.h"
+#include "eshkol/core/seed_entropy.h"
 #include <stdlib.h>
 #include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
@@ -23,13 +24,18 @@ extern void eshkol_srand48(int64_t seed);
 static double vm_prng_next(void) { return eshkol_drand48(); }
 static void vm_prng_seed(int64_t seed) { eshkol_srand48(seed); }
 #else
-static uint64_t vm_prng_state = 0x1234ABCD330EULL;
+static uint64_t vm_prng_state;
+static int vm_prng_initialized;
 static void vm_prng_seed(int64_t seed) {
-    vm_prng_state = ((uint64_t)seed << 16 | 0x330EULL) & ((1ULL << 48) - 1);
+    vm_prng_state = eshkol_prng_state_seed(seed);
+    vm_prng_initialized = 1;
 }
 static double vm_prng_next(void) {
-    vm_prng_state = (vm_prng_state * 0x5DEECE66DULL + 0xBULL) & ((1ULL << 48) - 1);
-    return (double)vm_prng_state / (double)(1ULL << 48);
+    if (!vm_prng_initialized) {
+        eshkol_seed_entropy(&vm_prng_state, sizeof(vm_prng_state));
+        vm_prng_initialized = 1;
+    }
+    return eshkol_prng_state_random(&vm_prng_state);
 }
 #endif
 
