@@ -721,7 +721,7 @@ probe_run v14_protobuf_roundtrip \
 # why this probe passes --strict-types explicitly).
 probe_run v14_linear_consume_exactly_once_static \
     'Linear/affine kernel (ADR-0004): a program that uses a linear Qubit twice is REJECTED at compile time under --strict-types (no-cloning), proving the same mechanism v1.4 needs for Own/socket typestate' \
-    '"$ESHKOL_RUN" --strict-types tests/typesystem/qubit_no_cloning_test.esk -o "$WORK/qubit_bad" >/dev/null 2>&1; rc=$?; [ "$rc" -ne 0 ] && [ ! -e "$WORK/qubit_bad" ]'
+    'bash tests/typesystem/qubit_no_cloning_gate.sh "$ESHKOL_RUN" "$WORK"'
 
 # The opt-in native checked fragment must accept real scoped owners and reject
 # the corresponding bad programs. Every static probe compiles a valid control

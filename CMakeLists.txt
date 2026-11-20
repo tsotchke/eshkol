@@ -9792,6 +9792,11 @@ endif()
 # Keep them in CTest so normal developer and CI test selections exercise the
 # same contracts as the release workflow.
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    if(UNIX)
+        add_test(NAME release_qubit_compile_contract
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_no_cloning_gate.sh"
+                    "$<TARGET_FILE:eshkol-run>" "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     foreach(_release_invariant_test IN ITEMS
             test_release_invariant_contracts
             test_release_gate_inputs
