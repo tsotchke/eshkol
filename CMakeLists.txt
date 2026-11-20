@@ -13163,6 +13163,10 @@ endif()
 # reimplementation of them.
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-server AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_handle_client_test.cpp")
+    add_test(NAME eshkol_server_compile_worker COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/server_compile_worker.py
+        $<TARGET_FILE:eshkol-server>)
+    set_tests_properties(eshkol_server_compile_worker PROPERTIES TIMEOUT 120)
     add_executable(eshkol_server_handle_client_test
         tests/toolchain/eshkol_server_handle_client_test.cpp)
     target_compile_features(eshkol_server_handle_client_test PRIVATE cxx_std_17)
