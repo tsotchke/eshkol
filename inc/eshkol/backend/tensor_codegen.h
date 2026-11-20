@@ -1640,6 +1640,7 @@ public:
      */
     void emitSetErrorLocation();
 
+    llvm::Value* emitBinaryCrossEntropy(const eshkol_operations_t* op, const char* name);
     /**
      * Validate a reduction axis against the operand's rank, at runtime.
      *

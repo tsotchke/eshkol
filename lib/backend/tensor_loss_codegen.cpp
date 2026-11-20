@@ -292,118 +292,7 @@ llvm::Value* TensorCodegen::crossEntropyLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::bceLoss(const eshkol_operations_t* op) {
-    refuseUnsupportedLossAD("bce-loss");
-    // bce-loss: (bce-loss predictions targets)
-    // BCE = -sum(target * log(pred) + (1-target) * log(1-pred)) / n
-    if (op->call_op.num_vars < 2) {
-        eshkol_error("bce-loss requires 2 arguments: predictions, targets");
-        return nullptr;
-    }
-
-    llvm::IRBuilder<>& builder = ctx_.builder();
-
-    llvm::Value* pred_tagged = codegenAST(&op->call_op.variables[0]);
-    llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
-    if (!pred_tagged || !target_tagged) return nullptr;
-
-    llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "bce-loss");
-    llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "bce-loss");
-    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "bce-loss");
-
-    llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* num_dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 1);
-    llvm::Value* num_dims = builder.CreateLoad(ctx_.int64Type(), num_dims_ptr);
-    llvm::Value* dims_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 0);
-    llvm::Value* dims = builder.CreateLoad(ctx_.ptrType(), dims_ptr);
-
-    llvm::Value* pred_elems_ptr = builder.CreateStructGEP(tensor_type, pred_ptr, 2);
-    llvm::Value* pred_elems = builder.CreateLoad(ctx_.ptrType(), pred_elems_ptr);
-    llvm::Value* target_elems_ptr = builder.CreateStructGEP(tensor_type, target_ptr, 2);
-    llvm::Value* target_elems = builder.CreateLoad(ctx_.ptrType(), target_elems_ptr);
-
-    llvm::Function* log_func = eshkol::libm_codegen::unary(
-        ctx_.module(), "log", ctx_.doubleType());
-
-    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-
-    // Compute total elements
-    llvm::BasicBlock* size_loop = llvm::BasicBlock::Create(ctx_.context(), "bce_size_loop", current_func);
-    llvm::BasicBlock* size_body = llvm::BasicBlock::Create(ctx_.context(), "bce_size_body", current_func);
-    llvm::BasicBlock* size_done = llvm::BasicBlock::Create(ctx_.context(), "bce_size_done", current_func);
-    llvm::BasicBlock* sum_loop = llvm::BasicBlock::Create(ctx_.context(), "bce_sum_loop", current_func);
-    llvm::BasicBlock* sum_body = llvm::BasicBlock::Create(ctx_.context(), "bce_sum_body", current_func);
-    llvm::BasicBlock* sum_done = llvm::BasicBlock::Create(ctx_.context(), "bce_sum_done", current_func);
-
-    llvm::Value* size_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* total_size = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), size_idx);
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1), total_size);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_loop);
-    llvm::Value* si = builder.CreateLoad(ctx_.int64Type(), size_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(si, num_dims), size_body, size_done);
-
-    builder.SetInsertPoint(size_body);
-    llvm::Value* dim_ptr = builder.CreateGEP(ctx_.int64Type(), dims, si);
-    llvm::Value* dim_val = builder.CreateLoad(ctx_.int64Type(), dim_ptr);
-    llvm::Value* cur_size = builder.CreateLoad(ctx_.int64Type(), total_size);
-    builder.CreateStore(builder.CreateMul(cur_size, dim_val), total_size);
-    builder.CreateStore(builder.CreateAdd(si, llvm::ConstantInt::get(ctx_.int64Type(), 1)), size_idx);
-    builder.CreateBr(size_loop);
-
-    builder.SetInsertPoint(size_done);
-    llvm::Value* num_elements = builder.CreateLoad(ctx_.int64Type(), total_size);
-
-    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* eps = llvm::ConstantFP::get(ctx_.doubleType(), 1e-4); // For numerical stability (JAX/PyTorch standard)
-
-    llvm::Value* sum_idx = builder.CreateAlloca(ctx_.int64Type());
-    llvm::Value* bce_sum = builder.CreateAlloca(ctx_.doubleType());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), sum_idx);
-    builder.CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), bce_sum);
-    builder.CreateBr(sum_loop);
-
-    builder.SetInsertPoint(sum_loop);
-    llvm::Value* sui = builder.CreateLoad(ctx_.int64Type(), sum_idx);
-    builder.CreateCondBr(builder.CreateICmpULT(sui, num_elements), sum_body, sum_done);
-
-    builder.SetInsertPoint(sum_body);
-    llvm::Value* pred_elem_ptr = builder.CreateGEP(ctx_.int64Type(), pred_elems, sui);
-    llvm::Value* pred_bits = builder.CreateLoad(ctx_.int64Type(), pred_elem_ptr);
-    llvm::Value* pred_val = builder.CreateBitCast(pred_bits, ctx_.doubleType());
-    // Clamp predictions for numerical stability
-    llvm::Value* pred_clamp = builder.CreateSelect(
-        builder.CreateFCmpOLT(pred_val, eps), eps,
-        builder.CreateSelect(
-            builder.CreateFCmpOGT(pred_val, builder.CreateFSub(one, eps)),
-            builder.CreateFSub(one, eps), pred_val));
-
-    llvm::Value* target_elem_ptr = builder.CreateGEP(ctx_.int64Type(), target_elems, sui);
-    llvm::Value* target_bits = builder.CreateLoad(ctx_.int64Type(), target_elem_ptr);
-    llvm::Value* target_val = builder.CreateBitCast(target_bits, ctx_.doubleType());
-
-    // BCE term: target * log(pred) + (1-target) * log(1-pred)
-    llvm::Value* log_pred = builder.CreateCall(log_func, {pred_clamp});
-    llvm::Value* one_minus_pred = builder.CreateFSub(one, pred_clamp);
-    llvm::Value* log_one_minus_pred = builder.CreateCall(log_func, {one_minus_pred});
-    llvm::Value* one_minus_target = builder.CreateFSub(one, target_val);
-
-    llvm::Value* term1 = builder.CreateFMul(target_val, log_pred);
-    llvm::Value* term2 = builder.CreateFMul(one_minus_target, log_one_minus_pred);
-    llvm::Value* term = builder.CreateFAdd(term1, term2);
-
-    llvm::Value* cur_sum = builder.CreateLoad(ctx_.doubleType(), bce_sum);
-    builder.CreateStore(builder.CreateFAdd(cur_sum, term), bce_sum);
-    builder.CreateStore(builder.CreateAdd(sui, llvm::ConstantInt::get(ctx_.int64Type(), 1)), sum_idx);
-    builder.CreateBr(sum_loop);
-
-    builder.SetInsertPoint(sum_done);
-    llvm::Value* total_sum = builder.CreateLoad(ctx_.doubleType(), bce_sum);
-    llvm::Value* n_double = builder.CreateSIToFP(num_elements, ctx_.doubleType());
-    llvm::Value* bce = builder.CreateFDiv(builder.CreateFNeg(total_sum), n_double);
-
-    return tagged_.packDouble(bce);
+    return emitBinaryCrossEntropy(op, "bce-loss");
 }
 
 llvm::Value* TensorCodegen::huberLoss(const eshkol_operations_t* op) {
@@ -622,11 +511,15 @@ llvm::Value* TensorCodegen::maeLoss(const eshkol_operations_t* op) {
 }
 
 llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op) {
-    refuseUnsupportedLossAD("binary-cross-entropy-loss");
+    return emitBinaryCrossEntropy(op, "binary-cross-entropy-loss");
+}
+
+llvm::Value* TensorCodegen::emitBinaryCrossEntropy(const eshkol_operations_t* op, const char* name) {
+    refuseUnsupportedLossAD(name);
     // binary-cross-entropy-loss: (binary-cross-entropy-loss predictions targets)
     // BCE = -(1/n) * sum(target * log(pred) + (1-target) * log(1-pred))
     if (op->call_op.num_vars != 2) {
-        eshkol_error("binary-cross-entropy-loss requires 2 arguments: predictions, targets");
+        eshkol_error("%s requires 2 arguments: predictions, targets", name);
         return nullptr;
     }
 
@@ -638,9 +531,9 @@ llvm::Value* TensorCodegen::binaryCrossEntropyLoss(const eshkol_operations_t* op
     llvm::Value* target_tagged = codegenAST(&op->call_op.variables[1]);
     if (!pred_tagged || !target_tagged) return nullptr;
 
-    llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, "binary-cross-entropy-loss");
-    llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, "binary-cross-entropy-loss");
-    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, "binary-cross-entropy-loss");
+    llvm::Value* pred_ptr = unpackTensorOperandChecked(pred_tagged, name);
+    llvm::Value* target_ptr = unpackTensorOperandChecked(target_tagged, name);
+    emitMatchingTensorShapes(ctx_, {pred_ptr, target_ptr}, name);
 
     // Get tensor layouts (index 0 = dims ptr, index 1 = ndims, index 2 = elems)
     llvm::StructType* tensor_type = ctx_.tensorType();

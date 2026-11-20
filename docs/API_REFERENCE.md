@@ -3600,8 +3600,7 @@ class targets.
 
 Binary Cross-Entropy: L = -(1/n) Σ_i [y_i · log(ŷ_i) + (1 - y_i) · log(1 - ŷ_i)].
 
-Predictions must be in (0, 1) — typically the output of a sigmoid layer. Internally clamped
-to [ε, 1-ε] for numerical stability.
+Both spellings clamp predicted probabilities to `[1e-7, 1 - 1e-7]` before evaluating the logarithms.
 
 **Use case:** Binary classification, multi-label classification.
 
