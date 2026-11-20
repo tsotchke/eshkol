@@ -15,6 +15,7 @@
 #include <eshkol/core/introspection.h>
 #include <eshkol/logger.h>
 #include "arena_memory.h"
+#include "datum_cycles.h"
 
 #include <cstring>
 #include <cstdlib>
@@ -1196,6 +1197,7 @@ extern "C" {
  * @return Pointer to allocated AST node, or NULL on error.
  */
 eshkol_ast_t* eshkol_sexp_to_ast(eshkol_tagged_value_t sexp) {
+    eshkol::validate_eval_datum(sexp);
     return convert_sexp(sexp);
 }
 
