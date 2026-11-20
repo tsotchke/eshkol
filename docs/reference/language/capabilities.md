@@ -20,9 +20,11 @@ Once a policy is active, every capability it does not name is refused, and that
 holds on all three engines — the LLVM JIT, an ahead-of-time executable, and the
 bytecode VM — because they consult one policy store.
 
-**A policy only ever narrows.** Installing one while another is active keeps the
-capabilities both name and drops the rest, so a program cannot widen what it was
-given; and `(capability-clear-policy!)` is refused while a policy is active,
+**A policy only ever narrows.** A policy is installed by one call carrying the
+whole set, so it is never active with its set half-assembled and there is no
+moment in which a stray grant could widen it. Installing one while another is
+active keeps the capabilities both name and drops the rest, so a program cannot
+widen what it was given; and `(capability-clear-policy!)` is refused while a policy is active,
 raising a catchable capability error, because a policy the governed code can
 switch off is not a policy. With no policy installed, clearing is a no-op that
 succeeds. A host embedding Eshkol that needs to return to the unrestricted
@@ -38,6 +40,11 @@ refused when the program compiles.
 (capability-allowed? 'file-write)                   ; => #f, dropped
 (capability-allowed? 'network)                      ; => #f, never held
 ```
+
+**Granting `ffi` is granting everything.** Foreign code runs outside the
+language, so it reaches every host operation directly and can reach the policy
+store itself; a policy that grants `ffi` constrains nothing in practice. Grant it
+only to code you would have run with no policy at all.
 
 **Granting `subprocess` grants everything the host can do.** The policy lives in
 this process's memory, so a child process started with `subprocess` begins with

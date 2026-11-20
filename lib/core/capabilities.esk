@@ -25,9 +25,13 @@
          capability-allowed?
          capability-require!)
 
+;; Two entry points, and only two. A policy is installed by one call carrying
+;; the whole set, so there is no moment at which a policy is active with its set
+;; still being assembled — and so no call a program could make, in or out of
+;; this module, that widens a settled policy. The runtime's staged installer is
+;; deliberately not named here.
 (extern i32 capability-runtime-clear-raw :real eshkol_capability_runtime_clear)
-(extern void capability-runtime-begin-install-raw :real eshkol_capability_runtime_begin_install)
-(extern void capability-runtime-allow-raw ptr :real eshkol_capability_runtime_allow)
+(extern i32 capability-runtime-install-raw ptr :real eshkol_capability_runtime_install)
 
 (define *capability-policy-active* #f)
 (define *capability-allow-list* '())
@@ -45,14 +49,23 @@
           (capability-symbol-list? (cdr allow-list))
           #f)))
 
+(define (capability-names-string allow-list)
+  "ALLOW-LIST as one space-separated string, which is how the whole set reaches
+the runtime in a single call."
+  (if (null? allow-list)
+      ""
+      (if (null? (cdr allow-list))
+          (symbol->string (car allow-list))
+          (string-append (symbol->string (car allow-list))
+                         " "
+                         (capability-names-string (cdr allow-list))))))
+
 (define (capability-sync-runtime! allow-list)
-  (capability-runtime-begin-install-raw)
-  (let loop ((remaining allow-list))
-    (if (null? remaining)
-        #t
-        (begin
-          (capability-runtime-allow-raw (symbol->string (car remaining)))
-          (loop (cdr remaining))))))
+  "Hand the whole set to the runtime at once. The runtime intersects it with any
+active policy and swaps under one lock, so a policy is never observable with a
+partly-assembled set."
+  (capability-runtime-install-raw (capability-names-string allow-list))
+  #t)
 
 (define (capability-intersect allow-list current)
   "The names in ALLOW-LIST that CURRENT also holds, in ALLOW-LIST's order."

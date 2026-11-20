@@ -1421,6 +1421,7 @@ class EshkolRepl {
         this._capabilityPolicyActive = false;
         this._capabilityAllowed = new Set();
         this._capabilityCeiling = null;
+        this._capabilityInstallOpen = false;
         this.compileToken = compileToken;
         this.sessionId = null;
         this.modules = [];      // Compiled WASM modules
@@ -2597,19 +2598,44 @@ class EshkolRepl {
                 // regardless; what the policy still governs is the answer the
                 // program gets, and that answer is now the same one the native
                 // runtime gives.
+                // Installing is one call carrying the whole set, so a policy is
+                // never active with its set half-assembled and no stray grant
+                // can widen a settled one. An active policy is narrowed: only
+                // the names it already held survive.
+                eshkol_capability_runtime_install: (namesPtr) => {
+                    const requested = new Set(
+                        this.readString(namesPtr).split(' ').filter((n) => n.length > 0));
+                    if (this._capabilityPolicyActive) {
+                        const narrowed = new Set();
+                        for (const name of requested) {
+                            if (this._capabilityAllowed.has(name)) narrowed.add(name);
+                        }
+                        this._capabilityAllowed = narrowed;
+                    } else {
+                        this._capabilityAllowed = requested;
+                    }
+                    this._capabilityPolicyActive = true;
+                    return 1;
+                },
+                // The staged form, for a host embedding this runtime. A grant
+                // outside an open staged install is refused.
                 eshkol_capability_runtime_begin_install: () => {
-                    // A second install narrows the first: the names that follow
-                    // are kept only if the active policy already held them.
                     this._capabilityCeiling = this._capabilityPolicyActive
                         ? this._capabilityAllowed : null;
+                    this._capabilityInstallOpen = true;
                     this._capabilityPolicyActive = true;
                     this._capabilityAllowed = new Set();
                 },
+                eshkol_capability_runtime_end_install: () => {
+                    this._capabilityInstallOpen = false;
+                    this._capabilityCeiling = null;
+                },
                 eshkol_capability_runtime_allow: (namePtr) => {
-                    if (!this._capabilityPolicyActive) return;
+                    if (!this._capabilityInstallOpen) return 0;
                     const name = this.readString(namePtr);
-                    if (this._capabilityCeiling && !this._capabilityCeiling.has(name)) return;
+                    if (this._capabilityCeiling && !this._capabilityCeiling.has(name)) return 0;
                     this._capabilityAllowed.add(name);
+                    return 1;
                 },
                 eshkol_capability_runtime_clear: () => {
                     // Refused while a policy is active: a policy the governed
@@ -2617,12 +2643,14 @@ class EshkolRepl {
                     if (this._capabilityPolicyActive) return 0;
                     this._capabilityAllowed = new Set();
                     this._capabilityCeiling = null;
+                    this._capabilityInstallOpen = false;
                     return 1;
                 },
                 eshkol_capability_runtime_host_reset: () => {
                     this._capabilityPolicyActive = false;
                     this._capabilityAllowed = new Set();
                     this._capabilityCeiling = null;
+                    this._capabilityInstallOpen = false;
                 },
                 eshkol_capability_runtime_is_active: () =>
                     this._capabilityPolicyActive ? 1 : 0,

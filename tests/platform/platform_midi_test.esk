@@ -42,6 +42,6 @@
 ;; Narrowed: the capability the body used is no longer granted.
 (capability-install-policy! '(audio))
 (check "a policy without 'midi refuses ports"
-       (raises? (lambda () (midi-open-output "eshkol-esk-out"))))
+       (refuses-capability? 'midi (lambda () (midi-open-output "eshkol-esk-out"))))
 
 (report "platform midi")

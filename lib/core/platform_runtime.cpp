@@ -1829,6 +1829,15 @@ extern "C" int eshkol_path_is_stdlib_module(const char* host_path) {
     const std::filesystem::path root = eshkol::platform::module_source_root().path;
     if (root.empty()) return 0;
 
+    /* Only a root that actually carries the standard library confers the
+     * exemption. module_source_root() falls back to the first directory that
+     * merely exists so that a partial install still resolves user modules, and
+     * it honours a library directory named in the environment — both chosen by
+     * whoever launches the compiler. Neither is evidence that the files in it
+     * are Eshkol's own, and a project's own ./lib must not become exempt
+     * because it happened to be picked. */
+    if (!std::filesystem::exists(root / "stdlib.esk", ec) || ec) return 0;
+
     std::filesystem::path canonical_root = std::filesystem::weakly_canonical(root, ec);
     if (ec) { canonical_root = root; ec.clear(); }
     std::filesystem::path canonical_file =

@@ -1893,14 +1893,16 @@ static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
     /* VM-local implementation: this deliberately resets the VM's own logic
      * registry and intern pool rather than depending on the hosted runtime. */
     {"eshkol-logic-reset", "void", {NULL}, 0, "eshkol_logic_registry_reset", 2251},
-    /* The capability policy installers. core.capabilities declares these, so
-     * without them a program running on this engine could read a policy but
-     * never install one — and the engine's own capability gates would have
-     * nothing to consult. They reach the same process-wide policy store the
-     * native runtime uses (lib/core/capability_policy.cpp). */
+    /* The capability policy's two entry points. core.capabilities declares
+     * these, so without them a program running on this engine could read a
+     * policy but never install one — and the engine's own capability gates
+     * would have nothing to consult. Installing is one call carrying the whole
+     * set, so this table offers no way to add a capability to a policy that is
+     * already settled. The runtime's staged installer is deliberately absent.
+     * They reach the same process-wide policy store the native runtime uses
+     * (lib/core/capability_policy.cpp). */
     {"capability-runtime-clear-raw", "i32", {NULL}, 0, "eshkol_capability_runtime_clear", 2253},
-    {"capability-runtime-begin-install-raw", "void", {NULL}, 0, "eshkol_capability_runtime_begin_install", 2254},
-    {"capability-runtime-allow-raw", "void", {"ptr"}, 1, "eshkol_capability_runtime_allow", 2255},
+    {"capability-runtime-install-raw", "i32", {"ptr"}, 1, "eshkol_capability_runtime_install", 2254},
     {"sha256-raw", "i32", {"ptr", "i64", "ptr", "i64"}, 4, "eshkol_sha256", VM_NATIVE_SHA256_EXTERN},
     {"hmac-sha256-raw", "i32", {"ptr", "i64", "ptr", "i64", "ptr", "i64"}, 6, "eshkol_hmac_sha256", VM_NATIVE_HMAC_SHA256_EXTERN},
     {"random-bytes-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_bytes", VM_NATIVE_RANDOM_BYTES_EXTERN},

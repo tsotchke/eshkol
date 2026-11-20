@@ -80,6 +80,6 @@
 ;; Narrowed: the capability the body used is no longer granted.
 (capability-install-policy! '(network))
 (check "a policy without 'display refuses windows"
-       (raises? (lambda () (window-create "denied" 10 10))))
+       (refuses-capability? 'display (lambda () (window-create "denied" 10 10))))
 
 (report "platform window")

@@ -17,9 +17,12 @@
  * Policy semantics:
  *   - With no policy installed, every capability is permitted. Programs that
  *     never install one behave exactly as they did before.
- *   - Installing a policy (eshkol_capability_runtime_begin_install followed by
- *     eshkol_capability_runtime_allow for each granted name) makes the policy
- *     active and denies every capability it does not name.
+ *   - Installing a policy (eshkol_capability_runtime_install, one call carrying
+ *     the whole set) makes the policy active and denies every capability it
+ *     does not name. One call is the point: a policy is never active with its
+ *     set half-assembled, so there is no window in which a stray grant could
+ *     widen it. The staged form — begin, allow…, end — is for a host embedding
+ *     Eshkol, and a grant outside an open staged install is refused.
  *   - A policy only ever narrows. Installing one while another is active keeps
  *     the capabilities both name and drops the rest, so the code a policy wraps
  *     cannot widen what it was given. Clearing is refused while a policy is
@@ -56,6 +59,9 @@ std::unordered_set<std::string> g_capability_denials_reported;
  * one granted — the ceiling the new list is intersected with. */
 std::unordered_set<std::string> g_capability_previous_allow_list;
 bool g_capability_narrowing = false;
+/* Whether a staged install is open. A grant outside one is refused, so a
+ * settled policy cannot be widened by a stray call. */
+bool g_capability_install_open = false;
 
 bool capability_allows_locked(const char* capability) {
     if (capability == nullptr || capability[0] == '\0') {
@@ -84,6 +90,7 @@ extern "C" int eshkol_capability_runtime_clear() {
     std::lock_guard<std::mutex> lock(g_capability_mutex);
     if (g_capability_policy_active) return 0;
     g_capability_allow_list.clear();
+    g_capability_install_open = false;
     return 1;
 }
 
@@ -100,17 +107,70 @@ extern "C" int eshkol_capability_runtime_clear() {
 extern "C" void eshkol_capability_runtime_host_reset() {
     std::lock_guard<std::mutex> lock(g_capability_mutex);
     g_capability_policy_active = false;
+    g_capability_install_open = false;
+    g_capability_narrowing = false;
     g_capability_allow_list.clear();
+    g_capability_previous_allow_list.clear();
 }
 
 /**
- * @brief Begin installing a policy: activate it with nothing granted yet.
+ * @brief Install a policy from a whole set of names, in one step.
  *
- * After this call every capability is denied until one is permitted through
- * eshkol_capability_runtime_allow(). When a policy is already active the
- * capabilities it granted are remembered, so the names that follow are
- * intersected with them rather than replacing them — a second install can only
- * narrow what the first one gave. Thread-safe.
+ * This is the only way a program installs a policy, and it is a single call on
+ * purpose: there is no moment at which a policy is active with its set still
+ * being assembled, so there is no window in which a stray grant could widen it.
+ *
+ * @param names  The granted capabilities, separated by spaces, e.g.
+ *               "file-read network". NULL or empty installs a policy that
+ *               grants nothing.
+ * @return 1 once the policy is in force.
+ *
+ * When a policy is already active the new set is intersected with it, so an
+ * install can only ever take capabilities away. The whole operation happens
+ * under one lock: another thread sees either the old policy or the new one.
+ */
+extern "C" int eshkol_capability_runtime_install(const char* names) {
+    std::unordered_set<std::string> requested;
+    if (names != nullptr) {
+        const char* cursor = names;
+        while (*cursor != '\0') {
+            while (*cursor == ' ') ++cursor;
+            const char* start = cursor;
+            while (*cursor != '\0' && *cursor != ' ') ++cursor;
+            if (cursor != start) requested.emplace(start, (size_t)(cursor - start));
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(g_capability_mutex);
+    if (g_capability_policy_active) {
+        /* Narrowing: keep only what the active policy also holds. */
+        std::unordered_set<std::string> narrowed;
+        for (const std::string& name : requested) {
+            if (g_capability_allow_list.find(name) != g_capability_allow_list.end()) {
+                narrowed.insert(name);
+            }
+        }
+        g_capability_allow_list = std::move(narrowed);
+    } else {
+        g_capability_allow_list = std::move(requested);
+    }
+    g_capability_policy_active = true;
+    return 1;
+}
+
+/**
+ * @brief Open a staged install, for a host embedding Eshkol.
+ *
+ * The staged form — begin, then one eshkol_capability_runtime_allow() per name,
+ * then eshkol_capability_runtime_end_install() — exists for an embedder that
+ * builds its allow-list as it goes. A program's own code never reaches it: it
+ * installs through eshkol_capability_runtime_install(), and the staged entry
+ * points are refused in an `(extern …)` declaration and absent from the
+ * bytecode VM's table.
+ *
+ * While the install is open the policy is already active with nothing granted,
+ * so a concurrent check fails closed. On an already-active policy the current
+ * set becomes the ceiling the staged names are intersected with. Thread-safe.
  */
 extern "C" void eshkol_capability_runtime_begin_install() {
     std::lock_guard<std::mutex> lock(g_capability_mutex);
@@ -121,34 +181,51 @@ extern "C" void eshkol_capability_runtime_begin_install() {
         g_capability_previous_allow_list.clear();
         g_capability_narrowing = false;
     }
+    g_capability_install_open = true;
     g_capability_policy_active = true;
     g_capability_allow_list.clear();
 }
 
 /**
- * @brief Grant a capability in the policy being installed.
+ * @brief Close a staged install.
  *
- * No-op if no policy is currently active (i.e. before the first
- * begin_install()) or if `capability` is NULL/empty. When the install is
- * narrowing an existing policy, a name the previous policy did not grant is
- * not granted now either: a policy cannot hand its code more than it holds.
+ * After this, eshkol_capability_runtime_allow() grants nothing: the set is
+ * settled and the only way to change it is another install, which can only
+ * narrow. Thread-safe.
+ */
+extern "C" void eshkol_capability_runtime_end_install() {
+    std::lock_guard<std::mutex> lock(g_capability_mutex);
+    g_capability_install_open = false;
+    g_capability_narrowing = false;
+    g_capability_previous_allow_list.clear();
+}
+
+/**
+ * @brief Grant a capability in the staged install that is currently open.
+ *
+ * Refused — nothing is granted and 0 is returned — unless a staged install is
+ * open, which is what keeps a stray grant from widening a settled policy. When
+ * the staged install is narrowing an existing policy, a name that policy did
+ * not grant is refused too: a policy cannot hand its code more than it holds.
  * Thread-safe.
  *
  * @param capability  Capability name to permit, e.g. "file-read".
+ * @return 1 when the capability was granted, 0 when the grant was refused.
  */
-extern "C" void eshkol_capability_runtime_allow(const char* capability) {
+extern "C" int eshkol_capability_runtime_allow(const char* capability) {
     if (capability == nullptr || capability[0] == '\0') {
-        return;
+        return 0;
     }
 
     std::lock_guard<std::mutex> lock(g_capability_mutex);
-    if (!g_capability_policy_active) return;
+    if (!g_capability_install_open) return 0;
     if (g_capability_narrowing &&
         g_capability_previous_allow_list.find(capability) ==
             g_capability_previous_allow_list.end()) {
-        return;
+        return 0;
     }
     g_capability_allow_list.insert(capability);
+    return 1;
 }
 
 /** @brief Whether a capability policy is currently installed (1) or all capabilities are unrestricted (0). Thread-safe. */

@@ -52,6 +52,6 @@
 ;; Narrowed: the capability the body used is no longer granted.
 (capability-install-policy! '(display))
 (check "a policy without 'audio refuses devices"
-       (raises? (lambda () (audio-open-output 48000 2 256))))
+       (refuses-capability? 'audio (lambda () (audio-open-output 48000 2 256))))
 
 (report "platform audio")

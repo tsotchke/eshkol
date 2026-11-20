@@ -269,28 +269,62 @@ int eshkol_capability_runtime_clear();
 void eshkol_capability_runtime_host_reset();
 
 /**
- * @brief Begins installing a policy, in preparation for a fresh set of
- *        eshkol_capability_runtime_allow() calls.
+ * @brief Installs a policy from a whole set of names, in one call.
  *
- * When a policy is already active the new one narrows it: a capability the
- * active policy did not grant cannot be granted now, so an install only ever
- * takes away.
+ * The way a program installs a policy, and a single call on purpose: a policy
+ * is never active with its set still being assembled, so there is no window in
+ * which a stray grant could widen it. When a policy is already active the new
+ * set is intersected with it, so an install only ever takes away. The whole
+ * operation happens under one lock.
+ *
+ * @param names Granted capability names separated by spaces, e.g.
+ *        "file-read network". NULL or empty grants nothing.
+ * @return 1 once the policy is in force.
+ * @note Thread-safe.
+ */
+int eshkol_capability_runtime_install(const char* names);
+
+/**
+ * @brief Opens a staged install, for a host embedding Eshkol.
+ *
+ * For an embedder that builds its allow-list as it goes: begin, then one
+ * eshkol_capability_runtime_allow() per name, then
+ * eshkol_capability_runtime_end_install(). A program's own code never reaches
+ * it — it installs through eshkol_capability_runtime_install(), and the staged
+ * entry points are refused in an `(extern ...)` declaration and absent from
+ * the bytecode VM's table.
+ *
+ * While the install is open the policy is active with nothing granted, so a
+ * concurrent check fails closed. On an already-active policy the current set
+ * becomes the ceiling the staged names are intersected with.
  * @note Thread-safe.
  */
 void eshkol_capability_runtime_begin_install();
 
 /**
- * @brief Grants a capability, adding it to the active allow-list.
+ * @brief Closes a staged install, settling the set.
  *
- * Has no effect if the capability policy is not active (i.e. this must be
- * called after eshkol_capability_runtime_begin_install()).
- *
- * @param capability Capability name to grant (e.g. "file-read",
- *        "file-write", "env-read", "env-write"). NULL or empty is ignored,
- *        and so is a name the policy being narrowed did not itself grant.
+ * Afterwards eshkol_capability_runtime_allow() grants nothing; the only way to
+ * change the policy is another install, which can only narrow.
  * @note Thread-safe.
  */
-void eshkol_capability_runtime_allow(const char* capability);
+void eshkol_capability_runtime_end_install();
+
+/**
+ * @brief Grants a capability in the staged install that is currently open.
+ *
+ * Refused unless a staged install is open (see
+ * eshkol_capability_runtime_begin_install()).
+ *
+ * @param capability Capability name to grant (e.g. "file-read",
+ *        "file-write", "env-read", "env-write"). NULL or empty is refused,
+ *        and so is a name the policy being narrowed did not itself grant.
+ * @return 1 when the capability was granted; 0 when the grant was refused,
+ *         which is what happens whenever no staged install is open — a
+ *         settled policy cannot be widened by a stray call.
+ * @note Thread-safe.
+ */
+int eshkol_capability_runtime_allow(const char* capability);
 
 /**
  * @brief Reports whether capability enforcement is currently active.

@@ -30,6 +30,7 @@
 (require core.memory)
 (require core.sexp)
 (require core.files)   ;; path-directory for durable sidecar publication
+(require core.capabilities)  ;; the file capability this module's own opens need
 
 (provide make-memory-store
          memory-store?
@@ -52,14 +53,18 @@
          memory-store-test-fail-next-first-file-parent-sync!)
 
 ;; ---- fixed-arity libc (ARM64-safe; see header) ----
-(extern ptr ms-fopen ptr ptr :real fopen)
+;; The two entry points that take a path go through the runtime's own file
+;; wrappers rather than libc, so a path this module opens meets the same
+;; file-read / file-write check as a path any other part of the language opens.
+;; eshkol_fopen reads the mode to decide which of the two it needs.
+(extern ptr ms-fopen ptr ptr :real eshkol_fopen)
 (extern i64 ms-fwrite ptr i64 i64 ptr :real fwrite)
 (extern i32 ms-fflush ptr :real fflush)
 (extern i32 ms-fileno ptr :real fileno)
 (extern i32 ms-fsync i32 :real fsync)
 (extern i32 ms-fclose ptr :real fclose)
 (extern i32 ms-flock i32 i32 :real flock)
-(extern i32 ms-rename ptr ptr :real rename)
+(extern i32 ms-rename ptr ptr :real eshkol_rename)
 (extern i32 ms-open-readonly ptr i32 :real open)
 (extern i32 ms-close i32 :real close)
 ;; `fcntl(fd, F_FULLFSYNC, 0)` is an ABI-fixed use of fcntl: the third
@@ -576,7 +581,10 @@
 
 (define (ms-sync-parent-directory! path)
   ;; Rename durability requires syncing its containing directory too.  `open`
-  ;; is used only in its fixed two-argument O_RDONLY form (no variadic mode).
+  ;; is used only in its fixed two-argument O_RDONLY form (no variadic mode),
+  ;; which is why it is still libc here; the capability it needs is asked for
+  ;; directly, since this descriptor exists to complete a write.
+  (capability-require! 'file-write path)
   (let ((fd (ms-open-readonly (path-directory path) 0)))
     (if (< fd 0)
         #f
