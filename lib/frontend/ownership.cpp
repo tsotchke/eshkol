@@ -4323,6 +4323,27 @@ private:
                         work.push_back(astChild(&op->call_op.variables[i - 1]));
                     break;
                 }
+                // A builtin whose resource contract closes or takes an owned
+                // handle consumes its owner once the arguments are evaluated.
+                if (!checked) {
+                    const std::string head = getVarName(op->call_op.func);
+                    const sr::Contract* contract =
+                        head.empty() || lookupVariable(head) ? nullptr : sr::findBuiltinContract(head.c_str());
+                    for (int slot = 0; contract && slot < 2; ++slot) {
+                        const sr::HandleArg& handle = contract->handle_args[slot];
+                        const bool consumed = handle.consumed || (slot == 0 &&
+                            (contract->role == sr::Role::CLOSE || contract->consumes_handle));
+                        if (!consumed || handle.index < 0 ||
+                            static_cast<uint64_t>(handle.index) >= op->call_op.num_vars)
+                            continue;
+                        VariableInfo* owner = lookupVariable(getVarName(&op->call_op.variables[handle.index]));
+                        if (!owner || !owner->is_owned_binding) continue;
+                        WorkItem after = WorkItem::marker(WorkItem::Kind::CALL_AFTER, nullptr,
+                                                          owner->binding_id, false);
+                        after.flag = true;
+                        work.push_back(after);
+                    }
+                }
                 // An applied lambda runs after its arguments are evaluated.
                 if (isLambdaNode(op->call_op.func)) work.push_back(astChild(op->call_op.func));
                 for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
