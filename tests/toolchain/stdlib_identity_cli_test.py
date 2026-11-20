@@ -118,6 +118,9 @@ def main():
             "unstamped": "@ordinary = global i8 0\n",
             "declaration": f"@{symbol} = external global i8\n@keep = global ptr @{symbol}\n",
             "mixed": f"@{symbol} = global i8 0\n@eshkol_stdlib_identity_foreign = global i8 0\n",
+            # Outside Mach-O a leading underscore is part of the symbol name;
+            # it must not be normalized into the expected marker.
+            "forged-leading-underscore": f"@_{symbol} = global i8 0\n",
         }
 
         def check(label, artifact, allowed):
@@ -154,7 +157,7 @@ def main():
             check(name, path, False)
         check("missing-file", work / "absent", False)
         check("directory", work / "tmp", False)
-        need(len(cases) == 20, "case matrix incomplete")
+        need(len(cases) == 22, "case matrix incomplete")
         result.update(status="PASS_STDLIB_IDENTITY_METADATA_CONTROLS",
                       cases_passed=len(cases), expected_identity=identity,
                       executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest())

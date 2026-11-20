@@ -44,6 +44,11 @@ inline bool matches_object(llvm::MemoryBufferRef buffer, std::string& found) {
         return false;
     }
 
+    // LLVM exposes Mach-O's external leading underscore in symbol names.
+    // Other object formats may legally contain an unrelated symbol beginning
+    // with an underscore, so normalize only after identifying Mach-O itself.
+    const bool mach_o = (*object_or_error)->isMachO();
+
     size_t marker_count = 0;
     bool expected_marker = false;
     for (const llvm::object::SymbolRef& symbol : (*object_or_error)->symbols()) {
@@ -54,7 +59,7 @@ inline bool matches_object(llvm::MemoryBufferRef buffer, std::string& found) {
             return false;
         }
         llvm::StringRef name = *name_or_error;
-        name.consume_front("_"); // Mach-O external-symbol spelling.
+        if (mach_o) name.consume_front("_");
         if (!name.starts_with(kSymbolPrefix)) continue;
 
         auto flags_or_error = symbol.getFlags();
