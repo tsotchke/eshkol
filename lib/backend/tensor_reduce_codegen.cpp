@@ -98,20 +98,24 @@ llvm::Value* extractStructuralIntOrRaise(CodegenContext& ctx,
         ctx.builder().SetInsertPoint(err_block);
         emitStructuralIntErrorLocation(ctx);
 
-        llvm::Function* type_error_fn = ctx.module().getFunction("eshkol_type_error");
+        // Same condition and message as the tagged branch below, with the
+        // operand's type taken from its static type instead of a runtime tag.
+        llvm::Function* type_error_fn = ctx.module().getFunction("eshkol_type_error_with_value");
         if (!type_error_fn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
                 ctx.builder().getVoidTy(),
-                {ctx.builder().getPtrTy(), ctx.builder().getPtrTy()},
+                {ctx.builder().getPtrTy(), ctx.builder().getPtrTy(), ctx.builder().getPtrTy()},
                 false);
             type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                "eshkol_type_error", &ctx.module());
+                "eshkol_type_error_with_value", &ctx.module());
             type_error_fn->setDoesNotReturn();
         }
+        const char* actual_type = value_type->isFloatingPointTy() ? "double" : "non-integer value";
 
         llvm::Value* proc = ctx.builder().CreateGlobalString(proc_name, "axis_int_proc");
         llvm::Value* expected = ctx.builder().CreateGlobalString(expected_type, "axis_int_expected");
-        ctx.builder().CreateCall(type_error_fn, {proc, expected});
+        llvm::Value* actual = ctx.builder().CreateGlobalString(actual_type, "axis_int_actual");
+        ctx.builder().CreateCall(type_error_fn, {proc, expected, actual});
         ctx.builder().CreateUnreachable();
         // The refusal is unconditional: there is no success block, and the
         // caller lowers the rest of the reduction with the value returned
