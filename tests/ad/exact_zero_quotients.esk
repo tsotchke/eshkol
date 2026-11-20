@@ -1,0 +1,7 @@
+(define n (expt 2 80))
+(define (signals? thunk) (guard (condition (#t (error-object? condition))) (thunk) #f))
+(display (if (and (signals? (lambda () (/ n 0)))
+                  (signals? (lambda () (quotient n 0)))
+                  (signals? (lambda () (remainder n 0))))
+             "PASS exact_zero_quotients" "FAIL exact_zero_quotients"))
+(newline)

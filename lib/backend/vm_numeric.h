@@ -63,6 +63,7 @@
 #define VM_SUBTYPE_SUBST     11
 #define VM_SUBTYPE_FACT      12
 #define VM_SUBTYPE_KB        13
+#define VM_EXACT_DIV_ZERO "rational division by zero"
 #define VM_SUBTYPE_FG        14  /* factor graph */
 #define VM_SUBTYPE_WORKSPACE 15
 #define VM_SUBTYPE_PORT      16

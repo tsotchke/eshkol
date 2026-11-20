@@ -18,6 +18,24 @@ static int rational_limits(void) {
     return ok;
 }
 
+static int bignum_zero_condition(void) {
+    VM* vm = vm_create();
+    if (!vm) return 0;
+    VmRegionStack* rs = &vm->heap.regions;
+    VmBignum* n = bignum_from_int64(rs, 3);
+    VmBignum* z = bignum_from_int64(rs, 0);
+    int ok = n && z && !bignum_div(rs, n, z) && !bignum_mod(rs, n, z);
+    for (int fid = 358; fid <= 359; ++fid) {
+        vm->error = 0;
+        vm_push(vm, INT_VAL(3));
+        vm_push(vm, INT_VAL(0));
+        vm_dispatch_native(vm, fid);
+        ok = ok && vm->error;
+    }
+    vm_free(vm);
+    return ok;
+}
+
 static int symbolic_variable_power(void) {
     VmArena arena;
     vm_arena_init(&arena, sizeof(SymNode) * 4);
@@ -49,6 +67,7 @@ static int symbolic_variable_power(void) {
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     if (!strcmp(argv[1], "rational_limits")) return !rational_limits();
+    if (!strcmp(argv[1], "bignum_zero_condition")) return !bignum_zero_condition();
     if (!strcmp(argv[1], "symbolic_variable_power")) return !symbolic_variable_power();
     return 2;
 }

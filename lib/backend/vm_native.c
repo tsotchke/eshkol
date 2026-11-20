@@ -7806,17 +7806,17 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
     VmBignum* ab = vm_coerce_bignum(vm, a);
     VmBignum* bb = vm_coerce_bignum(vm, b);
     if (!ab || !bb) { vm->error = 1; return; }
+    if ((op == '/' || op == 'q' || op == 'r' || op == 'm') && bignum_is_zero(bb)) {
+        vm_raise_error_msg(vm, VM_EXACT_DIV_ZERO);
+        return;
+    }
     VmBignum* r = NULL;
     switch (op) {
     case '+': r = bignum_add(rs, ab, bb); break;
     case '-': r = bignum_sub(rs, ab, bb); break;
     case '*': r = bignum_mul(rs, ab, bb); break;
-    case 'q': if (bignum_is_zero(bb)) {
-                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
-              r = bignum_div(rs, ab, bb); break;
-    case 'r': if (bignum_is_zero(bb)) {
-                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
-              r = bignum_mod(rs, ab, bb); break;
+    case 'q': r = bignum_div(rs, ab, bb); break;
+    case 'r': r = bignum_mod(rs, ab, bb); break;
     case '/': {
         /* Exact bignum `/`.  A zero divisor is a fatal exact division by zero
          * (native raises "bignum division by zero").  An even division yields
@@ -7830,8 +7830,6 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
          * operation on exact operands to stay exact, and the rational
          * substrate is bignum-capable now, so the exact result is built
          * instead of rounded. */
-        if (bignum_is_zero(bb)) {
-            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
         VmBignum* rem = bignum_mod(rs, ab, bb);
         if (rem && bignum_is_zero(rem)) { r = bignum_div(rs, ab, bb); break; }
         vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, ab, bb));
@@ -7841,8 +7839,6 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
         /* R7RS modulo: result carries the sign of the divisor. bignum_mod
          * returns the truncated remainder (sign of the dividend), so adjust
          * by adding the divisor when the signs disagree. */
-        if (bignum_is_zero(bb)) {
-            fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; return; }
         r = bignum_mod(rs, ab, bb);
         if (r && !bignum_is_zero(r) && bignum_sign(r) != bignum_sign(bb))
             r = bignum_add(rs, r, bb);
@@ -11216,7 +11212,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
              * silently produce an inexact value. */
             if (fid == 334 &&
                 (b_r->is_big ? bignum_is_zero(b_r->big_num) : b_r->num == 0)) {
-                vm_raise_error_msg(vm, "rational division by zero"); break;
+                vm_raise_error_msg(vm, VM_EXACT_DIV_ZERO); break;
             }
             char rop = (fid == 331) ? '+' : (fid == 332) ? '-'
                      : (fid == 333) ? '*' : '/';
@@ -11398,6 +11394,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmBignum* a_bn = (a_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[a_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(a_val));
             VmBignum* b_bn = (b_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(b_val));
             if (!a_bn || !b_bn) { vm_push(vm, NIL_VAL); break; }
+            if ((fid == 358 || fid == 359) && bignum_is_zero(b_bn)) {
+                vm_raise_error_msg(vm, VM_EXACT_DIV_ZERO);
+                break;
+            }
             VmBignum* result = NULL;
             switch (fid) { case 355: result=bignum_add(bn_rs,a_bn,b_bn); break; case 356: result=bignum_sub(bn_rs,a_bn,b_bn); break;
                 case 357: result=bignum_mul(bn_rs,a_bn,b_bn); break; case 358: result=bignum_div(bn_rs,a_bn,b_bn); break; case 359: result=bignum_mod(bn_rs,a_bn,b_bn); break; }

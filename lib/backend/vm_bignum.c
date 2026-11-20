@@ -493,10 +493,7 @@ static VmBignum* bignum_mul(VmRegionStack* rs, const VmBignum* a, const VmBignum
  * Returns quotient; *remainder receives the remainder.
  */
 static VmBignum* mag_div_single(VmRegionStack* rs, const VmBignum* a, uint32_t d, uint32_t* remainder) {
-    if (d == 0) {
-        fprintf(stderr, "ERROR: bignum division by zero\n");
-        return NULL;
-    }
+    if (d == 0) return NULL;
 
     VmBignum* q = bignum_create(rs, a->n_limbs);
     if (!q) return NULL;
@@ -666,9 +663,8 @@ static void mag_div_knuth(VmRegionStack* rs, const VmBignum* a, const VmBignum* 
 static void bignum_divmod(VmRegionStack* rs, const VmBignum* a, const VmBignum* b,
                           VmBignum** q_out, VmBignum** r_out) {
     if (bignum_is_zero(b)) {
-        fprintf(stderr, "ERROR: bignum division by zero\n");
-        if (q_out) *q_out = bignum_from_int64(rs, 0);
-        if (r_out) *r_out = bignum_from_int64(rs, 0);
+        if (q_out) *q_out = NULL;
+        if (r_out) *r_out = NULL;
         return;
     }
 
