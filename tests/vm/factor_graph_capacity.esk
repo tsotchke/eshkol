@@ -1,20 +1,39 @@
+(define (refuses? thunk message)
+  (guard (e ((error-object? e) (equal? (error-object-message e) message))
+            (#t #f))
+    (thunk)
+    #f))
+(define (near? a b) (< (abs (- a b)) 1e-9))
+
+;; Factor arity: 32 variables are admitted, 33 are refused.
 (define fg (make-factor-graph 33 1))
 (define wide
-  (guard (e (#t (equal? (error-object-message e)
-                         "fg-add-factor!: supports at most 32 variables per factor")))
-    (fg-add-factor! fg
-      #(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)
-      #(0.7))
-    #f))
-(define large-domain
-  (guard (e (#t (equal? (error-object-message e)
-                         "make-factor-graph: supports at most 256 states per variable")))
-    (let ((m (fg-marginal (make-factor-graph 1 257) 0)))
-      (and (= (tensor-length m) 257)
-           (< (abs (- (tensor-ref m 256) (/ 1.0 257.0))) 1e-9)))))
+  (refuses? (lambda ()
+              (fg-add-factor! fg
+                #(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)
+                #(0.7)))
+            "fg-add-factor!: supports at most 32 variables per factor"))
 (fg-add-factor! fg
   #(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31)
   #(-0.7))
-(define boundary-factor (< (abs (- (free-energy fg #()) 0.7)) 1e-9))
-(display (if (and wide large-domain boundary-factor) "PASS factor_graph_capacity" "FAIL factor_graph_capacity"))
+(define boundary-factor (near? (free-energy fg #()) 0.7))
+
+;; A 257-state domain is inferred, marginalised and measured on every engine.
+(define big (make-factor-graph 1 257))
+(define big-cpt (make-tensor '(257) 0.0))
+(tensor-set! big-cpt 256 (log 2.0))
+(fg-add-factor! big #(0) big-cpt)
+(fg-infer! big 20)
+(define big-marginal (fg-marginal big 0))
+(define big-entropy
+  (- 0.0 (* 256.0 (/ 1.0 258.0) (log (/ 1.0 258.0)))
+         (* (/ 2.0 258.0) (log (/ 2.0 258.0)))))
+(define large-domain
+  (and (= (tensor-length big-marginal) 257)
+       (near? (tensor-ref big-marginal 0) (/ 1.0 258.0))
+       (near? (tensor-ref big-marginal 256) (/ 2.0 258.0))
+       (near? (fg-entropy big 0) big-entropy)))
+
+(display (if (and wide boundary-factor large-domain)
+             "PASS factor_graph_capacity" "FAIL factor_graph_capacity"))
 (newline)

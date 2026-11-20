@@ -13109,14 +13109,14 @@ tensor_inverse_done:
         int valid_dims = 1;
         for (int i = 0; i < dseq_n; ++i) {
             double extent = dseq[i];
-            if (!isfinite(extent) || extent > VM_FACTOR_MAX_STATES) {
+            if (!isfinite(extent)) {
                 valid_dims = 0;
                 break;
             }
             var_dims[nd++] = extent >= 1.0 ? (int)extent : 2;
         }
         if (!valid_dims) {
-            vm_raise_error_msg(vm, "make-factor-graph: supports at most 256 states per variable");
+            vm_raise_error_msg(vm, "make-factor-graph: state counts must be finite");
             break;
         }
         /* A BARE SCALAR dims argument means "every variable has this many

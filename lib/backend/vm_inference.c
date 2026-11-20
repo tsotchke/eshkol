@@ -25,7 +25,7 @@
 #include <float.h>
 #include <limits.h>
 
-enum { VM_FACTOR_MAX_ARITY = 32, VM_FACTOR_MAX_STATES = 256 };
+enum { VM_FACTOR_MAX_ARITY = 32 };
 
 /* ========================================================================
  * Log-space arithmetic
@@ -113,7 +113,7 @@ static VmFactorGraph* vm_make_factor_graph(VmRegionStack* rs,
     if (!rs || num_vars <= 0 || !var_dims) return NULL;
 
     for (int i = 0; i < num_vars; ++i)
-        if (var_dims[i] <= 0 || var_dims[i] > VM_FACTOR_MAX_STATES) return NULL;
+        if (var_dims[i] <= 0) return NULL;
 
     VmFactorGraph* fg = (VmFactorGraph*)vm_alloc_object(rs,
         VM_SUBTYPE_FG, sizeof(VmFactorGraph));
@@ -177,7 +177,7 @@ static VmFactor* vm_make_factor(VmRegionStack* rs,
     /* Compute CPT size = product of dimensions */
     int cpt_size = 1;
     for (int i = 0; i < num_vars; i++) {
-        if (dims[i] <= 0 || dims[i] > VM_FACTOR_MAX_STATES || cpt_size > INT_MAX / dims[i]) return NULL;
+        if (dims[i] <= 0 || cpt_size > INT_MAX / dims[i]) return NULL;
         cpt_size *= dims[i];
     }
     f->cpt_size = cpt_size;
@@ -384,7 +384,15 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
     if (!allocate_messages(rs, fg)) return 0;
 
     int converged = 0;
-    double new_msg[VM_FACTOR_MAX_STATES];
+
+    /* One scratch message sized by the widest domain in the graph, so every
+     * domain the graph admits is inferred with the same contract as the
+     * native engine. */
+    int max_dim = 1;
+    for (int v = 0; v < fg->num_vars; v++)
+        if (fg->var_dims[v] > max_dim) max_dim = fg->var_dims[v];
+    double* new_msg = (double*)vm_alloc(rs, (size_t)max_dim * sizeof(double));
+    if (!new_msg) return 0;
 
     for (int iter = 0; iter < max_iterations; iter++) {
         double max_delta = 0.0;

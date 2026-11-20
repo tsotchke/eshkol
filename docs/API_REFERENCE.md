@@ -2859,6 +2859,9 @@ This allows heterogeneous state spaces (e.g., one binary variable and one ternar
 
 **Returns:** A `FactorGraph` (heap subtype 16) with no factors attached.
 
+Domains are not capped: the compiled engines and the bytecode VM size their message storage from
+the widest domain in the graph.
+
 **Implementation:** `LogicWorkspaceCodegen::codegenMakeFactorGraph` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_make_factor_graph_tagged`.
 

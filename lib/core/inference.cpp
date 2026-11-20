@@ -508,6 +508,13 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
 
     bool converged = false;
 
+    /* One scratch message sized by the widest domain in the graph. */
+    uint32_t max_dim = 1;
+    for (uint32_t v = 0; v < fg->num_vars; v++)
+        if (fg->var_dims[v] > max_dim) max_dim = fg->var_dims[v];
+    double* new_msg = alloc_doubles(arena, max_dim);
+    if (!new_msg) return false;
+
     for (uint32_t iter = 0; iter < max_iterations; iter++) {
         double max_delta = 0.0;
 
@@ -520,7 +527,6 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
                 uint32_t dim = fg->var_dims[var_id];
 
                 double* old_msg = fg->msg_vf[msg_idx];
-                double* new_msg = (double*)alloca(dim * sizeof(double));
                 compute_var_to_factor_message(fg, fi, vi, new_msg);
 
                 for (uint32_t s = 0; s < dim; s++) {
@@ -540,7 +546,6 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
                 uint32_t dim = fg->var_dims[var_id];
 
                 double* old_msg = fg->msg_fv[msg_idx];
-                double* new_msg = (double*)alloca(dim * sizeof(double));
                 compute_factor_to_var_message(fg, fi, vi, new_msg);
 
                 for (uint32_t s = 0; s < dim; s++) {
