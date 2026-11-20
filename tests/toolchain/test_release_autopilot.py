@@ -38,18 +38,18 @@ class Decisions(unittest.TestCase):
 
     def test_receipt_requires_exact_identity_and_numeric_ready_100(self):
         good = {"schema": "eshkol.release-readiness.v2", "sha": SHA, "run_id": 10,
-                "run_attempt": 2, "target": "v1.3.5-evolve", "status": "ready", "score": 100,
+                "run_attempt": 2, "tag": "v1.4.0-connection", "target": "v1.4-connection", "status": "ready", "score": 100,
                 "qualification_mode": "normal", "waiver_count": 0, "role": "candidate-proof", "metadata_validated": True,
                 "phase_id": "fixture", **{key: "b" * 64 for key in ("record_sha256", "notes_sha256", "measurement_manifest_sha256", "build_cohort_sha256")}}
         run = {"id": 10, "run_attempt": 2}
-        module.require_receipt(good, SHA, run, "v1.3.5-evolve")
+        module.require_receipt(good, SHA, run, "v1.4-connection")
         for key, value in (("sha", "b" * 40), ("run_id", 9), ("run_attempt", 1),
                            ("target", "v1.3.4-evolve"), ("status", "blocked"),
                            ("score", "100"), ("score", True), ("score", 99), ("schema", "other")):
             with self.subTest(key=key, value=value), self.assertRaises(module.Wait):
-                module.require_receipt({**good, key: value}, SHA, run, "v1.3.5-evolve")
+                module.require_receipt({**good, key: value}, SHA, run, "v1.4-connection")
         with self.assertRaises(module.Wait):
-            module.require_receipt({}, SHA, run, "v1.3.5-evolve")
+            module.require_receipt({}, SHA, run, "v1.4-connection")
 
     def test_montreal_publication_window_is_enforced_in_utc(self):
         config = {"not_before": "2026-09-14T09:00:00-04:00", "expires_at": "2026-09-15T00:00:00-04:00"}
@@ -79,11 +79,11 @@ class Decisions(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as folder:
             path = Path(folder)
             (path / "thoughts.jsonl").write_text("")
-            hold = {"stream": "dispatch", "kind": "hold", "task_id": "v136-cut",
-                    "ts": "2026-09-14T12:00:00Z", "why": "v136 release hold"}
+            hold = {"stream": "dispatch", "kind": "hold", "task_id": "v140-cut",
+                    "ts": "2026-09-14T12:00:00Z", "why": "v140 release hold"}
             (path / "dispatch.jsonl").write_text(json.dumps(hold) + "\n")
             now = module.timestamp("2026-09-14T13:00:00Z")
-            self.assertTrue(module.pending_hold(path, now, "v1.3.6-evolve"))
+            self.assertTrue(module.pending_hold(path, now, "v1.4.0-connection"))
 
 
 class Controller(unittest.TestCase):
@@ -92,7 +92,7 @@ class Controller(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(dir=ROOT / ".scratch")
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name)
-        self.config = {"repo": "tsotchke/eshkol", "tag": "v1.3.5-evolve", "gh": "gh",
+        self.config = {"repo": "tsotchke/eshkol", "tag": "v1.4.0-connection", "gh": "gh",
                        "checkout": str(self.path / "checkout"), "required_contexts": ["sanitizer"],
                        "lanes": [{"branch": "fix/pending", "worktree": str(self.path / "absent")}],
                        "presence_root": str(self.path), "not_before": "2026-09-14T09:00:00-04:00",
@@ -226,15 +226,15 @@ class Controller(unittest.TestCase):
         rewritten = base64.b64decode(content).decode()
         self.assertIn('    sha256 "' + '2' * 64 + '"', rewritten)
         self.assertIn(hashlib.sha256(b"source archive").hexdigest(), rewritten)
-        self.assertIn("v1.3.5-evolve.tar.gz", rewritten)
+        self.assertIn("v1.4.0-connection.tar.gz", rewritten)
         self.assertTrue(gh.call_args.kwargs["mutate"])
 
     def test_publication_does_not_finish_without_homebrew_verification(self):
         self.config["assets"] = [["linux-x64-lite", "tar.gz"]]
         release = {"draft": False, "prerelease": False, "html_url": "release", "assets": [
-            {"name": "eshkol-v1.3.5-evolve-linux-x64-lite.tar.gz", "size": 100},
+            {"name": "eshkol-v1.4.0-connection-linux-x64-lite.tar.gz", "size": 100},
             {"name": "SHA256SUMS.txt", "size": 100}]}
-        runs = {"workflow_runs": [{"head_sha": SHA, "event": "push", "head_branch": "v1.3.5-evolve",
+        runs = {"workflow_runs": [{"head_sha": SHA, "event": "push", "head_branch": "v1.4.0-connection",
                                    "conclusion": "success"}]}
         with patch.object(self.release, "api", side_effect=[release, runs]):
             with patch.object(self.release, "ensure_homebrew", side_effect=module.Wait("tap pending")):
@@ -245,7 +245,7 @@ class Controller(unittest.TestCase):
     def test_pending_metadata_cannot_become_ready_by_marker_deletion(self):
         self.release.checkout.mkdir()
         path = self.release.checkout / "RELEASE_NOTES.md"
-        original = '# Eshkol v1.3.5-evolve — Release Notes\n**Status:** RELEASE CANDIDATE.\n<!-- RELEASE_EVIDENCE_PENDING -->\n'
+        original = '# Eshkol v1.4.0-connection — Release Notes\n**Status:** RELEASE CANDIDATE.\n<!-- RELEASE_EVIDENCE_PENDING -->\n'
         path.write_text(original)
         self.release.execute = True
         with patch.object(self.release, "git") as git:
@@ -260,7 +260,7 @@ class Controller(unittest.TestCase):
         (self.path / "thoughts.jsonl").write_text("")
         self.release.checkout.mkdir()
         (self.release.checkout / "RELEASE_NOTES.md").write_text(
-            '# Eshkol v1.3.5-evolve — Release Notes\n\n'
+            '# Eshkol v1.4.0-connection — Release Notes\n\n'
             '**Status:** release candidate; verification pending.\n')
         self.release.execute = True
         cut = {"number": 628, "state": "OPEN", "headRefOid": SHA,
@@ -279,7 +279,7 @@ class Controller(unittest.TestCase):
         gh.assert_not_called()
 
     def test_restart_preserves_completed_release_and_does_not_publish_twice(self):
-        self.release.state.update(completed=True, release_url="https://github.com/tsotchke/eshkol/releases/tag/v1.3.5-evolve")
+        self.release.state.update(completed=True, release_url="https://github.com/tsotchke/eshkol/releases/tag/v1.4.0-connection")
         module.write_json(self.release.state_path, self.release.state)
         restarted = module.Release(self.config, self.release.directory, execute=True)
         with patch.object(restarted, "api") as api:

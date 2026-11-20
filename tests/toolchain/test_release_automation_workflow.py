@@ -31,7 +31,7 @@ class ReleaseAutomationWorkflowTests(unittest.TestCase):
         self.assertEqual(strict["required"], "false")
         self.assertIn("inputs.strict_readiness", self.text)
         self.assertEqual(self.workflow["on"]["workflow_dispatch"]["inputs"]["candidate_tag"]["default"],
-                         "v1.3.6-evolve")
+                         "v1.4.0-connection")
 
     def test_memory_diagnostic_mode_is_opt_in_and_nonpublishing(self):
         diagnostic = self.workflow["on"]["workflow_dispatch"]["inputs"]["memory_diagnostics"]

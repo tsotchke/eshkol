@@ -21,7 +21,7 @@ import sys
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_target import target_for_tag
+from release_target import project_identity, target_for_tag
 from release_publication_contract import ContractError, load_record, validate_notes, validate_publication, validate_proof
 
 
@@ -82,9 +82,10 @@ def require_window(config, now):
         raise Wait("Authorized publication window expired; no tag will be created")
 
 
-def pending_hold(presence_root, now, target="v1.3.5-evolve"):
+def pending_hold(presence_root, now, target=None):
+    target = project_identity()[0] if target is None else target
     target_for_tag(target)
-    version = target.removesuffix("-evolve")
+    version = target.split("-", 1)[0]
     scopes = ("eshkol", "v1.3.5", "v135", version, version.replace(".", ""))
     records = []
     for stream in ("dispatch", "thoughts"):
@@ -373,7 +374,7 @@ class Release:
             return "Already complete: " + self.state["release_url"]
         if (self.directory / "PAUSE").exists():
             raise Wait("Paused by operator: remove the PAUSE file to resume")
-        hold = pending_hold(self.config["presence_root"], utcnow(), self.target)
+        hold = pending_hold(self.config["presence_root"], utcnow(), self.config["tag"])
         if hold:
             raise Wait("Tsotchke hold/veto: " + hold)
         if self.state.get("tagged_sha"):

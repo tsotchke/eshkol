@@ -9794,6 +9794,7 @@ endif()
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
     foreach(_release_invariant_test IN ITEMS
             test_release_invariant_contracts
+            test_release_gate_inputs
             test_example_catalogue
             test_cuda_benchmark_metadata
             test_release_publication_contract

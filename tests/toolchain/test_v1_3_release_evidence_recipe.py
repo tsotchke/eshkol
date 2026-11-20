@@ -318,6 +318,11 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             self.assertEqual(snapshot(), before, "the nested preflight test modified the inherited outer release evidence")
 
     def test_verifier_rejects_missing_duplicate_failed_and_unmapped_evidence(self):
+        for target_name in ("v1.3.5-evolve", "v1.4-connection"):
+            with self.subTest(target=target_name):
+                self.check_verifier_evidence(target_name)
+
+    def check_verifier_evidence(self, target_name):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as temp:
             temp_root = Path(temp)
             repo = temp_root / "repo"
@@ -327,7 +332,7 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             (repo / ".icc/completion-oracles.yaml").write_bytes((ROOT / ".icc/completion-oracles.yaml").read_bytes())
             records = []
             for criterion in __import__("yaml").safe_load((repo / ".icc/completion-oracles.yaml").read_text())["oracles"]:
-                if criterion["name"] == "v1.3.5-evolve":
+                if criterion["name"] == target_name:
                     target = criterion
                     break
             for criterion in target["requires"]:
@@ -347,7 +352,7 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
             def check() -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
                     [sys.executable, str(ROOT / "scripts/verify_v1_3_release_evidence.py"),
-                     "--repo-root", str(repo), "--trace-dir", str(trace)],
+                     "--repo-root", str(repo), "--trace-dir", str(trace), "--target", target_name],
                     capture_output=True, text=True,
                     # scripts/ goes in front of the caller's module path, which
                     # may be where this interpreter's PyYAML lives.
@@ -355,7 +360,7 @@ class ReleaseEvidenceRecipeTests(unittest.TestCase):
                         [str(ROOT / "scripts")] +
                         [p for p in [os.environ.get("PYTHONPATH", "")] if p])})
 
-            verifier_fixture(repo, trace, "v1.3.5-evolve")
+            verifier_fixture(repo, trace, target_name)
             result = check()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             original = (trace / "evidence.jsonl").read_text(encoding="utf-8")
