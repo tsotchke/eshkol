@@ -52,6 +52,35 @@ static void vm_rotation_log(const double q[4], double omega[3]) {
     for (int i = 0; i < 3; ++i) omega[i] = factor * v[i];
 }
 
+/* The left Jacobian of SO(3), or its inverse, applied to a vector. */
+static void vm_twist_translation(const double omega[3], const double v[3],
+                                 int inverse, double out[3]) {
+    double theta = hypot(hypot(omega[0], omega[1]), omega[2]);
+    double t2 = theta * theta;
+    double a, b;
+    if (inverse) {
+        a = -0.5;
+        b = theta < 1e-3 ? 1.0 / 12.0 + t2 / 720.0
+                         : (1.0 - 0.5 * theta / tan(0.5 * theta)) / t2;
+    } else if (theta < 1e-3) {
+        a = 0.5 - t2 / 24.0;
+        b = 1.0 / 6.0 - t2 / 120.0;
+    } else {
+        double half_sinc = sin(0.5 * theta) / theta;
+        a = 2.0 * half_sinc * half_sinc;
+        b = (1.0 - sin(theta) / theta) / t2;
+    }
+    double cross[3];
+    for (int i = 0; i < 3; ++i) {
+        int j = (i + 1) % 3, k = (i + 2) % 3;
+        cross[i] = omega[j] * v[k] - omega[k] * v[j];
+    }
+    for (int i = 0; i < 3; ++i) {
+        int j = (i + 1) % 3, k = (i + 2) % 3;
+        out[i] = v[i] + a * cross[i] + b * (omega[j] * cross[k] - omega[k] * cross[j]);
+    }
+}
+
 /** @brief Unwrap a tensor Value to its VmTensor*, or NULL if @p v isn't a
  *         tensor heap object. */
 static VmTensor* vm_get_tensor(VM* vm, Value v) {
@@ -1116,19 +1145,12 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         double ox = twist->data[0], oy = twist->data[1], oz = twist->data[2];
-        double theta = sqrt(ox * ox + oy * oy + oz * oz);
-        if (theta <= 1e-12) out->data[0] = 1.0;
-        else {
-            double half = 0.5 * theta;
-            double s = sin(half) / theta;
-            out->data[0] = cos(half);
-            out->data[1] = ox * s;
-            out->data[2] = oy * s;
-            out->data[3] = oz * s;
-        }
-        out->data[4] = twist->data[3];
-        out->data[5] = twist->data[4];
-        out->data[6] = twist->data[5];
+        double theta = hypot(hypot(ox, oy), oz);
+        double half = 0.5 * theta;
+        double factor = theta == 0.0 ? 0.5 : sin(half) / theta;
+        out->data[0] = cos(half);
+        for (int i = 0; i < 3; ++i) out->data[i + 1] = twist->data[i] * factor;
+        vm_twist_translation(twist->data, twist->data + 3, 0, out->data + 4);
         VM_PUSH_TENSOR(vm, out);
         break;
     }
@@ -1138,24 +1160,8 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         int64_t shape[1] = {6};
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        double n = sqrt(pose->data[0] * pose->data[0] + pose->data[1] * pose->data[1] +
-                        pose->data[2] * pose->data[2] + pose->data[3] * pose->data[3]);
-        if (n > 0.0) {
-            double w = pose->data[0] / n;
-            if (w > 1.0) w = 1.0;
-            if (w < -1.0) w = -1.0;
-            double x = pose->data[1] / n, y = pose->data[2] / n, z = pose->data[3] / n;
-            double vnorm = sqrt(x * x + y * y + z * z);
-            if (vnorm > 1e-12) {
-                double theta = 2.0 * atan2(vnorm, w);
-                out->data[0] = x * theta / vnorm;
-                out->data[1] = y * theta / vnorm;
-                out->data[2] = z * theta / vnorm;
-            }
-        }
-        out->data[3] = pose->data[4];
-        out->data[4] = pose->data[5];
-        out->data[5] = pose->data[6];
+        vm_rotation_log(pose->data, out->data);
+        vm_twist_translation(out->data, pose->data + 4, 1, out->data + 3);
         VM_PUSH_TENSOR(vm, out);
         break;
     }
