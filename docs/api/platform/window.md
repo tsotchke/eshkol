@@ -86,7 +86,7 @@ Read one pixel back from what the display backend last received (X11: the server
 *Function* — line 88
 
 ```c
-bool eshkol_window_poll_event(eshkol_window_t* window, eshkol_event_t* event);
+bool eshkol_window_poll_event(eshkol_window_t* window, eshkol_platform_event_t* event);
 ```
 
 Pump the backend and pop one event; false when the queue is empty.
@@ -96,7 +96,7 @@ Pump the backend and pop one event; false when the queue is empty.
 *Function* — line 90
 
 ```c
-void eshkol_window_wait_event(eshkol_window_t* window, eshkol_event_t* event);
+void eshkol_window_wait_event(eshkol_window_t* window, eshkol_platform_event_t* event);
 ```
 
 Block until an event arrives.
@@ -107,7 +107,7 @@ Block until an event arrives.
 
 ```c
 int eshkol_window_wait_event_timeout(eshkol_window_t* window,
- eshkol_event_t* event, int timeout_ms);
+ eshkol_platform_event_t* event, int timeout_ms);
 ```
 
 Wait up to timeout_ms (negative = forever): 1 event, 0 timeout, <0 status.
@@ -117,7 +117,7 @@ Wait up to timeout_ms (negative = forever): 1 event, 0 timeout, <0 status.
 *Function* — line 95
 
 ```c
-int eshkol_window_push_event(eshkol_window_t* window, const eshkol_event_t* event);
+int eshkol_window_push_event(eshkol_window_t* window, const eshkol_platform_event_t* event);
 ```
 
 Enqueue an event (thread-safe). window_id/timestamp are filled when 0.

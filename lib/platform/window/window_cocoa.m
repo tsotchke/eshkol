@@ -92,7 +92,7 @@ static void view_swallow(id self, SEL _cmd, id ev) { (void)self; (void)_cmd; (vo
 /* ── runtime-registered window delegate ────────────────────────────── */
 
 static void emit_simple(eshkol_window_t* w, int type) {
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = type;
     ev.u.window.x = w->x;
@@ -388,7 +388,7 @@ static void translate(NSEvent* e) {
     eshkol_window_t* w = nw ? owner_of([nw delegate]) : NULL;
     if (!w || !w->impl) return;
     cocoa_t* c = (cocoa_t*)w->impl;
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     NSEventType t = [e type];
     switch (t) {

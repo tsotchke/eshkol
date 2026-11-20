@@ -263,7 +263,7 @@ static uint32_t map_keysym(KeySym ks) {
 }
 
 static void emit_key(eshkol_window_t* w, x11_t* x, XKeyEvent* ke, int type) {
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = type;
     ev.u.key.scancode = ke->keycode;
@@ -278,7 +278,7 @@ static void emit_key(eshkol_window_t* w, x11_t* x, XKeyEvent* ke, int type) {
 }
 
 static void translate(eshkol_window_t* w, x11_t* x, XEvent* e) {
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     switch (e->type) {
         case KeyPress: {
@@ -353,7 +353,7 @@ static void translate(eshkol_window_t* w, x11_t* x, XEvent* e) {
             int cw = e->xconfigure.width, ch = e->xconfigure.height;
             if (cw != w->width || ch != w->height) {
                 if (eshkol_plat_window_resize_surface(w, cw, ch) == ESHKOL_PLATFORM_OK) {
-                    eshkol_event_t rs;
+                    eshkol_platform_event_t rs;
                     memset(&rs, 0, sizeof(rs));
                     rs.type = ESHKOL_EVENT_WINDOW_RESIZE;
                     rs.u.window.x = e->xconfigure.x;

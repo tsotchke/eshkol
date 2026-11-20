@@ -10400,6 +10400,12 @@ if(ESHKOL_BUILD_TESTS)
     # scripts/run_ctest_gate.sh, which re-runs ctest with --output-junit and
     # feeds the result to this same script.
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_self_verdicts.py")
+        add_test(NAME event_loop_receipt_contract
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_event_loop_gate.py")
+        add_test(NAME documentation_front_matter_controls
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_doc_front_matter.py" --self-test)
+        add_test(NAME nonlinear_observability_certificate_corpus
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/repro/nonlinear-observability/self_test.py" --certificates)
         add_test(
             NAME self_verdict_gate
             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
