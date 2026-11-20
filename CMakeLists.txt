@@ -13238,6 +13238,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
     # library above stays float).
     if(ESHKOL_BUILD_TESTS AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/qllm_backward_gradcheck_test.c")
+        add_executable(qllm_attention_weights_test tests/backend/qllm_attention_weights_test.c)
+        target_include_directories(qllm_attention_weights_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+        target_link_libraries(qllm_attention_weights_test PRIVATE eshkol-qllm-backward eshkol-static m)
+        if(UNIX AND NOT APPLE)
+            target_link_options(qllm_attention_weights_test PRIVATE "-Wl,--allow-multiple-definition")
+        elseif(APPLE)
+            target_link_options(qllm_attention_weights_test PRIVATE "-Wl,-multiply_defined,suppress")
+        endif()
+        add_test(NAME qllm_attention_weights COMMAND qllm_attention_weights_test)
         add_executable(qllm_backward_gradcheck_test
             tests/backend/qllm_backward_gradcheck_test.c
             lib/backend/qllm_backward.c)

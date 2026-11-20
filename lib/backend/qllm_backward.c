@@ -24,7 +24,8 @@
  * Correctness. The FFN backward passes are certified to relative error
  * < 1e-6 against a central finite-difference reference by
  * `tests/backend/qllm_backward_gradcheck_test.c` (ctest
- * `qllm_backward_gradcheck`).
+ * `qllm_backward_gradcheck`). The attention key and value gradients are checked
+ * against finite differences and the trainer by `qllm_attention_weights`.
  *
  * Precision. The math is written against `qllm_real` (see qllm_backward.h),
  * which defaults to `float` so the weight layout stays byte-compatible with
@@ -45,8 +46,7 @@
 /* qllm_real scalar type + architecture constants (D/H/HD/N_LAYERS/FFN_DIM),
  * shared with the public backward surface and the gradient-check test. */
 #include "eshkol/backend/qllm_backward.h"
-/* The logistic-gate and softmax reverse-mode rule, shared with the runtime
- * weight kernels in lib/core/sdnc_core.h. */
+/* The gated FFN shares its logistic VJP with the runtime weight kernels. */
 #include "eshkol/core/saturating_vjp.h"
 ESHKOL_SATURATING_VJP_RULES(qllm_real, _qllm)
 
@@ -246,84 +246,54 @@ typedef struct {
 
 /*******************************************************************************
  * Backward Through Attention (Layer 0 only)
- * Forward: Q = x @ W_q + b_q
- *          K[p] = pe[p] @ W_k, V[p] = pe[p] @ W_v  (for each position p)
- *          scores[p] = (Q[0]*K[p][0] + Q[1]*K[p][1]) / sqrt(HD)
- *          attn = softmax(scores)
- *          hout[d] = sum_p(attn[p] * V[p][d])
- *          ao = hout @ W_o
+ * Q = Wq x + bq, K[p] = Wk pe[p], V[p] = Wv pe[p], output = Wo head.
+ * The active head occupies coordinates [0, HD).
  ******************************************************************************/
 
-static void qllm_backward_attention(
-    const qllm_real* wq, const qllm_real* wk, const qllm_real* wv, const qllm_real* wo,
-    const qllm_real* bq,
-    const QllmForwardCache* cache,
-    const qllm_real dao[D],    /* upstream gradient into attention output */
-    qllm_real dx[D],           /* output: gradient into layer input */
-    qllm_real* dwq, qllm_real* dwk, qllm_real* dwv, qllm_real* dwo, qllm_real* dbq)
+void qllm_backward_attention(
+    int np, const qllm_real positions[][D], const qllm_real x[D],
+    const qllm_real query[D], const qllm_real keys[][D], const qllm_real values[][D],
+    const qllm_real probabilities[], const qllm_real head[D],
+    const qllm_real wq[D * D], const qllm_real wo[D * D], const qllm_real upstream[D],
+    qllm_real dx[D], qllm_real dwq[D * D], qllm_real dwk[D * D], qllm_real dwv[D * D],
+    qllm_real dwo[D * D], qllm_real dbq[D])
 {
-    int np = cache->np;
     if (np <= 0) return;
-
-    /* d(W_o) += hout^T outer dao */
-    for (int i = 0; i < D; i++)
-        for (int j = 0; j < D; j++)
-            dwo[i * D + j] += cache->hout[i] * dao[j];
-
-    /* d_hout = dao @ W_o^T */
-    qllm_real d_hout[D] = {0};
-    for (int i = 0; i < D; i++)
-        for (int j = 0; j < D; j++)
-            d_hout[i] += dao[j] * wo[i * D + j];
-
-    /* d_attn[p] = sum_d(d_hout[d] * V[p][d]) for d in [0..HD-1] */
-    qllm_real d_attn[256] = {0};
-    qllm_real dV[256][D];
-    memset(dV, 0, sizeof(dV));
-    for (int p = 0; p < np; p++) {
-        for (int d = 0; d < HD; d++) {
-            d_attn[p] += d_hout[d] * cache->V_all[p][d];
-            dV[p][d] += cache->attn_weights[p] * d_hout[d];
+    qllm_real dh[HD] = {0};
+    for (int i = 0; i < D; ++i) {
+        for (int d = 0; d < HD; ++d) {
+            dwo[i * D + d] += upstream[i] * head[d];
+            dh[d] += upstream[i] * wo[i * D + d];
         }
     }
 
-    /* Softmax backward: d_scores[p] = attn[p] * (d_attn[p] - dot(attn, d_attn)) */
-    qllm_real d_scores[256];
-    eshkol_softmax_vjp_qllm(cache->attn_weights, d_attn, np, (qllm_real)1, d_scores);
-    qllm_real scale = 1.0f / sqrt((qllm_real)HD);
-    for (int p = 0; p < np; p++)
-        d_scores[p] = d_scores[p] * scale;
+    /* For softmax weights a, sum(a[p] * V[p]) is the cached head.
+     * Thus dlogit[p] = a[p] * dot(dh, V[p] - head). */
+    qllm_real dq[HD] = {0};
+    qllm_real scale = (qllm_real)(1.0 / sqrt((double)HD));
+    for (int p = 0; p < np; ++p) {
+        qllm_real centered = 0;
+        for (int d = 0; d < HD; ++d)
+            centered += dh[d] * (values[p][d] - head[d]);
+        qllm_real ds = probabilities[p] * centered * scale;
+        for (int d = 0; d < HD; ++d) {
+            dq[d] += ds * keys[p][d];
+            qllm_real dk = ds * query[d];
+            qllm_real dv = probabilities[p] * dh[d];
+            for (int j = 0; j < D; ++j) {
+                dwk[d * D + j] += dk * positions[p][j];
+                dwv[d * D + j] += dv * positions[p][j];
+            }
+        }
+    }
 
-    /* dQ from scores: dQ[d] += sum_p(d_scores[p] * K[p][d]) for d in [0..HD-1] */
-    qllm_real dQ[D] = {0};
-    for (int p = 0; p < np; p++)
-        for (int d = 0; d < HD; d++)
-            dQ[d] += d_scores[p] * cache->K_all[p][d];
-
-    /* dK[p][d] += d_scores[p] * Q[d] */
-    qllm_real dK[256][D];
-    memset(dK, 0, sizeof(dK));
-    for (int p = 0; p < np; p++)
-        for (int d = 0; d < HD; d++)
-            dK[p][d] += d_scores[p] * cache->Q[d];
-
-    /* Q = x @ W_q + b_q → dbq += dQ, dwq += x^T outer dQ, dx += dQ @ W_q^T */
-    for (int d = 0; d < D; d++) dbq[d] += dQ[d];
-    for (int i = 0; i < D; i++)
-        for (int j = 0; j < D; j++)
-            dwq[i * D + j] += cache->x_in[0][i] * dQ[j];
-    for (int i = 0; i < D; i++)
-        for (int j = 0; j < D; j++)
-            dx[i] += dQ[j] * wq[i * D + j];
-
-    /* K[p] = pe[p] @ W_k → dwk += sum_p(pe[p]^T outer dK[p])
-     * pe is fixed (not trainable) */
-    /* Note: pe is position embeddings, passed externally. For now, only
-     * weight gradients are computed. pe gradients would be needed for
-     * learnable positional encodings. */
-
-    /* V[p] = pe[p] @ W_v → dwv += sum_p(pe[p]^T outer dV[p]) */
-    /* Same note: pe is fixed. */
+    for (int d = 0; d < HD; ++d) {
+        dbq[d] += dq[d];
+        for (int j = 0; j < D; ++j) {
+            dwq[d * D + j] += dq[d] * x[j];
+            dx[j] += dq[d] * wq[d * D + j];
+        }
+    }
 }
 
 /*******************************************************************************
@@ -352,7 +322,7 @@ typedef struct {
 
 static void qllm_backward(
     const QllmWeights* w,
-    const QllmForwardCache* cache,
+    const qllm_real positions[][D], const QllmForwardCache* cache,
     const qllm_real loss_grad[D],
     QllmWeightGradients* grads)
 {
@@ -396,8 +366,8 @@ static void qllm_backward(
         if (L == 0 && cache->np > 0) {
             qllm_real dx_attn[D] = {0};
             qllm_backward_attention(
-                w->wq[0], w->wk[0], w->wv[0], w->wo[0], w->bq[0],
-                cache, dx, dx_attn,
+                cache->np, positions, cache->x_in[0], cache->Q, cache->K_all, cache->V_all,
+                cache->attn_weights, cache->hout, w->wq[0], w->wo[0], dx_layer, dx_attn,
                 grads->dwq[0], grads->dwk[0], grads->dwv[0],
                 grads->dwo[0], grads->dbq[0]);
             for (int i = 0; i < D; i++)
