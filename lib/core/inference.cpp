@@ -18,6 +18,9 @@
 #include <stdlib.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
+
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
 
 /* ===== Arena Forward Declarations ===== */
 
@@ -136,6 +139,12 @@ static uint32_t fg_read_numeric(const eshkol_tagged_value_t* tv, double* out, ui
         return n;
     }
     return 0;
+}
+
+/* A count or state count admitted by make-factor-graph: a finite integer in
+ * [1, INT_MAX], the range both engines represent. */
+static bool fg_positive_integer(double value) {
+    return isfinite(value) && value == floor(value) && value >= 1.0 && value <= (double)INT_MAX;
 }
 
 /* ===== Log-Space Arithmetic ===== */
@@ -506,6 +515,13 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
 
     bool converged = false;
 
+    /* One scratch message sized by the widest domain in the graph. */
+    uint32_t max_dim = 1;
+    for (uint32_t v = 0; v < fg->num_vars; v++)
+        if (fg->var_dims[v] > max_dim) max_dim = fg->var_dims[v];
+    double* new_msg = alloc_doubles(arena, max_dim);
+    if (!new_msg) return false;
+
     for (uint32_t iter = 0; iter < max_iterations; iter++) {
         double max_delta = 0.0;
 
@@ -518,7 +534,6 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
                 uint32_t dim = fg->var_dims[var_id];
 
                 double* old_msg = fg->msg_vf[msg_idx];
-                double* new_msg = (double*)alloca(dim * sizeof(double));
                 compute_var_to_factor_message(fg, fi, vi, new_msg);
 
                 for (uint32_t s = 0; s < dim; s++) {
@@ -538,7 +553,6 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
                 uint32_t dim = fg->var_dims[var_id];
 
                 double* old_msg = fg->msg_fv[msg_idx];
-                double* new_msg = (double*)alloca(dim * sizeof(double));
                 compute_factor_to_var_message(fg, fi, vi, new_msg);
 
                 for (uint32_t s = 0; s < dim; s++) {
@@ -787,46 +801,68 @@ void eshkol_make_factor_graph_tagged(arena_t* arena,
         return;
     }
 
-    /* Extract num_vars from integer */
-    uint32_t num_vars = 0;
-    if (num_vars_tv->type == ESHKOL_VALUE_INT64) {
-        num_vars = (uint32_t)num_vars_tv->data.int_val;
-    } else {
+    /* Admission matches the VM (native call 520 in vm_native.c): a positive
+     * integer variable count and one positive integer state count per
+     * variable, each refusal a catchable condition. */
+    double count = 0.0;
+    uint8_t count_tag = num_vars_tv->type & 0x0F;
+    if (count_tag == ESHKOL_VALUE_INT64) count = (double)num_vars_tv->data.int_val;
+    else if (count_tag == ESHKOL_VALUE_DOUBLE) count = num_vars_tv->data.double_val;
+    else count = NAN;
+    if (!fg_positive_integer(count)) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "make-factor-graph: variable count must be a positive integer");
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
+    uint32_t num_vars = (uint32_t)count;
 
     /* Extract var_dims from a tensor (#(…)), a runtime vector ((vector …)), a
      * list ('(…)), or a BARE SCALAR meaning "every variable has this many
-     * states".  The scalar spelling is what the VM has always accepted, and
-     * `(make-factor-graph 2 2)` silently produced `()` here — and therefore
-     * `()` from every later fg-marginal — because a tagged INT64 is not a heap
-     * pointer and fg_read_numeric answered 0 (SW-07). */
-    double* dims_buf = (double*)alloca(num_vars * sizeof(double));
+     * states". */
+    double* dims_buf = (double*)malloc((size_t)num_vars * sizeof(double));
+    uint32_t* var_dims = (uint32_t*)malloc((size_t)num_vars * sizeof(uint32_t));
+    if (!dims_buf || !var_dims) {
+        free(dims_buf);
+        free(var_dims);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "make-factor-graph: allocation failed");
+        result->type = ESHKOL_VALUE_NULL;
+        return;
+    }
     uint8_t dims_tag = var_dims_tv->type & 0x0F;
     if (dims_tag == ESHKOL_VALUE_INT64 || dims_tag == ESHKOL_VALUE_DOUBLE) {
         double d = (dims_tag == ESHKOL_VALUE_INT64)
                        ? (double)var_dims_tv->data.int_val
                        : var_dims_tv->data.double_val;
-        if (d < 1.0) {
-            result->type = ESHKOL_VALUE_NULL;
-            return;
-        }
         for (uint32_t i = 0; i < num_vars; i++) dims_buf[i] = d;
     } else if (fg_read_numeric(var_dims_tv, dims_buf, num_vars) < num_vars) {
+        free(dims_buf);
+        free(var_dims);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "make-factor-graph: supply one dimension per variable");
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
-    uint32_t* var_dims = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
     for (uint32_t i = 0; i < num_vars; i++) {
+        if (!fg_positive_integer(dims_buf[i])) {
+            free(dims_buf);
+            free(var_dims);
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "make-factor-graph: state counts must be positive integers");
+            result->type = ESHKOL_VALUE_NULL;
+            return;
+        }
         var_dims[i] = (uint32_t)dims_buf[i];
     }
+    free(dims_buf);
 
     eshkol_factor_graph_t* fg = eshkol_make_factor_graph(arena, num_vars, var_dims);
+    free(var_dims);
     if (fg) {
         result->type = ESHKOL_VALUE_HEAP_PTR;
         result->data.ptr_val = (uint64_t)fg;
     } else {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "make-factor-graph: allocation failed");
         result->type = ESHKOL_VALUE_NULL;
     }
 }
@@ -859,52 +895,73 @@ void eshkol_fg_add_factor_tagged(arena_t* arena,
     eshkol_factor_graph_t* fg = (eshkol_factor_graph_t*)fg_tv->data.ptr_val;
 
     /* Extract var_indices from a tensor (#(…)) OR a runtime vector ((vector …)). */
-    double idx_buf[32];
-    uint32_t num_vars = fg_read_numeric(var_indices_tv, idx_buf, 32);
+    constexpr uint32_t max_factor_vars = 32;
+    double idx_buf[max_factor_vars + 1];
+    uint32_t num_vars = fg_read_numeric(var_indices_tv, idx_buf, max_factor_vars + 1);
+    if (num_vars > max_factor_vars) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "fg-add-factor!: supports at most 32 variables per factor");
+        return;
+    }
     if (num_vars == 0) return;
 
-    uint32_t* var_indices = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
-    for (uint32_t i = 0; i < num_vars; i++) {
-        var_indices[i] = (uint32_t)idx_buf[i];
-    }
-
-    /* Build dims array from the factor graph's var_dims */
-    uint32_t* dims = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
-    for (uint32_t i = 0; i < num_vars; i++) {
-        if (var_indices[i] < fg->num_vars) {
-            dims[i] = fg->var_dims[var_indices[i]];
-        } else {
-            return; /* invalid variable index */
-        }
-    }
-
-    /* Compute expected CPT size = product of variable dimensions */
+    /* Each index must be an integer naming a variable of this graph, and
+     * the configuration count must stay representable; both refusals are
+     * the catchable conditions the VM raises (native call 522). */
+    uint32_t var_indices[max_factor_vars];
+    uint32_t dims[max_factor_vars];
     uint32_t cpt_size = 1;
-    for (uint32_t i = 0; i < num_vars; i++) cpt_size *= dims[i];
-    double* cpt_data = (double*)alloca(cpt_size * sizeof(double));
+    for (uint32_t i = 0; i < num_vars; i++) {
+        double index = idx_buf[i];
+        if (!isfinite(index) || index != floor(index) || index < 0.0 ||
+            index >= (double)fg->num_vars) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "fg-add-factor!: invalid variable index");
+            return;
+        }
+        var_indices[i] = (uint32_t)index;
+        dims[i] = fg->var_dims[var_indices[i]];
+    }
+    for (uint32_t i = 0; i < num_vars; i++) {
+        if (dims[i] == 0 || cpt_size > (uint32_t)INT_MAX / dims[i]) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "fg-add-factor!: invalid variables or configuration count");
+            return;
+        }
+        cpt_size *= dims[i];
+    }
+    double* cpt_data = (double*)malloc((size_t)cpt_size * sizeof(double));
+    if (!cpt_data) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "fg-add-factor!: allocation failed");
+        return;
+    }
 
     /* CPT may be a homogeneous tensor (#(…)) or a heterogeneous vector. */
+    bool cpt_ok = true;
     tensor_layout_t* cpt_tensor = extract_tensor(cpt_tv);
     if (cpt_tensor) {
         if ((uint32_t)cpt_tensor->total_elements != cpt_size) {
             eshkol_error(
                 "fg-add-factor!: tensor has %llu elements but factor expects %u",
                 (unsigned long long)cpt_tensor->total_elements, cpt_size);
-            return;
-        }
-        for (uint32_t i = 0; i < cpt_size; i++) {
-            cpt_data[i] = tensor_get(cpt_tensor, i);
+            cpt_ok = false;
+        } else {
+            for (uint32_t i = 0; i < cpt_size; i++) {
+                cpt_data[i] = tensor_get(cpt_tensor, i);
+            }
         }
     } else if (!extract_doubles_from_vector(cpt_tv, cpt_size, cpt_data)) {
         eshkol_error(
             "fg-add-factor!: CPT must be a tensor or vector of %u numbers", cpt_size);
-        return;
+        cpt_ok = false;
     }
 
-    eshkol_factor_t* factor = eshkol_make_factor(arena, var_indices, num_vars, cpt_data, dims);
-    if (factor) {
-        eshkol_fg_add_factor(arena, fg, factor);
+    if (cpt_ok) {
+        eshkol_factor_t* factor = eshkol_make_factor(arena, var_indices, num_vars, cpt_data, dims);
+        if (factor) {
+            eshkol_fg_add_factor(arena, fg, factor);
+        }
     }
+    free(cpt_data);
 }
 
 /**

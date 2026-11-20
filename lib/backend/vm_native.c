@@ -7838,17 +7838,20 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
     VmBignum* ab = vm_coerce_bignum(vm, a);
     VmBignum* bb = vm_coerce_bignum(vm, b);
     if (!ab || !bb) { vm->error = 1; return; }
+    if ((op == '/' || op == 'q' || op == 'r' || op == 'm') && bignum_is_zero(bb)) {
+        vm_raise_error_msg(vm, op == 'q' ? VM_QUOTIENT_DIV_ZERO
+                             : op == 'r' ? VM_REMAINDER_DIV_ZERO
+                             : op == 'm' ? VM_MODULO_DIV_ZERO
+                             : VM_EXACT_DIV_ZERO);
+        return;
+    }
     VmBignum* r = NULL;
     switch (op) {
     case '+': r = bignum_add(rs, ab, bb); break;
     case '-': r = bignum_sub(rs, ab, bb); break;
     case '*': r = bignum_mul(rs, ab, bb); break;
-    case 'q': if (bignum_is_zero(bb)) {
-                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
-              r = bignum_div(rs, ab, bb); break;
-    case 'r': if (bignum_is_zero(bb)) {
-                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
-              r = bignum_mod(rs, ab, bb); break;
+    case 'q': r = bignum_div(rs, ab, bb); break;
+    case 'r': r = bignum_mod(rs, ab, bb); break;
     case '/': {
         /* Exact bignum `/`.  A zero divisor is a fatal exact division by zero
          * (native raises "bignum division by zero").  An even division yields
@@ -7862,8 +7865,6 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
          * operation on exact operands to stay exact, and the rational
          * substrate is bignum-capable now, so the exact result is built
          * instead of rounded. */
-        if (bignum_is_zero(bb)) {
-            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
         VmBignum* rem = bignum_mod(rs, ab, bb);
         if (rem && bignum_is_zero(rem)) { r = bignum_div(rs, ab, bb); break; }
         vm_push_rational_norm(vm, vm_rational_alloc_bn(rs, ab, bb));
@@ -7873,8 +7874,6 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
         /* R7RS modulo: result carries the sign of the divisor. bignum_mod
          * returns the truncated remainder (sign of the dividend), so adjust
          * by adding the divisor when the signs disagree. */
-        if (bignum_is_zero(bb)) {
-            fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; return; }
         r = bignum_mod(rs, ab, bb);
         if (r && !bignum_is_zero(r) && bignum_sign(r) != bignum_sign(bb))
             r = bignum_add(rs, r, bb);
@@ -9578,16 +9577,16 @@ static double vm_d_cosh(double x)  { return sinh(x); }
 
 /* Push a complex result, or raise the operation's no-derivative message. */
 static void vm_push_complex_result(VM* vm, VmComplex* result) {
-    if (vm_dual_error) {
-        const char* msg = vm_dual_error;
-        vm_dual_error = NULL;
+    if (vm->heap.regions.dual_error) {
+        const char* msg = vm->heap.regions.dual_error;
+        vm->heap.regions.dual_error = NULL;
         vm_raise_error_msg(vm, msg);
         return;
     }
     if (!result) {
-        if (vm_complex_d_error) {
-            const char* msg = vm_complex_d_error;
-            vm_complex_d_error = NULL;
+        if (vm->heap.regions.complex_error) {
+            const char* msg = vm->heap.regions.complex_error;
+            vm->heap.regions.complex_error = NULL;
             vm_raise_error_msg(vm, msg);
         } else {
             vm->error = 1;
@@ -10969,8 +10968,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_push(vm, vm_ad_coeff_value(vm, r));
             } else if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                double dm = vm_complex_magnitude_tangent(z);
-                if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                double dm = vm_complex_magnitude_tangent(&vm->heap.regions, z);
+                if (vm->heap.regions.complex_error) { const char* msg = vm->heap.regions.complex_error; vm->heap.regions.complex_error = NULL; vm_raise_error_msg(vm, msg); break; }
                 vm_push(vm, vm_real_result(vm, vm_complex_magnitude(z), dm));
             } else if (z_val.type == VAL_DUAL) {
                 vm_push(vm, z_val); vm_dispatch_native(vm, 35);   /* abs keeps the tangent */
@@ -11018,8 +11017,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                             vm_push(vm, vm_ad_coeff_value(vm, r));
                             break;
                         }
-                        double da = vm_complex_angle_tangent(&a_z);
-                        if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                        double da = vm_complex_angle_tangent(&vm->heap.regions, &a_z);
+                        if (vm->heap.regions.complex_error) { const char* msg = vm->heap.regions.complex_error; vm->heap.regions.complex_error = NULL; vm_raise_error_msg(vm, msg); break; }
                         vm_push(vm, vm_real_result(vm, vm_complex_angle(&a_z), da));
                         break;
                     }
@@ -11248,7 +11247,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
              * silently produce an inexact value. */
             if (fid == 334 &&
                 (b_r->is_big ? bignum_is_zero(b_r->big_num) : b_r->num == 0)) {
-                vm_raise_error_msg(vm, "rational division by zero"); break;
+                vm_raise_error_msg(vm, VM_EXACT_DIV_ZERO); break;
             }
             char rop = (fid == 331) ? '+' : (fid == 332) ? '-'
                      : (fid == 333) ? '*' : '/';
@@ -11430,6 +11429,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmBignum* a_bn = (a_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[a_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(a_val));
             VmBignum* b_bn = (b_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(b_val));
             if (!a_bn || !b_bn) { vm_push(vm, NIL_VAL); break; }
+            if ((fid == 358 || fid == 359) && bignum_is_zero(b_bn)) {
+                vm_raise_error_msg(vm, fid == 358 ? VM_QUOTIENT_DIV_ZERO : VM_REMAINDER_DIV_ZERO);
+                break;
+            }
             VmBignum* result = NULL;
             switch (fid) { case 355: result=bignum_add(bn_rs,a_bn,b_bn); break; case 356: result=bignum_sub(bn_rs,a_bn,b_bn); break;
                 case 357: result=bignum_mul(bn_rs,a_bn,b_bn); break; case 358: result=bignum_div(bn_rs,a_bn,b_bn); break; case 359: result=bignum_mod(bn_rs,a_bn,b_bn); break; }
@@ -11499,7 +11502,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 377: case 378: case 379: case 380: case 381: case 382: case 383:
     case 384: case 385: case 386: case 387: case 388: case 389: {
         VmRegionStack* dual_rs = &vm->heap.regions;
-        vm_dual_error = NULL;
+        vm->heap.regions.dual_error = NULL;
         switch (fid) {
         case 370: { Value tangent = vm_pop(vm), primal = vm_pop(vm);
             VmDual* d = vm_dual_make(dual_rs, as_number_vm(vm, primal), as_number_vm(vm, tangent));   /* ESH-0410 */
@@ -11580,9 +11583,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* SW-219: an operation with no value (exact division by exact zero,
          * at any depth of a carrier) raises; its placeholder result is
          * discarded. */
-        if (vm_dual_error) {
-            const char* msg = vm_dual_error;
-            vm_dual_error = NULL;
+        if (vm->heap.regions.dual_error) {
+            const char* msg = vm->heap.regions.dual_error;
+            vm->heap.regions.dual_error = NULL;
             (void)vm_pop(vm);
             vm_raise_error_msg(vm, msg);
         }
@@ -12517,6 +12520,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-reduce: axis out of range");
             break;
         }
+        if (!full && t->shape[axis] == 0) {
+            vm_raise_error_msg(vm, "tensor-reduce: cannot reduce a zero-length axis");
+            break;
+        }
         if (vm_tensor_has_tangent(t) && !(full && (fid == 457 || fid == 458))) {
             vm_raise_error_msg(vm, "tensor-reduce: a derivative can pass through a full tensor-sum or tensor-mean only on the VM; use the native backend");
             break;
@@ -13082,41 +13089,50 @@ tensor_inverse_done:
      * ══════════════════════════════════════════════════════════════════════ */
     case 520: { /* make-factor-graph(num_vars, var_dims) */
         Value dims_val = vm_pop(vm), nvars_val = vm_pop(vm);
-        int nv = (int)as_number(nvars_val);
-        int var_dims[64]; int nd = 0;
+        /* Admission matches eshkol_make_factor_graph_tagged() in
+         * lib/core/inference.cpp: a positive integer variable count, one
+         * positive integer state count per variable (a bare number gives
+         * every variable that many states), each condition catchable. */
+        double count = as_number_vm(vm, nvars_val);
+        if (!isfinite(count) || count != floor(count) || count < 1 || count > INT_MAX) {
+            vm_raise_error_msg(vm, "make-factor-graph: variable count must be a positive integer");
+            break;
+        }
+        int nv = (int)count;
         /* var-dims is read by the one factor-graph sequence reader, so the
          * documented `#(2 2 2)` literal (a VECTOR in the VM, a TENSOR
          * natively), a `(2 2 2)` list and a bare scalar all mean the same
-         * thing.  The tensor-or-list reader this replaces matched neither the
-         * documented literal nor a vector: dims collapsed to a single
-         * degenerate dimension, so every multi-variable factor graph silently
-         * became single-variable and inference/free-energy went degenerate. */
+         * thing. */
         int dseq_n = 0;
         const double* dseq = vm_fg_seq_doubles(vm, dims_val, &dseq_n);
-        for (int i = 0; i < dseq_n && nd < 64; i++) {
-            int d = (int)dseq[i];
-            var_dims[nd++] = (d > 0) ? d : 2;   /* a non-positive dim is not a
-                                                 * variable domain; binary is
-                                                 * the documented default */
+        int broadcast = dseq_n == 1 && vm_tensor_collection_len(vm, dims_val) < 0;
+        if (!dseq || (dseq_n < nv && !broadcast)) {
+            vm_raise_error_msg(vm, "make-factor-graph: supply one dimension per variable");
+            break;
         }
-        /* A BARE SCALAR dims argument means "every variable has this many
-         * states", so `(make-factor-graph 2 2)` is a two-variable graph and
-         * `(fg-marginal fg 1)` is a marginal rather than `()`.  Read as a
-         * one-element sequence it hits the clamp below and cuts num_vars to 1,
-         * where the native engine broadcasts — SW-07's own reproducer.  Only a
-         * genuine scalar LEAF broadcasts: a short sequence is an operand
-         * mismatch, not a broadcast, and still clamps. */
-        if (nd == 1 && nv > 1 && vm_tensor_collection_len(vm, dims_val) < 0) {
-            for (int i = 1; i < nv && i < 64; i++) var_dims[i] = var_dims[0];
-            nd = (nv < 64) ? nv : 64;
+        int* var_dims = (int*)vm_alloc(&vm->heap.regions, (size_t)nv * sizeof(int));
+        if (!var_dims) {
+            vm_raise_error_msg(vm, "make-factor-graph: allocation failed");
+            break;
         }
-        if (nd == 0) {                          /* dims omitted/unreadable */
-            int want = (nv > 0 && nv < 64) ? nv : 0;
-            for (int i = 0; i < want; i++) var_dims[nd++] = 2;
+        int valid_dims = 1;
+        for (int i = 0; i < nv; ++i) {
+            double extent = dseq[broadcast ? 0 : i];
+            if (!isfinite(extent) || extent != floor(extent) || extent < 1 || extent > INT_MAX) {
+                valid_dims = 0;
+                break;
+            }
+            var_dims[i] = (int)extent;
         }
-        if (nd < nv) nv = nd;
+        if (!valid_dims) {
+            vm_raise_error_msg(vm, "make-factor-graph: state counts must be positive integers");
+            break;
+        }
         VmFactorGraph* fg = vm_make_factor_graph(&vm->heap.regions, nv, var_dims);
-        if (!fg) { vm_push(vm, NIL_VAL); break; }
+        if (!fg) {
+            vm_raise_error_msg(vm, "make-factor-graph: allocation failed");
+            break;
+        }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_FACTOR_GRAPH, VAL_FACTOR_GRAPH, fg);
         break;
     }
@@ -13137,22 +13153,38 @@ tensor_inverse_done:
                  * reader this replaces silently dropped every factor added
                  * with the documented literal form (n_vars stayed 0), which
                  * left beliefs uniform and free-energy at -0.0. */
-                int var_idx[8], n_vars = 0;
+                int var_idx[VM_FACTOR_MAX_ARITY], n_vars = 0;
                 int vseq_n = 0;
                 const double* vseq = vm_fg_seq_doubles(vm, vars, &vseq_n);
-                for (int i = 0; i < vseq_n && n_vars < 8; i++)
-                    var_idx[n_vars++] = (int)vseq[i];
+                if (vseq_n > VM_FACTOR_MAX_ARITY) {
+                    vm_raise_error_msg(vm, "fg-add-factor!: supports at most 32 variables per factor");
+                    break;
+                }
+                for (int i = 0; i < vseq_n; ++i) {
+                    double index = vseq[i];
+                    if (!isfinite(index) || index != floor(index) || index < 0 || index >= fg->num_vars)
+                        break;
+                    var_idx[n_vars++] = (int)index;
+                }
+                if (n_vars != vseq_n) {
+                    vm_raise_error_msg(vm, "fg-add-factor!: invalid variable index");
+                    break;
+                }
 
                 int cpt_n = 0;
                 const double* cpt_data = vm_fg_seq_doubles(vm, cpt, &cpt_n);
 
                 if (n_vars > 0 && cpt_data) {
                     /* Build dims array from factor graph's var_dims */
-                    int dims[8];
+                    int dims[VM_FACTOR_MAX_ARITY];
                     int need = 1;
                     for (int i = 0; i < n_vars; i++) {
                         int vi = var_idx[i];
-                        dims[i] = (vi >= 0 && vi < fg->num_vars) ? fg->var_dims[vi] : 2;
+                        if (need > INT_MAX / fg->var_dims[vi]) {
+                            need = 0;
+                            break;
+                        }
+                        dims[i] = fg->var_dims[vi];
                         need *= dims[i];
                     }
                     /* vm_make_factor() copies exactly `need` doubles out of
@@ -13162,6 +13194,10 @@ tensor_inverse_done:
                      * reports the mismatch without aborting the program
                      * (lib/core/inference.cpp, eshkol_fg_add_factor_tagged);
                      * mirror both halves of that contract. */
+                    if (need == 0) {
+                        vm_raise_error_msg(vm, "fg-add-factor!: invalid variables or configuration count");
+                        break;
+                    }
                     if (cpt_n == need) {
                         VmFactor* factor = vm_make_factor(&vm->heap.regions, var_idx, n_vars, cpt_data, dims);
                         if (factor) vm_fg_add_factor(&vm->heap.regions, fg, factor);

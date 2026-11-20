@@ -702,6 +702,13 @@ extern "C" eshkol_tensor_t* eshkol_tensor_scaled_dot_attention_dual(
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                              "scaled-dot-attention: incompatible Q/K/V dimensions for forward dual input");
     }
+    bool padding_mask = mask && mask->num_dimensions == 3;
+    if (mask && !((padding_mask && mask->dimensions[0] == (uint64_t)batch &&
+                    mask->dimensions[1] == 1 && mask->dimensions[2] == (uint64_t)seq_k) ||
+                   (mask->num_dimensions == 2 && mask->dimensions[0] == (uint64_t)seq_q &&
+                    mask->dimensions[1] == (uint64_t)seq_k))) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "scaled-dot-attention: mask shape must match Q and K");
+    }
     arena_t* arena = get_global_arena();
     auto* result = dual_tensor_result(arena, v,
         (uint64_t)batch * (uint64_t)seq_q * (uint64_t)d_v,
@@ -730,7 +737,7 @@ extern "C" eshkol_tensor_t* eshkol_tensor_scaled_dot_attention_dual(
                 }
                 score = jet_div(score, scale, "scaled-dot-attention");
                 if (mask) {
-                    const int64_t mask_index = i * seq_k + j;
+                    const int64_t mask_index = (padding_mask ? b : i) * seq_k + j;
                     score = jet_add(score, tensor_jet_at(mask, mask_index,
                                                          "scaled-dot-attention"));
                 }

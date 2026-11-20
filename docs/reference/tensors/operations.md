@@ -202,8 +202,12 @@ returning a wrong answer.
 | `tensor-var` | `(tensor-var t)` | population (÷N) → `1.25` |
 | `tensor-reduce` | `(tensor-reduce t proc init)` | `(tensor-reduce t + 0.0)` → `10` |
 | `tensor-reduce-all` | `(tensor-reduce-all t proc init)` | → `10` |
+| `tensor-reduce` | `(tensor-reduce t proc init axis)` | seeds each output slice with `init` |
 | `tensor-cov` | `(tensor-cov a b)` | two 1-D tensors → `0.666667` |
 | `tensor-corrcoef` | `(tensor-corrcoef a b)` | two 1-D tensors → `1` |
+
+An empty slice returns the supplied initial value for sum, product, minimum and maximum.
+An axis mean requires a positive axis length. Its numerator starts at `init` and the divisor is the number of elements along the selected axis.
 
 `tensor-std`/`tensor-var` use the **population** normalization (divide by N).
 `tensor-cov`/`tensor-corrcoef` take **two 1-D tensors** (not one 2-D matrix).

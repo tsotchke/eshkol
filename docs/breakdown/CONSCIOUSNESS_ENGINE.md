@@ -1484,10 +1484,6 @@ comments or in the project memory; this section enumerates them.
   `MAX_WS_MODULES` constant matches this. Registering more than 16
   modules is allowed at construction (subject to `max_modules`), but
   only the first 16 indices will be processed per cycle.
-- **Per-variable cap of 256 states for `fg-entropy`**: the stack
-  `probs[256]` array in `eshkol_fg_entropy_tagged` imposes this limit
-  (`lib/core/logic_builtins.cpp` line 108). Variables with more states
-  will be silently truncated.
 - **Module return-value robustness**: `eshkol_ws_step_finalize`
   recognises only cons cells whose `car` is `DOUBLE` or `INT64` for
   salience. Any other shape collapses to salience 0 (lines 240–244).

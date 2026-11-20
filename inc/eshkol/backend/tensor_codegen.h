@@ -1204,7 +1204,7 @@ public:
      * @param op The operation AST node containing:
      *   - lengths: Actual sequence lengths (batch,)
      *   - max_len: Maximum sequence length
-     * @return Mask tensor of shape (batch, max_len)
+     * @return Additive mask of shape (batch, 1, max_len), broadcast across queries
      */
     llvm::Value* paddingMask(const eshkol_operations_t* op);
 
@@ -1640,8 +1640,13 @@ public:
      */
     void emitSetErrorLocation();
 
+    llvm::Value* emitBinaryCrossEntropy(const eshkol_operations_t* op, const char* name);
+    llvm::Value* extractStructuralIntOrRaise(llvm::Value* value, const char* name, const char* expected);
+    llvm::Value* checkAttentionMask(llvm::Value* mask, llvm::Value* batch, llvm::Value* queries,
+                                    llvm::Value* keys, const char* operation);
+
     /**
-     * Validate a reduction axis against the operand's rank, at runtime.
+     * Validate the selected index and require a positive reduction extent before either lowering.
      *
      * Emits a call to `eshkol_tensor_axis_checked`, which requires
      * `0 <= axis < rank` and otherwise raises a catchable error. Without it an
@@ -1659,11 +1664,14 @@ public:
      *
      * @param axis     Normalized (non-negative) axis as an i64.
      * @param rank     The operand's `num_dimensions` as an i64.
+     * @param dims     Array of integer dimension lengths.
      * @param op_name  User-facing op name, used only for the error message.
      * @return The validated axis (i64), usable directly.
      */
-    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
+    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank, llvm::Value* dims,
                                  const char* op_name);
+    /** Validate an axis index when only its rank is available. */
+    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank, const char* op_name);
 
     /**
      * Emit a catchable Eshkol error at the current insert point and terminate

@@ -94,58 +94,28 @@ static int64_t vm_rational_lcm_i64(int64_t a, int64_t b) {
  *   2. gcd(|num|, denom) == 1
  *   3. 0/n → 0/1
  */
-static void vm_rational_normalize(int64_t *num, int64_t *denom) {
-    if (*denom == 0) {
-        /* Division by zero → leave as-is, caller must handle. */
-        return;
-    }
-
-    /* Ensure positive denominator */
-    if (*denom < 0) {
-        /* Handle INT64_MIN: we can't negate it, so fail gracefully. */
-        if (*denom == INT64_MIN || *num == INT64_MIN) {
-            /* Rare edge case. Use __int128 for the flip. */
-            __int128_t n128 = -(__int128_t)*num;
-            __int128_t d128 = -(__int128_t)*denom;
-            if (n128 > INT64_MAX || n128 < INT64_MIN ||
-                d128 > INT64_MAX || d128 < INT64_MIN) {
-                /* Truly pathological — can't represent. Leave denom negative as signal. */
-                return;
-            }
-            *num = (int64_t)n128;
-            *denom = (int64_t)d128;
-        } else {
-            *num = -*num;
-            *denom = -*denom;
-        }
-    }
-
-    /* Zero numerator → canonical 0/1 */
-    if (*num == 0) {
-        *denom = 1;
-        return;
-    }
-
-    /* Divide by GCD */
-    int64_t g = vm_rational_gcd_i64(*num, *denom);
-    if (g > 1) {
-        *num /= g;
-        *denom /= g;
-    }
-}
-
-/* ============================================================================
- * Arena Allocation
- * ============================================================================ */
-
-/**
- * Allocate a VmRational on the arena, pre-normalized. Returns NULL if denom==0.
- */
 static VmRational* vm_rational_alloc(VmArena *arena, int64_t num, int64_t denom) {
     if (denom == 0) return NULL;
-
-    vm_rational_normalize(&num, &denom);
-
+    uint64_t gcd = (uint64_t)vm_rational_gcd_i64(num, denom);
+    __int128 n = (__int128)num / gcd;
+    __int128 d = (__int128)denom / gcd;
+    if (d < 0) {
+        n = -n;
+        d = -d;
+    }
+    /* A positive magnitude of 2^63 requires the exact bignum representation. */
+    if (n > INT64_MAX || d > INT64_MAX) {
+        VmBignum *bn = bignum_from_magnitude(arena, (uint64_t)(n < 0 ? -n : n), n < 0 ? -1 : 1);
+        VmBignum *bd = bignum_from_magnitude(arena, (uint64_t)d, 1);
+        if (!bn || !bd) return NULL;
+        VmRational *r = (VmRational*)vm_arena_alloc_object(arena, VM_SUBTYPE_RATIONAL,
+                                                            sizeof(VmRational));
+        if (!r) return NULL;
+        *r = (VmRational){.is_big = 1, .big_num = bn, .big_den = bd};
+        return r;
+    }
+    num = (int64_t)n;
+    denom = (int64_t)d;
     VmRational *r = (VmRational *)vm_arena_alloc_object(arena, VM_SUBTYPE_RATIONAL,
                                                          sizeof(VmRational));
     if (!r) return NULL;
@@ -419,21 +389,10 @@ VmRational* vm_rational_mul(VmArena *arena, const VmRational *a, const VmRationa
 /** a / b (native ID 334). */
 VmRational* vm_rational_div(VmArena *arena, const VmRational *a, const VmRational *b) {
     if (!a || !b || b->num == 0) return NULL;
-    /* a/b = a * (b.denom / b.num) */
-    /* Construct reciprocal of b inline */
-    int64_t b_num = b->denom;
-    int64_t b_denom = b->num;
-    /* Fix sign: if b->num was negative, flip */
-    if (b_denom < 0) {
-        b_num = -b_num;
-        b_denom = -b_denom;
-    }
-    /* Now multiply a by (b_num / b_denom) using cross-reduction */
-    int64_t g1 = vm_rational_gcd_i64(a->num, b_denom);
-    int64_t g2 = vm_rational_gcd_i64(b_num, a->denom);
-    __int128_t num = (__int128_t)(a->num / g1) * (b_num / g2);
-    __int128_t denom = (__int128_t)(a->denom / g2) * (b_denom / g1);
-    return vm_rational_pack128(arena, num, denom);
+    /* Every product of two int64 components fits in a signed 128-bit word.
+     * Canonicalize the sign there, including when b->num is INT64_MIN. */
+    return vm_rational_pack128(arena, (__int128_t)a->num * b->denom,
+                               (__int128_t)a->denom * b->num);
 }
 
 /* ── Exact, never-degrading entry points (SW-18) ──────────────────────────

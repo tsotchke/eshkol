@@ -11,9 +11,10 @@
  * *fixed* weights execute the ISA, this module differentiates that same
  * architecture so the weights become trainable from (state, target) pairs.
  *
- * The gradients emitted here are validated to relative error < 1e-6 against
+ * The FFN gradients are validated to relative error < 1e-6 against
  * a central finite-difference reference by
- * `tests/backend/qllm_backward_gradcheck_test.c`.
+ * `tests/backend/qllm_backward_gradcheck_test.c`. The attention key and value
+ * weight test compares against finite differences and the exact trainer VJP.
  *
  * Precision. The backward math is written against `qllm_real`, a compile-time
  * scalar type that defaults to `float` so the layout stays byte-compatible
@@ -55,6 +56,16 @@ typedef QLLM_REAL qllm_real;
 #ifndef FFN_DIM
 #define FFN_DIM 2304
 #endif
+
+/* Accumulate the Layer 0 attention VJP from its forward intermediates.
+ * Positions, keys and values have np rows. The weight layout is output-major. */
+void qllm_backward_attention(
+    int np, const qllm_real positions[][D], const qllm_real x[D],
+    const qllm_real query[D], const qllm_real keys[][D], const qllm_real values[][D],
+    const qllm_real probabilities[], const qllm_real head[D],
+    const qllm_real wq[D * D], const qllm_real wo[D * D], const qllm_real upstream[D],
+    qllm_real dx[D], qllm_real dwq[D * D], qllm_real dwk[D * D], qllm_real dwv[D * D],
+    qllm_real dwo[D * D], qllm_real dbq[D]);
 
 /*
  * Backward through FFN Type 1 (SQUARE activation).
