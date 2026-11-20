@@ -8340,6 +8340,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         eshkol_add_numeric_test(reduction_empty_axis tests/tensor/reduction_empty_axis.esk jit aot vm)
         eshkol_add_numeric_test(padding_mask_attention tests/ml/padding_mask_attention.esk jit aot)
         eshkol_add_numeric_test(seeded_tensor_reductions tests/xla/seeded_tensor_reductions.esk jit aot)
+        eshkol_add_numeric_test(variable_power_slope tests/ad/variable_power_slope.esk jit aot vm)
         eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot)
         eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
 
@@ -11009,6 +11010,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+    add_executable(vm_numeric_context_test tests/backend/vm_numeric_context_test.c)
+    target_include_directories(vm_numeric_context_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    eshkol_apply_vm_limit_definitions(vm_numeric_context_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(vm_numeric_context_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(vm_numeric_context_test PRIVATE eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    foreach(case IN ITEMS symbolic_variable_power)
+        add_test(NAME vm_${case} COMMAND vm_numeric_context_test ${case})
+    endforeach()
     foreach(_dispatch IN ITEMS threaded switch)
         set(_dispatch_target vm_invalid_opcode_${_dispatch}_test)
         add_executable(${_dispatch_target} tests/vm/vm_invalid_opcode_dispatch_test.c)
