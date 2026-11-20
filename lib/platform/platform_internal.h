@@ -73,15 +73,15 @@ int   eshkol_plat_handle_close(int64_t id);
 typedef struct {
     pthread_mutex_t lock;
     pthread_cond_t  ready;
-    eshkol_event_t  items[ESHKOL_PLAT_EVENT_QUEUE_CAP];
+    eshkol_platform_event_t  items[ESHKOL_PLAT_EVENT_QUEUE_CAP];
     uint32_t head, count;
     uint64_t dropped;
 } eshkol_plat_event_queue_t;
 
 int  eshkol_plat_queue_init(eshkol_plat_event_queue_t* q);
 void eshkol_plat_queue_destroy(eshkol_plat_event_queue_t* q);
-int  eshkol_plat_queue_push(eshkol_plat_event_queue_t* q, const eshkol_event_t* ev);
-bool eshkol_plat_queue_pop(eshkol_plat_event_queue_t* q, eshkol_event_t* ev);
+int  eshkol_plat_queue_push(eshkol_plat_event_queue_t* q, const eshkol_platform_event_t* ev);
+bool eshkol_plat_queue_pop(eshkol_plat_event_queue_t* q, eshkol_platform_event_t* ev);
 /** Wait up to timeout_ms (< 0 forever) for a queued event; 1 ready, 0 timeout. */
 int  eshkol_plat_queue_wait(eshkol_plat_event_queue_t* q, int timeout_ms);
 uint64_t eshkol_plat_queue_dropped(eshkol_plat_event_queue_t* q);
@@ -114,7 +114,7 @@ struct eshkol_window {
     eshkol_surface_t surface;
     atomic_uint_fast64_t presents;
     eshkol_plat_event_queue_t queue;
-    eshkol_event_t current;          /* Eshkol bridge slot */
+    eshkol_platform_event_t current;          /* Eshkol bridge slot */
 };
 
 extern const eshkol_window_backend_ops_t eshkol_plat_window_offscreen_ops;
@@ -129,7 +129,7 @@ const eshkol_window_backend_ops_t* eshkol_plat_window_ops_for(int backend);
 /** Reallocate the surface to width x height, keeping the overlapping pixels. */
 int  eshkol_plat_window_resize_surface(eshkol_window_t* w, int width, int height);
 /** Queue an event originating from the backend (fills window_id/timestamp). */
-void eshkol_plat_window_emit(eshkol_window_t* w, eshkol_event_t* ev);
+void eshkol_plat_window_emit(eshkol_window_t* w, eshkol_platform_event_t* ev);
 
 /* ── Audio ─────────────────────────────────────────────────────────── */
 typedef struct eshkol_audio_backend_ops {

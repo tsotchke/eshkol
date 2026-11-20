@@ -1746,7 +1746,6 @@ Alphabetical index of every public symbol found in `inc/eshkol/**/*.h`. Generate
 | [`eshkol_event_loop_t`](core/event_loop.md) | Struct | `core/event_loop.h` | yes |
 | [`ESHKOL_EVENT_READ`](core/event_loop.md) | Macro | `core/event_loop.h` | no |
 | [`eshkol_event_t`](core/event_loop.md) | Struct | `core/event_loop.h` | yes |
-| [`eshkol_event_t`](platform/event.md) | Struct | `platform/event.h` | no |
 | [`eshkol_event_type_t`](platform/event.md) | Enum | `platform/event.h` | no |
 | [`ESHKOL_EVENT_WRITE`](core/event_loop.md) | Macro | `core/event_loop.h` | yes |
 | [`eshkol_exact_rational_pow_tagged`](core/rational.md) | Function | `core/rational.h` | no |
@@ -2517,6 +2516,7 @@ Alphabetical index of every public symbol found in `inc/eshkol/**/*.h`. Generate
 | [`eshkol_platform_backend_compiled`](platform/platform.md) | Function | `platform/platform.h` | yes |
 | [`eshkol_platform_backend_name`](platform/platform.md) | Function | `platform/platform.h` | yes |
 | [`eshkol_platform_backend_t`](platform/platform.md) | Enum | `platform/platform.h` | yes |
+| [`eshkol_platform_event_t`](platform/event.md) | Struct | `platform/event.h` | no |
 | [`eshkol_platform_init`](platform/platform.md) | Function | `platform/platform.h` | yes |
 | [`eshkol_platform_quit`](platform/platform.md) | Function | `platform/platform.h` | yes |
 | [`eshkol_platform_select_backend`](platform/platform.md) | Function | `platform/platform.h` | yes |

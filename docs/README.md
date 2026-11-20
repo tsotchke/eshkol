@@ -231,6 +231,7 @@ Architecture Decision Records (`docs/design/adr/`) — design proposals and deci
 - [ADR 0028 — One number syntax recognizer](design/adr/0028-one-number-syntax-recognizer.md) — program literals and datum readers share the R7RS grammar
 - [ADR 0029 — Browser VM WebGPU dispatch](design/adr/0029-browser-vm-webgpu-dispatch.md) — browser tensor operations use the shared GPU dispatch seam
 - [ADR 0049 — Neuro-symbolic bridge](design/adr/0049-neuro-symbolic-bridge.md) — v1.5.0 item map, LSTM/GRU, stop-gradient and estimators, HNSW/BPE/sparse substrate, Noesis upstreaming proposal
+- [ADR 0060 — One program-entry rule and Eshkol-owned physical names](design/adr/0060-program-entry-and-physical-names.md) — Proposed — one entry-plan decision shared by every engine, and one physical-name facility so an Eshkol binding's object name can never collide with a C or runtime symbol (implements ADR 0006 section 5)
 
 ## Testing and Quality Gates
 

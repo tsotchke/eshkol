@@ -5,10 +5,10 @@
 This hands-on tutorial introduces Eshkol's core features through practical examples. You'll learn functions, lists, tensors, and automatic differentiation - the tools for scientific computing and AI systems programming.
 
 > **Reading the `; =>` annotations.** They give an expression's **value**. An
-> inexact value is sometimes written with its `.0` (`6.0`) for clarity, but what
-> the compiler *prints* for an integral double omits the decimal point — `6`,
-> not `6.0` — and the value is still inexact. `-0.0` is the one exception and
-> prints in full. Text inside a fenced result block is the exact printed
+> inexact value is written with its `.0` (`6.0`), which is also what the
+> compiler *prints* for an integral double, so an exact `6` and an inexact
+> `6.0` are told apart on sight. `-0.0` prints in full, keeping its
+> sign. Text inside a fenced result block is the exact printed
 > output. See
 > [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
 
@@ -137,8 +137,9 @@ eshkol-run hello.esk -o hello
 
 **Type System**: Polymorphic arithmetic with automatic promotion (exact integer
 → rational → double, promoting only when a value actually requires it). An
-inexact value with no fractional part prints without a decimal point, so `4`
-above may be either exact or inexact — ask `exact?` if it matters. See
+inexact value with no fractional part prints with its decimal point, so the `4`
+above is the exact integer (`(sqrt 16)` of an exact square is exact) and an
+inexact four would print `4.0`. See
 [the numeric tower reference](reference/language/numeric-tower.md).
 
 ---
@@ -256,22 +257,22 @@ N-dimensional arrays for numerical computing.
 ; Tensor creation functions
 (zeros 5)           ; => #(0.0 0.0 0.0 0.0 0.0)
 (ones 2 3)          ; => #((1.0 1.0 1.0) (1.0 1.0 1.0))
-(eye 3)             ; => #((1 0 0) (0 1 0) (0 0 1))  (a 3x3 identity matrix)
-(arange 0.0 1.0 0.2) ; => #(0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
+(eye 3)             ; => #((1.0 0.0 0.0) (0.0 1.0 0.0) (0.0 0.0 1.0))  (a 3x3 identity matrix)
+(arange 0.0 1.0 0.2) ; => #(0.0 0.2 0.4 0.6000000000000001 0.8)  (step accumulates in floating point)
 
 ; Element access
 (vref v 0)          ; => 1.0
-(tensor-get M 1 2)  ; => 6
+(tensor-get M 1 2)  ; => 6.0
 
 ; Arithmetic (element-wise)
-(tensor-add #(1 2 3) #(4 5 6))  ; => #(5 7 9)
+(tensor-add #(1 2 3) #(4 5 6))  ; => #(5.0 7.0 9.0)
 (tensor-mul v v)                ; => #(1.0 4.0 9.0)
 
 ; Linear algebra
 (define A #(#(1 2) #(3 4)))
 (define B #(#(5 6) #(7 8)))
-(matmul A B)        ; => #((19 22) (43 50))
-(transpose A)       ; => #((1 3) (2 4))
+(matmul A B)        ; => #((19.0 22.0) (43.0 50.0))
+(transpose A)       ; => #((1.0 3.0) (2.0 4.0))
 (trace A)           ; => 5.0
 
 ; Reductions
@@ -782,7 +783,7 @@ Full module list in [`lib/stdlib.esk`](../lib/stdlib.esk)
 
 (define data '(4.0 7.0 13.0 2.0 9.0 15.0 6.0 11.0))
 
-(display (median data))         ; => 8
+(display (median data))         ; => 8.0
 (display (std-dev data))        ; => 4.181432170919432
 (display (percentile data 75))  ; => 11.5   (linear interpolation between order
                                 ;            statistics, as NumPy's default)
@@ -994,8 +995,8 @@ ar rcs libmylib.a mylib.o
 (+ r r)             ; => 2/3 (exact)
 
 ;; R7RS: exact + inexact → inexact
-(+ big 0.5)         ; => 9223372036854776000 (a double, printed without a
-                    ;    decimal point because it has no fractional part)
+(+ big 0.5)         ; => 9223372036854776000.0 (a double: its decimal
+                    ;    point marks it inexact)
 
 ;; Exact roots and exact expt: exactness follows the VALUE, not the operator
 (sqrt 4/9)          ; => 2/3   exact
@@ -1021,16 +1022,16 @@ under the bytecode VM — bignum-backed rationals included.
 ```scheme
 ;; Create complex numbers
 (define z (make-rectangular 3.0 4.0))
-(magnitude z)       ; => 5
+(magnitude z)       ; => 5.0
 (angle z)           ; => 0.9272952180016122
 
 ;; Complex arithmetic
-(+ z (make-rectangular 1.0 -1.0))  ; => 4+3i
-(* z z)             ; => -7+24i
+(+ z (make-rectangular 1.0 -1.0))  ; => 4.0+3.0i
+(* z z)             ; => -7.0+24.0i
 
 ;; Smith's formula for numerical stability
 (/ (make-rectangular 1e300 1e300)
-   (make-rectangular 1e300 1e300))  ; => 1 (no overflow; the zero imaginary
+   (make-rectangular 1e300 1e300))  ; => 1.0 (no overflow; the zero imaginary
                                     ;    part is not printed)
 ```
 
