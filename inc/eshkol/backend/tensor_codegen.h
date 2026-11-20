@@ -1545,11 +1545,12 @@ private:
     llvm::VectorType* getSIMDVectorType() const;
 
     /**
-     * Extract a tagged value as double, handling both int64 and double types.
-     * @param tagged_val The tagged value
+     * Convert an integer, rational or floating-point value to double.
+     * @param tagged_val The numeric operand.
+     * @param nonnumeric_error Optional condition message for a nonnumeric operand.
      * @return The extracted double value
      */
-    llvm::Value* extractAsDouble(llvm::Value* tagged_val);
+    llvm::Value* extractAsDouble(llvm::Value* tagged_val, const char* nonnumeric_error = nullptr);
 
     /**
      * A tensor operator's scalar PARAMETER as a double (a scale factor, an

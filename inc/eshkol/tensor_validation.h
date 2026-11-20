@@ -12,6 +12,15 @@ extern "C" {
  * are valid and produce an empty tensor. */
 int64_t eshkol_tensor_shape_total(const int64_t* dims, int64_t ndim);
 
+/* eshkol_xla_reduce axis operations 0..4 retain their unseeded ABI. The
+ * seeded lowering combines its initial value with the returned slices. */
+enum { ESHKOL_REDUCE_SEEDED_AXIS = 8 };
+
+/* Products on either side of the selected axis. The output element count
+ * must fit a double buffer even when the input has a zero extent. */
+int eshkol_tensor_axis_geometry(const uint64_t* shape, int64_t rank, int64_t axis,
+                                int64_t* outer, int64_t* inner);
+
 /* Validate a tensor descriptor's shape, element count, and backing storage. */
 int eshkol_tensor_metadata_valid(const int64_t* dims, int64_t ndim,
                                  const void* elements, int64_t total);

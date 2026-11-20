@@ -355,8 +355,10 @@ extern "C" void* eshkol_xla_reduce(
     int64_t axis,
     int64_t op_code) {
 
+    bool seeded_axis = (op_code & ESHKOL_REDUCE_SEEDED_AXIS) != 0;
+    op_code &= ~ESHKOL_REDUCE_SEEDED_AXIS;
     if (total_elements < 0 || (!data && total_elements > 0)) return nullptr;
-    if (total_elements == 0 && (!shape || axis < 0 || axis >= rank ||
+    if (total_elements == 0 && (!seeded_axis || !shape || axis < 0 || axis >= rank ||
                                 (op_code == 1 && shape[axis] == 0)))
         return nullptr;
 
@@ -422,35 +424,30 @@ extern "C" void* eshkol_xla_reduce(
         return result;
     }
 
-    // Reduce along specific axis
-    if (axis < 0 || axis >= rank) return nullptr;
-
-    // Compute output shape (remove the reduced axis)
-    if (rank > 16) return nullptr; // max 16D tensors supported
-    uint64_t out_rank = static_cast<uint64_t>(rank - 1);
-    if (out_rank == 0) out_rank = 1; // scalar result
-
-    // Compute strides and output dimensions
-    uint64_t out_total = 1;
-    uint64_t out_dims[16];
-    uint64_t j = 0;
-    for (int64_t i = 0; i < rank; i++) {
-        if (i != axis) {
-            out_dims[j++] = shape[i];
-            out_total *= shape[i];
-        }
-    }
-    if (j == 0) { out_dims[0] = 1; out_total = 1; }
-
+    if (!seeded_axis && rank > 16) return nullptr;
+    int64_t outer_count, inner_stride;
+    if (!eshkol_tensor_axis_geometry(shape, rank, axis, &outer_count, &inner_stride)) return nullptr;
+    uint64_t out_total = static_cast<uint64_t>(outer_count * inner_stride);
+    uint64_t out_rank = rank > 1 ? static_cast<uint64_t>(rank - 1) : 1;
     eshkol_tensor_t* result = arena_allocate_tensor_full(reinterpret_cast<arena_t*>(arena), out_rank, out_total);
     if (!result) return nullptr;
     result->dtype = ESHKOL_TENSOR_DTYPE_F64;
-    for (uint64_t i = 0; i < out_rank; i++) result->dimensions[i] = out_dims[i];
+    uint64_t j = 0;
+    for (int64_t d = 0; d < rank; ++d)
+        if (d != axis) result->dimensions[j++] = shape[d];
+    if (j == 0) result->dimensions[0] = 1;
+    if (out_total == 0) return result;
 
     double* out = reinterpret_cast<double*>(result->elements);
 
     // Try GPU dispatch for axis-reduce (large tensors)
-    if (total_elements > 0 && eshkol_gpu_should_use(static_cast<size_t>(total_elements)) && op_code >= 0 && op_code <= 4) {
+    const bool seeded_extrema = seeded_axis && (op_code == 2 || op_code == 3);
+    const bool gpu_candidate = rank <= 16 && total_elements > 0 && op_code >= 0 && op_code <= 4 &&
+                               eshkol_gpu_should_use(static_cast<size_t>(total_elements));
+    // Ordered slice comparisons keep the first zero and a leading NaN.
+    // Device min/max can select a different representative in those cases.
+    if (gpu_candidate && (!seeded_extrema || std::none_of(data, data + total_elements,
+            [](double x) { return x == 0.0 || std::isnan(x); }))) {
         // XLA op codes: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4
         // GPU op codes: SUM=0, PROD=1, MIN=2, MAX=3, MEAN=4
         static const int xla_to_gpu_reduce[] = {0, 4, 3, 2, 1};
@@ -471,13 +468,11 @@ extern "C" void* eshkol_xla_reduce(
 
     // CPU fallback: compute stride for the reduced axis
     uint64_t axis_len = shape[axis];
-    uint64_t inner_stride = 1;
-    for (int64_t i = axis + 1; i < rank; i++) inner_stride *= shape[i];
     uint64_t outer_stride = axis_len * inner_stride;
 
     // Reduce
-    for (uint64_t outer = 0; outer < out_total / (inner_stride > 0 ? inner_stride : 1); outer++) {
-        for (uint64_t inner = 0; inner < inner_stride; inner++) {
+    for (int64_t outer = 0; outer < outer_count; outer++) {
+        for (int64_t inner = 0; inner < inner_stride; inner++) {
             uint64_t out_idx = outer * inner_stride + inner;
             double acc;
             switch (op_code) {
@@ -487,13 +482,15 @@ extern "C" void* eshkol_xla_reduce(
                 case 4: acc = 1.0; break;
                 default: acc = 0.0; break;
             }
+            if (seeded_extrema && axis_len)
+                acc = data[outer * outer_stride + inner];
             for (uint64_t k = 0; k < axis_len; k++) {
                 uint64_t src_idx = outer * outer_stride + k * inner_stride + inner;
                 double val = data[src_idx];
                 switch (op_code) {
                     case 0: case 1: acc += val; break;
-                    case 2: acc = std::fmax(acc, val); break;
-                    case 3: acc = std::fmin(acc, val); break;
+                    case 2: acc = seeded_extrema ? (val > acc ? val : acc) : std::fmax(acc, val); break;
+                    case 3: acc = seeded_extrema ? (val < acc ? val : acc) : std::fmin(acc, val); break;
                     case 4: acc *= val; break;
                 }
             }

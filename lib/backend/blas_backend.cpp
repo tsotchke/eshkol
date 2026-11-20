@@ -1091,6 +1091,7 @@ void eshkol_batched_matmul_f64(const double* A, const double* B, double* C,
 
 #ifndef ESHKOL_XLA_ENABLED
 
+#include <eshkol/tensor_validation.h>
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
@@ -1126,8 +1127,10 @@ void* eshkol_xla_reduce(
     int64_t axis,
     int64_t op_code)
 {
+    bool seeded_axis = (op_code & ESHKOL_REDUCE_SEEDED_AXIS) != 0;
+    op_code &= ~ESHKOL_REDUCE_SEEDED_AXIS;
     if (total_elements < 0 || (!data && total_elements > 0)) return nullptr;
-    if (total_elements == 0 && (!shape || axis < 0 || axis >= rank ||
+    if (total_elements == 0 && (!seeded_axis || !shape || axis < 0 || axis >= rank ||
                                 (op_code == 1 && shape[axis] == 0)))
         return nullptr;
 
@@ -1151,10 +1154,9 @@ void* eshkol_xla_reduce(
     }
 
     /* Axis-specific reduction */
-    if (axis < 0 || axis >= rank) return nullptr;
-    int64_t outer = 1, mid = (int64_t)shape[axis], inner = 1;
-    for (int64_t i = 0; i < axis; i++) outer *= (int64_t)shape[i];
-    for (int64_t i = axis + 1; i < rank; i++) inner *= (int64_t)shape[i];
+    int64_t outer, inner;
+    if (!eshkol_tensor_axis_geometry(shape, rank, axis, &outer, &inner)) return nullptr;
+    int64_t mid = (int64_t)shape[axis];
     int64_t out_total = outer * inner;
 
     /* Reducing the sole axis of a rank-1 tensor removes the only dimension.

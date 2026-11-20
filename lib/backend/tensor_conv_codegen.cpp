@@ -1976,14 +1976,10 @@ llvm::Value* TensorCodegen::layerNorm(const eshkol_operations_t* op) {
  * runtime entry points -- so 1/2 converts EXACTLY (0.5 is exact in binary)
  * and 1/3 converts to its nearest double, matching `(inexact 1/3)`.
  *
- * A tagged value this function does not recognize as numeric (a non-
- * numeric heap object, or a base type other than INT64/DOUBLE/HEAP_PTR)
- * falls back to 0.0 rather than reinterpreting its payload -- matching
- * ArithmeticCodegen::extractAsDouble's own non-numeric fallback, since a
- * tensor element genuinely has no double to report for e.g. a boolean or a
- * string and this call site has no raise/exception plumbing of its own.
+ * A caller that supplies nonnumeric_error raises a catchable condition for a
+ * nonnumeric operand. Other callers use the ordinary 0.0 fallback.
  */
-llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
+llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val, const char* nonnumeric_error) {
     if (!tagged_val) return nullptr;
 
     // Handle raw double - return as-is
@@ -1992,6 +1988,11 @@ llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
     // Handle raw int64 - convert to double
     if (tagged_val->getType()->isIntegerTy(64)) {
         return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
+    }
+
+    if (nonnumeric_error && tagged_val->getType() != ctx_.taggedValueType()) {
+        emitConditionGuard(ctx_.builder().getFalse(), nonnumeric_error, "reduce_seed");
+        return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
     }
 
     auto& builder = ctx_.builder();
@@ -2078,8 +2079,8 @@ llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
 
     builder.SetInsertPoint(fallback_bb);
     llvm::Value* zero_fallback = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-    builder.CreateBr(merge_bb);
-    fallback_bb = builder.GetInsertBlock();
+    if (nonnumeric_error) emitCatchableError(nonnumeric_error);
+    else builder.CreateBr(merge_bb);
 
     builder.SetInsertPoint(merge_bb);
     llvm::PHINode* result = builder.CreatePHI(ctx_.doubleType(), 5, "ead_t_result");
@@ -2087,7 +2088,7 @@ llvm::Value* TensorCodegen::extractAsDouble(llvm::Value* tagged_val) {
     result->addIncoming(rat_dbl, rational_bb);
     result->addIncoming(bn_dbl, bignum_bb);
     result->addIncoming(int_as_dbl, int_bb);
-    result->addIncoming(zero_fallback, fallback_bb);
+    if (!nonnumeric_error) result->addIncoming(zero_fallback, fallback_bb);
     return result;
 }
 

@@ -19,6 +19,7 @@
  */
 #include <eshkol/backend/tensor_codegen.h>
 #include <eshkol/backend/tensor_shape_guard.h>
+#include <eshkol/tensor_validation.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -1738,65 +1739,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     }
     std::string func_name = func_ast->variable.id;
 
-    // Check type: Scheme vector vs Tensor (using consolidated type check)
-    llvm::Value* is_scheme_vector = tagged_.isVector(src_val);
-
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-    llvm::BasicBlock* scheme_vec_block = llvm::BasicBlock::Create(ctx_.context(), "reduce_scheme_vec", current_func);
-    llvm::BasicBlock* tensor_block = llvm::BasicBlock::Create(ctx_.context(), "reduce_tensor", current_func);
-    llvm::BasicBlock* reduce_merge = llvm::BasicBlock::Create(ctx_.context(), "reduce_merge", current_func);
-
-    ctx_.builder().CreateCondBr(is_scheme_vector, scheme_vec_block, tensor_block);
-
-    // === SCHEME VECTOR PATH ===
-    ctx_.builder().SetInsertPoint(scheme_vec_block);
-    llvm::Value* svec_ptr_int = tagged_.unpackInt64(src_val);
-    llvm::Value* svec_ptr = ctx_.builder().CreateIntToPtr(svec_ptr_int, ctx_.ptrType());
-
-    // Scheme vector: [length:i64, element0:tagged_value, element1:tagged_value, ...]
-    llvm::Value* svec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_ptr);
-
-    llvm::BasicBlock* svec_loop_cond = llvm::BasicBlock::Create(ctx_.context(), "svec_reduce_cond", current_func);
-    llvm::BasicBlock* svec_loop_body = llvm::BasicBlock::Create(ctx_.context(), "svec_reduce_body", current_func);
-    llvm::BasicBlock* svec_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "svec_reduce_exit", current_func);
-
-    // Initialize with initial_value as double
-    llvm::Value* svec_initial = taggedNumericToDouble(ctx_, tagged_, initial_tagged);
-    llvm::Value* svec_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "svec_acc");
-    llvm::Value* svec_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_i");
-    ctx_.builder().CreateStore(svec_initial, svec_acc);
-    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), svec_counter);
-    ctx_.builder().CreateBr(svec_loop_cond);
-
-    ctx_.builder().SetInsertPoint(svec_loop_cond);
-    llvm::Value* svec_i = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_counter);
-    llvm::Value* svec_cmp = ctx_.builder().CreateICmpULT(svec_i, svec_len);
-    ctx_.builder().CreateCondBr(svec_cmp, svec_loop_body, svec_loop_exit);
-
-    ctx_.builder().SetInsertPoint(svec_loop_body);
-    // Elements start after 8-byte length field
-    llvm::Value* svec_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* svec_elems_typed = ctx_.builder().CreatePointerCast(svec_elems_base, ctx_.ptrType());
-    llvm::Value* svec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_elems_typed, svec_i);
-    llvm::Value* svec_elem_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_elem_ptr);
-    llvm::Value* svec_elem_val = extractAsDouble(svec_elem_tagged);
-
-    llvm::Value* svec_current_acc = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_acc);
-    llvm::Value* svec_new_acc = combineReduction(ctx_.builder(), func_name, svec_current_acc, svec_elem_val);
-    ctx_.builder().CreateStore(svec_new_acc, svec_acc);
-    llvm::Value* svec_next_i = ctx_.builder().CreateAdd(svec_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    ctx_.builder().CreateStore(svec_next_i, svec_counter);
-    ctx_.builder().CreateBr(svec_loop_cond);
-
-    ctx_.builder().SetInsertPoint(svec_loop_exit);
-    llvm::Value* svec_result = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_acc);
-    llvm::Value* svec_result_tagged = tagged_.packDouble(svec_result);
-    ctx_.builder().CreateBr(reduce_merge);
-    llvm::BasicBlock* svec_exit_block = ctx_.builder().GetInsertBlock();
-
-    // === TENSOR PATH ===
-    ctx_.builder().SetInsertPoint(tensor_block);
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(src_val, "tensor-reduce-all");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
@@ -1811,7 +1754,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::BasicBlock* tensor_loop_body = llvm::BasicBlock::Create(ctx_.context(), "tensor_reduce_body", current_func);
     llvm::BasicBlock* tensor_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "tensor_reduce_exit", current_func);
 
-    llvm::Value* tensor_initial = taggedNumericToDouble(ctx_, tagged_, initial_tagged);
+    llvm::Value* tensor_initial = extractAsDouble(initial_tagged, "tensor-reduce: expected a real initial value");
     llvm::Value* tensor_acc = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "tensor_acc");
     llvm::Value* tensor_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "tensor_i");
     ctx_.builder().CreateStore(tensor_initial, tensor_acc);
@@ -1892,17 +1835,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(tensor_loop_exit);
     llvm::Value* tensor_result = ctx_.builder().CreateLoad(ctx_.doubleType(), tensor_acc);
-    llvm::Value* tensor_result_tagged = tagged_.packDouble(tensor_result);
-    ctx_.builder().CreateBr(reduce_merge);
-    llvm::BasicBlock* tensor_exit_block = ctx_.builder().GetInsertBlock();
-
-    // === MERGE ===
-    ctx_.builder().SetInsertPoint(reduce_merge);
-    llvm::PHINode* result_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "reduce_result");
-    result_phi->addIncoming(svec_result_tagged, svec_exit_block);
-    result_phi->addIncoming(tensor_result_tagged, tensor_exit_block);
-
-    return result_phi;
+    return tagged_.packDouble(tensor_result);
 }
 
 llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
@@ -1918,7 +1851,10 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Value* initial_value = codegenAST(&op->call_op.variables[2]);
     llvm::Value* dimension_value = codegenAST(&op->call_op.variables[3]);
     if (!tensor_val || !initial_value || !dimension_value) return nullptr;
-    llvm::Value* initial = taggedNumericToDouble(ctx_, tagged_, initial_value);
+    // Send statically typed literals through the same catchable check as
+    // axes supplied by a procedure parameter.
+    if (dimension_value->getType()->isDoubleTy()) dimension_value = tagged_.packDouble(dimension_value);
+    if (dimension_value->getType()->isIntegerTy(1)) dimension_value = tagged_.packBool(dimension_value);
 
     // Get function name to determine op code
     eshkol_ast_t* func_ast = &op->call_op.variables[1];
@@ -1942,6 +1878,7 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
 
     // Extract tensor pointer (type-checked: ESH-0069)
     llvm::Value* tensor_ptr = unpackTensorOperandChecked(tensor_val, "tensor-reduce");
+    llvm::Value* initial = extractAsDouble(initial_value, "tensor-reduce: expected a real initial value");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
 
@@ -1983,7 +1920,7 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
 
     // Call eshkol_xla_reduce(arena, data, total, shape, rank, axis, op_code)
     // This handles N-D tensors of any rank with GPU dispatch for large tensors
-    llvm::Value* op_code_val = llvm::ConstantInt::get(i64Ty, op_code);
+    llvm::Value* op_code_val = llvm::ConstantInt::get(i64Ty, op_code | ESHKOL_REDUCE_SEEDED_AXIS);
     llvm::Value* result = ctx_.builder().CreateCall(reduce_callee,
         {arena_ptr, src_elements_ptr, src_total, src_dims_ptr, src_num_dims, axis_val, op_code_val},
         "reduce_dim_result");

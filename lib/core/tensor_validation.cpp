@@ -21,6 +21,26 @@ extern "C" int64_t eshkol_tensor_shape_total(const int64_t* dims,
     return total;
 }
 
+extern "C" int eshkol_tensor_axis_geometry(const uint64_t* shape, int64_t rank, int64_t axis,
+                                            int64_t* outer, int64_t* inner) {
+    if (!shape || axis < 0 || axis >= rank) return 0;
+    *outer = *inner = 1;
+    for (int64_t d = 0; d < rank; ++d) {
+        if (d != axis && shape[d] == 0) {
+            *outer = *inner = 0;
+            return 1;
+        }
+    }
+    const uint64_t limit = std::numeric_limits<int64_t>::max() / sizeof(double);
+    for (int64_t d = 0; d < rank; ++d) {
+        if (d == axis) continue;
+        int64_t& product = d < axis ? *outer : *inner;
+        if (shape[d] > limit / static_cast<uint64_t>(product)) return 0;
+        product *= static_cast<int64_t>(shape[d]);
+    }
+    return static_cast<uint64_t>(*outer) <= limit / static_cast<uint64_t>(*inner);
+}
+
 extern "C" int eshkol_tensor_metadata_valid(const int64_t* dims, int64_t ndim,
                                               const void* elements,
                                               int64_t total) {
