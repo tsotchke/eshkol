@@ -50,8 +50,12 @@ namespace eshkol::regions_internal {
 /* ---- lifecycle state (runtime_regions.cpp) ---------------------------- */
 
 // The calling thread's memory context (OALR Phase A); the resident owner
-// borrows its allocation domain.
-extern thread_local eshkol_memctx_t t_memctx;
+// borrows its allocation domain. constinit tells every including unit that
+// the variable is constant-initialized, so a reference reads the TLS slot
+// directly instead of calling a TLS init function -- the definition has none,
+// and under the hidden visibility above that reference cannot be linked into
+// a position-independent executable.
+extern constinit thread_local eshkol_memctx_t t_memctx;
 // >0 while a work-stealing construct may run.
 extern std::atomic<int> s_parallel_depth;
 
