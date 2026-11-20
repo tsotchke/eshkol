@@ -1643,60 +1643,70 @@ private:
 
     // Syntactic tail positions of a body. Calls found here are the only loop
     // back edges, and handle values found here are the function's results.
-    void collectTailNodes(const eshkol_ast_t* node, std::set<const eshkol_ast_t*>& out,
-                          bool calls_only, unsigned depth = 0) {
-        if (!node || depth > 256) return;
-        if (node->type != ESHKOL_OP) {
-            if (!calls_only) out.insert(node);
-            return;
-        }
-        const auto& op = node->operation;
-        if (isIfForm(node)) {
-            collectTailNodes(&op.call_op.variables[1], out, calls_only, depth + 1);
-            if (op.call_op.num_vars == 3)
-                collectTailNodes(&op.call_op.variables[2], out, calls_only, depth + 1);
-            return;
-        }
-        switch (op.op) {
-            case ESHKOL_CALL_OP:
-                out.insert(node);
-                return;
-            case ESHKOL_SEQUENCE_OP:
-                if (op.sequence_op.num_expressions)
-                    collectTailNodes(&op.sequence_op.expressions[op.sequence_op.num_expressions - 1],
-                                     out, calls_only, depth + 1);
-                return;
-            case ESHKOL_AND_OP:
-            case ESHKOL_OR_OP:
-                if (op.sequence_op.num_expressions)
-                    collectTailNodes(&op.sequence_op.expressions[op.sequence_op.num_expressions - 1],
-                                     out, calls_only, depth + 1);
-                return;
-            case ESHKOL_LET_OP:
-            case ESHKOL_LET_STAR_OP:
-            case ESHKOL_LETREC_OP:
-            case ESHKOL_LETREC_STAR_OP:
-                if (op.op == ESHKOL_LET_OP && op.let_op.name) return;  // a nested loop
-                collectTailNodes(op.let_op.body, out, calls_only, depth + 1);
-                return;
-            case ESHKOL_WHEN_OP:
-            case ESHKOL_UNLESS_OP:
-                if (op.call_op.num_vars > 1)
-                    collectTailNodes(&op.call_op.variables[op.call_op.num_vars - 1], out,
-                                     calls_only, depth + 1);
-                return;
-            case ESHKOL_COND_OP:
-                for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
-                    const auto& clause = op.call_op.variables[i];
-                    if (clause.type == ESHKOL_OP && clause.operation.op == ESHKOL_CALL_OP &&
-                        clause.operation.call_op.num_vars > 0)
-                        collectTailNodes(&clause.operation.call_op.variables[clause.operation.call_op.num_vars - 1],
-                                         out, calls_only, depth + 1);
-                }
-                return;
-            default:
+    void collectTailNodes(const eshkol_ast_t* root, std::set<const eshkol_ast_t*>& out,
+                          bool calls_only) {
+        std::vector<const eshkol_ast_t*> pending{root};
+        while (!pending.empty()) {
+            const auto* node = pending.back();
+            pending.pop_back();
+            if (!node) continue;
+            if (node->type != ESHKOL_OP) {
                 if (!calls_only) out.insert(node);
-                return;
+                continue;
+            }
+            const auto& op = node->operation;
+            if (isIfForm(node)) {
+                pending.push_back(&op.call_op.variables[1]);
+                if (op.call_op.num_vars == 3) pending.push_back(&op.call_op.variables[2]);
+                continue;
+            }
+            switch (op.op) {
+                case ESHKOL_CALL_OP:
+                    out.insert(node);
+                    break;
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
+                    if (!calls_only) {
+                        for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                            pending.push_back(&op.sequence_op.expressions[i]);
+                        break;
+                    }
+                    [[fallthrough]];
+                case ESHKOL_SEQUENCE_OP:
+                    if (op.sequence_op.num_expressions)
+                        pending.push_back(&op.sequence_op.expressions[op.sequence_op.num_expressions - 1]);
+                    break;
+                case ESHKOL_LET_OP:
+                case ESHKOL_LET_STAR_OP:
+                case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
+                    if (op.op != ESHKOL_LET_OP || !op.let_op.name)
+                        pending.push_back(op.let_op.body);
+                    break;
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                    if (op.call_op.num_vars > 1)
+                        pending.push_back(&op.call_op.variables[op.call_op.num_vars - 1]);
+                    break;
+                case ESHKOL_COND_OP:
+                    for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                        const auto& clause = op.call_op.variables[i];
+                        if (clause.type == ESHKOL_OP && clause.operation.op == ESHKOL_CALL_OP &&
+                            clause.operation.call_op.num_vars)
+                            pending.push_back(&clause.operation.call_op.variables[clause.operation.call_op.num_vars - 1]);
+                    }
+                    break;
+                case ESHKOL_THE_OP:
+                    if (!calls_only) pending.push_back(op.the_op.expr);
+                    break;
+                case ESHKOL_BORROW_OP:
+                    if (!calls_only && op.borrow_op.num_body_exprs)
+                        pending.push_back(&op.borrow_op.body[op.borrow_op.num_body_exprs - 1]);
+                    break;
+                default:
+                    if (!calls_only) out.insert(node);
+                    break;
+            }
         }
     }
 
@@ -2982,6 +2992,11 @@ private:
     std::map<uint64_t, BranchFrame> branch_frames_;
     std::set<const eshkol_ast_t*> accepted_factory_nodes_;
     std::set<const eshkol_ast_t*> accepted_move_nodes_;
+    struct LoanResult {
+        uint64_t owner;
+        std::set<const eshkol_ast_t*> expressions;
+    };
+    std::vector<LoanResult> loan_results_;
     std::set<const eshkol_ast_t*> allowed_resource_use_nodes_;
     std::map<const eshkol_ast_t*, VariableInfo> parallel_binding_info_;
     std::set<const eshkol_ast_t*> call_position_nodes_;
@@ -3121,6 +3136,7 @@ private:
                     popScope();
                     continue;
                 case WorkItem::Kind::UNBORROW: {
+                    loan_results_.pop_back();
                     auto borrow = borrowed_counts_.find(item.binding_id);
                     if (borrow != borrowed_counts_.end() && --borrow->second == 0)
                         borrowed_counts_.erase(borrow);
@@ -3568,6 +3584,12 @@ private:
                             !(checked && info->resource_kind != ResourceKind::NONE)) {
                             reportError("Use of moved value '" + name + "'");
                         }
+                        if (info) {
+                            for (const auto& loan : loan_results_) {
+                                if (loan.owner == info->binding_id && loan.expressions.count(node))
+                                    reportError("Borrowed value '" + name + "' escapes its borrow scope");
+                            }
+                        }
                         if (checked && info) checkVariableUse(node, name, *info);
                     }
                     break;
@@ -3852,7 +3874,13 @@ private:
                         ++borrowed_counts_[borrowed_binding_id];
                     }
                 }
-                if (borrowed_binding_id) work.push_back(WorkItem::unborrow(borrowed_binding_id));
+                if (borrowed_binding_id) {
+                    work.push_back(WorkItem::unborrow(borrowed_binding_id));
+                    loan_results_.push_back({borrowed_binding_id, {}});
+                    if (op->borrow_op.num_body_exprs)
+                        collectTailNodes(&op->borrow_op.body[op->borrow_op.num_body_exprs - 1],
+                                         loan_results_.back().expressions, false);
+                }
                 for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i)
                     work.push_back(astChild(&op->borrow_op.body[i - 1]));
                 if (var_name.empty()) work.push_back(astChild(op->borrow_op.value));
