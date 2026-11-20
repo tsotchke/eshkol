@@ -603,11 +603,13 @@ llvm::Value* TensorCodegen::emitBinaryCrossEntropy(const eshkol_operations_t* op
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     llvm::Value* one_minus_eps = builder.CreateFSub(one, eps);
 
-    // pred_clipped = max(eps, min(1-eps, pred))
-    llvm::Value* cmp_high = builder.CreateFCmpOLT(pred_val, one_minus_eps);
-    llvm::Value* pred_upper = builder.CreateSelect(cmp_high, pred_val, one_minus_eps);
-    llvm::Value* cmp_low = builder.CreateFCmpOGT(pred_upper, eps);
-    llvm::Value* pred_clipped = builder.CreateSelect(cmp_low, pred_upper, eps);
+    // Clamp finite predictions to [eps, 1-eps]. Each select replaces the
+    // prediction only when an ordered comparison holds, so a NaN prediction
+    // reaches log unchanged and the loss is NaN.
+    llvm::Value* above_high = builder.CreateFCmpOGT(pred_val, one_minus_eps);
+    llvm::Value* pred_upper = builder.CreateSelect(above_high, one_minus_eps, pred_val);
+    llvm::Value* below_low = builder.CreateFCmpOLT(pred_upper, eps);
+    llvm::Value* pred_clipped = builder.CreateSelect(below_low, eps, pred_upper);
 
     // BCE term: target * log(pred) + (1-target) * log(1-pred)
     llvm::Function* log_func = ESHKOL_GET_INTRINSIC(
