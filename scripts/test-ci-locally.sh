@@ -29,7 +29,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 TARGET="${1:-all}"
-VERSION="${ESHKOL_VERSION:-1.0.0}"
+VERSION="${ESHKOL_VERSION:-$(python3 "$(dirname "$0")/release_target.py" --package-version)}"
 LLVM_MAJOR="${ESHKOL_REQUIRED_LLVM_MAJOR:-21}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -4,7 +4,7 @@
 #
 # Usage: ./scripts/make-docker.sh [BUILD_DIR] [VERSION] [TYPE]
 #   BUILD_DIR  - Output directory (default: ./dist)
-#   VERSION    - Version string (default: 1.0.0)
+#   VERSION    - Version string (default: CMake project release)
 #   TYPE       - Build type: release or debug (default: release)
 #
 # Copyright (C) tsotchke
@@ -14,7 +14,7 @@
 set -e
 
 BUILD_DIR="${1:-./dist}"
-VERSION="${2:-1.0.0}"
+VERSION="${2:-$(python3 "$(dirname "$0")/release_target.py" --package-version)}"
 TYPE="${3:-release}"
 
 case "$TYPE" in

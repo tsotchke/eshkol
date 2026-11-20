@@ -87,7 +87,7 @@ compile_and_run_test() {
     esac
 
     if g++ -std=c++20 \
-        -I"$PROJECT_DIR/inc" \
+        -I"$PROJECT_DIR/inc" -I"$BUILD_DIR/generated" \
         ${LLVM_CXXFLAGS[@]+"${LLVM_CXXFLAGS[@]}"} \
         $SOURCES \
         "$test_file" \

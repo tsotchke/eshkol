@@ -2,7 +2,7 @@
 # Matches GitHub Actions ubuntu-22.04 runner exactly
 FROM ubuntu:22.04
 
-ARG VERSION=1.1.11
+ARG VERSION
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Add LLVM 21 repository (required - not in Ubuntu 22.04 default repos)
@@ -48,7 +48,7 @@ RUN ./scripts/run_all_tests.sh || echo "Tests completed"
 
 # Create package
 WORKDIR /app/build
-RUN cpack -G DEB -D CPACK_PACKAGE_VERSION="${VERSION}"
+RUN if [ -n "$VERSION" ]; then cpack -G DEB -D CPACK_PACKAGE_VERSION="$VERSION"; else cpack -G DEB; fi
 
 # Verify artifacts
 RUN ls -la /app/build/eshkol-run /app/build/eshkol-repl /app/build/stdlib.o /app/build/stdlib.bc || true

@@ -7,20 +7,7 @@
 #ifndef ESHKOL_ESHKOL_H
 #define ESHKOL_ESHKOL_H
 
-/**
- * @brief Eshkol runtime/compiler version numbers and version string.
- *
- * ESHKOL_VERSION_MAJOR / _MINOR / _PATCH are the numeric semantic-version
- * components; ESHKOL_VERSION_STRING is the human-readable release tag
- * embedded in binaries and reported by `--version`.
- */
-#define ESHKOL_VERSION_MAJOR 1
-/** @brief Minor component of the semantic version (the `3` in 1.3.6). */
-#define ESHKOL_VERSION_MINOR 3
-/** @brief Patch component of the semantic version (the `6` in 1.3.6). */
-#define ESHKOL_VERSION_PATCH 6
-/** @brief Full release string, `MAJOR.MINOR.PATCH` plus the release-series suffix. */
-#define ESHKOL_VERSION_STRING "1.3.6-evolve"
+#include "eshkol/version.h"
 
 #include <stdint.h>
 #include <stdbool.h>

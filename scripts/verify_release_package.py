@@ -21,6 +21,7 @@ import sys
 import tempfile
 from typing import NoReturn
 
+from release_target import project_identity
 from repl_smoke import ReplSmokeError, verify_repl_smoke
 
 
@@ -495,6 +496,16 @@ def verify_macos_tls_smoke(
         if any(marker in result.stderr for marker in FORBIDDEN_SMOKE_DIAGNOSTICS):
             fail(f"macOS TLS {mode} smoke reported a module-loading failure",
                  stdout=result.stdout, stderr=result.stderr)
+def verify_version(package: Path, expected: str, stdout: str, stderr: str) -> None:
+    stamp_path = package / "share/eshkol/release-tag"
+    if not stamp_path.is_file():
+        fail("package is missing its configured release tag")
+    stamp = stamp_path.read_text(encoding="utf-8").strip()
+    if stamp != project_identity()[0] or stamp != expected or stdout.strip() != f"Eshkol Compiler {stamp}":
+        fail(f"expected package and compiler version {expected!r}, staged tag {stamp!r}",
+             stdout=stdout, stderr=stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package-dir", required=True, type=Path)
@@ -600,13 +611,7 @@ def main() -> int:
         timeout=60,
         description="packaged eshkol-run --version",
     )
-    version_text = version.stdout + version.stderr
-    if args.expected_version not in version_text:
-        fail(
-            f"packaged version does not contain {args.expected_version!r}",
-            stdout=version.stdout,
-            stderr=version.stderr,
-        )
+    verify_version(package_dir, args.expected_version, version.stdout, version.stderr)
 
     with tempfile.TemporaryDirectory(prefix="eshkol-release-package-smoke-") as tmp:
         state_dir = Path(tmp)

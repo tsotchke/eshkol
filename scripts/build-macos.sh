@@ -7,7 +7,7 @@
 #   - Universal binaries (arm64 + x86_64) via cross-compilation
 #
 # Usage: ./scripts/build-macos.sh [options]
-#   --version VER     Version string (default: 1.0.0)
+#   --version VER     Version string (default: CMake project release)
 #   --output DIR      Output directory for artifacts
 #   --run-tests       Run tests after build
 #   --universal       Build universal binary (arm64 + x86_64)
@@ -21,7 +21,6 @@
 set -e
 
 # Defaults
-VERSION="1.0.0"
 OUTPUT_DIR="./dist"
 RUN_TESTS=false
 UNIVERSAL=false
@@ -145,6 +144,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ -z "${VERSION+x}" ]; then
+    VERSION="$(python3 "$(dirname "$0")/release_target.py" --package-version)"
+fi
 validate_package_version "$VERSION"
 validate_target_arch "$TARGET_ARCH"
 

@@ -131,8 +131,8 @@ bench_capture_fingerprint() { # <build_dir> <label> -> JSON object on stdout
     fi
 
     local eshkol_version="unknown"
-    if [ -f "$repo_root/inc/eshkol/eshkol.h" ]; then
-        eshkol_version="$(grep '^#define ESHKOL_VERSION_STRING' "$repo_root/inc/eshkol/eshkol.h" | sed -E 's/.*"([^"]+)".*/\1/' | head -1)"
+    if [ -f "$build_dir/generated/eshkol/version.h" ]; then
+        eshkol_version="$(grep '^#define ESHKOL_VERSION_STRING' "$build_dir/generated/eshkol/version.h" | sed -E 's/.*"([^"]+)".*/\1/' | head -1)"
         [ -n "$eshkol_version" ] || eshkol_version="unknown"
     fi
 
