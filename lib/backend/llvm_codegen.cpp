@@ -48448,6 +48448,10 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         // eshkol-agent-ffi archive. See Noesis bug report #2 (2026-07-04).
         link_args.emplace_back("-framework");
         link_args.emplace_back("Security");
+        // Core Graphics: the runtime archive's window layer
+        // (lib/platform/window/window_cocoa.m) calls it directly.
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreGraphics");
 #endif
 
 #ifdef __APPLE__
