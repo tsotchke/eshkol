@@ -2318,9 +2318,17 @@ See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 ```
 
 JIT, AOT, the REPL and the hosted bytecode compiler apply ownership checks by
-default. Use `--unsafe` to run legacy code with static ownership and type
-checking disabled. The native `--strict-resources` profile additionally checks
-the acquisition and closing contracts of resource APIs.
+default, with one verdict function, before any code is generated. For every
+accepted program no owned value is read or moved through any name after it has
+been moved: through the owner, another binding built from it, a closure or
+procedure that names it, a lambda parameter or loop variable it is passed to.
+A value that refers to an owner may not reach a place the checker cannot
+follow: `set!`, an argument a procedure keeps past the call, a procedure the
+checker cannot resolve, or a form it does not model. The complete rules are in
+[ownership](reference/language/ownership.md). Use `--unsafe` to run legacy code
+with static ownership and type checking disabled. The native
+`--strict-resources` profile additionally checks the acquisition and closing
+contracts of resource APIs.
 
 #### 6.2.2 `owned` - Mark Ownership
 **Syntax:** `(owned expr)`
@@ -2340,8 +2348,10 @@ the acquisition and closing contracts of resource APIs.
 **Semantics:** Transfers ownership, marks original as moved
 
 **Compile-Time Checks:**
-- Cannot use after move
-- Cannot move while borrowed
+- Cannot use after move, through the owner or any alias, closure or loop
+  variable that refers to the moved value
+- Cannot move twice, or move while borrowed
+- Cannot move an owner bound outside a procedure or loop body from inside it
 
 **Example:**
 ```scheme
