@@ -9241,6 +9241,10 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
         target_link_directories(runtime_shared_memory_test PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()
     target_link_libraries(runtime_shared_memory_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(runtime_shared_memory_test PRIVATE ESHKOL_TEST_MALLOC_WRAP)
+        target_link_options(runtime_shared_memory_test PRIVATE "-Wl,--wrap=malloc")
+    endif()
     add_test(NAME runtime_shared_memory_test COMMAND runtime_shared_memory_test)
 endif()
 

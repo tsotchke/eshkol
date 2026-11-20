@@ -6,6 +6,17 @@
 #include <iostream>
 #include <thread>
 
+#ifdef ESHKOL_TEST_MALLOC_WRAP
+static thread_local bool observe_allocation;
+static thread_local unsigned allocation_calls;
+extern "C" void* __real_malloc(size_t);
+extern "C" void* __wrap_malloc(size_t size) {
+    if (!observe_allocation) return __real_malloc(size);
+    ++allocation_calls;
+    return nullptr;
+}
+#endif
+
 namespace {
 
 int destructor_calls = 0;
@@ -26,6 +37,15 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
+#ifdef ESHKOL_TEST_MALLOC_WRAP
+    observe_allocation = true;
+    void* over = shared_allocate_typed(SIZE_MAX, 77, nullptr);
+    observe_allocation = false;
+    if (over || allocation_calls) return fail("unrepresentable allocation reached the allocator");
+#endif
+    void* empty = shared_allocate(0, nullptr);
+    if (!empty || shared_ref_count(empty) != 1) return fail("empty payload ownership");
+    shared_release(empty);
     void* raw = shared_allocate_typed(8, 77, counting_destructor);
     if (!raw) return fail("shared allocation returned null");
 

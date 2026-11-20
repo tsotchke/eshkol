@@ -72,7 +72,9 @@ void* shared_allocate(size_t size, void (*destructor)(void*)) {
  *                    underlying malloc() failed.
  */
 void* shared_allocate_typed(size_t size, uint8_t value_type, void (*destructor)(void*)) {
-    const size_t total_size = sizeof(eshkol_shared_header_t) + size;
+    constexpr size_t header_size = sizeof(eshkol_shared_header_t);
+    if (size > SIZE_MAX - header_size) return nullptr;
+    const size_t total_size = header_size + size;
 
     // Shared allocations intentionally outlive lexical regions.
     auto* memory = (uint8_t*)std::malloc(total_size);
