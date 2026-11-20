@@ -2026,9 +2026,10 @@ private:
         bool used = false;
     };
 
-    enum class FnClass { PURE, RELEVANT, UNKNOWN };
+    // Mixed-case enumerators: the Windows SDK defines PURE as a macro.
+    enum class FnClass { Pure, Relevant, Unknown };
     struct FnClassResult {
-        FnClass cls = FnClass::PURE;
+        FnClass cls = FnClass::Pure;
         std::string reason;
     };
 
@@ -3245,7 +3246,7 @@ private:
             } else if (reject_callable_contract_captures &&
                        info->callable_effect != CallableEffect::NONE &&
                        !(info->callable_effect == CallableEffect::USER_FUNCTION &&
-                         classifyBinding(*info).cls == FnClass::PURE)) {
+                         classifyBinding(*info).cls == FnClass::Pure)) {
                 reportResourceError("resource contract callable '" + name +
                     "' is captured by a closure; closure effects are unsupported");
             }
@@ -3354,13 +3355,13 @@ private:
         FnClassResult result;
         if (fn.callable_effect != CallableEffect::USER_FUNCTION || !fn.function_node) {
             if (fn.callable_effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) {
-                result.cls = FnClass::UNKNOWN;
+                result.cls = FnClass::Unknown;
                 result.reason = fn.unknown_reason;
             } else if (fn.callable_effect != CallableEffect::NONE) {
                 result.cls = (fn.callable_effect == CallableEffect::CONTRACT &&
                               !contractHasHandleEffect(fn.contract) && fn.contract &&
                               fn.contract->proc_args[0].index < 0)
-                    ? FnClass::PURE : FnClass::RELEVANT;
+                    ? FnClass::Pure : FnClass::Relevant;
             }
             return result;
         }
@@ -3384,7 +3385,7 @@ private:
     void classifyName(const std::string& name, bool call_position,
                       const std::vector<std::set<std::string>>& lexical, size_t env_depth,
                       FnClassResult& result) {
-        if (result.cls == FnClass::UNKNOWN) return;
+        if (result.cls == FnClass::Unknown) return;
         for (auto it = lexical.rbegin(); it != lexical.rend(); ++it)
             if (it->count(name)) return;
         static const std::set<std::string> keywords = {
@@ -3398,47 +3399,47 @@ private:
             unresolvedCallable(name, &effect, &contract);
             if (effect == CallableEffect::TERMINAL_CONTROL) {
                 // exit/error end the path: the caller's open handles matter.
-                result.cls = FnClass::RELEVANT;
+                result.cls = FnClass::Relevant;
             } else if (effect == CallableEffect::UNKNOWN_RESOURCE_EFFECT) {
-                result.cls = FnClass::UNKNOWN;
+                result.cls = FnClass::Unknown;
                 result.reason = "builtin '" + name + "' has no strict resource effect summary";
             } else if (effect == CallableEffect::CONTRACT && contractHasHandleEffect(contract)) {
-                result.cls = FnClass::RELEVANT;
+                result.cls = FnClass::Relevant;
             }
             return;
         }
         if (info->is_verified_stdlib_primitive) return;
         if (info->resource_kind != ResourceKind::NONE) {
-            result.cls = FnClass::RELEVANT;
+            result.cls = FnClass::Relevant;
             return;
         }
         switch (info->callable_effect) {
             case CallableEffect::NONE:
                 return;
             case CallableEffect::TERMINAL_CONTROL:
-                result.cls = FnClass::RELEVANT;
+                result.cls = FnClass::Relevant;
                 return;
             case CallableEffect::CONTRACT:
                 if (contractHasHandleEffect(info->contract) || !call_position)
-                    result.cls = FnClass::RELEVANT;
+                    result.cls = FnClass::Relevant;
                 return;
             case CallableEffect::USER_FUNCTION: {
                 FnClassResult nested = classifyBinding(*info);
-                if (nested.cls == FnClass::UNKNOWN) {
+                if (nested.cls == FnClass::Unknown) {
                     result = nested;
                     if (result.reason.empty()) result.reason = "'" + name + "' has no proved effect";
-                } else if (nested.cls == FnClass::RELEVANT) {
-                    result.cls = FnClass::RELEVANT;
+                } else if (nested.cls == FnClass::Relevant) {
+                    result.cls = FnClass::Relevant;
                 }
                 return;
             }
             case CallableEffect::CONTINUATION:
             case CallableEffect::LOOP:
-                result.cls = FnClass::RELEVANT;
+                result.cls = FnClass::Relevant;
                 return;
             case CallableEffect::UNKNOWN_RESOURCE_EFFECT:
                 if (call_position) {
-                    result.cls = FnClass::UNKNOWN;
+                    result.cls = FnClass::Unknown;
                     result.reason = info->unknown_reason.empty()
                         ? "'" + name + "' has no proved resource effect" : info->unknown_reason;
                 }
@@ -3449,9 +3450,9 @@ private:
     void scanFunctionBody(const eshkol_ast_t* node, std::vector<std::set<std::string>>& lexical,
                           size_t env_depth, FnClassResult& result, bool call_position,
                           unsigned depth) {
-        if (!node || result.cls == FnClass::UNKNOWN) return;
+        if (!node || result.cls == FnClass::Unknown) return;
         if (depth > 256) {
-            result.cls = FnClass::UNKNOWN;
+            result.cls = FnClass::Unknown;
             result.reason = "the function body is nested deeper than the checker follows";
             return;
         }
@@ -3497,7 +3498,7 @@ private:
             case ESHKOL_DEFINE_OP:
                 if (op.define_op.name) lexical.back().insert(op.define_op.name);
                 if (op.define_op.is_external) {
-                    result.cls = FnClass::UNKNOWN;
+                    result.cls = FnClass::Unknown;
                     result.reason = "it declares an external definition";
                     return;
                 }
@@ -3547,7 +3548,7 @@ private:
                         if (info && (info->resource_kind != ResourceKind::NONE ||
                                      info->callable_effect != CallableEffect::NONE ||
                                      info->is_proven_callable))
-                            result.cls = FnClass::RELEVANT;
+                            result.cls = FnClass::Relevant;
                     }
                 }
                 scan(op.set_op.value);
@@ -3566,7 +3567,7 @@ private:
                     scan(&op.with_region_op.body[i]);
                 return;
             case ESHKOL_RAISE_OP:
-                if (result.cls == FnClass::PURE) result.cls = FnClass::RELEVANT;
+                if (result.cls == FnClass::Pure) result.cls = FnClass::Relevant;
                 scan(op.raise_op.exception);
                 return;
             case ESHKOL_CALL_CC_OP: scan(op.call_cc_op.proc); return;
@@ -3616,7 +3617,7 @@ private:
             case ESHKOL_TYPE_ANNOTATION_OP:
                 return;
             default:
-                result.cls = FnClass::UNKNOWN;
+                result.cls = FnClass::Unknown;
                 result.reason = "operator form " + std::to_string(static_cast<int>(op.op)) +
                     " has no strict resource traversal summary";
                 return;
@@ -3756,7 +3757,7 @@ private:
             VariableInfo* info = name.empty() ? nullptr : lookupVariable(name);
             if (info && info->callable_effect == CallableEffect::USER_FUNCTION) {
                 if (spec.mode == sr::ProcMode::THREAD) {
-                    if (classifyBinding(*info).cls != FnClass::PURE)
+                    if (classifyBinding(*info).cls != FnClass::Pure)
                         reportResourceError("thread body '" + name + "' uses handles or handle "
                             "operations; handles cannot cross a thread boundary in the checked fragment");
                     continue;
@@ -3843,7 +3844,7 @@ private:
             }
             if (info && info->is_proven_callable && info->callable_effect != CallableEffect::NONE) {
                 FnClassResult cls = classifyBinding(*info);
-                if (cls.cls != FnClass::PURE) {
+                if (cls.cls != FnClass::Pure) {
                     reportResourceError("procedure '" + name + "' is passed as a value to '" + callee.name +
                         "' but uses handles or handle operations; the checker follows handle effects "
                         "only through direct calls and borrow scopes");
@@ -3864,10 +3865,10 @@ private:
             if (expressionProducesResourceValue(arg) && factoryKindOfCall(arg) == ResourceKind::NONE)
                 reportResourceError("resource value escapes through call to '" + callee.name + "'");
         }
-        const bool flow = !pending.handles.empty() || classifyBinding(*callee.binding).cls == FnClass::RELEVANT;
+        const bool flow = !pending.handles.empty() || classifyBinding(*callee.binding).cls == FnClass::Relevant;
         if (!flow) {
             FnClassResult cls = classifyBinding(*callee.binding);
-            if (cls.cls == FnClass::UNKNOWN)
+            if (cls.cls == FnClass::Unknown)
                 reportResourceError("call to '" + callee.name + "' is unsupported in strict mode: " +
                     (cls.reason.empty() ? "its effect is not proved" : cls.reason));
             if (fn_ && fn_->return_nodes.count(node)) fn_->returned_value = true;
@@ -5263,7 +5264,7 @@ private:
                     "the checker follows loops only through tail calls");
         } else if (info.callable_effect == CallableEffect::USER_FUNCTION && info.function_node) {
             FnClassResult cls = classifyBinding(info);
-            if (cls.cls == FnClass::RELEVANT)
+            if (cls.cls == FnClass::Relevant)
                 reportResourceError("function '" + name + "' uses handles or handle operations and "
                     "escapes as a value; the checker cannot see where it is called");
         }
