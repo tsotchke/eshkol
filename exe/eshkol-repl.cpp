@@ -560,7 +560,14 @@ void clear_screen() {
 
 // Load and execute a file
 bool load_file(const std::string& filename, eshkol::ReplJITContext& repl_ctx) {
-    std::ifstream file(filename);
+    const auto path = eshkol::platform::resolve_module_source_path(
+        filename, ".");
+    if (path.empty()) {
+        print_error("Could not resolve module", filename);
+        return false;
+    }
+    eshkol::platform::ScopedRequiringFile source(path);
+    std::ifstream file(path);
     if (!file.is_open()) {
         print_error("Could not open file", filename);
         return false;

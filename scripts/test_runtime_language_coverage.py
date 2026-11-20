@@ -237,7 +237,7 @@ class RuntimeInstrumentationTest(unittest.TestCase):
             caller = root_path / "runtime-coverage-caller.esk"
             caller.write_text(
                 '(import "%s")\n(display (imported-covered-value))\n(newline)\n'
-                % str(imported).replace("\\", "\\\\"),
+                % imported.name,
                 encoding="utf-8",
             )
             env = os.environ.copy()

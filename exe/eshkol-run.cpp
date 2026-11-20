@@ -21,6 +21,7 @@
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/module_resolver.h>
 #include <eshkol/backend/debug_artifact.h>
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/strict_source_identity.h>
@@ -1357,7 +1358,7 @@ static std::set<std::string> imported_files;
 
 // Set to track pre-compiled modules (when linking with .o files like stdlib.o)
 // When a module is in this set, process_requires() will skip loading it
-static std::set<std::string> precompiled_modules;
+static bool using_precompiled_stdlib = false;
 
 // ===== MODULE DEPENDENCY RESOLVER =====
 // Provides cycle detection and topological sorting for module loading
@@ -6371,11 +6372,6 @@ static EscapeAnalyzer g_escape_analyzer;
 // Forward declarations
 static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode);
 static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t>& asts, bool debug_mode);
-// Module tree root (lib/), resolved once by find_lib_dir() before any of the
-// require/import/load lanes run. Declared here because process_imports() —
-// which sits above find_lib_dir() — now shares the one resolver and so needs
-// the same lib_dir tier every other lane passes.
-static std::string g_lib_dir;
 static bool g_source_parse_failed = false;
 // ESH-0361: a required module that does not resolve on ANY search path is a hard
 // dependency failure. process_requires() prints "Module '…' not found" and used
@@ -6537,9 +6533,10 @@ static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& 
             // through the same resolver rather than a private base_dir-only
             // rule that answered differently from every other lane.
             std::string resolved = eshkol::platform::resolve_module_source_path(
-                import_path, base_dir, g_lib_dir);
+                import_path, base_dir);
             if (resolved.empty()) {
                 eshkol_error("Import file not found: %s", import_path.c_str());
+                g_module_load_failed = true;
                 continue;
             }
             std::filesystem::path resolved_path(resolved);
@@ -6783,17 +6780,15 @@ static std::string shared_library_output_path(const char* requested_output,
     return parent.empty() ? name : (parent / name).generic_string();
 }
 
-// Check if any AST contains a require for stdlib or core.* modules.
-// Used to decide whether stdlib.o needs to be auto-linked: any core.*
-// require pulls in symbols whose bodies live in stdlib.o, same as an
-// explicit `(require stdlib)` would.
+// An explicitly required installed module can itself require the precompiled
+// stdlib. Make the object available to that module's dependencies.
 static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
 {
     for (const auto& ast : asts) {
         if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
                 std::string module_name = ast.operation.require_op.module_names[i];
-                if (module_name == "stdlib" || module_name.find("core.") == 0) {
+                if (eshkol_stdlib_module_path(module_name.c_str())) {
                     return true;
                 }
             }
@@ -6826,8 +6821,8 @@ static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& a
     for (const auto& ast : asts) {
         if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
-                std::string module_name = ast.operation.require_op.module_names[i];
-                if (module_name == "stdlib") {
+                const char* path = eshkol_stdlib_module_path(ast.operation.require_op.module_names[i]);
+                if (path && std::string_view(path) == "stdlib.esk") {
                     return true;
                 }
             }
@@ -6853,46 +6848,15 @@ static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& a
 // silently dropped its agent-FFI link requirement, producing an executable with
 // unresolved qllm_process_* / eshkol_sqlite_* symbols.
 
-// Find the library base directory (lib/) that holds the module sources.
-//
-// Executable-relative before cwd: stdlib + core.* belong to the Eshkol
-// install, not to the cwd. A downstream project (run from its own cwd) may
-// have its OWN lib/ that would otherwise shadow Eshkol's — which breaks stdlib
-// submodule discovery (collect_all_submodules parses <lib>/stdlib.esk), so
-// e.g. (require core.manifold) is not recognised as precompiled and AOT tries
-// to source-resolve it and fails. That makes the -r run-cache fall back to the
-// in-process JIT every run. install_module_roots() encodes that order (and
-// puts $ESHKOL_LIB_DIR ahead of it, and the system prefixes last).
-//
-// The selection itself lives in platform::module_source_root() so the
-// in-process JIT cannot drift from it; only the user-facing note about where
-// the tree came from is the driver's business.
-static std::string find_lib_dir()
-{
-    const auto root = eshkol::platform::module_source_root();
-    if (root.origin == eshkol::platform::InstallOrigin::NotFound) {
-        return {};
-    }
-
-    std::error_code ec;
-    if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
-        eshkol::platform::ResolvedInstallArtifact resolved{
-            root.path.string(), root.origin, root.path};
-        report_artifact_resolution("module source tree", resolved,
-                                   /*verify_version=*/false);
-    }
-    return root.path.string();
-}
-
 // Resolve a module name / path literal to a source file.
 //
 // Thin forwarder onto platform::resolve_module_source_path(), which is the
 // single authority shared with the in-process JIT. The AOT lane and the JIT
 // lane used to carry separate copies of the search order and disagreed about
 // what a relative `(load "…")` means — see the header for the full contract.
-static std::string resolve_module_path(const std::string& module_name, const std::string& base_dir, const std::string& lib_dir)
+static std::string resolve_module_path(const std::string& module_name, const std::string& base_dir)
 {
-    return eshkol::platform::resolve_module_source_path(module_name, base_dir, lib_dir);
+    return eshkol::platform::resolve_module_source_path(module_name, base_dir);
 }
 
 // Is `module_name` an agent.* module whose native symbols actually live in
@@ -7007,7 +6971,7 @@ static bool fileTextRequiresAgentFfi(const std::string& text,
                     tok.pop_back();
                 if (tok.empty()) continue;
                 if (agent_module_needs_ffi_archive(tok)) return true;
-                std::string mp = resolve_module_path(tok, base_dir, g_lib_dir);
+                std::string mp = resolve_module_path(tok, base_dir);
                 if (!mp.empty() && agent_module_path_needs_ffi_archive(mp))
                     return true;
             }
@@ -7040,23 +7004,8 @@ static void collectTransitiveSources(
     out[canon] = text;  // record bytes (empty string keeps "seen" marker)
     if (text.empty()) return;
 
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     std::string base_dir = path.parent_path().string();
     if (base_dir.empty()) base_dir = ".";
-
-    // Resolve a referenced module/path against the referring file's directory,
-    // then the -I include paths, then resolve_module_path's own search order
-    // (cwd, $ESHKOL_PATH, lib dir).
-    auto resolve_ref = [&](const std::string& ref) -> std::string {
-        std::string mp = resolve_module_path(ref, base_dir, g_lib_dir);
-        if (!mp.empty()) return mp;
-        for (char* inc : include_paths) {
-            if (!inc || !*inc) continue;
-            mp = resolve_module_path(ref, inc, g_lib_dir);
-            if (!mp.empty()) return mp;
-        }
-        return "";
-    };
 
     static const char* kForms[] = {"(load", "(import", "(require"};
     for (const char* form : kForms) {
@@ -7079,7 +7028,7 @@ static void collectTransitiveSources(
                 while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
                     tok.pop_back();
                 if (tok.empty()) continue;
-                std::string mp = resolve_ref(tok);
+                std::string mp = resolve_module_path(tok, base_dir);
                 if (!mp.empty())
                     collectTransitiveSources(mp, include_paths, out);
             }
@@ -7116,7 +7065,6 @@ static bool transitiveClosureRequiresAgentFfi(
     const std::filesystem::path& entry_source,
     const std::vector<char*>& include_paths)
 {
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     std::map<std::string, std::string> sources;  // canonical path -> bytes
     collectTransitiveSources(entry_source, include_paths, sources);
     for (const auto& entry : sources) {
@@ -7153,20 +7101,8 @@ static void collectTransitiveSourcePaths(
     std::string text = readFileBytes(path);
     if (text.empty()) return;
 
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     std::string base_dir = path.parent_path().string();
     if (base_dir.empty()) base_dir = ".";
-
-    auto resolve_ref = [&](const std::string& ref) -> std::string {
-        std::string mp = resolve_module_path(ref, base_dir, g_lib_dir);
-        if (!mp.empty()) return mp;
-        for (char* inc : include_paths) {
-            if (!inc || !*inc) continue;
-            mp = resolve_module_path(ref, inc, g_lib_dir);
-            if (!mp.empty()) return mp;
-        }
-        return "";
-    };
 
     static const char* kForms[] = {"(load", "(import", "(require"};
     for (const char* form : kForms) {
@@ -7189,7 +7125,7 @@ static void collectTransitiveSourcePaths(
                 while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
                     tok.pop_back();
                 if (tok.empty()) continue;
-                std::string mp = resolve_ref(tok);
+                std::string mp = resolve_module_path(tok, base_dir);
                 if (!mp.empty())
                     collectTransitiveSourcePaths(mp, include_paths, order, seen);
             }
@@ -7258,39 +7194,6 @@ static bool writeDepfile(const std::string& depfile_path,
         return false;
     }
     return true;
-}
-
-// Recursively discover all modules that a library requires.
-// Used to mark all sub-modules of a pre-compiled library as pre-compiled.
-// NOTE: Does NOT use load_file_asts to avoid polluting imported_files.
-static void collect_all_submodules(const std::string& module_name,
-                                   std::set<std::string>& out,
-                                   const std::string& lib_dir) {
-    if (out.count(module_name)) return;  // already visited
-    out.insert(module_name);
-
-    // Find and parse the module source to discover its requires
-    std::string module_path = resolve_module_path(module_name, ".", lib_dir);
-    if (module_path.empty()) return;
-
-    // Parse directly — do NOT use load_file_asts (it tracks imported_files
-    // and would prevent process_requires from loading these modules later)
-    std::ifstream file(module_path);
-    if (!file.is_open()) return;
-
-    eshkol_set_parse_source_context(module_path.c_str());
-    eshkol_reset_parse_line_counter();
-    eshkol_ast_t ast = eshkol_parse_next_ast(file);
-    while (ast.type != ESHKOL_INVALID) {
-        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
-            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
-                std::string sub = ast.operation.require_op.module_names[i];
-                collect_all_submodules(sub, out, lib_dir);
-            }
-        }
-        eshkol_set_parse_source_context(module_path.c_str());
-        ast = eshkol_parse_next_ast(file);
-    }
 }
 
 // ===== SYMBOL VISIBILITY HELPERS =====
@@ -7401,7 +7304,8 @@ static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast)
     for (uint64_t i = 0; i < require_op.num_modules; i++) {
         const char* raw_name = require_op.module_names[i];
         const std::set<std::string>* unit_exports =
-            raw_name ? eshkol::library_registry::exports(raw_name) : nullptr;
+            raw_name && !eshkol_stdlib_module_path(raw_name)
+                ? eshkol::library_registry::exports(raw_name) : nullptr;
 
         if (unit_exports) {
             // Record the surface so a later duplicate import of the same
@@ -7944,9 +7848,6 @@ static void rename_private_symbols(std::vector<eshkol_ast_t>& asts,
 // Process require statements (new module system)
 static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode)
 {
-    if (g_lib_dir.empty()) {
-        g_lib_dir = find_lib_dir();
-    }
 
     flatten_top_level_sequences(asts);
 
@@ -7973,19 +7874,17 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 std::string module_name = ast.operation.require_op.module_names[i];
 
                 // Check if this module is pre-compiled (e.g., from stdlib.o)
-                bool is_precompiled = precompiled_modules.count(module_name) > 0;
-
-                // All sub-modules of pre-compiled libraries are already in
-                // precompiled_modules (populated by collect_all_submodules),
-                // so the direct lookup above is sufficient.
+                bool is_precompiled = using_precompiled_stdlib &&
+                                      eshkol_module_is_precompiled(module_name.c_str());
 
                 if (is_precompiled) {
                     // For pre-compiled modules, we parse to get function declarations
                     // but strip the bodies. The actual code comes from the .o file.
-                    std::string module_path = resolve_module_path(module_name, base_dir, g_lib_dir);
+                    std::string module_path = resolve_module_path(module_name, base_dir);
                     if (module_path.empty()) {
                         if (debug_mode) {
-                            eshkol_warn("Pre-compiled module %s source not found - skipping declarations", module_name.c_str());
+                            eshkol_info("Using precompiled module %s without source declarations",
+                                        module_name.c_str());
                         }
                         continue;
                     }
@@ -8083,7 +7982,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     continue;
                 }
 
-                std::string module_path = resolve_module_path(module_name, base_dir, g_lib_dir);
+                std::string module_path = resolve_module_path(module_name, base_dir);
 
                 if (module_path.empty()) {
                     uint32_t defined_at = 0;
@@ -8103,15 +8002,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         continue;
                     }
                     eshkol_error("Module '%s' not found", module_name.c_str());
-                    eshkol_error("  Searched:");
-                    eshkol_error("    - %s/%s.esk", base_dir.c_str(), module_name.c_str());
-                    if (!g_lib_dir.empty()) {
-                        // Convert dots to slashes for display
-                        std::string path_display = module_name;
-                        for (char& c : path_display) if (c == '.') c = '/';
-                        eshkol_error("    - %s/%s.esk", g_lib_dir.c_str(), path_display.c_str());
-                    }
-                    eshkol_error("    - $ESHKOL_PATH entries");
+                    eshkol_error("  Referring directory: %s", base_dir.c_str());
                     // ESH-0361: record the unresolved dependency so the driver can
                     // refuse to emit a program that silently dropped it. Keep the
                     // `continue` so every missing module is listed, not just the
@@ -9267,7 +9158,6 @@ int main(int argc, char **argv)
                     eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                     return 1;
                 }
-                if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
                 std::string base_dir = std::filesystem::path(filepath).parent_path().string();
                 if (base_dir.empty()) base_dir = ".";
                 g_strict_source_identities.clear();
@@ -9719,34 +9609,12 @@ int main(int argc, char **argv)
     // Every module recursively required by a pre-compiled library is also pre-compiled.
     // Skipped for wasm: see the auto-link comment above — wasm inlines stdlib
     // from source and dead-strips it rather than importing a native .o.
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     for (const auto& obj_file : compiled_files) {
         if (wasm_output) break;
         std::string filename = std::filesystem::path(obj_file).filename().string();
         if (filename == "stdlib.o" || filename == "libstdlib.o") {
             eshkol_info("Detected pre-compiled stdlib: %s", obj_file);
-            // Recursively discover all modules included in stdlib.
-            // collect_all_submodules parses lib/stdlib.esk to build the
-            // set — if that source file is missing or unreadable (e.g.
-            // stdlib.o was installed without the accompanying .esk
-            // tree), we end up with an empty precompiled set and
-            // process_requires will then try to load core.* modules
-            // from source instead, doubling up symbols at link time.
-            // Fail loudly up-front instead of silently producing a bad
-            // binary.
-            size_t before = precompiled_modules.size();
-            collect_all_submodules("stdlib", precompiled_modules, g_lib_dir);
-            size_t added = precompiled_modules.size() - before;
-            eshkol_info("Pre-compiled modules: %zu total (+%zu from stdlib)",
-                        precompiled_modules.size(), added);
-            if (added == 0) {
-                eshkol_error(
-                    "stdlib.o is linked but no .esk sources were found under "
-                    "lib_dir=%s — precompiled-module detection is empty, which "
-                    "will produce duplicate symbols at link time. Check that "
-                    "the lib/ tree is installed alongside stdlib.o.",
-                    g_lib_dir.c_str());
-            }
+            using_precompiled_stdlib = true;
             // Tell codegen that stdlib is being used (for homoiconic display support)
             eshkol_set_uses_stdlib(1);
         }

@@ -3576,15 +3576,19 @@ endif()
 # so newly-added .esk modules are picked up without needing a manual
 # `cmake ..` re-run.
 file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/core/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/signal/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/random/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/web/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/tensor/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/quantum/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/ml/*.esk"
-     "${CMAKE_CURRENT_SOURCE_DIR}/lib/math.esk")
+     "${CMAKE_CURRENT_SOURCE_DIR}/lib/*.esk")
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(_module_generator "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_stdlib_modules.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${_module_generator}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_language_surface.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -B "${_module_generator}"
+    OUTPUT_VARIABLE ESHKOL_STDLIB_MODULES RESULT_VARIABLE _modules_status)
+if(NOT _modules_status EQUAL 0)
+    message(FATAL_ERROR "Could not generate the installed stdlib module manifest")
+endif()
+configure_file(cmake/stdlib_modules.inc.in
+    "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/stdlib_modules.inc" @ONLY)
 
 # The stdlib's identity travels inside stdlib.o and stdlib.bc, so every
 # package path carries it automatically with the artifacts. Fingerprint the
@@ -3622,6 +3626,7 @@ foreach(_stdlib_input IN LISTS _stdlib_identity_inputs)
          "${_stdlib_input_relative}:${_stdlib_input_sha256}\n")
 endforeach()
 string(APPEND _stdlib_identity_source_material
+       "${ESHKOL_STDLIB_MODULES}"
        "toolchain:c=${CMAKE_C_COMPILER_ID}-${CMAKE_C_COMPILER_VERSION};"
        "cxx=${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION};"
        "llvm=${LLVM_PACKAGE_VERSION}\n")
@@ -17087,3 +17092,33 @@ include(repro/quantum-qec/CTest.cmake)
 include(repro/nonlinear-observability/CTest.cmake)
 include(repro/sparse-solves/CTest.cmake)
 include(repro/sat-proof-admission/CTest.cmake)
+
+if(ESHKOL_BUILD_TESTS)
+    if(UNIX)
+        add_test(NAME module_resolution_browser_registry
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/test_wasm_embedded_module_generator.py")
+    endif()
+    find_program(NODE_EXECUTABLE node)
+    if(NODE_EXECUTABLE)
+        add_test(NAME module_resolution_browser_bundle
+            COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/product_wasm_embedded_modules_test.cjs"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js")
+    endif()
+    foreach(_engine IN ITEMS jit aot vm repl)
+        if(_engine STREQUAL "vm")
+            set(_module_runner eshkol-vm-standalone-test)
+        elseif(_engine STREQUAL "repl")
+            set(_module_runner eshkol-repl)
+        else()
+            set(_module_runner eshkol-run)
+        endif()
+        if(TARGET ${_module_runner})
+            foreach(_case IN ITEMS namespace conditions roots)
+                add_test(NAME module_resolution_${_case}_${_engine}
+                    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/module_resolution_test.py"
+                            ${_case} ${_engine} $<TARGET_FILE:${_module_runner}>)
+                set_tests_properties(module_resolution_${_case}_${_engine} PROPERTIES TIMEOUT 320)
+            endforeach()
+        endif()
+    endforeach()
+endif()

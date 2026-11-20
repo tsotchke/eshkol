@@ -1854,8 +1854,7 @@ static int vm_track_loaded_module(const char* path) {
 static void vm_seed_entry_module_path(const char* source_path) {
     if (!source_path || !*source_path || source_path[0] == '<') return;
     char path[VM_MAX_MODULE_PATH];
-    if (eshkol_resolve_module_source_path_c(
-            source_path, NULL, NULL, path, sizeof(path)))
+    if (eshkol_canonical_source_file_c(source_path, path, sizeof(path)))
         (void)vm_track_loaded_module(path);
 }
 #else
@@ -2031,17 +2030,27 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
 
+    if (!eshkol_module_name_allowed(mod_name)) {
+        compile_packed_string_literal(c, ESHKOL_MODULE_REFUSAL_PREFIX,
+                                      sizeof(ESHKOL_MODULE_REFUSAL_PREFIX) - 1);
+        compile_packed_string_literal(c, mod_name, strlen(mod_name));
+        chunk_emit(c, OP_NATIVE_CALL, 554); /* _string-append-2 */
+        chunk_emit(c, OP_NATIVE_CALL, 237); /* error */
+        return -1;
+    }
+
 #if defined(ESHKOL_VM_TEST_MODULES) || defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
     /* The differential WASM build has already loaded the canonical stdlib
      * image. Test fixtures may require it just as desktop programs do, but it
      * must not be reopened through MEMFS. */
-    if (strcmp(mod_name, "stdlib") == 0) return 0;
+    const char* installed_path = eshkol_stdlib_module_path(mod_name);
+    if (installed_path && strcmp(installed_path, "stdlib.esk") == 0) return 0;
 #endif
 
 #if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES) && !defined(ESHKOL_VM_TEST_MODULES)
     char path[VM_MAX_MODULE_PATH];
     const char* embedded_source = NULL;
-    if (!vm_embedded_module_lookup(mod_name, &embedded_source, path, sizeof(path))) {
+    if (!installed_path || !vm_embedded_module_lookup(installed_path, &embedded_source, path, sizeof(path))) {
         char msg[512];
         snprintf(msg, sizeof(msg), "module source not found: %s", mod_name);
         vm_compile_error(msg, "product WASM embeds only the supported core modules");
@@ -2228,9 +2237,6 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
             vm_mangle_module_form(forms[i], mod_name, private_names, n_private);
     }
 
-    char module_exports[64][128];
-    const int n_module_exports = vm_collect_module_form_exports(
-        forms, n_forms, module_exports, 64);
 
     char saved_redefined[VM_MAX_REDEFINED_NAMES][128];
     const int saved_n_redefined = g_vm_n_redefined;
@@ -2294,7 +2300,6 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     }
 
     g_vm_module_predeclared_depth--;
-    vm_unit_library_define(mod_name, module_exports, n_module_exports);
 
     g_vm_n_redefined = saved_n_redefined;
     memcpy(g_vm_redefined_names, saved_redefined, sizeof(saved_redefined));
@@ -2390,9 +2395,9 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
      * the caller's POP balances; the file-loading path adds real bindings, so a
      * placeholder is emitted there only if it happened to add none. */
     int locals_at_start = c->n_locals;
-    if (node->n_children >= 2 &&
-        (node->children[1]->type == N_SYMBOL || node->children[1]->type == N_STRING)) {
-        const Node* module_node = node->children[1];
+    for (int i = 1; i < node->n_children; ++i) {
+        const Node* module_node = node->children[i];
+        if (module_node->type != N_SYMBOL && module_node->type != N_STRING) continue;
         const char* module_name = module_node->type == N_STRING
             ? module_node->string_data : module_node->symbol;
         /* A `require` may also name a library this unit defines: the two
@@ -2587,6 +2592,10 @@ static void compile_form_import(FuncChunk* c, Node* node, int tail) {
     (void)tail;
     int locals_at_start = c->n_locals;
     for (int i = 1; i < node->n_children; i++) {
+        if (node->children[i]->type == N_STRING) {
+            vm_compile_module_by_name(c, node->children[i]->string_data, 0, NULL, 0);
+            continue;
+        }
         char visible[64][128];
         if (vm_resolve_unit_import_set(node->children[i], visible, 64) >= 0) continue;
         const Node* lib = vm_import_set_library_datum(node->children[i]);
@@ -2665,6 +2674,15 @@ static void compile_form_define_library(FuncChunk* c, Node* node, int tail) {
     char library_name[256];
     int named = vm_library_name_from_datum(node->children[1], library_name,
                                            sizeof(library_name));
+
+    if (named && !eshkol_module_name_allowed(library_name)) {
+        vm_compile_error("invalid library name", library_name);
+        return;
+    }
+    if (named && eshkol_stdlib_module_path(library_name)) {
+        vm_compile_error("library name belongs to the installed stdlib", library_name);
+        return;
+    }
 
     char exports[64][128];
     int n_exports = 0;
