@@ -1,0 +1,8 @@
+(display (char->integer #\x41)) (newline)
+(display (char->integer #\x3bb)) (newline)
+(display (char->integer #\x10FFFF)) (newline)
+(display (char->integer #\x0)) (newline)
+(display (char->integer #\x)) (newline)
+(display (list #\x41 #\x62)) (newline)
+(write (list #\x41 #\x20)) (newline)
+(display (eqv? #\x41 #\A)) (newline)

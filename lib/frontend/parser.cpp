@@ -1047,6 +1047,27 @@ private:
             pos++; // skip backslash
             column_++;
             if (pos < length) {
+                // R7RS #\x<hex scalar value>, decided by the rule both
+                // readers share.
+                uint32_t hex_scalar = 0;
+                int hex_invalid = 0;
+                const size_t hex_bytes = eshkol_char_hex_literal(
+                    input.data() + pos, length - pos, &hex_scalar, &hex_invalid);
+                if (hex_invalid) {
+                    Token at{TOKEN_EOF, "", start, tok_line, tok_col};
+                    PARSE_ERROR_AT(at, "character literal #\\%.*s names no Unicode scalar value",
+                                   (int)hex_bytes, input.data() + pos);
+                    return at;
+                }
+                if (hex_bytes) {
+                    unsigned char bytes[4];
+                    size_t width = 0;
+                    (void)eshkol_string_escape_append_utf8(hex_scalar, bytes, &width);
+                    pos += hex_bytes;
+                    column_ += hex_bytes;
+                    return {TOKEN_CHAR, std::string(reinterpret_cast<const char*>(bytes), width),
+                            start, tok_line, tok_col};
+                }
                 // Check for named characters like #\space, #\newline, #\tab
                 if (pos + 4 < length && input.substr(pos, 5) == "space") {
                     pos += 5;

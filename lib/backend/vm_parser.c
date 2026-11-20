@@ -952,7 +952,18 @@ static Node* parse_leaf_datum(void) {
         if (src_ptr[1] == '\\') {
             src_ptr += 2;
             int ch;
-            if (strncmp(src_ptr, "space", 5) == 0 && (!src_ptr[5] || isspace(src_ptr[5]) || src_ptr[5] == ')')) {
+            uint32_t hex_scalar = 0;
+            int hex_invalid = 0;
+            /* R7RS #\x<hex scalar value>, by the rule both readers share. */
+            size_t hex_bytes = eshkol_char_hex_literal(src_ptr, (size_t)-1,
+                                                       &hex_scalar, &hex_invalid);
+            if (hex_invalid) {
+                vm_compile_error("character literal names no Unicode scalar value", NULL);
+                return NULL;
+            }
+            if (hex_bytes) {
+                ch = (int)hex_scalar; src_ptr += hex_bytes;
+            } else if (strncmp(src_ptr, "space", 5) == 0 && (!src_ptr[5] || isspace(src_ptr[5]) || src_ptr[5] == ')')) {
                 ch = ' '; src_ptr += 5;
             } else if (strncmp(src_ptr, "newline", 7) == 0 && (!src_ptr[7] || isspace(src_ptr[7]) || src_ptr[7] == ')')) {
                 ch = '\n'; src_ptr += 7;

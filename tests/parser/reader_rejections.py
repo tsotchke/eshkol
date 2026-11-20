@@ -17,6 +17,10 @@ elif case == "character_encoding":
     inputs = [b"#\\" + bytes.fromhex(payload) for payload in
               ("80", "c0 af", "e0 80 af", "ed a0 80", "e2 28 a1",
                "f0 80 80 af", "f4 90 80 80", "f5 80 80 80", "e2 82")]
+elif case == "character_hex_range":
+    diagnostic = b"names no Unicode scalar value"
+    inputs = [b"(display #\\xD800)", b"(display #\\xdfff)",
+              b"(display #\\x110000)", b"(display #\\x100000000041)"]
 else:
     raise ValueError(case)
 

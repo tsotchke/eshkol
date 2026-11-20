@@ -11,6 +11,12 @@ Character literals use the `#\` prefix.
 | `#\space` | space |
 | `#\newline` | newline |
 | `#\tab` | tab |
+| `#\x41` | the character with Unicode scalar value U+0041 (here `A`) |
+
+`#\x` followed by one or more hexadecimal digits and a delimiter names a
+character by its Unicode scalar value (R7RS 7.1.1), on every engine. `#\x`
+alone is the letter x. A value that is a surrogate (U+D800 to U+DFFF) or above
+U+10FFFF is a read error.
 
 ```scheme
 (display #\a) (newline)
