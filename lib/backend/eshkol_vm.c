@@ -2487,8 +2487,10 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         /* Error occurred — roll back */
         rs->chunk.code_len = code_start;
         rs->chunk.n_constants = const_start;
-        for (int i = locals_start; i < rs->chunk.n_locals; i++)
+        for (int i = locals_start; i < rs->chunk.n_locals; i++) {
             free(rs->chunk.locals[i].name);
+            rs->chunk.locals[i].name = NULL;
+        }
         rs->chunk.n_locals = locals_start;
         rs->vm->sp = saved_sp;
         rs->vm->fp = saved_fp;
@@ -2561,8 +2563,10 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
     if (vm_compile_failed()) {
         rs->chunk.code_len = code_start;
         rs->chunk.n_constants = const_start;
-        for (int i = locals_start; i < rs->chunk.n_locals; i++)
+        for (int i = locals_start; i < rs->chunk.n_locals; i++) {
             free(rs->chunk.locals[i].name);
+            rs->chunk.locals[i].name = NULL;
+        }
         rs->chunk.n_locals = locals_start;
         rs->vm->sp = saved_sp;
         rs->vm->fp = saved_fp;
@@ -2603,8 +2607,10 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->chunk.code_len = code_start;
         rs->chunk.n_constants = const_start;
         /* Free any new local names */
-        for (int i = locals_start; i < rs->chunk.n_locals; i++)
+        for (int i = locals_start; i < rs->chunk.n_locals; i++) {
             free(rs->chunk.locals[i].name);
+            rs->chunk.locals[i].name = NULL;
+        }
         rs->chunk.n_locals = locals_start;
         /* Restore VM stack state */
         rs->vm->sp = saved_sp;

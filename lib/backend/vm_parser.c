@@ -1026,8 +1026,14 @@ static void free_node(Node* n) {
 #define MAX_LOCALS 512
 #define MAX_FUNCS 64
 
+/* A Local's `name` is owned by its slot in the chunk's locals array, not by
+ * the binding: a slot keeps the last name written to it after its scope
+ * closes (scope exit only lowers n_locals) and releases it when a new binding
+ * reuses the slot or when the chunk is freed. Every slot up to local_cap holds
+ * either NULL or one owned string, so lowering or raising n_locals never
+ * strands or double-releases a name. */
 typedef struct {
-    char* name;   /* heap-allocated via strdup() */
+    char* name;   /* heap-allocated via strdup(); owned by the slot */
     int slot;
     int depth;
     int boxed;    /* 1 = variable is heap-boxed (stored in 1-element vector) */
@@ -1113,10 +1119,12 @@ static int chunk_init_arrays(FuncChunk* c) {
 
 /** @brief Free a FuncChunk's dynamic arrays and every strdup'd name they
  *         hold (locals, entries, upvalues), for a stack-allocated
- *         FuncChunk previously set up by chunk_init_arrays(). */
+ *         FuncChunk previously set up by chunk_init_arrays(). Local names
+ *         are released for every slot, including slots above n_locals whose
+ *         scope has closed. */
 static void chunk_free_arrays(FuncChunk* c) {
     if (!c) return;
-    for (int i = 0; i < c->n_locals; i++) free(c->locals[i].name);
+    for (int i = 0; c->locals && i < c->local_cap; i++) free(c->locals[i].name);
     for (int i = 0; i < c->n_entries; i++) free(c->entries[i].name);
     for (int i = 0; i < c->n_upvalues; i++) free(c->upvalues[i].name);
     free(c->code); free(c->constants); free(c->locals); free(c->entries);
@@ -1269,7 +1277,7 @@ static int resolve_local(FuncChunk* c, const char* name) {
 
 /** @brief Register a new local variable named @p name (strdup'd) in chunk
  *         @p c at the current scope depth, growing the locals array as
- *         needed.
+ *         needed. A name left in the slot by a closed scope is released.
  * @return The assigned slot index, or -1 on allocation failure.
  */
 static int add_local(FuncChunk* c, const char* name) {
@@ -1277,10 +1285,12 @@ static int add_local(FuncChunk* c, const char* name) {
         int new_cap = c->local_cap * 2;
         Local* new_locals = (Local*)realloc(c->locals, new_cap * sizeof(Local));
         if (!new_locals) { fprintf(stderr, "ERROR: local variable realloc failed\n"); return -1; }
+        memset(new_locals + c->local_cap, 0, (size_t)(new_cap - c->local_cap) * sizeof(Local));
         c->locals = new_locals;
         c->local_cap = new_cap;
     }
     int slot = c->n_locals;
+    free(c->locals[c->n_locals].name);
     c->locals[c->n_locals].name = strdup(name);
     c->locals[c->n_locals].slot = slot;
     c->locals[c->n_locals].depth = c->scope_depth;
