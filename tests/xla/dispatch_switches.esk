@@ -1,0 +1,5 @@
+(define (measure x) (tensor-sum x))
+(if (= (measure (tensor 1.0 2.0 3.0)) 6.0)
+    (display "PASS: sum")
+    (exit 1))
+(newline)

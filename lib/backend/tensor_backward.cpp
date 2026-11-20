@@ -764,8 +764,7 @@ extern "C" void eshkol_backward_attention(
  *         from the saved pre-projection tensors and per-head weight slices,
  *         calls eshkol_backward_attention() for that head, and accumulates
  *         the resulting per-head gradients into grad_Q/K/V and the
- *         grad_W{Q,K,V} projection-weight gradients (grad_WO accumulation
- *         is not yet implemented here — see inline TODO). Uses BLAS
+ *         gradients for all four projection weights. Uses BLAS
  *         (cblas_dgemm) when ESHKOL_BLAS_ENABLED, else naive loops. */
 extern "C" void eshkol_backward_multihead_attention(
     const double* grad_out,
@@ -823,19 +822,8 @@ extern "C" void eshkol_backward_multihead_attention(
     memset(grad_K, 0, (size_t)(seq_k * d_model) * sizeof(double));
     memset(grad_V, 0, (size_t)(seq_k * d_model) * sizeof(double));
 
-    /* grad_WO = (concat_heads)^T @ grad_out — accumulate from saved data */
-    /* For now, approximate using the concatenated output from forward */
-
-    /* Per-head backward */
     for (int64_t h = 0; h < num_heads; h++) {
         int64_t h_offset = h * head_dim;
-
-        /* Extract per-head gradient from d_concat */
-        for (int64_t i = 0; i < seq_q; i++) {
-            for (int64_t d = 0; d < head_dim; d++) {
-                d_head_Q[i * head_dim + d] = 0.0;
-            }
-        }
 
         /* Extract per-head d_concat slice */
         double* d_head_out = (double*)arena_allocate_zeroed(mha_arena,
@@ -908,6 +896,32 @@ extern "C" void eshkol_backward_multihead_attention(
                            saved_W_V[j * d_model + h_offset + d];
                 }
                 head_V[i * head_dim + d] = sum;
+            }
+        }
+#endif
+
+        // Each head supplies a disjoint block of rows in dW_O:
+        // (attention @ projected_V)^T @ upstream.
+#ifdef ESHKOL_BLAS_ENABLED
+        // The attention adjoint below overwrites d_head_Q, so it can hold
+        // this head's forward output for the two matrix products.
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    (int)seq_q, (int)head_dim, (int)seq_k,
+                    1.0, head_attn, (int)seq_k, head_V, (int)head_dim,
+                    0.0, d_head_Q, (int)head_dim);
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    (int)head_dim, (int)d_model, (int)seq_q,
+                    1.0, d_head_Q, (int)head_dim, grad_out, (int)d_model,
+                    0.0, grad_WO + h_offset * d_model, (int)d_model);
+#else
+        for (int64_t i = 0; i < seq_q; ++i) {
+            for (int64_t d = 0; d < head_dim; ++d) {
+                double value = 0.0;
+                for (int64_t j = 0; j < seq_k; ++j)
+                    value += head_attn[i * seq_k + j] * head_V[j * head_dim + d];
+                double* row = grad_WO + (h_offset + d) * d_model;
+                for (int64_t k = 0; k < d_model; ++k)
+                    row[k] += value * grad_out[i * d_model + k];
             }
         }
 #endif
@@ -1692,7 +1706,14 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
                 eshkol_accumulate_tensor_grad(node->input2, grad_K, seq_k * d_model);
             if (node->input3)
                 eshkol_accumulate_tensor_grad(node->input3, grad_V, seq_k * d_model);
-            /* Weight gradients would go to input4 or separate weight nodes */
+            // A recording may retain projection parents after the eight
+            // forward buffers. A null parent denotes a constant projection.
+            double* weight_grads[] = {grad_WQ, grad_WK, grad_WV, grad_WO};
+            for (size_t w = 0; w < 4 && 8 + w < node->num_saved; ++w) {
+                auto* parent = static_cast<ad_node_t*>(node->saved_tensors[8 + w]);
+                if (parent)
+                    eshkol_accumulate_tensor_grad(parent, weight_grads[w], d_model * d_model);
+            }
         }
         break;
     }

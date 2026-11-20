@@ -847,146 +847,29 @@ int64_t vm_rational_lcm(int64_t a, int64_t b) {
     return vm_rational_lcm_i64(a, b);
 }
 
-/* ============================================================================
- * Rationalize: Stern-Brocot mediant search (native ID 349)
- *
- * Find the simplest rational p/q such that |p/q - x| <= tolerance.
- * "Simplest" means smallest denominator, then smallest |numerator|.
- * Uses the Stern-Brocot tree / mediant algorithm, max 1000 iterations.
- * ============================================================================ */
+typedef VmRegionStack RzArena;
+typedef VmBignum RzInteger;
+#define RZ_OP(name) bignum_##name
+#include "../../inc/eshkol/core/rationalize_impl.h"
 
-/** @brief Native call 349: `(rationalize x tolerance)` — find the
- *         simplest rational p/q (smallest denominator, then smallest
- *         |numerator|) with |p/q - x| <= tolerance, via Stern-Brocot
- *         mediant search (capped at 1000 iterations). Handles negative
- *         @p x by rationalizing |x| and negating the result; returns NULL
- *         for non-finite input. */
-VmRational* vm_rationalize(VmArena *arena, double x, double tolerance) {
-    if (!isfinite(x) || !isfinite(tolerance) || tolerance < 0.0) return NULL;
+static VmRational* vm_rationalize_exact(VmRegionStack* rs, const VmRational* x,
+                                        const VmRational* tolerance) {
+    VmBignum *num, *den;
+    if (!x || !tolerance || !simplest_rational(rs, vm_rat_num_bn(rs, x), vm_rat_den_bn(rs, x),
+            vm_rat_num_bn(rs, tolerance), vm_rat_den_bn(rs, tolerance), &num, &den))
+        return NULL;
+    return vm_rational_alloc_bn(rs, num, den);
+}
 
-    /* Handle negative x by rationalizing |x| and negating */
-    int negate = 0;
-    if (x < 0.0) {
-        x = -x;
-        negate = 1;
-    }
-
-    /* Target interval [x_lo, x_hi] */
-    double x_lo = x - tolerance;
-    double x_hi = x + tolerance;
-    if (x_lo < 0.0) x_lo = 0.0;
-
-    /* If the interval includes an integer, that's simplest */
-    int64_t lo_int = (int64_t)ceil(x_lo);
-    if ((double)lo_int <= x_hi) {
-        int64_t result = lo_int;
-        if (negate) result = -result;
-        return vm_rational_alloc(arena, result, 1);
-    }
-
-    /* Stern-Brocot mediant search with binary-search acceleration.
-     *
-     * Maintain Stern-Brocot ancestors: left = a/b, right = c/d.
-     * Invariant: a/b < x_lo and c/d > x_hi.
-     *
-     * When the mediant lands on the same side k times in a row, the naive
-     * algorithm takes k one-step iterations. Instead, we binary-search for
-     * the largest k such that (a + k*c) / (b + k*d) is still on that side,
-     * then jump. This gives O(log(denom)) convergence — equivalent to
-     * continued fraction convergents.
-     */
-    int64_t a = (int64_t)floor(x_lo);
-    int64_t b = 1;
-    int64_t c = a + 1;
-    int64_t d = 1;
-
-    int64_t best_num = a;
-    int64_t best_denom = b;
-
-    for (int iter = 0; iter < 1000; iter++) {
-        /* Mediant (a+c)/(b+d) */
-        int64_t med_num = a + c;
-        int64_t med_denom = b + d;
-
-        /* Overflow guard */
-        if (med_num < 0 || med_denom < 0 ||
-            med_denom > 1000000000LL) {
-            break;
-        }
-
-        double med_val = (double)med_num / (double)med_denom;
-
-        if (med_val < x_lo) {
-            /* Mediant is below interval. We need to move left bound up.
-             * Binary-search: find largest k where (a + k*c)/(b + k*d) < x_lo. */
-            int64_t lo_k = 1, hi_k = 1;
-            /* Exponential search for upper bound */
-            while (1) {
-                int64_t tn = a + hi_k * c;
-                int64_t td = b + hi_k * d;
-                if (td > 1000000000LL || td < 0) { hi_k--; break; }
-                double tv = (double)tn / (double)td;
-                if (tv >= x_lo) break;
-                lo_k = hi_k;
-                hi_k *= 2;
-            }
-            /* Binary search in [lo_k, hi_k] */
-            while (lo_k < hi_k) {
-                int64_t mid = lo_k + (hi_k - lo_k + 1) / 2;
-                int64_t tn = a + mid * c;
-                int64_t td = b + mid * d;
-                if (td > 1000000000LL || td < 0) { hi_k = mid - 1; continue; }
-                double tv = (double)tn / (double)td;
-                if (tv < x_lo) {
-                    lo_k = mid;
-                } else {
-                    hi_k = mid - 1;
-                }
-            }
-            a = a + lo_k * c;
-            b = b + lo_k * d;
-            /* Now check mediant (a+c)/(b+d) — should be >= x_lo */
-
-        } else if (med_val > x_hi) {
-            /* Mediant is above interval. Move right bound down.
-             * Binary-search: find largest k where (a + c*1)/(b + d*1) variant...
-             * Symmetric: find largest k where (k*a + c)/(k*b + d) > x_hi. */
-            int64_t lo_k = 1, hi_k = 1;
-            while (1) {
-                int64_t tn = hi_k * a + c;
-                int64_t td = hi_k * b + d;
-                if (td > 1000000000LL || td < 0) { hi_k--; break; }
-                double tv = (double)tn / (double)td;
-                if (tv <= x_hi) break;
-                lo_k = hi_k;
-                hi_k *= 2;
-            }
-            while (lo_k < hi_k) {
-                int64_t mid = lo_k + (hi_k - lo_k + 1) / 2;
-                int64_t tn = mid * a + c;
-                int64_t td = mid * b + d;
-                if (td > 1000000000LL || td < 0) { hi_k = mid - 1; continue; }
-                double tv = (double)tn / (double)td;
-                if (tv > x_hi) {
-                    lo_k = mid;
-                } else {
-                    hi_k = mid - 1;
-                }
-            }
-            c = lo_k * a + c;
-            d = lo_k * b + d;
-
-        } else {
-            /* Mediant is inside the interval — this is the simplest fraction
-             * (Stern-Brocot property: first mediant to enter = smallest denom). */
-            best_num = med_num;
-            best_denom = med_denom;
-            break;
-        }
-    }
-
-    if (negate) best_num = -best_num;
-    return vm_rational_alloc(arena, best_num, best_denom);
+/* Arena-only clients use the same bignum operations as the hosted VM. */
+VmRational* vm_rationalize(VmArena* arena, double x, double tolerance) {
+    VmRegionStack rs = {0};
+    rs.global_arena = *arena;
+    VmRational* value = vm_rational_from_double_exact(&rs, x);
+    VmRational* eps = vm_rational_from_double_exact(&rs, tolerance);
+    VmRational* answer = vm_rationalize_exact(&rs, value, eps);
+    *arena = rs.global_arena;
+    return answer;
 }
 
 /* ============================================================================

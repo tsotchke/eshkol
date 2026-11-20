@@ -53,6 +53,8 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 using namespace llvm;
 
+template<class T> class ContinuationTask;
+
 struct TypedValue {
     Value* llvm_value;              // LLVM IR value
     eshkol_value_type_t type;       // Our type tag from eshkol.h
@@ -213,7 +215,14 @@ std::vector<LambdaSExprMetadata>& pendingLambdaSExprs();
 }
 
 class EshkolLLVMCodeGen {
-    friend void ControlFlowCallbacks::finishIterScopeBeforeExitWrapper(void* context);
+    /* The first-class builtin table's row type and its variadic-rest
+     * strategy are DEFINED next to the table itself (see
+     * lookupInlineBuiltin), because the table is the thing a reader
+     * needs them for. The value-position sites that consult the table
+     * appear textually before it, so the names are introduced here. */
+    enum class VariadicRest : uint8_t;
+    struct InlineBuiltinSpec;
+
     // Friend declarations for ControlFlowCodegen callbacks
     friend llvm::Value* ControlFlowCallbacks::codegenASTWrapper(const void* ast, void* context);
     friend void* ControlFlowCallbacks::codegenTypedASTWrapper(const void* ast, void* context);
@@ -222,6 +231,10 @@ class EshkolLLVMCodeGen {
     friend void ControlFlowCallbacks::codegenVarDefineWrapper(const void* op, void* context);
     friend llvm::Value* ControlFlowCallbacks::eqvCompareWrapper(llvm::Value* a, llvm::Value* b, void* context);
     friend llvm::Value* ControlFlowCallbacks::detectAndPackWrapper(llvm::Value* val, void* context);
+    friend bool ControlFlowCallbacks::isVarSetWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::isReassignedTopLevelNameWrapper(const char* name, void* context);
+    friend bool ControlFlowCallbacks::isVarObservedWrapper(const void* ast, const char* name, void* context);
+    friend bool ControlFlowCallbacks::continuationEscapeWrapper(const void* ast, void* context);
     friend llvm::Value* ControlFlowCallbacks::consCreateWrapper(llvm::Value* car, llvm::Value* cdr, void* context);
     friend int ControlFlowCallbacks::getTypedValueTypeWrapper(void* typed_value, void* context);
     friend void ControlFlowCallbacks::registerFuncBindingWrapper(const char* var_name, void* typed_value, void* context);
@@ -234,6 +247,8 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
     friend llvm::Function* ControlFlowCallbacks::getConsSetPtrWrapper(void* context);
     friend llvm::Value* ControlFlowCallbacks::resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
+    friend bool ControlFlowCallbacks::variadicLookupWrapper(const char* name, void* context);
+    friend bool ControlFlowCallbacks::applyVariadicInfoWrapper(const char* name, uint64_t* fixed_params, void* context);
     friend llvm::Value* ControlFlowCallbacks::indirectCallWrapper(llvm::Value* arg, size_t arity, void* context);
     friend void ControlFlowCallbacks::pushFunctionContextWrapper(void* context);
     friend void ControlFlowCallbacks::popFunctionContextWrapper(void* context);
@@ -242,7 +257,9 @@ class EshkolLLVMCodeGen {
     friend llvm::Function* ControlFlowCallbacks::getBuiltinPredicateWrapper(const std::string& name, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
+    friend void ControlFlowCallbacks::finishIterScopeBeforeExitWrapper(void* context);
     friend llvm::Value* ControlFlowCallbacks::closureSpreadCallWrapper(llvm::Value*, llvm::Value*, llvm::Value*, int, void*);
+    friend llvm::Value* ControlFlowCallbacks::closureListCallWrapper(llvm::Value*, llvm::Value*, void*);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
     friend llvm::Value* ControlFlowCallbacks::gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
                                                                         llvm::Value* dual_elems, llvm::Value* declared_arity,
@@ -401,11 +418,6 @@ private:
     // `capturePointerTagFromCurrentFunction` already uses), and a per-loop
     // trampoline re-derefs those slots back into the pointer arguments the loop
     // function expects.
-    // NOTE: this definition must stay token-identical to the copy of the class
-    // in lib/backend/llvm_codegen.cpp, which is the translation unit that
-    // actually implements it.  It used to be only forward-declared here, which
-    // instantiated std::unordered_map over an INCOMPLETE type: libc++ tolerates
-    // that, libstdc++ rejects it ("std::pair<...>::second has incomplete type").
     struct NamedLetEscapeInfo {
         llvm::Function* loop_func = nullptr;
         std::vector<std::string> captures;
@@ -504,8 +516,6 @@ private:
      * definitions, which is every name in practice, keep the direct call.
      */
     std::unordered_set<std::string> redefined_toplevel_names;
-    /* Top-level names bound to a callable in this compilation unit. Kept in
-     * lockstep with the implementation definition in llvm_codegen.cpp. */
     std::unordered_set<std::string> toplevel_callee_names;
 
     /* Names whose top-level binding is reassigned: defined more than once, or
@@ -662,7 +672,7 @@ private:
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
 
-    void markFatalCodegenError() __attribute__((noinline));
+    void markFatalCodegenError() __attribute__((noinline, used));
 
     // DWARF DEBUG INFO: DIBuilder and metadata for source-level debugging
     std::unique_ptr<DIBuilder> di_builder_;
@@ -675,7 +685,9 @@ private:
 public:
     EshkolLLVMCodeGen(const char* module_name, bool is_library_mode = false,
                        const char* target_triple = nullptr,
-                       bool is_freestanding_codegen = false) ;
+                       bool is_freestanding_codegen = false);
+
+    // Register return types for builtin functions
     void registerBuiltinReturnTypes();
 
     std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> generateIR(const eshkol_ast_t* asts, size_t num_asts);
@@ -695,7 +707,7 @@ private:
 
     void createBuiltinFunctions();
 
-    void registerArenaFunctions() __attribute__((noinline));
+    void registerArenaFunctions() __attribute__((noinline, used));
 
     // Note: Old createArenaFunctions was ~600 lines - now in MemoryCodegen
 
@@ -760,9 +772,12 @@ private:
 
     bool isRedefinedTopLevelName(const char* name) const;
 
-    /* Is the top-level binding of `name` reassigned in this compilation unit
-     * (defined more than once, or the target of a set! at top-level scope)?
-     * Such a binding gets no static `<name>_func` alias. */
+    /* Is the top-level binding of `name` reassigned in this compilation
+     * unit: defined more than once, or the target of a set! anywhere at
+     * top-level scope (inside any top-level form, unless a nearer binding of
+     * the same name shadows it)? A top-level lambda binding of such a name
+     * must not be resolved statically: the lambda it was created with is not
+     * what the name denotes after the assignment. */
     bool isReassignedTopLevelName(const char* name);
 
     /* Wrap a top-level LLVM function in a zero-capture arena closure and
@@ -807,7 +822,8 @@ private:
      */
     Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params,
                                        bool is_variadic = false,
-                                       uint64_t fixed_params = 0);
+                                       uint64_t fixed_params = 0,
+                                       uint8_t return_category = CLOSURE_RETURN_UNKNOWN);
 
     /* emitFunctionAsCallableValue for a NAMED procedure: resolves the
      * rest-arg shape from the registries so callers cannot forget to. Every
@@ -817,14 +833,14 @@ private:
                                             const std::string& user_name,
                                             uint64_t num_params);
 
-    /* R7RS §5.3.1 store for a top-level PROCEDURE definition of a redefined
-     * name.  Ordinary procedure definitions need no store — their call sites
-     * resolve the LLVM function directly — but a redefined name is bound
-     * through a location, so each definition has to assign the procedure to
-     * that location at its own point in program order.  Emitted from the
+    /* Store a top-level PROCEDURE definition whose binding is mutable.
+     * Immutable procedure definitions need no store — their call sites
+     * resolve the LLVM function directly — but a reassigned name is bound
+     * through a location, so each definition assigns its procedure there at
+     * its own point in program order. Emitted from the
      * main/global-init sequence, where `builder` is already positioned at
      * the definition's place in the top-level order. */
-    void emitRedefinitionStoreForFunctionDefine(const eshkol_ast_t* ast);
+    void emitMutableProcedureStoreForFunctionDefine(const eshkol_ast_t* ast);
 
 
     // DWARF DEBUG INFO: build the DISubprogram for an Eshkol `define`d function.
@@ -903,9 +919,9 @@ private:
     // with proper closure support (like lambdas)
     void declareNestedFunctions(const eshkol_ast_t* ast);
 
-    bool isLibraryInitAST(const eshkol_ast_t& ast) const __attribute__((noinline));
+    bool isLibraryInitAST(const eshkol_ast_t& ast) const __attribute__((noinline, used));
 
-    void codegenLibraryInitAST(const eshkol_ast_t& ast) __attribute__((noinline));
+    void codegenLibraryInitAST(const eshkol_ast_t& ast) __attribute__((noinline, used));
 
     Function* createLibraryInitChunkFunction(
         FunctionType* init_type,
@@ -914,18 +930,18 @@ private:
         const std::vector<size_t>& init_indices,
         size_t begin_index,
         size_t end_index
-    ) __attribute__((noinline));
+    ) __attribute__((noinline, used));
 
-    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) __attribute__((noinline));
+    void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) __attribute__((noinline, used));
 
     Function* createLibraryLambdaSExprChunkFunction(
         FunctionType* init_type,
         size_t chunk_index,
         size_t begin_index,
         size_t end_index
-    ) __attribute__((noinline));
+    ) __attribute__((noinline, used));
 
-    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) __attribute__((noinline));
+    void finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t num_asts) __attribute__((noinline, used));
 
     /* ── SHARED-LIBRARY EXPORT ABI ───────────────────────────────────────────
      *
@@ -935,12 +951,69 @@ private:
      * promising the latter.
      *
      * `eshkol_tagged_value_type` is the raw 5-field struct
-     * `;
+     * `{i8, i8, i16, i32, i64}` (type, flags, reserved, explicit padding,
+     * data) — a field-for-field mirror of the C `eshkol_tagged_value_t`, which
+     * is exactly right for the LAYOUT of loads and stores.  It is not a
+     * description of how the value travels in registers.  Given a
+     * `define {i8,i8,i16,i32,i64} @f()`, the backend flattens the aggregate
+     * into one return value PER FIELD and assigns them to consecutive return
+     * registers.  On AArch64 that is:
+     *
+     *     _f:  mov w0, #1    ; type
+     *          mov w1, #0x10 ; flags       <- C caller reads this as data
+     *          mov w2, #0    ; reserved
+     *          mov w3, #0    ; padding
+     *          mov w4, #42   ; data        <- the payload, in x4
+     *          ret
+     *
+     * A C caller compiled against `eshkol_tagged_value_t` follows AAPCS: a
+     * 16-byte non-HFA composite comes back in x0:x1, so it reads
+     * `{type = 1, flags = 0, data = 16}` — the flags byte, zero-extended,
+     * masquerading as the payload.  `42` is stranded in x4.  Arguments were
+     * corrupted the same way and worse: with two tagged parameters the
+     * flattened fields overflow the 8 argument registers and the callee reads
+     * its second argument off the stack, while the C caller passed it in
+     * x2:x3.
+     *
+     * Both directions are affected, so the wrapper coerces both.
+     *
+     * THE FIX: leave the internal convention alone — every Eshkol-to-Eshkol
+     * call in the module is consistent with itself, and the struct type is
+     * what makes GEP-based field access correct — and coerce only at the
+     * export boundary.  The user's function keeps its body under a decorated
+     * symbol and the exported name becomes a thin thunk with the platform C
+     * signature.  This is the same coercion the REPL already performs in the
+     * opposite direction when it calls a native C function that returns a
+     * tagged value (see tryResolveReplFunction / `__cabi_thunk`); it was
+     * simply never wired for shared-library exports.
+     *
+     * PER-PLATFORM COERCION
+     *
+     *   AArch64 (AAPCS64) and x86-64 SysV, and every other 64-bit ELF/Mach-O
+     *   target we emit for (riscv64 LP64D, ppc64le ELFv2, loongarch64):
+     *   a 16-byte composite of two integer eightbytes is returned in the
+     *   first two GPRs (x0:x1 / rax:rdx) and passed in two consecutive GPRs.
+     *   `[2 x i64]` is precisely what Clang coerces such a struct to, in both
+     *   directions, so the thunk's signature is
+     *   `[2 x i64] @f([2 x i64], …)`.  Windows on ARM64 follows AAPCS64 here
+     *   and is covered by the same case.
+     *
+     *   Windows x64 (Microsoft ABI) is different and needs the memory form:
+     *   an aggregate whose size is not exactly 1, 2, 4 or 8 bytes is returned
+     *   through a hidden pointer supplied by the caller in RCX, and passed as
+     *   a pointer to a caller-owned temporary.  A 16-byte tagged value hits
+     *   both rules, so the thunk there is
+     *   `void @f(ptr sret(%tv) noalias, ptr, …)` — which is byte-identical to
+     *   what MSVC/clang-cl generate for
+     *   `eshkol_tagged_value_t f(eshkol_tagged_value_t …)`.
+     *
+     *   Anything else (32-bit targets, where the return is via memory but the
+     *   arguments are by-value on the stack, so neither shape above applies)
+     *   is refused rather than silently mis-exported.
      */
-
     enum class SharedLibraryExportAbi {
-        RegisterPair,
-        MemorySret,
+        RegisterPair,  // [2 x i64] in and out (AAPCS64, SysV, RISC-V, …)
+        MemorySret,    // sret return + by-pointer arguments (Windows x64)
         Unsupported
     };
 
@@ -952,11 +1025,36 @@ private:
     // Eshkol dynamic link has a struct-convention entry point to bind to.
     static std::string sharedLibraryImplSymbolName(const std::string& name);
 
+    /* ── FREESTANDING C-ABI EXPORTS ──────────────────────────────────────────
+     *
+     * Inside a module every Eshkol function speaks the internal tagged-value
+     * convention.  A freestanding image is entered from code that does not:
+     * a reset handler, a vector table, a C board-support layer.  So in a
+     * freestanding profile an `:export-symbol` function whose parameters and
+     * return are all annotated with machine types (u8..u64, i8..i64, usize,
+     * isize, ptr; `null` return) is exported under its symbol name with the
+     * platform C ABI for those scalars: the tagged body moves to an internal
+     * `<symbol>.eshkol` definition and a thunk under the exported name boxes
+     * the native arguments, calls it, and unboxes the result.  In-module
+     * Eshkol callers hold the body by pointer and keep the internal
+     * convention.  `:section`, `:used`, `:weak` and `:no-return` apply to
+     * the exported entry.
+     */
+    Type* freestandingExportScalarType(eshkol::hott::TypeId t, bool allow_void);
+
+    void emitFreestandingScalarExportWrappers(const eshkol_ast_t* asts, size_t num_asts);
+
     void emitSharedLibraryExportWrappers(const eshkol_ast_t* asts, size_t num_asts);
 
     // LIBRARY MODE: Create initialization function instead of main
     // This function initializes global state but doesn't create an entry point
     void createLibraryInitFunction(const eshkol_ast_t* asts, size_t num_asts);
+
+    /* A freestanding image has no unwinder and no exception runtime, so no
+     * function in it can unwind. Saying so keeps targets with table-driven
+     * unwinding (ARM EHABI) from referencing personality routines such as
+     * __aeabi_unwind_cpp_pr0 that only a hosted C++ runtime provides. */
+    void markFreestandingNoUnwind();
 
     void pruneUnusedFreestandingDeclarations();
 
@@ -977,6 +1075,29 @@ private:
     // call: the REPL keeps the process alive across evaluations (it calls
     // eshkol_runtime_shutdown() itself once, from exe/eshkol-repl.cpp, at
     // real process exit), and WASM has no runtime_init call to pair with.
+    /**
+     * ESH-0101 / SW-81: emit the native stack-headroom check at the entry of a
+     * user function body.
+     *
+     * Plain non-tail user recursion had NO guard at all. The frame-counting
+     * `eshkol_check_recursion_depth` is emitted only at lambda entry, and its
+     * ceiling (ESHKOL_MAX_STACK, default 100000) is a proxy for the wrong
+     * resource: raising it to cover legitimate 250k-frame recursion would make
+     * it useless, and lowering it to fire before overflow would break programs
+     * that fit. So the stack ran into its guard page and the process died with
+     * a bare SIGSEGV/SIGILL and no message.
+     *
+     * This call watches the actual resource — bytes left on this thread's
+     * stack — and is stateless, so unlike the depth counter it needs no
+     * matching decrement before returns and therefore cannot interfere with
+     * tail-call optimization.
+     *
+     * Not emitted for freestanding native or wasm objects: those profiles do
+     * not link the hosted stack runtime. A freestanding object must remain
+     * free of hosted imports, and wasm has no RLIMIT_STACK to read.
+     */
+    void emitStackGuardCheck();
+
     void emitRuntimeShutdownBeforeMainReturn();
 
     void createMainWrapper();
@@ -1015,7 +1136,15 @@ private:
     eshkol::hott::TypeId inferredElementTypeOf(const eshkol_ast_t* coll_ast) const;
 
     // Create TypedValue from AST node
+    // The central expression/call/arithmetic descent runs on heap-owned
+    // continuations. Keep these synchronous entry points for backend callbacks;
+    // recursive edges within that descent must await the Task variants so a
+    // source nesting level never adds another native dispatch frame. Locals
+    // (including provenance guards and earlier operands) live until the parent
+    // resumes, preserving the existing evaluation and IR insertion order.
     TypedValue codegenTypedAST(const eshkol_ast_t* ast);
+
+    ContinuationTask<TypedValue> codegenTypedASTTask(const eshkol_ast_t* ast);
 
 private:
     // Function context management for isolation
@@ -1032,7 +1161,7 @@ private:
 
     void registerContextFunction(const std::string& name, Function* func);
 
-    Function* resolveFunctionByLogicalName(const std::string& name) __attribute__((noinline));
+    Function* resolveFunctionByLogicalName(const std::string& name) __attribute__((noinline, used));
 
     // REPL MODE: Check if a function exists in the global REPL context and create external declaration
     Function* tryResolveReplFunction(const std::string& func_name);
@@ -1040,6 +1169,13 @@ private:
     Value* codegenArenaConsCell(Value* car_val, Value* cdr_val);
     // Phase 3B: Simplified tagged cons cell allocation - direct tagged_value storage!
     Value* codegenTaggedArenaConsCell(const TypedValue& car_val, const TypedValue& cdr_val);
+
+    // Allocate a cons cell whose car and cdr are COMPLETE copies of two
+    // tagged values: type byte, flags and payload. A list builtin that moves
+    // an existing element into a new list must use this (or
+    // codegenTaggedArenaConsCellFromTaggedValue); reducing the element to its
+    // 64-bit payload first loses its type, which is how remove and split-at
+    // returned the raw bits of inexact elements.
     Value* codegenTaggedArenaConsCellCopying(Value* car_tagged, Value* cdr_tagged);
 
     // ROBUST SOLUTION: Create cons cell directly from tagged_value with type preservation
@@ -1066,6 +1202,9 @@ private:
 
     // MIGRATED: Delegates to TaggedValueCodegen
     Value* packNullToTaggedValue();
+
+    /** The unspecified value (ADR-0024). */
+    Value* packUnspecifiedToTaggedValue();
 
     // Ensure a value is in tagged format
     // codegenAST returns raw i64/double for primitives, but tagged structs for complex types
@@ -1109,13 +1248,38 @@ private:
      *     unconditionally, and are what the arity-mismatch padding reads),
      *   - `count` is already clamped to [0, width].
      */
-    struct ClosureSpreadArgs;;
-    struct KnownCallableTarget;
+    struct ClosureSpreadArgs {
+        Value* args_ptr = nullptr;
+        Value* count = nullptr;
+        int width = 0;
+        // When set, variadic dispatch forwards this original proper list
+        // after splitting the runtime fixed prefix; no argument cap applies
+        // to the rest tail.
+        Value* list_int = nullptr;
+        Value* full_count = nullptr;
+    };
+
+    // A resolved ABI signature (e.g. a checked REPL forward reference) already
+    // has its fixed/rest arguments marshalled. Invocation still belongs here.
+    struct KnownCallableTarget {
+        FunctionType* signature;
+        Value* address;
+    };
+
+    // WASM call_indirect requires the callee's exact capture tail. Cache one
+    // non-inline dispatcher per user-argument arity in the module: placing the
+    // 65-way capture switch at every call site would multiply compiler work.
+    // Native caller-cleanup calls keep their existing padded fast path.
+    Value* codegenWasmSmallClosureCall(Value* function_ptr, Value* captures,
+                                     Value* capture_count,
+                                     const std::vector<Value*>& arguments);
 
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
-    Value* codegenWasmSmallClosureCall(Value* function_ptr, Value* captures,
-        Value* capture_count, const std::vector<Value*>& arguments);
+    // void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
+    //     int64_t expected, int64_t got, int64_t variadic)  -- never returns.
+    Function* getProcedureCallErrorFunc();
+
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
                               bool parameter_dispatch = true,
@@ -1123,6 +1287,12 @@ private:
                               const KnownCallableTarget* known = nullptr);
 
     Value* codegenClosureSpreadCall(Value* closure, Value* slots, Value* count, int width);
+
+    // Apply a tagged list without materialising its unbounded tail.  The
+    // staging array contains only the fixed-prefix window; variadic dispatch
+    // receives the original list and forwards its complete remaining tail.
+    Value* codegenClosureListCall(Value* closure, Value* list_int);
+
     /* ================= runtime-closure arity spread (AD gradient) =============
      *
      * A gradient of a RUNTIME closure has to call that closure with its own
@@ -1179,9 +1349,8 @@ private:
     Value* unpackPtrFromTaggedValue(Value* tagged_val);
 
     // MIGRATION HELPER: Get subtype from object header for HEAP_PTR/CALLABLE values
-    // The header immediately precedes the data pointer; its field order and width
-    // are defined once by eshkol_object_header_t in inc/eshkol/eshkol.h and must
-    // not be restated here (see scripts/abi_header_inventory.py, L_layout_in_prose).
+    // Object header is 8 bytes before the data pointer:
+    //   [subtype(1)][flags(1)][ref_count(2)][size(4)][data...]
     // Returns the subtype byte (0-255)
     Value* getObjectSubtype(Value* ptr_val);
 
@@ -1237,11 +1406,10 @@ private:
         Function* declaration;
     };
 
-    std::optional<LowLevelValueTypeInfo> resolveLowLevelTypeInfo(
-        const eshkol_ast_t* type_ast,
-        const char* builtin_name,
-        const char* role,
-        bool allow_null) const;
+    std::optional<LowLevelValueTypeInfo> resolveLowLevelTypeInfo(const eshkol_ast_t* type_ast,
+                                                                 const char* builtin_name,
+                                                                 const char* role,
+                                                                 bool allow_null) const;
 
     std::optional<LowLevelValueTypeInfo> resolveMemoryAccessTypeInfo(
         const eshkol_ast_t* type_ast, const char* builtin_name) const;
@@ -1284,7 +1452,8 @@ private:
     // Convert TypedValue to tagged_value (AST→IR boundary crossing)
     Value* typedValueToTaggedValue(const TypedValue& tv);
 
-
+    // Simple helper to wrap tagged_value in TypedValue (for cons cell creation)
+    // This avoids complex control flow by just storing the tagged_value as-is
     // ===== POLYMORPHIC ARITHMETIC FUNCTIONS (Phase 1.3 + Phase 2 Dual Number Support) =====
     // These operate on tagged_value parameters and handle mixed types + dual numbers
 
@@ -1328,6 +1497,8 @@ private:
 
     Value* codegenAST(const eshkol_ast_t* ast);
 
+    ContinuationTask<Value*> codegenASTTask(const eshkol_ast_t* ast);
+
     // MIGRATED: Delegates to StringIOCodegen
     Value* codegenString(const char* str);
 
@@ -1362,6 +1533,58 @@ private:
     Function* getOrCreateVariadicIdentityWrapper(const std::string& wrapper_name);
 
     Value* makeVariadicIdentityClosureValue(const std::string& wrapper_name);
+
+    /* Wrap a `(rest_list) -> tagged_value` function as a VARIADIC closure
+     * value: arity 0 with the variadic bit set, which is what makes the
+     * closure dispatcher cons the caller's arguments into the single rest
+     * list the wrapper expects. */
+    Value* makeVariadicClosureValueFor(Function* wrapper);
+
+    Function* getOrCreateBytevectorRestWrapper();
+
+
+    /* SW-230: a builtin that accepts a small RANGE of argument counts (`atan`
+     * of 1 or 2, `round` with an optional precision) as a value. The closure
+     * is variadic and dispatches on the length of its rest list to the
+     * wrapper built at that arity, each generated from the call-position
+     * lowering; any other count raises an arity error. A fixed-arity value
+     * silently dropped the second argument: `((lambda (f) (f 1.0 2.0)) atan)`
+     * answered atan(1). */
+    Value* makeByCountBuiltinClosureValue(const std::string& name,
+                                          const InlineBuiltinSpec& spec);
+
+    /* SW-173: materialise a VARIADIC builtin as a genuine variadic closure.
+     *
+     * Returns nullptr when the row declares no rest form, so the caller
+     * falls back to the row's fixed-arity materialisation — the pre-existing
+     * compromise, now reached only for rows that say so. */
+    Value* makeVariadicBuiltinClosureValue(const std::string& name,
+                                           const InlineBuiltinSpec& spec);
+
+    /* `(f a b c …)` == `(f (f (f a b) c) …)` for the associative variadic
+     * builtins. The BINARY form is the authoritative call-position lowering,
+     * so the fold cannot disagree with `f` on any pair; the only thing
+     * asserted here is associativity, and it is asserted only for the rows
+     * that declare LeftFold. There is no argument-count ceiling — unlike a
+     * fixed-arity wrapper, or a switch over unrolled arities. */
+    void emitVariadicBuiltinLeftFold(Function* wrap_fn, const std::string& name,
+                                     Value* rest, Function* binary_fn,
+                                     const std::function<Value*(Value*)>& unary = nullptr,
+                                     const std::function<Value*()>& nullary = nullptr);
+
+    /* `(f a b c …)` == `(and (f a b) (f b c) …)` for the R7RS comparison
+     * chains. Fewer than two arguments is an arity error. */
+    void emitVariadicBuiltinChain(Function* wrap_fn, const std::string& name,
+                                  Value* rest, Function* binary_fn);
+
+    /* SW-241: the arithmetic operators and numeric comparisons as VALUES are
+     * the variadic R7RS procedures, not their 2-argument lowering. Built from
+     * the same polymorphic operations the call position uses. */
+    Value* makeVariadicOperatorClosureValue(const std::string& op);
+
+    void raiseVariadicBuiltinZeroArgError(const std::string& name);
+
+    void raiseBuiltinArityError(const std::string& message);
 
     /* User-shadowable builtin OPs (audit Bug G).
      *
@@ -1414,6 +1637,8 @@ private:
 
     Value* codegenOperation(const eshkol_operations_t* op);
 
+    ContinuationTask<Value*> codegenOperationTask(const eshkol_operations_t* op);
+
     Value* codegenDefine(const eshkol_ast_t* ast);
 
     Value* codegenDefine(const eshkol_operations_t* op);
@@ -1448,6 +1673,10 @@ private:
     Value* codegenCallInlineLambda(const eshkol_operations_t* op);
 
     Value* codegenCallResultAsFunc(const eshkol_operations_t* op);
+
+    // Plain-language name for a non-procedure literal in operator position,
+    // used by the call diagnostic in codegenCallTask.
+    static const char* describeLiteralOperator(const eshkol_ast_t* head);
 
     Value* codegenCallOperationResultAsFunc(const eshkol_operations_t* op);
 
@@ -1575,14 +1804,74 @@ private:
 
     static bool externTypeIsPointerLike(const std::string& declared);
 
+    // Bytevector constructors accept only exact integers in [0,255].  Keep
+    // the original tagged representation through the exactness/range checks;
+    // conversion to a byte happens only in the success block.  In particular,
+    // bignums are compared by the existing exact runtime comparator.
+    Value* emitCheckedByte(Value* value, const std::string& who);
+
     Value* codegenCall(const eshkol_operations_t* op);
+
+    ContinuationTask<Value*> codegenCallTask(const eshkol_operations_t* op);
 
     // HoTT-optimized binary arithmetic: when both types are known, skip runtime dispatch
     // Returns nullptr if optimization not possible (fall back to polymorphic path)
+    // ── FREESTANDING MACHINE-INTEGER ARITHMETIC ─────────────────────────────
+    //
+    // The numeric tower (bignums, rationals, exact/inexact dispatch, AD
+    // carriers) is a hosted runtime facility.  A freestanding object has no
+    // runtime to call, so in a freestanding profile the integer operators
+    // lower to native modular machine arithmetic instead.  One rule covers
+    // every operator below:
+    //
+    //   * The operation width and signedness come from the operands that
+    //     carry a declared machine-integer type (u8..u64, i8..i64, usize,
+    //     isize: annotated parameters, low-level memory/atomic/intrinsic
+    //     results, and the results of these operators).  The widest such
+    //     type wins; on a width tie an unsigned type wins (C's usual
+    //     arithmetic conversions).  usize/isize are pointer-sized for the
+    //     module's data layout.
+    //   * Integer literals and values without a declared type adopt that
+    //     machine type; with no declared operand the operation is i64.
+    //   * Results wrap modulo 2^width; division and remainder by zero trap
+    //     (llvm.trap).  Comparisons use unsigned predicates for unsigned types.
+    //
+    // Non-integer operands (reals, strings, pairs) have no freestanding
+    // meaning and are rejected at compile time.
+    static const char* freestandingMachineIntegerOp(const std::string& name);
+
+    struct MachineIntegerShape {
+        eshkol::hott::TypeId type;
+        unsigned bits;
+        bool is_signed;
+    };
+
+    std::optional<MachineIntegerShape> machineIntegerShape(eshkol::hott::TypeId t) const;
+
+    // Integer payload of an operand, or nullptr when the operand is not an
+    // integer value in the freestanding sense.
+    Value* machineIntegerPayload(const TypedValue& tv);
+
+    void emitTrapUnless(Value* ok, const char* label);
+
+    TypedValue emitMachineIntegerOp(const char* operation, const char* source_name,
+                                    const std::vector<TypedValue>& operands,
+                                    const std::vector<bool>& is_literal);
+
+    ContinuationTask<TypedValue> codegenMachineIntegerOpTask(const eshkol_operations_t* op,
+                                                             const char* operation,
+                                                             const char* source_name);
+
+    // Freestanding builtin integer operator call that the program has not
+    // shadowed with its own definition.
+    const char* freestandingMachineIntegerCall(const std::string& func_name);
+
     Value* hottOptimizedBinaryArith(const TypedValue& left, const TypedValue& right,
                                      const std::string& operation);
 
     Value* codegenArithmetic(const eshkol_operations_t* op, const std::string& operation);
+
+    ContinuationTask<Value*> codegenArithmeticTask(const eshkol_operations_t* op, const std::string& operation);
 
     Value* codegenComparison(const eshkol_operations_t* op, const std::string& operation);
 
@@ -1592,7 +1881,139 @@ private:
                                     const std::string& operation);
 
 
+    /** The spelling the PROGRAMMER wrote for this call, for diagnostics.
+     *
+     *  Lowering names and public names are not the same word: `(ceiling)` is
+     *  lowered by codegenMathFunction(op, "ceil") and `(truncate)` by
+     *  codegenMathFunction(op, "trunc"). Reporting the lowering name told the
+     *  reader about an intrinsic they never wrote. Falls back to the lowering
+     *  name for a synthesized call with no variable callee. */
+    static std::string publicCalleeName(const eshkol_operations_t* op,
+                                        const std::string& lowering_name);
+
+    // stop-gradient (ADR-0049). One runtime entry point,
+    // eshkol_stop_gradient_tagged, reads the primal of any carrier -- forward
+    // jet, Taylor tower or level, reverse-mode node -- exactly as the
+    // comparisons do, so `(stop-gradient x)` is a constant to every enclosing
+    // `derivative`/`gradient`/`derivative-n` pass while its value equals x.
+    // Non-carriers pass through unchanged. This is the primitive behind the
+    // straight-through estimators: soft + (stop-gradient (- hard soft)) has
+    // the hard value and the soft derivative.
+    Value* codegenStopGradient(const eshkol_operations_t* op);
+
+    // Directed rounding: fl-next-up / fl-next-down. Unary Scheme surface
+    // (the direction is fixed by which name was called), lowered to the
+    // libm binary `nextafter(x, direction)` with `direction` a compile-time
+    // +INFINITY/-INFINITY constant -- nextafter saturates at the argument's
+    // own value once x has no representable neighbour in that direction
+    // (e.g. nextafter(+inf, +inf) == +inf, nextafter(DBL_MAX, +inf) == +inf,
+    // per C99 7.12.11.3), so no separate overflow handling is needed here.
+    // Deliberately real-scalar-only: no complex/tensor/dual/AD-node/tower
+    // fast path (see call-site comment) -- an operand in any of those
+    // representations reads as a tagged DOUBLE by extractDoubleFromTagged,
+    // which is correct only for the plain-real case, so this must never be
+    // reached for those tags. Guard here rather than trust every call site.
+    Value* codegenNextafter(const eshkol_operations_t* op, bool up);
+
+    /**
+     * @brief The libm function backing a scalar math builtin, guaranteed
+     *        non-null and of the expected `double(double[, double])` type.
+     *
+     * `function_table` is an `unordered_map<string, Function*>`, so reading it
+     * with `operator[]` on a MISSING key silently inserts a NULL Function* and
+     * hands that straight to IRBuilder::CreateCall — a null dereference inside
+     * CallInst::Create, i.e. the compiler dies with SIGSEGV instead of
+     * producing a diagnostic. That is exactly how
+     *
+     *     (display (tensor-ref (elu t 2) 0))  ; puts a bare @exp in the module
+     *     (display (exp -2.0))                ; SIGSEGV
+     *
+     * crashed: the activation lowering materialised `exp` by bare name,
+     * AutodiffCodegen::getMathFunc then found that module symbol and returned
+     * it WITHOUT recording it in function_table, and the scalar path's
+     * `function_table["exp"]` inserted null. `exp` was the only exposed name
+     * because it was the one libm entry BuiltinFactoryCodegen never
+     * pre-declared; every other scalar math name already had a row.
+     *
+     * Routing every scalar-math lookup through here removes the whole class:
+     * a missing or wrongly-typed row is repaired from libm_codegen (intrinsic
+     * first, so it can never bind to an unrelated symbol of the same name)
+     * rather than crashed on.
+     */
+    Function* mathFunc(const std::string& name);
+
     Value* codegenMathFunction(const eshkol_operations_t* op, const std::string& func_name);
+
+    // The value-level core of the procedure above: everything after its
+    // arguments are evaluated. Complex component formulas (ADR-0025) call it
+    // on a component, so a derivative carrier gets the same rule it gets here.
+    // `operand_is_real` is set by the complex component formulas, whose operands
+    // are components and so never complex: the complex-operand branch is not
+    // emitted for them. It must not be, because that branch emits those same
+    // formulas, and the emission would not terminate.
+    Value* codegenMathFunctionOnTagged(Value* arg_tagged, const std::string& func_name,
+                                       bool operand_is_real = false);
+
+    Value* codegenActivationFunction(const eshkol_operations_t* op, bool relu);
+
+    // ===== ML activation family: one dispatch point =====
+    //
+    // Every activation takes a number or a tensor and returns the same kind
+    // (docs/tutorials/01_AUTODIFF_AND_ML.md, docs/API_REFERENCE.md). This table
+    // and codegenActivationFamily() are the only place an activation name is
+    // lowered. The operand is evaluated ONCE, bound to a generated name, and
+    // classified at run time:
+    //   - a tensor, or a reverse-mode node that carries a tensor, goes to the
+    //     TensorCodegen lowering, which owns tensor layout and tensor AD;
+    //   - a scalar number or scalar differentiation carrier (fixnum, flonum,
+    //     bignum, rational, dual, Taylor tower, scalar AD node) goes to the
+    //     activation's scalar definition. That definition is a composition of
+    //     the scalar primitives (+ - * / exp log tanh min max and `>` on the
+    //     primal), each of which already carries every differentiation mode,
+    //     so the activation is differentiable without a rule of its own. It is
+    //     the same formula, constants and threshold as the tensor kernel;
+    //   - anything else goes to the tensor lowering, whose operand check
+    //     coerces a numeric collection or raises a catchable type error.
+    // relu and sigmoid enter through the same table but keep their dedicated
+    // scalar lowering (codegenActivationFunction), which records dedicated AD
+    // node and Taylor operations.
+    static eshkol_ast_t* actCall(const char* fn, std::initializer_list<eshkol_ast_t*> args);
+    static eshkol_ast_t* actNum(double v);
+
+    // An activation's definition as an AST over the operand x and the optional
+    // parameter p, and the TensorCodegen kernel it pairs with.
+    using ActivationFormula = eshkol_ast_t* (*)(eshkol_ast_t* x, eshkol_ast_t* p);
+    using ActivationKernel = Value* (eshkol::TensorCodegen::*)(const eshkol_operations_t*);
+    struct ActivationSpec {
+        const char* name;
+        uint64_t min_args;
+        uint64_t max_args;
+        double param_default;  // value of the optional second argument
+        ActivationKernel tensor_fn;
+        // Scalar definition; null for the activations with a dedicated scalar
+        // lowering (relu, sigmoid).
+        ActivationFormula scalar;
+        // Tensor definition used when the optional parameter is supplied and
+        // the tensor kernel has no parameter of its own (swish's beta).
+        ActivationFormula tensor_with_param;
+    };
+
+    static const ActivationSpec* findActivation(const std::string& name);
+
+    // i1: the operand belongs to the scalar definition (a number or a scalar
+    // differentiation carrier). Everything else -- a tensor, a reverse-mode node
+    // that carries a tensor, or a non-number -- belongs to the tensor lowering.
+    Value* emitActivationOperandIsScalar(Value* arg);
+
+    Value* codegenActivationFamily(const eshkol_operations_t* op, const ActivationSpec& spec);
+
+    // One element loader for the multi-sequence iterators (vector-map,
+    // vector-for-each): the i-th element of a source as a tagged value. A
+    // Scheme vector slot is the value; a tensor slot is a double bit pattern,
+    // unless the carrier was promoted by a non-numeric store or is a dual
+    // tensor (ADR-0020), where the slot is already a tagged value.
+    Value* loadSequenceElement(Value* is_tensor, Value* tagged_slots,
+                               Value* elems, Value* base, Value* idx);
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
     // for numeric types (int64, double, bignum)
@@ -1602,6 +2023,15 @@ private:
 
     // Binary math function codegen (for atan2, fmod, fmin, fmax, remainder, etc.)
     Value* codegenBinaryMathFunction(const eshkol_operations_t* op, const std::string& func_name);
+
+    // The value-level core of the procedure above: everything after its
+    // arguments are evaluated. Complex component formulas (ADR-0025) call it
+    // on a component, so a derivative carrier gets the same rule it gets here.
+    Value* codegenBinaryMathFunctionOnTagged(Value* arg1, Value* arg2, const std::string& func_name);
+
+    // atan2 of operands that are neither Taylor carriers nor forward jets: a
+    // reverse-tape node (recorded on the tape) or plain numbers.
+    Value* codegenAtan2NonTaylor(Value* arg1, Value* arg2);
 
     // Modulo operation - Scheme semantics (result has same sign as divisor)
     Value* codegenModulo(const eshkol_operations_t* op);
@@ -1675,6 +2105,36 @@ private:
     // MIGRATED: Cond expression - delegates to ControlFlowCodegen
     Value* codegenCond(const eshkol_operations_t* op);
 
+    // SW-229: the forward-mode AD dynamic state a non-local exit must put back.
+    //
+    // A derivative pass raises __ad_pert_level (and a Taylor pass
+    // __ad_tower_active/__ad_tower_order) on entry and lowers it on its normal
+    // exit. A raise or an escaping continuation from inside the pass longjmps
+    // past that exit, so the level stayed raised: every later `derivative`
+    // believed it was nested, declined the exact tier and answered inexact
+    // (exact 6 became 6.0), and a later derivative through exact division by
+    // exact 0 answered -inf.0 instead of raising. The runtime's unwinder
+    // (eshkol_ad_state_restore) cannot reach these: they are module globals,
+    // internal to an AOT module. So every site that installs a longjmp target
+    // snapshots them into entry-block slots before setjmp and stores them back
+    // first thing on the path a longjmp arrives by.
+    using AdForwardSnapshot = std::vector<std::pair<GlobalVariable*, Value*>>;
+    AdForwardSnapshot snapshotAdForwardState();
+    // Emit the restores at the start of `landing`, the block a longjmp reaches.
+    void restoreAdForwardStateAt(BasicBlock* landing, const AdForwardSnapshot& snap);
+
+    // The recursion-depth counter is dynamic state a non-local exit must put
+    // back too: the guarded returns a longjmp skips never decrement it, so a
+    // loop that keeps leaving deep code through raise or a continuation would
+    // reach ESHKOL_MAX_STACK without ever being deep. Same discipline as the
+    // AD state above: an entry-block slot written before setjmp, read first
+    // thing on the landing path.
+    // An alloca for one tagged value in the entry block of the current function.
+    Value* createEntryBlockTaggedSlot(const char* name);
+
+    Value* snapshotRecursionDepth();
+    void restoreRecursionDepthAt(BasicBlock* landing, Value* slot);
+
     // Exception handling: guard expression
     // Syntax: (guard (var clause ...) body ...)
     // Sets up setjmp handler, evaluates body, handles exceptions via clauses
@@ -1695,12 +2155,21 @@ private:
     // returned reference) is treated as escaping.
     bool callCCContinuationStaysLocal(const eshkol_operations_t* op);
 
+    bool astHasEscapingCallCC(const eshkol_ast_t* ast);
+
     Value* codegenCallCC(const eshkol_operations_t* op);
 
     // ===== DYNAMIC-WIND =====
     // Syntax: (dynamic-wind before thunk after)
     // Calls before(), then thunk(), then after(), returns thunk's result
     // before/after are also called during continuation jumps across dynamic-wind boundaries
+    // Borrow scopes close their port on every exit: a native cleanup frame on
+    // the dynamic-wind stack closes it when a raise or a continuation escape
+    // unwinds the scope, and normal return pops the frame and closes it here.
+    void pushPortCleanupWind(Value* close_fp);
+
+    void popPortCleanupWindAndClose(Value* close_fp);
+
     Value* codegenDynamicWind(const eshkol_operations_t* op);
 
     // ===== WITH-EXCEPTION-HANDLER (R7RS) =====
@@ -1709,6 +2178,13 @@ private:
     //   thunk: a 0-arg procedure whose body is protected
     // Uses setjmp/longjmp, same pattern as codegenGuard
     Value* codegenWithExceptionHandler(const eshkol_operations_t* op);
+
+    // ===== RAISE-CONTINUABLE (R7RS 6.11) =====
+    // (raise-continuable obj): call the current with-exception-handler's
+    // procedure with obj in the dynamic environment of the raise, the outer
+    // handlers installed, and return its value. With a guard (or no handler)
+    // as the current handler, the runtime raises obj as `raise` does.
+    Value* codegenRaiseContinuable(const eshkol_operations_t* op);
 
     // ===== MULTIPLE RETURN VALUES OPERATIONS =====
 
@@ -1771,7 +2247,10 @@ private:
     // Helper: Compare two tagged values for equality (eqv? semantics)
     Value* matchCompareValues(Value* val1, Value* val2);
 
-    // Helper: Check if a value is a pair (cons cell)
+    // Helper: Check if a value is a pair (cons cell). HEAP_PTR alone also
+    // covers strings, vectors, records, ...; the object header's subtype is
+    // what makes it a pair, as for `pair?`. The header is read only for a
+    // non-null HEAP_PTR.
     Value* matchIsPair(Value* val);
 
     // Helper: Check if a value is null (empty list)
@@ -1816,6 +2295,16 @@ private:
     bool doFormCapturesVar(const eshkol_operations_t* op,
                            const eshkol_ast_t* main_cons,
                            const std::string& var);
+
+    // Assignment conversion is a storage decision, not only a capture
+    // decision. A do variable that is set! from its own body must use one
+    // durable cell when an escaping continuation can re-enter the loop; a
+    // captured variable must use that same cell even without call/cc. Keeping
+    // this predicate beside doFormCapturesVar prevents the step/header/body
+    // paths from ever selecting different locations.
+    bool doFormSetsVar(const eshkol_operations_t* op,
+                       const eshkol_ast_t* main_cons,
+                       const std::string& var);
 
     Value* codegenDo(const eshkol_operations_t* op);
 
@@ -2014,6 +2503,10 @@ private:
     // and the first-class / apply'd equal? wrapper). Returns a packed boolean.
     Value* emitEqualTagged(Value* arg1, Value* arg2);
 
+    // (type-name v) on an already-tagged value: the runtime classifies it
+    // through the shared type-name vocabulary and returns an interned symbol.
+    Value* emitTypeNameTagged(Value* tagged);
+
     // NOTE: codegenNewline has been migrated to StringIOCodegen (strio_->newline)
 
     // (error-object? obj) — #t iff obj is an error object created by `error`.
@@ -2132,12 +2625,6 @@ private:
     // split body from a declaration that still needs a forwarder.
     std::vector<Function*> tail_body_decls_;
 
-    // Guarded named-let and do-loop codegen context; this state is part of
-    // the implementation object's cross-TU layout even though its helpers
-    // are defined in llvm_codegen.cpp.
-    std::set<std::string> tco_loop_bound_names_;
-    bool in_do_loop_codegen_ = false;
-
     /**
      * @brief Declare eshkol_tail_transfer_slot(), the per-thread record accessor.
      */
@@ -2212,6 +2699,124 @@ private:
      * forwarder is entered once per hop from a driver that reclaims it.
      */
     void finalizeTailTransferThunks();
+
+    // ═══════════ SW-58: a `guard` that carries a self-recursive TCO loop ═══════════
+    //
+    // ESH-0222 made a `guard` body a tail position for the self-call it
+    // contains and had the back edge DRAIN the handler chain. That is what the
+    // resident tick loop needs — its error boundary is re-entered once per
+    // tick, forever, so the chain must not grow — and it is exactly wrong for a
+    // handler that RE-RAISES. R7RS 7.3 derives `guard` from
+    // `with-exception-handler` wrapping the body, so every activation installs
+    // its own handler and they NEST; a re-raise out of the innermost one has to
+    // find the PREVIOUS activation's guard, which answers with THAT
+    // activation's variables. Draining them sent the re-raise to whatever stood
+    // outside the loop, and a different handler answered — silently. That is
+    // SW-58, whose fixture is
+    // tests/tco/guard_tail_context/04_reraise_reaches_enclosing_guard.esk.
+    //
+    // Reverting ESH-0222 would trade a rare wrong answer for a common crash, so
+    // it is not the fix. Instead every guard that carries a loop is classified
+    // into one of three lowerings. ALL THREE ARE SEMANTICALLY EXACT — they
+    // differ only in what they cost:
+    //
+    //   Collapse  the enclosing activations are PROVABLY unobservable, so
+    //             draining them changes nothing a program can see. Constant
+    //             stack and flat RSS. This is the resident tick-loop shape.
+    //   Replay    keep the handler frames standing and attach the departing
+    //             activation's loop parameters to each. Constant stack; one
+    //             handler frame per LIVE guard — the space R7RS's own semantics
+    //             require, moved off the native stack onto the heap.
+    //   Forbid    the clauses read a binding the loop rebinds every iteration,
+    //             which no snapshot of the loop PARAMETERS can restore. Leave
+    //             the call a real call: R7RS's own stack cost, never a guess.
+    enum class GuardLoopClass { Collapse, Replay, Forbid };
+
+    // Names bound inside the innermost TCO loop currently being generated,
+    // minus its own parameters. Set by setupGuardReplayForLoop, consulted by
+    // codegenGuard, saved/restored alongside the rest of the TCO context by
+    // codegenNamedLet.
+    std::set<std::string> tco_loop_bound_names_;
+    bool in_do_loop_codegen_ = false;
+
+    // Operators whose Eshkol lowering has no path to `eshkol_raise`, so an
+    // expression built from them cannot transfer control to an ENCLOSING
+    // handler while a guard's clauses are running (the guard's own handler is
+    // already removed at that point, so such a transfer is precisely what makes
+    // the enclosing activations observable).
+    //
+    // Deliberately small and total. `/`, `modulo`, `quotient` and `remainder`
+    // are absent because a zero divisor raises; `car`/`cdr`/`vector-ref` are
+    // absent because a domain violation raises; anything user-defined is absent
+    // because its body is unbounded. A name missing from this set costs a
+    // Replay lowering — correct, and one handler frame per iteration — never a
+    // wrong answer, so the set may be grown by measurement but never guessed.
+    static const std::set<std::string>& guardNonRaisingOperators();
+
+    // Can evaluating `e` inside a guard clause reach an enclosing handler?
+    // Conservative: anything not modelled answers "yes".
+    //
+    // A self tail call to `loop_name` counts as non-raising because it is not a
+    // call at all in this lowering — it is the loop's back edge, and whatever
+    // the next activation raises is caught by the guard that activation
+    // re-establishes. (That is an induction over the loop, and it is sound
+    // exactly when this predicate holds for every clause, which is the
+    // condition Collapse is granted under.)
+    bool guardClauseExprCannotRaise(const eshkol_ast_t* e,
+                                    const std::string& loop_name);
+
+    // Does this guard have a clause that always matches — `else`, or a literal
+    // true test?  Without one, a raise the clauses do not match is re-raised
+    // into the enclosing handler by R7RS, which is the enclosing ACTIVATION's
+    // guard, which makes the collapsed activations observable.
+    bool guardHasCatchAllClause(const eshkol_operations_t* g);
+
+    // Names bound INSIDE a loop body — let/let*/letrec/letrec*/named let/do
+    // variables and lambda parameters. A guard clause that reads one of these
+    // cannot be replayed from a snapshot of the loop PARAMETERS, because that
+    // binding's storage is reused by the next iteration.
+    void collectLoopBoundNames(const eshkol_ast_t* ast, std::set<std::string>& out);
+
+    // Is there a call to `loop_name` in TAIL position of `body`?  Mirrors the
+    // tail-context rules isInTailPosition() encodes, walking DOWN from a known
+    // tail expression rather than up from a known call.
+    bool tailPositionHasSelfCall(const eshkol_ast_t* body,
+                                 const std::string& loop_name);
+
+    // Does this guard's BODY carry the loop — i.e. does a back edge get taken
+    // from inside its dynamic extent?  Only those guards constrain the
+    // lowering; a guard whose self-call sits in a CLAUSE has already had its
+    // own handler removed when that call runs, so it leaves nothing behind.
+    bool guardCarriesLoop(const eshkol_operations_t* g, const std::string& loop_name);
+
+    GuardLoopClass classifyGuardForLoop(const eshkol_operations_t* g,
+                                        const std::string& loop_name,
+                                        const std::set<std::string>& loop_bound);
+
+    // Whole-loop verdict: does ANY guard that carries this loop need the replay
+    // lowering?  One does ⇒ every guard back edge in the loop takes it, which
+    // keeps a single rule for the whole loop and is always exact (Collapse is
+    // only ever an optimisation over Replay).
+    bool loopNeedsGuardReplay(const eshkol_ast_t* ast, const std::string& loop_name,
+                              const std::set<std::string>& loop_bound);
+
+    // One-shot setup for a loop that is about to be lowered: decides the guard
+    // lowering and, when it is Replay, allocates the two entry-block slots the
+    // mechanism needs. `arity` is the loop's parameter count.
+    void setupGuardReplayForLoop(eshkol::BindingCodegen::TailCallContext& tco_ctx,
+                                 const eshkol_ast_t* loop_body,
+                                 const std::string& loop_name);
+
+    // Declarations for the four SW-58 runtime entry points.
+    enum class GuardReplayFn { Depth, UnwindTo, Snapshot, Restore };
+    Function* getGuardReplayFn(GuardReplayFn which);
+
+    // Emitted on every path that leaves a replaying guard loop: drop whatever
+    // replay frames the loop's back edges left standing. Without it a loop that
+    // exits WITHOUT passing through the guard (`(if done acc (guard ...))`)
+    // would leave live handler frames whose landing pad is a frame the function
+    // is about to return from.
+    void emitGuardReplayUnwindAt(Value* mark_slot);
 
     // Check if an AST node is in tail position within its parent
     // Note: IF_OP uses call_op structure with variables[0]=cond, [1]=then, [2]=else
@@ -2402,6 +3007,22 @@ private:
     // control flow that could skip the balanced scope end.
     static const std::set<std::string>& iterScopeBlacklist();
 
+    static bool iterScopeNumericTensorElement(const eshkol_ast_t* expr);
+
+    bool iterScopeSafeTensorLiteral(const eshkol_ast_t* elements,
+                                   const uint64_t* dimensions,
+                                   uint64_t num_dimensions,
+                                   uint64_t total_elements,
+                                   std::set<std::string>& local_fns,
+                                   std::set<std::string>& analyzing,
+                                   int depth);
+
+    bool iterScopeSafeTensorDotOperand(const eshkol_ast_t* expr,
+                                       uint64_t* vector_length,
+                                       std::set<std::string>& local_fns,
+                                       std::set<std::string>& analyzing,
+                                       int depth);
+
     // Is `expr` free of iteration-escape channels? local_fns holds names
     // callable as plain loops from this position (the enclosing loop name +
     // any locally nested named-let names); analyzing holds user-define names
@@ -2410,19 +3031,6 @@ private:
                            std::set<std::string>& local_fns,
                            std::set<std::string>& analyzing,
                            int depth);
-    static bool iterScopeNumericTensorElement(const eshkol_ast_t* expr);
-    bool iterScopeSafeTensorLiteral(const eshkol_ast_t* elements,
-                                   const uint64_t* dimensions,
-                                   uint64_t num_dimensions,
-                                   uint64_t total_elements,
-                                   std::set<std::string>& local_fns,
-                                   std::set<std::string>& analyzing,
-                                   int depth);
-    bool iterScopeSafeTensorDotOperand(const eshkol_ast_t* expr,
-                                       uint64_t* vector_length,
-                                       std::set<std::string>& local_fns,
-                                       std::set<std::string>& analyzing,
-                                       int depth);
 
     // Analyze a user-defined function's body by name (define-level map).
     // Memoized; a name already on the analysis stack is resolved inductively
@@ -2440,12 +3048,34 @@ private:
                                bool* out_needs_nursery = nullptr,
                                bool loop_shadows_exit = false,
                                bool loop_shadows_tensor_dot = false);
-    void finishIterScopeBeforeExit();
 
     // Emit the end-of-iteration scope release: store the out-flowing tagged
     // values into an entry-hoisted scratch array and call the runtime helper,
     // which pops the scope when none of them escape it and commits otherwise.
-    void emitIterScopeEnd(const std::vector<Value*>& out_values);
+    // SW-164: open the loop's LOOP scope once, in the setup block that
+    // dominates the loop header. It sits OUTSIDE the per-iteration scope and
+    // is what gives an escaping back edge somewhere to rewind to: without it
+    // the runtime can only retain the iteration (the pre-SW-164 behavior),
+    // because the previous iteration's promoted accumulator lives below the
+    // iteration mark and nothing can reclaim it. Balanced by
+    // emitIterScopeFinish on every exit path.
+    void emitLoopScopeBegin();
+
+    // SW-164: end an iteration scope and RETURN the out-values as they stand
+    // afterwards. The runtime promotes survivors out of the span it rewinds and
+    // rewrites them in the scratch array in place, so the values that go in are
+    // not necessarily the values that come out — the caller must use these,
+    // exactly as the ESH-0214e nursery recycle already required.
+    //
+    // @param finish  false at a tail-call back edge (the loop scope is reopened
+    //                for the next iteration); true at the loop's exit (both the
+    //                iteration scope and the loop scope are closed for good).
+    std::vector<Value*> emitIterScopeEndImpl(const std::vector<Value*>& out_values,
+                                             bool finish);
+
+    std::vector<Value*> emitIterScopeEnd(const std::vector<Value*>& out_values);
+    Value* emitIterScopeFinish(Value* out_value);
+    void finishIterScopeBeforeExit();
     // ═══════════════════ END ESH-0214b ═══════════════════
 
     // ═══════════════════ ESH-0214e: nursery lowering for mutating loops ═══════
@@ -2456,7 +3086,9 @@ private:
     // nursery converges on the 48-h-validated with-region deep-promotion path
     // rather than forking a second evacuator. See runtime_regions.cpp
     // (eshkol_iter_nursery_recycle) for the runtime side.
-    struct IterNurseryFns;;
+    struct IterNurseryFns {
+        FunctionCallee create, push, pop, enter, leave, recycle, escape_into;
+    };
     IterNurseryFns getIterNurseryFns();
 
     // Open the loop's nursery region in the current (setup) block, ONCE per loop
@@ -2496,6 +3128,179 @@ private:
     // loop's arity, in which case the caller must fall back to a normal call.
     Value* emitTCOBackEdge(const std::vector<const eshkol_ast_t*>& arg_nodes,
                            eshkol::BindingCodegen::TailCallContext& tco_ctx);
+    // ===== END TAIL CALL OPTIMIZATION SUPPORT =====
+
+    // ESH-0074c: which node test astScanVar() applies while walking. See the
+    // comment on astScanVar for the contract.
+    enum class VarScanMode { SetTarget, ClosureCapture, ObservationContext };
+
+    // True iff `var` is bound by this parameter list (so an inner reference to it
+    // is the PARAMETER, not a capture of the enclosing binding).
+    bool paramListShadows(const eshkol_ast_t* params, uint64_t num_params,
+                          const char* rest_param, const std::string& var);
+
+    // Same question for a let/named-let binding list, whose entries are
+    // (variable value) pairs.
+    bool bindingListShadows(const eshkol_ast_t* bindings, uint64_t num_bindings,
+                            const std::string& var);
+
+    // Helper function to find free variables in a lambda body
+    // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
+    // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Returns true iff `var` is the target of
+    // a SET_OP anywhere in the AST subtree `ast`. Mirrors the recursion structure
+    // of findFreeVariablesImpl.
+    //
+    // COMPLETENESS MATTERS (ESH-0214f / vm-parity `do_set_param_native`): this
+    // predicate also drives ASSIGNMENT CONVERSION — boxing a set!-mutated
+    // function/lambda parameter into an alloca (codegenFunctionDefinition ~11252,
+    // codegenLambda ~27380). There, a MISSED set! is not merely "incomplete": the
+    // parameter stays a by-value LLVM Argument, so codegenSet finds no storage
+    // location and the assignment is dropped with a "not mutable" diagnostic. That
+    // is exactly how
+    //     (define (f n) (do ((i 0 (+ i 1))) ((= i 3)) (set! n (+ n 1))) n)
+    // returned 10 instead of 13: `do` lowers to the call_op layout but had no case
+    // here, and nothing walked into ESHKOL_CONS subtrees (which is where `do`
+    // keeps its bindings/steps/test/result forms), so the set! was invisible.
+    //
+    // The safe direction of error is to over-approximate — a spurious `true` only
+    // costs one unused alloca / one arena-promoted capture, whereas a spurious
+    // `false` silently miscompiles a mutation. So every structural container the
+    // parser can produce is walked, and `default: return false` is now reached
+    // only by genuine leaves (literals, quote, type annotations, macro defs).
+    //
+    // ESH-0074c: that completeness is scarce, so the traversal is shared rather
+    // than copied. `VarScanMode` selects which NODE TEST is applied while the
+    // walk itself stays byte-identical:
+    //   SetTarget      — `var` is the target of a set! (the original predicate).
+    //   ClosureCapture — `var` is referenced from inside a form whose capture
+    //                    machinery SHARES the enclosing cell by pointer, and which
+    //                    arena-moves a stack alloca to do it: a lambda or a named
+    //                    let. Internal function defines capture through
+    //                    module-level storage instead and are excluded on purpose
+    //                    (see the DEFINE_OP case).
+    // The second mode drives codegenDo's storage-class decision; see
+    // doFormCapturesVar().
+    bool astScanVar(const eshkol_ast_t* ast, const std::string& var,
+                    VarScanMode mode, unsigned scope_depth = 0);
+
+    // Collect a mutation summary for ASTs that contain no nested binder. Such
+    // bodies are the hot path for large generated lets/letrecs; binder-shaped
+    // ASTs deliberately fall back to astScanVar so shadowing remains exact.
+    bool collectFlatMutationTargets(const eshkol_ast_t* ast,
+                                    std::unordered_set<std::string>& targets);
+
+    // Returns true iff `var` is the target of a set! anywhere in `ast`.
+    bool astSetsVar(const eshkol_ast_t* ast, const std::string& var);
+
+    // ESH-0074c: returns true iff some closure created inside `ast` captures
+    // `var` THROUGH THE POINTER-SHARING PATH — i.e. `var` is referenced from the
+    // body of a lambda or a named let and is not shadowed by that form's own
+    // bindings. Drives codegenDo's storage-class decision.
+    bool astVarCapturedByNestedClosure(const eshkol_ast_t* ast, const std::string& var);
+
+    // Shared assignment-conversion observation query used by BindingCodegen.
+    // This includes compiler-generated contexts such as guard handlers, not
+    // only source-level lambda nodes.
+    bool astMayBeObservedAfterMutation(const eshkol_ast_t* ast,
+                                       const std::string& var);
+
+    // ── Escape analysis for a captured continuation ───────────────────────
+    //
+    // Snapshotting the C stack is what makes a continuation survive its
+    // frame's return, but it costs an arena copy proportional to the live
+    // stack at every capture. The overwhelmingly common use of call/cc —
+    // early return / exception-style unwinding, `(call/cc (lambda (k) … (k v)
+    // …))` — never needs it: such a continuation can only be invoked while
+    // proc is running, hence while the capturing frame is still live, so the
+    // plain setjmp/longjmp path is already correct and free. Measured before
+    // this analysis: an escape-only call/cc at depth 200 burned ~270KB of
+    // arena per capture and drove a 3000-iteration loop into the 1GB heap
+    // limit, where it had previously used none.
+    //
+    // Returns true only when EVERY use of `name` is the operator of a direct
+    // call and none appears inside a nested lambda or named let (which could
+    // outlive the frame). Anything this does not model falls through to
+    // astReferencesVar(), so an unrecognised form is treated as escaping. The
+    // safe direction of error is `false`: a spurious false only pays for a
+    // stack copy that was not needed, whereas a spurious true would drop the
+    // image a later re-entry depends on.
+    bool continuationUseStaysLocal(const eshkol_ast_t* ast, const std::string& name);
+
+    bool astReferencesVarScoped(const eshkol_ast_t* ast, const std::string& var,
+                                bool shadowed);
+
+    bool astReferencesVar(const eshkol_ast_t* ast, const std::string& var);
+
+    /**
+     * @brief True iff @p name is used as a VALUE (not merely called) anywhere in
+     *        @p ast — `(set! g loop)`, `(list loop)`, `(map loop xs)`, a return
+     *        position — as opposed to the direct call `(loop …)`.
+     *
+     * codegenNamedLet uses this to decide whether the loop procedure can outlive
+     * the frame that created it. If it can, every capture cell must live in the
+     * arena rather than on the caller's stack: a leaked procedure reads its
+     * captures through the cell pointer, and a stack cell is dangling as soon as
+     * the enclosing function returns. That was a real crash, not a theoretical
+     * one — a read-only captured PARAMETER (materialised into an entry-block
+     * alloca) came back as a pair once the frame had been reused, so
+     * `(< i n)` inside a leaked loop body reported "expected number, got pair".
+     *
+     * Only the direct-callee position is excluded, and only for CALL_OP. IF_OP /
+     * COND_OP share the call_op layout but their `func` field is the condition,
+     * so it is inspected normally. Unhandled op kinds fall back to
+     * astReferencesVar, which counts a direct call too: that OVER-approximates
+     * escape, which costs one arena cell and can never be incorrect.
+     */
+    bool astUsesNameAsValue(const eshkol_ast_t* ast, const std::string& name);
+
+    void findFreeVariablesImpl(const eshkol_ast_t* ast,
+                          const std::unordered_map<std::string, Value*>& current_scope,
+                          const eshkol_ast_t* parameters, uint64_t num_params,
+                          std::vector<std::string>& free_vars,
+                          std::unordered_set<std::string>& bound_vars);
+
+    // Wrapper function for findFreeVariablesImpl - initializes empty bound_vars set
+    void findFreeVariables(const eshkol_ast_t* ast,
+                          const std::unordered_map<std::string, Value*>& current_scope,
+                          const eshkol_ast_t* parameters, uint64_t num_params,
+                          std::vector<std::string>& free_vars);
+
+    Value* codegenLambda(const eshkol_operations_t* op);
+
+
+    /**
+     * @brief Build (once per loop function) the trampoline that lets an escaped
+     *        named-let loop procedure be entered through the ordinary closure ABI.
+     *
+     * A named-let loop function is `tagged f(tagged p0..pk-1, ptr c0..cm-1)`,
+     * where each `ci` points DIRECTLY at the shared cell holding capture `i`.
+     * The closure dispatcher, by contrast, passes `&env.captures[i]` — a slot
+     * holding a tagged value. The trampoline bridges exactly that one level:
+     * each slot carries the cell address as a tagged INT64 (the same convention
+     * `capturePointerTagFromCurrentFunction` uses when a body lambda captures a
+     * `_cap` argument), so the thunk loads it, turns it back into a pointer, and
+     * forwards it. Without the trampoline the dispatcher would hand the loop
+     * function pointers to the env slots themselves and every read of a captured
+     * variable would return the tag bytes instead of the value.
+     *
+     * Emitted lazily: only a named let whose loop procedure is actually used as
+     * a value pays for it, so the stdlib's many ordinary loops emit no extra IR.
+     */
+    Function* getNamedLetEscapeThunk(const NamedLetEscapeInfo& info);
+
+    /**
+     * @brief Materialise a first-class closure for a named-let loop procedure
+     *        used as a VALUE, or nullptr when the capture cells are not
+     *        reachable from the function currently being emitted.
+     *
+     * Each capture's shared cell is located the same three ways the rest of the
+     * backend locates one: the loop function's own `<fv>_cap` pointer argument,
+     * an enclosing lambda's `captured_<fv>` slot (which holds the cell address
+     * as a tagged int64), or the symbol table when the cell is a plain alloca /
+     * global / pointer instruction of the active function. Returning nullptr
+     * (rather than guessing) keeps the old behaviour for any shape not covered,
+     * so this can never make a working program worse.
+     */
     Value* codegenNamedLetEscapeClosure(const std::string& loop_name,
                                         const NamedLetEscapeInfo& info);
 
@@ -2604,7 +3409,9 @@ private:
     // Differentiate operations (symbolic, AST-based)
     eshkol_ast_t* differentiateOperationSymbolic(const eshkol_operations_t* op, const char* var);
 
-    // Convert AST to runtime S-expression (quoted list)
+    // Convert AST to runtime S-expression (quoted list). Identifiers carry
+    // their source spelling: this is also the source form of a procedure,
+    // whose binders the expander renamed (syntax_color.h).
     Value* codegenQuotedAST(const eshkol_ast_t* ast);
 
     // Handle operation AST nodes for S-expression generation
@@ -2612,6 +3419,35 @@ private:
 
     // Helper to build (op arg1 arg2 ...) for n-ary operations
     Value* codegenQuotedNaryOp(const char* op_name, const eshkol_ast_t* args, uint64_t num_args);
+
+    // True when `op` is exactly the `n/d` -> `(make-rational n d)` desugar
+    // the parser synthesizes for a rational-literal token (parser.cpp,
+    // parse_atom's TOKEN_NUMBER '/' branch): a call to "make-rational" with
+    // precisely two operands, each an int64 or bignum-magnitude LITERAL.
+    //
+    // This is deliberately the same whitelist autodiff_codegen.cpp's
+    // towerSafeExpr uses to accept a rational literal into the exact AD
+    // tier, and for the same reason: `(make-rational n d)` written directly
+    // by a user is indistinguishable in the AST from the literal's desugar,
+    // so only the shape a literal can actually produce is treated as a
+    // literal. `(make-rational x 3)` (a variable operand) is a genuine call
+    // and must still be quoted as list data.
+    static bool isQuotedRationalLiteralDesugar(const eshkol_operations_t* op);
+
+    // True when `op` is exactly the complex-literal desugar the parser
+    // synthesizes (parser.cpp, parse_atom's TOKEN_NUMBER branch): a call to
+    // "make-rectangular" with two DOUBLE literal operands. A complex literal's
+    // parts are always inexact, so a variable or exact operand is a genuine
+    // call and stays list data under quote.
+    static bool isQuotedComplexLiteralDesugar(const eshkol_operations_t* op);
+
+    // Construct the actual rational VALUE for a quoted `n/d` literal
+    // (isQuotedRationalLiteralDesugar already verified the shape). Routes
+    // through the same eshkol_rational_make_tagged runtime entry point the
+    // evaluated `(make-rational n d)` call uses (see the
+    // func_name == "make-rational" arm above), so a quoted bignum-rational
+    // literal and its evaluated twin are the same runtime value (SW-163).
+    Value* codegenQuotedRationalLiteral(const eshkol_operations_t* op);
 
     // Build runtime S-expression list from call operation
     Value* codegenQuotedList(const eshkol_operations_t* op);
@@ -2806,9 +3642,15 @@ private:
     // Sets ESHKOL_OBJ_FLAG_LINEAR on the object header so the value must be consumed exactly once
     Value* codegenOwned(const eshkol_operations_t* op);
 
+    // Apply the ownership marker to a value that has already been evaluated.
+    Value* codegenOwnedValue(Value* value);
+
     // Codegen for (move value) - transfers ownership
     // Sets CONSUMED flag on source object and nulls out the source binding
     Value* codegenMove(const eshkol_operations_t* op);
+
+    // Apply the move effects to an already evaluated tagged value.
+    Value* codegenMoveValue(const eshkol_operations_t* op, Value* value);
 
     // Codegen for (borrow value body ...) - temporary read-only access with scope guard
     // Sets BORROWED flag before body, clears it after body completes
@@ -2817,6 +3659,9 @@ private:
     // Codegen for (shared expr) - creates a reference-counted value
     // Sets SHARED flag and initializes ref_count to 1 in the object header
     Value* codegenShared(const eshkol_operations_t* op);
+
+    // Apply the shared marker to a value that has already been evaluated.
+    Value* codegenSharedValue(Value* value);
 
     // Codegen for (weak-ref value) - creates a weak reference to a shared value
     // Sets WEAK flag on the object header without incrementing ref_count
@@ -2928,6 +3773,73 @@ private:
                               bool has_op, int op_code);
 
     // (make-rectangular real imag) - Create complex from rectangular coordinates
+    // === Complex values that carry a derivative (ADR-0025) ===
+    //
+    // Every complex builtin reaches its carrier rule here and nowhere else. A
+    // carrier complex is read through its two tagged components and the result
+    // is the textbook component formula evaluated by the generic arithmetic
+    // and the value-level math functions, so a jet, a tape node or a Taylor
+    // tower flows through with the rule it already has. A REAL carrier is a
+    // complex number with no imaginary part, and gets the same treatment
+    // instead of being flattened to its primal.
+    enum ComplexUnaryKind { CPX_REAL_PART, CPX_IMAG_PART, CPX_MAGNITUDE, CPX_ANGLE, CPX_CONJUGATE };
+
+    // Raises unless the complex value is away from the origin, where neither
+    // the magnitude nor the angle has a derivative. Never answers 0 there.
+    void guardComplexAwayFromOrigin(Value* re, Value* im, const char* who);
+
+    // 0 - v through the binary operator, which has a rule for every carrier;
+    // the unary negation has one for tape nodes only.
+    Value* carrierNegate(Value* v);
+
+    Value* carrierMagnitude(Value* re, Value* im);
+
+    Value* carrierAngle(Value* re, Value* im);
+
+    Value* complexUnaryWithCarriers(Value* z_tagged, ComplexUnaryKind kind,
+                                    const std::function<Value*()>& plain);
+
+    // A complex number as its two real components, each any real number: a
+    // plain number or a derivative carrier. The carrier formulas below are
+    // written on these pairs with the real arithmetic and the value-level math
+    // functions, which have a rule for every carrier, and mirror the plain
+    // kernels in <eshkol/core/complex_math.h> formula for formula.
+    struct CPair { Value* re; Value* im; };
+    Value* cpxDouble(double v);
+    Value* cpxExact(int64_t v);
+    CPair cpxOf(Value* z);
+    Value* cpxPack(const CPair& p);
+    Value* cpxReal(Value* v, const char* name);
+    CPair cpxAdd(const CPair& a, const CPair& b);
+    CPair cpxSub(const CPair& a, const CPair& b);
+    CPair cpxMul(const CPair& a, const CPair& b);
+    CPair cpxDiv(const CPair& a, const CPair& b);
+    CPair cpxScale(const CPair& a, Value* k);
+    CPair cpxMulI(const CPair& a);   // i a
+    CPair cpxDivI(const CPair& a);   // a / i
+    CPair cpxConst(int64_t re);
+    CPair cpxExp(const CPair& a);
+    CPair cpxLog(const CPair& a);
+    CPair cpxSqrt(const CPair& a);
+    CPair cpxSin(const CPair& a);
+    CPair cpxCos(const CPair& a);
+    CPair cpxSinh(const CPair& a);
+    CPair cpxCosh(const CPair& a);
+    CPair cpxAsin(const CPair& z);
+
+    // Every complex procedure with a plain complex kernel, on a carrier complex,
+    // by its component formula (ADR-0025). nullptr for a procedure with no
+    // formula here; the caller raises.
+    Value* complexCarrierMath(Value* z_tagged, const std::string& func_name);
+
+    // (expt a b) when a derivative is in play and either operand is complex
+    // (SW-211). The plain kernel eshkol_complex_pow works on the primals and
+    // drops the derivative. An exact integer exponent is repeated complex
+    // multiplication (binary exponentiation, a reciprocal for a negative one),
+    // which is exact where the components are and defined at a zero base;
+    // any other exponent is exp(b log a), as eshkol_cpx_pow computes it.
+    Value* complexCarrierPow(Value* base, Value* expo);
+
     Value* codegenMakeRectangular(const eshkol_operations_t* op);
 
     // (make-polar magnitude angle) - Create complex from polar coordinates
@@ -3076,20 +3988,17 @@ private:
 
     // Helper function to resolve lambda/function from AST with arity-specific builtin handling
     /**
-     * @brief True when @p name is lexically shadowed by a runtime binding of
-     *        the current function (ESH-0070 class).
+     * @brief True when @p name denotes a runtime binding of the current
+     *        function that no static alias describes (ESH-0070 class).
      *
-     * A function parameter (llvm::Argument) or local variable (AllocaInst
-     * owned by the current function) shadows any same-named top-level
-     * function. The unscoped <name>_func entries leak into every scope
-     * (preGenerateTopLevelLambdas writes both symbol_table and
-     * global_symbol_table) and function_table is global, so static
-     * procedure resolution MUST decline when this returns true — the only
-     * resolution that agrees with lexical scope is runtime dispatch on the
-     * local value. A scoped <current>.<name>_func entry exempts the name:
-     * it proves the local binding itself is a statically-known lambda
-     * (let-bound or local define), which static resolution handles
-     * correctly via the scoped lookup.
+     * A function parameter or local storage cell shadows any same-named
+     * top-level function, and any scoped alias an earlier binding of the name
+     * left in this function. Static procedure resolution MUST decline when
+     * this returns true; the only resolution that agrees with lexical scope is
+     * runtime dispatch on the local value. The exception is a scoped alias
+     * recorded by the binding the name denotes now: that binding is a
+     * never-reassigned lambda and static resolution is exact. The rule lives
+     * in static_callee_binding.h so every static fast path applies it.
      */
     bool isShadowedByLocalRuntimeBinding(const std::string& name);
 
@@ -3244,7 +4153,52 @@ private:
      * user definitions, locals, captures, REPL namespaces — is decided
      * strictly before we get here and is untouched.
      */
-    struct InlineBuiltinSpec;;
+    /* How a VARIADIC builtin computes its result from the REST LIST.
+     *
+     * A first-class reference to a variadic builtin is called through the
+     * closure ABI, and that ABI has exactly one shape for "any number of
+     * arguments": the dispatcher conses the caller's arguments into a list
+     * and passes that single list (see the variadic branch of the closure
+     * dispatcher, `CLOSURE_FLAG_VARIADIC`). So the wrapper body for such a
+     * reference is not "call the builtin with N arguments" — it is
+     * "compute the builtin's answer from this list", and each variadic
+     * builtin says here how:
+     *
+     *   Identity   the rest list IS the answer  (`list`; `values` in this
+     *              path, which yields its arguments as a list)
+     *   RestUnary  a UNARY builtin is definitionally `(apply <name> lst)`
+     *              (`vector` is `list->vector`, `string` is `list->string`)
+     *   LeftFold   left-fold the list with the builtin's BINARY form
+     *              (`string-append`, `max`, `gcd`, `vector-append`, …)
+     *   ByCount    the builtin takes `arity` required arguments and up to
+     *              `max_arity` in all (`atan`, `round`, and `display`/`write`
+     *              with their optional port): the rest list is counted and
+     *              the call-position lowering at exactly that count is
+     *              called; any other count raises an arity error
+     *   None       the row is variadic but has no rest form, so a value
+     *              reference still materialises at the row's fixed arity —
+     *              the pre-existing compromise, recorded rather than
+     *              silently assumed.
+     *
+     * Every one of these is built from the AUTHORITATIVE call-position
+     * lowering (createInlineBuiltinWrapper re-enters codegenCall), so none
+     * of them is a second implementation that can drift. */
+    enum class VariadicRest : uint8_t { None, Identity, RestUnary, LeftFold, ByCount, Chain, Bytevector };
+
+    /* A row of the first-class builtin table.
+     *
+     * `arity` is the arity a wrapper is built at when the USE SITE names
+     * none. For a `variadic` row that number is a default, never a claim
+     * about the procedure: a use site that knows its own arity — `map` over
+     * k lists passes k as required_arity — must get a wrapper built at THAT
+     * arity, or the surplus arguments are silently dropped (SW-173). */
+    struct InlineBuiltinSpec {
+        size_t arity;
+        bool variadic = false;
+        VariadicRest rest = VariadicRest::None;
+        const char* rest_unary = nullptr;   // RestUnary only
+        size_t max_arity = 0;               // ByCount only: arities arity..max_arity
+    };
 
     /* A row's `arity` is what a use site gets when it names no arity of its
      * own. It was once the WHOLE story, described here as a compromise:
@@ -3268,14 +4222,20 @@ private:
     // AST (`variable.id` is a char*; a std::deque never invalidates).
     std::deque<std::string> inline_builtin_synthetic_names_;
 
+    /* Symbol-safe spelling of a builtin's name. Shared by every wrapper
+     * factory so one builtin can never acquire two wrapper symbols. */
+    static std::string inlineBuiltinSymbolSuffix(const std::string& name);
+
     Function* createInlineBuiltinWrapper(const std::string& name, size_t arity);
 
     /* Give a call-position-only builtin an honest first-class value, or
      * nullptr if the name is not one we can wrap. */
     Value* codegenInlineBuiltinAsValue(const std::string& name);
 
-    // Create wrapper function for builtin unary math functions (abs, etc.)
-    Function* createBuiltinUnaryMathFunction(const std::string& func_name_in);
+    // SW-230: a math builtin of the math dispatch (a row or an alias of the
+    // Taylor recurrence table, which the route guard keeps complete) that has
+    // a first-class table row. The activations have their own value route.
+    bool isFirstClassMathBuiltin(const std::string& name) const;
 
     /* Quirk 11: create a unary (or nullary for `newline`) closure wrapper
      * around an I/O runtime helper so the builtin can be passed as a
@@ -3339,15 +4299,7 @@ private:
     // ─── Global Workspace ───────────────────────────────────────────────
     // codegenMakeWorkspace / codegenWSRegister / codegenWSStep — extracted to
     // LogicWorkspaceCodegen.
-#if 0  // Replaced by LogicWorkspaceCodegen — kept #if 0 stub bodies for now
-       // until the next commit removes them entirely; dispatch in
-       // codegenOperation already routes through logic_workspace_->.
-    Value* codegenMakeWorkspace(const eshkol_operations_t* op);
-
-    Value* codegenWSRegister(const eshkol_operations_t* op);
-
-    Value* codegenWSStep(const eshkol_operations_t* op);
-#endif // codegenMakeWorkspace / codegenWSRegister / codegenWSStep stubs (extracted)
+ // codegenMakeWorkspace / codegenWSRegister / codegenWSStep stubs (extracted)
 };
 
 #endif

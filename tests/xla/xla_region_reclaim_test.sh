@@ -36,7 +36,7 @@ WORK="$ESHKOL_TEST_TMPDIR"
 eshkol_test_toolchain_snapshot "$B" || { echo "FAIL: toolchain snapshot failed" >&2; exit 1; }
 # Compile ahead of time so the report comes from the program alone, and so no
 # run-cache entry from another configuration can stand in for this one.
-if ! ESHKOL_XLA_THRESHOLD=100000 "$ESHKOL_RUN" "$SRC" -L"$B" -o "$WORK/prog" > "$WORK/compile.log" 2>&1; then
+if ! ESHKOL_ENABLE_XLA=1 ESHKOL_XLA_THRESHOLD=100000 "$ESHKOL_RUN" "$SRC" -L"$B" -o "$WORK/prog" > "$WORK/compile.log" 2>&1; then
     echo "FAIL: xla_region_reclaim_test: compile failed"; cat "$WORK/compile.log"; exit 1
 fi
 ESHKOL_ARENA_REPORT=1 eshkol_test_timeout 300 "$WORK/prog" > "$WORK/out.log" 2>&1

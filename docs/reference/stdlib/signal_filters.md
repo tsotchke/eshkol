@@ -118,13 +118,13 @@ Design an `order`-th Butterworth lowpass (bilinear transform of the analog proto
 ```
 
 ### `(butterworth-highpass order cutoff)`
-Highpass via the lowpass-to-highpass spectral inversion (`z → −z` on the numerator). Returns `(b . a)`.
+Highpass via the lowpass-to-highpass spectral reflection (`z → −z` in both numerator and denominator). Returns `(b . a)`.
 
 ```scheme
 (display (butterworth-highpass 2 0.5)) (newline)
 ```
 ```
-(#(0.2928932188134524 -0.5857864376269049 0.2928932188134524) . #(1.0 -1.3877787807814457e-16 0.17157287525380988))
+(#(0.2928932188134524 -0.5857864376269049 0.2928932188134524) . #(1.0 1.3877787807814457e-16 0.17157287525380988))
 ```
 
 ### `(butterworth-bandpass order low-cutoff high-cutoff)`
@@ -134,7 +134,7 @@ Bandpass as a lowpass+highpass cascade. Returns a **list of two** `(b . a)` pair
 (display (butterworth-bandpass 2 0.2 0.6)) (newline)
 ```
 ```
-((#(0.39133577250176854 0.7826715450035371 0.39133577250176854) . #(1 0.36952737735124097 0.19581571265583303)) (#(0.6389455251590224 -1.2778910503180447 0.6389455251590224) . #(1 1.142980502539901 0.4128015980961886)))
+((#(0.39133577250176854 0.7826715450035371 0.39133577250176854) . #(1 0.36952737735124097 0.19581571265583303)) (#(0.6389455251590224 -1.2778910503180447 0.6389455251590224) . #(1 -1.142980502539901 0.4128015980961886)))
 ```
 
 ## Frequency response

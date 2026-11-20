@@ -15,6 +15,8 @@
 #include "eshkol/backend/xla/xla_compiler.h"
 #include "eshkol/backend/codegen_context.h"
 #include "eshkol/backend/type_system.h"
+#include <eshkol/core/config.h>
+#include <cstdio>
 #include <cstdlib>
 #include <sstream>
 #include <vector>
@@ -278,6 +280,9 @@ public:
      *         fallback entry point for XLA tensor ops. */
     llvm::Function* getOrCreateRuntime(const char* funcName,
                                         const std::vector<llvm::Type*>& paramTypes) {
+        if (eshkol_config_get()->xla_verbose)
+            std::fprintf(stderr, "[XLA] lowering %s as a separate runtime call (fusion boundary)\n",
+                         funcName);
         auto& module = ctx_->module();
         if (auto* existing = module.getFunction(funcName)) {
             return existing;

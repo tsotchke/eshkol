@@ -317,6 +317,7 @@ eshkol_config_t eshkol_config_defaults(void) {
     config.llvm_opt_level = ESHKOL_OPT_LEVEL_2;
     config.enable_simd = true;
     config.enable_xla = false;
+    config.xla_verbose = false;
     config.enable_gpu = false;
 
     // Debug defaults
@@ -454,6 +455,9 @@ void eshkol_config_load_env(eshkol_config_t* config) {
     }
     if ((val = std::getenv(ESHKOL_ENV_ENABLE_XLA))) {
         config->enable_xla = parse_bool(val);
+    }
+    if ((val = std::getenv(ESHKOL_ENV_XLA_VERBOSE))) {
+        config->xla_verbose = parse_bool(val);
     }
     if ((val = std::getenv(ESHKOL_ENV_ENABLE_GPU))) {
         config->enable_gpu = parse_bool(val);

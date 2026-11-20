@@ -13260,6 +13260,19 @@
           ],
           "exports": [
             {
+              "name": "apply-filter",
+              "line": 14,
+              "definition_line": 396,
+              "definition_origin": {
+                "module": "signal.filters",
+                "path": "lib/signal/filters.esk",
+                "line": 396,
+                "chain": [
+                  "signal.filters"
+                ]
+              }
+            },
+            {
               "name": "apply-window",
               "line": 12,
               "definition_line": 102,
@@ -13288,11 +13301,11 @@
             {
               "name": "butterworth-bandpass",
               "line": 15,
-              "definition_line": 391,
+              "definition_line": 390,
               "definition_origin": {
                 "module": "signal.filters",
                 "path": "lib/signal/filters.esk",
-                "line": 391,
+                "line": 390,
                 "chain": [
                   "signal.filters"
                 ]
@@ -13301,11 +13314,11 @@
             {
               "name": "butterworth-highpass",
               "line": 15,
-              "definition_line": 369,
+              "definition_line": 376,
               "definition_origin": {
                 "module": "signal.filters",
                 "path": "lib/signal/filters.esk",
-                "line": 369,
+                "line": 376,
                 "chain": [
                   "signal.filters"
                 ]
@@ -13314,11 +13327,11 @@
             {
               "name": "butterworth-lowpass",
               "line": 15,
-              "definition_line": 327,
+              "definition_line": 334,
               "definition_origin": {
                 "module": "signal.filters",
                 "path": "lib/signal/filters.esk",
-                "line": 327,
+                "line": 334,
                 "chain": [
                   "signal.filters"
                 ]
@@ -13366,11 +13379,11 @@
             {
               "name": "frequency-response",
               "line": 16,
-              "definition_line": 405,
+              "definition_line": 409,
               "definition_origin": {
                 "module": "signal.filters",
                 "path": "lib/signal/filters.esk",
-                "line": 405,
+                "line": 409,
                 "chain": [
                   "signal.filters"
                 ]
@@ -13431,6 +13444,10 @@
           ],
           "top_level_definitions": [
             {
+              "name": "apply-filter",
+              "line": 396
+            },
+            {
               "name": "apply-window",
               "line": 102
             },
@@ -13448,15 +13465,15 @@
             },
             {
               "name": "butterworth-bandpass",
-              "line": 391
+              "line": 390
             },
             {
               "name": "butterworth-highpass",
-              "line": 369
+              "line": 376
             },
             {
               "name": "butterworth-lowpass",
-              "line": 327
+              "line": 334
             },
             {
               "name": "butterworth-poles",
@@ -13475,12 +13492,16 @@
               "line": 172
             },
             {
+              "name": "filter-normalized-cutoff",
+              "line": 324
+            },
+            {
               "name": "fir-filter",
               "line": 210
             },
             {
               "name": "frequency-response",
-              "line": 405
+              "line": 409
             },
             {
               "name": "hamming-window",
@@ -13769,7 +13790,7 @@
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 123,
     "ast_ops": 114,
-    "prelude": 635
+    "prelude": 636
   },
   "builtins_by_category": {
     "ffi_system": 302,
@@ -28716,6 +28737,76 @@
       "binding_identity": "core.list.transform:lib/core/list/transform.esk#append"
     },
     {
+      "name": "apply-filter",
+      "category": "misc",
+      "also_builtin": false,
+      "sources": [
+        "stdlib"
+      ],
+      "provenance": [
+        {
+          "kind": "module_export",
+          "module": "signal.filters",
+          "path": "lib/signal/filters.esk",
+          "line": 14,
+          "defined_at_top_level": true,
+          "definition_line": 396,
+          "definition_origin": {
+            "module": "signal.filters",
+            "path": "lib/signal/filters.esk",
+            "line": 396,
+            "chain": [
+              "signal.filters"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "apply-filter",
+          "binding_category": "procedure",
+          "binding_identity": "signal.filters:lib/signal/filters.esk#apply-filter",
+          "resolved_binding_origin": {
+            "module": "signal.filters",
+            "path": "lib/signal/filters.esk",
+            "name": "apply-filter",
+            "line": 396,
+            "chain": [
+              "signal.filters"
+            ]
+          }
+        },
+        {
+          "kind": "module_export",
+          "module": "signal.filters",
+          "path": "lib/signal/filters.esk",
+          "line": 14,
+          "defined_at_top_level": true,
+          "definition_line": 396,
+          "definition_origin": {
+            "module": "signal.filters",
+            "path": "lib/signal/filters.esk",
+            "line": 396,
+            "chain": [
+              "signal.filters"
+            ]
+          },
+          "visibility": "stdlib_root_required_export",
+          "public_name": "apply-filter",
+          "binding_category": "procedure",
+          "binding_identity": "signal.filters:lib/signal/filters.esk#apply-filter",
+          "resolved_binding_origin": {
+            "module": "signal.filters",
+            "path": "lib/signal/filters.esk",
+            "name": "apply-filter",
+            "line": 396,
+            "chain": [
+              "signal.filters"
+            ]
+          }
+        }
+      ],
+      "binding_category": "procedure",
+      "binding_identity": "signal.filters:lib/signal/filters.esk#apply-filter"
+    },
+    {
       "name": "apply-window",
       "category": "misc",
       "also_builtin": false,
@@ -30559,11 +30650,11 @@
           "path": "lib/signal/filters.esk",
           "line": 15,
           "defined_at_top_level": true,
-          "definition_line": 391,
+          "definition_line": 390,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 391,
+            "line": 390,
             "chain": [
               "signal.filters"
             ]
@@ -30576,7 +30667,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "butterworth-bandpass",
-            "line": 391,
+            "line": 390,
             "chain": [
               "signal.filters"
             ]
@@ -30588,11 +30679,11 @@
           "path": "lib/signal/filters.esk",
           "line": 15,
           "defined_at_top_level": true,
-          "definition_line": 391,
+          "definition_line": 390,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 391,
+            "line": 390,
             "chain": [
               "signal.filters"
             ]
@@ -30605,7 +30696,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "butterworth-bandpass",
-            "line": 391,
+            "line": 390,
             "chain": [
               "signal.filters"
             ]
@@ -30629,11 +30720,11 @@
           "path": "lib/signal/filters.esk",
           "line": 15,
           "defined_at_top_level": true,
-          "definition_line": 369,
+          "definition_line": 376,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 369,
+            "line": 376,
             "chain": [
               "signal.filters"
             ]
@@ -30646,7 +30737,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "butterworth-highpass",
-            "line": 369,
+            "line": 376,
             "chain": [
               "signal.filters"
             ]
@@ -30658,11 +30749,11 @@
           "path": "lib/signal/filters.esk",
           "line": 15,
           "defined_at_top_level": true,
-          "definition_line": 369,
+          "definition_line": 376,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 369,
+            "line": 376,
             "chain": [
               "signal.filters"
             ]
@@ -30675,7 +30766,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "butterworth-highpass",
-            "line": 369,
+            "line": 376,
             "chain": [
               "signal.filters"
             ]
@@ -30699,11 +30790,11 @@
           "path": "lib/signal/filters.esk",
           "line": 15,
           "defined_at_top_level": true,
-          "definition_line": 327,
+          "definition_line": 334,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 327,
+            "line": 334,
             "chain": [
               "signal.filters"
             ]
@@ -30716,7 +30807,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "butterworth-lowpass",
-            "line": 327,
+            "line": 334,
             "chain": [
               "signal.filters"
             ]
@@ -30728,11 +30819,11 @@
           "path": "lib/signal/filters.esk",
           "line": 15,
           "defined_at_top_level": true,
-          "definition_line": 327,
+          "definition_line": 334,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 327,
+            "line": 334,
             "chain": [
               "signal.filters"
             ]
@@ -30745,7 +30836,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "butterworth-lowpass",
-            "line": 327,
+            "line": 334,
             "chain": [
               "signal.filters"
             ]
@@ -39377,11 +39468,11 @@
           "path": "lib/signal/filters.esk",
           "line": 16,
           "defined_at_top_level": true,
-          "definition_line": 405,
+          "definition_line": 409,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 405,
+            "line": 409,
             "chain": [
               "signal.filters"
             ]
@@ -39394,7 +39485,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "frequency-response",
-            "line": 405,
+            "line": 409,
             "chain": [
               "signal.filters"
             ]
@@ -39406,11 +39497,11 @@
           "path": "lib/signal/filters.esk",
           "line": 16,
           "defined_at_top_level": true,
-          "definition_line": 405,
+          "definition_line": 409,
           "definition_origin": {
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
-            "line": 405,
+            "line": 409,
             "chain": [
               "signal.filters"
             ]
@@ -39423,7 +39514,7 @@
             "module": "signal.filters",
             "path": "lib/signal/filters.esk",
             "name": "frequency-response",
-            "line": 405,
+            "line": 409,
             "chain": [
               "signal.filters"
             ]

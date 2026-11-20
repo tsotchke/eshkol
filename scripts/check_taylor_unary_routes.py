@@ -87,7 +87,7 @@ def check(defs: str, runtime: str, codegen: str, complex_cg: str) -> list[str]:
             errors.append(f"binary row '{name}' has no rule in runtime_taylor.c")
 
     suffix_body = function_body(complex_cg, "ComplexCodegen::complexRuntimeSuffix(")
-    carrier_body = function_body(codegen, "Value* complexCarrierMath(")
+    carrier_body = function_body(codegen, "EshkolLLVMCodeGen::complexCarrierMath(")
     suffix_names = set(NAME_EQ_RE.findall(suffix_body))
     carrier_names = set(NAME_EQ_RE.findall(carrier_body))
     if not suffix_names:
