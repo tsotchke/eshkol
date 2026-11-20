@@ -249,7 +249,6 @@ int         vm_dual_is_taylor(const VmDual* d);
  * vm_dual_level_derivative: k! * that coefficient.
  * vm_dual_is_constant: a scalar with zero tangent (a plain number).
  * vm_dual_exact_value: the recursive exact primal, or NULL. */
-extern const char* vm_dual_error;   /* pending diagnostic (SW-219), or NULL */
 VmDual*     vm_dual_constant(VmRegionStack* rs, double value, VmRational* exact);
 VmDual*     vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
                                uint32_t order, uint64_t epoch);

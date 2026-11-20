@@ -9542,16 +9542,16 @@ static double vm_d_cosh(double x)  { return sinh(x); }
 
 /* Push a complex result, or raise the operation's no-derivative message. */
 static void vm_push_complex_result(VM* vm, VmComplex* result) {
-    if (vm_dual_error) {
-        const char* msg = vm_dual_error;
-        vm_dual_error = NULL;
+    if (vm->heap.regions.dual_error) {
+        const char* msg = vm->heap.regions.dual_error;
+        vm->heap.regions.dual_error = NULL;
         vm_raise_error_msg(vm, msg);
         return;
     }
     if (!result) {
-        if (vm_complex_d_error) {
-            const char* msg = vm_complex_d_error;
-            vm_complex_d_error = NULL;
+        if (vm->heap.regions.complex_error) {
+            const char* msg = vm->heap.regions.complex_error;
+            vm->heap.regions.complex_error = NULL;
             vm_raise_error_msg(vm, msg);
         } else {
             vm->error = 1;
@@ -10933,8 +10933,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 vm_push(vm, vm_ad_coeff_value(vm, r));
             } else if (z_val.type == VAL_COMPLEX) {
                 VmComplex* z = (VmComplex*)vm->heap.objects[z_val.as.ptr]->opaque.ptr;
-                double dm = vm_complex_magnitude_tangent(z);
-                if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                double dm = vm_complex_magnitude_tangent(&vm->heap.regions, z);
+                if (vm->heap.regions.complex_error) { const char* msg = vm->heap.regions.complex_error; vm->heap.regions.complex_error = NULL; vm_raise_error_msg(vm, msg); break; }
                 vm_push(vm, vm_real_result(vm, vm_complex_magnitude(z), dm));
             } else if (z_val.type == VAL_DUAL) {
                 vm_push(vm, z_val); vm_dispatch_native(vm, 35);   /* abs keeps the tangent */
@@ -10982,8 +10982,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                             vm_push(vm, vm_ad_coeff_value(vm, r));
                             break;
                         }
-                        double da = vm_complex_angle_tangent(&a_z);
-                        if (vm_complex_d_error) { const char* msg = vm_complex_d_error; vm_complex_d_error = NULL; vm_raise_error_msg(vm, msg); break; }
+                        double da = vm_complex_angle_tangent(&vm->heap.regions, &a_z);
+                        if (vm->heap.regions.complex_error) { const char* msg = vm->heap.regions.complex_error; vm->heap.regions.complex_error = NULL; vm_raise_error_msg(vm, msg); break; }
                         vm_push(vm, vm_real_result(vm, vm_complex_angle(&a_z), da));
                         break;
                     }
@@ -11467,7 +11467,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 377: case 378: case 379: case 380: case 381: case 382: case 383:
     case 384: case 385: case 386: case 387: case 388: case 389: {
         VmRegionStack* dual_rs = &vm->heap.regions;
-        vm_dual_error = NULL;
+        vm->heap.regions.dual_error = NULL;
         switch (fid) {
         case 370: { Value tangent = vm_pop(vm), primal = vm_pop(vm);
             VmDual* d = vm_dual_make(dual_rs, as_number_vm(vm, primal), as_number_vm(vm, tangent));   /* ESH-0410 */
@@ -11548,9 +11548,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* SW-219: an operation with no value (exact division by exact zero,
          * at any depth of a carrier) raises; its placeholder result is
          * discarded. */
-        if (vm_dual_error) {
-            const char* msg = vm_dual_error;
-            vm_dual_error = NULL;
+        if (vm->heap.regions.dual_error) {
+            const char* msg = vm->heap.regions.dual_error;
+            vm->heap.regions.dual_error = NULL;
             (void)vm_pop(vm);
             vm_raise_error_msg(vm, msg);
         }

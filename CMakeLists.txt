@@ -11022,7 +11022,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
     endif()
     target_link_libraries(vm_numeric_context_test PRIVATE eshkol-static
         ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
-    foreach(case IN ITEMS rational_limits bignum_zero_condition symbolic_variable_power)
+    foreach(case IN ITEMS rational_limits bignum_zero_condition diagnostic_contexts symbolic_variable_power)
         add_test(NAME vm_${case} COMMAND vm_numeric_context_test ${case})
     endforeach()
     foreach(_dispatch IN ITEMS threaded switch)
