@@ -63,13 +63,17 @@ components:
       The resolver is a consumer of parser identity, not a second identity
       scheme, and its tables are shared by native tooling and future VM consumers.
       AST string payloads have one owner here too (ADR-0021): a rooted chunked
-      arena every producer allocates from and no consumer frees.
+      arena every producer allocates from and no consumer frees. AST node
+      storage has a sibling owner on the same arena (ast_nodes.h).
     modules:
       - inc/eshkol/frontend/node_identity.h
       - inc/eshkol/frontend/semantic_identity.h
       - inc/eshkol/frontend/diagnostic.h
       - inc/eshkol/frontend/ast_strings.h
+      - inc/eshkol/frontend/ast_nodes.h
+      - lib/frontend/ast_owner_arena.h
       - lib/frontend/ast_strings.cpp
+      - lib/frontend/ast_nodes.cpp
       - lib/frontend/node_identity.cpp
       - lib/frontend/semantic_identity.cpp
       - lib/frontend/diagnostic.cpp

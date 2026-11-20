@@ -21,6 +21,7 @@
 #include <string>
 
 #include "eshkol/eshkol.h"
+#include "eshkol/frontend/ast_nodes.h"
 #include "eshkol/frontend/ast_strings.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
@@ -42,9 +43,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
          * AST string owner (ADR-0021) and are released below. */
         eshkol_ast_clean(&ast);
     }
-    /* Each input is a complete compilation: release its AST strings so a
-     * long campaign stays inside libFuzzer's RSS limit, and so a stale AST
-     * pointer from a previous input is a use-after-free, not a silent read. */
+    /* Each input is a complete compilation: release its AST nodes and
+     * strings so a long campaign stays inside libFuzzer's RSS limit, and so a
+     * stale AST pointer from a previous input is a use-after-free, not a
+     * silent read. */
+    eshkol_ast_nodes_teardown();
     eshkol_ast_strings_teardown();
     return 0;
 }

@@ -29,6 +29,7 @@
 
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
+#include <eshkol/frontend/ast_nodes.h>
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/syntax_datum.h>
 #include "../lib/repl/repl_jit.h"
@@ -8385,9 +8386,11 @@ int main(int argc, char **argv)
 #ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
     eshkol::frontend::enable_self_hosted_scalar_lowering();
 #endif
-    // First local, so it is destroyed last: every AST consumer in main() has
-    // finished before the AST string owner is released (ADR-0021).
+    // First locals, so they are destroyed last: every AST consumer in main()
+    // has finished before the AST node and string owners are released
+    // (ADR-0021, ast_nodes.h).
     eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
+    eshkol::frontend::AstNodesTeardownOnReturn ast_nodes_teardown;
 
     __eshkol_argc = (int32_t)argc;
     __eshkol_argv = argv;

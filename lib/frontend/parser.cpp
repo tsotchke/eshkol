@@ -8,6 +8,7 @@
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/core/logic.h>
+#include <eshkol/frontend/ast_nodes.h>
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/source_paths.h>
 #include <eshkol/frontend/node_identity.h>
@@ -1377,11 +1378,11 @@ static eshkol_ast_t make_parser_call_ast(const char* name,
     ast.type = ESHKOL_OP;
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_CALL_OP;
-    ast.operation.call_op.func = new eshkol_ast_t;
+    ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
     *ast.operation.call_op.func = make_parser_var_ast(name, line, column);
     ast.operation.call_op.num_vars = args.size();
     if (!args.empty()) {
-        ast.operation.call_op.variables = new eshkol_ast_t[args.size()];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(args.size());
         for (size_t i = 0; i < args.size(); i++) {
             ast.operation.call_op.variables[i] = args[i];
         }
@@ -1647,7 +1648,7 @@ static bool read_syntax_rules(SchemeTokenizer& tokenizer, const Token& open,
     macro->literals = nullptr;
     macro->num_literals = syntax.literals.size();
     if (!syntax.literals.empty()) {
-        macro->literals = new char*[syntax.literals.size()];
+        macro->literals = eshkol_ast_new_array<char*>(syntax.literals.size());
         for (size_t i = 0; i < syntax.literals.size(); ++i)
             macro->literals[i] = eshkol_ast_strdup(syntax.literals[i].c_str());
     }
@@ -1712,7 +1713,7 @@ static eshkol_ast_t make_parser_quoted_symbol_ast(const std::string& name,
     ast.operation.op = ESHKOL_QUOTE_OP;
     ast.operation.call_op.func = nullptr;
     ast.operation.call_op.num_vars = 1;
-    ast.operation.call_op.variables = new eshkol_ast_t[1];
+    ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
     ast.operation.call_op.variables[0] = sym_var;
     return ast;
 }
@@ -1753,9 +1754,9 @@ static eshkol_ast_t make_parser_binding_ast(const char* name,
     eshkol_ast_t binding = {};
     binding.type = ESHKOL_CONS;
     stamp_node(binding, line, column);
-    binding.cons_cell.car = new eshkol_ast_t;
+    binding.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
     *binding.cons_cell.car = make_parser_var_ast(name, line, column);
-    binding.cons_cell.cdr = new eshkol_ast_t;
+    binding.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
     *binding.cons_cell.cdr = value;
     return binding;
 }
@@ -1798,7 +1799,7 @@ static eshkol_ast_t wrap_keyword_formal_body(
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_LET_OP;
     ast.operation.let_op.num_bindings = formals.size();
-    ast.operation.let_op.bindings = new eshkol_ast_t[formals.size()];
+    ast.operation.let_op.bindings = eshkol_ast_new_array<eshkol_ast_t>(formals.size());
     ast.operation.let_op.name = nullptr;
     ast.operation.let_op.binding_types = nullptr;
 
@@ -1828,13 +1829,13 @@ static eshkol_ast_t wrap_keyword_formal_body(
         stamp_node(sequence, line, column);
         sequence.operation.op = ESHKOL_SEQUENCE_OP;
         sequence.operation.sequence_op.num_expressions = 2;
-        sequence.operation.sequence_op.expressions = new eshkol_ast_t[2];
+        sequence.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(2);
         sequence.operation.sequence_op.expressions[0] = validation;
         sequence.operation.sequence_op.expressions[1] = body;
         body = sequence;
     }
 
-    ast.operation.let_op.body = new eshkol_ast_t;
+    ast.operation.let_op.body = eshkol_ast_new<eshkol_ast_t>();
     *ast.operation.let_op.body = body;
     return ast;
 }
@@ -2042,7 +2043,7 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
             auto make_call = [&](const char* callee, eshkol_ast_t* operands) {
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_CALL_OP;
-                ast.operation.call_op.func = new eshkol_ast_t;
+                ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 *ast.operation.call_op.func = eshkol_ast_t{};
                 ast.operation.call_op.func->type = ESHKOL_VAR;
                 ast.operation.call_op.func->variable.id = eshkol_ast_strdup(callee);
@@ -2058,7 +2059,7 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
                 } else if (part.kind == ESHKOL_NUMSYN_RATIONAL) {
                     std::string text(part.text);
                     size_t slash = text.find('/');
-                    eshkol_ast_t* operands = new eshkol_ast_t[2];
+                    eshkol_ast_t* operands = eshkol_ast_new_array<eshkol_ast_t>(2);
                     build_int(text.substr(0, slash).c_str(), &operands[0]);
                     build_int(text.substr(slash + 1).c_str(), &operands[1]);
                     make_call("make-rational", operands);
@@ -2073,7 +2074,7 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
                     x = m * std::cos(a);
                     y = m * std::sin(a);
                 }
-                eshkol_ast_t* operands = new eshkol_ast_t[2];
+                eshkol_ast_t* operands = eshkol_ast_new_array<eshkol_ast_t>(2);
                 operands[0] = eshkol_ast_t{};
                 operands[1] = eshkol_ast_t{};
                 stamp_node(operands[0], token.line, token.column);
@@ -2107,7 +2108,7 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
             ast.operation.op = ESHKOL_QUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = sym_var;
             break;
         }
@@ -3088,7 +3089,7 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
                     PARSE_ERROR_AT(token, "expected ) after refinement predicate");
                     co_return nullptr;
                 }
-                eshkol_ast_t* pred = new eshkol_ast_t(predicate);
+                eshkol_ast_t* pred = eshkol_ast_new<eshkol_ast_t>(predicate);
                 co_return hott_make_refine_type(base, binder.empty() ? nullptr : binder.c_str(),
                                                 pred);
             }
@@ -3231,12 +3232,12 @@ static eshkol_ast_t make_cons_call(eshkol_ast_t car_ast, eshkol_ast_t cdr_ast) {
     eshkol_ast_t ast;
     ast.type = ESHKOL_OP;
     ast.operation.op = ESHKOL_CALL_OP;
-    ast.operation.call_op.func = new eshkol_ast_t;
+    ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
     ast.operation.call_op.func->type = ESHKOL_VAR;
     ast.operation.call_op.func->variable.id = eshkol_ast_strdup("cons");
     ast.operation.call_op.func->variable.data = nullptr;
     ast.operation.call_op.num_vars = 2;
-    ast.operation.call_op.variables = new eshkol_ast_t[2];
+    ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(2);
     ast.operation.call_op.variables[0] = car_ast;
     ast.operation.call_op.variables[1] = cdr_ast;
     return ast;
@@ -3310,11 +3311,11 @@ static ParserTask<eshkol_ast_t> parse_quoted_data_with_token(SchemeTokenizer& to
         ast.column = token.column;
         ast.operation.op = ESHKOL_TENSOR_OP;
         ast.operation.tensor_op.num_dimensions = 1;
-        ast.operation.tensor_op.dimensions = new uint64_t[1];
+        ast.operation.tensor_op.dimensions = eshkol_ast_new_array<uint64_t>(1);
         ast.operation.tensor_op.dimensions[0] = elements.size();
         ast.operation.tensor_op.total_elements = elements.size();
         ast.operation.tensor_op.elements =
-            elements.empty() ? nullptr : new eshkol_ast_t[elements.size()];
+            elements.empty() ? nullptr : eshkol_ast_new_array<eshkol_ast_t>(elements.size());
         for (size_t i = 0; i < elements.size(); i++) {
             ast.operation.tensor_op.elements[i] = elements[i];
         }
@@ -3341,7 +3342,7 @@ static ParserTask<eshkol_ast_t> parse_quoted_data_with_token(SchemeTokenizer& to
                                             ESHKOL_UNQUOTE_SPLICING_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
-        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
         ast.operation.call_op.variables[0] = inner;
         co_return ast;
     } else {
@@ -3414,13 +3415,13 @@ static ParserTask<eshkol_ast_t> parse_quoted_list_internal(SchemeTokenizer& toke
     eshkol_ast_t ast;
     ast.type = ESHKOL_OP;
     ast.operation.op = ESHKOL_CALL_OP;
-    ast.operation.call_op.func = new eshkol_ast_t;
+    ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
     ast.operation.call_op.func->type = ESHKOL_VAR;
     ast.operation.call_op.func->variable.id = eshkol_ast_strdup("list");
     ast.operation.call_op.func->variable.data = nullptr;
     ast.operation.call_op.num_vars = elements.size();
     if (elements.size() > 0) {
-        ast.operation.call_op.variables = new eshkol_ast_t[elements.size()];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(elements.size());
         for (size_t i = 0; i < elements.size(); i++) {
             ast.operation.call_op.variables[i] = elements[i];
         }
@@ -3492,11 +3493,11 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_data_with_token(SchemeTokenize
         ast.type = ESHKOL_OP;
         ast.operation.op = ESHKOL_TENSOR_OP;
         ast.operation.tensor_op.num_dimensions = 1;
-        ast.operation.tensor_op.dimensions = new uint64_t[1];
+        ast.operation.tensor_op.dimensions = eshkol_ast_new_array<uint64_t>(1);
         ast.operation.tensor_op.dimensions[0] = elements.size();
         ast.operation.tensor_op.total_elements = elements.size();
         ast.operation.tensor_op.elements =
-            elements.empty() ? nullptr : new eshkol_ast_t[elements.size()];
+            elements.empty() ? nullptr : eshkol_ast_new_array<eshkol_ast_t>(elements.size());
         for (size_t i = 0; i < elements.size(); i++) {
             ast.operation.tensor_op.elements[i] = elements[i];
         }
@@ -3517,7 +3518,7 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_data_with_token(SchemeTokenize
         ast.operation.op = ESHKOL_UNQUOTE_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
-        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
         ast.operation.call_op.variables[0] = inner;
         co_return ast;
     } else if (token.type == TOKEN_COMMA_AT) {
@@ -3532,7 +3533,7 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_data_with_token(SchemeTokenize
         ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
-        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
         ast.operation.call_op.variables[0] = inner;
         co_return ast;
     } else if (token.type == TOKEN_QUOTE) {
@@ -3543,7 +3544,7 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_data_with_token(SchemeTokenize
         ast.operation.op = ESHKOL_QUOTE_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
-        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
         ast.operation.call_op.variables[0] = quoted;
         co_return ast;
     } else if (token.type == TOKEN_BACKQUOTE) {
@@ -3554,7 +3555,7 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_data_with_token(SchemeTokenize
         ast.operation.op = ESHKOL_QUASIQUOTE_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
-        ast.operation.call_op.variables = new eshkol_ast_t[1];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
         ast.operation.call_op.variables[0] = inner;
         co_return ast;
     } else {
@@ -3602,7 +3603,7 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_list_internal(SchemeTokenizer&
             stamp_node(ast, head.line, head.column);
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             if (token_is_keyword(head, "unquote")) {
                 // Active unquote — its body is evaluated (same as ,expr).
                 ast.operation.op = ESHKOL_UNQUOTE_OP;
@@ -3683,13 +3684,13 @@ static ParserTask<eshkol_ast_t> parse_quasiquoted_list_internal(SchemeTokenizer&
     eshkol_ast_t ast;
     ast.type = ESHKOL_OP;
     ast.operation.op = ESHKOL_CALL_OP;
-    ast.operation.call_op.func = new eshkol_ast_t;
+    ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
     ast.operation.call_op.func->type = ESHKOL_VAR;
     ast.operation.call_op.func->variable.id = eshkol_ast_strdup("list");
     ast.operation.call_op.func->variable.data = nullptr;
     ast.operation.call_op.num_vars = elements.size();
     if (elements.size() > 0) {
-        ast.operation.call_op.variables = new eshkol_ast_t[elements.size()];
+        ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(elements.size());
         for (size_t i = 0; i < elements.size(); i++) {
             ast.operation.call_op.variables[i] = elements[i];
         }
@@ -4097,7 +4098,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
             result.type = ESHKOL_OP;
             result.operation.op = ESHKOL_SEQUENCE_OP;
             result.operation.sequence_op.num_expressions = body_expressions.size();
-            result.operation.sequence_op.expressions = new eshkol_ast_t[body_expressions.size()];
+            result.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(body_expressions.size());
             for (size_t i = 0; i < body_expressions.size(); i++) {
                 result.operation.sequence_op.expressions[i] = body_expressions[i];
             }
@@ -4114,7 +4115,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
 
     // Convert defines to bindings
     result.operation.let_op.num_bindings = defines.size();
-    result.operation.let_op.bindings = new eshkol_ast_t[defines.size()];
+    result.operation.let_op.bindings = eshkol_ast_new_array<eshkol_ast_t>(defines.size());
     result.operation.let_op.binding_types = nullptr;  // No type annotations for internal defines
     result.operation.let_op.name = nullptr;  // Not a named let
 
@@ -4135,7 +4136,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
             val_ast.operation.lambda_op.num_params = def.operation.define_op.num_params;
 
             if (val_ast.operation.lambda_op.num_params > 0) {
-                val_ast.operation.lambda_op.parameters = new eshkol_ast_t[val_ast.operation.lambda_op.num_params];
+                val_ast.operation.lambda_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(val_ast.operation.lambda_op.num_params);
                 for (size_t j = 0; j < val_ast.operation.lambda_op.num_params; j++) {
                     val_ast.operation.lambda_op.parameters[j] = def.operation.define_op.parameters[j];
                 }
@@ -4156,7 +4157,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
             // HoTT type annotations - copy from define_op if present
             val_ast.operation.lambda_op.return_type = def.operation.define_op.return_type;
             if (val_ast.operation.lambda_op.num_params > 0 && def.operation.define_op.param_types) {
-                val_ast.operation.lambda_op.param_types = new hott_type_expr_t*[val_ast.operation.lambda_op.num_params];
+                val_ast.operation.lambda_op.param_types = eshkol_ast_new_array<hott_type_expr_t*>(val_ast.operation.lambda_op.num_params);
                 for (size_t j = 0; j < val_ast.operation.lambda_op.num_params; j++) {
                     val_ast.operation.lambda_op.param_types[j] = def.operation.define_op.param_types[j];
                 }
@@ -4182,9 +4183,9 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
 
         // Create binding as cons cell (var . val)
         result.operation.let_op.bindings[i].type = ESHKOL_CONS;
-        result.operation.let_op.bindings[i].cons_cell.car = new eshkol_ast_t;
+        result.operation.let_op.bindings[i].cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
         *result.operation.let_op.bindings[i].cons_cell.car = var_ast;
-        result.operation.let_op.bindings[i].cons_cell.cdr = new eshkol_ast_t;
+        result.operation.let_op.bindings[i].cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
         *result.operation.let_op.bindings[i].cons_cell.cdr = val_ast;
     }
 
@@ -4203,13 +4204,13 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
         body.type = ESHKOL_OP;
         body.operation.op = ESHKOL_SEQUENCE_OP;
         body.operation.sequence_op.num_expressions = after_defines.size();
-        body.operation.sequence_op.expressions = new eshkol_ast_t[after_defines.size()];
+        body.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(after_defines.size());
         for (size_t i = 0; i < after_defines.size(); i++) {
             body.operation.sequence_op.expressions[i] = after_defines[i];
         }
     }
 
-    result.operation.let_op.body = new eshkol_ast_t;
+    result.operation.let_op.body = eshkol_ast_new<eshkol_ast_t>();
     *result.operation.let_op.body = body;
 
     // If there are statements before the first define, wrap in sequence
@@ -4219,7 +4220,7 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
         final_result.type = ESHKOL_OP;
         final_result.operation.op = ESHKOL_SEQUENCE_OP;
         final_result.operation.sequence_op.num_expressions = before_defines.size() + 1;
-        final_result.operation.sequence_op.expressions = new eshkol_ast_t[before_defines.size() + 1];
+        final_result.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(before_defines.size() + 1);
 
         // Copy before_defines statements first
         for (size_t i = 0; i < before_defines.size(); i++) {
@@ -4475,8 +4476,8 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
     // Set up parameter array
     signature.eshkol_func.num_variables = params.size();
     if (signature.eshkol_func.num_variables > 0) {
-        signature.eshkol_func.variables = new eshkol_ast_t[signature.eshkol_func.num_variables];
-        signature.eshkol_func.param_types = new hott_type_expr_t*[signature.eshkol_func.num_variables];
+        signature.eshkol_func.variables = eshkol_ast_new_array<eshkol_ast_t>(signature.eshkol_func.num_variables);
+        signature.eshkol_func.param_types = eshkol_ast_new_array<hott_type_expr_t*>(signature.eshkol_func.num_variables);
         for (size_t i = 0; i < signature.eshkol_func.num_variables; i++) {
             signature.eshkol_func.variables[i] = params[i];
             signature.eshkol_func.param_types[i] = param_types[i];  // Transfer ownership
@@ -4510,7 +4511,7 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
 static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
 
-    eshkol_pattern_t* pattern = new eshkol_pattern_t;
+    eshkol_pattern_t* pattern = eshkol_ast_new<eshkol_pattern_t>();
     pattern->type = PATTERN_INVALID;
 
     if (token.type == TOKEN_SYMBOL) {
@@ -4525,7 +4526,7 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                token.type == TOKEN_BOOLEAN || token.type == TOKEN_CHAR) {
         // Literal pattern
         pattern->type = PATTERN_LITERAL;
-        pattern->literal.value = new eshkol_ast_t;
+        pattern->literal.value = eshkol_ast_new<eshkol_ast_t>();
         *pattern->literal.value = (co_await parse_atom(token));
     } else if (token.type == TOKEN_QUOTE) {
         // Quoted literal pattern 'x → PATTERN_LITERAL comparing against the
@@ -4536,12 +4537,12 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
         // "Undefined variable: a" instead of comparing against the symbol.
         pattern->type = PATTERN_LITERAL;
         eshkol_ast_t inner_datum = (co_await parse_quoted_data(tokenizer));
-        eshkol_ast_t* wrapped = new eshkol_ast_t;
+        eshkol_ast_t* wrapped = eshkol_ast_new<eshkol_ast_t>();
         wrapped->type = ESHKOL_OP;
         wrapped->operation.op = ESHKOL_QUOTE_OP;
         wrapped->operation.call_op.func = nullptr;
         wrapped->operation.call_op.num_vars = 1;
-        wrapped->operation.call_op.variables = new eshkol_ast_t[1];
+        wrapped->operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
         wrapped->operation.call_op.variables[0] = inner_datum;
         pattern->literal.value = wrapped;
     } else if (token.type == TOKEN_LPAREN) {
@@ -4577,7 +4578,7 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                     }
                 }
                 pattern->list.num_patterns = list_pats.size();
-                pattern->list.patterns = new eshkol_pattern_t*[list_pats.size()];
+                pattern->list.patterns = eshkol_ast_new_array<eshkol_pattern_t*>(list_pats.size());
                 for (size_t i = 0; i < list_pats.size(); i++) {
                     pattern->list.patterns[i] = list_pats[i];
                 }
@@ -4590,7 +4591,7 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                 pattern->type = PATTERN_PREDICATE;
                 pattern->predicate.binding_name = nullptr;
                 Token pred_tok = tokenizer.nextToken();
-                pattern->predicate.predicate = new eshkol_ast_t;
+                pattern->predicate.predicate = eshkol_ast_new<eshkol_ast_t>();
                 if (pred_tok.type == TOKEN_LPAREN) {
                     *pattern->predicate.predicate = (co_await parse_list(tokenizer));
                 } else {
@@ -4621,14 +4622,14 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
                     }
                 }
                 pattern->or_pat.num_patterns = or_pats.size();
-                pattern->or_pat.patterns = new eshkol_pattern_t*[or_pats.size()];
+                pattern->or_pat.patterns = eshkol_ast_new_array<eshkol_pattern_t*>(or_pats.size());
                 for (size_t i = 0; i < or_pats.size(); i++) {
                     pattern->or_pat.patterns[i] = or_pats[i];
                 }
             } else {
                 // Unknown pattern keyword - treat as literal (quoted list-like)
                 pattern->type = PATTERN_LITERAL;
-                pattern->literal.value = new eshkol_ast_t;
+                pattern->literal.value = eshkol_ast_new<eshkol_ast_t>();
                 eshkol_ast_t list_ast = {.type = ESHKOL_VAR};
                 list_ast.variable.id = eshkol_ast_string_copy(peek.value);
                 *pattern->literal.value = list_ast;
@@ -4644,12 +4645,12 @@ static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
         } else if (peek.type == TOKEN_RPAREN) {
             // Empty list pattern () - matches null
             pattern->type = PATTERN_LITERAL;
-            pattern->literal.value = new eshkol_ast_t;
+            pattern->literal.value = eshkol_ast_new<eshkol_ast_t>();
             eshkol_ast_make_null(pattern->literal.value);
         } else {
             // Other starting token - probably a quoted list, treat as literal
             pattern->type = PATTERN_LITERAL;
-            pattern->literal.value = new eshkol_ast_t;
+            pattern->literal.value = eshkol_ast_new<eshkol_ast_t>();
             pattern->literal.value->type = ESHKOL_INVALID;
             // Skip the rest
             int depth = 1;
@@ -4682,7 +4683,7 @@ struct LetMatchBinding {
  * @return A newly-allocated eshkol_pattern_t; caller owns the result.
  */
 static eshkol_pattern_t* make_wildcard_pattern() {
-    eshkol_pattern_t* pattern = new eshkol_pattern_t;
+    eshkol_pattern_t* pattern = eshkol_ast_new<eshkol_pattern_t>();
     pattern->type = PATTERN_WILDCARD;
     return pattern;
 }
@@ -4715,7 +4716,7 @@ static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& e
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_SEQUENCE_OP;
     ast.operation.sequence_op.num_expressions = exprs.size();
-    ast.operation.sequence_op.expressions = new eshkol_ast_t[exprs.size()];
+    ast.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(exprs.size());
     for (size_t i = 0; i < exprs.size(); i++) {
         ast.operation.sequence_op.expressions[i] = exprs[i];
     }
@@ -4774,15 +4775,15 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_REQUIRE_OP;
     ast.operation.require_op.num_modules = modules.size();
-    ast.operation.require_op.module_names = new char*[modules.size()];
-    ast.operation.require_op.import_prefixes = new char*[modules.size()];
-    ast.operation.require_op.import_except_names = new char**[modules.size()];
-    ast.operation.require_op.num_import_except_names = new uint64_t[modules.size()];
-    ast.operation.require_op.import_only_names = new char**[modules.size()];
-    ast.operation.require_op.num_import_only_names = new uint64_t[modules.size()];
-    ast.operation.require_op.import_rename_from = new char**[modules.size()];
-    ast.operation.require_op.import_rename_to = new char**[modules.size()];
-    ast.operation.require_op.num_import_renames = new uint64_t[modules.size()];
+    ast.operation.require_op.module_names = eshkol_ast_new_array<char*>(modules.size());
+    ast.operation.require_op.import_prefixes = eshkol_ast_new_array<char*>(modules.size());
+    ast.operation.require_op.import_except_names = eshkol_ast_new_array<char**>(modules.size());
+    ast.operation.require_op.num_import_except_names = eshkol_ast_new_array<uint64_t>(modules.size());
+    ast.operation.require_op.import_only_names = eshkol_ast_new_array<char**>(modules.size());
+    ast.operation.require_op.num_import_only_names = eshkol_ast_new_array<uint64_t>(modules.size());
+    ast.operation.require_op.import_rename_from = eshkol_ast_new_array<char**>(modules.size());
+    ast.operation.require_op.import_rename_to = eshkol_ast_new_array<char**>(modules.size());
+    ast.operation.require_op.num_import_renames = eshkol_ast_new_array<uint64_t>(modules.size());
     for (size_t i = 0; i < modules.size(); i++) {
         ast.operation.require_op.module_names[i] = eshkol_ast_string_copy(modules[i]);
         ast.operation.require_op.import_prefixes[i] = nullptr;
@@ -4819,7 +4820,7 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
         ast.operation.require_op.import_prefixes[i] = eshkol_ast_string_copy(spec.prefix);
         if (!spec.except.empty()) {
             ast.operation.require_op.num_import_except_names[i] = spec.except.size();
-            ast.operation.require_op.import_except_names[i] = new char*[spec.except.size()];
+            ast.operation.require_op.import_except_names[i] = eshkol_ast_new_array<char*>(spec.except.size());
             for (size_t j = 0; j < spec.except.size(); j++) {
                 ast.operation.require_op.import_except_names[i][j] =
                     eshkol_ast_string_copy(spec.except[j]);
@@ -4827,14 +4828,14 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
         }
         if (!spec.only.empty()) {
             ast.operation.require_op.num_import_only_names[i] = spec.only.size();
-            ast.operation.require_op.import_only_names[i] = new char*[spec.only.size()];
+            ast.operation.require_op.import_only_names[i] = eshkol_ast_new_array<char*>(spec.only.size());
             for (size_t j = 0; j < spec.only.size(); ++j)
                 ast.operation.require_op.import_only_names[i][j] = eshkol_ast_string_copy(spec.only[j]);
         }
         if (!spec.renames.empty()) {
             ast.operation.require_op.num_import_renames[i] = spec.renames.size();
-            ast.operation.require_op.import_rename_from[i] = new char*[spec.renames.size()];
-            ast.operation.require_op.import_rename_to[i] = new char*[spec.renames.size()];
+            ast.operation.require_op.import_rename_from[i] = eshkol_ast_new_array<char*>(spec.renames.size());
+            ast.operation.require_op.import_rename_to[i] = eshkol_ast_new_array<char*>(spec.renames.size());
             for (size_t j = 0; j < spec.renames.size(); ++j) {
                 ast.operation.require_op.import_rename_from[i][j] = eshkol_ast_string_copy(spec.renames[j].from);
                 ast.operation.require_op.import_rename_to[i][j] = eshkol_ast_string_copy(spec.renames[j].to);
@@ -4854,7 +4855,7 @@ static eshkol_ast_t make_parser_define_value_ast(const std::string& name,
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_DEFINE_OP;
     ast.operation.define_op.name = eshkol_ast_string_copy(name);
-    ast.operation.define_op.value = new eshkol_ast_t(value);
+    ast.operation.define_op.value = eshkol_ast_new<eshkol_ast_t>(value);
     ast.operation.define_op.is_function = 0;
     ast.operation.define_op.parameters = nullptr;
     ast.operation.define_op.num_params = 0;
@@ -4876,7 +4877,7 @@ static eshkol_ast_t make_parser_set_ast(const std::string& name,
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_SET_OP;
     ast.operation.set_op.name = eshkol_ast_string_copy(name);
-    ast.operation.set_op.value = new eshkol_ast_t(value);
+    ast.operation.set_op.value = eshkol_ast_new<eshkol_ast_t>(value);
     return ast;
 }
 
@@ -4892,12 +4893,12 @@ static eshkol_ast_t make_parser_lambda_ast(const std::vector<std::string>& param
     ast.operation.op = ESHKOL_LAMBDA_OP;
     ast.operation.lambda_op.num_params = params.size();
     ast.operation.lambda_op.parameters = params.empty()
-        ? nullptr : new eshkol_ast_t[params.size()];
+        ? nullptr : eshkol_ast_new_array<eshkol_ast_t>(params.size());
     for (size_t i = 0; i < params.size(); i++) {
         ast.operation.lambda_op.parameters[i] =
             make_parser_var_ast(params[i].c_str(), line, column);
     }
-    ast.operation.lambda_op.body = new eshkol_ast_t(body);
+    ast.operation.lambda_op.body = eshkol_ast_new<eshkol_ast_t>(body);
     ast.operation.lambda_op.captured_vars = nullptr;
     ast.operation.lambda_op.num_captured = 0;
     ast.operation.lambda_op.is_variadic = rest_param ? 1 : 0;
@@ -4922,7 +4923,7 @@ static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_PROVIDE_OP;
     ast.operation.provide_op.num_exports = exports.size();
-    ast.operation.provide_op.export_names = new char*[exports.size()];
+    ast.operation.provide_op.export_names = eshkol_ast_new_array<char*>(exports.size());
     ast.operation.provide_op.library_name = nullptr;
     for (size_t i = 0; i < exports.size(); i++) {
         ast.operation.provide_op.export_names[i] = eshkol_ast_string_copy(exports[i]);
@@ -5414,19 +5415,19 @@ static eshkol_ast_t build_let_match_ast(const std::vector<LetMatchBinding>& bind
     ast.type = ESHKOL_OP;
     stamp_node(ast, line, column);
     ast.operation.op = ESHKOL_MATCH_OP;
-    ast.operation.match_op.expr = new eshkol_ast_t;
+    ast.operation.match_op.expr = eshkol_ast_new<eshkol_ast_t>();
     *ast.operation.match_op.expr = bindings[index].expr;
     ast.operation.match_op.num_clauses = 2;
-    ast.operation.match_op.clauses = new eshkol_match_clause_t[2];
+    ast.operation.match_op.clauses = eshkol_ast_new_array<eshkol_match_clause_t>(2);
 
     ast.operation.match_op.clauses[0].pattern = bindings[index].pattern;
     ast.operation.match_op.clauses[0].guard = nullptr;
-    ast.operation.match_op.clauses[0].body = new eshkol_ast_t;
+    ast.operation.match_op.clauses[0].body = eshkol_ast_new<eshkol_ast_t>();
     *ast.operation.match_op.clauses[0].body = success;
 
     ast.operation.match_op.clauses[1].pattern = make_wildcard_pattern();
     ast.operation.match_op.clauses[1].guard = nullptr;
-    ast.operation.match_op.clauses[1].body = new eshkol_ast_t;
+    ast.operation.match_op.clauses[1].body = eshkol_ast_new<eshkol_ast_t>();
     *ast.operation.match_op.clauses[1].body = failure;
     return ast;
 }
@@ -5786,12 +5787,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
         // Set up as a function call with the lambda/expression as the function
         ast.operation.op = ESHKOL_CALL_OP;
-        ast.operation.call_op.func = new eshkol_ast_t;
+        ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
         *ast.operation.call_op.func = func_expr;
         
         ast.operation.call_op.num_vars = elements.size();
         if (ast.operation.call_op.num_vars > 0) {
-            ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.call_op.num_vars);
             for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
                 ast.operation.call_op.variables[i] = elements[i];
             }
@@ -5888,7 +5889,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_THE_OP;
             ast.operation.the_op.type_expr = type_expr;
-            ast.operation.the_op.expr = new eshkol_ast_t(inner);
+            ast.operation.the_op.expr = eshkol_ast_new<eshkol_ast_t>(inner);
             co_return ast;
         }
         // else: not an ascription — fall through to ordinary symbol handling.
@@ -6131,9 +6132,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             stamp_node(invoke, form_line, form_column);
             invoke.operation.op = ESHKOL_CALL_WITH_VALUES_OP;
             invoke.operation.call_with_values_op.producer =
-                new eshkol_ast_t(producer_lambda);
+                eshkol_ast_new<eshkol_ast_t>(producer_lambda);
             invoke.operation.call_with_values_op.consumer =
-                new eshkol_ast_t(consumer_lambda);
+                eshkol_ast_new<eshkol_ast_t>(consumer_lambda);
             lowered.push_back(invoke);
             co_return make_sequence_or_null_ast(lowered, form_line, form_column);
         }
@@ -6160,7 +6161,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             lambda_ast.operation.op = ESHKOL_LAMBDA_OP;
             lambda_ast.operation.lambda_op.parameters = nullptr;
             lambda_ast.operation.lambda_op.num_params = 0;
-            lambda_ast.operation.lambda_op.body = new eshkol_ast_t(body_expr);
+            lambda_ast.operation.lambda_op.body = eshkol_ast_new<eshkol_ast_t>(body_expr);
             lambda_ast.operation.lambda_op.captured_vars = nullptr;
             lambda_ast.operation.lambda_op.num_captured = 0;
             lambda_ast.operation.lambda_op.is_variadic = false;
@@ -6172,11 +6173,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ? "%make-lazy-promise-force" : "%make-lazy-promise";
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_CALL_OP;
-            ast.operation.call_op.func = new eshkol_ast_t();
+            ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
             ast.operation.call_op.func->type = ESHKOL_VAR;
             ast.operation.call_op.func->variable.id = eshkol_ast_strdup(func_id);
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = lambda_ast;
             co_return ast;
         }
@@ -6314,7 +6315,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.define_op.num_params = func_signature.eshkol_func.num_variables;
                 
                 if (ast.operation.define_op.num_params > 0) {
-                    ast.operation.define_op.parameters = new eshkol_ast_t[ast.operation.define_op.num_params];
+                    ast.operation.define_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.define_op.num_params);
                     for (size_t i = 0; i < ast.operation.define_op.num_params; i++) {
                         ast.operation.define_op.parameters[i] = func_signature.eshkol_func.variables[i];
                     }
@@ -6322,7 +6323,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     ast.operation.define_op.parameters = nullptr;
                 }
                 
-                ast.operation.define_op.value = new eshkol_ast_t;
+                ast.operation.define_op.value = eshkol_ast_new<eshkol_ast_t>();
                 *ast.operation.define_op.value = body;
 
                 // Copy variadic information from function signature
@@ -6335,12 +6336,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                 // Copy HoTT type annotations from function signature
                 if (func_signature.eshkol_func.param_types && ast.operation.define_op.num_params > 0) {
-                    ast.operation.define_op.param_types = new hott_type_expr_t*[ast.operation.define_op.num_params];
+                    ast.operation.define_op.param_types = eshkol_ast_new_array<hott_type_expr_t*>(ast.operation.define_op.num_params);
                     for (size_t i = 0; i < ast.operation.define_op.num_params; i++) {
-                        // Transfer ownership of type expressions
                         ast.operation.define_op.param_types[i] = func_signature.eshkol_func.param_types[i];
                     }
-                    delete[] func_signature.eshkol_func.param_types;  // Free the array but not the elements
                 } else {
                     ast.operation.define_op.param_types = nullptr;
                 }
@@ -6372,7 +6371,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // Set up define operation for variable
                 ast.operation.define_op.name = eshkol_ast_strdup(name_ast.variable.id);
                 
-                ast.operation.define_op.value = new eshkol_ast_t;
+                ast.operation.define_op.value = eshkol_ast_new<eshkol_ast_t>();
                 *ast.operation.define_op.value = value;
                 
                 ast.operation.define_op.is_function = 0;
@@ -6431,7 +6430,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             tokenizer.pushBack(token);
             eshkol_ast_t value = (co_await parse_expression(tokenizer));
 
-            ast.operation.set_op.value = new eshkol_ast_t;
+            ast.operation.set_op.value = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.set_op.value = value;
 
             // Expect closing paren
@@ -6533,7 +6532,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.define_type_op.num_type_params = type_params.size();
 
             if (!type_params.empty()) {
-                ast.operation.define_type_op.type_params = new char*[type_params.size()];
+                ast.operation.define_type_op.type_params = eshkol_ast_new_array<char*>(type_params.size());
                 for (size_t i = 0; i < type_params.size(); i++) {
                     ast.operation.define_type_op.type_params[i] = eshkol_ast_string_copy(type_params[i]);
                 }
@@ -6545,7 +6544,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             for (auto* kind : type_param_kinds) any_kind = any_kind || kind;
             if (any_kind) {
                 ast.operation.define_type_op.type_param_kinds =
-                    new hott_type_expr_t*[type_params.size()];
+                    eshkol_ast_new_array<hott_type_expr_t*>(type_params.size());
                 for (size_t i = 0; i < type_params.size(); i++) {
                     ast.operation.define_type_op.type_param_kinds[i] =
                         i < type_param_kinds.size() ? type_param_kinds[i] : nullptr;
@@ -6632,14 +6631,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.op = ESHKOL_IF_OP;
             
             // Create function name AST node for "if"
-            ast.operation.call_op.func = new eshkol_ast_t;
+            ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
             ast.operation.call_op.func->type = ESHKOL_VAR;
             ast.operation.call_op.func->variable.id = eshkol_ast_strdup("if");
             ast.operation.call_op.func->variable.data = nullptr;
             
             // Set up arguments: condition, then-expr, else-expr
             ast.operation.call_op.num_vars = 3;
-            ast.operation.call_op.variables = new eshkol_ast_t[3];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(3);
             ast.operation.call_op.variables[0] = condition;
             ast.operation.call_op.variables[1] = then_expr;
             ast.operation.call_op.variables[2] = else_expr;
@@ -6846,8 +6845,8 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Set up lambda operation
             ast.operation.lambda_op.num_params = params.size();
             if (ast.operation.lambda_op.num_params > 0) {
-                ast.operation.lambda_op.parameters = new eshkol_ast_t[ast.operation.lambda_op.num_params];
-                ast.operation.lambda_op.param_types = new hott_type_expr_t*[ast.operation.lambda_op.num_params];
+                ast.operation.lambda_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.lambda_op.num_params);
+                ast.operation.lambda_op.param_types = eshkol_ast_new_array<hott_type_expr_t*>(ast.operation.lambda_op.num_params);
                 for (size_t i = 0; i < ast.operation.lambda_op.num_params; i++) {
                     ast.operation.lambda_op.parameters[i] = params[i];
                     ast.operation.lambda_op.param_types[i] = param_types[i];  // Transfer ownership
@@ -6857,7 +6856,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.lambda_op.param_types = nullptr;
             }
             
-            ast.operation.lambda_op.body = new eshkol_ast_t;
+            ast.operation.lambda_op.body = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.lambda_op.body = body;
             
             // Analyze for captured variables
@@ -6870,7 +6869,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             if (!captures.empty()) {
                 // Lambda has captured variables - populate AST
                 ast.operation.lambda_op.num_captured = captures.size();
-                ast.operation.lambda_op.captured_vars = new eshkol_ast_t[captures.size()];
+                ast.operation.lambda_op.captured_vars = eshkol_ast_new_array<eshkol_ast_t>(captures.size());
                 
                 for (size_t i = 0; i < captures.size(); i++) {
                     ast.operation.lambda_op.captured_vars[i].type = ESHKOL_VAR;
@@ -6985,9 +6984,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 
                 // Store binding as a cons cell (var . val)
                 eshkol_ast_t binding = {.type = ESHKOL_CONS};
-                binding.cons_cell.car = new eshkol_ast_t;
+                binding.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                 *binding.cons_cell.car = var_ast;
-                binding.cons_cell.cdr = new eshkol_ast_t;
+                binding.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                 *binding.cons_cell.cdr = val_ast;
 
                 bindings.push_back(binding);
@@ -7036,8 +7035,8 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Set up let operation
             ast.operation.let_op.num_bindings = bindings.size();
             if (ast.operation.let_op.num_bindings > 0) {
-                ast.operation.let_op.bindings = new eshkol_ast_t[ast.operation.let_op.num_bindings];
-                ast.operation.let_op.binding_types = new hott_type_expr_t*[ast.operation.let_op.num_bindings];
+                ast.operation.let_op.bindings = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.let_op.num_bindings);
+                ast.operation.let_op.binding_types = eshkol_ast_new_array<hott_type_expr_t*>(ast.operation.let_op.num_bindings);
                 for (size_t i = 0; i < ast.operation.let_op.num_bindings; i++) {
                     ast.operation.let_op.bindings[i] = bindings[i];
                     ast.operation.let_op.binding_types[i] = binding_types[i];  // Transfer ownership
@@ -7047,7 +7046,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.let_op.binding_types = nullptr;
             }
             
-            ast.operation.let_op.body = new eshkol_ast_t;
+            ast.operation.let_op.body = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.let_op.body = body;
 
             // Set named let name (NULL for regular let)
@@ -7096,7 +7095,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Store values
             ast.operation.values_op.num_values = values.size();
             if (values.size() > 0) {
-                ast.operation.values_op.expressions = new eshkol_ast_t[values.size()];
+                ast.operation.values_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(values.size());
                 for (size_t i = 0; i < values.size(); i++) {
                     ast.operation.values_op.expressions[i] = values[i];
                 }
@@ -7156,9 +7155,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            ast.operation.call_with_values_op.producer = new eshkol_ast_t;
+            ast.operation.call_with_values_op.producer = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.call_with_values_op.producer = producer;
-            ast.operation.call_with_values_op.consumer = new eshkol_ast_t;
+            ast.operation.call_with_values_op.consumer = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.call_with_values_op.consumer = consumer;
 
             co_return ast;
@@ -7286,13 +7285,13 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Set up let-values operation
             ast.operation.let_values_op.num_bindings = all_vars.size();
             if (all_vars.size() > 0) {
-                ast.operation.let_values_op.binding_vars = new char**[all_vars.size()];
-                ast.operation.let_values_op.binding_var_counts = new uint64_t[all_vars.size()];
-                ast.operation.let_values_op.producers = new eshkol_ast_t[all_vars.size()];
+                ast.operation.let_values_op.binding_vars = eshkol_ast_new_array<char**>(all_vars.size());
+                ast.operation.let_values_op.binding_var_counts = eshkol_ast_new_array<uint64_t>(all_vars.size());
+                ast.operation.let_values_op.producers = eshkol_ast_new_array<eshkol_ast_t>(all_vars.size());
 
                 for (size_t i = 0; i < all_vars.size(); i++) {
                     ast.operation.let_values_op.binding_var_counts[i] = all_vars[i].size();
-                    ast.operation.let_values_op.binding_vars[i] = new char*[all_vars[i].size()];
+                    ast.operation.let_values_op.binding_vars[i] = eshkol_ast_new_array<char*>(all_vars[i].size());
                     for (size_t j = 0; j < all_vars[i].size(); j++) {
                         ast.operation.let_values_op.binding_vars[i][j] = eshkol_ast_string_copy(all_vars[i][j]);
                     }
@@ -7304,7 +7303,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.let_values_op.producers = nullptr;
             }
 
-            ast.operation.let_values_op.body = new eshkol_ast_t;
+            ast.operation.let_values_op.body = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.let_values_op.body = body;
 
             co_return ast;
@@ -7373,7 +7372,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 tokenizer.pushBack(token);
                 eshkol_ast_t test = (co_await parse_expression(tokenizer));
 
-                clause.operation.call_op.func = new eshkol_ast_t;
+                clause.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 *clause.operation.call_op.func = test;
 
                 // Parse body expressions
@@ -7399,7 +7398,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                 clause.operation.call_op.num_vars = body_exprs.size();
                 if (body_exprs.size() > 0) {
-                    clause.operation.call_op.variables = new eshkol_ast_t[body_exprs.size()];
+                    clause.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(body_exprs.size());
                     for (size_t i = 0; i < body_exprs.size(); i++) {
                         clause.operation.call_op.variables[i] = body_exprs[i];
                     }
@@ -7413,7 +7412,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Store clauses
             ast.operation.guard_op.num_clauses = clauses.size();
             if (clauses.size() > 0) {
-                ast.operation.guard_op.clauses = new eshkol_ast_t[clauses.size()];
+                ast.operation.guard_op.clauses = eshkol_ast_new_array<eshkol_ast_t>(clauses.size());
                 for (size_t i = 0; i < clauses.size(); i++) {
                     ast.operation.guard_op.clauses[i] = clauses[i];
                 }
@@ -7449,7 +7448,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Transform internal defines to letrec if needed
             eshkol_ast_t body = transformInternalDefinesToLetrec(body_expressions);
 
-            ast.operation.guard_op.body = new eshkol_ast_t[1];
+            ast.operation.guard_op.body = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.guard_op.body[0] = body;
             ast.operation.guard_op.num_body_exprs = 1;
 
@@ -7481,7 +7480,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            ast.operation.raise_op.exception = new eshkol_ast_t;
+            ast.operation.raise_op.exception = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.raise_op.exception = exception;
 
             // Expect closing paren
@@ -7550,7 +7549,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     else_marker.variable.id = eshkol_ast_strdup("else");
                     else_marker.variable.data = nullptr;
 
-                    clause.cons_cell.car = new eshkol_ast_t;
+                    clause.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                     *clause.cons_cell.car = else_marker;
                 } else if (token.type == TOKEN_LPAREN) {
                     // Datums list - parse as quoted data
@@ -7591,7 +7590,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                             quoted.operation.op = ESHKOL_QUOTE_OP;
                             quoted.operation.call_op.func = nullptr;
                             quoted.operation.call_op.num_vars = 1;
-                            quoted.operation.call_op.variables = new eshkol_ast_t[1];
+                            quoted.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
                             quoted.operation.call_op.variables[0] = datum;
                             datum = quoted;
                         }
@@ -7612,12 +7611,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     datums_list.operation.op = ESHKOL_CALL_OP;
                     datums_list.operation.call_op.func = nullptr;
                     datums_list.operation.call_op.num_vars = datums.size();
-                    datums_list.operation.call_op.variables = new eshkol_ast_t[datums.size()];
+                    datums_list.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(datums.size());
                     for (size_t i = 0; i < datums.size(); i++) {
                         datums_list.operation.call_op.variables[i] = datums[i];
                     }
 
-                    clause.cons_cell.car = new eshkol_ast_t;
+                    clause.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                     *clause.cons_cell.car = datums_list;
                 } else {
                     PARSE_ERROR_AT(token, "case clause must start with datums list or else");
@@ -7658,7 +7657,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 body.operation.call_op.func = nullptr;
                 body.operation.call_op.num_vars = body_exprs.size();
                 if (body_exprs.size() > 0) {
-                    body.operation.call_op.variables = new eshkol_ast_t[body_exprs.size()];
+                    body.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(body_exprs.size());
                     for (size_t i = 0; i < body_exprs.size(); i++) {
                         body.operation.call_op.variables[i] = body_exprs[i];
                     }
@@ -7666,18 +7665,18 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     body.operation.call_op.variables = nullptr;
                 }
 
-                clause.cons_cell.cdr = new eshkol_ast_t;
+                clause.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                 *clause.cons_cell.cdr = body;
 
                 clauses.push_back(clause);
             }
 
             // Set up case operation
-            ast.operation.call_op.func = new eshkol_ast_t;
+            ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.call_op.func = key;
             ast.operation.call_op.num_vars = clauses.size();
             if (clauses.size() > 0) {
-                ast.operation.call_op.variables = new eshkol_ast_t[clauses.size()];
+                ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(clauses.size());
                 for (size_t i = 0; i < clauses.size(); i++) {
                     ast.operation.call_op.variables[i] = clauses[i];
                 }
@@ -7773,19 +7772,19 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                 // Store body - if multiple, wrap in sequence
                 if (body_exprs.size() == 1) {
-                    clause.body = new eshkol_ast_t;
+                    clause.body = eshkol_ast_new<eshkol_ast_t>();
                     *clause.body = body_exprs[0];
                 } else if (body_exprs.size() > 1) {
-                    clause.body = new eshkol_ast_t;
+                    clause.body = eshkol_ast_new<eshkol_ast_t>();
                     clause.body->type = ESHKOL_OP;
                     clause.body->operation.op = ESHKOL_SEQUENCE_OP;
                     clause.body->operation.sequence_op.num_expressions = body_exprs.size();
-                    clause.body->operation.sequence_op.expressions = new eshkol_ast_t[body_exprs.size()];
+                    clause.body->operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(body_exprs.size());
                     for (size_t i = 0; i < body_exprs.size(); i++) {
                         clause.body->operation.sequence_op.expressions[i] = body_exprs[i];
                     }
                 } else {
-                    clause.body = new eshkol_ast_t;
+                    clause.body = eshkol_ast_new<eshkol_ast_t>();
                     eshkol_ast_make_null(clause.body);
                 }
 
@@ -7793,11 +7792,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Set up match operation
-            ast.operation.match_op.expr = new eshkol_ast_t;
+            ast.operation.match_op.expr = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.match_op.expr = expr;
             ast.operation.match_op.num_clauses = clauses.size();
             if (clauses.size() > 0) {
-                ast.operation.match_op.clauses = new eshkol_match_clause_t[clauses.size()];
+                ast.operation.match_op.clauses = eshkol_ast_new_array<eshkol_match_clause_t>(clauses.size());
                 for (size_t i = 0; i < clauses.size(); i++) {
                     ast.operation.match_op.clauses[i] = clauses[i];
                 }
@@ -7818,7 +7817,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            eshkol_macro_def_t *macro = new eshkol_macro_def_t;
+            eshkol_macro_def_t *macro = eshkol_ast_new<eshkol_macro_def_t>();
             macro->name = eshkol_ast_strdup(token.value.c_str());
             macro->literals = nullptr;
             macro->num_literals = 0;
@@ -7910,7 +7909,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     co_return ast;
                 }
 
-                eshkol_macro_def_t* macro = new eshkol_macro_def_t;
+                eshkol_macro_def_t* macro = eshkol_ast_new<eshkol_macro_def_t>();
                 macro->name = eshkol_ast_strdup(token.value.c_str());
                 macro->literals = nullptr;
                 macro->num_literals = 0;
@@ -7966,7 +7965,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Store macro definitions
             ast.operation.let_syntax_op.num_macros = macro_defs.size();
             if (macro_defs.size() > 0) {
-                ast.operation.let_syntax_op.macros = new eshkol_macro_def_t*[macro_defs.size()];
+                ast.operation.let_syntax_op.macros = eshkol_ast_new_array<eshkol_macro_def_t*>(macro_defs.size());
                 for (size_t i = 0; i < macro_defs.size(); i++) {
                     ast.operation.let_syntax_op.macros[i] = macro_defs[i];
                 }
@@ -7976,20 +7975,20 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             // Wrap body in sequence if multiple expressions, or single expr
             if (body_exprs.size() == 1) {
-                ast.operation.let_syntax_op.body = new eshkol_ast_t;
+                ast.operation.let_syntax_op.body = eshkol_ast_new<eshkol_ast_t>();
                 *ast.operation.let_syntax_op.body = body_exprs[0];
             } else if (body_exprs.size() > 1) {
-                eshkol_ast_t* seq = new eshkol_ast_t;
+                eshkol_ast_t* seq = eshkol_ast_new<eshkol_ast_t>();
                 seq->type = ESHKOL_OP;
                 seq->operation.op = ESHKOL_SEQUENCE_OP;
                 seq->operation.sequence_op.num_expressions = body_exprs.size();
-                seq->operation.sequence_op.expressions = new eshkol_ast_t[body_exprs.size()];
+                seq->operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(body_exprs.size());
                 for (size_t i = 0; i < body_exprs.size(); i++) {
                     seq->operation.sequence_op.expressions[i] = body_exprs[i];
                 }
                 ast.operation.let_syntax_op.body = seq;
             } else {
-                eshkol_ast_t* null_body = new eshkol_ast_t;
+                eshkol_ast_t* null_body = eshkol_ast_new<eshkol_ast_t>();
                 eshkol_ast_make_null(null_body);
                 ast.operation.let_syntax_op.body = null_body;
             }
@@ -8006,7 +8005,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // LPAREN/atom dispatch dropped (same family as #110/#229).
             tokenizer.pushBack(token);
             eshkol_ast_t proc_ast = (co_await parse_expression(tokenizer));
-            ast.operation.call_cc_op.proc = new eshkol_ast_t;
+            ast.operation.call_cc_op.proc = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.call_cc_op.proc = proc_ast;
 
             // Consume closing paren
@@ -8029,7 +8028,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // LPAREN/atom dispatch dropped (same family as #110/#229).
             tokenizer.pushBack(token);
             eshkol_ast_t before_ast = (co_await parse_expression(tokenizer));
-            ast.operation.dynamic_wind_op.before = new eshkol_ast_t;
+            ast.operation.dynamic_wind_op.before = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.dynamic_wind_op.before = before_ast;
 
             // Parse body thunk
@@ -8039,7 +8038,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // LPAREN/atom dispatch dropped (same family as #110/#229).
             tokenizer.pushBack(token);
             eshkol_ast_t thunk_ast = (co_await parse_expression(tokenizer));
-            ast.operation.dynamic_wind_op.thunk = new eshkol_ast_t;
+            ast.operation.dynamic_wind_op.thunk = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.dynamic_wind_op.thunk = thunk_ast;
 
             // Parse after thunk
@@ -8049,7 +8048,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // LPAREN/atom dispatch dropped (same family as #110/#229).
             tokenizer.pushBack(token);
             eshkol_ast_t after_ast = (co_await parse_expression(tokenizer));
-            ast.operation.dynamic_wind_op.after = new eshkol_ast_t;
+            ast.operation.dynamic_wind_op.after = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.dynamic_wind_op.after = after_ast;
 
             // Consume closing paren
@@ -8258,7 +8257,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_SEQUENCE_OP;
             ast.operation.sequence_op.num_expressions = matched_body.size();
-            ast.operation.sequence_op.expressions = new eshkol_ast_t[matched_body.size()];
+            ast.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(matched_body.size());
             for (size_t i = 0; i < matched_body.size(); i++) {
                 ast.operation.sequence_op.expressions[i] = matched_body[i];
             }
@@ -8345,7 +8344,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_SEQUENCE_OP;
             ast.operation.sequence_op.num_expressions = all_exprs.size();
-            ast.operation.sequence_op.expressions = new eshkol_ast_t[all_exprs.size()];
+            ast.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(all_exprs.size());
             for (size_t i = 0; i < all_exprs.size(); i++) {
                 ast.operation.sequence_op.expressions[i] = all_exprs[i];
             }
@@ -8383,10 +8382,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t call = {};
                 call.type = ESHKOL_OP;
                 call.operation.op = ESHKOL_CALL_OP;
-                call.operation.call_op.func = new eshkol_ast_t;
+                call.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 *call.operation.call_op.func = clMakeVar(func);
                 call.operation.call_op.num_vars = 1;
-                call.operation.call_op.variables = new eshkol_ast_t[1];
+                call.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
                 call.operation.call_op.variables[0] = arg;
                 return call;
             };
@@ -8394,10 +8393,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t call = {};
                 call.type = ESHKOL_OP;
                 call.operation.op = ESHKOL_CALL_OP;
-                call.operation.call_op.func = new eshkol_ast_t;
+                call.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 *call.operation.call_op.func = clMakeVar(func);
                 call.operation.call_op.num_vars = 2;
-                call.operation.call_op.variables = new eshkol_ast_t[2];
+                call.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(2);
                 call.operation.call_op.variables[0] = a;
                 call.operation.call_op.variables[1] = b;
                 return call;
@@ -8408,7 +8407,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 if_ast.operation.op = ESHKOL_IF_OP;
                 if_ast.operation.call_op.func = nullptr;
                 if_ast.operation.call_op.num_vars = 3;
-                if_ast.operation.call_op.variables = new eshkol_ast_t[3];
+                if_ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(3);
                 if_ast.operation.call_op.variables[0] = cond;
                 if_ast.operation.call_op.variables[1] = then_e;
                 if_ast.operation.call_op.variables[2] = else_e;
@@ -8503,15 +8502,15 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     let_ast.type = ESHKOL_OP;
                     let_ast.operation.op = ESHKOL_LET_OP;
                     let_ast.operation.let_op.num_bindings = 1;
-                    let_ast.operation.let_op.bindings = new eshkol_ast_t[1];
+                    let_ast.operation.let_op.bindings = eshkol_ast_new_array<eshkol_ast_t>(1);
                     let_ast.operation.let_op.binding_types = nullptr;
                     let_ast.operation.let_op.name = nullptr;
                     let_ast.operation.let_op.bindings[0].type = ESHKOL_CONS;
-                    let_ast.operation.let_op.bindings[0].cons_cell.car = new eshkol_ast_t;
+                    let_ast.operation.let_op.bindings[0].cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                     *let_ast.operation.let_op.bindings[0].cons_cell.car = clMakeVar(cl.rest_param.c_str());
-                    let_ast.operation.let_op.bindings[0].cons_cell.cdr = new eshkol_ast_t;
+                    let_ast.operation.let_op.bindings[0].cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                     *let_ast.operation.let_op.bindings[0].cons_cell.cdr = clMakeVar("__cl_args");
-                    let_ast.operation.let_op.body = new eshkol_ast_t;
+                    let_ast.operation.let_op.body = eshkol_ast_new<eshkol_ast_t>();
                     *let_ast.operation.let_op.body = cl.body;
                     dispatch_body = let_ast;
                     continue;
@@ -8569,15 +8568,15 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     let_ast.operation.op = ESHKOL_LET_OP;
                     uint64_t nbindings = nparams + (cl.is_variadic ? 1 : 0);
                     let_ast.operation.let_op.num_bindings = nbindings;
-                    let_ast.operation.let_op.bindings = new eshkol_ast_t[nbindings];
+                    let_ast.operation.let_op.bindings = eshkol_ast_new_array<eshkol_ast_t>(nbindings);
                     let_ast.operation.let_op.binding_types = nullptr;
                     let_ast.operation.let_op.name = nullptr;
 
                     for (uint64_t j = 0; j < nparams; j++) {
                         let_ast.operation.let_op.bindings[j].type = ESHKOL_CONS;
-                        let_ast.operation.let_op.bindings[j].cons_cell.car = new eshkol_ast_t;
+                        let_ast.operation.let_op.bindings[j].cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                         *let_ast.operation.let_op.bindings[j].cons_cell.car = clMakeVar(cl.param_names[j].c_str());
-                        let_ast.operation.let_op.bindings[j].cons_cell.cdr = new eshkol_ast_t;
+                        let_ast.operation.let_op.bindings[j].cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                         *let_ast.operation.let_op.bindings[j].cons_cell.cdr = clMakeNthArg((int)j);
                     }
                     if (cl.is_variadic) {
@@ -8587,13 +8586,13 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         }
                         auto& rest_binding = let_ast.operation.let_op.bindings[nparams];
                         rest_binding.type = ESHKOL_CONS;
-                        rest_binding.cons_cell.car = new eshkol_ast_t;
+                        rest_binding.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                         *rest_binding.cons_cell.car = clMakeVar(cl.rest_param.c_str());
-                        rest_binding.cons_cell.cdr = new eshkol_ast_t;
+                        rest_binding.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                         *rest_binding.cons_cell.cdr = rest_tail;
                     }
 
-                    let_ast.operation.let_op.body = new eshkol_ast_t;
+                    let_ast.operation.let_op.body = eshkol_ast_new<eshkol_ast_t>();
                     *let_ast.operation.let_op.body = cl.body;
                     then_branch = let_ast;
                 }
@@ -8612,7 +8611,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.lambda_op.return_type = nullptr;
             ast.operation.lambda_op.captured_vars = nullptr;
             ast.operation.lambda_op.num_captured = 0;
-            ast.operation.lambda_op.body = new eshkol_ast_t;
+            ast.operation.lambda_op.body = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.lambda_op.body = dispatch_body;
             co_return ast;
         }
@@ -8718,7 +8717,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 def.operation.define_op.return_type = nullptr;
                 def.operation.define_op.param_types = nullptr;
                 def.operation.define_op.num_params = ctor_fields.size();
-                def.operation.define_op.parameters = new eshkol_ast_t[ctor_fields.size()];
+                def.operation.define_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(ctor_fields.size());
                 for (size_t i = 0; i < ctor_fields.size(); i++) {
                     def.operation.define_op.parameters[i].type = ESHKOL_VAR;
                     def.operation.define_op.parameters[i].variable.id = eshkol_ast_string_copy(ctor_fields[i]);
@@ -8727,22 +8726,22 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                 // Body: (vector 'type-tag f1 f2 ...)
                 // Build as a call to "vector" with type tag + fields
-                eshkol_ast_t* body = new eshkol_ast_t;
+                eshkol_ast_t* body = eshkol_ast_new<eshkol_ast_t>();
                 body->type = ESHKOL_OP;
                 body->operation.op = ESHKOL_CALL_OP;
-                body->operation.call_op.func = new eshkol_ast_t;
+                body->operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 body->operation.call_op.func->type = ESHKOL_VAR;
                 body->operation.call_op.func->variable.id = eshkol_ast_strdup("vector");
                 body->operation.call_op.func->variable.data = nullptr;
                 body->operation.call_op.num_vars = 1 + ctor_fields.size(); // type-tag + fields
-                body->operation.call_op.variables = new eshkol_ast_t[body->operation.call_op.num_vars];
+                body->operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(body->operation.call_op.num_vars);
 
                 // First element: type tag as a quoted symbol
                 body->operation.call_op.variables[0].type = ESHKOL_OP;
                 body->operation.call_op.variables[0].operation.op = ESHKOL_QUOTE_OP;
                 body->operation.call_op.variables[0].operation.call_op.func = nullptr;
                 body->operation.call_op.variables[0].operation.call_op.num_vars = 1;
-                body->operation.call_op.variables[0].operation.call_op.variables = new eshkol_ast_t[1];
+                body->operation.call_op.variables[0].operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
                 body->operation.call_op.variables[0].operation.call_op.variables[0].type = ESHKOL_VAR;
                 body->operation.call_op.variables[0].operation.call_op.variables[0].variable.id = eshkol_ast_string_copy(type_name);
                 body->operation.call_op.variables[0].operation.call_op.variables[0].variable.data = nullptr;
@@ -8786,11 +8785,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     eshkol_ast_t call = {};
                     call.type = ESHKOL_OP;
                     call.operation.op = ESHKOL_CALL_OP;
-                    call.operation.call_op.func = new eshkol_ast_t;
+                    call.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                     *call.operation.call_op.func = drMakeVar(func);
                     call.operation.call_op.num_vars = args.size();
                     if (!args.empty()) {
-                        call.operation.call_op.variables = new eshkol_ast_t[args.size()];
+                        call.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(args.size());
                         for (size_t i = 0; i < args.size(); i++) {
                             call.operation.call_op.variables[i] = args[i];
                         }
@@ -8817,7 +8816,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     if_ast.operation.op = ESHKOL_IF_OP;
                     if_ast.operation.call_op.func = nullptr;
                     if_ast.operation.call_op.num_vars = 3;
-                    if_ast.operation.call_op.variables = new eshkol_ast_t[3];
+                    if_ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(3);
                     if_ast.operation.call_op.variables[0] = test;
                     if_ast.operation.call_op.variables[1] = then_ast;
                     if_ast.operation.call_op.variables[2] = else_ast;
@@ -8833,7 +8832,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     quoted.operation.op = ESHKOL_QUOTE_OP;
                     quoted.operation.call_op.func = nullptr;
                     quoted.operation.call_op.num_vars = 1;
-                    quoted.operation.call_op.variables = new eshkol_ast_t[1];
+                    quoted.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
                     quoted.operation.call_op.variables[0] = sym_var;
                     return quoted;
                 };
@@ -8849,7 +8848,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 def.operation.define_op.return_type = nullptr;
                 def.operation.define_op.param_types = nullptr;
                 def.operation.define_op.num_params = 1;
-                def.operation.define_op.parameters = new eshkol_ast_t[1];
+                def.operation.define_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(1);
                 def.operation.define_op.parameters[0] = drMakeVar("obj");
 
                 // (equal? (vector-ref obj 0) 'type-name)
@@ -8876,7 +8875,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     drMakeBool(0)
                 );
 
-                eshkol_ast_t* body = new eshkol_ast_t;
+                eshkol_ast_t* body = eshkol_ast_new<eshkol_ast_t>();
                 *body = body_val;
                 def.operation.define_op.value = body;
                 defines.push_back(def);
@@ -8900,21 +8899,21 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     eshkol_ast_t c = {};
                     c.type = ESHKOL_OP;
                     c.operation.op = ESHKOL_CALL_OP;
-                    c.operation.call_op.func = new eshkol_ast_t(func);
+                    c.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>(func);
                     c.operation.call_op.num_vars = args.size();
-                    c.operation.call_op.variables = new eshkol_ast_t[args.size()];
+                    c.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(args.size());
                     for (size_t i = 0; i < args.size(); i++) c.operation.call_op.variables[i] = args[i];
                     return c;
                 };
                 eshkol_ast_t message = {};
                 const std::string text = proc + ": not a " + type_name + " record";
                 eshkol_ast_make_string(&message, eshkol_ast_string_copy(text), text.size() + 1);
-                eshkol_ast_t* guarded = new eshkol_ast_t{};
+                eshkol_ast_t* guarded = eshkol_ast_new<eshkol_ast_t>();
                 guarded->type = ESHKOL_OP;
                 guarded->operation.op = ESHKOL_IF_OP;
                 guarded->operation.call_op.func = nullptr;
                 guarded->operation.call_op.num_vars = 3;
-                guarded->operation.call_op.variables = new eshkol_ast_t[3];
+                guarded->operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(3);
                 guarded->operation.call_op.variables[0] = call(var(pred_name.c_str()), {var("obj")});
                 guarded->operation.call_op.variables[1] = *body;
                 guarded->operation.call_op.variables[2] = call(var("error"), {message, var("obj")});
@@ -8947,20 +8946,20 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 def.operation.define_op.return_type = nullptr;
                 def.operation.define_op.param_types = nullptr;
                 def.operation.define_op.num_params = 1;
-                def.operation.define_op.parameters = new eshkol_ast_t[1];
+                def.operation.define_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(1);
                 def.operation.define_op.parameters[0].type = ESHKOL_VAR;
                 def.operation.define_op.parameters[0].variable.id = eshkol_ast_strdup("obj");
                 def.operation.define_op.parameters[0].variable.data = nullptr;
 
-                eshkol_ast_t* body = new eshkol_ast_t;
+                eshkol_ast_t* body = eshkol_ast_new<eshkol_ast_t>();
                 body->type = ESHKOL_OP;
                 body->operation.op = ESHKOL_CALL_OP;
-                body->operation.call_op.func = new eshkol_ast_t;
+                body->operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 body->operation.call_op.func->type = ESHKOL_VAR;
                 body->operation.call_op.func->variable.id = eshkol_ast_strdup("vector-ref");
                 body->operation.call_op.func->variable.data = nullptr;
                 body->operation.call_op.num_vars = 2;
-                body->operation.call_op.variables = new eshkol_ast_t[2];
+                body->operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(2);
                 body->operation.call_op.variables[0].type = ESHKOL_VAR;
                 body->operation.call_op.variables[0].variable.id = eshkol_ast_strdup("obj");
                 body->operation.call_op.variables[0].variable.data = nullptr;
@@ -8983,7 +8982,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     mut_def.operation.define_op.return_type = nullptr;
                     mut_def.operation.define_op.param_types = nullptr;
                     mut_def.operation.define_op.num_params = 2;
-                    mut_def.operation.define_op.parameters = new eshkol_ast_t[2];
+                    mut_def.operation.define_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(2);
                     mut_def.operation.define_op.parameters[0].type = ESHKOL_VAR;
                     mut_def.operation.define_op.parameters[0].variable.id = eshkol_ast_strdup("obj");
                     mut_def.operation.define_op.parameters[0].variable.data = nullptr;
@@ -8991,15 +8990,15 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     mut_def.operation.define_op.parameters[1].variable.id = eshkol_ast_strdup("val");
                     mut_def.operation.define_op.parameters[1].variable.data = nullptr;
 
-                    eshkol_ast_t* mut_body = new eshkol_ast_t;
+                    eshkol_ast_t* mut_body = eshkol_ast_new<eshkol_ast_t>();
                     mut_body->type = ESHKOL_OP;
                     mut_body->operation.op = ESHKOL_CALL_OP;
-                    mut_body->operation.call_op.func = new eshkol_ast_t;
+                    mut_body->operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                     mut_body->operation.call_op.func->type = ESHKOL_VAR;
                     mut_body->operation.call_op.func->variable.id = eshkol_ast_strdup("vector-set!");
                     mut_body->operation.call_op.func->variable.data = nullptr;
                     mut_body->operation.call_op.num_vars = 3;
-                    mut_body->operation.call_op.variables = new eshkol_ast_t[3];
+                    mut_body->operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(3);
                     mut_body->operation.call_op.variables[0].type = ESHKOL_VAR;
                     mut_body->operation.call_op.variables[0].variable.id = eshkol_ast_strdup("obj");
                     mut_body->operation.call_op.variables[0].variable.data = nullptr;
@@ -9017,7 +9016,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_SEQUENCE_OP;
             ast.operation.sequence_op.num_expressions = defines.size();
-            ast.operation.sequence_op.expressions = new eshkol_ast_t[defines.size()];
+            ast.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(defines.size());
             for (size_t i = 0; i < defines.size(); i++) {
                 ast.operation.sequence_op.expressions[i] = defines[i];
             }
@@ -9057,7 +9056,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = args.size();
-            ast.operation.call_op.variables = new eshkol_ast_t[args.size()];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(args.size());
             for (size_t i = 0; i < args.size(); ++i) {
                 ast.operation.call_op.variables[i] = args[i];
             }
@@ -9177,10 +9176,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t call = {};
                 call.type = ESHKOL_OP;
                 call.operation.op = ESHKOL_CALL_OP;
-                call.operation.call_op.func = new eshkol_ast_t;
+                call.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 *call.operation.call_op.func = pmMakeVar(name);
                 call.operation.call_op.num_vars = args.size();
-                call.operation.call_op.variables = args.empty() ? nullptr : new eshkol_ast_t[args.size()];
+                call.operation.call_op.variables = args.empty() ? nullptr : eshkol_ast_new_array<eshkol_ast_t>(args.size());
                 for (size_t i = 0; i < args.size(); ++i) call.operation.call_op.variables[i] = args[i];
                 return call;
             };
@@ -9189,7 +9188,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 seq.type = ESHKOL_OP;
                 seq.operation.op = ESHKOL_SEQUENCE_OP;
                 seq.operation.sequence_op.num_expressions = expressions.size();
-                seq.operation.sequence_op.expressions = expressions.empty() ? nullptr : new eshkol_ast_t[expressions.size()];
+                seq.operation.sequence_op.expressions = expressions.empty() ? nullptr : eshkol_ast_new_array<eshkol_ast_t>(expressions.size());
                 for (size_t i = 0; i < expressions.size(); ++i) seq.operation.sequence_op.expressions[i] = expressions[i];
                 return seq;
             };
@@ -9205,7 +9204,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 lambda.operation.lambda_op.return_type = nullptr;
                 lambda.operation.lambda_op.captured_vars = nullptr;
                 lambda.operation.lambda_op.num_captured = 0;
-                lambda.operation.lambda_op.body = new eshkol_ast_t;
+                lambda.operation.lambda_op.body = eshkol_ast_new<eshkol_ast_t>();
                 *lambda.operation.lambda_op.body = lambda_body;
                 return lambda;
             };
@@ -9215,17 +9214,17 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 let.type = ESHKOL_OP;
                 let.operation.op = ESHKOL_LET_OP;
                 let.operation.let_op.num_bindings = bindings.size();
-                let.operation.let_op.bindings = bindings.empty() ? nullptr : new eshkol_ast_t[bindings.size()];
+                let.operation.let_op.bindings = bindings.empty() ? nullptr : eshkol_ast_new_array<eshkol_ast_t>(bindings.size());
                 let.operation.let_op.binding_types = nullptr;
                 let.operation.let_op.name = nullptr;
                 for (size_t i = 0; i < bindings.size(); ++i) {
                     let.operation.let_op.bindings[i].type = ESHKOL_CONS;
-                    let.operation.let_op.bindings[i].cons_cell.car = new eshkol_ast_t;
+                    let.operation.let_op.bindings[i].cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                     *let.operation.let_op.bindings[i].cons_cell.car = pmMakeVar(bindings[i].first.c_str());
-                    let.operation.let_op.bindings[i].cons_cell.cdr = new eshkol_ast_t;
+                    let.operation.let_op.bindings[i].cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                     *let.operation.let_op.bindings[i].cons_cell.cdr = bindings[i].second;
                 }
-                let.operation.let_op.body = new eshkol_ast_t;
+                let.operation.let_op.body = eshkol_ast_new<eshkol_ast_t>();
                 *let.operation.let_op.body = let_body;
                 return let;
             };
@@ -9296,11 +9295,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             eshkol_ast_t wind = {};
             wind.type = ESHKOL_OP;
             wind.operation.op = ESHKOL_DYNAMIC_WIND_OP;
-            wind.operation.dynamic_wind_op.before = new eshkol_ast_t;
+            wind.operation.dynamic_wind_op.before = eshkol_ast_new<eshkol_ast_t>();
             *wind.operation.dynamic_wind_op.before = pmMakeLambda(pmMakeSequence(push_expressions));
-            wind.operation.dynamic_wind_op.thunk = new eshkol_ast_t;
+            wind.operation.dynamic_wind_op.thunk = eshkol_ast_new<eshkol_ast_t>();
             *wind.operation.dynamic_wind_op.thunk = pmMakeLambda(body);
-            wind.operation.dynamic_wind_op.after = new eshkol_ast_t;
+            wind.operation.dynamic_wind_op.after = eshkol_ast_new<eshkol_ast_t>();
             *wind.operation.dynamic_wind_op.after = pmMakeLambda(pmMakeSequence(pop_expressions));
 
             ast = pmMakeLet(evaluated_bindings, pmMakeLet(converted_bindings, wind));
@@ -9397,9 +9396,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // Store binding as CONS: car=var, cdr=CONS(init, step_or_var)
                 // If no step, step is same as var (no update)
                 eshkol_ast_t inner_cons = {.type = ESHKOL_CONS};
-                inner_cons.cons_cell.car = new eshkol_ast_t;
+                inner_cons.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                 *inner_cons.cons_cell.car = init_ast;
-                inner_cons.cons_cell.cdr = new eshkol_ast_t;
+                inner_cons.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                 if (has_step) {
                     *inner_cons.cons_cell.cdr = step_ast;
                 } else {
@@ -9407,9 +9406,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
 
                 eshkol_ast_t binding = {.type = ESHKOL_CONS};
-                binding.cons_cell.car = new eshkol_ast_t;
+                binding.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
                 *binding.cons_cell.car = var_ast;
-                binding.cons_cell.cdr = new eshkol_ast_t;
+                binding.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
                 *binding.cons_cell.cdr = inner_cons;
 
                 bindings.push_back(binding);
@@ -9502,7 +9501,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             bindings_list.operation.call_op.func = nullptr;
             bindings_list.operation.call_op.num_vars = bindings.size();
             if (bindings.size() > 0) {
-                bindings_list.operation.call_op.variables = new eshkol_ast_t[bindings.size()];
+                bindings_list.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(bindings.size());
                 for (size_t i = 0; i < bindings.size(); i++) {
                     bindings_list.operation.call_op.variables[i] = bindings[i];
                 }
@@ -9516,7 +9515,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             results_list.operation.call_op.func = nullptr;
             results_list.operation.call_op.num_vars = result_exprs.size();
             if (result_exprs.size() > 0) {
-                results_list.operation.call_op.variables = new eshkol_ast_t[result_exprs.size()];
+                results_list.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(result_exprs.size());
                 for (size_t i = 0; i < result_exprs.size(); i++) {
                     results_list.operation.call_op.variables[i] = result_exprs[i];
                 }
@@ -9526,24 +9525,24 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             // Create test clause as CONS(test, results)
             eshkol_ast_t test_clause = {.type = ESHKOL_CONS};
-            test_clause.cons_cell.car = new eshkol_ast_t;
+            test_clause.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
             *test_clause.cons_cell.car = test_ast;
-            test_clause.cons_cell.cdr = new eshkol_ast_t;
+            test_clause.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
             *test_clause.cons_cell.cdr = results_list;
 
             // Create main structure CONS(bindings-list, test-clause)
             eshkol_ast_t main_cons = {.type = ESHKOL_CONS};
-            main_cons.cons_cell.car = new eshkol_ast_t;
+            main_cons.cons_cell.car = eshkol_ast_new<eshkol_ast_t>();
             *main_cons.cons_cell.car = bindings_list;
-            main_cons.cons_cell.cdr = new eshkol_ast_t;
+            main_cons.cons_cell.cdr = eshkol_ast_new<eshkol_ast_t>();
             *main_cons.cons_cell.cdr = test_clause;
 
             // Set up do operation
-            ast.operation.call_op.func = new eshkol_ast_t;
+            ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.call_op.func = main_cons;
             ast.operation.call_op.num_vars = body_exprs.size();
             if (body_exprs.size() > 0) {
-                ast.operation.call_op.variables = new eshkol_ast_t[body_exprs.size()];
+                ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(body_exprs.size());
                 for (size_t i = 0; i < body_exprs.size(); i++) {
                     ast.operation.call_op.variables[i] = body_exprs[i];
                 }
@@ -9596,7 +9595,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Store in sequence_op
             ast.operation.sequence_op.num_expressions = exprs.size();
             if (exprs.size() > 0) {
-                ast.operation.sequence_op.expressions = new eshkol_ast_t[exprs.size()];
+                ast.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(exprs.size());
                 for (size_t i = 0; i < exprs.size(); i++) {
                     ast.operation.sequence_op.expressions[i] = exprs[i];
                 }
@@ -9639,7 +9638,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Store in sequence_op
             ast.operation.sequence_op.num_expressions = exprs.size();
             if (exprs.size() > 0) {
-                ast.operation.sequence_op.expressions = new eshkol_ast_t[exprs.size()];
+                ast.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(exprs.size());
                 for (size_t i = 0; i < exprs.size(); i++) {
                     ast.operation.sequence_op.expressions[i] = exprs[i];
                 }
@@ -9677,12 +9676,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 
                 // Set up 1D tensor (vector)
                 ast.operation.tensor_op.num_dimensions = 1;
-                ast.operation.tensor_op.dimensions = new uint64_t[1];
+                ast.operation.tensor_op.dimensions = eshkol_ast_new_array<uint64_t>(1);
                 ast.operation.tensor_op.dimensions[0] = tensor_elements.size();
                 ast.operation.tensor_op.total_elements = tensor_elements.size();
                 
                 if (ast.operation.tensor_op.total_elements > 0) {
-                    ast.operation.tensor_op.elements = new eshkol_ast_t[ast.operation.tensor_op.total_elements];
+                    ast.operation.tensor_op.elements = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.tensor_op.total_elements);
                     for (size_t i = 0; i < ast.operation.tensor_op.total_elements; i++) {
                         ast.operation.tensor_op.elements[i] = tensor_elements[i];
                     }
@@ -9754,11 +9753,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 
                 // Set up 2D tensor (matrix)
                 ast.operation.tensor_op.num_dimensions = 2;
-                ast.operation.tensor_op.dimensions = new uint64_t[2];
+                ast.operation.tensor_op.dimensions = eshkol_ast_new_array<uint64_t>(2);
                 ast.operation.tensor_op.dimensions[0] = rows;
                 ast.operation.tensor_op.dimensions[1] = cols;
                 ast.operation.tensor_op.total_elements = expected_elements;
-                ast.operation.tensor_op.elements = new eshkol_ast_t[expected_elements];
+                ast.operation.tensor_op.elements = eshkol_ast_new_array<eshkol_ast_t>(expected_elements);
                 
                 for (size_t i = 0; i < expected_elements; i++) {
                     ast.operation.tensor_op.elements[i] = tensor_elements[i];
@@ -9896,14 +9895,14 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
 
                 ast.operation.tensor_op.num_dimensions = dimensions.size();
-                ast.operation.tensor_op.dimensions = new uint64_t[dimensions.size()];
+                ast.operation.tensor_op.dimensions = eshkol_ast_new_array<uint64_t>(dimensions.size());
                 for (size_t i = 0; i < dimensions.size(); i++) {
                     ast.operation.tensor_op.dimensions[i] = dimensions[i];
                 }
 
                 ast.operation.tensor_op.total_elements = total_elements;
                 if (total_elements > 0) {
-                    ast.operation.tensor_op.elements = new eshkol_ast_t[total_elements];
+                    ast.operation.tensor_op.elements = eshkol_ast_new_array<eshkol_ast_t>(total_elements);
                     for (size_t i = 0; i < total_elements; i++) {
                         ast.operation.tensor_op.elements[i] = tensor_elements[i];
                     }
@@ -9960,7 +9959,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     co_return {.type = ESHKOL_INVALID};
                 }
                 ast.operation.op = ESHKOL_CALL_OP;
-                ast.operation.call_op.func = new eshkol_ast_t{};
+                ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
                 ast.operation.call_op.func->type = ESHKOL_VAR;
                 ast.operation.call_op.func->variable.id = eshkol_ast_string_copy(mode == "numeric"
                     ? eshkol::frontend::differentiation_numeric_marker
@@ -9978,7 +9977,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
                 const size_t helper_count = helpers.size();
                 ast.operation.call_op.num_vars = 2 + helper_count;
-                ast.operation.call_op.variables = new eshkol_ast_t[2 + helper_count]{};
+                ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(2 + helper_count);
                 ast.operation.call_op.variables[0] = function;
                 ast.operation.call_op.variables[1] = point;
                 for (size_t i = 0; i < helper_count; ++i) {
@@ -10011,7 +10010,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             
             // Set up diff operation
-            ast.operation.diff_op.expression = new eshkol_ast_t;
+            ast.operation.diff_op.expression = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.diff_op.expression = expression;
             
             ast.operation.diff_op.variable = eshkol_ast_string_copy(token.value);
@@ -10049,7 +10048,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Check if this is the 1-argument form (derivative f) - returns a closure
             if (token.type == TOKEN_RPAREN) {
                 // Higher-order form: (derivative f) returns a function that computes derivatives
-                ast.operation.derivative_op.function = new eshkol_ast_t;
+                ast.operation.derivative_op.function = eshkol_ast_new<eshkol_ast_t>();
                 *ast.operation.derivative_op.function = function;
                 ast.operation.derivative_op.point = nullptr;  // No point = higher-order form
                 ast.operation.derivative_op.mode = 0; // Forward-mode by default
@@ -10082,10 +10081,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Set up derivative operation (2-argument form)
-            ast.operation.derivative_op.function = new eshkol_ast_t;
+            ast.operation.derivative_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.derivative_op.function = function;
 
-            ast.operation.derivative_op.point = new eshkol_ast_t;
+            ast.operation.derivative_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.derivative_op.point = point;
 
             ast.operation.derivative_op.mode = 0; // Forward-mode by default
@@ -10139,11 +10138,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_INVALID; co_return ast;
             }
 
-            ast.operation.taylor_op.function = new eshkol_ast_t;
+            ast.operation.taylor_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.taylor_op.function = t_function;
-            ast.operation.taylor_op.point = new eshkol_ast_t;
+            ast.operation.taylor_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.taylor_op.point = t_point;
-            ast.operation.taylor_op.order = new eshkol_ast_t;
+            ast.operation.taylor_op.order = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.taylor_op.order = t_order;
             co_return ast;
         }
@@ -10178,7 +10177,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Check if this is the 1-argument form (gradient f) - returns a closure
             if (token.type == TOKEN_RPAREN) {
                 // Higher-order form: (gradient f) returns a function that computes gradients
-                ast.operation.gradient_op.function = new eshkol_ast_t;
+                ast.operation.gradient_op.function = eshkol_ast_new<eshkol_ast_t>();
                 *ast.operation.gradient_op.function = function;
                 ast.operation.gradient_op.point = nullptr;  // No point = higher-order form
                 co_return ast;
@@ -10237,10 +10236,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Set up gradient operation (2-argument form, point may be packed tensor)
-            ast.operation.gradient_op.function = new eshkol_ast_t;
+            ast.operation.gradient_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.gradient_op.function = function;
 
-            ast.operation.gradient_op.point = new eshkol_ast_t;
+            ast.operation.gradient_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.gradient_op.point = point;
 
             co_return ast;
@@ -10295,10 +10294,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Set up jacobian operation
-            ast.operation.jacobian_op.function = new eshkol_ast_t;
+            ast.operation.jacobian_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.jacobian_op.function = function;
 
-            ast.operation.jacobian_op.point = new eshkol_ast_t;
+            ast.operation.jacobian_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.jacobian_op.point = point;
 
             co_return ast;
@@ -10353,10 +10352,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             
             // Set up hessian operation
-            ast.operation.hessian_op.function = new eshkol_ast_t;
+            ast.operation.hessian_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.hessian_op.function = function;
             
-            ast.operation.hessian_op.point = new eshkol_ast_t;
+            ast.operation.hessian_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.hessian_op.point = point;
             
             co_return ast;
@@ -10411,10 +10410,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             
             // Set up divergence operation
-            ast.operation.divergence_op.function = new eshkol_ast_t;
+            ast.operation.divergence_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.divergence_op.function = function;
             
-            ast.operation.divergence_op.point = new eshkol_ast_t;
+            ast.operation.divergence_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.divergence_op.point = point;
             
             co_return ast;
@@ -10469,10 +10468,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             
             // Set up curl operation
-            ast.operation.curl_op.function = new eshkol_ast_t;
+            ast.operation.curl_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.curl_op.function = function;
             
-            ast.operation.curl_op.point = new eshkol_ast_t;
+            ast.operation.curl_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.curl_op.point = point;
             
             co_return ast;
@@ -10527,10 +10526,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             
             // Set up laplacian operation
-            ast.operation.laplacian_op.function = new eshkol_ast_t;
+            ast.operation.laplacian_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.laplacian_op.function = function;
             
-            ast.operation.laplacian_op.point = new eshkol_ast_t;
+            ast.operation.laplacian_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.laplacian_op.point = point;
             
             co_return ast;
@@ -10607,13 +10606,13 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             
             // Set up directional-derivative operation
-            ast.operation.directional_deriv_op.function = new eshkol_ast_t;
+            ast.operation.directional_deriv_op.function = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.directional_deriv_op.function = function;
             
-            ast.operation.directional_deriv_op.point = new eshkol_ast_t;
+            ast.operation.directional_deriv_op.point = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.directional_deriv_op.point = point;
             
-            ast.operation.directional_deriv_op.direction = new eshkol_ast_t;
+            ast.operation.directional_deriv_op.direction = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.directional_deriv_op.direction = direction;
             
             co_return ast;
@@ -10730,7 +10729,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // Set up extern operation
             ast.operation.extern_op.num_params = param_types.size();
             if (ast.operation.extern_op.num_params > 0) {
-                ast.operation.extern_op.parameters = new eshkol_ast_t[ast.operation.extern_op.num_params];
+                ast.operation.extern_op.parameters = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.extern_op.num_params);
                 for (size_t i = 0; i < ast.operation.extern_op.num_params; i++) {
                     ast.operation.extern_op.parameters[i] = param_types[i];
                 }
@@ -10860,16 +10859,16 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             // Allocate and copy module names
             ast.operation.require_op.num_modules = modules.size();
-            ast.operation.require_op.module_names = new char*[modules.size()];
-            ast.operation.require_op.import_prefixes = new char*[modules.size()];
-            ast.operation.require_op.import_except_names = new char**[modules.size()];
-            ast.operation.require_op.num_import_except_names = new uint64_t[modules.size()];
+            ast.operation.require_op.module_names = eshkol_ast_new_array<char*>(modules.size());
+            ast.operation.require_op.import_prefixes = eshkol_ast_new_array<char*>(modules.size());
+            ast.operation.require_op.import_except_names = eshkol_ast_new_array<char**>(modules.size());
+            ast.operation.require_op.num_import_except_names = eshkol_ast_new_array<uint64_t>(modules.size());
             ast.operation.require_op.is_load = first_symbol == "load";
-            ast.operation.require_op.import_only_names = new char**[modules.size()];
-            ast.operation.require_op.num_import_only_names = new uint64_t[modules.size()];
-            ast.operation.require_op.import_rename_from = new char**[modules.size()];
-            ast.operation.require_op.import_rename_to = new char**[modules.size()];
-            ast.operation.require_op.num_import_renames = new uint64_t[modules.size()];
+            ast.operation.require_op.import_only_names = eshkol_ast_new_array<char**>(modules.size());
+            ast.operation.require_op.num_import_only_names = eshkol_ast_new_array<uint64_t>(modules.size());
+            ast.operation.require_op.import_rename_from = eshkol_ast_new_array<char**>(modules.size());
+            ast.operation.require_op.import_rename_to = eshkol_ast_new_array<char**>(modules.size());
+            ast.operation.require_op.num_import_renames = eshkol_ast_new_array<uint64_t>(modules.size());
             for (size_t i = 0; i < modules.size(); i++) {
                 ast.operation.require_op.module_names[i] = eshkol_ast_string_copy(modules[i]);
                 ast.operation.require_op.import_prefixes[i] = nullptr;
@@ -10912,7 +10911,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             // Allocate and copy export names
             ast.operation.provide_op.num_exports = exports.size();
-            ast.operation.provide_op.export_names = new char*[exports.size()];
+            ast.operation.provide_op.export_names = eshkol_ast_new_array<char*>(exports.size());
             for (size_t i = 0; i < exports.size(); i++) {
                 ast.operation.provide_op.export_names[i] = eshkol_ast_string_copy(exports[i]);
             }
@@ -11015,7 +11014,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     }
 
                     ast.operation.with_region_op.num_body_exprs = body_elements.size();
-                    ast.operation.with_region_op.body = new eshkol_ast_t[body_elements.size()];
+                    ast.operation.with_region_op.body = eshkol_ast_new_array<eshkol_ast_t>(body_elements.size());
                     for (size_t i = 0; i < body_elements.size(); i++) {
                         ast.operation.with_region_op.body[i] = body_elements[i];
                     }
@@ -11049,7 +11048,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             ast.operation.with_region_op.num_body_exprs = body_exprs.size();
-            ast.operation.with_region_op.body = new eshkol_ast_t[body_exprs.size()];
+            ast.operation.with_region_op.body = eshkol_ast_new_array<eshkol_ast_t>(body_exprs.size());
             for (size_t i = 0; i < body_exprs.size(); i++) {
                 ast.operation.with_region_op.body[i] = body_exprs[i];
             }
@@ -11070,7 +11069,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             tokenizer.pushBack(token);
             eshkol_ast_t value_expr = (co_await parse_expression(tokenizer));
 
-            ast.operation.owned_op.value = new eshkol_ast_t;
+            ast.operation.owned_op.value = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.owned_op.value = value_expr;
 
             token = tokenizer.nextToken();
@@ -11096,7 +11095,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             tokenizer.pushBack(token);
             eshkol_ast_t value_expr = (co_await parse_expression(tokenizer));
 
-            ast.operation.move_op.value = new eshkol_ast_t;
+            ast.operation.move_op.value = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.move_op.value = value_expr;
 
             token = tokenizer.nextToken();
@@ -11123,7 +11122,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             tokenizer.pushBack(token);
             eshkol_ast_t value_expr = (co_await parse_expression(tokenizer));
 
-            ast.operation.borrow_op.value = new eshkol_ast_t;
+            ast.operation.borrow_op.value = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.borrow_op.value = value_expr;
 
             // Parse body expressions
@@ -11151,7 +11150,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
 
             ast.operation.borrow_op.num_body_exprs = body_exprs.size();
-            ast.operation.borrow_op.body = new eshkol_ast_t[body_exprs.size()];
+            ast.operation.borrow_op.body = eshkol_ast_new_array<eshkol_ast_t>(body_exprs.size());
             for (size_t i = 0; i < body_exprs.size(); i++) {
                 ast.operation.borrow_op.body[i] = body_exprs[i];
             }
@@ -11172,7 +11171,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             tokenizer.pushBack(token);
             eshkol_ast_t value_expr = (co_await parse_expression(tokenizer));
 
-            ast.operation.shared_op.value = new eshkol_ast_t;
+            ast.operation.shared_op.value = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.shared_op.value = value_expr;
 
             token = tokenizer.nextToken();
@@ -11198,7 +11197,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             tokenizer.pushBack(token);
             eshkol_ast_t value_expr = (co_await parse_expression(tokenizer));
 
-            ast.operation.weak_ref_op.value = new eshkol_ast_t;
+            ast.operation.weak_ref_op.value = eshkol_ast_new<eshkol_ast_t>();
             *ast.operation.weak_ref_op.value = value_expr;
 
             token = tokenizer.nextToken();
@@ -11270,7 +11269,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_SEQUENCE_OP;
                 ast.operation.sequence_op.num_expressions = begin_expressions.size();
-                ast.operation.sequence_op.expressions = new eshkol_ast_t[begin_expressions.size()];
+                ast.operation.sequence_op.expressions = eshkol_ast_new_array<eshkol_ast_t>(begin_expressions.size());
                 for (size_t i = 0; i < begin_expressions.size(); i++) {
                     ast.operation.sequence_op.expressions[i] = begin_expressions[i];
                 }
@@ -11375,7 +11374,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         // Set up operation based on type and arguments
         if (ast.operation.op == ESHKOL_CALL_OP) {
             // Create function name AST node
-            ast.operation.call_op.func = new eshkol_ast_t;
+            ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
             ast.operation.call_op.func->type = ESHKOL_VAR;
             stamp_node(*ast.operation.call_op.func, head_token.line, head_token.column);
             ast.operation.call_op.func->variable.id =
@@ -11403,7 +11402,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             // For function calls, allocate variables array for arguments
             ast.operation.call_op.num_vars = elements.size();
             if (ast.operation.call_op.num_vars > 0) {
-                ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+                ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.call_op.num_vars);
                 for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
                     ast.operation.call_op.variables[i] = elements[i];
                 }
@@ -11416,7 +11415,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.func = nullptr;  // cond doesn't have a function
             ast.operation.call_op.num_vars = elements.size();
             if (ast.operation.call_op.num_vars > 0) {
-                ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+                ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.call_op.num_vars);
                 for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
                     ast.operation.call_op.variables[i] = elements[i];
                 }
@@ -11429,7 +11428,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = elements.size();
             if (ast.operation.call_op.num_vars > 0) {
-                ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+                ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.call_op.num_vars);
                 for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
                     ast.operation.call_op.variables[i] = elements[i];
                 }
@@ -11446,7 +11445,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = elements[0];
         } else if (ast.operation.op == ESHKOL_QUASIQUOTE_OP) {
             // quasiquote takes exactly one argument - the expression to quasiquote
@@ -11458,7 +11457,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             }
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = elements[0];
         } else if ((ast.operation.op >= ESHKOL_UNIFY_OP && ast.operation.op <= ESHKOL_WORKSPACE_PRED_OP) ||
                     ast.operation.op == ESHKOL_KB_QUERY_PREFIX_OP ||
@@ -11471,7 +11470,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = elements.size();
             if (ast.operation.call_op.num_vars > 0) {
-                ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+                ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.call_op.num_vars);
                 for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
                     ast.operation.call_op.variables[i] = elements[i];
                 }
@@ -11519,12 +11518,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
         // Create as CALL_OP structure: func=first_elem, variables=rest
         ast.operation.op = ESHKOL_CALL_OP;
-        ast.operation.call_op.func = new eshkol_ast_t;
+        ast.operation.call_op.func = eshkol_ast_new<eshkol_ast_t>();
         *ast.operation.call_op.func = first_elem;
 
         ast.operation.call_op.num_vars = elements.size();
         if (ast.operation.call_op.num_vars > 0) {
-            ast.operation.call_op.variables = new eshkol_ast_t[ast.operation.call_op.num_vars];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(ast.operation.call_op.num_vars);
             for (size_t i = 0; i < ast.operation.call_op.num_vars; i++) {
                 ast.operation.call_op.variables[i] = elements[i];
             }
@@ -11634,7 +11633,7 @@ static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
     if (elements.empty()) {
         // Empty vector: #() → 1D tensor with 0 elements
         ast.operation.tensor_op.num_dimensions = 1;
-        ast.operation.tensor_op.dimensions = new uint64_t[1];
+        ast.operation.tensor_op.dimensions = eshkol_ast_new_array<uint64_t>(1);
         ast.operation.tensor_op.dimensions[0] = 0;
         ast.operation.tensor_op.total_elements = 0;
         ast.operation.tensor_op.elements = nullptr;
@@ -11709,23 +11708,20 @@ static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
             // #(#(1 2) #(3 4)) with sub_dims=[2] → dims=[2, 2], elements=[1, 2, 3, 4]
             uint64_t outer_count = elements.size();
             uint64_t new_ndim = sub_ndim + 1;
-            uint64_t* new_dims = new uint64_t[new_ndim];
+            uint64_t* new_dims = eshkol_ast_new_array<uint64_t>(new_ndim);
             new_dims[0] = outer_count;
             for (uint64_t d = 0; d < sub_ndim; d++) {
                 new_dims[d + 1] = sub_dims[d];
             }
 
             uint64_t new_total = outer_count * sub_total;
-            eshkol_ast_t* new_elements = new eshkol_ast_t[new_total];
+            eshkol_ast_t* new_elements = eshkol_ast_new_array<eshkol_ast_t>(new_total);
 
             uint64_t idx = 0;
             for (auto& elem : elements) {
                 for (uint64_t i = 0; i < sub_total; i++) {
                     new_elements[idx++] = elem.operation.tensor_op.elements[i];
                 }
-                // Free the sub-tensor's allocated arrays (they've been flattened)
-                delete[] elem.operation.tensor_op.dimensions;
-                delete[] elem.operation.tensor_op.elements;
             }
 
             ast.operation.tensor_op.num_dimensions = new_ndim;
@@ -11749,10 +11745,10 @@ static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
 
     // Default: 1D vector of scalar elements
     ast.operation.tensor_op.num_dimensions = 1;
-    ast.operation.tensor_op.dimensions = new uint64_t[1];
+    ast.operation.tensor_op.dimensions = eshkol_ast_new_array<uint64_t>(1);
     ast.operation.tensor_op.dimensions[0] = elements.size();
     ast.operation.tensor_op.total_elements = elements.size();
-    ast.operation.tensor_op.elements = new eshkol_ast_t[elements.size()];
+    ast.operation.tensor_op.elements = eshkol_ast_new_array<eshkol_ast_t>(elements.size());
     for (size_t i = 0; i < elements.size(); i++) {
         ast.operation.tensor_op.elements[i] = elements[i];
     }
@@ -11833,7 +11829,7 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
             ast.operation.op = ESHKOL_QUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = quoted_expr;
             co_return ast;
         }
@@ -11864,7 +11860,7 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
             ast.operation.op = ESHKOL_QUASIQUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = inner_expr;
             co_return ast;
         }
@@ -11886,7 +11882,7 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
             ast.operation.op = ESHKOL_UNQUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = inner_expr;
             co_return ast;
         }
@@ -11909,7 +11905,7 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer) {
             ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
-            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            ast.operation.call_op.variables = eshkol_ast_new_array<eshkol_ast_t>(1);
             ast.operation.call_op.variables[0] = inner_expr;
             co_return ast;
         }

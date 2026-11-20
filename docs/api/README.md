@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2998/6731 public symbols documented (44.5%), 3733 undocumented.
+**Coverage:** 3006/6743 public symbols documented (44.6%), 3737 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -174,10 +174,11 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `frontend/`
 
-92/373 symbols documented.
+100/385 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
+| [`frontend/ast_nodes.h`](frontend/ast_nodes.md) | 12 | 8 |
 | [`frontend/ast_strings.h`](frontend/ast_strings.md) | 15 | 11 |
 | [`frontend/binding_forms.h`](frontend/binding_forms.md) | 3 | 0 |
 | [`frontend/diagnostic.h`](frontend/diagnostic.md) | 8 | 0 |

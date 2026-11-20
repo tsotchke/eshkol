@@ -3252,6 +3252,7 @@ add_library(eshkol-workspace STATIC
   lib/frontend/differentiation_graph.cpp
   lib/frontend/scalar_lowering.cpp
   lib/frontend/ast_strings.cpp
+  lib/frontend/ast_nodes.cpp
   lib/frontend/source_paths.cpp
   lib/frontend/node_identity.cpp
   lib/frontend/semantic_identity.cpp
@@ -4089,6 +4090,22 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast
     add_test(NAME ast_strings_test COMMAND ast_strings_test)
     set_tests_properties(ast_strings_test PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: AST string owner")
+endif()
+
+# The one owner of AST node storage (inc/eshkol/frontend/ast_nodes.h).
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend/ast_nodes_test.cpp")
+    add_executable(ast_nodes_test tests/frontend/ast_nodes_test.cpp)
+    target_compile_features(ast_nodes_test PRIVATE cxx_std_20)
+    target_include_directories(ast_nodes_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ast_nodes_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ast_nodes_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ast_nodes_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ast_nodes_test COMMAND ast_nodes_test)
+    set_tests_properties(ast_nodes_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: AST node owner"
+        FAIL_REGULAR_EXPRESSION "FAIL:|(ERROR|SUMMARY): [A-Za-z]+Sanitizer")
 endif()
 
 # ADR-0026: the one syntax-rules engine, compiled as plain C exactly as the
