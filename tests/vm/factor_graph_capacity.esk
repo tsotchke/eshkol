@@ -29,7 +29,9 @@
   (- 0.0 (* 256.0 (/ 1.0 258.0) (log (/ 1.0 258.0)))
          (* (/ 2.0 258.0) (log (/ 2.0 258.0)))))
 (define large-domain
-  (and (= (tensor-length big-marginal) 257)
+  (and (near? (let sum ((i 0) (total 0.0))
+                 (if (= i 257) total (sum (+ i 1) (+ total (tensor-ref big-marginal i)))))
+              1.0)
        (near? (tensor-ref big-marginal 0) (/ 1.0 258.0))
        (near? (tensor-ref big-marginal 256) (/ 2.0 258.0))
        (near? (fg-entropy big 0) big-entropy)))
