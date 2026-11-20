@@ -96,3 +96,8 @@ under the build directory (`tls_test_ca`); they use loopback only.
 - `tls_context_native`, `tls_public_scheme_jit`, `tls_public_scheme_aot` and the
   Python-peer suites: context validation, expired and mismatched certificates,
   concurrent close, and interoperation with an independent TLS stack.
+  The delayed-start JIT test waits eleven seconds before launching the runner,
+  then performs the same verified handshake and binary exchange. The peer
+  accepts connections for the lifetime of the client, within the harness's
+  60-second client deadline. The harness checks both the client summary and
+  the peer's result before reporting success.

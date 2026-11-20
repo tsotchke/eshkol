@@ -16260,11 +16260,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET tls_context_test)
                 if(_tls_case STREQUAL "python")
                     set(_tls_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_python_client.esk")
                     set(_tls_scenario normal)
-                    set(_tls_pass "TLS Python public API: 7 passed, 0 failed")
                 else()
                     set(_tls_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_fatal_client.esk")
                     set(_tls_scenario fatal)
-                    set(_tls_pass "PASS: fatal TLS errors close without another SSL operation")
                 endif()
                 add_test(NAME tls_public_${_tls_case}_${_tls_mode}
                     COMMAND "${Python3_EXECUTABLE}"
@@ -16280,10 +16278,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET tls_context_test)
                     TIMEOUT 300 RUN_SERIAL TRUE
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                     ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0"
-                    PASS_REGULAR_EXPRESSION "${_tls_pass}"
                     FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
             endforeach()
         endforeach()
+
+        add_test(NAME tls_public_python_delayed_jit
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_python_harness.py"
+                --runtime "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_delayed_jit.sh"
+                --source "${CMAKE_CURRENT_SOURCE_DIR}/tests/network/tls_public_python_client.esk"
+                --mode jit --scenario normal
+                --work-dir "${CMAKE_CURRENT_BINARY_DIR}/tls-public-python-delayed-jit"
+                --lib-dir "${CMAKE_CURRENT_SOURCE_DIR}/lib" --link-dir "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(tls_public_python_delayed_jit PROPERTIES
+            TIMEOUT 300 RUN_SERIAL TRUE
+            ENVIRONMENT "TLS_TEST_RUNNER=$<TARGET_FILE:eshkol-run>"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Unhandled exception|LLVM module verification failed|fatal signal")
     endif()
 endif()
 

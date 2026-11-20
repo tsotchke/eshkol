@@ -199,8 +199,9 @@ def main():
         raise failures[0]
     if result.returncode:
         return result.returncode
-    expected_marker = "TLS Python public API:" if args.scenario == "normal" else "PASS: fatal TLS errors"
-    if expected_marker not in result.stdout:
+    expected_marker = ("TLS Python public API: 7 passed, 0 failed" if args.scenario == "normal"
+                       else "PASS: fatal TLS errors close without another SSL operation")
+    if expected_marker not in result.stdout.splitlines():
         raise AssertionError("public TLS test omitted its final result")
     return 0
 

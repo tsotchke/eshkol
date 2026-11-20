@@ -223,7 +223,7 @@ probe_tls_acceptance() {
         return
     }
     for required in tls_context_native tls_public_scheme_jit tls_public_scheme_aot \
-                    tls_public_python_jit tls_public_python_aot \
+                    tls_public_python_jit tls_public_python_aot tls_public_python_delayed_jit \
                     tls_public_fatal_jit tls_public_fatal_aot \
                     tls_test_pki tls_lease_test tls_net_core_jit tls_net_core_aot; do
         if ! printf '%s\n' "$test_list" | grep -Fq "$required"; then
