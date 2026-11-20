@@ -1,0 +1,4 @@
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: consumed more than once
+(define (duplicate (token : qubit)) (cons token token))

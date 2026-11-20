@@ -1346,42 +1346,8 @@ static void emit_builtin_preamble(FuncChunk* c) {
     }
 }
 
-/*******************************************************************************
- * Linear (no-cloning) parity with the native engine
- *
- * The linear-type rule is a GUARANTEE the language advertises: cloning a
- * `Qubit` is a compile-time type error, the compile stops, and no artifact is
- * written. Until this hook existed that was true of the LLVM engine only. The
- * VM reaches its compiler through this file, whose reader produces `Node*` — a
- * different AST from `eshkol_ast_t` entirely — and no TypeChecker was ever
- * constructed, so `eshkol-vm-standalone-test` ran a qubit clone to completion
- * with exit 0 and no diagnostic, and `--emit-eskb` wrote the bytecode for it.
- * A type-system guarantee that holds on one engine and not the other is an
- * engine-parity defect, which is the class this project refuses to ship.
- *
- * The fix runs the SAME judgment, not a second one: eshkol_linear_check_source()
- * drives the real front end (parser, macro expander, TypeChecker) over the same
- * source text and returns the real verdict. See lib/types/linear_check_bridge.cpp
- * for why reimplementing the rule over `Node*` was rejected.
- *
- * The probe is gated on the source actually carrying a linear annotation, so a
- * program that opts out of linear types pays nothing and cannot be affected by
- * the front end's opinion of it. When the source DOES carry one and the front
- * end cannot read it, the compile fails LOUDLY rather than proceeding: "I
- * cannot verify this" is not "this is fine", and silent acceptance is precisely
- * the defect being closed.
- ******************************************************************************/
-/**
- * @brief True when @p source contains a linear TYPE ANNOTATION.
- *
- * Matches the annotation syntax — a `:` followed by one of the linear builtin
- * type names as a whole word — rather than the bare name, so a variable or
- * string that merely happens to contain "Stream" does not arm the check. The
- * linear builtins are Handle, Stream, Qubit and the quantum register family
- * qreg (hott_types.h, TYPE_FLAG_LINEAR); keep this list in step with them.
- * The quantum register and region forms arm it too: their linear values are
- * typed by signature, with no annotation in the program.
- */
+/* Embedders that do not link the frontend retain their restricted source
+ * profile. Hosted compilation always asks the installed checker. */
 static int vm_word_char(char c) {
     return isalnum((unsigned char)c) || c == '-' || c == '_' || c == '?' || c == '!' ||
            c == '>' || c == '<' || c == '*' || c == '/' || c == '%';
@@ -1574,12 +1540,11 @@ static int vm_reject_dependent_violations(const char* source, const char* source
  * @return 0 to proceed, nonzero when the VM must refuse this program.
  */
 static int vm_reject_linear_violations(const char* source, const char* source_name) {
-    if (!source || (!vm_source_carries_linear_annotation(source) &&
-                    !vm_source_carries_structural_types(source))) return 0;
+    if (!source) return 0;
 
     if (!g_vm_linear_check) {
-        /* No front end installed — a freestanding or embedded build. Refuse
-         * rather than accept unchecked: silent acceptance is the defect. */
+        if (!vm_source_carries_linear_annotation(source) &&
+            !vm_source_carries_structural_types(source)) return 0;
         vm_compile_error("this build cannot verify linear (no-cloning) typing",
                          "no linear checker is installed; link a driver that "
                          "calls eshkol_vm_install_linear_check(), or remove the "
@@ -1598,8 +1563,7 @@ static int vm_reject_linear_violations(const char* source, const char* source_na
         return 1;
     }
     if (violations < 0) {
-        vm_compile_error("refusing to compile a program carrying a linear type "
-                         "annotation that the front end could not analyse",
+        vm_compile_error("refusing to compile source that the front end could not analyse",
                          "the no-cloning guarantee cannot be verified for this "
                          "source, and an unverified linear program must not run");
         return 1;
@@ -1659,10 +1623,9 @@ static int vm_reject_refinement_violations(const char* source, const char* sourc
  *        the native engine makes before code generation, in the native order.
  *
  * Dependent-type obligations (ADR-0042), linearity, then refinements
- * (ADR-0044). Each judgment is reached through its own installed hook and is
- * consulted only when the source writes a form it governs, so a program that
- * uses none of them pays nothing. Both VM entry points (run and emit) call
- * this one function, so they cannot disagree about which judgments apply.
+ * (ADR-0044). The installed linear checker examines every source unit,
+ * including programs whose linear types arise through aliases or expansion.
+ * Source execution and bytecode emission use this gate.
  * @return 0 to proceed, nonzero when the VM must refuse this program.
  */
 static int vm_reject_type_violations(const char* source, const char* source_name) {

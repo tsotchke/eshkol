@@ -9031,6 +9031,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
     endfunction()
     add_vm_transcript_test(vm_tensor_dot_shapes tests/vm_parity/corpus/tensor_dot_shapes.esk)
     add_vm_transcript_test(vm_match_bytecode_parity tests/vm_parity/corpus/match_patterns.esk)
+    add_vm_transcript_test(vm_linear_type_spelling tests/typesystem/linear_type_spelling_test.esk)
+    add_vm_transcript_test(vm_linear_type_spelling_valid tests/typesystem/linear_type_spelling_valid_test.esk)
 endif()
 
 # BI-5 gate: the linear (no-cloning) rule is enforced on BOTH engines. The

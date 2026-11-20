@@ -2028,6 +2028,8 @@ static void vm_emit_binding_read(FuncChunk* c, uint32_t id) {
         chunk_emit(c, OP_LANGUAGE_COVERAGE_READ, (int)id);
 }
 
+static int vm_reject_linear_violations(const char* source, const char* source_name);
+
 static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
@@ -2116,6 +2118,15 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     }
     src[len] = '\0';
 #endif
+
+    /* The bootstrap establishes the compiler's standard environment. A source
+     * dependency selected by the program receives the same linearity judgment
+     * as its entry unit before its forms can contribute bytecode. */
+    if (tracked > 0 && !g_vm_bootstrapping_standard_library &&
+        vm_reject_linear_violations(src, path)) {
+        free(src);
+        return -1;
+    }
 
     /* Parse the complete module before compiling it. This gives loaded source
      * the same forward-procedure and same-location redefinition semantics as

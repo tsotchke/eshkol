@@ -1,0 +1,7 @@
+;; OUTPUT: accepted
+
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+(define (transfer (token : qubit)) : qubit token)
+(display "accepted")
+(newline)
