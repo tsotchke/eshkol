@@ -6993,9 +6993,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "owned") && node->n_children == 2) { compile_expr(c, node->children[1], tail); return; }
     if (is_sym(head, "move") && node->n_children == 2) { compile_expr(c, node->children[1], tail); return; }
     if (is_sym(head, "borrow") && node->n_children >= 3) {
-        compile_expr(c, node->children[1], 0); /* the borrowed value */
-        for (int i = 2; i < node->n_children; i++)
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+        /* The borrowed operand is evaluated for its effects and discarded;
+         * the body is a sequence whose last expression is the result, so the
+         * stack holds exactly one value afterwards, as for begin. */
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_POP, 0);
+        for (int i = 2; i < node->n_children; i++) {
+            const int last = i == node->n_children - 1;
+            compile_expr(c, node->children[i], tail && last);
+            if (!last) chunk_emit(c, OP_POP, 0);
+        }
         return;
     }
     if (is_sym(head, "shared") && node->n_children == 2) { compile_expr(c, node->children[1], tail); return; }
