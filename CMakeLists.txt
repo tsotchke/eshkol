@@ -8333,6 +8333,8 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                     FAIL_REGULAR_EXPRESSION "FAIL|LLVM module verification failed|fatal signal")
             endforeach()
         endfunction()
+        eshkol_add_numeric_test(reverse_tape_operands tests/ad/reverse_tape_operands.esk vm)
+        eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot)
         eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
 
         # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every
