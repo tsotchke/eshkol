@@ -11909,10 +11909,8 @@ SyntaxDatum syntax_read_tape(const void* opaque, uint32_t start) {
     return datum;
 }
 
-eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
-                                const std::set<std::string>& macro_names) {
-    std::vector<Token> tokens;
-    emit_syntax_tokens(datum, tokens);
+static eshkol_ast_t parse_token_tape(std::vector<Token> tokens,
+                                     const std::set<std::string>& macro_names) {
     std::set<std::string> names = macro_names;
     auto* const previous_names = g_parser_macro_names;
     const char* const previous_source = g_parse_source;
@@ -11926,6 +11924,27 @@ eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
     g_parse_source = previous_source;
     g_parser_macro_names = previous_names;
     return result;
+}
+
+eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
+                                const std::set<std::string>& macro_names) {
+    std::vector<Token> tokens;
+    emit_syntax_tokens(datum, tokens);
+    return parse_token_tape(std::move(tokens), macro_names);
+}
+
+eshkol_ast_t parse_syntax_tokens(std::vector<SyntaxToken> tokens,
+                                 const std::set<std::string>& macro_names) {
+    std::vector<Token> tape;
+    tape.reserve(tokens.size());
+    for (auto& source : tokens) {
+        Token token{static_cast<TokenType>(source.token_type), std::move(source.text), 0, 0, 0};
+        token.verbatim = source.verbatim;
+        tape.push_back(std::move(token));
+    }
+    tokens.clear();
+    tokens.shrink_to_fit();
+    return parse_token_tape(std::move(tape), macro_names);
 }
 
 } // namespace eshkol

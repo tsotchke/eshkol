@@ -12,7 +12,6 @@
 
 #include <eshkol/core/sexp_to_ast.h>
 #include "eshkol/core/reader_limits.h"
-#include "eshkol/core/stack_guard.h"
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/core/introspection.h>
 #include <eshkol/logger.h>
@@ -24,10 +23,13 @@
 #include <eshkol/frontend/syntax_datum.h>
 #include <eshkol/core/string_escape.h>
 
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
 #include <vector>
+#include <new>
+#include <set>
 #include <string>
 
 extern "C" int64_t eshkol_string_byte_length(const char* s);
@@ -132,1156 +134,187 @@ eshkol_tagged_value_t list_ref(eshkol_tagged_value_t list, size_t index) {
     return is_pair(current) ? pair_car(current) : make_null();
 }
 
-// Collect list elements into a vector
-std::vector<eshkol_tagged_value_t> list_to_vector(eshkol_tagged_value_t list) {
-    std::vector<eshkol_tagged_value_t> result;
-    eshkol_tagged_value_t current = list;
-    while (is_pair(current)) {
-        result.push_back(pair_car(current));
-        current = pair_cdr(current);
-    }
-    return result;
-}
-
 // Check if symbol matches a name
 inline bool symbol_eq(eshkol_tagged_value_t value, const char* name) {
     const char* sym_name = get_symbol_name(value);
     return sym_name && strcmp(sym_name, name) == 0;
 }
 
-// Keep identifiers, literal bytes and list structure distinct while handing a
-// runtime form to the native pattern parser and syntax-rules expander.
-bool runtime_syntax(eshkol_tagged_value_t value, eshkol::SyntaxDatum& out, unsigned depth) {
-    using Kind = eshkol::SyntaxDatum::Kind;
-    if (depth >= 500) return false;
-    if (is_pair(value) || is_null(value)) {
-        auto rest = pair_cdr(value);
-        if (symbol_eq(pair_car(value), "quote") && is_pair(rest) && is_null(pair_cdr(rest))) {
-            out.kind = Kind::Prefix;
-            out.token_type = TOKEN_QUOTE;
-            out.text = "'";
-            return runtime_syntax(pair_car(rest), out.items.emplace_back(), depth + 1);
-        }
-        out.kind = Kind::List;
-        out.token_type = TOKEN_LPAREN;
-        out.text = "(";
-        while (is_pair(value)) {
-            if (!runtime_syntax(pair_car(value), out.items.emplace_back(), depth + 1))
-                return false;
-            value = pair_cdr(value);
-        }
-        if (is_null(value)) return true;
-        out.dotted = true;
-        return runtime_syntax(value, out.items.emplace_back(), depth + 1);
-    }
+void set_error(eshkol::EvalConversionError& error, eshkol_exception_type_t type,
+               const char* text) {
+    error.type = type;
+    snprintf(error.message, sizeof(error.message), "%s", text);
+}
+
+// Spell one atom as the token the reader would have produced for it.
+bool spell_atom(eshkol_tagged_value_t value, eshkol::SyntaxToken& token,
+                eshkol::EvalConversionError& error) {
     if (const char* name = get_symbol_name(value)) {
-        if (eshkol_syntax_source_name_reserved(name, strlen(name))) return false;
-        out.kind = Kind::Symbol;
-        out.token_type = TOKEN_SYMBOL;
-        out.text = name;
-        out.verbatim = out.text == ".";
+        const size_t length = strlen(name);
+        if (eshkol_syntax_source_name_reserved(name, length)) {
+            error.type = ESHKOL_EXCEPTION_SYNTAX_ERROR;
+            snprintf(error.message, sizeof(error.message),
+                     "the symbol |%s| is spelled the way the compiler spells the "
+                     "bindings it generates, which no program text can name",
+                     name);
+            return false;
+        }
+        token.token_type = TOKEN_SYMBOL;
+        token.text.assign(name, length);
+        token.verbatim = token.text == ".";
         return true;
     }
     if (const char* bytes = get_string_value(value)) {
-        out.token_type = TOKEN_STRING;
-        out.text.assign(bytes, eshkol_string_byte_length(bytes));
+        token.token_type = TOKEN_STRING;
+        token.text.assign(bytes, eshkol_string_byte_length(bytes));
         return true;
     }
     switch (value.type) {
         case ESHKOL_VALUE_INT64:
-            out.token_type = TOKEN_NUMBER;
-            out.text = std::to_string(value.data.int_val);
+            token.token_type = TOKEN_NUMBER;
+            token.text = std::to_string(value.data.int_val);
             return true;
         case ESHKOL_VALUE_DOUBLE: {
             char buffer[64];
             eshkol_format_double(buffer, sizeof(buffer), value.data.double_val);
-            out.token_type = TOKEN_NUMBER;
-            out.text = buffer;
+            token.token_type = TOKEN_NUMBER;
+            token.text = buffer;
             return true;
         }
         case ESHKOL_VALUE_BOOL:
-            out.token_type = TOKEN_BOOLEAN;
-            out.text = value.data.int_val ? "#t" : "#f";
+            token.token_type = TOKEN_BOOLEAN;
+            token.text = value.data.int_val ? "#t" : "#f";
             return true;
         case ESHKOL_VALUE_CHAR: {
             unsigned char bytes[4];
             size_t length;
             if (value.data.int_val < 0 || value.data.int_val > 0x10ffff ||
-                !eshkol_string_escape_append_utf8(value.data.int_val, bytes, &length))
+                !eshkol_string_escape_append_utf8(value.data.int_val, bytes, &length)) {
+                set_error(error, ESHKOL_EXCEPTION_SYNTAX_ERROR,
+                          "a character outside the Unicode scalar values is not "
+                          "expression syntax");
                 return false;
-            out.token_type = TOKEN_CHAR;
-            out.text.assign(reinterpret_cast<const char*>(bytes), length);
+            }
+            token.token_type = TOKEN_CHAR;
+            token.text.assign(reinterpret_cast<const char*>(bytes), length);
             return true;
         }
         default:
+            error.type = ESHKOL_EXCEPTION_SYNTAX_ERROR;
+            snprintf(error.message, sizeof(error.message),
+                     "a value of type %s is not expression syntax",
+                     eshkol_format_value_type_tag(value));
             return false;
     }
 }
 
-eshkol_ast_t* parse_runtime_form(eshkol_tagged_value_t value,
-                                 const std::set<std::string>& names) {
-    eshkol::SyntaxDatum syntax;
-    if (!runtime_syntax(value, syntax, 0)) return nullptr;
-    auto parsed = eshkol::parse_syntax_datum(syntax, names);
-    if (parsed.type == ESHKOL_INVALID) return nullptr;
-    auto* ast = eshkol_alloc_symbolic_ast();
-    *ast = parsed;
-    return ast;
-}
-
-// Forward declaration for recursive conversion
-eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp);
-
-// ============================================================================
-// Special Form Handlers
-// ============================================================================
-
-// Convert lambda: (lambda (params...) body...)
-eshkol_ast_t* convert_lambda(eshkol_tagged_value_t sexp) {
-    // (lambda (params...) body)
-    // Get params list (second element)
-    eshkol_tagged_value_t params_sexp = list_ref(sexp, 1);
-    // Get body (third element onwards)
-    eshkol_tagged_value_t body_start = pair_cdr(pair_cdr(sexp));  // Skip lambda and params
-
-    if (is_null(body_start) || !is_pair(body_start)) {
-        eshkol_error("sexp_to_ast: lambda requires at least one body expression");
-        return nullptr;
-    }
-
-    // Collect parameters
-    std::vector<eshkol_tagged_value_t> param_sexps = list_to_vector(params_sexp);
-    uint64_t num_params = param_sexps.size();
-
-    // Check for variadic (rest parameter with dot notation)
-    bool is_variadic = false;
-    char* rest_param = nullptr;
-
-    // Convert parameters to AST
-    eshkol_ast_t* params = nullptr;
-    if (num_params > 0) {
-        params = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_params) * sizeof(eshkol_ast_t)), (num_params));
-        for (size_t i = 0; i < num_params; i++) {
-            const char* param_name = get_symbol_name(param_sexps[i]);
-            if (param_name) {
-                params[i].type = ESHKOL_VAR;
-                params[i].variable.id = eshkol_ast_strdup(param_name);
-                params[i].variable.data = nullptr;
-            } else {
-                eshkol_error("sexp_to_ast: lambda parameter must be a symbol");
-                return nullptr;
-            }
+// Spell a runtime datum as reader tokens, in reading order. Nesting is held on
+// an explicit work stack on the heap, so a datum converts at any depth the
+// reader could have produced it at; the only limit is the one input-size cap
+// (inc/eshkol/core/reader_limits.h), which the spelling is weighed against as
+// it grows. The datum is known to be acyclic (validate_eval_datum).
+bool spell_runtime_datum(eshkol_tagged_value_t datum,
+                         std::vector<eshkol::SyntaxToken>& tokens,
+                         eshkol::EvalConversionError& error) {
+    enum class Step : uint8_t { Value, Close, Dot };
+    struct Work {
+        Step step;
+        eshkol_tagged_value_t value;
+    };
+    const size_t cap = eshkol_reader_max_source_bytes();
+    size_t bytes = 0;
+    std::vector<Work> pending;
+    std::vector<eshkol_tagged_value_t> elements;
+    auto emit = [&](int type, const char* text) {
+        eshkol::SyntaxToken token;
+        token.token_type = type;
+        token.text = text;
+        bytes += token.text.size() + 1;
+        tokens.push_back(std::move(token));
+    };
+    pending.push_back({Step::Value, datum});
+    while (!pending.empty()) {
+        if (cap && bytes > cap) {
+            (void)eshkol_reader_source_over_cap(bytes, error.message, sizeof(error.message));
+            error.type = ESHKOL_EXCEPTION_ERROR;
+            return false;
         }
-    }
-
-    // Collect body expressions
-    std::vector<eshkol_tagged_value_t> body_sexps = list_to_vector(body_start);
-
-    // Convert body - if single expression, use directly; otherwise wrap in begin
-    eshkol_ast_t* body = nullptr;
-    if (body_sexps.size() == 1) {
-        body = convert_sexp(body_sexps[0]);
-    } else {
-        // Create a sequence (begin) for multiple body expressions
-        eshkol_ast_t* seq = eshkol_alloc_symbolic_ast();
-        seq->type = ESHKOL_OP;
-        seq->operation.op = ESHKOL_SEQUENCE_OP;
-        seq->operation.sequence_op.num_expressions = body_sexps.size();
-        seq->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
-        for (size_t i = 0; i < body_sexps.size(); i++) {
-            eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
-            if (expr) {
-                seq->operation.sequence_op.expressions[i] = *expr;
-            } else {
-                /* #194 PATTERN A: without this, a failed convert_sexp
-                 * left expressions[i] uninitialized and the JIT tried
-                 * to compile memory garbage. Zero-init to ESHKOL_INVALID
-                 * and log which body slot failed so the user can find
-                 * the offending form. */
-                eshkol_error("sexp_to_ast: failed to convert lambda body expression %zu/%zu",
-                             i, body_sexps.size());
-                eshkol_ast_construct_array(&seq->operation.sequence_op.expressions[i], 1);
-                seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
-            }
+        const Work work = pending.back();
+        pending.pop_back();
+        if (work.step == Step::Close) {
+            emit(TOKEN_RPAREN, ")");
+            continue;
         }
-        body = seq;
-    }
-
-    if (!body) {
-        return nullptr;
-    }
-
-    // Create lambda AST — match the parser's shape exactly: ESHKOL_OP with
-    // ESHKOL_LAMBDA_OP. The codegen for call-with-inline-lambda and for
-    // first-class lambda values dispatches on (type == ESHKOL_OP && op ==
-    // ESHKOL_LAMBDA_OP). Producing the alternate ESHKOL_FUNC shape here
-    // bypassed those dispatch paths, so eval of any (lambda ...) form
-    // failed with "Call expression requires variable or inline lambda".
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_LAMBDA_OP;
-    ast->operation.lambda_op.parameters = params;
-    ast->operation.lambda_op.num_params = num_params;
-    ast->operation.lambda_op.body = body;
-    ast->operation.lambda_op.captured_vars = nullptr;
-    ast->operation.lambda_op.num_captured = 0;
-    ast->operation.lambda_op.is_variadic = is_variadic;
-    ast->operation.lambda_op.rest_param = rest_param;
-    ast->operation.lambda_op.return_type = nullptr;
-    ast->operation.lambda_op.param_types = nullptr;
-
-    return ast;
-}
-
-// Convert define: (define name value) or (define (name params...) body...)
-eshkol_ast_t* convert_define(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t second = list_ref(sexp, 1);
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_DEFINE_OP;
-
-    if (is_symbol(second)) {
-        // Simple define: (define name value)
-        const char* name = get_symbol_name(second);
-        eshkol_tagged_value_t value_sexp = list_ref(sexp, 2);
-
-        ast->operation.define_op.name = eshkol_ast_strdup(name);
-        ast->operation.define_op.value = convert_sexp(value_sexp);
-        ast->operation.define_op.is_function = 0;
-        ast->operation.define_op.parameters = nullptr;
-        ast->operation.define_op.num_params = 0;
-        ast->operation.define_op.is_variadic = 0;
-        ast->operation.define_op.rest_param = nullptr;
-        ast->operation.define_op.is_external = 0;
-        ast->operation.define_op.return_type = nullptr;
-        ast->operation.define_op.param_types = nullptr;
-        ast->operation.define_op.link_section = nullptr;
-        ast->operation.define_op.alignment = 0;
-        ast->operation.define_op.has_alignment = 0;
-        ast->operation.define_op.is_used = 0;
-        ast->operation.define_op.is_weak = 0;
-        ast->operation.define_op.export_symbol = 0;
-        ast->operation.define_op.export_name = nullptr;
-        ast->operation.define_op.is_no_return = 0;
-    } else if (is_pair(second)) {
-        // Function define: (define (name params...) body...)
-        eshkol_tagged_value_t name_sexp = pair_car(second);
-        const char* name = get_symbol_name(name_sexp);
-
-        if (!name) {
-            eshkol_error("sexp_to_ast: define function name must be a symbol");
-            return nullptr;
+        if (work.step == Step::Dot) {
+            emit(TOKEN_SYMBOL, ".");
+            continue;
         }
-
-        // Get parameters (rest of second element)
-        std::vector<eshkol_tagged_value_t> param_sexps = list_to_vector(pair_cdr(second));
-        uint64_t num_params = param_sexps.size();
-
-        // Convert parameters
-        eshkol_ast_t* params = nullptr;
-        if (num_params > 0) {
-            params = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_params) * sizeof(eshkol_ast_t)), (num_params));
-            for (size_t i = 0; i < num_params; i++) {
-                const char* param_name = get_symbol_name(param_sexps[i]);
-                if (param_name) {
-                    params[i].type = ESHKOL_VAR;
-                    params[i].variable.id = eshkol_ast_strdup(param_name);
-                    params[i].variable.data = nullptr;
-                }
-            }
-        }
-
-        // Get body
-        eshkol_tagged_value_t body_start = pair_cdr(pair_cdr(sexp));
-        std::vector<eshkol_tagged_value_t> body_sexps = list_to_vector(body_start);
-
-        eshkol_ast_t* body = nullptr;
-        if (body_sexps.size() == 1) {
-            body = convert_sexp(body_sexps[0]);
-        } else if (body_sexps.size() > 1) {
-            // Create sequence for multiple body expressions
-            eshkol_ast_t* seq = eshkol_alloc_symbolic_ast();
-            seq->type = ESHKOL_OP;
-            seq->operation.op = ESHKOL_SEQUENCE_OP;
-            seq->operation.sequence_op.num_expressions = body_sexps.size();
-            seq->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
-            for (size_t i = 0; i < body_sexps.size(); i++) {
-                eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
-                if (expr) {
-                    seq->operation.sequence_op.expressions[i] = *expr;
-                } else {
-                    /* #194 PATTERN A: uninit AST slot poisons codegen. */
-                    eshkol_error("sexp_to_ast: failed to convert define body expression %zu/%zu",
-                                 i, body_sexps.size());
-                    eshkol_ast_construct_array(&seq->operation.sequence_op.expressions[i], 1);
-                    seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
-                }
-            }
-            body = seq;
-        }
-
-        ast->operation.define_op.name = eshkol_ast_strdup(name);
-        ast->operation.define_op.value = body;
-        ast->operation.define_op.is_function = 1;
-        ast->operation.define_op.parameters = params;
-        ast->operation.define_op.num_params = num_params;
-        ast->operation.define_op.is_variadic = 0;
-        ast->operation.define_op.rest_param = nullptr;
-        ast->operation.define_op.is_external = 0;
-        ast->operation.define_op.return_type = nullptr;
-        ast->operation.define_op.param_types = nullptr;
-        ast->operation.define_op.link_section = nullptr;
-        ast->operation.define_op.alignment = 0;
-        ast->operation.define_op.has_alignment = 0;
-        ast->operation.define_op.is_used = 0;
-        ast->operation.define_op.is_weak = 0;
-        ast->operation.define_op.export_symbol = 0;
-        ast->operation.define_op.export_name = nullptr;
-        ast->operation.define_op.is_no_return = 0;
-    } else {
-        eshkol_error("sexp_to_ast: invalid define form");
-        return nullptr;
-    }
-
-    return ast;
-}
-
-// Convert if: (if test then else?)
-eshkol_ast_t* convert_if(eshkol_tagged_value_t sexp) {
-    size_t len = list_length(sexp);
-    if (len < 3) {
-        eshkol_error("sexp_to_ast: if requires at least test and then clause");
-        return nullptr;
-    }
-
-    eshkol_ast_t* test_ast = convert_sexp(list_ref(sexp, 1));
-    eshkol_ast_t* then_ast = convert_sexp(list_ref(sexp, 2));
-    eshkol_ast_t* else_ast = (len >= 4) ? convert_sexp(list_ref(sexp, 3)) : nullptr;
-
-    if (!test_ast || !then_ast) {
-        return nullptr;
-    }
-
-    // Create if as a call representation
-    // The parser creates if as CALL_OP with "if" as the function,
-    // and the codegen handles this representation directly.
-    // This matches the parser's output format.
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_CALL_OP;
-    ast->operation.call_op.func = eshkol_make_var_ast("if");
-
-    // Arguments: test, then, else (if present)
-    int num_args = else_ast ? 3 : 2;
-    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_args) * sizeof(eshkol_ast_t)), (num_args));
-    ast->operation.call_op.variables[0] = *test_ast;
-    ast->operation.call_op.variables[1] = *then_ast;
-    if (else_ast) {
-        ast->operation.call_op.variables[2] = *else_ast;
-    }
-    ast->operation.call_op.num_vars = num_args;
-
-
-    return ast;
-}
-
-// Convert let: (let ((var val) ...) body...)
-eshkol_ast_t* convert_let(eshkol_tagged_value_t sexp, eshkol_op_t let_type) {
-    // (let bindings body...)
-    // bindings = ((var1 val1) (var2 val2) ...)
-
-    eshkol_tagged_value_t bindings_sexp = list_ref(sexp, 1);
-    eshkol_tagged_value_t body_start = pair_cdr(pair_cdr(sexp));
-
-    std::vector<eshkol_tagged_value_t> binding_pairs = list_to_vector(bindings_sexp);
-    uint64_t num_bindings = binding_pairs.size();
-
-    // Create bindings array - each binding is a pair (var, value)
-    eshkol_ast_t* bindings = nullptr;
-    if (num_bindings > 0) {
-        // Each binding takes 2 AST nodes (var and value)
-        bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_bindings * 2) * sizeof(eshkol_ast_t)), (num_bindings * 2));
-        for (size_t i = 0; i < num_bindings; i++) {
-            eshkol_tagged_value_t binding = binding_pairs[i];
-            eshkol_tagged_value_t var = pair_car(binding);
-            eshkol_tagged_value_t val = list_ref(binding, 1);
-
-            const char* var_name = get_symbol_name(var);
-            if (!var_name) {
-                eshkol_error("sexp_to_ast: let binding variable must be a symbol");
-                return nullptr;
-            }
-
-            // Variable
-            bindings[i * 2].type = ESHKOL_VAR;
-            bindings[i * 2].variable.id = eshkol_ast_strdup(var_name);
-            bindings[i * 2].variable.data = nullptr;
-
-            // Value
-            eshkol_ast_t* val_ast = convert_sexp(val);
-            if (val_ast) {
-                bindings[i * 2 + 1] = *val_ast;
-            }
-        }
-    }
-
-    // Convert body
-    std::vector<eshkol_tagged_value_t> body_sexps = list_to_vector(body_start);
-    eshkol_ast_t* body = nullptr;
-
-    if (body_sexps.size() == 1) {
-        body = convert_sexp(body_sexps[0]);
-    } else if (body_sexps.size() > 1) {
-        eshkol_ast_t* seq = eshkol_alloc_symbolic_ast();
-        seq->type = ESHKOL_OP;
-        seq->operation.op = ESHKOL_SEQUENCE_OP;
-        seq->operation.sequence_op.num_expressions = body_sexps.size();
-        seq->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
-        for (size_t i = 0; i < body_sexps.size(); i++) {
-            eshkol_ast_t* expr = convert_sexp(body_sexps[i]);
-            if (expr) {
-                seq->operation.sequence_op.expressions[i] = *expr;
-            } else {
-                /* #194 PATTERN A: uninit AST slot poisons codegen. */
-                eshkol_error("sexp_to_ast: failed to convert let/let*/letrec body expression %zu/%zu",
-                             i, body_sexps.size());
-                eshkol_ast_construct_array(&seq->operation.sequence_op.expressions[i], 1);
-                seq->operation.sequence_op.expressions[i].type = ESHKOL_INVALID;
-            }
-        }
-        body = seq;
-    }
-
-    if (!body && body_sexps.empty()) {
-        eshkol_error("sexp_to_ast: let requires at least one body expression");
-        return nullptr;
-    }
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = let_type;
-    ast->operation.let_op.bindings = bindings;
-    ast->operation.let_op.num_bindings = num_bindings;
-    ast->operation.let_op.body = body;
-    ast->operation.let_op.name = nullptr;  // Not a named let
-    ast->operation.let_op.binding_types = nullptr;
-
-    return ast;
-}
-
-// Convert quote: (quote expr) or 'expr
-eshkol_ast_t* convert_quote(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t quoted = list_ref(sexp, 1);
-
-    // Create a QUOTE_OP with the quoted expression stored in call_op structure.
-    // This matches the parser's representation where quote stores its
-    // argument in call_op.variables[0] for the codegen to access.
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_QUOTE_OP;
-    ast->operation.call_op.func = nullptr;
-
-    // Convert the quoted expression to AST representation
-    eshkol_ast_t* quoted_ast = convert_sexp(quoted);
-    if (quoted_ast) {
-        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
-        ast->operation.call_op.variables[0] = *quoted_ast;
-        ast->operation.call_op.num_vars = 1;
-    } else {
-        ast->operation.call_op.variables = nullptr;
-        ast->operation.call_op.num_vars = 0;
-    }
-
-    return ast;
-}
-
-// Convert begin: (begin expr...)
-eshkol_ast_t* convert_begin(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t exprs_start = pair_cdr(sexp);
-    std::vector<eshkol_tagged_value_t> expr_sexps = list_to_vector(exprs_start);
-
-    if (expr_sexps.empty()) {
-        // Empty begin returns void
-        eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-        ast->type = ESHKOL_NULL;
-        return ast;
-    }
-
-    if (expr_sexps.size() == 1) {
-        return convert_sexp(expr_sexps[0]);
-    }
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_SEQUENCE_OP;
-    ast->operation.sequence_op.num_expressions = expr_sexps.size();
-    ast->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (expr_sexps.size()) * sizeof(eshkol_ast_t)), (expr_sexps.size()));
-
-    for (size_t i = 0; i < expr_sexps.size(); i++) {
-        eshkol_ast_t* expr = convert_sexp(expr_sexps[i]);
-        if (expr) {
-            ast->operation.sequence_op.expressions[i] = *expr;
-        }
-    }
-
-    return ast;
-}
-
-// Convert set!: (set! var value)
-eshkol_ast_t* convert_set(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t var_sexp = list_ref(sexp, 1);
-    eshkol_tagged_value_t val_sexp = list_ref(sexp, 2);
-
-    const char* var_name = get_symbol_name(var_sexp);
-    if (!var_name) {
-        eshkol_error("sexp_to_ast: set! variable must be a symbol");
-        return nullptr;
-    }
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_SET_OP;
-    ast->operation.set_op.name = eshkol_ast_strdup(var_name);
-    ast->operation.set_op.value = convert_sexp(val_sexp);
-
-    return ast;
-}
-
-// Convert and: (and expr1 expr2 ...)
-// Short-circuit AND - returns first false value or last value
-eshkol_ast_t* convert_and(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t exprs_start = pair_cdr(sexp);  // Skip 'and'
-    std::vector<eshkol_tagged_value_t> expr_sexps = list_to_vector(exprs_start);
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_AND_OP;
-    ast->operation.sequence_op.num_expressions = expr_sexps.size();
-
-    if (expr_sexps.empty()) {
-        // (and) with no arguments returns #t
-        ast->operation.sequence_op.expressions = nullptr;
-    } else {
-        ast->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (expr_sexps.size()) * sizeof(eshkol_ast_t)), (expr_sexps.size()));
-        for (size_t i = 0; i < expr_sexps.size(); i++) {
-            eshkol_ast_t* expr = convert_sexp(expr_sexps[i]);
-            if (expr) {
-                ast->operation.sequence_op.expressions[i] = *expr;
-            }
-        }
-    }
-
-    return ast;
-}
-
-// Convert or: (or expr1 expr2 ...)
-// Short-circuit OR - returns first true value or last value
-eshkol_ast_t* convert_or(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t exprs_start = pair_cdr(sexp);  // Skip 'or'
-    std::vector<eshkol_tagged_value_t> expr_sexps = list_to_vector(exprs_start);
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_OR_OP;
-    ast->operation.sequence_op.num_expressions = expr_sexps.size();
-
-    if (expr_sexps.empty()) {
-        // (or) with no arguments returns #f
-        ast->operation.sequence_op.expressions = nullptr;
-    } else {
-        ast->operation.sequence_op.expressions = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (expr_sexps.size()) * sizeof(eshkol_ast_t)), (expr_sexps.size()));
-        for (size_t i = 0; i < expr_sexps.size(); i++) {
-            eshkol_ast_t* expr = convert_sexp(expr_sexps[i]);
-            if (expr) {
-                ast->operation.sequence_op.expressions[i] = *expr;
-            }
-        }
-    }
-
-    return ast;
-}
-
-// Convert cond: (cond (test expr...) ... (else expr...))
-eshkol_ast_t* convert_cond(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t clauses_start = pair_cdr(sexp);  // Skip 'cond'
-    std::vector<eshkol_tagged_value_t> clause_sexps = list_to_vector(clauses_start);
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_COND_OP;
-    ast->operation.call_op.func = nullptr;  // cond doesn't have a function
-    ast->operation.call_op.num_vars = clause_sexps.size();
-
-    if (clause_sexps.empty()) {
-        ast->operation.call_op.variables = nullptr;
-    } else {
-        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (clause_sexps.size()) * sizeof(eshkol_ast_t)), (clause_sexps.size()));
-        for (size_t i = 0; i < clause_sexps.size(); i++) {
-            // Each clause is a list (test expr...)
-            // We need to parse it as CALL_OP: func=test, variables=exprs
-            eshkol_tagged_value_t clause_sexp = clause_sexps[i];
-
-            if (!is_pair(clause_sexp)) {
-                eshkol_warn("cond clause must be a list");
+        eshkol_tagged_value_t value = work.value;
+        if (is_pair(value)) {
+            const eshkol_tagged_value_t rest = pair_cdr(value);
+            if (symbol_eq(pair_car(value), "quote") && is_pair(rest) &&
+                is_null(pair_cdr(rest))) {
+                emit(TOKEN_QUOTE, "'");
+                pending.push_back({Step::Value, pair_car(rest)});
                 continue;
             }
-
-            eshkol_tagged_value_t test_sexp = pair_car(clause_sexp);
-            eshkol_tagged_value_t body_start = pair_cdr(clause_sexp);
-            std::vector<eshkol_tagged_value_t> body_sexps = list_to_vector(body_start);
-
-            // Check if this is an else clause
-            bool is_else = false;
-            if (is_symbol(test_sexp)) {
-                const char* test_name = get_symbol_name(test_sexp);
-                if (test_name && strcmp(test_name, "else") == 0) {
-                    is_else = true;
-                }
+        }
+        if (is_pair(value) || is_null(value)) {
+            emit(TOKEN_LPAREN, "(");
+            elements.clear();
+            while (is_pair(value)) {
+                elements.push_back(pair_car(value));
+                value = pair_cdr(value);
             }
-
-            // Create a CALL_OP structure for this clause
-            eshkol_ast_t clause_ast;
-            clause_ast.type = ESHKOL_OP;
-            clause_ast.operation.op = ESHKOL_CALL_OP;
-            clause_ast.operation.call_op.num_vars = body_sexps.size();
-
-            // If it's an else clause, the test is #t
-            if (is_else) {
-                clause_ast.operation.call_op.func = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
-                clause_ast.operation.call_op.func->type = ESHKOL_BOOL;
-                clause_ast.operation.call_op.func->int64_val = 1;  // true
-            } else {
-                clause_ast.operation.call_op.func = convert_sexp(test_sexp);
+            pending.push_back({Step::Close, make_null()});
+            if (!is_null(value)) {
+                pending.push_back({Step::Value, value});
+                pending.push_back({Step::Dot, make_null()});
             }
-
-            // Convert body expressions
-            if (body_sexps.empty()) {
-                clause_ast.operation.call_op.variables = nullptr;
-            } else {
-                clause_ast.operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_sexps.size()) * sizeof(eshkol_ast_t)), (body_sexps.size()));
-                for (size_t j = 0; j < body_sexps.size(); j++) {
-                    eshkol_ast_t* body_ast = convert_sexp(body_sexps[j]);
-                    if (body_ast) {
-                        clause_ast.operation.call_op.variables[j] = *body_ast;
-                    }
-                }
-            }
-
-            ast->operation.call_op.variables[i] = clause_ast;
+            for (auto it = elements.rbegin(); it != elements.rend(); ++it)
+                pending.push_back({Step::Value, *it});
+            continue;
         }
+        eshkol::SyntaxToken token;
+        if (!spell_atom(value, token, error)) return false;
+        bytes += token.text.size() + 1;
+        tokens.push_back(std::move(token));
     }
-
-    return ast;
+    if (cap && bytes > cap) {
+        (void)eshkol_reader_source_over_cap(bytes, error.message, sizeof(error.message));
+        error.type = ESHKOL_EXCEPTION_ERROR;
+        return false;
+    }
+    return true;
 }
 
-// Convert when: (when test expr...)
-// One-armed if - executes body only when test is true
-eshkol_ast_t* convert_when(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t rest = pair_cdr(sexp);  // Skip 'when'
-    std::vector<eshkol_tagged_value_t> elements = list_to_vector(rest);
-
-    if (elements.empty()) {
-        eshkol_error("sexp_to_ast: when requires at least a test expression");
-        return nullptr;
-    }
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_WHEN_OP;
-    ast->operation.call_op.func = nullptr;
-    ast->operation.call_op.num_vars = elements.size();
-
-    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (elements.size()) * sizeof(eshkol_ast_t)), (elements.size()));
-    for (size_t i = 0; i < elements.size(); i++) {
-        eshkol_ast_t* elem = convert_sexp(elements[i]);
-        if (elem) {
-            ast->operation.call_op.variables[i] = *elem;
-        }
-    }
-
-    return ast;
-}
-
-// Convert unless: (unless test expr...)
-// Negated when - executes body only when test is false
-eshkol_ast_t* convert_unless(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t rest = pair_cdr(sexp);  // Skip 'unless'
-    std::vector<eshkol_tagged_value_t> elements = list_to_vector(rest);
-
-    if (elements.empty()) {
-        eshkol_error("sexp_to_ast: unless requires at least a test expression");
-        return nullptr;
-    }
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_UNLESS_OP;
-    ast->operation.call_op.func = nullptr;
-    ast->operation.call_op.num_vars = elements.size();
-
-    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (elements.size()) * sizeof(eshkol_ast_t)), (elements.size()));
-    for (size_t i = 0; i < elements.size(); i++) {
-        eshkol_ast_t* elem = convert_sexp(elements[i]);
-        if (elem) {
-            ast->operation.call_op.variables[i] = *elem;
-        }
-    }
-
-    return ast;
-}
-
-// Convert case: (case key ((datum...) expr...) ... (else expr...))
-eshkol_ast_t* convert_case(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t key_sexp = list_ref(sexp, 1);
-    eshkol_tagged_value_t clauses_start = pair_cdr(pair_cdr(sexp));  // Skip 'case' and key
-    std::vector<eshkol_tagged_value_t> clause_sexps = list_to_vector(clauses_start);
-
-    eshkol_ast_t* key_ast = convert_sexp(key_sexp);
-    if (!key_ast) {
-        eshkol_error("sexp_to_ast: case requires a key expression");
-        return nullptr;
-    }
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_CASE_OP;
-    ast->operation.call_op.func = key_ast;
-    ast->operation.call_op.num_vars = clause_sexps.size();
-
-    if (clause_sexps.empty()) {
-        ast->operation.call_op.variables = nullptr;
-    } else {
-        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (clause_sexps.size()) * sizeof(eshkol_ast_t)), (clause_sexps.size()));
-
-        for (size_t i = 0; i < clause_sexps.size(); i++) {
-            // Each clause is ((datum...) expr...) or (else expr...)
-            eshkol_tagged_value_t clause = clause_sexps[i];
-            eshkol_tagged_value_t first = pair_car(clause);
-
-            eshkol_ast_t clause_ast;
-            clause_ast.type = ESHKOL_CONS;
-
-            // Check for else clause
-            if (is_symbol(first) && symbol_eq(first, "else")) {
-                // else clause - create marker
-                eshkol_ast_t* else_marker = eshkol_make_var_ast("else");
-                clause_ast.cons_cell.car = else_marker;
-
-                // Rest is body expressions
-                std::vector<eshkol_tagged_value_t> body_exprs = list_to_vector(pair_cdr(clause));
-                eshkol_ast_t* body = eshkol_alloc_symbolic_ast();
-                body->type = ESHKOL_OP;
-                body->operation.op = ESHKOL_CALL_OP;
-                body->operation.call_op.func = nullptr;
-                body->operation.call_op.num_vars = body_exprs.size();
-                if (body_exprs.size() > 0) {
-                    body->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_exprs.size()) * sizeof(eshkol_ast_t)), (body_exprs.size()));
-                    for (size_t j = 0; j < body_exprs.size(); j++) {
-                        eshkol_ast_t* expr = convert_sexp(body_exprs[j]);
-                        if (expr) {
-                            body->operation.call_op.variables[j] = *expr;
-                        }
-                    }
-                } else {
-                    body->operation.call_op.variables = nullptr;
-                }
-                clause_ast.cons_cell.cdr = body;
-            } else {
-                // Normal clause - first is datums list
-                std::vector<eshkol_tagged_value_t> datums = list_to_vector(first);
-
-                eshkol_ast_t* datums_ast = eshkol_alloc_symbolic_ast();
-                datums_ast->type = ESHKOL_OP;
-                datums_ast->operation.op = ESHKOL_CALL_OP;
-                datums_ast->operation.call_op.func = nullptr;
-                datums_ast->operation.call_op.num_vars = datums.size();
-                if (datums.size() > 0) {
-                    datums_ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (datums.size()) * sizeof(eshkol_ast_t)), (datums.size()));
-                    for (size_t j = 0; j < datums.size(); j++) {
-                        eshkol_ast_t* datum = convert_sexp(datums[j]);
-                        if (datum) {
-                            datums_ast->operation.call_op.variables[j] = *datum;
-                        }
-                    }
-                } else {
-                    datums_ast->operation.call_op.variables = nullptr;
-                }
-                clause_ast.cons_cell.car = datums_ast;
-
-                // Body expressions
-                std::vector<eshkol_tagged_value_t> body_exprs = list_to_vector(pair_cdr(clause));
-                eshkol_ast_t* body = eshkol_alloc_symbolic_ast();
-                body->type = ESHKOL_OP;
-                body->operation.op = ESHKOL_CALL_OP;
-                body->operation.call_op.func = nullptr;
-                body->operation.call_op.num_vars = body_exprs.size();
-                if (body_exprs.size() > 0) {
-                    body->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (body_exprs.size()) * sizeof(eshkol_ast_t)), (body_exprs.size()));
-                    for (size_t j = 0; j < body_exprs.size(); j++) {
-                        eshkol_ast_t* expr = convert_sexp(body_exprs[j]);
-                        if (expr) {
-                            body->operation.call_op.variables[j] = *expr;
-                        }
-                    }
-                } else {
-                    body->operation.call_op.variables = nullptr;
-                }
-                clause_ast.cons_cell.cdr = body;
-            }
-
-            ast->operation.call_op.variables[i] = clause_ast;
-        }
-    }
-
-    return ast;
-}
-
-// Convert quasiquote: (quasiquote expr) or `expr
-eshkol_ast_t* convert_quasiquote(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t quoted = list_ref(sexp, 1);
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_QUASIQUOTE_OP;
-    ast->operation.call_op.func = nullptr;
-    ast->operation.call_op.num_vars = 1;
-    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
-
-    // Convert the quasiquoted expression
-    eshkol_ast_t* quoted_ast = convert_sexp(quoted);
-    if (quoted_ast) {
-        ast->operation.call_op.variables[0] = *quoted_ast;
-    }
-
-    return ast;
-}
-
-// Convert unquote: (unquote expr) or ,expr
-eshkol_ast_t* convert_unquote(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t expr = list_ref(sexp, 1);
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_UNQUOTE_OP;
-    ast->operation.call_op.func = nullptr;
-    ast->operation.call_op.num_vars = 1;
-    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
-
-    eshkol_ast_t* expr_ast = convert_sexp(expr);
-    if (expr_ast) {
-        ast->operation.call_op.variables[0] = *expr_ast;
-    }
-
-    return ast;
-}
-
-// Convert unquote-splicing: (unquote-splicing expr) or ,@expr
-eshkol_ast_t* convert_unquote_splicing(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t expr = list_ref(sexp, 1);
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
-    ast->operation.call_op.func = nullptr;
-    ast->operation.call_op.num_vars = 1;
-    ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), sizeof(eshkol_ast_t)), 1);
-
-    eshkol_ast_t* expr_ast = convert_sexp(expr);
-    if (expr_ast) {
-        ast->operation.call_op.variables[0] = *expr_ast;
-    }
-
-    return ast;
-}
-
-// Convert function call: (func args...)
-eshkol_ast_t* convert_call(eshkol_tagged_value_t sexp) {
-    eshkol_tagged_value_t func_sexp = pair_car(sexp);
-    eshkol_tagged_value_t args_start = pair_cdr(sexp);
-
-    eshkol_ast_t* func_ast = convert_sexp(func_sexp);
-    if (!func_ast) {
-        return nullptr;
-    }
-
-    std::vector<eshkol_tagged_value_t> arg_sexps = list_to_vector(args_start);
-    uint64_t num_args = arg_sexps.size();
-
-    eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-    ast->type = ESHKOL_OP;
-    ast->operation.op = ESHKOL_CALL_OP;
-    ast->operation.call_op.func = func_ast;
-    ast->operation.call_op.num_vars = num_args;
-
-    if (num_args > 0) {
-        ast->operation.call_op.variables = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_args) * sizeof(eshkol_ast_t)), (num_args));
-        for (size_t i = 0; i < num_args; i++) {
-            eshkol_ast_t* arg_ast = convert_sexp(arg_sexps[i]);
-            if (arg_ast) {
-                ast->operation.call_op.variables[i] = *arg_ast;
-            } else {
-                /* #194 PATTERN A: without this the arg slot stayed
-                 * uninitialised — whatever memory the arena gave us
-                 * last. The JIT would then compile that garbage as a
-                 * call argument. Poison to ESHKOL_INVALID and log so
-                 * downstream codegen fails loudly instead of silently
-                 * producing a wrong-code binary. Matches the same
-                 * treatment already applied to the sequence-op body
-                 * loops in lambda / define / let-family. */
-                eshkol_error("sexp_to_ast: failed to convert call argument %zu/%llu",
-                             i, (unsigned long long)num_args);
-                eshkol_ast_construct_array(&ast->operation.call_op.variables[i], 1);
-                ast->operation.call_op.variables[i].type = ESHKOL_INVALID;
-            }
-        }
-    } else {
-        ast->operation.call_op.variables = nullptr;
-    }
-
-    return ast;
-}
-
-// ============================================================================
-// Main Conversion Function
-// ============================================================================
-
-/**
- * @brief Recursively convert one S-expression node into an AST node.
- *
- * Dispatches on the tagged value's runtime type: atoms (null, int64,
- * double, bool, symbol, string, char) convert directly; a pair/cons
- * dispatches to the matching convert_* special-form handler when its head
- * symbol names one (lambda, define, if, let family, quote, begin, set!,
- * and, or, cond, case, when, unless, quasiquote, unquote,
- * unquote-splicing), otherwise falls through to convert_call(). Recursion
- * depth is capped (500) via a thread-local guard to avoid stack overflow
- * on pathological/cyclic input.
- *
- * @param sexp S-expression (cons-cell-based) to convert.
- * @return Newly allocated AST node, or NULL on error or if the depth cap is hit.
- */
-eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
-    // This conversion is natively recursive, and a datum nests as deeply as
-    // the reader could read it — reading has no depth limit. So it consults
-    // the shared, documented and configurable budget for CODE nesting, and
-    // the native-stack headroom guard alongside it, and it SAYS which one it
-    // reached instead of answering an unexplained nothing.
-    static thread_local size_t depth = 0;
-    {
-        const size_t budget = eshkol_reader_max_pass_depth();
-        if ((budget && depth >= budget) || !eshkol_stack_headroom_ok()) {
-            char message[320];
-            eshkol_reader_depth_message("converting a nested datum to an "
-                                        "expression tree",
-                                        budget ? budget : depth,
-                                        message, sizeof(message));
-            eshkol_error("%s", message);
-            return nullptr;
-        }
-    }
-    ++depth;
-    struct DepthGuard { size_t& d; DepthGuard(size_t& d_) : d(d_) {} ~DepthGuard() { --d; } } guard(depth);
-
-    // Handle atomic values
-
-    // Null
-    if (is_null(sexp)) {
+eshkol_ast_t* convert_datum(eshkol_tagged_value_t datum,
+                            const std::set<std::string>& macro_names,
+                            eshkol::EvalConversionError& error) {
+    // The empty list evaluates to itself here, as it always has for eval.
+    if (is_null(datum)) {
         eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
         ast->type = ESHKOL_NULL;
         return ast;
     }
-
-    // Integer
-    if (sexp.type == ESHKOL_VALUE_INT64) {
-        return eshkol_make_int_ast(sexp.data.int_val);
-    }
-
-    // Double
-    if (sexp.type == ESHKOL_VALUE_DOUBLE) {
-        return eshkol_make_double_ast(sexp.data.double_val);
-    }
-
-    // Boolean
-    if (sexp.type == ESHKOL_VALUE_BOOL) {
-        eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-        ast->type = ESHKOL_BOOL;
-        ast->int64_val = sexp.data.int_val;  // 0 for false, 1 for true
-        return ast;
-    }
-
-    // Symbol -> Variable reference
-    if (is_symbol(sexp)) {
-        const char* name = get_symbol_name(sexp);
-        return eshkol_make_var_ast(name);
-    }
-
-    // String
-    if (is_string(sexp)) {
-        const char* str = get_string_value(sexp);
-        eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-        ast->type = ESHKOL_STRING;
-        size_t len = (size_t)eshkol_string_byte_length(str);
-        ast->str_val.ptr = eshkol_ast_string_alloc(len + 1);
-        memcpy(ast->str_val.ptr, str, len);
-        ast->str_val.ptr[len] = 0;
-        ast->str_val.size = len + 1;
-        return ast;
-    }
-
-    // Pair/List -> Either special form or function call
-    if (is_pair(sexp)) {
-        eshkol_tagged_value_t head = pair_car(sexp);
-
-        // Check for special forms
-        if (is_symbol(head)) {
-            const char* head_name = get_symbol_name(head);
-
-            if (strcmp(head_name, "match") == 0 || strcmp(head_name, "define-syntax") == 0)
-                return parse_runtime_form(sexp, {});
-            if (strcmp(head_name, "lambda") == 0) {
-                return convert_lambda(sexp);
-            }
-            if (strcmp(head_name, "define") == 0) {
-                return convert_define(sexp);
-            }
-            if (strcmp(head_name, "if") == 0) {
-                return convert_if(sexp);
-            }
-            if (strcmp(head_name, "let") == 0) {
-                return convert_let(sexp, ESHKOL_LET_OP);
-            }
-            if (strcmp(head_name, "let*") == 0) {
-                return convert_let(sexp, ESHKOL_LET_STAR_OP);
-            }
-            if (strcmp(head_name, "letrec") == 0) {
-                return convert_let(sexp, ESHKOL_LETREC_OP);
-            }
-            if (strcmp(head_name, "letrec*") == 0) {
-                return convert_let(sexp, ESHKOL_LETREC_STAR_OP);
-            }
-            if (strcmp(head_name, "quote") == 0) {
-                return convert_quote(sexp);
-            }
-            if (strcmp(head_name, "begin") == 0) {
-                return convert_begin(sexp);
-            }
-            if (strcmp(head_name, "set!") == 0) {
-                return convert_set(sexp);
-            }
-            if (strcmp(head_name, "and") == 0) {
-                return convert_and(sexp);
-            }
-            if (strcmp(head_name, "or") == 0) {
-                return convert_or(sexp);
-            }
-            if (strcmp(head_name, "cond") == 0) {
-                return convert_cond(sexp);
-            }
-            if (strcmp(head_name, "case") == 0) {
-                return convert_case(sexp);
-            }
-            if (strcmp(head_name, "when") == 0) {
-                return convert_when(sexp);
-            }
-            if (strcmp(head_name, "unless") == 0) {
-                return convert_unless(sexp);
-            }
-            if (strcmp(head_name, "quasiquote") == 0) {
-                return convert_quasiquote(sexp);
-            }
-            if (strcmp(head_name, "unquote") == 0) {
-                return convert_unquote(sexp);
-            }
-            if (strcmp(head_name, "unquote-splicing") == 0) {
-                return convert_unquote_splicing(sexp);
-            }
+    try {
+        std::vector<eshkol::SyntaxToken> tokens;
+        if (!spell_runtime_datum(datum, tokens, error)) return nullptr;
+        eshkol_ast_t parsed = eshkol::parse_syntax_tokens(std::move(tokens), macro_names);
+        if (parsed.type == ESHKOL_INVALID) {
+            set_error(error, ESHKOL_EXCEPTION_SYNTAX_ERROR,
+                      "the datum is not a well-formed expression");
+            return nullptr;
         }
-
-        // Default: function call
-        return convert_call(sexp);
-    }
-
-    // Character
-    if (sexp.type == ESHKOL_VALUE_CHAR) {
         eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-        ast->type = ESHKOL_CHAR;
-        ast->int64_val = sexp.data.int_val;
+        *ast = parsed;
         return ast;
+    } catch (const std::bad_alloc&) {
+        set_error(error, ESHKOL_EXCEPTION_ERROR,
+                  "converting the datum to an expression needs more memory than "
+                  "this process can allocate");
+        return nullptr;
     }
-
-    // HEAP_PTR dispatch: the consolidated type system uses HEAP_PTR (8) for
-    // cons cells, strings, vectors, tensors, etc. Dispatch on the header subtype.
-    // This is the CORRECT architectural handling — not a fallback.
-    if (sexp.type == ESHKOL_VALUE_HEAP_PTR && sexp.data.ptr_val != 0) {
-        eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)sexp.data.ptr_val);
-        switch (hdr->subtype) {
-        case HEAP_SUBTYPE_CONS: {
-            // Cons cell — list or special form
-            eshkol_tagged_value_t head = pair_car(sexp);
-            if (is_symbol(head)) {
-                const char* head_name = get_symbol_name(head);
-                if (strcmp(head_name, "lambda") == 0) return convert_lambda(sexp);
-                if (strcmp(head_name, "define") == 0) return convert_define(sexp);
-                if (strcmp(head_name, "if") == 0) return convert_if(sexp);
-                if (strcmp(head_name, "let") == 0) return convert_let(sexp, ESHKOL_LET_OP);
-                if (strcmp(head_name, "let*") == 0) return convert_let(sexp, ESHKOL_LET_STAR_OP);
-                if (strcmp(head_name, "letrec") == 0) return convert_let(sexp, ESHKOL_LETREC_OP);
-                if (strcmp(head_name, "letrec*") == 0) return convert_let(sexp, ESHKOL_LETREC_STAR_OP);
-                if (strcmp(head_name, "quote") == 0) return convert_quote(sexp);
-                if (strcmp(head_name, "begin") == 0) return convert_begin(sexp);
-                if (strcmp(head_name, "set!") == 0) return convert_set(sexp);
-                if (strcmp(head_name, "and") == 0) return convert_and(sexp);
-                if (strcmp(head_name, "or") == 0) return convert_or(sexp);
-                if (strcmp(head_name, "cond") == 0) return convert_cond(sexp);
-                if (strcmp(head_name, "case") == 0) return convert_case(sexp);
-                if (strcmp(head_name, "when") == 0) return convert_when(sexp);
-                if (strcmp(head_name, "unless") == 0) return convert_unless(sexp);
-                if (strcmp(head_name, "quasiquote") == 0) return convert_quasiquote(sexp);
-                if (strcmp(head_name, "unquote") == 0) return convert_unquote(sexp);
-                if (strcmp(head_name, "unquote-splicing") == 0) return convert_unquote_splicing(sexp);
-            }
-            return convert_call(sexp);
-        }
-        case HEAP_SUBTYPE_STRING: {
-            const char* str = (const char*)(uintptr_t)sexp.data.ptr_val;
-            eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-            ast->type = ESHKOL_STRING;
-            size_t len = (size_t)eshkol_string_byte_length(str);
-            ast->str_val.ptr = eshkol_ast_string_alloc(len + 1);
-            if (ast->str_val.ptr) {
-                memcpy(ast->str_val.ptr, str, len);
-                ast->str_val.ptr[len] = 0;
-            }
-            ast->str_val.size = len + 1;
-            return ast;
-        }
-        case HEAP_SUBTYPE_VECTOR:
-        case HEAP_SUBTYPE_TENSOR:
-            // Vectors/tensors in eval context — return as literal
-            // (not yet supported — would need tensor literal AST node)
-            break;
-        default:
-            break;
-        }
-    }
-
-    // Null value
-    if (sexp.type == ESHKOL_VALUE_NULL || (sexp.type == 0 && sexp.data.raw_val == 0)) {
-        eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
-        eshkol_ast_make_null(ast);
-        return ast;
-    }
-
-    uint8_t diag_subtype = 0xFF;
-    if (sexp.type == ESHKOL_VALUE_HEAP_PTR && sexp.data.ptr_val != 0) {
-        eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)sexp.data.ptr_val);
-        diag_subtype = hdr->subtype;
-    }
-    eshkol_error("sexp_to_ast: unhandled S-expression type=%d subtype=%u",
-        sexp.type, (unsigned)diag_subtype);
-    return nullptr;
 }
 
 eshkol::EvalMacroNames eval_macro_names = nullptr;
@@ -1298,11 +331,15 @@ void register_eval_macro_names(EvalMacroNames provider) {
     eval_macro_names = provider;
 }
 
-eshkol_ast_t* eval_datum_to_ast(eshkol_tagged_value_t datum, void* jit) {
+eshkol_ast_t* eval_datum_to_ast(eshkol_tagged_value_t datum, void* jit,
+                                EvalConversionError& error) {
     validate_eval_datum(datum);
-    if (!is_pair(datum) || !jit || !eval_macro_names) return convert_sexp(datum);
+    error.type = ESHKOL_EXCEPTION_ERROR;
+    error.message[0] = '\0';
+    std::set<std::string> names;
+    if (jit && eval_macro_names) names = eval_macro_names(jit);
     ToplevelFormParseScope toplevel;
-    return parse_runtime_form(datum, eval_macro_names(jit));
+    return convert_datum(datum, names, error);
 }
 
 } // namespace eshkol
@@ -1312,15 +349,17 @@ extern "C" {
 /**
  * @brief Convert a runtime S-expression to an AST node.
  *
- * Entry point for direct, single-pass conversion from cons-cell
- * representation to AST structure; delegates to convert_sexp().
+ * The same conversion eval uses (eshkol::eval_datum_to_ast), outside any
+ * evaluation context's macro scope.
  *
  * @param sexp The S-expression to convert (cons cell structure).
- * @return Pointer to allocated AST node, or NULL on error.
+ * @return Pointer to allocated AST node, or NULL (with the reason logged).
  */
 eshkol_ast_t* eshkol_sexp_to_ast(eshkol_tagged_value_t sexp) {
-    eshkol::validate_eval_datum(sexp);
-    return convert_sexp(sexp);
+    eshkol::EvalConversionError error;
+    eshkol_ast_t* ast = eshkol::eval_datum_to_ast(sexp, nullptr, error);
+    if (!ast) eshkol_error("%s", error.message);
+    return ast;
 }
 
 /**

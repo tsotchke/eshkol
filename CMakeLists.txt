@@ -4228,13 +4228,15 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
             FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
-if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
+if(ESHKOL_BUILD_TESTS)
     add_executable(eval_datum_graph tests/core/eval_datum_graph.cpp)
     target_compile_features(eval_datum_graph PRIVATE cxx_std_17)
     target_include_directories(eval_datum_graph PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(eval_datum_graph PRIVATE eshkol-runtime)
     add_test(NAME eval_datum_graph COMMAND eval_datum_graph)
+endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
     add_executable(tensor_validation_test tests/core/tensor_validation_test.cpp)
     target_compile_features(tensor_validation_test PRIVATE cxx_std_17)
     target_include_directories(tensor_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -15221,6 +15223,21 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
             eval_pattern_syntax jit)
+    # Hosted eval: conditions a guard catches, a million-level datum, and the
+    # macro scope shared by the body and an environment's values.
+    add_test(NAME eval_conditions_jit
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+            eval_conditions jit)
+    set_tests_properties(eval_conditions_jit PROPERTIES TIMEOUT 900)
+    add_test(NAME eval_input_cap_jit
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+            eval_input_cap jit)
+    set_tests_properties(eval_input_cap_jit PROPERTIES
+        ENVIRONMENT "ESHKOL_MAX_SOURCE_BYTES=65536")
     add_test(NAME macro_definition_scope
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_definition_scope_test.py

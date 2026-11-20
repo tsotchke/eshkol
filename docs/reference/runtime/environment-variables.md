@@ -233,11 +233,16 @@ source text is 67108865 bytes, over the 67108864-byte input cap (raise it with
 ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N; 0 removes the cap)
 ```
 
+`eval`, `compile` and an evaluation environment's binding values convert a
+runtime datum with no depth limit: the datum is spelled as the reader's tokens
+on a heap work stack and handed to the parser. The spelling is weighed against
+the same input cap, and a datum over it raises a condition a `guard` catches,
+with the same message.
+
 `ESHKOL_MAX_PASS_DEPTH` is about **code**, not data. A thousand levels of
 nested *expression* is not something a person writes, and the passes that
-compile one — expression emission, the binding scanners, the datum-to-tree
-conversion `eval` uses — are natively recursive, so that is the budget they
-name when they refuse. Quoted data is unaffected by it at any depth. The
+compile one — expression emission and the binding scanners — are natively
+recursive, so that is the budget they name when they refuse. Quoted data is unaffected by it at any depth. The
 native stack headroom guard (the one `check_stack_space` has always applied in
 the front end, reserving 64 KB) is consulted alongside the count, so raising
 `ESHKOL_MAX_PASS_DEPTH` cannot turn a refusal into a signal: the pass still
