@@ -2282,6 +2282,9 @@ jobs:
               "qllm_bridge_producer_gradcheck", "riemannian_core_adversarial_regression",
               "frechet_mean_backward_gradcheck", "signed_curvature_jit",
               "signed_curvature_aot", "vm_prelude_cache_is_current",
+              # Fixture setup the signed_curvature tests require; CTest
+              # selects it with them.
+              "exact_foundations_local_stdlib",
           }
           actual = [t["name"] for t in json.load(open(sys.argv[1], encoding="utf-8"))["tests"]]
           if len(actual) != len(expected) or set(actual) != expected:
