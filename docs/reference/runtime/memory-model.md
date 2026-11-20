@@ -843,7 +843,7 @@ the REPL, and the agent-FFI test binaries — was run under ASan+LSan over
 | category | sites | disposition |
 |---|---|---|
 | **Runtime, VM, arena, compiled programs** | 0 | Nothing. These paths are leak-clean: every report from a compiled binary or a bytecode-VM run came from platform framework init, not from Eshkol code. |
-| **Compiler front-end AST** | 8 | Node storage is retained for process lifetime by design (`eshkol_ast_t` has no destructor), the convention clang/rustc/gcc use. Named individually with a reason in `.icc/lsan-suppressions.txt`. Retires with epic #182. Two of the eight covered only string payloads. They were retired when those payloads got one rooted owner ([ADR-0021](../../design/adr/0021-ast-string-owner.md)), so six rules remain. |
+| **Compiler front-end AST** | 8 | Nodes and their side arrays come from the rooted AST node owner (`inc/eshkol/frontend/ast_nodes.h`) and strings from the AST string owner ([ADR-0021](../../design/adr/0021-ast-string-owner.md)). Both are released at driver teardown, and LeakSanitizer sees them as live until then. No front-end rule remains in `.icc/lsan-suppressions.txt`. |
 | **In-process JIT and driver** | 3 | **Fixed — see below.** All three grew with the work done, none was process-init. |
 | **LLVM ORC JIT** | 1 | Third-party: `DynamicLibrarySearchGenerator` holds a `dlopen` handle for the life of the JITDylib. Suppressed, scoped to that class. |
 | **Platform frameworks** | 7 | macOS `libobjc` / CoreFoundation / CFNetwork / libxpc process init. Not in the shipped suppression file — that file describes the Linux lane, where these frames do not exist. |
@@ -869,21 +869,31 @@ the address stability the mechanism depends on.
 
 ### The one retention that is not flat
 
-The front-end suppressions are scoped to one function each, but within a
-function they are total, so a new leak inside `parse_list()` would be swallowed
-by them. `tests/memory/leak_audit_gate.sh` closes that: it measures front-end
-retention per REPL input line at two horizons **with suppressions off** and
-gates on the slope. The measured retention is LeakSanitizer's leaked bytes
-(node storage) plus the AST string owner's own report
-(`ESHKOL_AST_STRINGS_STATS`). Since ADR-0021, identifiers are rooted rather
-than leaked, and a slope that counted only leaks would have lost them. The
-figure stayed at 1628 bytes per line when that change landed: 1608 bytes of
-node storage and 20 bytes of rooted identifier text, measured on Linux with
-gcc-13 ASan at 10 and 40 lines.
+A REPL session keeps every AST it has read, because later inputs refer to
+earlier definitions, macros and imports. That storage is owned, not leaked, so
+LeakSanitizer does not report it, and its growth needs its own gate.
+`tests/memory/leak_audit_gate.sh` measures front-end retention per REPL input
+line at two horizons **with suppressions off** and gates on the slope. The
+measured retention is the AST node owner's report (`ESHKOL_AST_NODES_STATS`)
+plus the AST string owner's report (`ESHKOL_AST_STRINGS_STATS`) plus anything
+LeakSanitizer still calls leaked. It is 1798 bytes per line, measured on Linux
+with gcc-13 ASan at 10 and 40 lines: 1776 bytes of node storage in 11
+allocations and 22 bytes of identifier text.
 
-Measured at 10 / 20 / 40 input lines: 21 171 / 37 451 / 70 009 bytes, i.e.
-**1628 bytes per input line, linear across a 4× span**. A batch compile reaps
-that at exit; a long-running REPL session does not.
+Work repeated for every input must not add to it. Each REPL input constructs
+a type checker, and constructing one used to read the core.quantum primitive
+table into fresh annotation trees whose 84 type-variable names went to the
+session-lifetime string owner, 2474 bytes per line in all. The primitive
+signatures are now computed once per process, and `ast_strings_test` checks
+that constructing a checker allocates no AST string after the first.
+
+Earlier figures, recorded so each change is accounted for: 1628 bytes per line
+when node storage was counted as LeakSanitizer's leaked bytes (1608 bytes of
+unreachable node storage and 20 bytes of identifier text).
+
+That earlier figure was 21 171 / 37 451 / 70 009 bytes at 10 / 20 / 40 input
+lines, linear across a 4× span. A batch compile releases the retention at
+exit; a long-running REPL session holds it.
 
 The figure is expected to move when the front end legitimately changes shape,
 and the gate is sensitive enough to show it: the audit first measured 1546.0
@@ -894,10 +904,8 @@ a regression. Both numbers are recorded in the gate so the increase is
 accounted for rather than silently absorbed by its tolerance. This is growth, not a wrong answer, so it is a defect rather
 than a silent-wrong, and the honest statement of it is: **`eshkol-run` is
 bounded by its input, `eshkol-repl` is not**. The number is pinned in the gate
-so it can go down freely and cannot go up. Giving `eshkol_ast_t` nodes a real
-owner (epic #182) is what removes the node share. The string share already has
-an owner that releases it at teardown, but a REPL session still holds it until
-it exits.
+so it can go down freely and cannot go up. Both shares have owners that
+release them at teardown, but a REPL session holds them until it exits.
 
 ### Leak detection during builds
 

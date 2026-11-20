@@ -16,16 +16,16 @@
 #     newly-introduced leak in the runtime, the VM, the arena, the JIT, the
 #     agent FFI or the driver.
 #
-#   SECTION B -- the suppressed front end must not grow FASTER.
-#     The suppression rules are scoped to one function each, but within a
-#     function they are total: a new leak inside parse_list() would be
-#     swallowed by section A. Section B closes that by measuring, with
-#     suppressions OFF, how many bytes the compiler front end retains per REPL
-#     input line at two horizons, and gating on the SLOPE. The front end
-#     currently retains a measured, exactly-linear 1628 bytes per line: node
-#     storage LeakSanitizer reports (epic #182: eshkol_ast_t has no
-#     destructor) plus the AST string owner's rooted bytes (ADR-0021).
-#     That number is pinned here: it may go DOWN freely, and going up fails.
+#   SECTION B -- the front end must not retain MORE per REPL line.
+#     AST nodes and strings are held by rooted owners for the whole REPL
+#     session (inc/eshkol/frontend/ast_nodes.h, ADR-0021), so LeakSanitizer
+#     does not report them and section A cannot see them grow. Section B
+#     measures, with suppressions OFF, how many bytes the front end retains
+#     per REPL input line at two horizons -- both owners' own reports plus
+#     anything LeakSanitizer still calls leaked -- and gates on the SLOPE.
+#     The front end currently retains a measured, exactly-linear 1798 bytes
+#     per line. That number is pinned here: it may go DOWN freely, and going
+#     up fails.
 #
 # ---------------------------------------------------------------------------
 # IF YOU CHANGE THIS GATE: the red-proof must itself be proven
@@ -145,10 +145,21 @@ PROBE_ID="leak_audit_gate"
 # 64320 + 782 bytes, i.e. 1608 B/line of node storage plus 20 B/line of
 # identifier text = 1628 B/line, the same pin.
 #
+# The AST node owner changed WHAT is measured. Node storage used to be
+# counted as LeakSanitizer's leaked bytes, which left out any node a session
+# table still reached; the owner reports every node byte the line allocated.
+# Re-measured on Linux gcc-13 ASan at 10 / 40 lines: 18638 / 72578 bytes,
+# i.e. 1776 B/line of node storage (11 allocations) plus 22 B/line of
+# identifier text = 1798 B/line. The same build without one-time computation
+# of the core.quantum primitive signatures measured 2474 B/line: every REPL
+# input constructs a type checker, and each construction read the primitive
+# table into new annotation trees whose type-variable names (84 per input)
+# went to the session-lifetime string owner.
+#
 # TOLERANCE is generous on purpose: this gate must catch a real regression (a
 # new per-line retention is at minimum tens of bytes and usually far more),
 # not flap on a one-node change in how a define is spelled.
-PINNED_BYTES_PER_LINE="${PINNED_BYTES_PER_LINE:-1628}"
+PINNED_BYTES_PER_LINE="${PINNED_BYTES_PER_LINE:-1798}"
 SLOPE_TOLERANCE_PCT="${SLOPE_TOLERANCE_PCT:-25}"
 
 NO_TRACE=0
@@ -173,10 +184,15 @@ if [ ! -f "$SUPPRESSIONS" ]; then
     exit 1
 fi
 
-SCRATCH="$REPO_ROOT/.leak-audit-gate-$$"
-mkdir -p "$SCRATCH"
-cleanup() { rm -rf "$SCRATCH"; }
-trap cleanup EXIT
+. "$REPO_ROOT/scripts/lib/durable_work_root.sh"
+if eshkol_durable_enabled; then
+    SCRATCH="$(eshkol_durable_prepare_dir leak-audit)" || exit $?
+else
+    SCRATCH="$REPO_ROOT/.leak-audit-gate-$$"
+    mkdir "$SCRATCH" || exit $?
+    cleanup() { rm -rf "$SCRATCH"; }
+    trap cleanup EXIT
+fi
 
 # The `-r` and AOT paths link the user program with the host C++ driver. It
 # must be the SAME toolchain the compiler was built with, or the ASan runtime
@@ -283,7 +299,7 @@ check_workload() {
 
     if grep -q "ERROR: LeakSanitizer" "$out"; then
         local summary
-        summary="$(grep -h 'SUMMARY: AddressSanitizer' "$out" | head -1)"
+        summary="$(grep -E 'SUMMARY: (Address|Leak)Sanitizer:' "$out" | head -1)"
         fail "$name reported an unsuppressed leak -- $summary"
         echo "  --- first unsuppressed stack in $name ---" >&2
         # Print whatever the report actually contains. The earlier form
@@ -359,6 +375,10 @@ fi
 check_workload jit-eval "$BUILD_DIR/eshkol-run" -e \
     '(define a 1)(define b 2)(define (sq x) (* x x))(display (sq (+ a b)))'
 check_workload jit-run "$BUILD_DIR/eshkol-run" -r "$SCRATCH/hello.esk"
+# Pool workers run guarded tasks (with-mutex), so each worker allocates
+# exception-handler frames that must be released when the pool shuts down.
+check_workload jit-guarded-workers "$BUILD_DIR/eshkol-run" -r \
+    "$REPO_ROOT/tests/v1_2_edge_cases/threads_mutex_test.esk"
 
 if [ -x "$BUILD_DIR/eshkol-repl" ]; then
     check_workload repl bash -c \
@@ -375,35 +395,54 @@ echo "=== section B: front-end per-line retention slope ==="
 if [ ! -x "$BUILD_DIR/eshkol-repl" ]; then
     echo "  skip: eshkol-repl not built in $BUILD_DIR"
 else
-    # Suppressions OFF here on purpose: section B is measuring exactly the
-    # retention section A is allowed to ignore.
-    # Retention per line = what LeakSanitizer reports as leaked (the AST node
-    # storage, epic #182) PLUS what the AST string owner holds (ADR-0021).
-    # The owner's strings are rooted, so LeakSanitizer rightly no longer calls
-    # them leaks; they are still retained for the whole REPL session, and a
-    # gate that only summed leaks would have watched that retention vanish
-    # from its measurement the day it stopped being a leak. The owner reports
-    # its own figure at teardown (ESHKOL_AST_STRINGS_STATS), and a missing
-    # report fails the measurement rather than silently counting zero.
+    # Suppressions OFF here on purpose: nothing the front end retains may be
+    # hidden from this measurement.
+    # Retention per line = what the AST node owner holds (ast_nodes.h) PLUS
+    # what the AST string owner holds (ADR-0021) PLUS anything LeakSanitizer
+    # still reports as leaked. Owned storage is rooted, so LeakSanitizer
+    # rightly does not call it a leak; it is still retained for the whole
+    # REPL session, and a gate that only summed leaks would watch that
+    # retention vanish from its measurement the day it stopped being a leak.
+    # Each owner reports its own figure at teardown (ESHKOL_AST_NODES_STATS,
+    # ESHKOL_AST_STRINGS_STATS), and a missing report fails the measurement
+    # rather than silently counting zero. A clean run prints no leak summary;
+    # it counts as zero leaked bytes only when the REPL exited 0 and the
+    # leak-detection runtime is present in the binary (checked below), so a
+    # build without LeakSanitizer cannot pass for a clean one.
     measure_repl_leak() {
-        local lines="$1" i out leaked owned
+        local lines="$1" i out rc leaked owned_strings owned_nodes
         out="$( { for ((i = 1; i <= lines; i++)); do
                       echo "(define (fn$i x) (+ x $i))"
                   done; } \
-                | ESHKOL_AST_STRINGS_STATS=1 \
+                | ESHKOL_AST_STRINGS_STATS=1 ESHKOL_AST_NODES_STATS=1 \
                   ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:allocator_may_return_null=1:report_objects=0" \
                   LSAN_OPTIONS="print_suppressions=0:report_objects=0" \
                   "$BUILD_DIR/eshkol-repl" 2>&1 )"
-        leaked="$(echo "$out" | grep -o 'SUMMARY: AddressSanitizer: [0-9]* byte' \
+        rc=$?
+        leaked="$(echo "$out" | grep -Eo 'SUMMARY: (Address|Leak)Sanitizer: [0-9]+ byte' \
                     | grep -o '[0-9]*' | head -1)"
-        owned="$(echo "$out" | grep -o 'eshkol-ast-strings: .*requested=[0-9]*' \
+        owned_strings="$(echo "$out" | grep -o 'eshkol-ast-strings: .*requested=[0-9]*' \
                     | grep -o 'requested=[0-9]*' | grep -o '[0-9]*' | tail -1)"
-        if [ -z "$leaked" ] || [ -z "$owned" ]; then
+        owned_nodes="$(echo "$out" | grep -o 'eshkol-ast-nodes: .*requested=[0-9]*' \
+                    | grep -o 'requested=[0-9]*' | grep -o '[0-9]*' | tail -1)"
+        if [ -z "$leaked" ]; then
+            if [ "$rc" -ne 0 ] || echo "$out" | grep -q 'ERROR: LeakSanitizer'; then
+                echo ""
+                return
+            fi
+            leaked=0
+        fi
+        if [ -z "$owned_strings" ] || [ -z "$owned_nodes" ]; then
             echo ""
             return
         fi
-        echo $(( leaked + owned ))
+        echo $(( leaked + owned_strings + owned_nodes ))
     }
+
+    if ! ASAN_OPTIONS=help=1 LSAN_OPTIONS=help=1 "$BUILD_DIR/eshkol-repl" </dev/null 2>&1 \
+            | grep -qE 'Available flags for (Address|Leak)Sanitizer'; then
+        fail "section B needs a REPL built with LeakSanitizer (ASan or standalone LSan); $BUILD_DIR/eshkol-repl has no leak-detection runtime, so a missing leak summary would prove nothing"
+    fi
 
     LOW_N=10
     HIGH_N=40
@@ -411,11 +450,9 @@ else
     high="$(measure_repl_leak "$HIGH_N")"
 
     if [ -z "$low" ] || [ -z "$high" ]; then
-        # No report at all means either the front end became leak-free (great,
-        # and then this section retires with epic #182) or leak detection is
-        # not actually running (catastrophic, and indistinguishable from the
-        # good news if we just pass). Fail loudly and make a human look.
-        fail "section B got no complete measurement from the REPL at ${LOW_N}/${HIGH_N} lines (low='$low' high='$high'): it needs both a LeakSanitizer summary and the AST string owner's teardown report. Either the front-end node retention is gone -- in which case retire this section and its suppression rules -- or leak detection is not live in $BUILD_DIR, which would make section A meaningless too, or the REPL no longer reaches its ordered exit (eshkol_ast_strings_teardown)"
+        # A missing owner report means the REPL never reached its ordered
+        # exit, so nothing was measured. Fail loudly and make a human look.
+        fail "section B got no complete measurement from the REPL at ${LOW_N}/${HIGH_N} lines (low='$low' high='$high'): it needs both AST owners' teardown reports and either a LeakSanitizer summary or a clean exit. Either the REPL no longer reaches its ordered exit (eshkol_ast_nodes_teardown / eshkol_ast_strings_teardown) or it failed before the leak check"
     else
         slope=$(( (high - low) / (HIGH_N - LOW_N) ))
         ceiling=$(( PINNED_BYTES_PER_LINE * (100 + SLOPE_TOLERANCE_PCT) / 100 ))
