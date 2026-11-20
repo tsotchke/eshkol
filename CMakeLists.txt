@@ -8352,7 +8352,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         eshkol_add_numeric_test(exact_integer_boundaries tests/ad/exact_integer_boundaries.esk jit aot vm)
         eshkol_add_numeric_test(exact_zero_quotients tests/ad/exact_zero_quotients.esk jit aot vm)
         eshkol_add_numeric_test(variable_power_slope tests/ad/variable_power_slope.esk jit aot vm)
-        eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot)
+        eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot vm)
         eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
 
         # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every
