@@ -1466,10 +1466,42 @@ static const char* vm_sexp_end(const char* p, size_t limit) {
     return NULL;
 }
 
+/* When @p p starts text the reader does not read as code that could carry a
+ * type -- a line comment, a string literal, a character literal or a
+ * |vertical-line| symbol -- return the first character after it; otherwise
+ * return @p p unchanged. */
+static const char* vm_skip_inert_text(const char* p) {
+    if (*p == ';') {
+        while (*p && *p != '\n') p++;
+        return p;
+    }
+    if (*p == '"' || *p == '|') {
+        const char close = *p;
+        for (p++; *p && *p != close; p++) {
+            if (*p == '\\' && p[1]) p++;
+        }
+        return *p ? p + 1 : p;
+    }
+    if (p[0] == '#' && p[1] == '\\') {
+        p += 2;
+        if (*p) p++;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' &&
+               *p != '(' && *p != ')' && *p != '"' && *p != ';') p++;
+        return p;
+    }
+    return p;
+}
+
 /* True when [begin, end) holds a group (vector X Y ...) with an index: three
  * or more elements, the shape of a length-indexed vector type. */
 static int vm_text_has_indexed_vector(const char* begin, const char* end) {
     for (const char* p = begin; p && p < end; ++p) {
+        const char* code = vm_skip_inert_text(p);
+        if (code != p) {
+            if (code >= end) break;
+            p = code - 1;
+            continue;
+        }
         if (*p != '(' || strncmp(p + 1, "vector", 6) != 0) continue;
         const char* q = p + 7;
         if (*q != ' ' && *q != '\t' && *q != '\n' && *q != '\r') continue;
@@ -1497,9 +1529,18 @@ static int vm_source_carries_dependent_annotation(const char* source) {
         "(Pi", "(Sigma", "(\xCE\xA0", "(\xCE\xA3", "(universe"
     };
     if (!source) return 0;
-    for (size_t i = 0; i < sizeof(kKeywords) / sizeof(kKeywords[0]); ++i) {
-        const size_t len = strlen(kKeywords[i]);
-        for (const char* p = strstr(source, kKeywords[i]); p; p = strstr(p + 1, kKeywords[i])) {
+    /* Comments, strings and character literals are skipped: only code can
+     * carry an annotation, and a type spelled in prose is not one. */
+    for (const char* p = source; *p; ++p) {
+        const char* code = vm_skip_inert_text(p);
+        if (code != p) {
+            if (!*code) break;
+            p = code - 1;
+            continue;
+        }
+        for (size_t i = 0; i < sizeof(kKeywords) / sizeof(kKeywords[0]); ++i) {
+            const size_t len = strlen(kKeywords[i]);
+            if (strncmp(p, kKeywords[i], len) != 0) continue;
             const char after = p[len];
             if (after == ' ' || after == '\t' || after == '\n' || after == '\r' || after == '(') {
                 return 1;
@@ -1507,6 +1548,12 @@ static int vm_source_carries_dependent_annotation(const char* source) {
         }
     }
     for (const char* p = source; *p; ++p) {
+        const char* code = vm_skip_inert_text(p);
+        if (code != p) {
+            if (!*code) break;
+            p = code - 1;
+            continue;
+        }
         const char* q = NULL;
         int sexps = 2;
         int define_type = 0;
