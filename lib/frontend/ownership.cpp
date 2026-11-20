@@ -5832,6 +5832,13 @@ private:
 }
 
 static thread_local OwnershipBindings* interactive_bindings = nullptr;
+static thread_local bool unit_refused = false;
+
+bool takeOwnershipRefusal() {
+    const bool refused = unit_refused;
+    unit_refused = false;
+    return refused;
+}
 
 OwnershipTransaction::OwnershipTransaction(OwnershipBindings& session)
     : session_(session), pending_(session), previous_(interactive_bindings) {
@@ -5859,9 +5866,13 @@ std::vector<std::string> checkOwnership(const std::vector<eshkol_ast_t>& forms,
         });
     OwnershipAnalyzer analyzer(strict, strict || live_ownership);
     analyzer.analyze(forms, globals);
-    if (!analyzer.needsBranchAnalysis()) return analyzer.getErrors();
+    if (!analyzer.needsBranchAnalysis()) {
+        unit_refused = unit_refused || !analyzer.getErrors().empty();
+        return analyzer.getErrors();
+    }
     OwnershipAnalyzer flow(strict, true);
     flow.analyze(forms, globals);
+    unit_refused = unit_refused || !flow.getErrors().empty();
     return flow.getErrors();
 }
 

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -58,5 +59,15 @@ private:
 std::vector<std::string> checkOwnership(const std::vector<eshkol_ast_t>& forms,
                                         const ResourceContracts* strict = nullptr,
                                         OwnershipBindings* globals = nullptr);
+
+// A unit the ownership verdict refused. Loaders that tolerate other
+// compilation failures of a loaded file propagate this one, so a program
+// that loads a refused file is refused on every engine.
+struct OwnershipRefusal : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+// Whether a verdict on this thread refused a unit since the last call.
+bool takeOwnershipRefusal();
 
 }
