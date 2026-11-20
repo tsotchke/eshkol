@@ -666,8 +666,9 @@ Three consequences:
 The output is identical under the JIT and as an AOT binary. The regression is
 [tests/ad/named_differentiand_closure_capture_test.esk](../../../tests/ad/named_differentiand_closure_capture_test.esk),
 which checks every operator against the analytic value, with three captured
-parameters, two lambda levels and the environment-pointer ABI used above 64
-captures. If a capture cannot be reached from the function being compiled, the
+parameters, two lambda levels and a differentiand that captures more than 64
+variables (its body takes one capture-slot pointer per variable, like every
+other procedure body). If a capture cannot be reached from the function being compiled, the
 compiler stops with a diagnostic that names the variable, the function that
 owns it, the function being emitted and the source position; it never emits a
 reference across functions.

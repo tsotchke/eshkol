@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 2998/6731 public symbols documented (44.5%), 3733 undocumented.
+**Coverage:** 3001/6734 public symbols documented (44.6%), 3733 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,7 +16,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-428/915 symbols documented.
+429/916 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -25,7 +25,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 4 | 1 |
-| [`eshkol.h`](eshkol.md) | 381 | 218 |
+| [`eshkol.h`](eshkol.md) | 382 | 219 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`exhaustive_dispatch.h`](exhaustive_dispatch.md) | 2 | 0 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
@@ -46,7 +46,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `backend/`
 
-1357/3123 symbols documented.
+1359/3125 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -57,7 +57,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
 | [`backend/call_apply_codegen.h`](backend/call_apply_codegen.md) | 65 | 22 |
 | [`backend/cblas_compat.h`](backend/cblas_compat.md) | 7 | 0 |
-| [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 6 | 6 |
+| [`backend/closure_capture_scope.h`](backend/closure_capture_scope.md) | 8 | 8 |
 | [`backend/codegen_context.h`](backend/codegen_context.md) | 199 | 53 |
 | [`backend/collection_codegen.h`](backend/collection_codegen.md) | 33 | 21 |
 | [`backend/complex_codegen.h`](backend/complex_codegen.md) | 37 | 26 |

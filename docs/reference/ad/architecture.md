@@ -667,8 +667,8 @@ only place that decides where a capture comes from (since v1.3.5):
 - For a **named** differentiand it reads the captures from the closure object
   the name evaluates to. `emitClosureCaptureArguments` in
   [`closure_capture_scope.h`](../../../inc/eshkol/backend/closure_capture_scope.h)
-  follows the closure-call ABI, including the environment-pointer ABI used above
-  64 captures.
+  follows the closure-call ABI: capture parameter i of the procedure body
+  receives the address of capture slot i, for any number of captures.
 - For an **inline** lambda, created at the same site, it resolves captures by
   name in that scope. A local define's module-level capture cells are used
   directly.
