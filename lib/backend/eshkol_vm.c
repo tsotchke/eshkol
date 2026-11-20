@@ -339,7 +339,7 @@ static int run_compiled_chunk(FuncChunk* chunk) {
 static int vm_load_prelude_cache(FuncChunk* chunk) {
 #ifdef ESHKOL_VM_NO_DISASM
     if (!chunk || prelude_code_len <= 0) return 0;
-    chunk_ensure_code_cap(chunk, prelude_code_len);
+    if (!chunk_ensure_code_cap(chunk, prelude_code_len)) return 0;
     for (int i = 0; i < prelude_code_len; i++)
         chunk->code[i] = (Instr){prelude_ops[i], prelude_operands[i]};
     chunk->code_len = prelude_code_len;

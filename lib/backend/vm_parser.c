@@ -1163,21 +1163,29 @@ static int is_sym(Node* n, const char* s) {
 }
 
 /** @brief Grow chunk @p c's code array (doubling) until it can hold
- *         @p needed more instructions. */
-static void chunk_ensure_code_cap(FuncChunk* c, int needed) {
+ *         @p needed more instructions.
+ * @return 1 when the capacity is available. On allocation failure the
+ *         compilation is marked failed, the array is left unchanged and 0
+ *         is returned, so no caller writes past the current capacity. */
+static int chunk_ensure_code_cap(FuncChunk* c, int needed) {
     while (c->code_len + needed > c->code_cap) {
         int new_cap = c->code_cap * 2;
         Instr* new_code = (Instr*)realloc(c->code, new_cap * sizeof(Instr));
-        if (!new_code) { fprintf(stderr, "ERROR: bytecode realloc failed\n"); return; }
+        if (!new_code) {
+            vm_compile_error("bytecode allocation failed", NULL);
+            return 0;
+        }
         c->code = new_code;
         c->code_cap = new_cap;
     }
+    return 1;
 }
 
 /** @brief Append one bytecode instruction (@p op, @p operand) to chunk
- *         @p c, growing the code array as needed. */
+ *         @p c, growing the code array as needed. When the array cannot
+ *         grow, nothing is appended and code_len is unchanged. */
 static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
-    chunk_ensure_code_cap(c, 1);
+    if (!chunk_ensure_code_cap(c, 1)) return;
     c->code[c->code_len++] = (Instr){op, operand};
 }
 
@@ -1220,7 +1228,7 @@ static int* vm_alloc_const_map(int n_constants) {
  *         chunk @p c (used when inlining another function's compiled
  *         code). */
 static void chunk_emit_instr(FuncChunk* c, Instr fi) {
-    chunk_ensure_code_cap(c, 1);
+    if (!chunk_ensure_code_cap(c, 1)) return;
     c->code[c->code_len++] = fi;
 }
 
@@ -1254,8 +1262,11 @@ static int placeholder(FuncChunk* c) {
     return slot;
 }
 
-/** @brief Overwrite the instruction at @p slot with (@p op, @p target). */
+/** @brief Overwrite the instruction at @p slot with (@p op, @p target).
+ *         A slot that was never emitted (its emission failed to allocate)
+ *         is left alone. */
 static void patch(FuncChunk* c, int slot, uint8_t op, int32_t target) {
+    if (slot < 0 || slot >= c->code_len) return;
     c->code[slot] = (Instr){op, target};
 }
 

@@ -1,14 +1,16 @@
 /* Match lowering for the source bytecode compiler. Every pattern takes a
  * subject slot and leaves one boolean. Clause bindings live in private slots
  * until the complete pattern has succeeded. */
+/* Pending jumps form a chain through their operands. Only an emitted jump
+ * joins the chain, so every link names an instruction inside the chunk. */
 static void match_jump(FuncChunk* c, int* chain, uint8_t op) {
     int site = c->code_len;
     chunk_emit(c, op, *chain);
-    *chain = site;
+    if (c->code_len > site) *chain = site;
 }
 
 static void match_join(FuncChunk* c, int chain) {
-    while (chain >= 0) {
+    while (chain >= 0 && chain < c->code_len) {
         Instr jump = c->code[chain];
         patch(c, chain, jump.op, c->code_len);
         chain = jump.operand;
