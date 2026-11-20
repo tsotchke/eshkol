@@ -8250,6 +8250,10 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: parameter evacuation deep-walk"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 
+    if(UNIX AND CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
+        add_test(NAME llvm_codegen_definition COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/codegen_definition_test.py" "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
     # VM-semantics fixtures also run through the native JIT and AOT so the
     # shared contracts are checked in every execution lane, not only by the
     # VM differential harness.
