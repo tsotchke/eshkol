@@ -34,6 +34,8 @@
 # Usage: scripts/run_v14_connection_gate.sh
 #   BUILD_DIR   (env, default "build")   the CMake build directory
 #   TRACE_DIR   (env, default scripts/icc_traces)
+#   ICC_BIN     HTTP receipt producer (default: icc on PATH)
+#   ICC_REPO_NAME   ICC alias registered to this checkout (default: eshkol)
 
 set -u
 set -o pipefail
@@ -89,13 +91,13 @@ print(json.dumps({"kind": "v1_4_connection", "name": sys.argv[1], "value": sys.a
 probe_http_server_source_receipt() {
     local icc_bin repo_name binding_output binding_status command_line jit_cache fingerprint_trace fingerprint_file out status snippet receipt_ok
     PROBE_TOTAL=$((PROBE_TOTAL + 1))
-    icc_bin="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
-    if [ ! -x "$icc_bin" ]; then
+    if ! icc_bin=$(type -P -- "${ICC_BIN:-icc}"); then
         PROBE_FAILURES=$((PROBE_FAILURES + 1))
-        emit_event v14_http_server_roundtrip FAIL "ICC receipt producer unavailable: $icc_bin"
+        emit_event v14_http_server_roundtrip FAIL "ICC receipt producer unavailable: ${ICC_BIN:-icc}"
         printf '  \xE2\x9C\x97 %-42s ICC receipt producer unavailable\n' v14_http_server_roundtrip
         return
     fi
+    icc_bin=$(eshkol_abs_path "$icc_bin" "$REPO_ROOT")
 
     repo_name="${ICC_REPO_NAME:-eshkol}"
     binding_output=$(ICC_BIN="$icc_bin" ICC_REPO_NAME="$repo_name" \
@@ -115,7 +117,10 @@ probe_http_server_source_receipt() {
     fingerprint_trace="$TRACE_DIR/v14_http_server_build"
     mkdir -p "$jit_cache" "$fingerprint_trace"
     fingerprint_file="$fingerprint_trace/build_fingerprint.jsonl"
-    command_line="env BUILD_DIR='$BUILD_DIR_PATH' TRACE_DIR='$fingerprint_trace' ICC_BIN='$icc_bin' ICC_REPO_NAME='$repo_name' ESHKOL_LIB_DIR='$BUILD_DIR_PATH' ESHKOL_JIT_CACHE_DIR='$jit_cache' bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh"
+    command_line=$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' \
+        env "BUILD_DIR=$BUILD_DIR_PATH" "TRACE_DIR=$fingerprint_trace" \
+        "ICC_BIN=$icc_bin" "ICC_REPO_NAME=$repo_name" "ESHKOL_LIB_DIR=$BUILD_DIR_PATH" \
+        "ESHKOL_JIT_CACHE_DIR=$jit_cache" bash ./tests/v1_2_edge_cases/http_server_smoke_test.sh)
     # The shell test invokes helper files transitively; ICC's command-seed
     # closure does not enumerate every sourced shell dependency. Disable that
     # relaxation so only an exact whole-tree source/index match is admissible;

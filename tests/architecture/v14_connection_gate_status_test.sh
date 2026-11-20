@@ -127,6 +127,64 @@ case "$tt_out" in
 esac
 echo 'PASS: portable-tail-transfer survives an orphaned-writer race'
 
+# Exercise the HTTP probe through its checkout check and ICC command boundary.
+(
+    REPO_ROOT="$root"
+    WORK="$work/http"
+    BUILD_DIR_PATH="$WORK/build"
+    TRACE_DIR="$WORK/traces"
+    ESHKOL_RUN="$BUILD_DIR_PATH/eshkol-run"
+    export ICC_REPO_NAME=fixture
+    export HOME="$WORK/home" PATH="$WORK/tool's bin:$PATH"
+    mkdir -p "$WORK/tool's bin" "$HOME"
+    unset ICC_BIN
+    source "$root/scripts/lib/evidence_paths.sh"
+    eval "$(sed -n '/^probe_http_server_source_receipt() {/,/^}/p' "$gate")"
+
+    cat > "$WORK/tool's bin/icc" <<'PY'
+#!/usr/bin/env python3
+import json
+import os
+import shlex
+import sys
+
+if sys.argv[1:] == ["resolve", "--repo", "fixture", "--format", "json"]:
+    print(json.dumps({"repo": {"path": os.environ["TEST_ICC_CHECKOUT"]}}))
+elif sys.argv[1] == "test-execution-oracle":
+    argv = shlex.split(sys.argv[sys.argv.index("--command") + 1])
+    assert sys.argv[0] == os.environ["EXPECTED_ICC"]
+    assert "ICC_BIN=" + os.environ["EXPECTED_ICC"] in argv
+    assert argv[-2:] == ["bash", "./tests/v1_2_edge_cases/http_server_smoke_test.sh"]
+    print("fixture received the bound smoke command")
+    sys.exit(1)
+else:
+    sys.exit(2)
+PY
+    chmod +x "$WORK/tool's bin/icc"
+    export TEST_ICC_CHECKOUT="$root"
+    smoke="$root/tests/v1_2_edge_cases/http_server_smoke_test.sh"
+    bash "$smoke" --verify-icc-checkout-only
+
+    check_http_event() {
+        local expected="$1" out
+        emit_event() { printf 'EVENT %s %s %s\n' "$1" "$2" "$3"; }
+        out=$(probe_http_server_source_receipt) || return 1
+        [[ "$out" == *"EVENT v14_http_server_roundtrip FAIL $expected"* ]] || {
+            printf 'FAIL: HTTP receipt expected %s, got %s\n' "$expected" "$out" >&2
+            return 1
+        }
+    }
+    export EXPECTED_ICC="$WORK/tool's bin/icc"
+    check_http_event "fixture received the bound smoke command"
+    export ICC_BIN="$WORK/selected icc"
+    cp "$WORK/tool's bin/icc" "$ICC_BIN"
+    EXPECTED_ICC="$ICC_BIN"
+    check_http_event "fixture received the bound smoke command"
+    TEST_ICC_CHECKOUT="$WORK" check_http_event "FAIL: ICC repo fixture resolves to"
+    ICC_BIN="$WORK/absent" check_http_event "ICC receipt producer unavailable:"
+)
+echo 'PASS: HTTP receipt follows ICC discovery and checkout binding'
+
 # BUILD_DIR failures remain setup errors and do not attempt a compiler build.
 missing_build="$work/missing"
 empty_build="$work/empty"

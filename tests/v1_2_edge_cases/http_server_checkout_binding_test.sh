@@ -5,15 +5,14 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-ICC_BIN="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
 ICC_REPO_NAME="${MISMATCH_ICC_REPO_NAME:-eshkol}"
 
-if [ ! -x "$ICC_BIN" ]; then
-    echo "SKIP: ICC client unavailable at $ICC_BIN"
+if ! icc_bin=$(type -P -- "${ICC_BIN:-icc}"); then
+    echo "SKIP: ICC client unavailable: ${ICC_BIN:-icc}"
     exit 0
 fi
 
-REGISTERED_ROOT=$("$ICC_BIN" resolve --repo "$ICC_REPO_NAME" --format json 2>/dev/null | python3 -c '
+REGISTERED_ROOT=$("$icc_bin" resolve --repo "$ICC_REPO_NAME" --format json 2>/dev/null | python3 -c '
 import json, os, sys
 try:
     path = json.load(sys.stdin).get("repo", {}).get("path", "")
@@ -32,7 +31,7 @@ if [ "$REGISTERED_ROOT" = "$CHECKOUT_ROOT" ]; then
     exit 0
 fi
 
-output=$(ICC_BIN="$ICC_BIN" ICC_REPO_NAME="$ICC_REPO_NAME" BUILD_DIR="$ROOT/build" \
+output=$(ICC_BIN="$icc_bin" ICC_REPO_NAME="$ICC_REPO_NAME" BUILD_DIR="$ROOT/build" \
     bash "$ROOT/tests/v1_2_edge_cases/http_server_smoke_test.sh" \
     --verify-icc-checkout-only 2>&1)
 status=$?

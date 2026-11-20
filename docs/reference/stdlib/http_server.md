@@ -125,3 +125,11 @@ Send a response tuple over the given server `handle`. Returns `#t`.
 Compute `(http-standard-response request ready?)` and send it over `handle`.
 
 Edge cases: request accessors never raise on malformed input — a garbage string yields `""`/`#f` from the parsers. A handler that throws or returns a non-response is converted by `http-route-request` into `500 Internal Server Error`.
+
+## Loopback evidence
+
+The connection gate uses `icc` from `PATH` for the HTTP round-trip receipt.
+Set `ICC_BIN` to select another executable. Set `ICC_REPO_NAME` to the ICC
+alias registered to the checkout under test (default `eshkol`). The smoke
+test checks that binding before opening a socket. The receipt identifies
+the runner, both standard-library artifacts, and the build fingerprint.
