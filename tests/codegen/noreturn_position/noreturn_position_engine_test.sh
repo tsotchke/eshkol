@@ -54,7 +54,7 @@ fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
 # itself wrote.
 transcript() {
     sed -E -e 's/=== Execution complete ===//' \
-           -e 's/[^ |]*\.esk:[0-9]+:[0-9]+: //g' "$1" \
+           -e 's/([^ |]*\.esk|<unknown>):[0-9]+:[0-9]+: //g' "$1" \
         | grep -v -e '^\[ESKB\]' -e '^=== Eshkol VM' \
         | tr -d '\n'
 }
