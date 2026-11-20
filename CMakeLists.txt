@@ -8315,6 +8315,26 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES TIMEOUT 120
                 PASS_REGULAR_EXPRESSION "site scalar Hessian PASS"
                 FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
+        function(eshkol_add_numeric_test name source)
+            foreach(engine IN LISTS ARGN)
+                if(engine STREQUAL "vm")
+                    add_test(NAME ${name}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+                elseif(engine STREQUAL "jit")
+                    add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${source}" -L${CMAKE_CURRENT_BINARY_DIR})
+                elseif(engine STREQUAL "aot")
+                    add_test(NAME ${name}_aot COMMAND sh -c
+                        "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${name}_aot' '${CMAKE_CURRENT_SOURCE_DIR}/${source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${name}_aot'")
+                endif()
+                set_tests_properties(${name}_${engine} PROPERTIES
+                    ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+                    PASS_REGULAR_EXPRESSION "PASS ${name}"
+                    FAIL_REGULAR_EXPRESSION "FAIL|LLVM module verification failed|fatal signal")
+            endforeach()
+        endfunction()
+        eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
+
         # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every
         # mode (forward, reverse and mixed), confusion controls, exact Taylor
         # coefficients and more than 2^16 passes in one process, on the native
