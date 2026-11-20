@@ -4,6 +4,7 @@
 #include "../../inc/eshkol/core/http_response.h"
 #endif
 #include "../../inc/eshkol/core/websocket_handshake.h"
+#include <eshkol/core/merkle_hash.h>
 #include <eshkol/core/linear_solve_portable.h>
 #include <eshkol/core/tensor_inverse_checked.h>
 #include <math.h>
@@ -9842,6 +9843,18 @@ extern int eshkol_random_hex(char*, size_t);
 #endif
 
 static void vm_dispatch_content_extern(VM* vm, int fid) {
+    if (fid == VM_NATIVE_FNV1A64_EXTERN) {
+        int64_t size;
+        VmString *input;
+        if (!vm_sqlite_pop_i64(vm, "fnv1a-64-raw", &size) ||
+            !vm_sqlite_pop_string(vm, "fnv1a-64-raw", &input)) return;
+        if (size < 0 || size > input->byte_len) {
+            vm_raise_error_msg(vm, "fnv1a-64-raw: input length exceeds string");
+            return;
+        }
+        vm_push(vm, INT_VAL(eshkol_merkle_fnv1a(input->data, size)));
+        return;
+    }
     int64_t capacity;
     if (!vm_sqlite_pop_i64(vm, "content extern output size", &capacity)) return;
     Value target = vm_pop(vm);
@@ -9851,6 +9864,26 @@ static void vm_dispatch_content_extern(VM* vm, int fid) {
         return;
     }
     int output_length = output->byte_len;
+    if (fid == VM_NATIVE_HEX16_EXTERN) {
+        int64_t value;
+        if (!vm_sqlite_pop_i64(vm, "u64-to-hex16-raw", &value)) return;
+        if (capacity < 16) { vm_push(vm, INT_VAL(0)); return; }
+        char *bytes = (char *)malloc((size_t)output_length);
+        if (!bytes) {
+            vm_raise_error_msg(vm, "u64-to-hex16-raw: output allocation failed");
+            return;
+        }
+        memcpy(bytes, output->data, (size_t)output_length);
+        int64_t written = eshkol_merkle_hex16(value, bytes, capacity);
+        int ok = vm_sqlite_store_buffer(vm, target, bytes, (size_t)output_length);
+        free(bytes);
+        if (!ok) {
+            vm_raise_error_msg(vm, "u64-to-hex16-raw: output update failed");
+            return;
+        }
+        vm_push(vm, INT_VAL(written));
+        return;
+    }
     if (fid == VM_NATIVE_RANDOM_BYTES_EXTERN || fid == VM_NATIVE_RANDOM_HEX_EXTERN) {
         if (fid == VM_NATIVE_RANDOM_HEX_EXTERN && capacity >= output_length) {
             vm_raise_error_msg(vm, "random-hex-raw: buffer needs room for terminator");
@@ -10065,7 +10098,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         return;
     }
-    if (fid >= VM_NATIVE_SHA256_EXTERN && fid <= VM_NATIVE_RANDOM_HEX_EXTERN) {
+    if (fid >= VM_NATIVE_SHA256_EXTERN && fid <= VM_NATIVE_HEX16_EXTERN) {
         if (vm->native_policy == ESHKOL_VM_NATIVE_POLICY_HOST_ONLY) {
             fprintf(stderr, "VM native policy rejected content extern fid %d\n", fid);
             vm->error = 1;

@@ -106,6 +106,28 @@
 (check "cas key is the content hash" (hash->hex (fnv1a-64 "payload")) key)
 (check "cas round-trips" "payload" (cas-get store key))
 
+;; Independent SHA-256 vectors use the UTF-8 bytes of the leaf and the
+;; lowercase hex of each child. The third leaf is paired with itself.
+(define binary-leaf (string-append "é" (string (integer->char 0)) "z"))
+(define sha-tree (merkle-tree-with-hash (list binary-leaf "b" "c") merkle-sha256))
+(define sha-root (merkle-root sha-tree))
+(check "FNV-1a default content hash" "a430d84680aabd0b" (hash->hex (fnv1a-64 "hello")))
+(check "SHA-256 content hash" "d81c38f3eef78d979ead312d6a920b521d20a0656885469f8b717dbf400d5183"
+       (merkle-sha256 binary-leaf))
+(check "SHA-256 leaf hash" "93cc2bcca8784a3dca3ee7eb788c83d0651c7078473e982b736be9854678dd1b"
+       (merkle-root (merkle-leaf binary-leaf merkle-sha256)))
+(check "SHA-256 odd-width tree" "8d9dedaa5671a41cad6c69cc319c1c825a712a6599a59611d36a2bbc8b08c6b6" sha-root)
+(check "SHA-256 proof includes the rightmost leaf"
+       #t (merkle-verify sha-root "c" (merkle-proof sha-tree 2) merkle-sha256))
+(check "SHA-256 proof binds leaf data"
+       #f (merkle-verify sha-root "d" (merkle-proof sha-tree 2) merkle-sha256))
+(check "SHA-256 proof binds leaf position"
+       #f (merkle-verify sha-root "c" (merkle-proof sha-tree 1) merkle-sha256))
+(define sha-store (make-cas-with-hash merkle-sha256))
+(define sha-key (cas-put! sha-store binary-leaf))
+(check "SHA-256 CAS uses the full content digest" (merkle-sha256 binary-leaf) sha-key)
+(check "SHA-256 CAS lookup" binary-leaf (cas-get sha-store sha-key))
+
 (display "merkle domain separation: ")
 (display passed) (display " passed, ")
 (display failed) (display " failed")

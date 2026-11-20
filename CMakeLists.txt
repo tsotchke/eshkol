@@ -14934,10 +14934,18 @@ endif()
 # vm-src and emitted ESKB; these native tests keep the JIT and AOT paths from
 # drifting independently.
 # image-read/image-write/image-to-grayscale through compiled Eshkol code.
-# Merkle leaf/interior domain separation: a node cannot be presented as a
-# leaf. Run on the JIT and on the AOT path. There is no bytecode-VM lane:
-# core.merkle reaches the VM through an extern the VM does not admit today,
-# so the VM lane would measure that gap rather than the domain separation.
+# Check hash vectors, versioned trees and inclusion proofs on each engine.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME merkle_domain_separation_vm
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/merkle_domain_separation_test.esk")
+    set_tests_properties(merkle_domain_separation_vm PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|ERROR: VM terminated|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME merkle_domain_separation_jit

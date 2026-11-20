@@ -2,17 +2,11 @@
 ;;
 ;; (require core.merkle)
 ;;
-;; Pure-Eshkol implementation, no FFI dependencies.  Uses FNV-1a 64-bit
-;; as the default hash — fast and well-distributed for content
-;; addressing within a single process, but NOT cryptographically secure.
+;; FNV-1a 64-bit is the default for in-process content addressing.
+;; Pass merkle-sha256 for a 64-character lowercase SHA-256 digest:
 ;;
-;; For tamper-resistant content addressing (signing, distributed
-;; storage with adversarial actors), pass a crypto-grade hash via
-;; the optional hash-fn parameter, e.g. agent.crypto's sha256:
-;;
-;;   (require agent.crypto)
-;;   (define mt (merkle-tree-with-hash my-data sha256))
-;;   (define cas (make-cas-with-hash sha256))
+;;   (define mt (merkle-tree-with-hash my-data merkle-sha256))
+;;   (define cas (make-cas-with-hash merkle-sha256))
 ;;
 ;; Tree representation:
 ;;   leaf  → (vector 'merkle-leaf hash data)
@@ -31,7 +25,7 @@
 ;; child hashes.  Without the two prefixes, leaf and interior hashes
 ;; live in one value space, and the hash of a node can be offered as
 ;; the data of a leaf: a proof for one reads as a proof for the other.
-;; With them, no leaf hash is ever an interior hash of anything.
+;; With them, leaf and interior inputs always differ in their first byte.
 ;;
 ;; Format versions
 ;; ---------------
@@ -45,10 +39,11 @@
 ;; with the version that produced it; new trees should be version 2.
 
 (require stdlib)
+(require agent.crypto)
 
 (provide
   ;; Hash
-  fnv1a-64 hash->hex
+  fnv1a-64 merkle-sha256 hash->hex
   ;; Format
   merkle-format-version merkle-leaf-domain merkle-node-domain
   ;; Merkle tree
@@ -84,11 +79,17 @@
    only equality and hex rendering matter for content addressing)."
   (fnv1a-64-raw str (string-length str)))
 
+(define (merkle-sha256 data)
+  "Return the lowercase SHA-256 hex digest of the bytes of data."
+  (let ((digest (sha256 data)))
+    (if digest digest (error "merkle-sha256: digest unavailable"))))
+
 (define (hash->hex h)
-  "Render a 64-bit hash as a 16-char lowercase hex string."
-  (let ((buf (make-string 17 #\space)))
-    (u64-to-hex16-raw h buf 17)
-    (substring buf 0 16)))
+  "Return a hexadecimal digest string or render an integer as 16 hex digits."
+  (if (string? h) h
+      (let ((buf (make-string 17 #\space)))
+        (u64-to-hex16-raw h buf 17)
+        (substring buf 0 16))))
 
 ;; ── Merkle tree ──────────────────────────────────────────────────────
 
@@ -112,7 +113,7 @@
    function (defaults to fnv1a-64).  data must be a string.
 
    The leaf hash is taken over the leaf domain prefix followed by the
-   data, so it cannot coincide with the hash of any interior node."
+   data, giving the hash input a distinct first byte."
   (let ((hash-fn (if (null? hash-fn-opt) fnv1a-64 (car hash-fn-opt))))
     (vector 'merkle-leaf
             (hash-fn (string-append (merkle-leaf-domain) data))
@@ -273,7 +274,10 @@
 (define (merkle-verify-with leaf-hash pair-fn root-hash leaf-data proof hash-fn)
   (let loop ((h (leaf-hash leaf-data hash-fn)) (rest proof))
     (cond
-      ((null? rest) (= h root-hash))
+      ((null? rest)
+       (if (string? h)
+           (and (string? root-hash) (string=? h root-hash))
+           (and (number? root-hash) (= h root-hash))))
       (else
        (let* ((p (car rest))
               (sibling-h (car p))
@@ -330,7 +334,7 @@
 (define (cas-table c)   (vector-ref c 2))
 
 (define (cas-put! c data)
-  "Store data, return the content hash as a 16-char hex string."
+  "Store data, return the content hash as a hex string."
   (let* ((h (hash->hex ((cas-hash-fn c) data))))
     (hash-table-set! (cas-table c) h data)
     h))

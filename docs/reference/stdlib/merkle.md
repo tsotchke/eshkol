@@ -1,17 +1,21 @@
-# `core.merkle` — FNV-1a hashing, Merkle trees, content-addressable storage
+# `core.merkle` — FNV-1a and SHA-256 hashing, Merkle trees, content-addressable storage
 
 **Source**: [`lib/core/merkle.esk`](../../../lib/core/merkle.esk)
 **Require**: `(require core.merkle)` — must be required individually (not auto-loaded by `(require stdlib)`).
-**Engines**: the JIT and the AOT path. The module declares `fnv1a-64-raw` and
-`u64-to-hex16-raw` as externs, which the bytecode VM does not admit, so
-`core.merkle` is unavailable there.
+**Engines**: JIT, AOT and bytecode VM.
 
-Pure-Eshkol Merkle trees and a content-addressable store (CAS). The default hash is
-**FNV-1a 64-bit** (the inner loop is in `lib/core/merkle.c` for correct `uint64_t`
-overflow semantics) — fast and well-distributed for in-process content addressing
-but **not cryptographically secure**. For tamper resistance, pass a crypto hash
-(e.g. `agent.crypto`'s `sha256`) via the optional `hash-fn` argument to
-`merkle-leaf`, `merkle-tree-with-hash`, `merkle-verify`, or `make-cas-with-hash`.
+`merkle-tree` and `make-cas` default to FNV-1a 64-bit for in-process
+content addressing. For a cryptographic digest, pass `merkle-sha256` to
+`merkle-leaf`, `merkle-tree-with-hash`, `merkle-verify` or `make-cas-with-hash`.
+It uses the SHA-256 primitive from `agent.crypto` and returns all 64 lowercase
+hex digits. A parent hashes the node prefix followed by the two child hex
+strings in left-to-right order.
+
+```scheme
+(require core.merkle)
+(define tree (merkle-tree-with-hash (list "alice" "bob") merkle-sha256))
+(merkle-verify (merkle-root tree) "bob" (merkle-proof tree 1) merkle-sha256)
+```
 
 Tree representation:
 - leaf  → `(vector 'merkle-leaf hash data)`
@@ -30,11 +34,8 @@ RFC 6962 §2.1 prescribes:
   of its two child hashes.
 
 `(merkle-leaf-domain)` and `(merkle-node-domain)` are those one-byte prefixes.
-Without them, leaf and interior hashes share one value space, and the hex
-concatenation of two child hashes is itself data whose leaf hash equals their
-parent's: a proof for a subtree reads as a proof for a leaf. With them, no
-leaf hash is an interior hash of anything, and an interior node offered as
-leaf data verifies against no root.
+The first byte identifies the role of the input to the hash function, even
+when the leaf data is itself a concatenation of two child digests.
 
 `(merkle-format-version)` is `2`: the domain-separated tree, and what
 `merkle-tree`, `merkle-tree-with-hash`, `merkle-proof` and `merkle-verify`
@@ -51,7 +52,7 @@ under it:
 | `(merkle-proof tree index)` | `(merkle-proof-v1 tree index)` |
 | `(merkle-verify root data proof [hash-fn])` | `(merkle-verify-v1 root data proof [hash-fn])` |
 
-Keep a stored root with the version that produced it; build new trees under
+Keep a stored root with its hash algorithm and format version; build new trees under
 version 2.
 
 Content-addressable storage is unaffected: `cas-put!` hashes the content
@@ -78,7 +79,7 @@ af63dc4c8601ec8c
 Edge case: `(hash->hex (fnv1a-64 ""))` = `"cbf29ce484222325"` (the FNV offset basis).
 
 ### `(hash->hex h)`
-Render a 64-bit hash `h` as a 16-char lowercase hex string.
+Render an integer hash as 16 lowercase hex digits. A string digest is already in hex and passes through directly.
 
 ```scheme
 (require core.merkle)
@@ -168,13 +169,13 @@ the one the tree was built with.
 #f
 ```
 
-Edge case: an empty proof `'()` verifies only if `(hash-fn leaf-data)` equals
-`root-hash` directly (i.e. a single-leaf tree).
+For a single-leaf tree, the proof is empty and verification compares the
+domain-prefixed leaf hash directly with the root.
 
 ## Content-addressable store (CAS)
 
-A CAS is `(vector 'eshkol-cas hash-fn hash-table)`. Keys are 16-char hex content
-hashes; storing identical data yields the same key (dedup).
+A CAS is `(vector 'eshkol-cas hash-fn hash-table)`. Keys contain the hex digest of the content,
+16 characters for FNV-1a and 64 for SHA-256. Storing identical data yields the same key.
 
 ### `(make-cas)` / `(make-cas-with-hash hash-fn)`
 Create a CAS using the default FNV-1a hash, or an explicit hash function.
@@ -183,7 +184,7 @@ Create a CAS using the default FNV-1a hash, or an explicit hash function.
 Predicate: is `c` a CAS handle?
 
 ### `(cas-put! c data)`
-Store `data`, returning its content hash as a 16-char hex string. Mutates the store.
+Store `data`, returning its content hash as a hex string. Mutates the store.
 
 ### `(cas-get c hash)`
 Retrieve the data stored under `hash`, or `#f` if absent.
