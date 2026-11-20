@@ -45,7 +45,7 @@ run() {  # label threshold [VAR=value] -> require successful program and exactly
         # Cache probes bypass persistence during language-coverage collection.
         # Clear only this variable for the probes, leaving the parent intact.
         ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR= \
-        ESHKOL_JIT_CACHE_DIR="$WORK/cache" ESHKOL_JIT_CACHE_TRACE=1 ESHKOL_XLA_THRESHOLD="$threshold" \
+        ESHKOL_JIT_CACHE_DIR="$WORK/cache" ESHKOL_JIT_CACHE_TRACE=1 ESHKOL_ENABLE_XLA=1 ESHKOL_XLA_THRESHOLD="$threshold" \
             eshkol_test_timeout 300 "$ESHKOL_RUN" -r "$WORK/prog.esk" -L"$B"
     ) > "$WORK/$label.out" 2>&1 || {
             echo "FAIL: $label execution failed" >&2

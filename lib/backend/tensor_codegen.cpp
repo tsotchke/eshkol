@@ -11,6 +11,7 @@
  * dependencies are extracted.
  */
 
+#include <eshkol/core/config.h>
 #include <eshkol/backend/tensor_codegen.h>
 #include <eshkol/backend/libm_codegen.h>
 
@@ -82,7 +83,7 @@ TensorCodegen::TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, Me
     , tagged_(tagged)
     , mem_(mem) {
 #ifdef ESHKOL_XLA_ENABLED
-    // Initialize XLA backend for accelerated tensor operations
+    if (!eshkol_config_is_xla_enabled()) return;
     xla_ = std::make_unique<xla::XLACodegen>(ctx);
     eshkol_debug("TensorCodegen initialized with SIMD width: %u, XLA: %s (threshold: %zu)",
                  getSIMDWidth(),

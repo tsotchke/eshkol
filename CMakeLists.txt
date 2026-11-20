@@ -8254,6 +8254,15 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         add_test(NAME llvm_codegen_definition COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/codegen_definition_test.py" "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
+    if(ESHKOL_XLA_ENABLED)
+        foreach(_engine jit aot)
+            add_test(NAME xla_dispatch_switches_${_engine} COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/xla/dispatch_switches.py"
+                $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}" "${_engine}")
+            set_tests_properties(xla_dispatch_switches_${_engine} PROPERTIES
+                ENVIRONMENT "${STDLIB_CODEGEN_ENV}" TIMEOUT 360)
+        endforeach()
+    endif()
     foreach(_fixture vm_parity/corpus/58_rationalize_r7rs stdlib/matrix_dimension_test signal/butterworth_response_test)
         get_filename_component(_name "${_fixture}" NAME)
         set(_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_fixture}.esk")
