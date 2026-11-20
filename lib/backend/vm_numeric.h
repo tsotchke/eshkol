@@ -323,6 +323,8 @@ VmHyperDual* vm_hd_pow_hd(VmRegionStack* rs, const VmHyperDual* a,
 #define VM_NATIVE_STRING_BASE    550
 /* Reserved VM-native IDs for the closed agent.sqlite extern signature set.
  * They are serialized as OP_NATIVE_CALL operands in ESKB; keep these stable. */
+#define VM_NATIVE_CHECK_ASCRIPTION 2257
+
 #define VM_NATIVE_SQLITE_BASE    2300
 #define VM_NATIVE_SQLITE_OPEN              (VM_NATIVE_SQLITE_BASE + 0)
 #define VM_NATIVE_SQLITE_CLOSE             (VM_NATIVE_SQLITE_BASE + 1)

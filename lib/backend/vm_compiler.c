@@ -1,3 +1,4 @@
+#include "../core/ascription_tags.h"
 #include <eshkol/builtin_libraries.h>
 #include <eshkol/module_resolver.h>
 #if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
@@ -38,6 +39,22 @@ static void vm_macro_capture_definition(VmMacro* macro, FuncChunk* owner) {
     int context = ++g_macro_value_context_serial;
     for (int i = 0; i < macro->n_rules; ++i)
         vm_macro_capture_values((Node*)macro->rules[i].template_node, owner, context);
+}
+
+static EshkolTagSet vm_ascription_tags(Node* type) {
+    if (!type) return 0;
+    if (type->type == N_SYMBOL) return eshkol_ground_type_tags(type->symbol);
+    if (type->type != N_LIST || type->n_children < 2 || type->children[0]->type != N_SYMBOL) return 0;
+    const char* head = type->children[0]->symbol;
+    if (eshkol_type_spelling_equal(head, "+") && type->n_children == 3)
+        return vm_ascription_tags(type->children[1]) | vm_ascription_tags(type->children[2]);
+    if (eshkol_type_spelling_equal(head, "refine")) return vm_ascription_tags(type->children[1]);
+    if (eshkol_type_spelling_equal(head, "forall")) return vm_ascription_tags(type->children[type->n_children - 1]);
+    if (eshkol_type_spelling_equal(head, "pi") || eshkol_type_spelling_equal(head, "->"))
+        return eshkol_ground_type_tags("procedure");
+    if (eshkol_type_spelling_equal(head, "sigma") || eshkol_type_spelling_equal(head, "*"))
+        return eshkol_ground_type_tags("pair");
+    return eshkol_ground_type_tags(head);
 }
 
 static int resolve_macro_local(FuncChunk* c, const Node* identifier) {
@@ -6990,19 +7007,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      *    consume, and the enclosing sequence's pop stays balanced. -- */
     if (is_sym(head, "define-type")) { chunk_emit(c, OP_VOID, 0); return; }
 
-    /* -- (: name type) declarations and (the type expr) ascriptions
-     *    (ADR-0042, ADR-0044): types are compile-time only, checked before
-     *    compilation (the gradual and dependent checkers, and refinements,
-     *    through the front-end bridge). A declaration is the unspecified
-     *    value; an ascription is its expression, exactly the code the native
-     *    engine emits for it. A user binding of either name is an ordinary
-     *    call. -- */
+    /* A declaration yields the unspecified value. An ascription checks its
+     * evaluated operand before yielding that same value. */
     if (is_sym(head, ":") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
         chunk_emit(c, OP_VOID, 0);
         return;
     }
     if (is_sym(head, "the") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
-        compile_expr(c, node->children[2], tail);
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(vm_ascription_tags(node->children[1]))));
+        chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_CHECK_ASCRIPTION);
         return;
     }
 

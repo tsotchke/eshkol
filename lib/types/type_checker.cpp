@@ -1438,14 +1438,8 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
         }
 
         case ESHKOL_THE_OP: {
-            // Expression-level checked cast (the <type> <expr>): a trusted
-            // ascription. Still synthesize the inner expression so nested type
-            // errors are reported, but the ascribed type is what flows onward,
-            // letting a value recovered from a dynamic container satisfy a typed
-            // context without reconstruction. Runtime is unaffected — codegen
-            // evaluates the inner expression verbatim. This is a gradual-typing
-            // trust boundary (no runtime check), consistent with `--strict-types`
-            // as a whole-program refinement rather than a soundness proof.
+            // The ascribed type flows to the enclosing expression after the
+            // runtime tag check. Diagnose provable contradictions here as well.
             TypeId ascribed;
             {
                 ResolveSiteGuard site(*this, expr);
@@ -1454,21 +1448,6 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizeOperationTask(eshkol_as
             if (expr->operation.the_op.expr) {
                 auto inner = (co_await synthesizeTask(expr->operation.the_op.expr));
                 if (inner.success) {
-                    // SW-11: "trusted" governs which type flows ONWARD; it was
-                    // silently also suppressing the one question the checker
-                    // can already answer. The inner type was synthesized and
-                    // then dropped on the floor, so `(the string (+ 1 2))` —
-                    // an ascription no value can ever satisfy — type-checked
-                    // clean and evaluated to 3. Compare the two types now and
-                    // report a provable contradiction through the unified
-                    // enforcement point, so it is a warning under gradual
-                    // typing and fatal under --strict-types, exactly like
-                    // every other type issue. The emitted IR is untouched:
-                    // this is a compile-time diagnostic, so the spec's
-                    // byte-identical/no-runtime-cost guarantee for `the`
-                    // (COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6) still holds,
-                    // and a VM program that omits the ascription still
-                    // computes the identical result.
                     const std::string contradiction =
                         "ascription (the " + env_.getTypeName(ascribed) +
                         " ...) contradicts the inferred type " +

@@ -5,6 +5,7 @@
  *
  */
 #include <eshkol/frontend/ownership.h>
+#include "../core/ascription_tags.h"
 #include <functional>
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/core/execution_profile.h>
@@ -9312,6 +9313,27 @@ private:
         return module->getDataLayout().getABITypeAlign(type);
     }
 
+    EshkolTagSet ascriptionTags(const hott_type_expr_t* type) {
+        if (!type) return 0;
+        switch (type->kind) {
+            case HOTT_TYPE_SUM:
+                return ascriptionTags(type->sum.left) | ascriptionTags(type->sum.right);
+            case HOTT_TYPE_NUMBER: return eshkol_ground_type_tags("number");
+            case HOTT_TYPE_ARROW:
+            case HOTT_TYPE_DEPENDENT: return eshkol_ground_type_tags("procedure");
+            case HOTT_TYPE_PRODUCT:
+            case HOTT_TYPE_SIGMA:
+            case HOTT_TYPE_PAIR: return eshkol_ground_type_tags("pair");
+            case HOTT_TYPE_LIST: return eshkol_ground_type_tags("list");
+            case HOTT_TYPE_VECTOR: return eshkol_ground_type_tags("vector");
+            case HOTT_TYPE_TENSOR: return eshkol_ground_type_tags("tensor");
+            case HOTT_TYPE_FORALL: return ascriptionTags(type->forall.body);
+            case HOTT_TYPE_REFINE: return ascriptionTags(type->refine.base);
+            case HOTT_TYPE_APP: return eshkol_ground_type_tags(type->app.head);
+            default: return eshkol_ground_type_tags(hott_type_to_string(type));
+        }
+    }
+
     eshkol::hott::TypeId resolveDeclaredHottTypeId(const hott_type_expr_t* type_expr) const {
         using namespace eshkol::hott;
 
@@ -12110,11 +12132,26 @@ private:
                 // but generate no runtime code (proof erasure)
                 co_return packNullToTaggedValue();
 
-            // Expression-level checked cast (the <type> <expr>): the type is
-            // erased; the value is exactly that of the wrapped expression. Pure
-            // passthrough — emits identical IR to writing <expr> directly.
-            case AstRoute::The:
-                co_return (co_await codegenASTTask(op->the_op.expr));
+            case AstRoute::The: {
+                auto inner = co_await codegenTypedASTTask(op->the_op.expr);
+                if (!inner.llvm_value) co_return nullptr;
+                Value* value = typedValueToTaggedValue(inner);
+                auto check = module->getOrInsertFunction("eshkol_value_has_type_tag",
+                    FunctionType::get(int32_type, {builder->getPtrTy(), int64_type}, false));
+                Function* current = builder->GetInsertBlock()->getParent();
+                IRBuilder<> entry(&current->getEntryBlock(), current->getEntryBlock().begin());
+                auto* slot = entry.CreateAlloca(tagged_value_type, nullptr, "ascription");
+                builder->CreateStore(value, slot);
+                auto* matches = builder->CreateCall(check, {slot,
+                    ConstantInt::get(int64_type, ascriptionTags(op->the_op.type_expr))});
+                BasicBlock* pass = BasicBlock::Create(*context, "ascription.pass", current);
+                BasicBlock* fail = BasicBlock::Create(*context, "ascription.raise", current);
+                builder->CreateCondBr(builder->CreateIsNotNull(matches), pass, fail);
+                builder->SetInsertPoint(fail);
+                arith_->emitTypeError("the: value does not satisfy the ascribed type");
+                builder->SetInsertPoint(pass);
+                co_return value;
+            }
 
             // Multiple Return Values operations
             case AstRoute::Values:
@@ -14070,21 +14107,6 @@ private:
     ContinuationTask<Value*> codegenCallTask(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             co_return nullptr;
-        }
-
-        // ((the <type> f) x) — an ascribed head. `the` is a pure no-op at
-        // runtime, so a call through it must behave exactly like a call to the
-        // wrapped expression. Unwrap and re-dispatch rather than teaching each
-        // head form about ascriptions: every case below (variable head, inline
-        // lambda, nested call, operation-result) then works through a cast.
-        // Unwrapping keeps `((the procedure f) 7)` on the same static paths
-        // as `(f 7)` instead of the general computed-operator path below.
-        if (op->call_op.func->type == ESHKOL_OP &&
-            op->call_op.func->operation.op == ESHKOL_THE_OP &&
-            op->call_op.func->operation.the_op.expr) {
-            eshkol_operations_t unwrapped = *op;
-            unwrapped.call_op.func = op->call_op.func->operation.the_op.expr;
-            co_return (co_await codegenCallTask(&unwrapped));
         }
 
         // ((lambda (x) body) arg) — inline lambda head

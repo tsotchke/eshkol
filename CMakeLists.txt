@@ -15007,6 +15007,10 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-vm-standalone-test AND TARGET eshkol-repl)
+    add_test(NAME ascription_runtime
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/ascription_runtime.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>)
     foreach(case IN ITEMS move borrow)
         add_test(NAME ownership_default_${case}
             COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}

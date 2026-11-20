@@ -378,6 +378,9 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value);
 void eshkol_type_name_into(const eshkol_tagged_value_t* value,
                            eshkol_tagged_value_t* out);
 
+/** Test a value against the runtime tags of a type ascription. */
+int eshkol_value_has_type_tag(const eshkol_tagged_value_t* value, uint64_t tags);
+
 /**
  * @brief Get source location information for a procedure.
  *
