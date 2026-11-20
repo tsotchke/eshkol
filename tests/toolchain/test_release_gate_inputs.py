@@ -72,6 +72,13 @@ sys.exit(0 if mode == 'accept' else 1)
                                                  "WORK": directory, "TMPDIR": directory})
                     self.assertEqual(result.returncode == 0, mode == "valid", result.stderr)
 
+    def test_wasm_checker_accepts_build_dir_and_rejects_unknown_override(self):
+        command = [sys.executable, SCRIPTS / "check_wasm_imports.py", "--selftest", "--build-dir", "build"]
+        self.assertEqual(subprocess.run(command, capture_output=True).returncode, 0)
+        result = subprocess.run(command + ["--server", "absent"], capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"unrecognized arguments: --server", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
