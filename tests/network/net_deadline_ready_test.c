@@ -11,6 +11,10 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
+#ifdef __APPLE__
+/* Strict POSIX on Darwin hides INADDR_LOOPBACK and the BSD socket names. */
+#define _DARWIN_C_SOURCE 1
+#endif
 #if defined(_WIN32) || defined(ESHKOL_VM_WASM) || defined(__EMSCRIPTEN__)
 #include <stdio.h>
 int main(void) {
