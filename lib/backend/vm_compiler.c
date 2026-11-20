@@ -4,6 +4,7 @@
 #if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
 #include "vm_embedded_modules.h"
 #endif
+static int vm_reject_type_violations(const char* source, const char* source_name);
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
@@ -2132,6 +2133,11 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     }
     src[len] = '\0';
 #endif
+
+    if (tracked > 0 && vm_reject_type_violations(src, path)) {
+        free(src);
+        return -1;
+    }
 
     /* Parse the complete module before compiling it. This gives loaded source
      * the same forward-procedure and same-location redefinition semantics as

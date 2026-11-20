@@ -31,6 +31,13 @@ def main():
             checked = run(command, work, env)
             if checked.returncode == 0 or diagnostic not in checked.stdout or out.exists():
                 raise AssertionError(f"{command}: {checked.returncode}\n{checked.stdout}")
+        imported = work / "imported.esk"
+        imported.write_text('(load "ownership.esk")\n')
+        for command in ([compiler, "-n", "-r", imported], [compiler, "-n", imported, "-o", out],
+                        [vm, imported]):
+            result = run(command, work, env)
+            if result.returncode == 0 or diagnostic not in result.stdout or out.exists():
+                raise AssertionError(f"{command}: {result.returncode}\n{result.stdout}")
         checked = run([repl], work, env, source)
         if diagnostic not in checked.stdout:
             raise AssertionError(f"interactive {case}: {checked.stdout}")
