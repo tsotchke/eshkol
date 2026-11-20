@@ -5058,11 +5058,12 @@ static int vm_tensor_collection_len(VM* vm, Value v) {
     if (v.type == VAL_PAIR) {
         int len = 0;
         Value cur = v;
-        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+        while (cur.type == VAL_PAIR && len < vm->heap.next_free &&
+               is_heap_type(vm, cur, HEAP_CONS)) {
             len++;
             cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
         }
-        return len;
+        return cur.type == VAL_NIL ? len : -1;
     }
     if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
         VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
@@ -5146,36 +5147,50 @@ static int vm_tensor_store_value(VM* vm, VmTensor* t, int64_t i, Value v) {
     return 1;
 }
 
-/** @brief Row-major fill of @p data from nested collection @p v, validating
- *         @p v against @p shape at every level. Returns 0 on success, -1 when
- *         @p v is ragged (a level's length disagrees with the shape) or nests
- *         deeper/shallower than the inferred rank. */
-static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int level,
-                                 int rank, VmTensor* out, int64_t* pos, int64_t cap) {
-    if (level == rank) {
-        if (vm_tensor_collection_len(vm, v) >= 0) return -1;  /* deeper than rank */
-        /* MS-04 / SW-166: a tensor's elements are homogeneous doubles, so an
-         * exact rational or bignum leaf is a legitimate numeric element, not
-         * a rejection — it must convert with the same correctly-rounded
-         * nearest-double conversion the rest of the numeric tower uses
-         * (as_number_vm, which unwraps VAL_RATIONAL/VAL_BIGNUM through their
-         * heap payload) rather than either being refused here or, on the
-         * native engine's equivalent path, silently reading as 0.0. */
-        if (v.type != VAL_INT && v.type != VAL_FLOAT &&
-            v.type != VAL_RATIONAL && v.type != VAL_BIGNUM && v.type != VAL_DUAL) return -1;
-        if (*pos >= cap) return -1;
-        /* A derivative carrier leaf is kept whole (ADR-0020 amendment 2). */
-        if (!vm_tensor_store_value(vm, out, (*pos)++, v)) return -1;
-        return 0;
+static Value vm_tensor_element_value(VM* vm, const VmTensor* t, int64_t flat);
+
+/* Return the native collection diagnostic on a shape or element mismatch. */
+static const char* vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int level,
+                                          int rank, VmTensor* out, int64_t* pos) {
+    if (v.type == VAL_TENSOR && is_heap_type(vm, v, HEAP_TENSOR)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || t->n_dims != rank - level || !t->shape ||
+            memcmp(t->shape, shape + level, (size_t)t->n_dims * sizeof(*shape)) != 0 ||
+            t->total > out->total - *pos)
+            return "tensor: nested tensor element does not have the same shape as its siblings";
+        if (!t->dual_data && !out->dual_data) {
+            if (t->total) memcpy(out->data + *pos, t->data, (size_t)t->total * sizeof(double));
+            *pos += t->total;
+        } else {
+            for (int64_t i = 0; i < t->total; i++)
+                if (!vm_tensor_store_value(vm, out, (*pos)++, vm_tensor_element_value(vm, t, i)))
+                    return "tensor: collection element has no tensor representation";
+        }
+        return NULL;
     }
     int len = vm_tensor_collection_len(vm, v);
-    if (len != (int)shape[level]) return -1;                  /* ragged */
-    for (int i = 0; i < len; i++) {
-        if (vm_tensor_nested_fill(vm, vm_tensor_collection_at(vm, v, i),
-                                  shape, level + 1, rank, out, pos, cap) != 0)
-            return -1;
+    if (level == rank) {
+        if (len >= 0) return "tensor: nested list/vector is not rectangular — a sub-collection appears where a number was expected";
+        if (!vm_tensor_store_value(vm, out, (*pos)++, v))
+            return "tensor: element is not a number";
+        return NULL;
     }
-    return 0;
+    if (len < 0) return "tensor: nested list/vector is not rectangular — a number appears where a sub-collection was expected";
+    if (len != shape[level])
+        return "tensor: nested list/vector is ragged — every sub-collection at the same depth must have the same length";
+    Value cursor = v;
+    for (int i = 0; i < len; i++) {
+        Value element;
+        if (v.type == VAL_PAIR) {
+            element = vm->heap.objects[cursor.as.ptr]->cons.car;
+            cursor = vm->heap.objects[cursor.as.ptr]->cons.cdr;
+        } else {
+            element = vm_tensor_collection_at(vm, v, i);
+        }
+        const char* err = vm_tensor_nested_fill(vm, element, shape, level + 1, rank, out, pos);
+        if (err) return err;
+    }
+    return NULL;
 }
 
 /**
@@ -5195,7 +5210,16 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
     int depth = 0;
     for (Value probe = v; vm_tensor_collection_len(vm, probe) >= 0;
          probe = vm_tensor_collection_at(vm, probe, 0)) {
-        depth++;
+        if (probe.type == VAL_TENSOR) {
+            VmTensor* child = (VmTensor*)vm->heap.objects[probe.as.ptr]->opaque.ptr;
+            if (child->n_dims > INT_MAX - depth) return NULL;
+            depth += child->n_dims;
+            break;
+        }
+        if (++depth > vm->heap.next_free) {
+            if (err) *err = "tensor: cyclic nested collection";
+            return NULL;
+        }
         if (vm_tensor_collection_len(vm, probe) == 0) break;
     }
     if (depth <= 0) { if (err) *err = "tensor: not a collection"; return NULL; }
@@ -5205,11 +5229,17 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
     int rank = 0;
     Value spine = v;
     for (;;) {
+        if (spine.type == VAL_TENSOR) {
+            VmTensor* child = (VmTensor*)vm->heap.objects[spine.as.ptr]->opaque.ptr;
+            memcpy(shape + rank, child->shape, (size_t)child->n_dims * sizeof(*shape));
+            rank += child->n_dims;
+            break;
+        }
         int len = vm_tensor_collection_len(vm, spine);
         if (len < 0) break;                       /* scalar leaf: shape ends */
-        if (len == 0) { if (err) *err = "tensor: empty nested collection"; return NULL; }
         if (rank >= depth) break;
         shape[rank++] = len;
+        if (len == 0) break;
         spine = vm_tensor_collection_at(vm, spine, 0);
     }
     if (rank == 0) { if (err) *err = "tensor: not a collection"; return NULL; }
@@ -5217,9 +5247,9 @@ static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
     VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, rank);
     if (!t) { if (err) *err = "tensor: allocation failed"; return NULL; }
     int64_t pos = 0;
-    if (vm_tensor_nested_fill(vm, v, shape, 0, rank, t, &pos, t->total) != 0
-        || pos != t->total) {
-        if (err) *err = "tensor: nested collection is not rectangular";
+    const char* mismatch = vm_tensor_nested_fill(vm, v, shape, 0, rank, t, &pos);
+    if (mismatch || pos != t->total) {
+        if (err) *err = mismatch ? mismatch : "tensor: nested collection is not rectangular";
         return NULL;
     }
     return t;
@@ -9045,6 +9075,53 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
 }
 
+static void vm_reduction_type_error(VM* vm, const char* op, const char* expected, Value v) {
+    const char* actual = eshkol_type_name_spelling(vm_value_type_name_id(vm, v));
+    if (v.type == VAL_FLOAT) actual = "double";
+    else if (v.type == VAL_BIGNUM) actual = "bignum";
+    else if (v.type == VAL_CHAR) actual = "character";
+    char msg[192];
+    snprintf(msg, sizeof msg, "Type error in %s: expected %s, got %s", op, expected, actual);
+    vm_raise_error_msg(vm, msg);
+}
+
+static VmTensor* vm_seeded_reduction_operand(VM* vm, Value v, const char* op) {
+    VmTensor* t;
+    if (v.type == VAL_PAIR || v.type == VAL_VECTOR) {
+        const char* err = NULL;
+        t = vm_tensor_from_nested(vm, v, &err);
+        if (!t) {
+            if (err && strcmp(err, "tensor: allocation failed") == 0) {
+                vm_raise_error_msg(vm, "tensor-reduce: reduction failed");
+                return NULL;
+            }
+            if (err && strncmp(err, "tensor: nested ", 15) == 0) {
+                vm_raise_error_msg(vm, err);
+                return NULL;
+            }
+            const char* expected = v.type == VAL_VECTOR ? "tensor or numeric vector"
+                : "tensor, numeric vector, or list of numbers";
+            vm_reduction_type_error(vm, op, expected, v);
+            return NULL;
+        }
+    } else if (v.type == VAL_TENSOR) {
+        t = vm_tensor_operand_carrier(vm, v, op);
+        if (!t) return NULL;
+    } else {
+        vm_reduction_type_error(vm, op, "tensor", v);
+        return NULL;
+    }
+    if (t->dual_data || t->dtype == VM_TENSOR_DTYPE_DUAL) {
+        char msg[256];
+        snprintf(msg, sizeof msg, "%s: a forward-mode derivative cannot pass through this tensor "
+                 "operation (it has no rule for a tensor of dual numbers); differentiate with "
+                 "gradient or restructure the computation", op);
+        vm_raise_error_msg(vm, msg);
+        return NULL;
+    }
+    return t;
+}
+
 typedef int64_t (*VmSqliteOpenFn)(const char*);
 typedef void (*VmSqliteCloseFn)(int64_t);
 typedef int64_t (*VmSqlitePrepareFn)(int64_t, const char*);
@@ -12498,6 +12575,53 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
         }
+        VM_PUSH_TENSOR(vm, out);
+        break;
+    }
+    case VM_NATIVE_SEEDED_REDUCE_ALL:
+    case VM_NATIVE_SEEDED_REDUCE_AXIS: {
+        int with_axis = fid == VM_NATIVE_SEEDED_REDUCE_AXIS;
+        Value op = vm_pop(vm);
+        Value dim = with_axis ? vm_pop(vm) : NIL_VAL;
+        Value initial = vm_pop(vm);
+        Value input = vm_pop(vm);
+        const char* name = with_axis ? "tensor-reduce" : "tensor-reduce-all";
+        if (op.type != VAL_INT || op.as.i < VM_REDUCE_SUM || op.as.i > VM_REDUCE_PROD) {
+            vm_raise_error_msg(vm, "tensor-reduce: invalid reduction operation");
+            break;
+        }
+        VmTensor* t = vm_seeded_reduction_operand(vm, input, name);
+        if (!t) break;
+        double seed;
+        if (initial.type == VAL_DUAL || initial.type == VAL_HYPER_DUAL ||
+            !vm_tensor_slot_value(vm, initial, &seed)) {
+            vm_raise_error_msg(vm, "tensor-reduce: expected a real initial value");
+            break;
+        }
+        VmReduceOp reducer = (VmReduceOp)op.as.i;
+        if (!with_axis) {
+            vm_push(vm, FLOAT_VAL(vm_seeded_reduce_all(t, seed, reducer)));
+            break;
+        }
+        if (dim.type != VAL_INT) {
+            vm_reduction_type_error(vm, name, "integer axis", dim);
+            break;
+        }
+        int64_t axis = dim.as.i;
+        if (axis < 0) axis += t->n_dims;
+        if (axis < 0 || axis >= t->n_dims) {
+            char msg[144];
+            snprintf(msg, sizeof msg, "%s: axis %lld out of range for rank-%d tensor",
+                     name, (long long)axis, t->n_dims);
+            vm_raise_error_msg(vm, msg);
+            break;
+        }
+        if (reducer == VM_REDUCE_MEAN && t->shape[axis] == 0) {
+            vm_raise_error_msg(vm, "tensor-reduce: cannot reduce a zero-length axis");
+            break;
+        }
+        VmTensor* out = vm_seeded_reduce_axis(&vm->heap.regions, t, (int)axis, seed, reducer);
+        if (!out) { vm_raise_error_msg(vm, "tensor-reduce: reduction failed"); break; }
         VM_PUSH_TENSOR(vm, out);
         break;
     }

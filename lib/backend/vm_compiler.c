@@ -966,6 +966,41 @@ static int gpu_reduce_native_id(Node* fn) {
 }
 
 
+/* The native forms dispatch on the reducer's source name. The tensor, seed
+ * and optional axis are ordinary expressions, evaluated once in that order. */
+static void compile_form_seeded_reduction(FuncChunk* c, Node* node, int allows_axis) {
+    int argc = node->n_children - 1;
+    int with_axis = allows_axis && argc == 4;
+    if (argc != 3 && !with_axis) {
+        vm_compile_error(allows_axis ? ESHKOL_ARITY_MISMATCH_PREFIX "tensor-reduce requires 3 or 4 arguments"
+                                     : ESHKOL_ARITY_MISMATCH_PREFIX "tensor-reduce-all requires 3 arguments", NULL);
+        return;
+    }
+    Node* reducer = node->children[2];
+    if (reducer->type != N_SYMBOL) {
+        vm_compile_error("tensor-reduce currently only supports simple function names", NULL);
+        return;
+    }
+    VmReduceOp op = VM_REDUCE_SUM;
+    if (is_sym(reducer, "*")) op = VM_REDUCE_PROD;
+    else if (is_sym(reducer, "min")) op = VM_REDUCE_MIN;
+    else if (is_sym(reducer, "max")) op = VM_REDUCE_MAX;
+    else if (with_axis && is_sym(reducer, "mean")) op = VM_REDUCE_MEAN;
+
+    int saved_locals = c->n_locals;
+    compile_expr(c, node->children[1], 0);
+    add_operand_local(c);
+    compile_expr(c, node->children[3], 0);
+    if (with_axis) {
+        add_operand_local(c);
+        compile_expr(c, node->children[4], 0);
+    }
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(op)));
+    chunk_emit(c, OP_NATIVE_CALL, with_axis ? VM_NATIVE_SEEDED_REDUCE_AXIS
+                                            : VM_NATIVE_SEEDED_REDUCE_ALL);
+    c->n_locals = saved_locals;
+}
+
 /* ═══ Extracted compilation sub-functions ═══ */
 
 /** @brief Compile a `(cond clause...)` special form: chains
@@ -5439,6 +5474,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    if (is_sym(head, "tensor-reduce")) {
+        compile_form_seeded_reduction(c, node, 1);
+        return;
+    }
+    if (is_sym(head, "tensor-reduce-all")) {
+        compile_form_seeded_reduction(c, node, 0);
+        return;
+    }
     if (is_sym(head, "gpu-matmul") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);

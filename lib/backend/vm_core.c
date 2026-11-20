@@ -5,6 +5,8 @@
  * argument contract so existing ESKB modules cannot consume an unrelated slot. */
 #define VM_NATIVE_ERROR_WITH_IRRITANTS 2231
 #define VM_NATIVE_APPLY_PACKED 2232
+#define VM_NATIVE_SEEDED_REDUCE_ALL 481
+#define VM_NATIVE_SEEDED_REDUCE_AXIS 482
 
 /* Pack a function's declared fixed arity into bits 32..40 of its func-PC
  * constant. The low 32 bits remain the code offset, so the metadata survives

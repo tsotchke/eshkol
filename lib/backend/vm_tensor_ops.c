@@ -358,8 +358,8 @@ typedef enum {
  *        prod). Output shape has the reduced axis removed; a 1D input
  *        reduces to a 1-element tensor rather than a 0-dim one.
  */
-static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
-                                  int axis, VmReduceOp op) {
+static VmTensor* vm_tensor_reduce_axis(VmRegionStack* rs, const VmTensor* t,
+                                       int axis, VmReduceOp op, int use_first_extremum) {
     if (!t) return NULL;
     if (axis < 0) axis += t->n_dims;
     if (axis < 0 || axis >= t->n_dims) return NULL;
@@ -425,10 +425,12 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
                 out->data[out_flat] += val;
                 break;
             case VM_REDUCE_MAX:
-                if (val > out->data[out_flat]) out->data[out_flat] = val;
+                if ((use_first_extremum && t_indices[axis] == 0) || val > out->data[out_flat])
+                    out->data[out_flat] = val;
                 break;
             case VM_REDUCE_MIN:
-                if (val < out->data[out_flat]) out->data[out_flat] = val;
+                if ((use_first_extremum && t_indices[axis] == 0) || val < out->data[out_flat])
+                    out->data[out_flat] = val;
                 break;
             case VM_REDUCE_PROD:
                 out->data[out_flat] *= val;
@@ -444,6 +446,39 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
         }
     }
 
+    return out;
+}
+
+static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t, int axis, VmReduceOp op) {
+    return vm_tensor_reduce_axis(rs, t, axis, op, 0);
+}
+
+/* LLVM's ordered comparison selects the element on a tie or unordered
+ * comparison. In particular this preserves the sign of the selected zero. */
+static double vm_seeded_combine(double acc, double element, VmReduceOp op) {
+    switch (op) {
+        case VM_REDUCE_PROD: return acc * element;
+        case VM_REDUCE_MIN:  return acc < element ? acc : element;
+        case VM_REDUCE_MAX:  return acc > element ? acc : element;
+        default:             return acc + element;
+    }
+}
+
+static double vm_seeded_reduce_all(const VmTensor* t, double seed, VmReduceOp op) {
+    for (int64_t i = 0; i < t->total; i++)
+        seed = vm_seeded_combine(seed, t->data[i], op);
+    return seed;
+}
+
+static VmTensor* vm_seeded_reduce_axis(VmRegionStack* rs, const VmTensor* t,
+                                        int axis, double seed, VmReduceOp op) {
+    VmTensor* out = vm_tensor_reduce_axis(rs, t, axis, op, 1);
+    if (!out) return NULL;
+    out->dtype = VM_TENSOR_DTYPE_F64;
+    int64_t length = t->shape[axis];
+    if (op == VM_REDUCE_MEAN) seed /= (double)length;
+    for (int64_t i = 0; i < out->total; i++)
+        out->data[i] = length ? vm_seeded_combine(seed, out->data[i], op) : seed;
     return out;
 }
 
