@@ -1498,6 +1498,12 @@ jobs:
               zx_moonlab_crosscheck_test.esk)
                 grep -q 'zx_moonlab_crosscheck_test: PASS' <<<"$output"
                 ;;
+              circuit_export_test.esk)
+                grep -q 'circuit_export_test: 50 checks, 0 failed' <<<"$output"
+                ;;
+              qaoa_moonlab_crosscheck_test.esk)
+                grep -q 'qaoa_moonlab_crosscheck_test: PASS' <<<"$output"
+                ;;
               *)
                 echo "Unhandled quantum test: $test" >&2
                 exit 1
