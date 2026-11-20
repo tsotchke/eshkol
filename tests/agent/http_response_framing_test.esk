@@ -1,0 +1,44 @@
+(require stdlib)
+
+(define origin (get-environment-variable "ESHKOL_HTTP_RESPONSE_ORIGIN"))
+(define (fetch method path)
+  (http-request method (string-append origin "/" path) "" "" 2000))
+
+(define (check label value)
+  (if (not value) (error (string-append "FAIL: " label)) #t))
+
+(define (refusal path)
+  (call-with-current-continuation
+    (lambda (return)
+      (with-exception-handler
+        (lambda (condition) (return (error-object-message condition)))
+        (lambda () (fetch "GET" path) #f)))))
+
+(define fixed (fetch "GET" "length"))
+(check "final status" (= 200 (car fixed)))
+(check "final header block"
+       (string=? "HTTP/1.1 200 OK\r\ncOnTeNt-LeNgTh: 3" (cadr fixed)))
+(check "binary body byte count" (= 3 (string-byte-length (caddr fixed))))
+(check "exact binary body"
+       (string=? (string-append "a" (string (integer->char 0)) "b") (caddr fixed)))
+(define chunks (fetch "GET" "chunks"))
+(check "decoded chunks" (string=? "Wikipedia" (caddr chunks)))
+(check "trailers separate from headers"
+       (string=? "HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked" (cadr chunks)))
+(check "close-delimited" (string=? "closed" (caddr (fetch "GET" "close"))))
+(check "empty body" (string=? "" (caddr (fetch "GET" "zero"))))
+(check "HEAD metadata" (string=? "" (caddr (fetch "HEAD" "head"))))
+(check "304 metadata" (string=? "" (caddr (fetch "GET" "cached"))))
+(check "body larger than 64 KiB" (= 65537 (string-byte-length (caddr (fetch "GET" "large")))))
+(check "exact metadata limit" (string=? "k" (caddr (fetch "GET" "metadata-exact"))))
+(check "exact body limit" (= 10485760 (string-byte-length (caddr (fetch "GET" "close-exact")))))
+(for-each (lambda (path) (check path (string? (refusal path))))
+          '("short" "invalid-size" "overflow" "duplicate" "list" "both" "coding"
+            "bad-status" "bad-field" "bare-lf" "chunk-size" "chunk-short"
+            "chunk-ending" "chunk-extension" "trailer" "trailer-eof"
+            "close-timeout"))
+(for-each (lambda (path) (check path (string=? "http-request: response metadata limit" (refusal path))))
+          '("header-limit" "trailer-limit"))
+(for-each (lambda (path) (check path (string=? "http-request: response body limit" (refusal path))))
+          '("body-limit" "chunk-limit" "close-limit"))
+(display "HTTP-RESPONSE-FRAMING OK") (newline)

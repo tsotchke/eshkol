@@ -1,5 +1,8 @@
 #include "../../inc/eshkol/core/number_syntax.h"
 #include "../../inc/eshkol/core/http_syntax.h"
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+#include "../../inc/eshkol/core/http_response.h"
+#endif
 #include "../../inc/eshkol/core/websocket_handshake.h"
 #include <eshkol/core/linear_solve_portable.h>
 #include <eshkol/core/tensor_inverse_checked.h>
@@ -15321,37 +15324,20 @@ tensor_inverse_done:
                     ok = sent == body_len;
                 }
                 if (ok) {
-                    int cap = 65536;
-                    char* response = (char*)malloc((size_t)cap + 1);
-                    if (response) {
-                        int total = 0;
-                        while (total < cap) {
-                            ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
-                            if (n <= 0) break;
-                            total += (int)n;
-                        }
-                        response[total] = '\0';
-                        close(fd);
-                        int status = 0;
-                        (void)sscanf(response, "HTTP/%*s %d", &status);
-                        char* body_start = strstr(response, "\r\n\r\n");
-                        int header_len = total;
-                        int body_offset = total;
-                        if (body_start) {
-                            body_start += 4;
-                            body_offset = (int)(body_start - response);
-                            header_len = body_offset - 4;
-                        } else {
-                            body_start = response + total;
-                        }
-                        Value result = vm_http_response_value(vm, status,
-                                                              response, header_len,
-                                                              body_start,
-                                                              total - body_offset);
-                        free(response);
-                        vm_push(vm, result);
+                    eshkol_http_response_reader response = {0};
+                    const char *err = eshkol_http_read_response(&response, fd, method_text);
+                    close(fd);
+                    if (err) {
+                        free(response.wire);
+                        vm_raise_error_msg(vm, err);
                         break;
                     }
+                    Value result = vm_http_response_value(
+                        vm, response.status, response.wire + response.head, response.head_len,
+                        response.wire + response.body, response.body_len);
+                    free(response.wire);
+                    vm_push(vm, result);
+                    break;
                 }
                 close(fd);
             }

@@ -14960,6 +14960,35 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(response_fixture "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/http_response_fixture.py")
+    set(response_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/http_response_framing_test.esk")
+    if(TARGET eshkol-run)
+        add_test(NAME http_response_framing_jit
+            COMMAND "${Python3_EXECUTABLE}" "${response_fixture}"
+                $<TARGET_FILE:eshkol-run> -r "${response_test}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME http_response_framing_aot
+            COMMAND sh -c
+                [=["$1" -O0 -o "$2" "$3" "-L$4" && "$5" "$6" "$2"]=]
+                sh $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}/http_response_framing_aot"
+                "${response_test}" "${CMAKE_CURRENT_BINARY_DIR}" "${Python3_EXECUTABLE}" "${response_fixture}")
+    endif()
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(NAME http_response_framing_vm
+            COMMAND "${Python3_EXECUTABLE}" "${response_fixture}"
+                $<TARGET_FILE:eshkol-vm-standalone-test> "${response_test}")
+    endif()
+    foreach(engine jit aot vm)
+        if(TEST http_response_framing_${engine})
+            set_tests_properties(http_response_framing_${engine} PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "HTTP-RESPONSE-FRAMING OK"
+                FAIL_REGULAR_EXPRESSION "FAIL:|Traceback|LLVM module verification failed|ERROR: VM terminated|fatal signal")
+        endif()
+    endforeach()
+endif()
+
 # The request grammar as a program sees it: hostile methods, URLs, header
 # lines and reserved framing fields driven through (http-request ...) and
 # (websocket-connect ...), asserting the refusal is a catchable Eshkol error.

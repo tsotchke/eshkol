@@ -22,6 +22,9 @@ extern size_t arena_get_used_memory(const void* a);
 #include "model_io_atomic.h"
 #include "eshkol/eshkol.h"
 #include "eshkol/core/http_syntax.h"
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+#include "eshkol/core/http_response.h"
+#endif
 #include "eshkol/core/websocket_handshake.h"
 
 #ifndef _WIN32
@@ -4620,35 +4623,19 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
         ok = send(fd, body_data, body_len, 0) == (ssize_t)body_len;
 
     if (ok) {
-        int cap = 65536;
-        char* response = (char*)malloc((size_t)cap + 1);
-        if (response) {
-            int total = 0;
-            while (total < cap) {
-                ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
-                if (n <= 0) break;
-                total += (int)n;
-            }
-            response[total] = '\0';
-            close(fd);
-            int status = 0;
-            (void)sscanf(response, "HTTP/%*s %d", &status);
-            char* body_start = strstr(response, "\r\n\r\n");
-            int header_len = total;
-            int body_offset = total;
-            if (body_start) {
-                body_start += 4;
-                body_offset = (int)(body_start - response);
-                header_len = body_offset - 4;
-            } else {
-                body_start = response + total;
-            }
-            eshkol_sysbuiltin_value_t result =
-                sys_http_response_value(status, response, (size_t)header_len,
-                                        body_start, (size_t)(total - body_offset));
-            free(response);
-            return result;
+        eshkol_http_response_reader response = {0};
+        const char *err = eshkol_http_read_response(&response, fd, method);
+        close(fd);
+        if (err) {
+            free(response.wire);
+            eshkol_runtime_fatal(SYS_PROTOCOL_EXC_ERROR, "%s", err);
+            return sys_make_bool(0);
         }
+        eshkol_sysbuiltin_value_t result = sys_http_response_value(
+            response.status, response.wire + response.head, response.head_len,
+            response.wire + response.body, response.body_len);
+        free(response.wire);
+        return result;
     }
     close(fd);
 #else

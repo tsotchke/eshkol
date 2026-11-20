@@ -87,25 +87,27 @@ socket client, which parses a narrower set of URLs of its own.
 | `http-stream-close` | `(http-stream-close stream)` |
 | `sse-event-type` / `sse-event-data` / `sse-event-free` | event accessors |
 
-### What the response side does, and does not, do
+### Response framing
 
-The validation above is **request-side**. On the response side the two client
-layers differ, and a program should know which one it is on.
+The agent clients use libcurl, NSURLSession or WinHTTP to parse responses.
 
-- The agent clients on libcurl, NSURLSession and WinHTTP parse responses
-  through those libraries: `Content-Length`, chunked transfer coding,
-  duplicate and conflicting framing fields and truncation are the transport's
-  business and are handled there.
-- The raw socket client behind the core `(http-request ...)` builtin and the
-  bytecode VM reads whatever arrives within a 64 KiB cap and returns it. It
-  does not consult `Content-Length`, does not implement chunked decoding — a
-  chunked response is returned with its chunk-size lines inside the body — and
-  cannot distinguish a response truncated by a reset from a complete one. Its
-  allocation is bounded, so this is a completeness limit rather than a safety
-  one, but a program parsing those bytes must not assume a framed message.
+The POSIX raw socket builtin `(http-request method url headers body timeout-ms)`
+returns `(status headers body)` on the JIT, AOT and bytecode VM. The header
+string starts with the final HTTP/1.x status line and ends before the blank
+line. The body contains the decoded payload bytes, including embedded NULs.
 
-Response-side grammar for the raw socket client is its own piece of work and
-is not part of this client today.
+The reader skips interim responses and reads exactly one final response. A
+single decimal `Content-Length` declares an exact byte count. HTTP/1.1
+`Transfer-Encoding: chunked` supports hex sizes, extensions and trailer fields.
+Trailers are validated and consumed separately from the returned headers.
+With neither framing field, the body ends at orderly socket EOF. HEAD, 204,
+304, protocol switching and successful CONNECT responses end at the headers.
+
+The client allows 10 MiB of decoded body and 64 KiB of framing metadata in
+total, including interim headers, chunk lines, delimiters and trailers. A
+malformed status or field, repeated or conflicting framing fields, unsupported
+transfer coding, incomplete message, read error or exceeded size limit raises
+a catchable Eshkol condition. Connection establishment failure returns `#f`.
 
 ### Implementation status
 
