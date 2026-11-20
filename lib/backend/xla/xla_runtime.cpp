@@ -355,7 +355,10 @@ extern "C" void* eshkol_xla_reduce(
     int64_t axis,
     int64_t op_code) {
 
-    if (total_elements <= 0 || !data) return nullptr;
+    if (total_elements < 0 || (!data && total_elements > 0)) return nullptr;
+    if (total_elements == 0 && (!shape || axis < 0 || axis >= rank ||
+                                (op_code == 1 && shape[axis] == 0)))
+        return nullptr;
 
     // Ensure GPU subsystem is initialized before checking dispatch
     ensure_gpu_initialized();
@@ -447,7 +450,7 @@ extern "C" void* eshkol_xla_reduce(
     double* out = reinterpret_cast<double*>(result->elements);
 
     // Try GPU dispatch for axis-reduce (large tensors)
-    if (eshkol_gpu_should_use(static_cast<size_t>(total_elements)) && op_code >= 0 && op_code <= 4) {
+    if (total_elements > 0 && eshkol_gpu_should_use(static_cast<size_t>(total_elements)) && op_code >= 0 && op_code <= 4) {
         // XLA op codes: SUM=0, MEAN=1, MAX=2, MIN=3, PROD=4
         // GPU op codes: SUM=0, PROD=1, MIN=2, MAX=3, MEAN=4
         static const int xla_to_gpu_reduce[] = {0, 4, 3, 2, 1};

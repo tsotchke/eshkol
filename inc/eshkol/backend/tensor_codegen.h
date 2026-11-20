@@ -1664,6 +1664,9 @@ public:
      */
     llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
                                  const char* op_name);
+    /** Also require a positive extent on the validated axis. */
+    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
+                                 llvm::Value* dims, const char* op_name);
 
     /**
      * Emit a catchable Eshkol error at the current insert point and terminate

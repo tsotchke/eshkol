@@ -356,7 +356,7 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
 
 /** @brief Runtime axis validation for the axis-reduce family (see header).
  *         Emits `eshkol_tensor_axis_checked(axis, rank, op_name)`, which
- *         raises catchably unless rank >= 2 and 0 <= axis < rank, and returns
+ *         raises catchably unless 0 <= axis < rank, and returns
  *         the validated axis. */
 llvm::Value* TensorCodegen::checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
                                             const char* op_name) {
@@ -372,6 +372,16 @@ llvm::Value* TensorCodegen::checkReduceAxis(llvm::Value* axis, llvm::Value* rank
     }
     llvm::Value* name = ctx_.internCString(op_name ? op_name : "tensor-reduce-axis");
     return b.CreateCall(fn, {axis, rank, name}, "reduce_axis_checked");
+}
+
+llvm::Value* TensorCodegen::checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
+                                            llvm::Value* dims, const char* op_name) {
+    auto& b = ctx_.builder();
+    llvm::Value* checked = checkReduceAxis(axis, rank, op_name);
+    llvm::Value* length = b.CreateLoad(ctx_.int64Type(), b.CreateGEP(ctx_.int64Type(), dims, checked));
+    emitConditionGuard(b.CreateICmpSGT(length, b.getInt64(0)),
+        "tensor-reduce: cannot reduce a zero-length axis", "reduce_axis_length");
+    return checked;
 }
 
 /** @brief Raise a catchable ESHKOL_EXCEPTION_ERROR carrying @p message at the
