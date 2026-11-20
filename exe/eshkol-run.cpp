@@ -10316,6 +10316,12 @@ int main(int argc, char **argv)
         // errors.
         link_args.emplace_back("-framework");
         link_args.emplace_back("Security");
+        // Core Graphics: the window layer in the runtime archive
+        // (lib/platform/window/window_cocoa.m) draws pixel surfaces through
+        // CGImageCreate / CGContextDrawImage, so a program that reaches it
+        // needs the framework on its link line, as the build's own binaries do.
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreGraphics");
 #endif
 
         if (!append_host_runtime_link_args(link_args)) {
