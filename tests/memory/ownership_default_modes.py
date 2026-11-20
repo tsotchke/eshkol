@@ -48,6 +48,29 @@ def accepted():
             raise AssertionError(f"interactive accepted: {checked.stdout}")
 
 
+def loaded_alias():
+    # The owner and its alias live in a loaded file; the loading program moves
+    # the owner and reads the alias. Every engine checks the loaded file as
+    # part of the program that loads it.
+    compiler, vm, repl = (Path(arg).resolve() for arg in sys.argv[1:4])
+    diagnostic = "Use of 'y', which refers to moved value 'x'"
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        env = dict(os.environ, ESHKOL_JIT_CACHE="0", ESHKOL_VM_NO_DISASM="1")
+        (work / "owner.esk").write_text("(define x (owned (list 1 2)))\n(define y (cons x '()))\n")
+        program = work / "program.esk"
+        program.write_text('(load "owner.esk")\n(define z (move x))\n(display (car y))\n')
+        out = work / "compiled"
+        for command in ([compiler, "-n", "-r", program], [compiler, "-n", program, "-o", out],
+                        [vm, program]):
+            result = run(command, work, env)
+            if result.returncode == 0 or diagnostic not in result.stdout or out.exists():
+                raise AssertionError(f"{command}: {result.returncode}\n{result.stdout}")
+        checked = run([repl], work, env, program.read_text())
+        if diagnostic not in checked.stdout:
+            raise AssertionError(f"interactive loaded_alias: {checked.stdout}")
+
+
 def main():
     compiler, vm, repl = (Path(arg).resolve() for arg in sys.argv[1:4])
     case = sys.argv[4]
@@ -96,6 +119,9 @@ def main():
     }.get(case, (None, None))
     if case == "accepted":
         accepted()
+        return
+    if case == "loaded_alias":
+        loaded_alias()
         return
     if source is None:
         raise SystemExit(f"unknown case {case}")
