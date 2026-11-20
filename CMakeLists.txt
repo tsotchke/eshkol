@@ -8384,6 +8384,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     if(NOT WIN32)
+        set(_seeded_reduce_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/seeded_reduce_parity.esk")
+        add_test(NAME seeded_reduce_parity_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${_seeded_reduce_test}" -L${CMAKE_CURRENT_BINARY_DIR})
+        add_test(NAME seeded_reduce_parity_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/seeded_reduce_parity_aot' '${_seeded_reduce_test}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/seeded_reduce_parity_aot'")
+        add_test(NAME seeded_reduce_parity_vm
+            COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_seeded_reduce_test}")
+        set_tests_properties(seeded_reduce_parity_jit seeded_reduce_parity_aot seeded_reduce_parity_vm
+            PROPERTIES TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS seeded tensor reductions"
+                FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal"
+                ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1")
+
+        foreach(_engine IN ITEMS jit aot vm)
+            if(_engine STREQUAL "vm")
+                set(_reduce_runner eshkol-vm-standalone-test)
+            else()
+                set(_reduce_runner eshkol-run)
+            endif()
+            add_test(NAME seeded_reduce_syntax_${_engine}
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/seeded_reduce_syntax.py"
+                    ${_engine} $<TARGET_FILE:${_reduce_runner}> "${CMAKE_CURRENT_BINARY_DIR}")
+            set_tests_properties(seeded_reduce_syntax_${_engine} PROPERTIES
+                TIMEOUT 500 ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1")
+        endforeach()
+
         add_test(NAME site_scalar_hessian_jit
             COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
                 $<TARGET_FILE:eshkol-run> -r

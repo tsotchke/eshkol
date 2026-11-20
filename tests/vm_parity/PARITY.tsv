@@ -858,8 +858,8 @@ tensor-norm	gap	tensor linalg/manipulation fid missing in VM
 tensor-pow	vm-supported	
 tensor-qr	gap	tensor linalg/manipulation fid missing in VM
 tensor-rect-fill!	gap	tensor linalg/manipulation fid missing in VM
-tensor-reduce	gap	tensor linalg/manipulation fid missing in VM
-tensor-reduce-all	gap	tensor linalg/manipulation fid missing in VM
+tensor-reduce	vm-supported	tests/tensor/seeded_reduce_parity.esk
+tensor-reduce-all	vm-supported	tests/tensor/seeded_reduce_parity.esk
 tensor-ref	vm-supported	out-of-range raises the uniform bounds error on the FLAT and the multi-dimensional path (each component checked, not just the flattened offset) and a non-index argument raises instead of fabricating 0.0 (corpus/40_tensor_bounds_contract.esk); #322: multi-dim (tensor-ref t i j ...) via a VM-compiler special form packing trailing indices into a list (native handler already accepts a list index)
 tensor-reshape	vm-supported	
 tensor-save	vm-supported	

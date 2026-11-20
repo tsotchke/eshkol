@@ -1,0 +1,101 @@
+(define (check label ok)
+  (if (not ok)
+      (begin (display "FAIL ") (display label) (newline) (exit 1))))
+
+;; Source locations can precede a type error on native.
+(define (condition-ends-with? e expected)
+  (and (error-object? e)
+       (let* ((msg (error-object-message e))
+              (end (string-length msg))
+              (start (- end (string-length expected))))
+         (and (>= start 0) (string=? (substring msg start end) expected)))))
+
+(define m (reshape (tensor 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define empty (make-tensor '(0 3) 1.0))
+(define (pair-is? t a b)
+  (and (equal? (tensor-shape t) '(2))
+       (= (tensor-ref t 0) a) (= (tensor-ref t 1) b)))
+(define (three-is? t a b c)
+  (and (equal? (tensor-shape t) '(3))
+       (= (tensor-ref t 0) a) (= (tensor-ref t 1) b) (= (tensor-ref t 2) c)))
+
+(check "full reduction" (= (tensor-reduce m + 10) 31.0))
+(check "full product" (= (tensor-reduce-all m * 2) 1440.0))
+(check "full extrema" (and (= (tensor-reduce-all m min -3) -3.0)
+                           (= (tensor-reduce-all m max 10) 10.0)))
+(check "full vector" (= (tensor-reduce-all (vector 1.0 2.0) + 1/2) 3.5))
+(check "full list" (= (tensor-reduce '(2 3 4) * 2) 48.0))
+(check "full mean name uses sum" (= (tensor-reduce-all m mean 2) 23.0))
+(check "named sum fallback" (= (tensor-reduce m - 1) 22.0))
+(check "empty vector" (= (tensor-reduce-all (vector) * 11) 11))
+(check "nested list" (pair-is? (tensor-reduce '((1 2) (3 4)) + 1 1) 4 8))
+(check "rank one" (equal? (tensor-shape (tensor-reduce #(1 2 3) + 4 -1)) '(1)))
+(check "rank one value" (= (tensor-ref (tensor-reduce #(1 2 3) + 4 -1) 0) 10.0))
+(check "axis zero" (three-is? (tensor-reduce m + 10 -2) 15 17 19))
+(check "axis product" (pair-is? (tensor-reduce m * 2 -1) 12 240))
+(check "axis minimum" (pair-is? (tensor-reduce m min 2 1) 1 2))
+(check "axis maximum" (pair-is? (tensor-reduce m max 5 1) 5 6))
+(check "axis mean" (pair-is? (tensor-reduce m mean 6 1) 4 7))
+
+(define cube (reshape (tensor 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) 2 2 2))
+(define middle (tensor-reduce cube + 1 1))
+(check "interior axis" (and (equal? (tensor-shape middle) '(2 2))
+                            (= (tensor-ref middle 0 0) 5)
+                            (= (tensor-ref middle 1 1) 15)))
+
+(check "leading unordered extremum"
+       (nan? (tensor-ref (tensor-reduce (tensor +nan.0 2.0) max 9.0 0) 0)))
+(check "ordered whole-tensor comparison"
+       (= (tensor-reduce-all (tensor +nan.0 2.0) max 9.0) 2.0))
+(check "nested tensor shape"
+       (let ((r (tensor-reduce (list m m) + 1 0)))
+         (and (equal? (tensor-shape r) '(2 3))
+              (= (tensor-ref r 0 0) 3.0) (= (tensor-ref r 1 2) 13.0))))
+
+(check "empty full" (= (tensor-reduce-all empty min 7.5) 7.5))
+(check "empty sum" (three-is? (tensor-reduce empty + 7.5 0) 7.5 7.5 7.5))
+(check "empty product" (three-is? (tensor-reduce empty * -2 0) -2 -2 -2))
+(check "empty minimum" (three-is? (tensor-reduce empty min 9 0) 9 9 9))
+(check "empty maximum" (three-is? (tensor-reduce empty max -8 0) -8 -8 -8))
+(check "no slices" (equal? (tensor-shape (tensor-reduce empty mean 7 1)) '(0)))
+
+(define (bad-axis? axis expected)
+  (guard (e (#t (condition-ends-with? e expected)))
+    (tensor-reduce m + 1 axis) #f))
+(check "false axis" (bad-axis? #f "Type error in tensor-reduce: expected integer axis, got boolean"))
+(check "double axis" (bad-axis? 1.0 "Type error in tensor-reduce: expected integer axis, got double"))
+(check "rational axis" (bad-axis? 1/2 "Type error in tensor-reduce: expected integer axis, got rational"))
+(check "upper bound" (bad-axis? 2 "tensor-reduce: axis 2 out of range for rank-2 tensor"))
+(check "negative bound" (bad-axis? -3 "tensor-reduce: axis -1 out of range for rank-2 tensor"))
+(check "wide axis" (bad-axis? 4294967296 "tensor-reduce: axis 4294967296 out of range for rank-2 tensor"))
+(check "literal axis"
+       (guard (e (#t (condition-ends-with? e "Type error in tensor-reduce: expected integer axis, got double")))
+         (tensor-reduce m + 0 1.5) #f))
+(check "improper list"
+       (guard (e (#t (condition-ends-with? e "expected tensor, numeric vector, or list of numbers, got pair")))
+         (tensor-reduce-all (cons 1 2) + 0) #f))
+(check "unrepresentable output"
+       (guard (e (#t (condition-ends-with? e "tensor-reduce: reduction failed")))
+         (tensor-reduce (make-tensor '(0 9223372036854775807 2) 0.0) + 1 0) #f))
+(check "empty mean"
+       (guard (e (#t (condition-ends-with? e "tensor-reduce: cannot reduce a zero-length axis")))
+         (tensor-reduce empty mean 3 0) #f))
+(check "operand"
+       (guard (e (#t (condition-ends-with? e "Type error in tensor-reduce-all: expected tensor, got string")))
+         (tensor-reduce-all "x" + 0) #f))
+(check "seed"
+       (guard (e (#t (condition-ends-with? e "tensor-reduce: expected a real initial value")))
+         (tensor-reduce m + "x" 0) #f))
+
+(check "accelerator-sized full reduction"
+       (= (tensor-reduce-all (make-tensor '(120000) 1.0) + 7.0) 120007.0))
+(check "full floating-point order"
+       (= (tensor-reduce-all (tensor -1e16 1.0) + 1e16) 1.0))
+(check "axis floating-point order"
+       (= (tensor-ref (tensor-reduce (tensor -1e16 1.0) + 1e16 0) 0) 0.0))
+
+(define seed-count 0)
+(define (next-seed) (set! seed-count (+ seed-count 1)) 5)
+(check "slice seed evaluation" (pair-is? (tensor-reduce m + (next-seed) 1) 11 20))
+(check "single evaluation" (= seed-count 1))
+(display "PASS seeded tensor reductions") (newline)

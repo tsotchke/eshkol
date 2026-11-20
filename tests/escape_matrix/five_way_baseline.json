@@ -298,8 +298,6 @@
     "vm_missing::tensor-lu",
     "vm_missing::tensor-qr",
     "vm_missing::tensor-rect-fill!",
-    "vm_missing::tensor-reduce",
-    "vm_missing::tensor-reduce-all",
     "vm_missing::tensor-set",
     "vm_missing::tensor-solve",
     "vm_missing::tensor-std",

@@ -1100,19 +1100,29 @@ Sum or mean of all elements.
 
 ---
 
-#### `tensor-reduce`
-**Syntax**: `(tensor-reduce tensor func init)` or `(tensor-reduce tensor func init dim)`
+#### `tensor-reduce` and `tensor-reduce-all`
 
-Reduces tensor with custom function.
-
-**Examples**:
 ```scheme
-(tensor-reduce #(1 2 3 4) + 0)   ; => 10
-(tensor-reduce matrix max -inf 0) ; Row-wise maximum
+(tensor-reduce t proc init)
+(tensor-reduce-all t proc init)
+(tensor-reduce t proc init axis)
 ```
 
-**Type**: Generalized reduction  
-**Implementation**: [`tensorReduceAll()`](../lib/backend/tensor_codegen.cpp), [`tensorReduceWithDim()`](../lib/backend/tensor_codegen.cpp)
+On the bytecode VM, JIT and AOT, the three-argument forms reduce all elements to a number.
+The four-argument form reduces each slice independently and returns a tensor with the
+selected axis removed. Reducing the sole axis of a vector produces a tensor of shape
+`(1)`. An axis must be an integer in `[-rank, rank)`, with `-1` selecting the last axis.
+
+The reducer is a simple name. Use `+`, `*`, `min` or `max` with a real initial value.
+Each empty slice returns that initial value. The axis form also accepts `mean`, which
+adds the initial value to the sum and divides by the slice length. A zero-length mean
+axis and an invalid axis raise catchable conditions.
+
+```scheme
+(tensor-reduce #(1 2 3 4) + 10)                 ; => 20
+(tensor-reduce-all #(2 3 4) * 2)                ; => 48
+(tensor-reduce (reshape #(1 2 3 4) 2 2) + 5 -1) ; => #(8 12)
+```
 
 ---
 

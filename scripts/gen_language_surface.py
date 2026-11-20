@@ -815,6 +815,20 @@ def extract_stdlib_surface(repo=REPO):
 VM_PRELUDE_H = os.path.join(REPO, "lib", "backend", "vm_prelude_source.h")
 
 
+def extract_vm_compiler_intrinsics():
+    """Unconditional named calls delegated to a VM form compiler.
+
+    A recognizer that only handles a particular operand or refuses a name
+    does not establish general support for that builtin.
+    """
+    path = os.path.join(REPO, "lib", "backend", "vm_compiler.c")
+    with open(path, encoding="utf-8") as fh:
+        source = _strip_c_comments(fh.read())
+    return set(re.findall(
+        r'if\s*\(is_sym\(head,\s*"([^"]+)"\)\)\s*\{\s*'
+        r'compile_form_\w+\(c,\s*node(?:,\s*\w+)*\);\s*return;\s*\}', source))
+
+
 def extract_vm_prelude_defs():
     """Top-level names the VM prelude defines -- the VM's second vehicle.
 
@@ -1116,6 +1130,7 @@ def build_manifest():
     stdlib = stdlib_surface["names"]
     stdlib_closure = stdlib_surface["closure_names"]
     vm_prelude = extract_vm_prelude_defs()
+    vm_intrinsics = extract_vm_compiler_intrinsics()
 
     # AOT-dispatched names that are also declared special forms are syntax, not
     # builtins — keep them out of the builtin set (they appear under forms).
@@ -1140,7 +1155,7 @@ def build_manifest():
     builtins = []
     for name in names:
         member_names = [name] + aliases_by_canonical.get(name, [])
-        in_v = any(m in vm or m in vm_prelude for m in member_names)
+        in_v = any(m in vm or m in vm_prelude or m in vm_intrinsics for m in member_names)
         in_a = any(m in aot_builtins for m in member_names)
         ids = sorted(set().union(*(set(vm.get(m, {}).get("ids", []))
                                    for m in member_names)))
