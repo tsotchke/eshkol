@@ -300,6 +300,7 @@ struct Token {
     // the order in which it was read. A list's opening `(` sits at the
     // index just before its head token.
     uint32_t index = 0;
+    std::vector<eshkol::InterpolationSpan> interpolations{};
 };
 
 /**
@@ -349,9 +350,6 @@ static void trace_parser_reject(uint32_t line,
     eshkol_language_coverage_reject(
         g_parse_filename.c_str(), line, column, operation, name);
 }
-
-static constexpr char kStringInterpolationStart = '\x1e';
-static constexpr char kStringInterpolationEnd = '\x1f';
 
 class SchemeTokenizer {
 private:
@@ -670,6 +668,8 @@ private:
         column_++;
         std::string value;
 
+        std::vector<eshkol::InterpolationSpan> interpolations;
+
         // Append a Unicode codepoint as UTF-8 to value.
         auto append_utf8 = [&value](uint32_t cp) {
             if (cp < 0x80) {
@@ -906,9 +906,11 @@ private:
                     return {TOKEN_STRING, value, start, tok_line, tok_col};
                 }
 
-                value += kStringInterpolationStart;
+                const size_t begin = value.size();
+                value += "~{";
                 value += expr_source;
-                value += kStringInterpolationEnd;
+                value += '}';
+                interpolations.push_back({begin, value.size()});
 
                 pos++; // skip closing interpolation brace
                 column_++;
@@ -928,7 +930,9 @@ private:
             pos++; // skip closing quote
             column_++;
         }
-        return {TOKEN_STRING, value, start, tok_line, tok_col};
+        Token token{TOKEN_STRING, std::move(value), start, tok_line, tok_col};
+        token.interpolations = std::move(interpolations);
+        return token;
     }
     
     Token readNumber() {
@@ -1382,6 +1386,7 @@ static eshkol::SyntaxDatum syntax_atom_from_token(const Token& token) {
     datum.token_type = static_cast<int>(token.type);
     datum.text = token.value;
     datum.verbatim = token.verbatim;
+    datum.interpolations = token.interpolations;
     datum.line = token.line;
     datum.column = token.column;
     return datum;
@@ -1468,6 +1473,7 @@ static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Tok
     Token token{static_cast<TokenType>(datum.token_type), datum.text, 0,
                 datum.line, datum.column};
     token.verbatim = datum.verbatim;
+    token.interpolations = datum.interpolations;
     switch (datum.kind) {
         case Kind::Symbol:
             token.type = TOKEN_SYMBOL;
@@ -1542,6 +1548,7 @@ static eshkol::SyntaxDatum effect_syn_to_datum(const eshkol_syn* node, uint32_t 
                    node->kind == ESHKOL_SYN_PREFIX || node->kind == ESHKOL_SYN_SYMBOL)) {
         datum.token_type = origin->token_type;
         datum.verbatim = origin->verbatim;
+        datum.interpolations = origin->interpolations;
         datum.text = origin->text;
     }
     datum.line = origin ? origin->line : line;
@@ -1865,63 +1872,34 @@ static ParserTask<eshkol_ast_t> parse_string_interpolation_expr(const Token& tok
  * @brief Converts a (possibly interpolated) string token into its AST
  * representation.
  *
- * String tokens containing embedded expressions are delimited internally
- * by the sentinel bytes kStringInterpolationStart/kStringInterpolationEnd
- * (inserted by the tokenizer). Splits @p token's value on those markers
- * into literal text segments and interpolated-expression segments (each
- * parsed via parse_string_interpolation_expr()), then joins them with a
- * synthesized `(string-append ...)` call. Tokens with no interpolation
- * markers are returned as a plain string-literal AST unchanged. Returns a
- * single string-literal node if only one segment results, or an empty
- * string literal if the token is empty.
+ * The lexer records the boundaries of each source expression. Bytes
+ * between those ranges belong to the string literal.
  *
  * @return AST node for the (possibly concatenated) string, or
  *         ESHKOL_INVALID on an unterminated or malformed interpolation.
  */
 static ParserTask<eshkol_ast_t> parse_interpolated_string_token(const Token& token) {
-    if (token.value.find(kStringInterpolationStart) == std::string::npos) {
+    if (token.interpolations.empty()) {
         co_return make_parser_string_ast(token.value, token.line, token.column);
     }
-
     std::vector<eshkol_ast_t> parts;
-    std::string literal;
-
-    size_t i = 0;
-    while (i < token.value.size()) {
-        if (token.value[i] != kStringInterpolationStart) {
-            literal += token.value[i++];
-            continue;
+    size_t literal_start = 0;
+    for (const auto& span : token.interpolations) {
+        if (span.start > literal_start) {
+            parts.push_back(make_parser_string_ast(
+                token.value.substr(literal_start, span.start - literal_start),
+                token.line, token.column));
         }
-
-        if (!literal.empty()) {
-            parts.push_back(make_parser_string_ast(literal, token.line, token.column));
-            literal.clear();
-        }
-
-        size_t expr_start = i + 1;
-        size_t expr_end = token.value.find(kStringInterpolationEnd, expr_start);
-        if (expr_end == std::string::npos) {
-            PARSE_ERROR_AT(token, "unterminated string interpolation");
-            co_return {.type = ESHKOL_INVALID};
-        }
-
-        eshkol_ast_t formatted =
-            (co_await parse_string_interpolation_expr(token,
-                                            token.value.substr(expr_start,
-                                                               expr_end - expr_start)));
-        if (formatted.type == ESHKOL_INVALID) {
-            co_return formatted;
-        }
+        const size_t expr_start = span.start + 2;
+        auto formatted = co_await parse_string_interpolation_expr(
+            token, token.value.substr(expr_start, span.end - 1 - expr_start));
+        if (formatted.type == ESHKOL_INVALID) co_return formatted;
         parts.push_back(formatted);
-        i = expr_end + 1;
+        literal_start = span.end;
     }
-
-    if (!literal.empty()) {
-        parts.push_back(make_parser_string_ast(literal, token.line, token.column));
-    }
-
-    if (parts.empty()) {
-        co_return make_parser_string_ast("", token.line, token.column);
+    if (literal_start < token.value.size()) {
+        parts.push_back(make_parser_string_ast(token.value.substr(literal_start),
+                                              token.line, token.column));
     }
     if (parts.size() == 1) {
         co_return parts[0];

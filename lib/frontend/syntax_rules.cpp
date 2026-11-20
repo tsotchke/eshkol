@@ -47,8 +47,20 @@ eshkol_syn* to_syn(const SyntaxDatum& datum) {
         return nullptr;
     }
     std::string text = datum.text;
-    if (datum.kind == SyntaxDatum::Kind::Atom)
-        text = std::to_string(datum.token_type) + ":" + datum.text;
+    if (datum.kind == SyntaxDatum::Kind::Atom) {
+        text = std::to_string(datum.token_type);
+        for (const auto& span : datum.interpolations) {
+            text += "/" + std::to_string(span.start) + "-" + std::to_string(span.end);
+        }
+        text += ":";
+        // The shared matcher compares C strings. Encode all literal bytes,
+        // including NUL, independently of the lexer's interpolation ranges.
+        constexpr char hex[] = "0123456789abcdef";
+        for (unsigned char byte : datum.text) {
+            text += hex[byte >> 4];
+            text += hex[byte & 15];
+        }
+    }
     eshkol_syn* node = eshkol_syn_new(kind_of(datum.kind), text.c_str(), &datum);
     if (!node) return nullptr;
     node->dotted = datum.dotted ? 1 : 0;
@@ -73,6 +85,7 @@ SyntaxDatum from_syn(const eshkol_syn* node) {
     if (origin) {
         datum.token_type = origin->token_type;
         datum.verbatim = origin->verbatim;
+        datum.interpolations = origin->interpolations;
         datum.line = origin->line;
         datum.column = origin->column;
         datum.text = origin->text;
