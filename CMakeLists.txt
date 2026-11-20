@@ -3524,11 +3524,16 @@ foreach(_part IN ITEMS plan runtime scalar)
 endforeach()
 add_custom_target(eshkol-incremental-bootstrap DEPENDS "${_incremental_plan_object}" "${_incremental_runtime_object}" "${_scalar_lower_object}")
 target_sources(eshkol-runtime PRIVATE "${_incremental_runtime_object}")
+# Several targets take these objects as sources. Each one depends on the single
+# target that produces them, so every generator runs the three commands once
+# and the consumers wait for that one run instead of each starting its own.
+add_dependencies(eshkol-runtime eshkol-incremental-bootstrap)
 
 # Final native tools register the packaged pass at startup; the seed remains
 # the explicit reference backend and no final-tool build retries after refusal.
 foreach(_native_tool IN LISTS EXES)
     target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
+    add_dependencies(${_native_tool} eshkol-incremental-bootstrap)
     if(ESHKOL_SELF_HOSTED_INCREMENTAL)
         target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
         target_compile_features(${_native_tool} PRIVATE cxx_std_20)
@@ -5326,18 +5331,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    # `(tensor ...)` builds an f64 tensor from integer literals: each element is
+    # converted once at construction and prints as the inexact number it is,
+    # with its decimal point.
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 1 2 3))"
     )
     set_tests_properties(tensor_integer_vector_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1 2 3\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(1\\.0 2\\.0 3\\.0\\)")
     add_test(
         NAME tensor_integer_shaped_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 2 2 1 2 3 4))"
     )
     set_tests_properties(tensor_integer_shaped_literal_runtime_smoke
-        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1 2\\) \\(3 4\\)\\)")
+        PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1\\.0 2\\.0\\) \\(3\\.0 4\\.0\\)\\)")
     # #309 regression guard: a matmul result read via tensor-ref/tensor-data
     # from INSIDE a defined function (captured global, argument, in-function
     # matmul, nested define, closure, with-region escape, and a large
@@ -8725,6 +8733,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             COMMAND bash
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_owned_temp_cleanup_test.sh"
                     $<TARGET_FILE:eshkol-run>
+                    "${STDLIB_OUTPUT}"
         )
         set_tests_properties(aot_owned_temp_cleanup PROPERTIES TIMEOUT 300)
     endif()
@@ -10482,6 +10491,12 @@ if(ESHKOL_BUILD_TESTS)
     # scripts/run_ctest_gate.sh, which re-runs ctest with --output-junit and
     # feeds the result to this same script.
     if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_self_verdicts.py")
+        add_test(NAME event_loop_receipt_contract
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_event_loop_gate.py")
+        add_test(NAME documentation_front_matter_controls
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_doc_front_matter.py" --self-test)
+        add_test(NAME nonlinear_observability_certificate_corpus
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/repro/nonlinear-observability/self_test.py" --certificates)
         add_test(
             NAME self_verdict_gate
             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
@@ -13081,6 +13096,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-repl AND ESHKOL_PYTHON3_EXECUTABLE AND
         FAIL_REGULAR_EXPRESSION "^FAIL:")
 endif()
 
+# Naming, liveness, claim and publication rules for the files the driver keeps
+# beside a native output. Header-only subject, no compiler: every platform.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/driver_output_ownership_test.cpp")
+    add_executable(driver_output_ownership_test tests/toolchain/driver_output_ownership_test.cpp)
+    target_compile_features(driver_output_ownership_test PRIVATE cxx_std_17)
+    target_include_directories(driver_output_ownership_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(
+        NAME driver_output_ownership_test
+        COMMAND driver_output_ownership_test "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(driver_output_ownership_test PROPERTIES
+        TIMEOUT 60 PASS_REGULAR_EXPRESSION "PASS: driver output ownership")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/windows_suite_surface_test.cpp")
     add_executable(windows_suite_surface_test tests/toolchain/windows_suite_surface_test.cpp)
     target_compile_features(windows_suite_surface_test PRIVATE cxx_std_17)
@@ -13138,6 +13167,63 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/es
         NAME eshkol_server_security_surface_test
         COMMAND eshkol_server_security_surface_test "${CMAKE_CURRENT_SOURCE_DIR}"
     )
+endif()
+
+# ── Protocol validation: the request grammar, the WebSocket handshake and the
+# server's request handling. Each is a self-contained binary over the headers
+# that carry the rules, so the rules are exercised on every platform that
+# builds the tests, with no compiler or network dependency beyond loopback.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/http_protocol_syntax_test.cpp")
+    add_executable(http_protocol_syntax_test
+        tests/toolchain/http_protocol_syntax_test.cpp)
+    target_compile_features(http_protocol_syntax_test PRIVATE cxx_std_17)
+    target_include_directories(http_protocol_syntax_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    add_test(NAME http_protocol_syntax_test COMMAND http_protocol_syntax_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/websocket_handshake_test.cpp")
+    add_executable(websocket_handshake_test
+        tests/toolchain/websocket_handshake_test.cpp)
+    target_compile_features(websocket_handshake_test PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_include_directories(websocket_handshake_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    # eshkol_random_bytes: the platform cryptographic source.
+    target_link_libraries(websocket_handshake_test PRIVATE
+        eshkol-runtime Threads::Threads)
+    add_test(NAME websocket_handshake_test COMMAND websocket_handshake_test)
+    set_tests_properties(websocket_handshake_test PROPERTIES TIMEOUT 120)
+endif()
+
+# The shipped server binary answering real connections, so handle_client's
+# own read loop, refusal branches and budgets are what answer rather than a
+# reimplementation of them.
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-server AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_handle_client_test.cpp")
+    add_executable(eshkol_server_handle_client_test
+        tests/toolchain/eshkol_server_handle_client_test.cpp)
+    target_compile_features(eshkol_server_handle_client_test PRIVATE cxx_std_17)
+    add_test(
+        NAME eshkol_server_handle_client_test
+        COMMAND eshkol_server_handle_client_test "$<TARGET_FILE:eshkol-server>")
+    set_tests_properties(eshkol_server_handle_client_test PROPERTIES TIMEOUT 300)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_request_handling_test.cpp")
+    add_executable(eshkol_server_request_handling_test
+        tests/toolchain/eshkol_server_request_handling_test.cpp)
+    target_compile_features(eshkol_server_request_handling_test PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_include_directories(eshkol_server_request_handling_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    target_link_libraries(eshkol_server_request_handling_test PRIVATE
+        Threads::Threads)
+    add_test(NAME eshkol_server_request_handling_test
+             COMMAND eshkol_server_request_handling_test)
+    set_tests_properties(eshkol_server_request_handling_test PROPERTIES TIMEOUT 180)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/macos_build_surface_test.cpp")
@@ -14848,6 +14934,95 @@ endif()
 # vm-src and emitted ESKB; these native tests keep the JIT and AOT paths from
 # drifting independently.
 # image-read/image-write/image-to-grayscale through compiled Eshkol code.
+# Merkle leaf/interior domain separation: a node cannot be presented as a
+# leaf. Run on the JIT and on the AOT path. There is no bytecode-VM lane:
+# core.merkle reaches the VM through an extern the VM does not admit today,
+# so the VM lane would measure that gap rather than the domain separation.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME merkle_domain_separation_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/core/merkle_domain_separation_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(merkle_domain_separation_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME merkle_domain_separation_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/merkle_domain_separation_aot' tests/core/merkle_domain_separation_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/merkle_domain_separation_aot'"
+    )
+    set_tests_properties(merkle_domain_separation_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+# The request grammar as a program sees it: hostile methods, URLs, header
+# lines and reserved framing fields driven through (http-request ...) and
+# (websocket-connect ...), asserting the refusal is a catchable Eshkol error.
+# The C++ grammar tests link the header; these run the engines, so the
+# JIT/AOT/VM parity claim rests on execution rather than on inspection.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME http_hostile_input_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/agent/http_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(http_hostile_input_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME http_hostile_input_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/http_hostile_input_aot' tests/agent/http_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/http_hostile_input_aot'"
+    )
+    set_tests_properties(http_hostile_input_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+# The same hostile inputs through agent.http, so the module's own URL and
+# reserved-name checks and the native clients' per-line check are exercised
+# too. JIT and AOT only: the bytecode VM does not admit this module's externs.
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    add_test(
+        NAME http_wrapper_hostile_input_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/agent/http_wrapper_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(http_wrapper_hostile_input_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-WRAPPER-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME http_wrapper_hostile_input_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/http_wrapper_hostile_input_aot' tests/agent/http_wrapper_hostile_input_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/http_wrapper_hostile_input_aot'"
+    )
+    set_tests_properties(http_wrapper_hostile_input_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-WRAPPER-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test)
+    add_test(NAME http_hostile_input_vm
+        COMMAND ${CMAKE_COMMAND} -E env ESHKOL_VM_NO_DISASM=1
+            $<TARGET_FILE:eshkol-vm-standalone-test>
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/http_hostile_input_test.esk")
+    set_tests_properties(http_hostile_input_vm PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "HTTP-HOSTILE-INPUT OK"
+        FAIL_REGULAR_EXPRESSION "FAIL:|TOTAL FAILURES|ERROR: VM terminated|fatal signal")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     add_test(
         NAME image_io_language_test
@@ -16559,6 +16734,7 @@ if(ESHKOL_BUILD_TESTS)
         target_link_libraries(${_lower_test} PRIVATE eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
         if(_lower_test STREQUAL "selfhost_scalar_lowering_test")
             target_sources(${_lower_test} PRIVATE lib/frontend/scalar_lowering_host.cpp "${_scalar_lower_object}")
+            add_dependencies(${_lower_test} eshkol-incremental-bootstrap)
             target_compile_definitions(${_lower_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
         endif()
         add_test(NAME ${_lower_test} COMMAND ${_lower_test})
@@ -16599,6 +16775,7 @@ endif()
 foreach(_native_tool IN ITEMS eshkol-repl)
     if(TARGET ${_native_tool})
         target_sources(${_native_tool} PRIVATE "${_incremental_runtime_object}")
+        add_dependencies(${_native_tool} eshkol-incremental-bootstrap)
         if(ESHKOL_SELF_HOSTED_INCREMENTAL)
             target_sources(${_native_tool} PRIVATE lib/frontend/incremental_plan_host.cpp "${_incremental_plan_object}")
             target_compile_features(${_native_tool} PRIVATE cxx_std_20)
@@ -16656,6 +16833,7 @@ if(ESHKOL_BUILD_TESTS)
         if(_planner_test STREQUAL "selfhost_incremental_test")
             target_sources(${_planner_test} PRIVATE lib/frontend/incremental_plan_host.cpp
                 "${_incremental_plan_object}" "${_incremental_runtime_object}")
+            add_dependencies(${_planner_test} eshkol-incremental-bootstrap)
             eshkol_target_llvm_includes(${_planner_test})
             target_compile_definitions(${_planner_test} PRIVATE ESHKOL_EXPECT_SELFHOST)
         endif()

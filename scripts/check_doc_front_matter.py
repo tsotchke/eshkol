@@ -144,15 +144,12 @@ def in_scope(rel: str) -> bool:
     rel = rel.replace(os.sep, "/")
     if not rel.endswith(".md"):
         return False
-    if rel in ROOT_PAGES:
-        return True
-    if not rel.startswith(DOCS_DIR + "/"):
-        return False
-    return not any(rel.startswith(prefix) for prefix in EXCLUDED_PREFIXES)
+    return rel in ROOT_PAGES or (rel.startswith(DOCS_DIR + "/") and
+                                 not rel.startswith(EXCLUDED_PREFIXES))
 
 
 def list_pages(root: str, use_git: bool = True) -> list[str]:
-    """Repo-relative, sorted paths of every page in scope that exists on disk."""
+    """Repo-relative, sorted paths of indexed pages or pages discovered on disk."""
     candidates: list[str] | None = None
     if use_git:
         try:
@@ -164,12 +161,13 @@ def list_pages(root: str, use_git: bool = True) -> list[str]:
                 candidates = [p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p]
         except OSError:
             candidates = None
-    if candidates is None:
-        candidates = [name for name in ROOT_PAGES]
-        for base, dirs, files in os.walk(os.path.join(root, DOCS_DIR)):
-            dirs.sort()
-            for name in files:
-                candidates.append(os.path.relpath(os.path.join(base, name), root).replace(os.sep, "/"))
+    if candidates is not None:
+        return sorted({rel for rel in candidates if in_scope(rel)})
+    candidates = [name for name in ROOT_PAGES]
+    for base, dirs, files in os.walk(os.path.join(root, DOCS_DIR)):
+        dirs.sort()
+        for name in files:
+            candidates.append(os.path.relpath(os.path.join(base, name), root).replace(os.sep, "/"))
     return sorted({rel for rel in candidates
                    if in_scope(rel) and os.path.isfile(os.path.join(root, rel))})
 
@@ -406,9 +404,16 @@ def scan(root: str, use_git: bool = True) -> dict:
     def finding(page: str, line: int, rule: str, message: str) -> None:
         findings.append({"page": page, "line": line, "rule": rule, "message": message})
 
+    if not pages:
+        finding(".", 1, "coverage", "no documentation pages in scope")
+
     for page in pages:
-        with open(os.path.join(root, page), "r", encoding="utf-8", errors="replace") as handle:
-            text = handle.read()
+        try:
+            with open(os.path.join(root, page), "r", encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError as exc:
+            finding(page, 1, "coverage", f"cannot read documentation page: {exc}")
+            continue
         block, body_start, error = split_front_matter(text)
         if block is None:
             unmarked.append(page)
@@ -456,7 +461,7 @@ def scan(root: str, use_git: bool = True) -> dict:
     top = sorted(by_directory.items(), key=lambda item: (-item[1], item[0]))[:10]
     return {
         "pages": len(pages),
-        "with_front_matter": len(pages) - len(unmarked),
+        "with_front_matter": len(parsed),
         "without_front_matter": len(unmarked),
         "unmarked_pages": unmarked,
         "top_unmarked_directories": [{"directory": d, "pages": n} for d, n in top],
@@ -563,6 +568,11 @@ def self_test(parent_dir: str | None) -> bool:
         return block + body
 
     try:
+        run("empty_documentation_inventory", {}, False, rule="coverage")
+        root, baseline_path = tree({}, 5)
+        check("empty_inventory_preserves_baseline",
+              update_baseline(root, baseline_path, False, False, out=None) != 0
+              and load_baseline(baseline_path) == 5)
         # Scope.
         scope_cases = [("docs/a.md", True), ("docs/deep/er/b.md", True), ("README.md", True),
                        ("SECURITY.md", True), ("docs/api/generated.md", False), ("docs/a.txt", False),
@@ -741,7 +751,12 @@ def self_test(parent_dir: str | None) -> bool:
 # ───────────────────────── CLI ─────────────────────────
 
 def update_baseline(root: str, baseline_path: str, use_git: bool, allow_increase: bool, out=sys.stdout) -> int:
-    count = scan(root, use_git)["without_front_matter"]
+    result = scan(root, use_git)
+    if any(item["rule"] == "coverage" for item in result["findings"]):
+        if out:
+            print("cannot update the baseline with incomplete documentation coverage", file=out)
+        return 2
+    count = result["without_front_matter"]
     try:
         previous = load_baseline(baseline_path)
     except Exception:

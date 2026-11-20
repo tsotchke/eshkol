@@ -27,6 +27,7 @@
 #include <eshkol/frontend/scalar_lowering.h>
 #endif
 #include "eshkol/eshkol.h"
+#include "eshkol/core/http_syntax.h"
 #include "eshkol/http_request_utils.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/logger.h>
@@ -36,6 +37,7 @@
 #include <string>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
 #include <cstdlib>
 #include <unordered_map>
@@ -44,7 +46,8 @@
 #include <mutex>
 #include <atomic>
 #include <chrono>
-#include <random>
+#include <new>
+#include <stdexcept>
 #include <fstream>
 
 // Networking headers
@@ -188,17 +191,28 @@ static std::string g_bind_host = "127.0.0.1";
 static std::string g_compile_token;
 static std::string g_cors_origin;
 
-// Thread-safe session ID generator.
-std::string generate_session_id() {
-    static std::mutex rng_mutex;
-    static std::mt19937 gen(std::random_device{}());
-    static std::uniform_int_distribution<> dis(0, 15);
-    static const char* hex = "0123456789abcdef";
+// The platform cryptographic source (lib/core/crypto_primitives.c):
+// SecRandomCopyBytes, BCryptGenRandom, RAND_bytes or /dev/urandom.
+extern "C" int eshkol_random_bytes(char* buf, size_t len);
 
-    std::lock_guard<std::mutex> lock(rng_mutex);
+// A session identifier names a compilation a client will come back for, so
+// it is drawn from the operating system's cryptographic source and from
+// nowhere else — 16 bytes, rendered as 32 hex characters. The seeded
+// generator behind Eshkol's own `(random)` is a reproducible stream for
+// simulation and replay and has no part in this. When the source cannot be
+// read the function returns an empty string and the caller declines the
+// request rather than issuing a guessable identifier.
+std::string generate_session_id() {
+    static const char* hex = "0123456789abcdef";
+    unsigned char bytes[16];
+    if (eshkol_random_bytes(reinterpret_cast<char*>(bytes), sizeof(bytes)) != 0) {
+        return std::string();
+    }
     std::string id;
-    for (int i = 0; i < 32; ++i) {
-        id += hex[dis(gen)];
+    id.reserve(sizeof(bytes) * 2);
+    for (unsigned char byte : bytes) {
+        id += hex[(byte >> 4) & 0x0f];
+        id += hex[byte & 0x0f];
     }
     return id;
 }
@@ -215,8 +229,10 @@ std::string build_response(int status, const std::string& content_type,
         case 401: status_text = "Unauthorized"; break;
         case 403: status_text = "Forbidden"; break;
         case 404: status_text = "Not Found"; break;
+        case 408: status_text = "Request Timeout"; break;
         case 413: status_text = "Payload Too Large"; break;
         case 415: status_text = "Unsupported Media Type"; break;
+        case 431: status_text = "Request Header Fields Too Large"; break;
         case 500: status_text = "Internal Server Error"; break;
         case 503: status_text = "Service Unavailable"; break;
         default: status_text = "Unknown"; break;
@@ -237,34 +253,13 @@ std::string build_response(int status, const std::string& content_type,
     return response.str() + body;
 }
 
-// JSON escape helper
-std::string json_escape(const std::string& s) {
-    std::string result;
-    for (char c : s) {
-        switch (c) {
-            case '"': result += "\\\""; break;
-            case '\\': result += "\\\\"; break;
-            case '\n': result += "\\n"; break;
-            case '\r': result += "\\r"; break;
-            case '\t': result += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    // Escape control characters as \u00XX
-                    char buf[8];
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    result += buf;
-                } else {
-                    result += c;
-                }
-                break;
-        }
-    }
-    return result;
-}
+// JSON strings are built by the one serializer in
+// <eshkol/http_request_utils.h>, which both this server and its tests use.
+std::string json_escape(const std::string& s) { return eshkol_json_escape(s); }
 
 // Build JSON error response
 std::string json_error(const std::string& message) {
-    return "{\"success\":false,\"error\":\"" + json_escape(message) + "\"}";
+    return "{\"success\":false,\"error\":" + eshkol_json_string(message) + "}";
 }
 
 // Build JSON success response with WASM (base64 encoded)
@@ -284,8 +279,12 @@ std::string json_success_wasm(const std::string& session_id, const uint8_t* wasm
         encoded += (i + 2 < size) ? b64[n & 0x3F] : '=';
     }
 
+    // Every string that goes into a JSON document goes through the one
+    // serializer that knows what JSON strings may contain. session_id can be
+    // a value the client chose, so it is escaped on the way out exactly as
+    // every other string value is.
     std::ostringstream json;
-    json << "{\"success\":true,\"session_id\":\"" << session_id << "\",";
+    json << "{\"success\":true,\"session_id\":" << eshkol_json_string(session_id) << ",";
     json << "\"wasm\":\"" << encoded << "\",";
     json << "\"size\":" << size << "}";
     return json.str();
@@ -346,9 +345,14 @@ struct HttpRequest {
     std::string error_message;
 };
 
-HttpRequest parse_request(const std::string& raw) {
+// Interpret a complete request. `header_end` and `body_length` come from the
+// one framing answer the accumulator produced while reading, so the body this
+// returns is exactly the body the read loop waited for — there is no second
+// reading of Content-Length here to disagree with the first.
+HttpRequest parse_request(const std::string& raw, size_t header_end,
+                          size_t body_length) {
     HttpRequest req;
-    std::istringstream stream(raw);
+    std::istringstream stream(raw.substr(0, header_end));
     std::string line;
 
     // Parse request line
@@ -376,30 +380,28 @@ HttpRequest parse_request(const std::string& raw) {
         }
     }
 
-    // Get body (rest of stream)
-    std::ostringstream body_stream;
-    body_stream << stream.rdbuf();
-    req.body = body_stream.str();
+    // The body is the declared number of bytes that follow the header
+    // section, taken by length from the accumulated request. NUL bytes in it
+    // are content and are preserved.
+    const size_t available = raw.size() > header_end ? raw.size() - header_end : 0;
+    req.body.assign(raw, header_end, std::min(body_length, available));
 
-    // Validate and enforce Content-Length (now case-insensitive)
-    auto it = req.headers.find("content-length");
-    if (it != req.headers.end()) {
-        size_t len = 0;
-        if (!eshkol_parse_content_length(it->second, len)) {
-            req.malformed = true;
-            req.error_status = 400;
-            req.error_message = "Invalid Content-Length";
-            return req;
-        }
-        if (len > kMaxRequestBodySize) {
-            req.malformed = true;
-            req.error_status = 413;
-            req.error_message = "Payload too large";
-            return req;
-        }
-        if (req.body.size() > len) {
-            req.body = req.body.substr(0, len);
-        }
+    // The request line must itself be a request line: a method token and one
+    // of the request-target forms. A request whose line is neither is refused
+    // before any route sees it.
+    if (req.method.empty() ||
+        !eshkol_http_valid_method_n(req.method.data(), req.method.size())) {
+        req.malformed = true;
+        req.error_status = 400;
+        req.error_message = "Request method is not a token";
+        return req;
+    }
+    if (req.path.empty() ||
+        !eshkol_http_valid_request_target_n(req.path.data(), req.path.size())) {
+        req.malformed = true;
+        req.error_status = 400;
+        req.error_message = "Request target is not a request-target form";
+        return req;
     }
 
     return req;
@@ -538,83 +540,75 @@ struct ConnectionGuard {
 void handle_client(socket_handle_t client_socket) {
     ConnectionGuard guard;
 
-    // Read request
+    // Read the request. The accumulator owns both questions — is it complete,
+    // and is it one this server will answer — from one reading of the header
+    // section, and it is fed exact byte counts, so a body carrying NUL bytes
+    // arrives whole.
     char buffer[65536];
-    std::string request_data;
-    int bytes_read;
+    eshkol_http_request_accumulator accumulator;
 
-    set_socket_receive_timeout(client_socket, 5);
+    // Two clocks bound the read: each recv() blocks for at most
+    // kReceiveTimeoutSeconds, and the whole request must arrive within the
+    // per-request deadline measured from the moment it was accepted. A client
+    // that sends a byte at a time therefore holds this one connection for a
+    // bounded time and no other connection at all.
+    const auto deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::seconds(eshkol_server_request_deadline_seconds());
+    set_socket_receive_timeout(client_socket, kReceiveTimeoutSeconds);
 
-    // Read until we have the full request (bounded by kMaxRequestTotalSize)
-    while ((bytes_read = recv(client_socket, buffer, sizeof(buffer) - 1, 0)) > 0) {
-        buffer[bytes_read] = '\0';
-        request_data += buffer;
-
-        // Bound total request size to prevent OOM from unbounded header
-        // accumulation or oversized bodies.
-        if (request_data.size() > kMaxRequestTotalSize) {
-            std::string response = build_response(413, "application/json",
-                json_error("Request too large"));
-            send_all(client_socket, response);
-            close_socket(client_socket);
-            return;
+    bool timed_out = false;
+    while (accumulator.current() ==
+           eshkol_http_request_accumulator::state::need_more) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            timed_out = true;
+            break;
         }
-
-        // Check if we have the complete request
-        size_t header_end = request_data.find("\r\n\r\n");
-        if (header_end != std::string::npos) {
-            // Case-insensitive Content-Length search in raw data.
-            // We need to find it before full header parsing because the read
-            // loop uses it to decide when the body is complete.
-            // Include the trailing \r\n\r\n so the last header's \r\n is findable.
-            std::string lower_data = request_data.substr(0, header_end + 4);
-            std::transform(lower_data.begin(), lower_data.end(), lower_data.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-
-            size_t cl_pos = lower_data.find("content-length:");
-            if (cl_pos != std::string::npos) {
-                size_t cl_end = lower_data.find("\r\n", cl_pos);
-                if (cl_end == std::string::npos) {
-                    std::string response = build_response(400, "application/json",
-                        json_error("Invalid Content-Length"));
-                    send_all(client_socket, response);
-                    close_socket(client_socket);
-                    return;
-                }
-
-                // Extract from the ORIGINAL data (preserving case for the value)
-                std::string cl_str = request_data.substr(cl_pos + 15, cl_end - cl_pos - 15);
-                size_t content_length = 0;
-                if (!eshkol_parse_content_length(cl_str, content_length)) {
-                    std::string response = build_response(400, "application/json",
-                        json_error("Invalid Content-Length"));
-                    send_all(client_socket, response);
-                    close_socket(client_socket);
-                    return;
-                }
-                if (content_length > kMaxRequestBodySize) {
-                    std::string response = build_response(413, "application/json",
-                        json_error("Payload too large"));
-                    send_all(client_socket, response);
-                    close_socket(client_socket);
-                    return;
-                }
-                size_t body_start = header_end + 4;
-                if (request_data.size() >= body_start + content_length) {
-                    break;
-                }
-            } else {
-                break;
-            }
+        const int bytes_read = recv(client_socket, buffer, sizeof(buffer), 0);
+        if (bytes_read > 0) {
+            accumulator.append(buffer, static_cast<size_t>(bytes_read));
+            continue;
         }
+        if (bytes_read == 0) {
+            accumulator.close();  // the peer stopped sending
+            break;
+        }
+        // A recv() that expired is not an error: the deadline above decides
+        // whether this connection still has time.
+#ifndef _WIN32
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+#else
+        if (WSAGetLastError() == WSAETIMEDOUT) continue;
+#endif
+        close_socket(client_socket);
+        return;
     }
 
+    if (timed_out) {
+        send_all(client_socket,
+                 build_response(408, "application/json",
+                                json_error("Request did not arrive within the "
+                                           "per-request deadline")));
+        close_socket(client_socket);
+        return;
+    }
+    if (accumulator.current() ==
+        eshkol_http_request_accumulator::state::refused) {
+        send_all(client_socket,
+                 build_response(accumulator.refusal_status(), "application/json",
+                                json_error(accumulator.refusal_message())));
+        close_socket(client_socket);
+        return;
+    }
+
+    const std::string& request_data = accumulator.data();
     if (request_data.empty()) {
         close_socket(client_socket);
         return;
     }
 
-    HttpRequest req = parse_request(request_data);
+    HttpRequest req = parse_request(request_data, accumulator.header_end(),
+                                    accumulator.declared_body_length());
     std::string response;
 
     if (req.malformed) {
@@ -645,8 +639,29 @@ void handle_client(socket_handle_t client_socket) {
             if (session_id.empty()) {
                 session_id = generate_session_id();
             }
-            std::string result = compile_to_wasm(code, session_id);
-            response = build_response(200, "application/json", result);
+            if (session_id.empty()) {
+                response = build_response(503, "application/json",
+                    json_error("The cryptographic source for session "
+                               "identifiers is unavailable"));
+            } else {
+                // One request's compilation is one request's business. A
+                // source that the compiler cannot find memory for, or that
+                // fails anywhere in the pipeline, is answered on this
+                // connection; the process stays up and every other
+                // connection is unaffected.
+                try {
+                    std::string result = compile_to_wasm(code, session_id);
+                    response = build_response(200, "application/json", result);
+                } catch (const std::bad_alloc&) {
+                    response = build_response(413, "application/json",
+                        json_error("The submitted source needs more memory "
+                                   "than one request is given"));
+                } catch (const std::exception& error) {
+                    response = build_response(400, "application/json",
+                        json_error(std::string("Compilation declined: ") +
+                                   error.what()));
+                }
+            }
         }
     }
     // Handle GET /health

@@ -61,6 +61,14 @@ set_tests_properties(expected_failure unexpected_success PROPERTIES
     def tearDownClass(cls):
         cls.temporary.cleanup()
 
+    def test_check_self_verdicts_clean_summary(self):
+        path = self.work / "clean.log"
+        for text in ("", "Failed: 0\n", "Failed: 1\nAll 60 checks green.\n"):
+            path.write_text(text)
+            self.assertFalse(audit.clean_summary_matches(path, 60))
+        path.write_text("Failed: 0\nAll 60 checks green.\n")
+        self.assertTrue(audit.clean_summary_matches(path, 60))
+
     def run_cases(self, *names):
         type(self).serial += 1
         junit = self.work / f"junit-{self.serial}.xml"
