@@ -28,6 +28,22 @@ static uint64_t hash_exact_integer(const eshkol_bignum_t* bn) {
                                   (size_t)bn->num_limbs * sizeof(uint64_t)));
 }
 
+/**
+ * @brief Compute the hash-table hash of a tagged Scheme value.
+ *
+ * Every hash is SipHash-2-4 (eshkol_table_hash) under a key drawn from host
+ * entropy once per process, so bucket placement cannot be predicted from
+ * outside the process and differs between runs. The hash is a function of
+ * exactly what hash_keys_equal() compares: strings and symbols hash their
+ * characters; exact integers hash their value (a bignum that fits in int64
+ * hashes like the fixnum it equals); rationals hash the reduced numerator and
+ * denominator in their active representation; i128 values hash both halves;
+ * complex numbers hash both component bits; pairs and vectors hash their
+ * elements structurally. Any other heap object hashes its identity.
+ *
+ * @param value Tagged value to hash; NULL returns 0.
+ * @return      64-bit hash for indexing the table's slot array.
+ */
 uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
     if (!value) return 0;
     uint8_t type = value->type;
@@ -90,7 +106,20 @@ uint64_t hash_tagged_value(const eshkol_tagged_value_t* value) {
     return hash;
 }
 
-// Compare table keys using their active numeric or structural representation.
+/**
+ * @brief Test two tagged Scheme values for hash-table key equality.
+ *
+ * Values of different types are unequal, except that a fixnum equals a bignum
+ * holding the same integer. Doubles compare by bit pattern (consistent with
+ * their hash), complex numbers and i128 values by their components, rationals
+ * by value, strings and symbols by characters, and pairs and vectors
+ * structurally through this same function. Any other heap object compares by
+ * identity.
+ *
+ * @param a First value to compare (may be NULL).
+ * @param b Second value to compare (may be NULL).
+ * @return  true if the two values are equal keys.
+ */
 bool hash_keys_equal(const eshkol_tagged_value_t* a, const eshkol_tagged_value_t* b) {
     if (!a || !b) return a == b;
 
