@@ -17,12 +17,28 @@ clauses returns the empty list without evaluating the subject.
 |---------|---------|
 | `_` | anything (wildcard), binds nothing |
 | `var` | anything, binds `var` |
-| literal (`5`, `"s"`) | that literal value |
+| literal (`5`, `"s"`, `#\a`, `#t`, `'sym`, `'(1 2)`, `()`) | a value equal to the literal (see below) |
 | `(list p …)` | a list of exactly that many elements, matching each `p` |
 | `(cons p1 p2)` | a pair (as `pair?` decides; a string or vector is not one), `p1` = car, `p2` = cdr |
 | `(or p …)` | the first matching alternative |
 | `(? pred)` | any value for which `(pred value)` is true |
 | `(? pred var)` | as above, and binds `var` |
+
+## Literal equality
+
+A literal pattern matches a value that is `equal?` to it. All three engines
+use the same rule:
+
+- Numbers, characters, booleans and symbols compare by `eqv?`. Exact and
+  inexact numbers never match each other, so `1` does not match `1.0`. Exact
+  rationals and bignums compare by value, so `1/2` matches `(/ 2 4)` and a
+  bignum literal matches an equal computed bignum. Complex numbers compare
+  component by component.
+- Inexact reals compare by representation, as `eqv?` does: `0.0` and `-0.0`
+  do not match each other, and a NaN literal matches a NaN with the same bits.
+- Strings and quoted compound data (`'(1 2)`) compare by structure, so a
+  string literal matches any string with the same characters, including one
+  built at run time by `string-copy` or `string-append`.
 
 ## Examples
 

@@ -25852,24 +25852,19 @@ private:
 
     // ===== PATTERN MATCHING OPERATIONS =====
 
-    // Helper: Compare two tagged values for equality (eqv? semantics)
+    // A literal pattern matches a value equal to it. The runtime equal?
+    // routine compares numbers, characters, booleans and symbols by eqv?
+    // (exact and inexact stay distinct, flonums compare by representation,
+    // heap numbers by value), and strings and quoted compound data by
+    // structure. Returns an i1.
     Value* matchCompareValues(Value* val1, Value* val2) {
-        // Get types
-        Value* type1 = getTaggedValueType(val1);
-        Value* type2 = getTaggedValueType(val2);
-
-        // Types must match for equality
-        Value* types_match = builder->CreateICmpEQ(type1, type2, "types_match");
-
-        // Get the raw data parts
-        Value* data1 = unpackInt64FromTaggedValue(val1);
-        Value* data2 = unpackInt64FromTaggedValue(val2);
-
-        // Data must match
-        Value* data_match = builder->CreateICmpEQ(data1, data2, "data_match");
-
-        // Both conditions must hold
-        return builder->CreateAnd(types_match, data_match, "values_equal");
+        Function* func = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry(&func->getEntryBlock(), func->getEntryBlock().begin());
+        Value* arg1_ptr = entry.CreateAlloca(tagged_value_type, nullptr, "match_subject");
+        Value* arg2_ptr = entry.CreateAlloca(tagged_value_type, nullptr, "match_literal");
+        builder->CreateStore(val1, arg1_ptr);
+        builder->CreateStore(val2, arg2_ptr);
+        return builder->CreateCall(eshkol_deep_equal_func, {arg1_ptr, arg2_ptr}, "values_equal");
     }
 
     // Helper: Check if a value is a pair (cons cell). HEAP_PTR alone also
@@ -25949,7 +25944,7 @@ private:
             }
 
             case PATTERN_LITERAL: {
-                // Literal matches if values are eqv?
+                // Literal matches a value equal to it (matchCompareValues)
                 if (!pattern->literal.value) {
                     return ConstantInt::getFalse(*context);
                 }

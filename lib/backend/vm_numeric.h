@@ -80,7 +80,6 @@
 #define VM_SUBTYPE_MULTI_VAL 4
 #define VM_SUBTYPE_FUTURE    26
 #define VM_SUBTYPE_I128      27
-#define VM_SUBTYPE_STRING_LITERAL 28
 
 /* ── Complex Number ── */
 typedef struct VmDual VmDual;
