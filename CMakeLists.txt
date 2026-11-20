@@ -8311,6 +8311,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     if(NOT WIN32)
+        add_test(NAME vm_hyperdual_dispatch_reference COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/hyperdual_dispatch_reference.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
         add_test(NAME site_scalar_hessian_jit
             COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
                 $<TARGET_FILE:eshkol-run> -r

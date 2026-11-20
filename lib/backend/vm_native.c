@@ -17113,10 +17113,9 @@ tensor_inverse_done:
      *   one variable with tangent=1 and the rest with tangent=0. The
      *   tangent of the result gives the partial derivative ∂f/∂xi.
      *
-     *   Hessian uses central difference of exact gradients:
-     *     f''(x) ≈ (f'(x+h) - f'(x-h)) / (2h)
-     *   where f' is computed exactly via dual numbers, giving O(h²)
-     *   accuracy with exact first derivatives.
+     *   The scalar Hessian takes an order-two Taylor coefficient. Vector
+     *   Hessians take mixed coefficients from nested Taylor levels or
+     *   hyper-dual directions according to the carrier and closure arity.
      *
      * Helper: vm_ad_make_dual_val — allocate a dual on the heap, return Value
      * Helper: vm_ad_extract_point — read point from scalar/list/tensor
@@ -17177,10 +17176,7 @@ tensor_inverse_done:
         break;
     }
 
-    case 752: { /* hessian(f, point) → EXACT second derivative via hyper-dual numbers
-                 * Scalar: seed x = (x,1,1,0) → f₁₂ = f''(x)
-                 * Multi-var: H[i][j] = ∂²f/∂xᵢ∂xⱼ via hyper-dual seeding
-                 * NO finite differences — mathematically exact. */
+    case 752: { /* hessian */
 #define VM_HD_MAKE(vm, fv, f1v, f2v, f12v, out) do { \
     VmHyperDual* _h = vm_hd_make(&(vm)->heap.regions, (fv), (f1v), (f2v), (f12v)); \
     if (!_h) { (out) = FLOAT_VAL(0); break; } \
