@@ -9,7 +9,7 @@ from pathlib import Path
 
 def check_ir(ir):
     functions = dict(re.findall(
-        r"^define [^\n]*?@([\w.]+)\([^\n]*\) [^\n]*\{\n(.*?)^\}", ir, re.M | re.S
+        r"^define [^\n]*?@([^ (\n]+)\([^\n]*\) [^\n]*\{\n(.*?)^\}", ir, re.M | re.S
     ))
     registration = "call void @eshkol_lambda_registry_add("
     chunks = [body for name, body in functions.items()
@@ -21,6 +21,21 @@ def check_ir(ir):
         raise ValueError("main must call every procedure registration group")
     if any("@eshkol_ad_home_arena(" in body for body in chunks):
         raise ValueError("the metadata cell constructor must resolve the allocation arena")
+
+    # The fixture has small Scheme arities. Only the native ABI thunks pass
+    # a wide pointer tail to an indirect target, once per user-argument count.
+    wide_calls = {}
+    for name, body in functions.items():
+        for line in body.splitlines():
+            if re.search(r"\bcall\b.* %[^( ]+\(", line) and line.count("ptr ") >= 64:
+                if not name.startswith("__eshkol_native_closure_call_"):
+                    raise ValueError(f"capture-slot call in {name}")
+                arity = name.split("_")[-1].split(".")[0]
+                if arity in wide_calls:
+                    raise ValueError(f"repeated capture-slot call for arity {arity}")
+                wide_calls[arity] = name
+    if not {"1", "2"} <= wide_calls.keys():
+        raise ValueError("missing closure entry for unary or binary calls")
 
 
 if __name__ == "__main__":

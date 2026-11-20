@@ -1178,3 +1178,5 @@ The native compiler builds procedure-source lists in registration order. Executa
 and library entry points call small initialization functions, and each cell
 constructor reads the current allocation arena. `procedure_metadata_aot_ir`
 checks the generated executable IR and runs the procedure identity fixture.
+For native indirect closure calls it also checks that only one helper per argument
+count expands the capture-slot pointers passed to the callee.
