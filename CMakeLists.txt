@@ -8334,6 +8334,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             endforeach()
         endfunction()
         eshkol_add_numeric_test(reverse_tape_operands tests/ad/reverse_tape_operands.esk vm)
+        eshkol_add_numeric_test(rotation_log_cover tests/vm/rotation_log_cover.esk vm)
         eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot)
         eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
 

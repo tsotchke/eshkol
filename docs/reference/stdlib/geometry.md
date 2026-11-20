@@ -770,9 +770,9 @@ the identity quaternion `(1 0 0 0)`. `()` if the input has fewer than 3 elements
 
 ### `(so3-log q)` — id 825
 
-`q` a tensor with at least 4 elements. Normalises it, then returns the axis-angle
-vector of shape `(3)`: `θ = 2·atan2(‖v‖, w)`, direction `v/‖v‖`. Returns zeros for a
-zero-norm input or a vector part below `1e-12`. `()` if the input has fewer than 4
+`q` a tensor with at least 4 elements. Returns the principal rotation vector of shape `(3)` and norm at most π.
+Both quaternion signs yield the same vector. At a half turn, its first nonzero
+component is positive. A zero-norm input returns zeros. `()` if the input has fewer than 4
 elements.
 
 ```scheme

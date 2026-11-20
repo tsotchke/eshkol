@@ -30,6 +30,28 @@
 #define HEAP_MANIFOLD_POINT  31
 #define HEAP_MANIFOLD_TANGENT 32
 
+/* Principal rotation vector, invariant under nonzero quaternion rescaling.
+ * At a half turn the first nonzero axis component selects the sign. */
+static void vm_rotation_log(const double q[4], double omega[3]) {
+    double scale = fmax(fmax(fabs(q[0]), fabs(q[1])), fmax(fabs(q[2]), fabs(q[3])));
+    if (scale == 0.0) {
+        memset(omega, 0, 3 * sizeof(double));
+        return;
+    }
+    double w = q[0] / scale;
+    double v[3] = {q[1] / scale, q[2] / scale, q[3] / scale};
+    double norm = hypot(hypot(v[0], v[1]), v[2]);
+    double sign = 1.0;
+    for (int i = 0; i < 4; ++i) {
+        if (q[i] != 0.0) {
+            sign = copysign(1.0, q[i]);
+            break;
+        }
+    }
+    double factor = norm == 0.0 ? 0.0 : sign * (2.0 * atan2(norm, fabs(w)) / norm);
+    for (int i = 0; i < 3; ++i) omega[i] = factor * v[i];
+}
+
 /** @brief Unwrap a tensor Value to its VmTensor*, or NULL if @p v isn't a
  *         tensor heap object. */
 static VmTensor* vm_get_tensor(VM* vm, Value v) {
@@ -1083,20 +1105,7 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         int64_t shape[1] = {3};
         VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
         if (!out) { vm_push(vm, NIL_VAL); break; }
-        double n = sqrt(q->data[0] * q->data[0] + q->data[1] * q->data[1] +
-                        q->data[2] * q->data[2] + q->data[3] * q->data[3]);
-        if (n <= 0.0) { VM_PUSH_TENSOR(vm, out); break; }
-        double w = q->data[0] / n;
-        if (w > 1.0) w = 1.0;
-        if (w < -1.0) w = -1.0;
-        double x = q->data[1] / n, y = q->data[2] / n, z = q->data[3] / n;
-        double vnorm = sqrt(x * x + y * y + z * z);
-        if (vnorm > 1e-12) {
-            double theta = 2.0 * atan2(vnorm, w);
-            out->data[0] = x * theta / vnorm;
-            out->data[1] = y * theta / vnorm;
-            out->data[2] = z * theta / vnorm;
-        }
+        vm_rotation_log(q->data, out->data);
         VM_PUSH_TENSOR(vm, out);
         break;
     }
