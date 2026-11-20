@@ -1830,6 +1830,7 @@ jobs:
           - linux-x64-cuda
           - linux-arm64-cuda
           - linux-x64-asan-ubsan
+          - linux-x64-tsan
           - windows-arm64-xla
           - windows-x64-cuda
           - windows-arm64-lite
@@ -1982,13 +1983,16 @@ jobs:
             test_command: ./scripts/run_xla_tests.sh
             upload_artifact: 'false'
             artifact_name: ''
-          # Sanitizer lanes (per v1.2 release audit, blocker #10).
-          # ASan and UBSan are compatible together; both run the v1.2
-          # edge-case suite which is the most likely place to surface
-          # memory-safety / UB regressions.  TSan and MSan are deferred
-          # — TSan needs LLVM-21-built-with-tsan-runtime which the
-          # apt.llvm.org packages don't ship; MSan needs an MSan-built
-          # libstdc++ which is even more involved.
+          - name: linux-x64-tsan
+            runner: ubuntu-22.04
+            build_dir: build-tsan
+            xla_enabled: 'OFF'
+            gpu_enabled: 'OFF'
+            sanitizer_flags: '-DESHKOL_ENABLE_TSAN=ON'
+            build_jobs: 2
+            test_command: bash scripts/run_tsan_concurrency.sh
+            upload_artifact: 'false'
+            artifact_name: ''
           - name: linux-x64-asan-ubsan
             runner: ubuntu-22.04
             build_dir: build-asan
@@ -2002,13 +2006,8 @@ jobs:
             # sanitizer-instrumented compiles of this repo's backend do not
             # fit 16 GiB six at a time.
             build_jobs: 2
-            # This is the only lane that runs under sanitizers, so it must
-            # exercise the code most likely to read or write out of bounds:
-            # the tensor and autodiff paths, which do their own index and
-            # rank arithmetic over arena memory. It previously ran the v1.2
-            # edge-case corpus alone, which touches none of them — several
-            # memory-safety fixes were credited to a green here that never
-            # executed the paths they repaired.
+            # Tensor and autodiff workloads exercise index and rank arithmetic
+            # over arena storage in addition to the edge-case suite.
             test_command: ./scripts/run_v1_2_edge_cases_tests.sh && ./scripts/run_ml_tests.sh && ./scripts/run_ad_oracle.sh
             upload_artifact: 'false'
             artifact_name: ''
@@ -2446,9 +2445,9 @@ jobs:
       # compile, the compiled program, the VM and the REPL under
       # detect_leaks=1 with the checked-in suppression file, and fails on any
       # leak that file does not already name and justify — plus a slope check
-      # on the one retention the suppressions do hide (the front-end AST,
-      # epic #182), so a per-form growth regression cannot slip in behind a
-      # suppression rule. Verified to go red: with a 4321-byte unfreed
+      # on the front end's rooted per-line retention (the AST node and string
+      # owners), so per-form growth in a REPL session is gated even though
+      # owned storage is not a leak. Verified to go red: with a 4321-byte unfreed
       # allocation added to eshkol_runtime_init() and nothing else changed,
       # this step fails and names eshkol_runtime_init as the site.
       - name: No unsuppressed leak in the real workloads
@@ -2463,7 +2462,14 @@ jobs:
           ESHKOL_CXX_COMPILER: /usr/bin/c++
         run: |
           set -euxo pipefail
+          test -x "$BUILD_DIR/eshkol-repl"
+          test -x "$BUILD_DIR/eshkol-vm-standalone-test"
           ./tests/memory/leak_audit_gate.sh
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+          LSAN_OPTIONS="suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt" \
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+          ctest --test-dir "$BUILD_DIR" --no-tests=error --output-on-failure \
+            -R '^region_evac_ad_jet_vm_smoke$'
 
       - name: Run Tests
         if: env.LANE_ACTIVE == 'true'
@@ -2497,7 +2503,9 @@ jobs:
             export LSAN_OPTIONS="suppressions=$GITHUB_WORKSPACE/.icc/lsan-suppressions.txt:print_suppressions=0"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
-          ${{ matrix.test_command }} 2>&1 | tee -a "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
+          (
+            ${{ matrix.test_command }}
+          ) 2>&1 | tee -a "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
           test -x "${{ matrix.build_dir }}/eshkol-agent-http-test"
           "${{ matrix.build_dir }}/eshkol-agent-http-test"
           test -x "${{ matrix.build_dir }}/eshkol-agent-sse-test"
@@ -2554,6 +2562,17 @@ jobs:
           set -euxo pipefail
           mkdir -p "$ESHKOL_JIT_CACHE_DIR"
           ./scripts/run_ad_exactness_gate.sh
+
+      - name: Record the completed leak-detection lane
+        if: env.LANE_ACTIVE == 'true' && matrix.name == 'linux-x64-asan-ubsan'
+        shell: bash
+        run: |
+          mkdir -p scripts/icc_traces
+          jq -cn --arg sha "$(git rev-parse HEAD)" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            '{kind:"v1_4_connection",name:"v14_assurance_a12_lsan_lane",value:"PASS",
+              source:$sha,snippet:("Detector self-test, workload audit and VM evacuation poison passed. " + $run)}' \
+            > scripts/icc_traces/asan_lsan_ci.jsonl
 
       - name: Upload Test Logs
         if: env.LANE_ACTIVE == 'true' && (failure() || cancelled() || matrix.name == 'linux-x64-lite' || matrix.name == 'linux-x64-xla')

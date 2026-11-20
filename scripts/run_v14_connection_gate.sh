@@ -769,7 +769,7 @@ probe_portable_tail_transfer
 # Assurance (docs/design/adr/0010-closed-loop-assurance.md A8, A10-A13)
 # ─────────────────────────────────────────────────────────────────
 probe_external_ci_evidence v14_assurance_a8_tsan_lane \
-    '.github/workflows/adversarial-nightly.yml' \
+    '.github/workflows/tsan-nightly.yml' \
     'requires the applicable A8 policy evidence and a source-bound TSan CI receipt'
 probe_package_manifest_complete
 probe_diagnostic_corpus_clean

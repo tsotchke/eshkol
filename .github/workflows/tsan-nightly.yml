@@ -1,0 +1,81 @@
+name: Nightly ThreadSanitizer
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  LLVM_MAJOR: '21'
+
+jobs:
+  concurrency-tsan:
+    name: concurrency-tsan (Linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} clang-${LLVM_MAJOR} libclang-rt-${LLVM_MAJOR}-dev \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: TSan build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
+            -DCMAKE_C_COMPILER="clang-${LLVM_MAJOR}" \
+            -DCMAKE_CXX_COMPILER="clang++-${LLVM_MAJOR}" \
+            -DESHKOL_XLA_ENABLED=OFF -DESHKOL_GPU_ENABLED=OFF \
+            -DESHKOL_ENABLE_TSAN=ON
+          cmake --build build-tsan --target eshkol-run stdlib --parallel 2
+
+      - name: Concurrency corpus under TSan
+        shell: bash
+        env:
+          BUILD_DIR: build-tsan
+        run: bash scripts/run_tsan_concurrency.sh
+
+      - name: Verify the required TSan check for the nightly revision
+        if: github.event_name == 'schedule'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch=$(jq -rn --arg branch "$GITHUB_REF_NAME" '$branch | @uri')
+          contexts="$RUNNER_TEMP/tsan-required-contexts"
+          if ! gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/$branch" \
+                --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[]
+                      | select(.integration_id == null or .integration_id == -1 or .integration_id == 15368) | .context' \
+                > "$contexts" || ! grep -Fxq linux-x64-tsan "$contexts"; then
+            gh api "repos/$GITHUB_REPOSITORY/branches/$branch/protection/required_status_checks" \
+              --jq 'if .checks then .checks[] | select(.app_id == null or .app_id == -1 or .app_id == 15368)
+                    | .context else .contexts[] end' > "$contexts"
+            grep -Fx linux-x64-tsan "$contexts"
+          fi
+          jq -cn --arg sha "$(git rev-parse HEAD)" --arg branch "$GITHUB_REF_NAME" \
+            --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" \
+            '{kind:"v1_4_connection",name:"v14_assurance_a8_tsan_lane",value:"PASS",source:$sha,
+              snippet:("Nightly TSan corpus passed. " + $branch + " requires linux-x64-tsan. " + $run)}' \
+            > "$RUNNER_TEMP/nightly_tsan_ci.jsonl"
+
+      - name: Upload nightly TSan evidence
+        if: github.event_name == 'schedule'
+        uses: actions/upload-artifact@v7
+        with:
+          name: icc-evidence-nightly-tsan
+          path: ${{ runner.temp }}/nightly_tsan_ci.jsonl
+          if-no-files-found: error
