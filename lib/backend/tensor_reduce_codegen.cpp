@@ -113,6 +113,10 @@ llvm::Value* extractStructuralIntOrRaise(CodegenContext& ctx,
         llvm::Value* expected = ctx.builder().CreateGlobalString(expected_type, "axis_int_expected");
         ctx.builder().CreateCall(type_error_fn, {proc, expected});
         ctx.builder().CreateUnreachable();
+        // The refusal is unconditional: there is no success block, and the
+        // caller lowers the rest of the reduction with the value returned
+        // here. That IR continues in its own unreachable block.
+        ctx.continueAfterNoReturn("axis_type_error_dead");
         return llvm::ConstantInt::get(ctx.int64Type(), 0);
     }
 

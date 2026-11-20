@@ -4315,6 +4315,24 @@ if(ESHKOL_BUILD_TESTS)
     add_test(NAME ir_builder_continuation COMMAND ir_builder_continuation_test)
 endif()
 
+# The block boundary after a no-return emission: continueAfterNoReturn() seats
+# the builder on a fresh predecessor-less block, and blocksPastUnreachable()
+# names every block an emitter left with instructions behind `unreachable`.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(noreturn_blocks_test tests/backend/noreturn_blocks_test.cpp)
+    target_compile_features(noreturn_blocks_test PRIVATE cxx_std_20)
+    target_include_directories(noreturn_blocks_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    eshkol_target_llvm_includes(noreturn_blocks_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(noreturn_blocks_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(noreturn_blocks_test PRIVATE ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME noreturn_blocks COMMAND noreturn_blocks_test)
+    set_tests_properties(noreturn_blocks PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: no-return block continuation"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND ESHKOL_TENSORCORE_ENABLED AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_compatibility_test.cpp")
     add_executable(tensorcore_compatibility_test
