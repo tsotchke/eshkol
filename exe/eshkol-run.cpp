@@ -8593,6 +8593,9 @@ int main(int argc, char **argv)
     std::vector<std::string> required_zero_arg_vm_entries;
     const char* depfile_path = nullptr;  // --emit-depfile PATH (ESH-0215)
     const char* stdlib_identity_symbol = nullptr;
+    enum class StdlibIdentityAction { None, PrintExpected, CheckFile };
+    StdlibIdentityAction stdlib_identity_action = StdlibIdentityAction::None;
+    const char* stdlib_identity_check_path = nullptr;
 
     if (argc == 1) print_help(1);
 
@@ -8774,9 +8777,27 @@ int main(int argc, char **argv)
             stdlib_identity_symbol = optarg;
             break;
         case 270:
-            return eshkol::stdlib_identity::print_expected_identity(stdout) ? 0 : 1;
+            if (stdlib_identity_action != StdlibIdentityAction::None) {
+                fprintf(stderr,
+                        "stdlib identity metadata action may be specified only once\n");
+                return 1;
+            }
+            stdlib_identity_action = StdlibIdentityAction::PrintExpected;
+            break;
         case 271:
-            return eshkol::stdlib_identity::check_file_identity(optarg, stdout, stderr);
+            if (!optarg || !*optarg) {
+                fprintf(stderr,
+                        "--check-stdlib-identity requires a non-empty path\n");
+                return 1;
+            }
+            if (stdlib_identity_action != StdlibIdentityAction::None) {
+                fprintf(stderr,
+                        "stdlib identity metadata action may be specified only once\n");
+                return 1;
+            }
+            stdlib_identity_action = StdlibIdentityAction::CheckFile;
+            stdlib_identity_check_path = optarg;
+            break;
         case 'f':
             /* Native AOT object emission is configured with Reloc::PIC_. */
             break;
@@ -8813,6 +8834,19 @@ int main(int argc, char **argv)
         default:
             print_help(1);
         }
+    }
+
+    if (stdlib_identity_action != StdlibIdentityAction::None) {
+        if (optind != argc) {
+            fprintf(stderr,
+                    "stdlib identity metadata commands do not accept positional inputs\n");
+            return 1;
+        }
+        if (stdlib_identity_action == StdlibIdentityAction::PrintExpected) {
+            return eshkol::stdlib_identity::print_expected_identity(stdout) ? 0 : 1;
+        }
+        return eshkol::stdlib_identity::check_file_identity(
+            stdlib_identity_check_path, stdout, stderr);
     }
 
     // Default optimization level for GENERATED code.

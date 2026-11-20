@@ -157,7 +157,44 @@ def main():
             check(name, path, False)
         check("missing-file", work / "absent", False)
         check("directory", work / "tmp", False)
-        need(len(cases) == 22, "case matrix incomplete")
+        if args.compiler:
+            # Metadata actions finish option parsing before they run, so unknown
+            # options, operands, empty paths and repeated or combined actions are
+            # refused without printing identity metadata.
+            matching = work / "matching.o"
+            refusals = {
+                "leading-unknown": (["--unknown-identity-option", "--stdlib-identity"], None),
+                "trailing-unknown": (["--stdlib-identity", "--unknown-identity-option"], None),
+                "trailing-invalid-types": (["--stdlib-identity", "--types", "bogus"],
+                                           "--types takes gradual or strict"),
+                "metadata-positional": (["--stdlib-identity", work / "main.esk"],
+                                        "do not accept positional inputs"),
+                "empty-check-path": (["--check-stdlib-identity="], "requires a non-empty path"),
+                "repeated-print": (["--stdlib-identity", "--stdlib-identity"], "may be specified only once"),
+                "repeated-check": (["--check-stdlib-identity", matching, "--check-stdlib-identity", matching],
+                                   "may be specified only once"),
+                "combined-actions": (["--stdlib-identity", "--check-stdlib-identity", matching],
+                                     "may be specified only once"),
+                "combined-actions-reverse": (["--check-stdlib-identity", matching, "--stdlib-identity"],
+                                             "may be specified only once"),
+                "check-trailing-unknown": (["--check-stdlib-identity", matching, "--unknown-identity-option"], None),
+                "check-positional": (["--check-stdlib-identity", matching, "extra-input"],
+                                     "do not accept positional inputs"),
+            }
+            metadata = re.compile(r"^(schema|release|abi|source|symbol|status)=", re.M)
+            for label, (argv, reason) in refusals.items():
+                child = subprocess.run([str(executable), *map(str, argv)], capture_output=True,
+                                       text=True, env=env, timeout=60)
+                (work / ("cli-" + label + ".stdout")).write_text(child.stdout)
+                (work / ("cli-" + label + ".stderr")).write_text(child.stderr)
+                need(child.returncode != 0, label + ": metadata command unexpectedly succeeded")
+                need(not metadata.search(child.stdout) and not metadata.search(child.stderr),
+                     label + ": refusal emitted identity metadata")
+                if reason:
+                    need(reason in child.stderr, label + ": missing diagnostic: " + reason)
+                cases.append({"name": "cli-" + label, "expected_admission": False, "pass": True})
+                record()
+        need(len(cases) == 22 + (11 if args.compiler else 0), "case matrix incomplete")
         result.update(status="PASS_STDLIB_IDENTITY_METADATA_CONTROLS",
                       cases_passed=len(cases), expected_identity=identity,
                       executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest())
