@@ -2560,6 +2560,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_deep_equal.cpp
   lib/core/runtime_math_compat.c
   lib/core/runtime_hash_table.cpp
+  lib/core/table_hash.cpp
   lib/core/runtime_list_helpers.cpp
   lib/core/linear_solve.cpp
   lib/core/linear_solve_portable.c
@@ -11034,6 +11035,12 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
             ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
         add_test(NAME ${name} COMMAND ${name})
     endfunction()
+    add_executable(table_hash_vectors tests/core/table_hash_vectors.cpp lib/core/table_hash.cpp)
+    target_include_directories(table_hash_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME table_hash_vectors COMMAND table_hash_vectors)
+    add_vm_runtime_test(vm_numeric_key_hash)
+    add_test(NAME vm_process_hash_key COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/process_hash_key.py $<TARGET_FILE:vm_numeric_key_hash>)
     add_vm_runtime_test(vm_standard_port_roots)
     add_vm_runtime_test(gensym_shared_sequence)
     foreach(_dispatch IN ITEMS threaded switch)

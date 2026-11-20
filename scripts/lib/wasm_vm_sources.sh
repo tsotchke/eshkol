@@ -31,6 +31,7 @@
 ESHKOL_WASM_VM_SOURCES=(
     "$REPO_ROOT/lib/backend/vm_wasm_repl.c"
     "$REPO_ROOT/lib/core/gensym_sequence.cpp"
+    "$REPO_ROOT/lib/core/table_hash.cpp"
     "$REPO_ROOT/lib/core/unicode.cpp"
     "$REPO_ROOT/lib/core/platform_runtime.cpp"
     "$REPO_ROOT/lib/core/model_io_atomic.c"

@@ -49,6 +49,13 @@
       "from": 26,
       "to": 13,
       "reason": "Shared lifetime operations centralize atomic count access and final header reclamation."
+    },
+    {
+      "class": "G_header_field_write",
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "from": 7,
+      "to": 6,
+      "reason": "Numeric subtype tests share the subtype accessor for rational and i128 payloads."
     }
   ]
 }
