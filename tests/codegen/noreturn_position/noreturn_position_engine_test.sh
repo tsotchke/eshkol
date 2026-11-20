@@ -20,8 +20,11 @@
 #     repl   the same forms fed to eshkol-repl on standard input
 #
 #   jit, aot and vm must each produce the expected output and status, so the
-#   three agree with each other by construction. On all four, the generated
-#   module must be accepted by the IR verifier.
+#   three agree with each other by construction. The REPL column states what
+#   an interactive session does with the same forms: the same transcript when
+#   the program handles its conditions, the reported diagnostic when it does
+#   not, the exit status when it exits. On all four, and in the VM compile
+#   step, the generated module must be accepted by the IR checks.
 #
 # USAGE
 #   bash noreturn_position_engine_test.sh <eshkol-run> <eshkol-vm-standalone-test> <eshkol-repl> <work dir>
@@ -40,7 +43,7 @@ mkdir -p "$WORK"
 WORK="$(cd "$WORK" && pwd)"
 cd "$WORK" || exit 1
 
-IR_REJECTED='verification failed|Terminator found|does not dominate|Invalid LLVM module|Failed to generate LLVM IR|fatal signal'
+IR_REJECTED='verification failed|Terminator found|emitted after .unreachable.|does not dominate|Invalid LLVM module|Failed to generate LLVM IR|fatal signal'
 
 failures=0
 rows=0
@@ -50,7 +53,8 @@ fail() { echo "FAIL: $*"; failures=$((failures + 1)); }
 # line breaks dropped, so the three engines are compared on what the program
 # itself wrote.
 transcript() {
-    sed -e 's/=== Execution complete ===//' "$1" \
+    sed -E -e 's/=== Execution complete ===//' \
+           -e 's/([^ |]*\.esk|<unknown>):[0-9]+:[0-9]+: //g' "$1" \
         | grep -v -e '^\[ESKB\]' -e '^=== Eshkol VM' \
         | tr -d '\n'
 }
@@ -75,7 +79,7 @@ check_engine() {  # check_engine <id> <engine> <expected status> <expected stdou
     fi
 }
 
-while IFS=$'\t' read -r want_status want_out program; do
+while IFS=$'\t' read -r want_status want_out want_repl program; do
     case "$want_status" in ''|'#'*) continue ;; esac
     rows=$((rows + 1))
     id="$(printf 'case%03d' "$rows")"
@@ -94,6 +98,9 @@ while IFS=$'\t' read -r want_status want_out program; do
 
     if [ -n "$ESHKOL_VM" ]; then
         if "$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$id.eskb" "$id.esk" -L"$LIBDIR" < /dev/null > "$id.vmc.out" 2>&1 && [ -f "$id.eskb" ]; then
+            if grep -Eq "$IR_REJECTED" "$id.vmc.out"; then
+                fail "$id [vm] compile step reported a rejected module: $(grep -Eh -m1 "$IR_REJECTED" "$id.vmc.out" | head -1)"
+            fi
             "$ESHKOL_VM" "$id.eskb" < /dev/null > "$id.vm.out" 2> "$id.vm.err"
             check_engine "$id" vm "$want_status" "$want_out" $?
         else
@@ -102,19 +109,32 @@ while IFS=$'\t' read -r want_status want_out program; do
     fi
 
     if [ -n "$ESHKOL_REPL" ]; then
-        # The REPL session survives an unhandled condition and goes on to the
-        # next line, so its transcript is compared only for programs that
-        # handle theirs; every row must still produce an accepted module.
+        # A REPL session reports an unhandled condition and goes on to the
+        # next line; `exit` ends it with the program's status.
         "$ESHKOL_REPL" < "$id.esk" > "$id.repl.out" 2> "$id.repl.err"
+        repl_status=$?
+        repl_out="$(transcript "$id.repl.out")"
         if grep -Eq "$IR_REJECTED" "$id.repl.out" "$id.repl.err"; then
             fail "$id [repl] generated module was rejected: $(grep -Eh -m1 "$IR_REJECTED" "$id.repl.out" "$id.repl.err" | head -1)"
-        elif [ "$want_status" = "0" ]; then
-            repl_out="$(tr -d '\n' < "$id.repl.out")"
+        elif [ "$want_repl" = "-" ]; then
             if [ "$repl_out" != "$want_out" ]; then
                 fail "$id [repl] stdout '$repl_out', expected '$want_out'"
             fi
-        elif ! grep -q 'before|' "$id.repl.out"; then
-            fail "$id [repl] did not run the form ahead of the no-return call"
+        elif [ "$want_repl" = "exit" ]; then
+            if [ "$repl_out" != "$want_out" ]; then
+                fail "$id [repl] stdout '$repl_out', expected '$want_out'"
+            fi
+            if ! status_ok "$want_status" "$repl_status"; then
+                fail "$id [repl] exit status $repl_status, expected $want_status"
+            fi
+        else
+            if ! grep -Fq -- "$want_repl" "$id.repl.err" "$id.repl.out"; then
+                fail "$id [repl] no diagnostic '$want_repl' (stderr: $(head -c 200 "$id.repl.err" | tr '\n' ' '))"
+            fi
+            case "$repl_out" in
+                "$want_out"*) : ;;
+                *) fail "$id [repl] stdout '$repl_out' does not begin with '$want_out'" ;;
+            esac
         fi
     fi
 done < "$CASES"

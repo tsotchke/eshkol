@@ -104,6 +104,10 @@
 (check "(if (and) ..)"            (if (and) 'yes 'no) 'yes)
 (check "(or (or) (and))"          (or (or) (and)) #t)
 (check "(and (and) (or))"         (and (and) (or)) #f)
+(check "(and) in a mapped lambda" (map (lambda (x) (and)) (list 1 2)) '(#t #t))
+(check "(or) in a mapped lambda"  (map (lambda (x) (or)) (list 1 2)) '(#f #f))
+(check "(and) under apply"        (apply (lambda () (and)) '()) #t)
+(check "(or) under apply"         (apply (lambda () (or)) '()) #f)
 
 ;; --- the operand is a call --------------------------------------------------
 (define (pos-list x) (if (> x 0) (list x) #f))
