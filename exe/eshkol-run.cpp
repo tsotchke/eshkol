@@ -4785,6 +4785,9 @@ int main(int argc, char **argv)
         eshkol_error("Strict resource error: opaque -l libraries are unsupported with --strict-resources");
         return 1;
     }
+    // Every unit this driver compiles under --strict-resources passes the
+    // strict verdict first; code generation applies no second verdict.
+    if (strict_resources) eshkol::setStrictVerdictApplied(true);
 
     if (!include_paths.empty()) {
         std::string merged;

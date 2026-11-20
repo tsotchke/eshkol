@@ -3,6 +3,7 @@
 #include <eshkol/types/type_checker.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -5854,6 +5855,12 @@ private:
 
 static thread_local OwnershipBindings* interactive_bindings = nullptr;
 static thread_local bool unit_refused = false;
+
+static std::atomic<bool> strict_verdict_applied{false};
+
+void setStrictVerdictApplied(bool applied) { strict_verdict_applied = applied; }
+
+bool strictVerdictApplied() { return strict_verdict_applied; }
 
 bool takeOwnershipRefusal() {
     const bool refused = unit_refused;

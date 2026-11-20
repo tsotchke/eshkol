@@ -70,4 +70,10 @@ struct OwnershipRefusal : std::runtime_error {
 // Whether a verdict on this thread refused a unit since the last call.
 bool takeOwnershipRefusal();
 
+// Set by a driver that has already applied the --strict-resources verdict,
+// which includes every default ownership rule, to the units it compiles.
+// Code generation then does not apply the default verdict a second time.
+void setStrictVerdictApplied(bool applied);
+bool strictVerdictApplied();
+
 }

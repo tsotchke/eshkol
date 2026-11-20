@@ -2444,7 +2444,7 @@ public:
             // expansion, so every downstream pass sees a clean flat list.
             eshkol::splice_toplevel_forms(expanded_asts);   // R7RS 5.1: recursive
 
-            if (!eshkol_config_get()->unsafe_mode) {
+            if (!eshkol_config_get()->unsafe_mode && !eshkol::strictVerdictApplied()) {
                 const auto errors = eshkol::checkOwnership(expanded_asts, nullptr,
                     eshkol::OwnershipTransaction::current());
                 if (!errors.empty()) {
