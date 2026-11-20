@@ -1710,6 +1710,14 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(typed_result_tensor_ptr);
 }
 
+static llvm::Value* combineReduction(llvm::IRBuilder<>& builder, const std::string& op,
+                                     llvm::Value* accumulator, llvm::Value* value) {
+    if (op == "*") return builder.CreateFMul(accumulator, value);
+    if (op == "max") return builder.CreateSelect(builder.CreateFCmpOGT(accumulator, value), accumulator, value);
+    if (op == "min") return builder.CreateSelect(builder.CreateFCmpOLT(accumulator, value), accumulator, value);
+    return builder.CreateFAdd(accumulator, value);
+}
+
 llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     // tensor-reduce-all: (tensor-reduce-all tensor function initial-value)
     // Reduces entire tensor to a single value by applying a binary function
@@ -1775,22 +1783,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::Value* svec_elem_val = extractAsDouble(svec_elem_tagged);
 
     llvm::Value* svec_current_acc = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_acc);
-    llvm::Value* svec_new_acc = nullptr;
-
-    if (func_name == "+") {
-        svec_new_acc = ctx_.builder().CreateFAdd(svec_current_acc, svec_elem_val);
-    } else if (func_name == "*") {
-        svec_new_acc = ctx_.builder().CreateFMul(svec_current_acc, svec_elem_val);
-    } else if (func_name == "max") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(svec_current_acc, svec_elem_val);
-        svec_new_acc = ctx_.builder().CreateSelect(cmp, svec_current_acc, svec_elem_val);
-    } else if (func_name == "min") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(svec_current_acc, svec_elem_val);
-        svec_new_acc = ctx_.builder().CreateSelect(cmp, svec_current_acc, svec_elem_val);
-    } else {
-        svec_new_acc = ctx_.builder().CreateFAdd(svec_current_acc, svec_elem_val);
-    }
-
+    llvm::Value* svec_new_acc = combineReduction(ctx_.builder(), func_name, svec_current_acc, svec_elem_val);
     ctx_.builder().CreateStore(svec_new_acc, svec_acc);
     llvm::Value* svec_next_i = ctx_.builder().CreateAdd(svec_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(svec_next_i, svec_counter);
@@ -1856,13 +1849,16 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
             ctx_.builder().SetInsertPoint(xla_reduce_block);
             llvm::Value* xla_result = xla_->emitReduce(tensor_ptr, -1, xla_reduce_op);
             if (xla_result) {
+                auto* reduced = llvm::BasicBlock::Create(ctx_.context(), "treduce_xla_value", current_func);
+                ctx_.builder().CreateCondBr(ctx_.builder().CreateIsNotNull(xla_result), reduced, scalar_reduce_block);
+                ctx_.builder().SetInsertPoint(reduced);
                 // Extract scalar from 1-element result tensor
                 llvm::Value* xla_elems_ptr = ctx_.builder().CreateStructGEP(tensor_type, xla_result,
                     TypeSystem::TENSOR_ELEMENTS_IDX, "xla_reduce_elems_ptr");
                 llvm::Value* xla_elems = ctx_.builder().CreateLoad(ctx_.ptrType(), xla_elems_ptr, "xla_reduce_elems");
                 llvm::Value* xla_int_val = ctx_.builder().CreateLoad(ctx_.int64Type(), xla_elems, "xla_reduce_int");
                 llvm::Value* xla_reduce_val = ctx_.builder().CreateBitCast(xla_int_val, ctx_.doubleType(), "xla_reduce_dbl");
-                ctx_.builder().CreateStore(xla_reduce_val, tensor_acc);
+                ctx_.builder().CreateStore(combineReduction(ctx_.builder(), func_name, tensor_initial, xla_reduce_val), tensor_acc);
                 ctx_.builder().CreateBr(tensor_loop_exit);
             } else {
                 // XLA returned nullptr, fall back to scalar loop
@@ -1888,22 +1884,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::Value* tensor_elem_val = ctx_.builder().CreateBitCast(tensor_elem_bits, ctx_.doubleType());
 
     llvm::Value* tensor_current_acc = ctx_.builder().CreateLoad(ctx_.doubleType(), tensor_acc);
-    llvm::Value* tensor_new_acc = nullptr;
-
-    if (func_name == "+") {
-        tensor_new_acc = ctx_.builder().CreateFAdd(tensor_current_acc, tensor_elem_val);
-    } else if (func_name == "*") {
-        tensor_new_acc = ctx_.builder().CreateFMul(tensor_current_acc, tensor_elem_val);
-    } else if (func_name == "max") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(tensor_current_acc, tensor_elem_val);
-        tensor_new_acc = ctx_.builder().CreateSelect(cmp, tensor_current_acc, tensor_elem_val);
-    } else if (func_name == "min") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(tensor_current_acc, tensor_elem_val);
-        tensor_new_acc = ctx_.builder().CreateSelect(cmp, tensor_current_acc, tensor_elem_val);
-    } else {
-        tensor_new_acc = ctx_.builder().CreateFAdd(tensor_current_acc, tensor_elem_val);
-    }
-
+    llvm::Value* tensor_new_acc = combineReduction(ctx_.builder(), func_name, tensor_current_acc, tensor_elem_val);
     ctx_.builder().CreateStore(tensor_new_acc, tensor_acc);
     llvm::Value* tensor_next_i = ctx_.builder().CreateAdd(tensor_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(tensor_next_i, tensor_counter);
@@ -1934,11 +1915,10 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     }
 
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
-    // Evaluate initial_value for side effects but we don't pass it to the runtime
-    // (the runtime knows the correct identity for each op)
-    codegenAST(&op->call_op.variables[2]);
+    llvm::Value* initial_value = codegenAST(&op->call_op.variables[2]);
     llvm::Value* dimension_value = codegenAST(&op->call_op.variables[3]);
-    if (!tensor_val || !dimension_value) return nullptr;
+    if (!tensor_val || !initial_value || !dimension_value) return nullptr;
+    llvm::Value* initial = taggedNumericToDouble(ctx_, tagged_, initial_value);
 
     // Get function name to determine op code
     eshkol_ast_t* func_ast = &op->call_op.variables[1];
@@ -1987,7 +1967,9 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     // An axis that does not address a reducible dimension used to reach
     // eshkol_xla_reduce, which returned NULL, which was packed as a heap
     // pointer and displayed as `()` — an error that read as an empty result.
-    axis_val = checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
+    axis_val = func_name == "mean"
+        ? checkReduceAxis(axis_val, src_num_dims, src_dims_ptr, "tensor-reduce")
+        : checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
 
     // Load arena
     llvm::Value* arena_ptr = ctx_.currentArena();
@@ -2006,6 +1988,37 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
         {arena_ptr, src_elements_ptr, src_total, src_dims_ptr, src_num_dims, axis_val, op_code_val},
         "reduce_dim_result");
 
+    // Combine the seed with each independently reduced slice.
+    auto& builder = ctx_.builder();
+    emitConditionGuard(builder.CreateIsNotNull(result), "tensor-reduce: reduction failed", "reduce_result");
+    llvm::Value* values = builder.CreateLoad(ptrTy, builder.CreateStructGEP(tensor_type, result, 2));
+    llvm::Value* count = builder.CreateLoad(i64Ty, builder.CreateStructGEP(tensor_type, result, 3));
+    auto* length = builder.CreateLoad(i64Ty, builder.CreateGEP(i64Ty, src_dims_ptr, axis_val));
+    auto* empty_slice = builder.CreateICmpEQ(length, builder.getInt64(0));
+    llvm::Value* seed = initial;
+    if (func_name == "mean") {
+        seed = builder.CreateFDiv(initial, builder.CreateSIToFP(length, ctx_.doubleType()));
+    }
+
+    auto* entry = builder.GetInsertBlock();
+    auto* parent = entry->getParent();
+    auto* loop = llvm::BasicBlock::Create(ctx_.context(), "reduce_seed_loop", parent);
+    auto* body = llvm::BasicBlock::Create(ctx_.context(), "reduce_seed_body", parent);
+    auto* done = llvm::BasicBlock::Create(ctx_.context(), "reduce_seed_done", parent);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(loop);
+    auto* index = builder.CreatePHI(i64Ty, 2);
+    index->addIncoming(builder.getInt64(0), entry);
+    builder.CreateCondBr(builder.CreateICmpULT(index, count), body, done);
+    builder.SetInsertPoint(body);
+    auto* element = builder.CreateGEP(ctx_.doubleType(), values, index);
+    auto* value = builder.CreateLoad(ctx_.doubleType(), element);
+    auto* combined = combineReduction(builder, func_name, seed, value);
+    builder.CreateStore(builder.CreateSelect(empty_slice, initial, combined), element);
+    auto* next = builder.CreateAdd(index, builder.getInt64(1));
+    index->addIncoming(next, body);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(done);
     return tagged_.packHeapPtr(result);
 }
 
