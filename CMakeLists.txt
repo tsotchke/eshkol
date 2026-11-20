@@ -15157,6 +15157,15 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
    AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    foreach(_case IN ITEMS interpolation_ranges)
+        foreach(_engine IN ITEMS jit aot vm)
+            add_test(NAME ${_case}_${_engine}
+                COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+                    $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                    ${_case} ${_engine})
+        endforeach()
+    endforeach()
     add_test(NAME macro_definition_scope
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_definition_scope_test.py
