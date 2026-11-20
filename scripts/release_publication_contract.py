@@ -311,6 +311,8 @@ def junit_outcomes(path):
         failures = [node for node in case if node.tag in {"failure", "error"}]
         if case.find("skipped") is not None or status in {"skipped", "notrun", "disabled"}:
             verdict = "skipped"
+        elif status.lower() == "timeout":
+            verdict = "infra"
         elif failures or status in {"fail", "failed", "error"}:
             detail = " ".join(" ".join(node.itertext()) + " " + node.get("message", "") for node in failures)
             verdict = "infra" if re.search(r"\btimeout\b", detail, re.I) else "failed"
