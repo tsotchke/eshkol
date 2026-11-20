@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -12,6 +14,257 @@
 namespace eshkol {
 namespace {
 namespace sr = strict_resources;
+
+// ── value flow helpers for alias and escape checking ────────────────────
+// Every expression a node evaluates or closes over, following the payload of
+// each operator the macro expander traverses. Leaf operators have none.
+template <class F>
+void forEachChildExpr(const eshkol_ast_t* e, F&& f) {
+    if (!e) return;
+    if (e->type == ESHKOL_CONS) {
+        f(e->cons_cell.car);
+        f(e->cons_cell.cdr);
+        return;
+    }
+    if (e->type != ESHKOL_OP) return;
+    const auto& op = e->operation;
+    auto each = [&](const eshkol_ast_t* nodes, uint64_t count) {
+        if (nodes)
+            for (uint64_t i = 0; i < count; ++i) f(&nodes[i]);
+    };
+    switch (op.op) {
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            each(op.sequence_op.expressions, op.sequence_op.num_expressions);
+            return;
+        case ESHKOL_DEFINE_OP:
+            f(op.define_op.value);
+            return;
+        case ESHKOL_LAMBDA_OP:
+            f(op.lambda_op.body);
+            return;
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP:
+            for (uint64_t i = 0; op.let_op.bindings && i < op.let_op.num_bindings; ++i) {
+                const eshkol_ast_t& binding = op.let_op.bindings[i];
+                if (binding.type == ESHKOL_CONS) f(binding.cons_cell.cdr);
+            }
+            f(op.let_op.body);
+            return;
+        case ESHKOL_MATCH_OP:
+            f(op.match_op.expr);
+            for (uint64_t i = 0; op.match_op.clauses && i < op.match_op.num_clauses; ++i) {
+                f(op.match_op.clauses[i].guard);
+                f(op.match_op.clauses[i].body);
+            }
+            return;
+        case ESHKOL_SET_OP:
+            f(op.set_op.value);
+            return;
+        case ESHKOL_GUARD_OP:
+            each(op.guard_op.clauses, op.guard_op.num_clauses);
+            each(op.guard_op.body, op.guard_op.num_body_exprs);
+            return;
+        case ESHKOL_RAISE_OP:
+            f(op.raise_op.exception);
+            return;
+        case ESHKOL_VALUES_OP:
+            each(op.values_op.expressions, op.values_op.num_values);
+            return;
+        case ESHKOL_CALL_CC_OP:
+            f(op.call_cc_op.proc);
+            return;
+        case ESHKOL_DYNAMIC_WIND_OP:
+            f(op.dynamic_wind_op.before);
+            f(op.dynamic_wind_op.thunk);
+            f(op.dynamic_wind_op.after);
+            return;
+        case ESHKOL_THE_OP:
+            f(op.the_op.expr);
+            return;
+        case ESHKOL_COMPOSE_OP:
+            f(op.compose_op.func_a);
+            f(op.compose_op.func_b);
+            return;
+        case ESHKOL_TENSOR_OP:
+            each(op.tensor_op.elements, op.tensor_op.total_elements);
+            return;
+        case ESHKOL_DIFF_OP:
+            f(op.diff_op.expression);
+            return;
+        case ESHKOL_DERIVATIVE_OP:
+            f(op.derivative_op.function);
+            f(op.derivative_op.point);
+            return;
+        case ESHKOL_GRADIENT_OP:
+        case ESHKOL_JACOBIAN_OP:
+        case ESHKOL_HESSIAN_OP:
+        case ESHKOL_DIVERGENCE_OP:
+        case ESHKOL_CURL_OP:
+        case ESHKOL_LAPLACIAN_OP:
+            f(op.gradient_op.function);
+            f(op.gradient_op.point);
+            return;
+        case ESHKOL_DIRECTIONAL_DERIV_OP:
+            f(op.directional_deriv_op.function);
+            f(op.directional_deriv_op.point);
+            f(op.directional_deriv_op.direction);
+            return;
+        case ESHKOL_TAYLOR_OP:
+        case ESHKOL_DERIVATIVE_N_OP:
+            f(op.taylor_op.function);
+            f(op.taylor_op.point);
+            f(op.taylor_op.order);
+            return;
+        case ESHKOL_WITH_REGION_OP:
+            each(op.with_region_op.body, op.with_region_op.num_body_exprs);
+            return;
+        case ESHKOL_OWNED_OP:
+            f(op.owned_op.value);
+            return;
+        case ESHKOL_MOVE_OP:
+            f(op.move_op.value);
+            return;
+        case ESHKOL_SHARED_OP:
+            f(op.shared_op.value);
+            return;
+        case ESHKOL_WEAK_REF_OP:
+            f(op.weak_ref_op.value);
+            return;
+        case ESHKOL_BORROW_OP:
+            f(op.borrow_op.value);
+            each(op.borrow_op.body, op.borrow_op.num_body_exprs);
+            return;
+        case ESHKOL_CALL_WITH_VALUES_OP:
+            f(op.call_with_values_op.producer);
+            f(op.call_with_values_op.consumer);
+            return;
+        case ESHKOL_LET_VALUES_OP:
+        case ESHKOL_LET_STAR_VALUES_OP:
+            each(op.let_values_op.producers, op.let_values_op.num_bindings);
+            f(op.let_values_op.body);
+            return;
+        case ESHKOL_CASE_LAMBDA_OP:
+            each(op.case_lambda_op.clauses, op.case_lambda_op.num_clauses);
+            return;
+        case ESHKOL_PARAMETERIZE_OP:
+            each(op.parameterize_op.params, op.parameterize_op.num_bindings);
+            each(op.parameterize_op.values, op.parameterize_op.num_bindings);
+            f(op.parameterize_op.body);
+            return;
+        case ESHKOL_CALL_OP:
+        case ESHKOL_IF_OP:
+        case ESHKOL_ADD_OP:
+        case ESHKOL_SUB_OP:
+        case ESHKOL_MUL_OP:
+        case ESHKOL_DIV_OP:
+        case ESHKOL_QUASIQUOTE_OP:
+        case ESHKOL_UNQUOTE_OP:
+        case ESHKOL_UNQUOTE_SPLICING_OP:
+        case ESHKOL_COND_OP:
+        case ESHKOL_CASE_OP:
+        case ESHKOL_WHEN_OP:
+        case ESHKOL_UNLESS_OP:
+        case ESHKOL_DO_OP:
+        case ESHKOL_UNIFY_OP: case ESHKOL_MAKE_SUBST_OP: case ESHKOL_WALK_OP:
+        case ESHKOL_MAKE_FACT_OP: case ESHKOL_MAKE_KB_OP: case ESHKOL_KB_ASSERT_OP:
+        case ESHKOL_KB_QUERY_OP: case ESHKOL_MAKE_FACTOR_GRAPH_OP: case ESHKOL_FG_ADD_FACTOR_OP:
+        case ESHKOL_FG_INFER_OP: case ESHKOL_FREE_ENERGY_OP: case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+        case ESHKOL_MAKE_WORKSPACE_OP: case ESHKOL_WS_REGISTER_OP: case ESHKOL_WS_STEP_OP:
+        case ESHKOL_FG_UPDATE_CPT_OP: case ESHKOL_FG_OBSERVE_OP: case ESHKOL_LOGIC_VAR_PRED_OP:
+        case ESHKOL_SUBSTITUTION_PRED_OP: case ESHKOL_KB_PRED_OP: case ESHKOL_FACT_PRED_OP:
+        case ESHKOL_FACTOR_GRAPH_PRED_OP: case ESHKOL_WORKSPACE_PRED_OP: case ESHKOL_KB_QUERY_PREFIX_OP:
+        case ESHKOL_DNC_MAKE_OP: case ESHKOL_DNC_CONTENT_ADDR_OP: case ESHKOL_DNC_LOC_ADDR_OP:
+        case ESHKOL_DNC_READ_OP: case ESHKOL_DNC_WRITE_OP: case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+        case ESHKOL_DNC_READ_GRAD_OP: case ESHKOL_DNC_PRED_OP: case ESHKOL_SDNC_PROGRAM_OP:
+        case ESHKOL_SDNC_RUN_OP: case ESHKOL_SDNC_WEIGHT_GRAD_OP: case ESHKOL_SDNC_PARAMS_OP:
+        case ESHKOL_SDNC_SET_PARAMS_OP: case ESHKOL_SDNC_IMPROVE_OP: case ESHKOL_SDNC_PRED_OP:
+            f(op.call_op.func);
+            each(op.call_op.variables, op.call_op.num_vars);
+            return;
+        default:
+            return;
+    }
+}
+
+bool containsOwnershipForm(const eshkol_ast_t* e, unsigned depth = 0) {
+    if (!e || depth > 4096) return e != nullptr;
+    if (e->type == ESHKOL_OP && (e->operation.op == ESHKOL_OWNED_OP ||
+                                 e->operation.op == ESHKOL_MOVE_OP ||
+                                 e->operation.op == ESHKOL_BORROW_OP))
+        return true;
+    bool found = false;
+    forEachChildExpr(e, [&](const eshkol_ast_t* child) {
+        found = found || containsOwnershipForm(child, depth + 1);
+    });
+    return found;
+}
+
+// Builtins whose result holds no reference to an argument: numbers,
+// booleans, characters, fresh strings and symbols, and the unspecified value.
+bool isScalarResultBuiltin(const std::string& name) {
+    if (!name.empty() && name.back() == '?') return true;
+    static const std::set<std::string> names = {
+        "+", "-", "*", "/", "=", "<", "<=", ">", ">=", "not", "quotient", "remainder",
+        "modulo", "abs", "min", "max", "expt", "exp", "log", "sqrt", "sin", "cos", "tan",
+        "asin", "acos", "atan", "floor", "ceiling", "round", "truncate", "square", "gcd",
+        "lcm", "numerator", "denominator", "exact->inexact", "inexact->exact", "exact",
+        "inexact", "number->string", "string->number", "length", "vector-length",
+        "string-length", "string-ref", "char->integer", "integer->char", "symbol->string",
+        "string->symbol", "string-append", "substring", "string-copy", "list->string",
+        "string-upcase", "string-downcase", "display", "write", "newline", "write-string",
+        "write-char", "print", "println", "void", "type-name", "bitwise-and", "bitwise-or",
+        "bitwise-xor", "bitwise-not", "arithmetic-shift", "hash", "string-hash", "eq-hash"
+    };
+    return names.count(name) != 0;
+}
+
+// Builtins that may call a procedure argument with their other arguments.
+bool callsProcedureArguments(const std::string& name) {
+    static const char* const parts[] = {
+        "map", "for-each", "fold", "reduce", "filter", "sort", "apply", "find", "any",
+        "every", "count", "partition", "remove", "call-with", "call/cc", "with-",
+        "dynamic-wind", "walk", "update", "spawn", "thread", "parallel", "future", "force",
+        "promise", "tabulate", "iterate", "compose", "memo", "assoc", "member", "delete"
+    };
+    for (const char* part : parts)
+        if (name.find(part) != std::string::npos) return true;
+    return false;
+}
+
+// Builtins that keep an argument after they return. A Scheme mutator keeps
+// every argument after the object it mutates; the others keep all of them.
+enum class Keeps { NONE, AFTER_FIRST, ALL };
+Keeps builtinKeeps(const std::string& name) {
+    static const char* const parts[] = {
+        "spawn", "thread", "register", "schedule", "async", "future", "send", "enqueue",
+        "publish", "atexit", "set-", "parameter", "promise", "delay", "channel"
+    };
+    for (const char* part : parts)
+        if (name.find(part) != std::string::npos) return Keeps::ALL;
+    if (!name.empty() && name.back() == '!') return Keeps::AFTER_FIRST;
+    return Keeps::NONE;
+}
+
+// What a procedure does with its arguments beyond computing its result.
+struct ProcSummary {
+    std::set<size_t> keeps;                       // parameter slots stored past the call
+    std::map<size_t, std::set<size_t>> passes;    // procedure slot -> slots it receives
+    size_t num_params = 0;
+    bool rest = false;
+
+    bool operator==(const ProcSummary& other) const {
+        return keeps == other.keeps && passes == other.passes;
+    }
+    bool keepsNothing() const { return keeps.empty() && passes.empty(); }
+    size_t slot(size_t argument) const {
+        if (argument < num_params) return argument;
+        return rest ? num_params : SIZE_MAX;
+    }
+};
 
 class OwnershipAnalyzer {
 public:
@@ -61,6 +314,13 @@ public:
         bool lent = false;                             // lent by a borrow scope that closes it
         bool is_exit = false;                          // TERMINAL_CONTROL that ends the process
         std::string unknown_reason;
+        // Alias facts, recorded while the unit uses owned, move or borrow.
+        std::set<uint64_t> reaches;                   // bindings its value may refer to
+        const eshkol_ast_t* proc_node = nullptr;      // function definition or lambda it holds
+        std::shared_ptr<const ProcSummary> summary;   // procedure accepted by an earlier input
+        bool loop_proc = false;                       // a named-let loop procedure
+        bool data = false;                            // holds a value that is never a procedure
+        bool external = false;                        // declared here, defined by a linked object
 
         VariableInfo() = default;
         VariableInfo(State s, std::string at, bool owned, uint64_t id)
@@ -128,10 +388,8 @@ public:
 
         // Push global scope
         pushScope("global");
-        if (globals) {
-            for (const auto& [name, state] : *globals)
-                currentScope().variables[name] = {state, name, state == State::OWNED, next_binding_id_++};
-        }
+        if (globals) loadSession(*globals);
+        prepareAliasTracking(asts, globals);
         prepareStrictBindings(asts);
 
         // Required module ASTs are also executed by the compiler/JIT module
@@ -149,10 +407,7 @@ public:
 
         // Check global scope exit
         checkScopeExit();
-        if (globals && !has_errors_) {
-            for (const auto& [name, info] : currentScope().variables)
-                (*globals)[name] = info.state;
-        }
+        if (globals && !has_errors_) saveSession(*globals);
         popScope();
 
         return !has_errors_;
@@ -403,6 +658,7 @@ private:
         int handler_depth = 0;
         FunctionContext* fn = nullptr;
         bool effects = true;
+        std::vector<size_t> markers;
     };
 
     // ── diagnostics ─────────────────────────────────────────────────────
@@ -647,6 +903,12 @@ private:
         }
         joined.is_proven_callable = a.is_proven_callable && b.is_proven_callable;
         joined.lent = a.lent && b.lent;
+        joined.reaches = a.reaches;
+        joined.reaches.insert(b.reaches.begin(), b.reaches.end());
+        joined.proc_node = a.proc_node == b.proc_node ? a.proc_node : nullptr;
+        joined.summary = a.summary == b.summary ? a.summary : nullptr;
+        joined.loop_proc = a.loop_proc && b.loop_proc;
+        joined.data = a.data && b.data;
     }
 
     Snapshot joinSnapshots(const Snapshot& a, const Snapshot& b) {
@@ -2318,6 +2580,7 @@ private:
         saved.handler_depth = handler_depth_;
         saved.fn = fn_;
         saved.effects = active_resource_effects_enabled_;
+        saved.markers = body_markers_;
         return saved;
     }
 
@@ -2329,6 +2592,7 @@ private:
         handler_depth_ = saved.handler_depth;
         fn_ = saved.fn;
         active_resource_effects_enabled_ = saved.effects;
+        body_markers_ = std::move(saved.markers);
     }
 
     // Analyze one call of a user function against the caller's handle
@@ -2394,6 +2658,7 @@ private:
                                saved.scopes.begin() + std::min<size_t>(saved.scopes.size(),
                                                                        static_cast<size_t>(env_depth) + 1));
         scope_stack_ = std::move(env);
+        body_markers_.clear();
         // While the call runs, a handle passed as an argument is owned by its
         // parameter; the caller's binding is not a second owner the callee
         // may use or must close.
@@ -2940,6 +3205,11 @@ private:
 
     void popScope() {
         if (!scope_stack_.empty()) {
+            if (alias_tracking_)
+                for (const auto& [name, info] : scope_stack_.back().variables)
+                    scoped_out_[info.binding_id] = {name, info.state, info.is_owned_binding, info.reaches};
+            while (!body_markers_.empty() && body_markers_.back() + 1 >= scope_stack_.size())
+                body_markers_.pop_back();
             scope_stack_.pop_back();
         }
     }
@@ -3477,6 +3747,7 @@ private:
                             if (strict_resources_ && item.resource_effects_enabled)
                                 bindResourceInitializer(info, binding->cons_cell.cdr, var_name,
                                                         currentScope().id);
+                            bindValueFacts(info, binding->cons_cell.cdr);
                             info.is_defined = true;
                             currentScope().variables[var_name] = std::move(info);
                         }
@@ -3509,6 +3780,7 @@ private:
                                 info.resource_alias = var_name;
                             }
                         }
+                        bindValueFacts(info, binding->cons_cell.cdr);
                         info.is_defined = true;
                         currentScope().variables[var_name] = std::move(info);
                     }
@@ -3524,6 +3796,7 @@ private:
                         frames_.push_back(std::move(frame));
                         work.push_back(WorkItem::marker(WorkItem::Kind::LOOP_END, nullptr, id, true));
                     }
+                    bindLoopFacts(item.op);
                     work.push_back(astChild(item.op->let_op.body));
                     continue;
                 }
@@ -3589,6 +3862,7 @@ private:
                                 if (loan.owner == info->binding_id && loan.expressions.count(node))
                                     reportError("Borrowed value '" + name + "' escapes its borrow scope");
                             }
+                            checkAliasUse(name, *info);
                         }
                         if (checked && info) checkVariableUse(node, name, *info);
                     }
@@ -3754,7 +4028,12 @@ private:
                     info.binding_id = existing->second.binding_id;
                     previous = existing->second;
                     had_previous = true;
+                } else if (scope_stack_.size() == 1) {
+                    auto predeclared = predeclared_.find(name);
+                    if (predeclared != predeclared_.end()) info.binding_id = predeclared->second;
                 }
+                if (op->define_op.is_function) bindFunctionFacts(info, node);
+                else bindValueFacts(info, op->define_op.value);
                 if (checked) {
                     info.is_defined = true;
                     if (const sr::Contract* stdlib_contract = verifiedStdlibContract(node)) {
@@ -3795,6 +4074,7 @@ private:
                     // The body is checked at each call site with the caller's
                     // handle states; here only the ownership forms are walked.
                     pushScope("function");
+                    enterBody();
                     for (uint64_t i = 0; i < op->define_op.num_params; ++i) {
                         const std::string param_name = getVarName(&op->define_op.parameters[i]);
                         if (!param_name.empty()) {
@@ -3803,6 +4083,9 @@ private:
                             };
                         }
                     }
+                    if (alias_tracking_ && op->define_op.rest_param)
+                        currentScope().variables[op->define_op.rest_param] = {
+                            State::UNOWNED, op->define_op.rest_param, false, next_binding_id_++};
                     work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op, 0, false));
                     work.push_back(WorkItem::astNode(op->define_op.value, false));
                 } else {
@@ -3817,6 +4100,9 @@ private:
 
             case ESHKOL_MOVE_OP: {
                 std::string var_name = getVarName(op->move_op.value);
+                if (alias_tracking_ && boundOutsideCurrentBody(var_name))
+                    reportError("Cannot move '" + var_name + "' inside a procedure or loop body that may run "
+                                "more than once; it is bound outside that body");
                 if (!var_name.empty()) {
                     VariableInfo* info = lookupVariable(var_name);
                     if (info) {
@@ -3911,6 +4197,13 @@ private:
                         }
                     }
                 }
+                for (uint64_t i = 0; record_procs_ && i < op->let_op.num_bindings; ++i) {
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    if (binding->type != ESHKOL_CONS) continue;
+                    auto bound = currentScope().variables.find(getVarName(binding->cons_cell.car));
+                    if (bound != currentScope().variables.end())
+                        bindValueFacts(bound->second, binding->cons_cell.cdr);
+                }
                 if (checked) {
                     for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
                         const eshkol_ast_t* binding = &op->let_op.bindings[i];
@@ -3945,12 +4238,37 @@ private:
                     checkLambdaResourceCapture(node);
                 if (checked && fn_ && fn_->return_nodes.count(node) && !dead_)
                     fn_->returned_value = true;
+                if (alias_tracking_) {
+                    for (const auto& loan : loan_results_) {
+                        if (!loan.expressions.count(node)) continue;
+                        Reach captured;
+                        mentionsOf(node, captured);
+                        std::string borrowed;
+                        if (captured.count(loan.owner) && findBindingById(loan.owner, &borrowed))
+                            reportError("Borrowed value '" + borrowed + "' escapes its borrow scope");
+                    }
+                }
                 pushScope("lambda");
+                ParamReach params;
+                if (alias_tracking_) {
+                    auto known = lambda_param_reach_.find(node);
+                    if (known != lambda_param_reach_.end()) params = known->second;
+                    if (!immediate_lambdas_.count(node)) enterBody();
+                }
                 for (uint64_t i = 0; i < op->lambda_op.num_params; ++i) {
                     std::string param_name = getVarName(&op->lambda_op.parameters[i]);
                     if (!param_name.empty()) {
-                        currentScope().variables[param_name] = {State::UNOWNED, "", false, next_binding_id_++};
+                        VariableInfo param{State::UNOWNED, "", false, next_binding_id_++};
+                        param.reaches = i < params.positional.size() ? params.positional[i] : params.all;
+                        currentScope().variables[param_name] = std::move(param);
                     }
+                }
+                if (alias_tracking_ && op->lambda_op.rest_param) {
+                    VariableInfo rest{State::UNOWNED, "", false, next_binding_id_++};
+                    rest.reaches = params.all;
+                    for (size_t i = op->lambda_op.num_params; i < params.positional.size(); ++i)
+                        rest.reaches.insert(params.positional[i].begin(), params.positional[i].end());
+                    currentScope().variables[op->lambda_op.rest_param] = std::move(rest);
                 }
                 work.push_back(WorkItem::continuation(
                     WorkItem::Kind::EXIT_SCOPE, op, 0,
@@ -3974,8 +4292,10 @@ private:
                                                         0, false, true));
                     break;
                 }
-                for (uint64_t i = op->call_op.num_vars; i > 0; --i)
+                for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
+                    clause_nodes_.insert(&op->call_op.variables[i - 1]);
                     work.push_back(astChild(&op->call_op.variables[i - 1]));
+                }
                 break;
 
             case ESHKOL_WHEN_OP:
@@ -3993,6 +4313,7 @@ private:
                 break;
 
             case ESHKOL_CALL_OP: {
+                if (alias_tracking_ && !clause_nodes_.count(node)) checkCallFlow(node);
                 const bool inline_callee = checked && op->call_op.func &&
                     inline_lambdas_.count(op->call_op.func) != 0;
                 if (inline_callee) {
@@ -4002,10 +4323,12 @@ private:
                         work.push_back(astChild(&op->call_op.variables[i - 1]));
                     break;
                 }
+                // An applied lambda runs after its arguments are evaluated.
+                if (isLambdaNode(op->call_op.func)) work.push_back(astChild(op->call_op.func));
                 for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
                     work.push_back(astChild(&op->call_op.variables[i - 1]));
                 }
-                work.push_back(astChild(op->call_op.func));
+                if (!isLambdaNode(op->call_op.func)) work.push_back(astChild(op->call_op.func));
                 break;
             }
 
@@ -4046,6 +4369,23 @@ private:
 
             case ESHKOL_SET_OP:
                 checkCopy(op->set_op.value);
+                if (alias_tracking_ && op->set_op.name) {
+                    Reach assigned;
+                    reachOf(op->set_op.value, assigned);
+                    const auto owners = reachedOwners(assigned);
+                    if (!owners.empty())
+                        reportError("Assignment to '" + std::string(op->set_op.name) +
+                                    "' would keep a reference to owned value '" + owners.front().name +
+                                    "'; transfer it with move");
+                    if (VariableInfo* target = lookupVariable(op->set_op.name)) {
+                        target->reaches.insert(assigned.begin(), assigned.end());
+                        target->proc_node = nullptr;
+                        target->summary = nullptr;
+                        target->loop_proc = false;
+                        target->external = false;
+                        target->data = target->data && neverProcedure(op->set_op.value);
+                    }
+                }
                 if (op->set_op.name) {
                     auto* binding = lookupVariable(op->set_op.name);
                     if (binding && isBorrowed(binding->binding_id))
@@ -4109,7 +4449,10 @@ private:
                 break;
 
             case ESHKOL_DO_OP: {
-                if (!checked) break;
+                if (!checked) {
+                    refuseUnfollowed(node);
+                    break;
+                }
                 std::vector<const eshkol_ast_t*> bindings;
                 const eshkol_ast_t* test = nullptr;
                 const eshkol_ast_t* results = nullptr;
@@ -4127,7 +4470,10 @@ private:
             }
 
             case ESHKOL_GUARD_OP: {
-                if (!checked) break;
+                if (!checked) {
+                    refuseUnfollowed(node);
+                    break;
+                }
                 Frame frame;
                 frame.kind = FrameKind::GUARD;
                 frame.id = next_frame_id_++;
@@ -4142,14 +4488,26 @@ private:
             }
 
             case ESHKOL_RAISE_OP:
-                if (!checked) break;
+                if (!checked) {
+                    refuseUnfollowed(node);
+                    break;
+                }
+                if (alias_tracking_) {
+                    const std::string raised = ownerReachedBy(op->raise_op.exception);
+                    if (!raised.empty())
+                        reportError("Raised value refers to owned value '" + raised +
+                                    "'; a handler the checker cannot see may keep it");
+                }
                 work.push_back(WorkItem::marker(WorkItem::Kind::RAISE_AFTER, node, 0, true));
                 work.push_back(astChild(op->raise_op.exception));
                 break;
 
             case ESHKOL_CALL_CC_OP: {
                 const eshkol_ast_t* proc = op->call_cc_op.proc;
-                if (!checked) break;
+                if (!checked) {
+                    refuseUnfollowed(node);
+                    break;
+                }
                 if (!proc || proc->type != ESHKOL_OP || proc->operation.op != ESHKOL_LAMBDA_OP ||
                     proc->operation.lambda_op.num_params < 1) {
                     if (hasTrackedResourceBinding())
@@ -4180,7 +4538,10 @@ private:
             }
 
             case ESHKOL_DYNAMIC_WIND_OP: {
-                if (!checked) break;
+                if (!checked) {
+                    refuseUnfollowed(node);
+                    break;
+                }
                 const auto& wind = op->dynamic_wind_op;
                 auto thunk = [](const eshkol_ast_t* p) {
                     return p && p->type == ESHKOL_OP && p->operation.op == ESHKOL_LAMBDA_OP &&
@@ -4212,6 +4573,7 @@ private:
 
             case ESHKOL_VALUES_OP:
             case ESHKOL_CALL_WITH_VALUES_OP:
+                refuseUnfollowed(node);
                 if (checked)
                     reportResourceError("multiple-value resource flow is unsupported in the checked fragment");
                 break;
@@ -4219,12 +4581,14 @@ private:
             case ESHKOL_QUASIQUOTE_OP:
             case ESHKOL_UNQUOTE_OP:
             case ESHKOL_UNQUOTE_SPLICING_OP:
+                refuseUnfollowed(node);
                 if (checked)
                     reportResourceError("quasiquote/unquote evaluation is unsupported in the checked fragment");
                 break;
 
             case ESHKOL_CASE_OP:
             case ESHKOL_MATCH_OP:
+                refuseUnfollowed(node);
                 if (checked)
                     reportResourceError("case and match are not followed by the strict resource checker; "
                         "use cond or if for resource flow");
@@ -4239,12 +4603,1206 @@ private:
             case ESHKOL_TYPE_ANNOTATION_OP:
                 break;
             default:
+                refuseUnfollowed(node);
                 if (checked)
                     reportResourceError("operator form " +
                         std::to_string(static_cast<int>(op->op)) +
                         " has no strict resource traversal summary");
                 break;
         }
+    }
+
+    // ── alias and escape checking ───────────────────────────────────────
+    // A unit that uses owned, move or borrow records, for each binding, the
+    // bindings its value may refer to. Reading a binding that refers to a
+    // moved owner is refused. A place the checker cannot follow -- an
+    // assignment, an argument a procedure keeps, a procedure the checker
+    // cannot resolve, an operator it does not model -- refuses any value
+    // that refers to an owner.
+    using Reach = std::set<uint64_t>;
+    struct ScopedOut {
+        std::string name;
+        State state = State::UNOWNED;
+        bool owner = false;
+        Reach reaches;
+    };
+    struct ParamReach {
+        std::vector<Reach> positional;
+        Reach all;
+    };
+    struct BindingView {
+        std::string name;
+        State state = State::UNOWNED;
+        bool owner = false;
+        const Reach* reaches = nullptr;
+    };
+    bool alias_tracking_ = false;
+    bool record_procs_ = false;                   // keep procedure facts for a session
+    std::map<uint64_t, ScopedOut> scoped_out_;
+    std::map<std::string, uint64_t> predeclared_;
+    std::map<uint64_t, std::string> predeclared_names_;
+    std::set<uint64_t> future_owners_;
+    std::map<std::string, const eshkol_ast_t*> global_procs_;
+    std::set<std::string> global_names_;
+    std::set<std::string> external_names_;
+    std::vector<size_t> body_markers_;
+    std::vector<std::set<std::string>> shadows_;  // binder names inside a value being measured
+    std::set<const eshkol_ast_t*> immediate_lambdas_;
+    std::set<const eshkol_ast_t*> clause_nodes_;
+    std::map<const eshkol_ast_t*, ParamReach> lambda_param_reach_;
+    std::map<const eshkol_ast_t*, ProcSummary> proc_table_;
+    std::set<const eshkol_ast_t*> proc_final_;
+
+    static bool isLambdaNode(const eshkol_ast_t* e) {
+        return e && e->type == ESHKOL_OP && e->operation.op == ESHKOL_LAMBDA_OP;
+    }
+
+    // Top-level names, the procedures they are bound to once, and owners
+    // defined later in the unit, so a procedure can refer to them earlier.
+    void prepareAliasTracking(const std::vector<eshkol_ast_t>& asts, const OwnershipBindings* globals) {
+        alias_tracking_ = false;
+        bool active = false;
+        if (globals)
+            for (const auto& entry : *globals)
+                active = active || entry.second.owner || !entry.second.reaches.empty();
+        for (size_t i = 0; !active && i < asts.size(); ++i) active = containsOwnershipForm(&asts[i]);
+        if (!globals && (!active || !follow_branches_)) return;
+        record_procs_ = true;
+        if (globals)
+            for (const auto& entry : *globals)
+                if (!entry.second.scoped_out) global_names_.insert(entry.first);
+        std::map<std::string, int> definitions;
+        std::set<std::string> assigned;
+        std::vector<const eshkol_ast_t*> pending;
+        for (const auto& ast : asts) pending.push_back(&ast);
+        while (!pending.empty()) {
+            const eshkol_ast_t* form = pending.back();
+            pending.pop_back();
+            if (!form || form->type != ESHKOL_OP) continue;
+            if (form->operation.op == ESHKOL_SEQUENCE_OP) {
+                for (uint64_t i = 0; i < form->operation.sequence_op.num_expressions; ++i)
+                    pending.push_back(&form->operation.sequence_op.expressions[i]);
+                continue;
+            }
+            if (form->operation.op != ESHKOL_DEFINE_OP || !form->operation.define_op.name) continue;
+            const auto& define = form->operation.define_op;
+            const std::string name = define.name;
+            ++definitions[name];
+            global_names_.insert(name);
+            if (define.is_external) external_names_.insert(name);
+            else if (define.is_function) global_procs_[name] = form;
+            else if (isLambdaNode(define.value)) global_procs_[name] = define.value;
+            if (!currentScope().variables.count(name) && !predeclared_.count(name)) {
+                const uint64_t id = next_binding_id_++;
+                predeclared_[name] = id;
+                predeclared_names_[id] = name;
+            }
+            auto pre = predeclared_.find(name);
+            if (pre != predeclared_.end() && !define.is_function && transfersOwnership(define.value))
+                future_owners_.insert(pre->second);
+        }
+        std::vector<const eshkol_ast_t*> walk;
+        for (const auto& ast : asts) walk.push_back(&ast);
+        while (!walk.empty()) {
+            const eshkol_ast_t* node = walk.back();
+            walk.pop_back();
+            if (!node) continue;
+            if (node->type == ESHKOL_OP && node->operation.op == ESHKOL_SET_OP && node->operation.set_op.name)
+                assigned.insert(node->operation.set_op.name);
+            forEachChildExpr(node, [&](const eshkol_ast_t* child) { walk.push_back(child); });
+        }
+        for (const auto& [name, count] : definitions)
+            if (count > 1 || assigned.count(name)) global_procs_.erase(name);
+        for (const auto& name : assigned)
+            if (VariableInfo* session = lookupVariable(name)) session->summary = nullptr;
+        alias_tracking_ = active && follow_branches_;
+    }
+
+    bool shadowed(const std::string& name) const {
+        for (const auto& names : shadows_)
+            if (names.count(name)) return true;
+        return false;
+    }
+
+    uint64_t resolveName(const std::string& name) {
+        if (name.empty() || shadowed(name)) return 0;
+        if (VariableInfo* info = lookupVariable(name)) return info->binding_id;
+        auto pre = predeclared_.find(name);
+        return pre == predeclared_.end() ? 0 : pre->second;
+    }
+
+    // A name no binding of the unit, the session or an enclosing scope
+    // defines, or an external declaration: a runtime builtin.
+    bool isBuiltinName(const std::string& name) {
+        if (name.empty() || shadowed(name)) return false;
+        if (external_names_.count(name)) return true;
+        return !resolveName(name) && !global_names_.count(name);
+    }
+
+    bool viewBinding(uint64_t id, BindingView& view) {
+        static const Reach none;
+        std::string name;
+        if (VariableInfo* info = findBindingById(id, &name)) {
+            view = {name, info->state, info->is_owned_binding || future_owners_.count(id) != 0,
+                    &info->reaches};
+            return true;
+        }
+        auto out = scoped_out_.find(id);
+        if (out != scoped_out_.end()) {
+            view = {out->second.name, out->second.state, out->second.owner, &out->second.reaches};
+            return true;
+        }
+        auto pre = predeclared_names_.find(id);
+        if (pre != predeclared_names_.end()) {
+            view = {pre->second, State::UNOWNED, future_owners_.count(id) != 0, &none};
+            return true;
+        }
+        return false;
+    }
+
+    // Owners a value may refer to through any chain of bindings.
+    std::vector<BindingView> reachedOwners(const Reach& seeds, uint64_t self = 0) {
+        std::vector<BindingView> owners;
+        std::set<uint64_t> seen;
+        std::vector<uint64_t> pending(seeds.begin(), seeds.end());
+        while (!pending.empty()) {
+            const uint64_t id = pending.back();
+            pending.pop_back();
+            if (!seen.insert(id).second) continue;
+            BindingView view;
+            if (!viewBinding(id, view)) continue;
+            if (view.owner && id != self) owners.push_back(view);
+            for (uint64_t next : *view.reaches) pending.push_back(next);
+        }
+        return owners;
+    }
+
+    void allVisibleOwners(Reach& out) const {
+        for (const auto& scope : scope_stack_)
+            for (const auto& entry : scope.variables)
+                if (entry.second.is_owned_binding) out.insert(entry.second.binding_id);
+        for (const auto& entry : scoped_out_)
+            if (entry.second.owner) out.insert(entry.first);
+        out.insert(future_owners_.begin(), future_owners_.end());
+    }
+
+    // Visit the children of a binding form with its bound names shadowing
+    // the enclosing scopes, so a parameter or local never stands for an
+    // outer binding of the same spelling. Returns false for other forms.
+    template <class Visit>
+    bool visitBinder(const eshkol_ast_t* e, Visit&& visit) {
+        if (!e || e->type != ESHKOL_OP) return false;
+        const auto& op = e->operation;
+        auto shadow = [&](const std::vector<std::string>& names, const eshkol_ast_t* body) {
+            shadows_.emplace_back(names.begin(), names.end());
+            visit(body);
+            shadows_.pop_back();
+        };
+        auto params = [&](const eshkol_ast_t* list, uint64_t count, const char* rest) {
+            std::vector<std::string> names;
+            for (uint64_t i = 0; list && i < count; ++i) names.push_back(getVarName(&list[i]));
+            if (rest) names.push_back(rest);
+            return names;
+        };
+        if (op.op == ESHKOL_LAMBDA_OP) {
+            shadow(params(op.lambda_op.parameters, op.lambda_op.num_params, op.lambda_op.rest_param),
+                   op.lambda_op.body);
+            return true;
+        }
+        if (op.op == ESHKOL_DEFINE_OP && op.define_op.is_function) {
+            shadow(params(op.define_op.parameters, op.define_op.num_params, op.define_op.rest_param),
+                   op.define_op.value);
+            return true;
+        }
+        if (op.op == ESHKOL_LET_OP || op.op == ESHKOL_LET_STAR_OP || op.op == ESHKOL_LETREC_OP ||
+            op.op == ESHKOL_LETREC_STAR_OP) {
+            std::vector<std::string> names;
+            if (op.let_op.name) names.push_back(op.let_op.name);
+            for (uint64_t i = 0; op.let_op.bindings && i < op.let_op.num_bindings; ++i) {
+                const eshkol_ast_t& binding = op.let_op.bindings[i];
+                if (binding.type != ESHKOL_CONS) continue;
+                names.push_back(getVarName(binding.cons_cell.car));
+                visit(binding.cons_cell.cdr);
+            }
+            shadow(names, op.let_op.body);
+            return true;
+        }
+        return false;
+    }
+
+    // Bindings an expression's value may refer to: every binding it names,
+    // except the operands of a builtin that returns a fresh scalar, string
+    // or symbol. A procedure value refers to everything its body names.
+    void reachOf(const eshkol_ast_t* e, Reach& out, unsigned depth = 0) {
+        if (!e) return;
+        if (depth > 2048) {
+            allVisibleOwners(out);
+            return;
+        }
+        if (e->type == ESHKOL_VAR) {
+            if (const uint64_t id = resolveName(getVarName(e))) out.insert(id);
+            return;
+        }
+        if (e->type == ESHKOL_OP) {
+            const auto& op = e->operation;
+            switch (op.op) {
+                case ESHKOL_QUOTE_OP:
+                case ESHKOL_SET_OP:
+                case ESHKOL_ADD_OP:
+                case ESHKOL_SUB_OP:
+                case ESHKOL_MUL_OP:
+                case ESHKOL_DIV_OP:
+                    return;
+                case ESHKOL_LAMBDA_OP:
+                    mentionsOf(e, out, depth + 1);
+                    return;
+                case ESHKOL_LET_OP:
+                case ESHKOL_LET_STAR_OP:
+                case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
+                    visitBinder(e, [&](const eshkol_ast_t* child) { reachOf(child, out, depth + 1); });
+                    return;
+                case ESHKOL_MOVE_OP:
+                    if (op.move_op.value && op.move_op.value->type == ESHKOL_VAR) {
+                        const std::string source = getVarName(op.move_op.value);
+                        if (VariableInfo* moved = shadowed(source) ? nullptr : lookupVariable(source))
+                            out.insert(moved->reaches.begin(), moved->reaches.end());
+                        return;
+                    }
+                    break;
+                case ESHKOL_CALL_OP:
+                    if (!isIfForm(e) && op.call_op.func && op.call_op.func->type == ESHKOL_VAR) {
+                        const std::string head = getVarName(op.call_op.func);
+                        if (isScalarResultBuiltin(head) && isBuiltinName(head)) return;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        forEachChildExpr(e, [&](const eshkol_ast_t* child) { reachOf(child, out, depth + 1); });
+    }
+
+    // Every binding an expression names, wherever it names it.
+    void mentionsOf(const eshkol_ast_t* e, Reach& out, unsigned depth = 0) {
+        if (!e) return;
+        if (depth > 2048) {
+            allVisibleOwners(out);
+            return;
+        }
+        if (e->type == ESHKOL_VAR) {
+            if (const uint64_t id = resolveName(getVarName(e))) out.insert(id);
+            return;
+        }
+        if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_QUOTE_OP) return;
+        auto visit = [&](const eshkol_ast_t* child) { mentionsOf(child, out, depth + 1); };
+        if (visitBinder(e, visit)) return;
+        forEachChildExpr(e, visit);
+    }
+
+    // A value that is never a procedure: a datum, a number, a fresh string
+    // or a structure built by a builtin constructor.
+    bool neverProcedure(const eshkol_ast_t* e) {
+        if (!e) return true;
+        if (e->type == ESHKOL_VAR) {
+            const std::string name = getVarName(e);
+            VariableInfo* info = shadowed(name) ? nullptr : lookupVariable(name);
+            return info && info->data;
+        }
+        if (e->type != ESHKOL_OP) return true;
+        const auto& op = e->operation;
+        switch (op.op) {
+            case ESHKOL_QUOTE_OP:
+            case ESHKOL_ADD_OP:
+            case ESHKOL_SUB_OP:
+            case ESHKOL_MUL_OP:
+            case ESHKOL_DIV_OP:
+            case ESHKOL_TENSOR_OP:
+                return true;
+            case ESHKOL_OWNED_OP:
+                return neverProcedure(op.owned_op.value);
+            case ESHKOL_MOVE_OP:
+                return neverProcedure(op.move_op.value);
+            case ESHKOL_SHARED_OP:
+                return neverProcedure(op.shared_op.value);
+            case ESHKOL_THE_OP:
+                return neverProcedure(op.the_op.expr);
+            case ESHKOL_CALL_OP: {
+                static const std::set<std::string> constructors = {
+                    "cons", "list", "vector", "make-vector", "make-string", "string", "list-copy",
+                    "vector-copy", "append", "reverse", "make-list", "iota", "make-hash-table",
+                    "make-tensor", "zeros", "ones", "list->vector", "vector->list", "string->list"
+                };
+                if (isIfForm(e) || !op.call_op.func || op.call_op.func->type != ESHKOL_VAR) return false;
+                const std::string head = getVarName(op.call_op.func);
+                return isBuiltinName(head) && (isScalarResultBuiltin(head) || constructors.count(head));
+            }
+            default:
+                return false;
+        }
+    }
+
+    void bindValueFacts(VariableInfo& info, const eshkol_ast_t* value) {
+        if (!record_procs_) return;
+        info.reaches.clear();
+        if (alias_tracking_) reachOf(value, info.reaches);
+        info.reaches.erase(info.binding_id);
+        info.proc_node = isLambdaNode(value) ? value : nullptr;
+        info.summary = nullptr;
+        info.loop_proc = false;
+        info.external = false;
+        info.data = neverProcedure(value);
+        if (value && value->type == ESHKOL_VAR) {
+            if (VariableInfo* source = lookupVariable(getVarName(value))) {
+                info.proc_node = source->proc_node;
+                info.summary = source->summary;
+                info.external = source->external;
+            } else if (isBuiltinName(getVarName(value))) {
+                info.external = true;
+            }
+        }
+    }
+
+    void bindFunctionFacts(VariableInfo& info, const eshkol_ast_t* define_node) {
+        if (!record_procs_) return;
+        const auto& define = define_node->operation.define_op;
+        info.reaches.clear();
+        if (alias_tracking_) mentionsOf(define_node, info.reaches);
+        info.reaches.erase(info.binding_id);
+        info.proc_node = define.is_external ? nullptr : define_node;
+        info.external = define.is_external != 0;
+        info.summary = nullptr;
+        info.loop_proc = false;
+        info.data = false;
+    }
+
+    // Procedure bodies may run more than once. A move inside one may only
+    // take an owner bound inside it.
+    void enterBody() {
+        if (alias_tracking_ && !scope_stack_.empty()) body_markers_.push_back(scope_stack_.size() - 1);
+    }
+
+    bool boundOutsideCurrentBody(const std::string& name) const {
+        if (body_markers_.empty()) return false;
+        for (size_t i = scope_stack_.size(); i > 0; --i)
+            if (scope_stack_[i - 1].variables.count(name)) return i - 1 < body_markers_.back();
+        return predeclared_.count(name) != 0;
+    }
+
+    void checkAliasUse(const std::string& name, const VariableInfo& info) {
+        if (!alias_tracking_ || info.reaches.empty()) return;
+        for (const auto& owner : reachedOwners(info.reaches, info.binding_id)) {
+            if (owner.state == State::MOVED)
+                reportError("Use of '" + name + "', which refers to moved value '" + owner.name + "'");
+            else if (owner.state == State::MAYBE_MOVED)
+                reportError("Use of '" + name + "', which may refer to moved value '" + owner.name + "'");
+        }
+    }
+
+    std::string ownerReachedBy(const eshkol_ast_t* e) {
+        Reach reach;
+        reachOf(e, reach);
+        const auto owners = reachedOwners(reach);
+        return owners.empty() ? std::string() : owners.front().name;
+    }
+
+    bool touchesOwnership(const eshkol_ast_t* e, std::string& name, unsigned depth = 0) {
+        if (!e) return false;
+        if (depth > 2048) return true;
+        if (e->type == ESHKOL_VAR) {
+            const uint64_t id = resolveName(getVarName(e));
+            if (!id) return false;
+            const auto owners = reachedOwners(Reach{id});
+            if (owners.empty()) return false;
+            name = owners.front().name;
+            return true;
+        }
+        if (e->type == ESHKOL_OP) {
+            const auto op = e->operation.op;
+            if (op == ESHKOL_QUOTE_OP) return false;
+            if (op == ESHKOL_OWNED_OP || op == ESHKOL_MOVE_OP || op == ESHKOL_BORROW_OP) return true;
+        }
+        bool found = false;
+        forEachChildExpr(e, [&](const eshkol_ast_t* child) {
+            if (!found) found = touchesOwnership(child, name, depth + 1);
+        });
+        return found;
+    }
+
+    static const char* unfollowedFormName(eshkol_op_t op) {
+        switch (op) {
+            case ESHKOL_DO_OP: return "do loops";
+            case ESHKOL_GUARD_OP: return "guard";
+            case ESHKOL_RAISE_OP: return "raise";
+            case ESHKOL_CALL_CC_OP: return "call/cc";
+            case ESHKOL_DYNAMIC_WIND_OP: return "dynamic-wind";
+            case ESHKOL_VALUES_OP: return "values";
+            case ESHKOL_CALL_WITH_VALUES_OP: return "call-with-values";
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP: return "let-values";
+            case ESHKOL_QUASIQUOTE_OP:
+            case ESHKOL_UNQUOTE_OP:
+            case ESHKOL_UNQUOTE_SPLICING_OP: return "quasiquote";
+            case ESHKOL_CASE_OP: return "case";
+            case ESHKOL_MATCH_OP: return "match";
+            case ESHKOL_CASE_LAMBDA_OP: return "case-lambda";
+            case ESHKOL_PARAMETERIZE_OP: return "parameterize";
+            default: return "this operator";
+        }
+    }
+
+    // A form the checker does not model may not involve an owner.
+    void refuseUnfollowed(const eshkol_ast_t* node) {
+        if (!alias_tracking_) return;
+        std::string name;
+        if (!touchesOwnership(node, name)) return;
+        const std::string form = unfollowedFormName(node->operation.op);
+        if (name.empty())
+            reportError("The ownership checker does not follow " + form +
+                        " that contains owned, move or borrow; bind the value with let and use if");
+        else
+            reportError("The ownership checker does not follow " + form + " that refers to owned value '" +
+                        name + "'; bind the value with let and use if");
+    }
+
+    // ── procedure summaries ─────────────────────────────────────────────
+    // What a procedure does with its parameters, flow-insensitively: which
+    // it may keep past the call and which procedure parameters it calls with
+    // which others. Mutually recursive procedures reach a fixed point from
+    // "keeps nothing".
+    class ProcScan {
+    public:
+        ProcScan(OwnershipAnalyzer& analyzer, ProcSummary& out, std::vector<const eshkol_ast_t*>& deps)
+            : a_(analyzer), out_(out), deps_(deps) {}
+
+        void run(const eshkol_ast_t* proc) {
+            const FunctionShape shape = functionShape(proc);
+            out_.num_params = shape.num_params;
+            out_.rest = shape.rest != nullptr;
+            for (uint64_t i = 0; i < shape.num_params; ++i)
+                env_.push_back({a_.getVarName(&shape.params[i]), Tokens{static_cast<size_t>(i)}});
+            if (shape.rest) env_.push_back({shape.rest, Tokens{static_cast<size_t>(shape.num_params)}});
+            scan(shape.body);
+        }
+
+    private:
+        using Tokens = std::set<size_t>;
+        struct Entry {
+            std::string name;
+            Tokens tokens;
+            const eshkol_ast_t* proc = nullptr;
+            bool loop = false;
+            size_t loop_vars = 0;
+            size_t loop_count = 0;
+        };
+        struct LambdaFlow {
+            Tokens captured;
+            Tokens result;
+        };
+        enum class Head { LOOP, PROC, PARAM, BUILTIN, UNKNOWN };
+
+        OwnershipAnalyzer& a_;
+        ProcSummary& out_;
+        std::vector<const eshkol_ast_t*>& deps_;
+        std::vector<Entry> env_;
+        std::vector<std::pair<size_t, Tokens>> frames_;
+        unsigned depth_ = 0;
+
+        static void add(Tokens& to, const Tokens& from) { to.insert(from.begin(), from.end()); }
+        Tokens all() const {
+            Tokens tokens;
+            for (size_t i = 0; i <= out_.num_params; ++i) tokens.insert(i);
+            return tokens;
+        }
+        void keep(const Tokens& tokens) { add(out_.keeps, tokens); }
+        int find(const std::string& name) const {
+            for (size_t i = env_.size(); i > 0; --i)
+                if (env_[i - 1].name == name) return static_cast<int>(i - 1);
+            return -1;
+        }
+        Tokens lookup(const std::string& name) {
+            const int i = find(name);
+            if (i < 0) return {};
+            for (auto& frame : frames_)
+                if (static_cast<size_t>(i) < frame.first) add(frame.second, env_[i].tokens);
+            return env_[i].tokens;
+        }
+        const ProcSummary* globalSummary(const std::string& name) {
+            auto proc = a_.global_procs_.find(name);
+            if (proc != a_.global_procs_.end()) return &a_.summaryForScan(proc->second, deps_);
+            if (a_.external_names_.count(name) || a_.scope_stack_.empty()) return nullptr;
+            auto session = a_.scope_stack_.front().variables.find(name);
+            if (session != a_.scope_stack_.front().variables.end() && session->second.summary)
+                return session->second.summary.get();
+            return nullptr;
+        }
+        bool isBuiltin(const std::string& name) const {
+            return a_.external_names_.count(name) || !a_.global_names_.count(name);
+        }
+
+        Tokens mentions(const eshkol_ast_t* e, unsigned depth = 0) {
+            Tokens tokens;
+            if (!e || depth > 1024) return depth > 1024 ? all() : tokens;
+            if (e->type == ESHKOL_VAR) return lookup(a_.getVarName(e));
+            if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_QUOTE_OP) return tokens;
+            forEachChildExpr(e, [&](const eshkol_ast_t* child) { add(tokens, mentions(child, depth + 1)); });
+            return tokens;
+        }
+
+        LambdaFlow lambdaScan(const eshkol_ast_t* node, const std::vector<Tokens>* positional,
+                              const Tokens* every) {
+            const FunctionShape shape = functionShape(node);
+            const size_t mark = env_.size();
+            frames_.push_back({mark, {}});
+            for (uint64_t i = 0; i < shape.num_params; ++i) {
+                Tokens tokens;
+                if (positional && i < positional->size()) tokens = (*positional)[i];
+                else if (every) tokens = *every;
+                env_.push_back({a_.getVarName(&shape.params[i]), tokens});
+            }
+            if (shape.rest) {
+                Tokens tokens;
+                if (every) tokens = *every;
+                if (positional)
+                    for (size_t i = shape.num_params; i < positional->size(); ++i) add(tokens, (*positional)[i]);
+                env_.push_back({shape.rest, tokens});
+            }
+            LambdaFlow flow;
+            flow.result = scan(shape.body);
+            flow.captured = std::move(frames_.back().second);
+            frames_.pop_back();
+            env_.resize(mark);
+            for (auto& frame : frames_)
+                if (frame.first <= mark) add(frame.second, flow.captured);
+            return flow;
+        }
+
+        Tokens scanLet(const eshkol_ast_t* e) {
+            const auto& let = e->operation.let_op;
+            const eshkol_op_t kind = e->operation.op;
+            const size_t mark = env_.size();
+            auto name = [&](uint64_t i) {
+                const eshkol_ast_t& binding = let.bindings[i];
+                return binding.type == ESHKOL_CONS ? a_.getVarName(binding.cons_cell.car) : std::string();
+            };
+            auto init = [&](uint64_t i) -> const eshkol_ast_t* {
+                const eshkol_ast_t& binding = let.bindings[i];
+                return binding.type == ESHKOL_CONS ? binding.cons_cell.cdr : nullptr;
+            };
+            const uint64_t count = let.bindings ? let.num_bindings : 0;
+            if (kind == ESHKOL_LET_OP && let.name) {
+                std::vector<Tokens> inits;
+                for (uint64_t i = 0; i < count; ++i) inits.push_back(scan(init(i)));
+                const size_t base = env_.size();
+                for (uint64_t i = 0; i < count; ++i) env_.push_back({name(i), inits[i]});
+                Entry loop{let.name, {}};
+                loop.loop = true;
+                loop.loop_vars = base;
+                loop.loop_count = count;
+                env_.push_back(loop);
+                Tokens result;
+                for (int round = 0; round < 8; ++round) {
+                    std::vector<Tokens> before;
+                    for (uint64_t i = 0; i < count; ++i) before.push_back(env_[base + i].tokens);
+                    result = scan(let.body);
+                    bool stable = true;
+                    for (uint64_t i = 0; i < count; ++i) stable = stable && before[i] == env_[base + i].tokens;
+                    if (stable) break;
+                    if (round == 7) {
+                        result = all();
+                        keep(result);
+                    }
+                }
+                env_.resize(mark);
+                return result;
+            }
+            if (kind == ESHKOL_LET_OP) {
+                std::vector<Entry> entries;
+                for (uint64_t i = 0; i < count; ++i) {
+                    Entry entry{name(i), scan(init(i))};
+                    if (isLambdaNode(init(i))) entry.proc = init(i);
+                    entries.push_back(std::move(entry));
+                }
+                for (auto& entry : entries) env_.push_back(std::move(entry));
+            } else if (kind == ESHKOL_LET_STAR_OP) {
+                for (uint64_t i = 0; i < count; ++i) {
+                    Entry entry{name(i), scan(init(i))};
+                    if (isLambdaNode(init(i))) entry.proc = init(i);
+                    env_.push_back(std::move(entry));
+                }
+            } else {
+                for (uint64_t i = 0; i < count; ++i) {
+                    Entry entry{name(i), {}};
+                    if (isLambdaNode(init(i))) entry.proc = init(i);
+                    env_.push_back(std::move(entry));
+                }
+                for (int round = 0; round < 3; ++round)
+                    for (uint64_t i = 0; i < count; ++i) {
+                        Tokens tokens = scan(init(i));
+                        add(env_[mark + i].tokens, tokens);
+                    }
+            }
+            Tokens result = scan(let.body);
+            env_.resize(mark);
+            return result;
+        }
+
+        // A procedure argument that may be called with @p values.
+        void receive(const eshkol_ast_t* arg, const Tokens& values) {
+            if (values.empty() || !arg || isLambdaNode(arg)) return;
+            if (arg->type != ESHKOL_VAR) {
+                if (arg->type == ESHKOL_OP && arg->operation.op != ESHKOL_QUOTE_OP) keep(values);
+                return;
+            }
+            const std::string name = a_.getVarName(arg);
+            const int i = find(name);
+            if (i >= 0) {
+                if (env_[i].proc && !env_[i].loop) {
+                    if (!a_.summaryForScan(env_[i].proc, deps_).keepsNothing()) keep(values);
+                } else if (!env_[i].tokens.empty() && !env_[i].loop) {
+                    for (size_t p : Tokens(env_[i].tokens)) add(out_.passes[p], values);
+                } else {
+                    keep(values);
+                }
+                return;
+            }
+            if (const ProcSummary* summary = globalSummary(name)) {
+                if (!summary->keepsNothing()) keep(values);
+                return;
+            }
+            if (isBuiltin(name)) {
+                if (builtinKeeps(name) != Keeps::NONE) keep(values);
+                return;
+            }
+            keep(values);
+        }
+
+        Tokens scanCall(const eshkol_ast_t* e) {
+            const auto& call = e->operation.call_op;
+            const eshkol_ast_t* head = call.func;
+            const size_t n = call.variables ? call.num_vars : 0;
+            std::vector<Tokens> args(n);
+            for (size_t j = 0; j < n; ++j)
+                if (!isLambdaNode(&call.variables[j])) args[j] = scan(&call.variables[j]);
+            auto others = [&](size_t k) {
+                Tokens tokens;
+                for (size_t j = 0; j < n; ++j)
+                    if (j != k) add(tokens, args[j]);
+                return tokens;
+            };
+            if (isLambdaNode(head)) {
+                for (size_t j = 0; j < n; ++j)
+                    if (isLambdaNode(&call.variables[j])) {
+                        const Tokens every = others(j);
+                        args[j] = lambdaScan(&call.variables[j], nullptr, &every).captured;
+                    }
+                LambdaFlow flow = lambdaScan(head, &args, nullptr);
+                add(flow.result, flow.captured);
+                return flow.result;
+            }
+            Head kind = Head::UNKNOWN;
+            const ProcSummary* summary = nullptr;
+            Tokens head_tokens;
+            std::string head_name;
+            int head_index = -1;
+            if (head && head->type == ESHKOL_VAR) {
+                head_name = a_.getVarName(head);
+                head_index = find(head_name);
+                head_tokens = lookup(head_name);
+                if (head_index >= 0) {
+                    const Entry& entry = env_[head_index];
+                    if (entry.loop) kind = Head::LOOP;
+                    else if (entry.proc) {
+                        kind = Head::PROC;
+                        summary = &a_.summaryForScan(entry.proc, deps_);
+                    } else if (!entry.tokens.empty()) kind = Head::PARAM;
+                } else if ((summary = globalSummary(head_name))) {
+                    kind = Head::PROC;
+                } else if (isBuiltin(head_name)) {
+                    kind = Head::BUILTIN;
+                }
+            } else {
+                head_tokens = scan(head);
+            }
+            std::vector<Tokens> receives(n);
+            if (kind == Head::PROC) {
+                for (const auto& [slot, sources] : summary->passes)
+                    for (size_t k = 0; k < n; ++k) {
+                        if (summary->slot(k) != slot) continue;
+                        for (size_t j = 0; j < n; ++j)
+                            if (sources.count(summary->slot(j))) add(receives[k], args[j]);
+                    }
+            } else if (kind != Head::LOOP &&
+                       (kind != Head::BUILTIN || callsProcedureArguments(head_name))) {
+                for (size_t k = 0; k < n; ++k) receives[k] = others(k);
+            }
+            for (size_t j = 0; j < n; ++j)
+                if (isLambdaNode(&call.variables[j]))
+                    args[j] = lambdaScan(&call.variables[j], nullptr, &receives[j]).captured;
+            switch (kind) {
+                case Head::LOOP: {
+                    const size_t base = env_[head_index].loop_vars;
+                    const size_t count = std::min(n, env_[head_index].loop_count);
+                    for (size_t j = 0; j < count; ++j) add(env_[base + j].tokens, args[j]);
+                    break;
+                }
+                case Head::PARAM: {
+                    Tokens values;
+                    for (const auto& tokens : args) add(values, tokens);
+                    for (size_t p : Tokens(env_[head_index].tokens)) add(out_.passes[p], values);
+                    break;
+                }
+                case Head::PROC:
+                    for (size_t j = 0; j < n; ++j)
+                        if (summary->keeps.count(summary->slot(j))) keep(args[j]);
+                    for (size_t k = 0; k < n; ++k) receive(&call.variables[k], receives[k]);
+                    break;
+                case Head::BUILTIN: {
+                    const Keeps keeps = builtinKeeps(head_name);
+                    for (size_t j = 0; j < n; ++j)
+                        if (keeps == Keeps::ALL || (keeps == Keeps::AFTER_FIRST && j > 0)) keep(args[j]);
+                    if (callsProcedureArguments(head_name))
+                        for (size_t k = 0; k < n; ++k) receive(&call.variables[k], others(k));
+                    break;
+                }
+                case Head::UNKNOWN:
+                    for (const auto& tokens : args) keep(tokens);
+                    break;
+            }
+            if (kind == Head::BUILTIN && isScalarResultBuiltin(head_name)) return {};
+            Tokens result = head_tokens;
+            for (const auto& tokens : args) add(result, tokens);
+            return result;
+        }
+
+        Tokens scan(const eshkol_ast_t* e) {
+            if (!e) return {};
+            if (depth_ > 1024) {
+                Tokens tokens = all();
+                keep(tokens);
+                return tokens;
+            }
+            struct Depth {
+                unsigned& value;
+                explicit Depth(unsigned& d) : value(d) { ++value; }
+                ~Depth() { --value; }
+            } guard(depth_);
+            if (e->type == ESHKOL_VAR) return lookup(a_.getVarName(e));
+            if (e->type == ESHKOL_CONS) {
+                Tokens tokens = scan(e->cons_cell.car);
+                add(tokens, scan(e->cons_cell.cdr));
+                return tokens;
+            }
+            if (e->type != ESHKOL_OP) return {};
+            const auto& op = e->operation;
+            if (a_.isIfForm(e)) {
+                Tokens tokens;
+                scan(&op.call_op.variables[0]);
+                for (uint64_t i = 1; i < op.call_op.num_vars; ++i) add(tokens, scan(&op.call_op.variables[i]));
+                return tokens;
+            }
+            auto last = [&](const eshkol_ast_t* nodes, uint64_t count) {
+                Tokens tokens;
+                for (uint64_t i = 0; nodes && i < count; ++i) tokens = scan(&nodes[i]);
+                return tokens;
+            };
+            switch (op.op) {
+                case ESHKOL_QUOTE_OP:
+                case ESHKOL_DEFINE_TYPE_OP:
+                case ESHKOL_IMPORT_OP:
+                case ESHKOL_REQUIRE_OP:
+                case ESHKOL_PROVIDE_OP:
+                case ESHKOL_DEFINE_SYNTAX_OP:
+                case ESHKOL_TYPE_ANNOTATION_OP:
+                case ESHKOL_EXTERN_OP:
+                case ESHKOL_EXTERN_VAR_OP:
+                    return {};
+                case ESHKOL_ADD_OP:
+                case ESHKOL_SUB_OP:
+                case ESHKOL_MUL_OP:
+                case ESHKOL_DIV_OP:
+                    for (uint64_t i = 0; op.call_op.variables && i < op.call_op.num_vars; ++i)
+                        scan(&op.call_op.variables[i]);
+                    return {};
+                case ESHKOL_SEQUENCE_OP:
+                    return last(op.sequence_op.expressions, op.sequence_op.num_expressions);
+                case ESHKOL_WITH_REGION_OP:
+                    return last(op.with_region_op.body, op.with_region_op.num_body_exprs);
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP: {
+                    Tokens tokens;
+                    for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i)
+                        add(tokens, scan(&op.sequence_op.expressions[i]));
+                    return tokens;
+                }
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                    return last(op.call_op.variables, op.call_op.num_vars);
+                case ESHKOL_COND_OP: {
+                    Tokens tokens;
+                    for (uint64_t i = 0; op.call_op.variables && i < op.call_op.num_vars; ++i) {
+                        const eshkol_ast_t* clause = &op.call_op.variables[i];
+                        if (clause->type == ESHKOL_OP && clause->operation.op == ESHKOL_CALL_OP) {
+                            add(tokens, scan(clause->operation.call_op.func));
+                            add(tokens, last(clause->operation.call_op.variables,
+                                             clause->operation.call_op.num_vars));
+                        } else {
+                            add(tokens, scan(clause));
+                        }
+                    }
+                    return tokens;
+                }
+                case ESHKOL_DEFINE_OP: {
+                    const auto& define = op.define_op;
+                    Entry entry{define.name ? define.name : "", {}};
+                    if (define.is_function) {
+                        entry.tokens = lambdaScan(e, nullptr, nullptr).captured;
+                        if (!define.is_external) entry.proc = e;
+                    } else {
+                        entry.tokens = scan(define.value);
+                        if (isLambdaNode(define.value)) entry.proc = define.value;
+                    }
+                    env_.push_back(std::move(entry));
+                    return {};
+                }
+                case ESHKOL_SET_OP: {
+                    const Tokens tokens = scan(op.set_op.value);
+                    keep(tokens);
+                    if (op.set_op.name) {
+                        const int i = find(op.set_op.name);
+                        if (i >= 0) {
+                            add(env_[i].tokens, tokens);
+                            env_[i].proc = nullptr;
+                        }
+                    }
+                    return {};
+                }
+                case ESHKOL_LAMBDA_OP:
+                    return lambdaScan(e, nullptr, nullptr).captured;
+                case ESHKOL_LET_OP:
+                case ESHKOL_LET_STAR_OP:
+                case ESHKOL_LETREC_OP:
+                case ESHKOL_LETREC_STAR_OP:
+                    return scanLet(e);
+                case ESHKOL_OWNED_OP:
+                    return scan(op.owned_op.value);
+                case ESHKOL_MOVE_OP:
+                    return scan(op.move_op.value);
+                case ESHKOL_SHARED_OP:
+                    return scan(op.shared_op.value);
+                case ESHKOL_WEAK_REF_OP:
+                    return scan(op.weak_ref_op.value);
+                case ESHKOL_THE_OP:
+                    return scan(op.the_op.expr);
+                case ESHKOL_BORROW_OP:
+                    scan(op.borrow_op.value);
+                    return last(op.borrow_op.body, op.borrow_op.num_body_exprs);
+                case ESHKOL_RAISE_OP:
+                    keep(scan(op.raise_op.exception));
+                    return {};
+                case ESHKOL_CALL_OP:
+                    return scanCall(e);
+                default: {
+                    Tokens tokens = mentions(e);
+                    keep(tokens);
+                    return tokens;
+                }
+            }
+        }
+    };
+
+    // Summary of a procedure being scanned: final, or the current
+    // assumption of its fixed point, which the caller then iterates.
+    const ProcSummary& summaryForScan(const eshkol_ast_t* proc, std::vector<const eshkol_ast_t*>& deps) {
+        if (!proc_final_.count(proc)) deps.push_back(proc);
+        return proc_table_[proc];
+    }
+
+    const ProcSummary& summaryOf(const eshkol_ast_t* proc) {
+        if (proc_final_.count(proc)) return proc_table_[proc];
+        std::vector<const eshkol_ast_t*> group{proc};
+        std::set<const eshkol_ast_t*> members{proc};
+        proc_table_[proc];
+        bool changed = true;
+        for (int round = 0; changed && round < 64; ++round) {
+            changed = false;
+            for (size_t i = 0; i < group.size(); ++i) {
+                std::vector<const eshkol_ast_t*> deps;
+                ProcSummary next;
+                ProcScan(*this, next, deps).run(group[i]);
+                for (const auto* dep : deps)
+                    if (members.insert(dep).second) {
+                        group.push_back(dep);
+                        changed = true;
+                    }
+                ProcSummary& current = proc_table_[group[i]];
+                ProcSummary merged = current;
+                merged.num_params = next.num_params;
+                merged.rest = next.rest;
+                merged.keeps.insert(next.keeps.begin(), next.keeps.end());
+                for (const auto& [slot, sources] : next.passes)
+                    merged.passes[slot].insert(sources.begin(), sources.end());
+                if (!(merged == current) || merged.num_params != current.num_params ||
+                    merged.rest != current.rest) {
+                    current = std::move(merged);
+                    changed = true;
+                }
+            }
+        }
+        if (changed)
+            for (const auto* member : group) {
+                ProcSummary& summary = proc_table_[member];
+                for (size_t i = 0; i <= summary.num_params; ++i) summary.keeps.insert(i);
+            }
+        for (const auto* member : group) proc_final_.insert(member);
+        return proc_table_[proc];
+    }
+
+    const ProcSummary* summaryOfBinding(const VariableInfo& info) {
+        if (info.summary) return info.summary.get();
+        if (info.proc_node) return &summaryOf(info.proc_node);
+        return nullptr;
+    }
+
+    const ProcSummary* globalSummaryByName(const std::string& name) {
+        auto proc = global_procs_.find(name);
+        return proc == global_procs_.end() ? nullptr : &summaryOf(proc->second);
+    }
+
+    // ── calls ───────────────────────────────────────────────────────────
+    // Arguments that refer to owners may only reach procedures that do not
+    // keep them. Lambdas written as arguments receive what the callee may
+    // pass them, and their bodies are checked with those parameters.
+    void checkCallFlow(const eshkol_ast_t* node) {
+        const auto& call = node->operation.call_op;
+        const eshkol_ast_t* head = call.func;
+        const size_t n = call.variables ? call.num_vars : 0;
+        std::vector<Reach> reach(n);
+        std::vector<std::string> owner(n);
+        bool any = false;
+        for (size_t j = 0; j < n; ++j) {
+            reachOf(&call.variables[j], reach[j]);
+            const auto owners = reachedOwners(reach[j]);
+            if (!owners.empty()) {
+                owner[j] = owners.front().name;
+                any = true;
+            }
+        }
+        if (isLambdaNode(head)) {
+            immediate_lambdas_.insert(head);
+            lambda_param_reach_[head].positional = reach;
+            return;
+        }
+        Reach head_reach;
+        reachOf(head, head_reach);
+        auto others = [&](size_t k) {
+            Reach result = head_reach;
+            for (size_t j = 0; j < n; ++j)
+                if (j != k) result.insert(reach[j].begin(), reach[j].end());
+            return result;
+        };
+        for (size_t k = 0; k < n; ++k)
+            if (isLambdaNode(&call.variables[k])) lambda_param_reach_[&call.variables[k]].all = others(k);
+        if (!any) return;
+        auto refuseKept = [&](const std::string& value, const std::string& callee) {
+            reportError("'" + callee + "' may keep a reference to owned value '" + value +
+                        "' after the call; transfer it with move");
+        };
+        auto refuseUnknown = [&](const std::string& value) {
+            reportError("Owned value '" + value +
+                        "' is passed to a procedure the ownership checker cannot resolve");
+        };
+        auto receive = [&](size_t k, const std::string& value) {
+            const eshkol_ast_t* arg = &call.variables[k];
+            if (value.empty() || isLambdaNode(arg)) return;
+            if (arg->type != ESHKOL_VAR) {
+                if (!neverProcedure(arg)) refuseUnknown(value);
+                return;
+            }
+            const std::string name = getVarName(arg);
+            if (isBuiltinName(name)) {
+                if (builtinKeeps(name) != Keeps::NONE) refuseKept(value, name);
+                return;
+            }
+            VariableInfo* info = lookupVariable(name);
+            if (info && info->data) return;
+            if (info && info->external) {
+                if (builtinKeeps(name) != Keeps::NONE) refuseKept(value, name);
+                return;
+            }
+            const ProcSummary* summary = info ? summaryOfBinding(*info) : globalSummaryByName(name);
+            if (!summary) refuseUnknown(value);
+            else if (!summary->keepsNothing()) refuseKept(value, name);
+        };
+        auto firstOther = [&](size_t k, const std::set<size_t>* sources, const ProcSummary* summary) {
+            for (size_t j = 0; j < n; ++j) {
+                if (j == k || owner[j].empty()) continue;
+                if (!sources || sources->count(summary->slot(j))) return owner[j];
+            }
+            return std::string();
+        };
+        if (head && head->type == ESHKOL_VAR) {
+            const std::string head_name = getVarName(head);
+            VariableInfo* info = lookupVariable(head_name);
+            if ((!info && isBuiltinName(head_name)) || (info && info->external)) {
+                if (head_name == "eval") {
+                    reportError("eval may name owned value '" + firstOther(n, nullptr, nullptr) +
+                                "' outside the ownership checker");
+                    return;
+                }
+                const Keeps keeps = builtinKeeps(head_name);
+                for (size_t j = 0; j < n; ++j)
+                    if (!owner[j].empty() && (keeps == Keeps::ALL || (keeps == Keeps::AFTER_FIRST && j > 0)))
+                        refuseKept(owner[j], head_name);
+                if (callsProcedureArguments(head_name))
+                    for (size_t k = 0; k < n; ++k) receive(k, firstOther(k, nullptr, nullptr));
+                return;
+            }
+            if (info && info->loop_proc) return;  // its variables record every argument
+            const ProcSummary* summary = info ? summaryOfBinding(*info) : globalSummaryByName(head_name);
+            if (summary) {
+                for (size_t j = 0; j < n; ++j)
+                    if (!owner[j].empty() && summary->keeps.count(summary->slot(j)))
+                        refuseKept(owner[j], head_name);
+                for (const auto& [slot, sources] : summary->passes)
+                    for (size_t k = 0; k < n; ++k)
+                        if (summary->slot(k) == slot) receive(k, firstOther(k, &sources, summary));
+                return;
+            }
+        }
+        for (size_t j = 0; j < n; ++j)
+            if (!owner[j].empty()) refuseUnknown(owner[j]);
+    }
+
+    // Named-let variables also take every argument of a call to the loop.
+    void bindLoopFacts(const eshkol_operations_t* op) {
+        if (!alias_tracking_ || !op->let_op.name) return;
+        const std::string loop = op->let_op.name;
+        std::vector<VariableInfo*> vars;
+        for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
+            const eshkol_ast_t& binding = op->let_op.bindings[i];
+            const std::string name = binding.type == ESHKOL_CONS ? getVarName(binding.cons_cell.car) : "";
+            auto found = currentScope().variables.find(name);
+            vars.push_back(name.empty() || found == currentScope().variables.end() ? nullptr : &found->second);
+        }
+        auto existing = currentScope().variables.find(loop);
+        if (existing == currentScope().variables.end()) {
+            VariableInfo info{State::UNOWNED, loop, false, next_binding_id_++};
+            info.is_defined = true;
+            existing = currentScope().variables.emplace(loop, std::move(info)).first;
+        }
+        existing->second.loop_proc = true;
+        std::vector<const eshkol_ast_t*> walk{op->let_op.body};
+        while (!walk.empty()) {
+            const eshkol_ast_t* node = walk.back();
+            walk.pop_back();
+            if (!node) continue;
+            if (node->type == ESHKOL_OP && node->operation.op == ESHKOL_CALL_OP &&
+                getVarName(node->operation.call_op.func) == loop) {
+                const auto& call = node->operation.call_op;
+                for (uint64_t i = 0; call.variables && i < call.num_vars && i < vars.size(); ++i)
+                    if (vars[i]) reachOf(&call.variables[i], vars[i]->reaches);
+            }
+            forEachChildExpr(node, [&](const eshkol_ast_t* child) { walk.push_back(child); });
+        }
+        Reach body;
+        mentionsOf(op->let_op.body, body);
+        body.erase(existing->second.binding_id);
+        existing->second.reaches = std::move(body);
+        enterBody();
+    }
+
+    // ── interactive sessions ────────────────────────────────────────────
+    static std::string scopedOutKey(const std::string& name, uint64_t id) {
+        return std::string("\x1f") + name + "\x1f" + std::to_string(id);
+    }
+
+    static std::string scopedOutName(const std::string& key) {
+        if (key.empty() || key[0] != '\x1f') return key;
+        const size_t end = key.find('\x1f', 1);
+        return key.substr(1, end == std::string::npos ? std::string::npos : end - 1);
+    }
+
+    void loadSession(const OwnershipBindings& globals) {
+        std::map<std::string, uint64_t> ids;
+        for (const auto& entry : globals) ids[entry.first] = next_binding_id_++;
+        for (const auto& [name, binding] : globals) {
+            Reach reaches;
+            for (const auto& target : binding.reaches) {
+                auto id = ids.find(target);
+                if (id != ids.end()) reaches.insert(id->second);
+            }
+            if (binding.scoped_out) {
+                scoped_out_[ids[name]] = {scopedOutName(name), binding.state, binding.owner, reaches};
+                continue;
+            }
+            VariableInfo info{binding.state, name, binding.owner, ids[name]};
+            info.reaches = std::move(reaches);
+            info.data = binding.data;
+            info.is_defined = true;
+            if (binding.procedure) {
+                auto summary = std::make_shared<ProcSummary>();
+                summary->keeps = binding.keeps;
+                summary->passes = binding.passes;
+                summary->num_params = binding.num_params;
+                summary->rest = binding.rest;
+                info.summary = std::move(summary);
+            }
+            currentScope().variables[name] = std::move(info);
+        }
+    }
+
+    void saveSession(OwnershipBindings& globals) {
+        OwnershipBindings saved;
+        std::map<uint64_t, std::string> keys;
+        for (const auto& [name, info] : currentScope().variables) keys[info.binding_id] = name;
+        std::vector<uint64_t> pending;
+        for (const auto& entry : currentScope().variables)
+            pending.insert(pending.end(), entry.second.reaches.begin(), entry.second.reaches.end());
+        while (!pending.empty()) {
+            const uint64_t id = pending.back();
+            pending.pop_back();
+            if (keys.count(id)) continue;
+            auto out = scoped_out_.find(id);
+            if (out == scoped_out_.end()) continue;
+            keys[id] = scopedOutKey(out->second.name, id);
+            pending.insert(pending.end(), out->second.reaches.begin(), out->second.reaches.end());
+        }
+        auto names = [&](const Reach& reaches) {
+            std::set<std::string> result;
+            for (uint64_t id : reaches) {
+                auto key = keys.find(id);
+                if (key != keys.end()) result.insert(key->second);
+            }
+            return result;
+        };
+        for (const auto& [name, info] : currentScope().variables) {
+            OwnershipBinding binding;
+            binding.state = info.state;
+            binding.owner = info.is_owned_binding;
+            binding.reaches = names(info.reaches);
+            binding.data = info.data;
+            if ((info.proc_node || info.summary) && !info.external) {
+                const ProcSummary& summary = info.summary ? *info.summary : summaryOf(info.proc_node);
+                binding.procedure = true;
+                binding.keeps = summary.keeps;
+                binding.passes = summary.passes;
+                binding.num_params = summary.num_params;
+                binding.rest = summary.rest;
+            }
+            saved[name] = std::move(binding);
+        }
+        for (const auto& [id, key] : keys) {
+            auto out = scoped_out_.find(id);
+            if (out == scoped_out_.end() || saved.count(key)) continue;
+            OwnershipBinding binding;
+            binding.state = out->second.state;
+            binding.owner = out->second.owner;
+            binding.reaches = names(out->second.reaches);
+            binding.scoped_out = true;
+            saved[key] = std::move(binding);
+        }
+        globals.swap(saved);
     }
 
     void checkCopy(const eshkol_ast_t* value) {
@@ -4295,7 +5853,10 @@ std::vector<std::string> checkOwnership(const std::vector<eshkol_ast_t>& forms,
     // without allocating control-flow snapshots. Encountering an ownership
     // form restarts the walk before any provisional globals are published.
     const bool live_ownership = globals && std::any_of(globals->begin(), globals->end(),
-        [](const auto& binding) { return binding.second != OwnershipState::UNOWNED; });
+        [](const auto& binding) {
+            return binding.second.state != OwnershipState::UNOWNED || binding.second.owner ||
+                   !binding.second.reaches.empty();
+        });
     OwnershipAnalyzer analyzer(strict, strict || live_ownership);
     analyzer.analyze(forms, globals);
     if (!analyzer.needsBranchAnalysis()) return analyzer.getErrors();

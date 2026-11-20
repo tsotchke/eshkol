@@ -15186,7 +15186,9 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-vm-standal
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/ascription_runtime.py
             $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>)
-    foreach(case IN ITEMS move borrow joined_borrow borrow_result)
+    foreach(case IN ITEMS move borrow joined_borrow borrow_result alias_data alias_closure
+                          closure_let_alias borrow_closure escape_set escape_call escape_hof
+                          escape_unknown captured_move loop_move unfollowed accepted)
         add_test(NAME ownership_default_${case}
             COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_default_modes.py

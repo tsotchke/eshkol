@@ -3,6 +3,7 @@
 #include <eshkol/eshkol.h>
 #include <eshkol/strict_resource_contracts.h>
 
+#include <cstddef>
 #include <map>
 #include <set>
 #include <string>
@@ -19,7 +20,22 @@ struct ResourceContracts {
 };
 
 enum class OwnershipState { UNOWNED, OWNED, MOVED, BORROWED, MAYBE_MOVED };
-using OwnershipBindings = std::map<std::string, OwnershipState>;
+
+// What an interactive session keeps about one accepted global binding, and
+// about each binding that left scope while a global still refers to it.
+struct OwnershipBinding {
+    OwnershipState state = OwnershipState::UNOWNED;
+    bool owner = false;                      // bound by owned or move
+    std::set<std::string> reaches;           // session bindings its value may refer to
+    bool procedure = false;                  // a procedure whose effects are summarized
+    std::set<size_t> keeps;                  // parameter slots it stores past a call
+    std::map<size_t, std::set<size_t>> passes;  // procedure slot -> argument slots it receives
+    size_t num_params = 0;
+    bool rest = false;
+    bool data = false;                       // holds a value that is never a procedure
+    bool scoped_out = false;                 // left its scope; names only a reference target
+};
+using OwnershipBindings = std::map<std::string, OwnershipBinding>;
 
 // Code generation uses a provisional environment until the JIT admits its module.
 class OwnershipTransaction {
