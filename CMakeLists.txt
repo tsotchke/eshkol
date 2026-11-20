@@ -13,9 +13,10 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-set(ESHKOL_VERSION "1.3.6")
-
-project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
+project("Eshkol" VERSION 1.4.0 LANGUAGES C CXX)
+set(ESHKOL_RELEASE_NAME "connection")
+set(ESHKOL_RELEASE_VERSION "${PROJECT_VERSION}-${ESHKOL_RELEASE_NAME}")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/release-tag" CONTENT "v${ESHKOL_RELEASE_VERSION}\n")
 
 # Release macOS packages carry the OpenSSL closure. Keep developer builds
 # compatible with their existing host OpenSSL installation, while allowing
@@ -665,6 +666,10 @@ else()
 endif()
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
+configure_file(cmake/version.h.in "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/version.h" @ONLY)
+include_directories("${ESHKOL_GENERATED_INCLUDE_DIR}")
+install(FILES "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/version.h"
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_config.h.in"
   "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol/build_config.h"
@@ -2235,7 +2240,7 @@ add_custom_command(
   TARGET "debug"
   POST_BUILD
   COMMENT "Creates the debian files for building the debug files."
-  COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make-docker.sh ${CMAKE_CURRENT_BINARY_DIR} ${ESHKOL_VERSION} debug
+  COMMAND cd ${CMAKE_CURRENT_SOURCE_DIR} && ${CMAKE_CURRENT_SOURCE_DIR}/scripts/make-docker.sh ${CMAKE_CURRENT_BINARY_DIR} ${ESHKOL_RELEASE_VERSION} debug
 )
 
 # Get all the source code recursively.
@@ -2497,7 +2502,7 @@ endif()
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
 add_compile_definitions(
-  ESHKOL_VER="${ESHKOL_VERSION}-evolve"
+  ESHKOL_VER="${ESHKOL_RELEASE_VERSION}"
 )
 
 # ADR-0001 SS3 / ADR-0000 Stage 4. Whole-project, not per-target: the object
@@ -3632,7 +3637,7 @@ if(ESHKOL_MEMORY_ABI_V2)
 else()
   set(ESHKOL_STDLIB_IDENTITY_ABI "object-abi-v1")
 endif()
-set(ESHKOL_STDLIB_RELEASE_STRING "${ESHKOL_VERSION}-evolve")
+set(ESHKOL_STDLIB_RELEASE_STRING "${ESHKOL_RELEASE_VERSION}")
 string(REGEX REPLACE "[^A-Za-z0-9_]" "_" ESHKOL_STDLIB_IDENTITY_RELEASE
        "${ESHKOL_STDLIB_RELEASE_STRING}")
 string(REGEX REPLACE "[^A-Za-z0-9_]" "_" ESHKOL_STDLIB_IDENTITY_ABI_SYMBOL
@@ -3714,6 +3719,7 @@ endif()
 # stdlib and later REPL batches share the same ORC IR compilation pipeline;
 # stdlib.o remains available for legacy/load-time fallback paths.
 install(FILES ${STDLIB_OUTPUT} ${STDLIB_BITCODE} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/release-tag" DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol)
 install(FILES lib/tensorcore.esk DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib)
 install(FILES inc/eshkol/tensorcore_adapter.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
 install(FILES inc/eshkol/agent_platform.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
@@ -9547,7 +9553,7 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND
     add_test(NAME ast_routing_compile_mutations
         COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/ast_routing_compile_mutations.py"
-                --cxx "${CMAKE_CXX_COMPILER}")
+                --generated-include "${ESHKOL_GENERATED_INCLUDE_DIR}" --cxx "${CMAKE_CXX_COMPILER}")
     add_test(NAME compiler_architecture_gate_selftest
         COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/gate_compiler_architecture.py" --self-test)
@@ -9792,6 +9798,9 @@ endif()
 # Keep them in CTest so normal developer and CI test selections exercise the
 # same contracts as the release workflow.
 if(ESHKOL_BUILD_TESTS AND Python3_Interpreter_FOUND)
+    add_test(NAME release_build_identity
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/release_build_identity.py"
+                "$<TARGET_FILE:eshkol-run>" "${CMAKE_CURRENT_BINARY_DIR}")
     if(UNIX)
         add_test(NAME release_qubit_compile_contract
             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/qubit_no_cloning_gate.sh"

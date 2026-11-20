@@ -1,4 +1,6 @@
 """Exercise the input boundaries of release evidence producers."""
+from contextlib import redirect_stderr
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -78,6 +80,32 @@ sys.exit(0 if mode == 'accept' else 1)
         result = subprocess.run(command + ["--server", "absent"], capture_output=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn(b"unrecognized arguments: --server", result.stderr)
+
+    def test_package_version_requires_exact_compiler_and_staged_tag(self):
+        from verify_release_package import verify_version
+        scratch = ROOT / ".scratch"
+        scratch.mkdir(exist_ok=True)
+        tag = "v1.4.0-connection"
+        with tempfile.TemporaryDirectory(dir=scratch) as directory:
+            package = Path(directory)
+            stamp = package / "share/eshkol/release-tag"
+            stamp.parent.mkdir(parents=True)
+            stamp.write_text(tag + "\n")
+            verify_version(package, tag, f"Eshkol Compiler {tag}\n", "")
+            old_tag = "v1.3.6-evolve"
+            for staged, expected, reported in (
+                (tag, tag, tag + "-other"),
+                (tag, tag, "v1.4.0-evolve"),
+                (old_tag, old_tag, old_tag),
+                (old_tag, tag, tag),
+            ):
+                with self.subTest(staged=staged, expected=expected, reported=reported):
+                    stamp.write_text(staged + "\n")
+                    diagnostic = io.StringIO()
+                    with redirect_stderr(diagnostic), self.assertRaises(SystemExit) as refusal:
+                        verify_version(package, expected, f"Eshkol Compiler {reported}\n", tag)
+                    self.assertEqual(refusal.exception.code, 1)
+                    self.assertIn("expected package and compiler version", diagnostic.getvalue())
 
 
 if __name__ == "__main__":
