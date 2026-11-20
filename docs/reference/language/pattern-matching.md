@@ -7,8 +7,9 @@ where each clause is `(pattern body …)`. Clauses are tried top-to-bottom; the
 body of the first matching pattern is evaluated and returned. Variables in the
 pattern are bound in the body.
 
-`match` is supported by the native JIT and AOT backends. The bytecode VM does not
-currently support `match`; a VM attempt fails with an undefined-variable error.
+With at least one clause, the native JIT, AOT compiler and bytecode VM evaluate
+the subject once and raise an error if every clause fails. A match with zero
+clauses returns the empty list without evaluating the subject.
 
 ## Supported patterns
 
@@ -19,6 +20,7 @@ currently support `match`; a VM attempt fails with an undefined-variable error.
 | literal (`5`, `"s"`) | that literal value |
 | `(list p …)` | a list of exactly that many elements, matching each `p` |
 | `(cons p1 p2)` | a pair (as `pair?` decides; a string or vector is not one), `p1` = car, `p2` = cdr |
+| `(or p …)` | the first matching alternative |
 | `(? pred)` | any value for which `(pred value)` is true |
 | `(? pred var)` | as above, and binds `var` |
 

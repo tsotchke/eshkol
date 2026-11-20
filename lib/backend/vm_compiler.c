@@ -4,6 +4,7 @@
 #include "vm_embedded_modules.h"
 #endif
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
+static void compile_form_match(FuncChunk* c, Node* form, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
 
@@ -6106,6 +6107,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (cond (test1 expr1) (test2 expr2) ... (else exprN)) */
     if (is_sym(head, "cond") && node->n_children >= 2) { compile_form_cond(c, node, tail); return; }
+
+    if (is_sym(head, "match") && node->n_children >= 2) {
+        compile_form_match(c, node, tail);
+        return;
+    }
 
     /* (case expr ((val ...) body ...) ... (else body ...))
      * Compiles as: evaluate key, then for each clause: DUP key, test each val,

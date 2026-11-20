@@ -2349,6 +2349,7 @@ set(ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC
   lib/backend/vm_parser.c
   lib/backend/vm_macro.c
   lib/backend/vm_compiler.c
+  lib/backend/vm_match.c
   lib/backend/vm_peephole.c
 )
 
@@ -9029,6 +9030,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
         set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 600)
     endfunction()
     add_vm_transcript_test(vm_tensor_dot_shapes tests/vm_parity/corpus/tensor_dot_shapes.esk)
+    add_vm_transcript_test(vm_match_bytecode_parity tests/vm_parity/corpus/match_patterns.esk)
 endif()
 
 # BI-5 gate: the linear (no-cloning) rule is enforced on BOTH engines. The

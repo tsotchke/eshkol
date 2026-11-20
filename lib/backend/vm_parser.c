@@ -42,6 +42,7 @@ typedef struct Node {
                        * `'(vector 1 2)` still quotes as the list it reads as — the
                        * same discipline `is_verbatim` uses to keep `|.|` apart from
                        * the dotted-pair delimiter. */
+    int is_numeric_literal; /* A numeric token lowered to a constructor call. */
     int is_quote_sugar; /* N_LIST node produced by the reader's `'datum` prefix.
                          * Its shape is also used by explicit `(quote datum)`,
                          * but with-region treats only this spelling as a specifier. */
@@ -553,14 +554,15 @@ static double vm_numsyn_inexact_value(const eshkol_numsyn_part_t* p) {
     return strtod(p->text, NULL);
 }
 
-/* A two-element call node (head a b). */
-static Node* make_call2_node(const char* head, Node* a, Node* b) {
+/* Preserve numeric-token origin when lowering a literal to its constructor. */
+static Node* make_numeric_literal_call(const char* head, Node* a, Node* b) {
     Node* call = make_node(N_LIST);
     Node* op = make_node(N_SYMBOL);
     if (!call || !op || !a || !b) {
         free_node(call); free_node(op); free_node(a); free_node(b);
         return NULL;
     }
+    call->is_numeric_literal = 1;
     strncpy(op->symbol, head, 127);
     op->symbol[127] = 0;
     add_child(call, op); add_child(call, a); add_child(call, b);
@@ -578,7 +580,7 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
             return make_int_or_bignum_node(p->text, (int)strlen(p->text));
         if (p->kind == ESHKOL_NUMSYN_RATIONAL) {
             const char* slash = strchr(p->text, '/');
-            return make_call2_node("exact-rational",
+            return make_numeric_literal_call("exact-rational",
                 make_int_or_bignum_node(p->text, (int)(slash - p->text)),
                 make_int_or_bignum_node(slash + 1, (int)strlen(slash + 1)));
         }
@@ -592,7 +594,7 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
             x = m * cos(a);
             y = m * sin(a);
         }
-        return make_call2_node("make-rectangular",
+        return make_numeric_literal_call("make-rectangular",
                                make_inexact_number_node(x), make_inexact_number_node(y));
     }
 }
@@ -873,6 +875,7 @@ static Node* parse_sexp_impl(void) {
             Node* div_node = make_node(N_LIST); if (!div_node) { free(num_text); free(den_buf); return NULL; }
             Node* op = make_node(N_SYMBOL);
             if (!op) { free_node(div_node); free(num_text); free(den_buf); return NULL; }
+            div_node->is_numeric_literal = 1;
             strncpy(op->symbol, "exact-rational", 127);
             Node* n_node = make_int_or_bignum_node(num_text, num_len);
             Node* d_node = make_int_or_bignum_node(den_buf, den_len);

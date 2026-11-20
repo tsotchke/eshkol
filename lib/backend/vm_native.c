@@ -9693,6 +9693,7 @@ static void vm_dispatch_packed_literal(VM* vm, int n_packs, int symbol) {
     }
     vm->heap.objects[ptr]->type = HEAP_STRING;
     vm->heap.objects[ptr]->opaque.ptr = s;
+    if (!symbol) vm->heap.objects[ptr]->opaque.subtype = VM_SUBTYPE_STRING_LITERAL;
     vm_push(vm, (Value){.type = symbol ? VAL_SYMBOL : VAL_STRING, .as.ptr = ptr});
 }
 
@@ -17509,6 +17510,24 @@ tensor_inverse_done:
         break;
     }
 
+    case VM_NATIVE_MATCH_LITERAL: {
+        /* Native match compares the literal's tag and payload. Literal
+         * strings share a constant in the native module. A dynamic string
+         * has a separate identity even when its bytes are identical. */
+        Value literal = vm_pop(vm), subject = vm_pop(vm);
+        int equal;
+        if (literal.type == VAL_STRING) {
+            equal = subject.type == VAL_STRING && is_valid_heap_ptr(vm, subject.as.ptr) &&
+                vm->heap.objects[subject.as.ptr]->opaque.subtype == VM_SUBTYPE_STRING_LITERAL &&
+                vm_identity_equal(vm, subject, literal);
+        } else if (literal.type == VAL_BIGNUM || literal.type == VAL_COMPLEX) {
+            equal = subject.type == literal.type && subject.as.ptr == literal.as.ptr;
+        } else {
+            equal = vm_identity_equal(vm, subject, literal);
+        }
+        vm_push(vm, BOOL_VAL(equal));
+        break;
+    }
     case 133: { /* eq?: identity equality */
         Value b = vm_pop(vm), a = vm_pop(vm);
         vm_push(vm, BOOL_VAL(vm_identity_equal(vm, a, b)));

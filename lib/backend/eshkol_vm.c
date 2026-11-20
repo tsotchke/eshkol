@@ -261,6 +261,7 @@ static int vm_builtin_operands_at_index(int local_index, const char* name);
 
 /* Bytecode compiler */
 #include "vm_compiler.c"
+#include "vm_match.c"
 
 /* Peephole optimizer */
 #include "vm_peephole.c"
