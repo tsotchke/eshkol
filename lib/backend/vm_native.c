@@ -7839,7 +7839,10 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
     VmBignum* bb = vm_coerce_bignum(vm, b);
     if (!ab || !bb) { vm->error = 1; return; }
     if ((op == '/' || op == 'q' || op == 'r' || op == 'm') && bignum_is_zero(bb)) {
-        vm_raise_error_msg(vm, VM_EXACT_DIV_ZERO);
+        vm_raise_error_msg(vm, op == 'q' ? VM_QUOTIENT_DIV_ZERO
+                             : op == 'r' ? VM_REMAINDER_DIV_ZERO
+                             : op == 'm' ? VM_MODULO_DIV_ZERO
+                             : VM_EXACT_DIV_ZERO);
         return;
     }
     VmBignum* r = NULL;
@@ -11427,7 +11430,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmBignum* b_bn = (b_val.type == VAL_BIGNUM) ? (VmBignum*)vm->heap.objects[b_val.as.ptr]->opaque.ptr : bignum_from_int64(bn_rs, (int64_t)as_number(b_val));
             if (!a_bn || !b_bn) { vm_push(vm, NIL_VAL); break; }
             if ((fid == 358 || fid == 359) && bignum_is_zero(b_bn)) {
-                vm_raise_error_msg(vm, VM_EXACT_DIV_ZERO);
+                vm_raise_error_msg(vm, fid == 358 ? VM_QUOTIENT_DIV_ZERO : VM_REMAINDER_DIV_ZERO);
                 break;
             }
             VmBignum* result = NULL;
