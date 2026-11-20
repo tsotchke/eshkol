@@ -359,6 +359,11 @@ public:
     /** Get the current scope nesting depth. */
     size_t currentScope() const { return current_scope_; }
 
+    // Evaluate a binding at one program point. The ownership analyzer supplies
+    // its path-joined facts and the type checker supplies its lexical facts.
+    static std::optional<BorrowError::Kind> moveViolation(BorrowState state, bool active_loan);
+    static std::optional<BorrowError::Kind> sharedBorrowViolation(BorrowState state, bool exclusive);
+
     // Ownership operations
     /** Declare @p name as a newly owned value in the current scope. */
     void declareOwned(const std::string& name);

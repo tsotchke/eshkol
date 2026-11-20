@@ -1,5 +1,6 @@
 #include <eshkol/frontend/ownership.h>
 #include <eshkol/frontend/syntax_color.h>
+#include <eshkol/types/type_checker.h>
 
 #include <algorithm>
 #include <cctype>
@@ -3012,6 +3013,12 @@ private:
     WorkItem astChild(const eshkol_ast_t* node) const {
         return WorkItem::astNode(node, active_resource_effects_enabled_);
     }
+    static hott::BorrowState borrowState(const VariableInfo& binding) {
+        if (binding.state == State::MOVED || binding.state == State::MAYBE_MOVED)
+            return hott::BorrowState::Moved;
+        return hott::BorrowState::Owned;
+    }
+
     bool isBorrowed(uint64_t binding_id) const {
         auto it = borrowed_counts_.find(binding_id);
         return it != borrowed_counts_.end() && it->second > 0;
@@ -3791,15 +3798,16 @@ private:
                 if (!var_name.empty()) {
                     VariableInfo* info = lookupVariable(var_name);
                     if (info) {
-                        if (info->state == State::MOVED) {
-                            if (!(checked && info->resource_kind != ResourceKind::NONE))
-                                reportError("Double move of '" + var_name + "' - value already moved");
+                        auto issue = hott::BorrowChecker::moveViolation(borrowState(*info),
+                                                                        isBorrowed(info->binding_id));
+                        if (!issue) {
+                            info->state = State::MOVED;
+                        } else if (*issue == hott::BorrowChecker::BorrowError::Kind::MoveWhileBorrowed) {
+                            reportError("Cannot move '" + var_name + "' while it is borrowed");
                         } else if (info->state == State::MAYBE_MOVED) {
                             reportError("Move of maybe-moved value '" + var_name + "'");
-                        } else if (isBorrowed(info->binding_id)) {
-                            reportError("Cannot move '" + var_name + "' while it is borrowed");
-                        } else {
-                            info->state = State::MOVED;
+                        } else if (!(checked && info->resource_kind != ResourceKind::NONE)) {
+                            reportError("Double move of '" + var_name + "' - value already moved");
                         }
                         if (checked && info->resource_kind != ResourceKind::NONE) {
                             if (!accepted_move_nodes_.count(node)) {
@@ -3829,7 +3837,7 @@ private:
                 uint64_t borrowed_binding_id = 0;
                 if (!var_name.empty()) {
                     VariableInfo* info = lookupVariable(var_name);
-                    if (info && (info->state == State::MOVED || info->state == State::MAYBE_MOVED) &&
+                    if (info && hott::BorrowChecker::sharedBorrowViolation(borrowState(*info), false) &&
                         !(checked && info->resource_kind != ResourceKind::NONE)) {
                         reportError("Cannot borrow moved value '" + var_name + "'");
                     } else if (info) {

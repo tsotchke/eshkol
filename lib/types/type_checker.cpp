@@ -527,6 +527,22 @@ void BorrowChecker::declareOwned(const std::string& name) {
     values_[name] = info;
 }
 
+std::optional<BorrowChecker::BorrowError::Kind>
+BorrowChecker::moveViolation(BorrowState state, bool active_loan) {
+    if (state == BorrowState::Moved) return BorrowError::Kind::UseAfterMove;
+    if (state == BorrowState::Dropped) return BorrowError::Kind::UseAfterDrop;
+    if (active_loan) return BorrowError::Kind::MoveWhileBorrowed;
+    return std::nullopt;
+}
+
+std::optional<BorrowChecker::BorrowError::Kind>
+BorrowChecker::sharedBorrowViolation(BorrowState state, bool exclusive) {
+    if (state == BorrowState::Moved) return BorrowError::Kind::UseAfterMove;
+    if (state == BorrowState::Dropped) return BorrowError::Kind::UseAfterDrop;
+    if (exclusive) return BorrowError::Kind::MutableBorrowWhileShared;
+    return std::nullopt;
+}
+
 /**
  * @brief Attempt to move the value bound to @p name.
  *
@@ -544,22 +560,11 @@ bool BorrowChecker::move(const std::string& name) {
 
     auto& info = it->second;
 
-    // Cannot move if already moved or dropped
-    if (info.state == BorrowState::Moved) {
-        addError(BorrowError::Kind::UseAfterMove, name,
-                "Cannot move '" + name + "': already moved");
-        return false;
-    }
-    if (info.state == BorrowState::Dropped) {
-        addError(BorrowError::Kind::UseAfterDrop, name,
-                "Cannot move '" + name + "': already dropped");
-        return false;
-    }
-
-    // Cannot move if borrowed
-    if (info.borrow_count > 0 || info.has_mutable_borrow) {
-        addError(BorrowError::Kind::MoveWhileBorrowed, name,
-                "Cannot move '" + name + "': currently borrowed");
+    if (auto issue = moveViolation(info.state, info.borrow_count || info.has_mutable_borrow)) {
+        const char* reason = "currently borrowed";
+        if (*issue == BorrowError::Kind::UseAfterMove) reason = "already moved";
+        if (*issue == BorrowError::Kind::UseAfterDrop) reason = "already dropped";
+        addError(*issue, name, "Cannot move '" + name + "': " + reason);
         return false;
     }
 
@@ -615,21 +620,12 @@ bool BorrowChecker::borrowShared(const std::string& name) {
 
     auto& info = it->second;
 
-    if (info.state == BorrowState::Moved) {
-        addError(BorrowError::Kind::UseAfterMove, name,
-                "Cannot borrow '" + name + "': already moved");
-        return false;
-    }
-    if (info.state == BorrowState::Dropped) {
-        addError(BorrowError::Kind::UseAfterDrop, name,
-                "Cannot borrow '" + name + "': already dropped");
-        return false;
-    }
-
-    // Cannot create shared borrow if mutable borrow exists
-    if (info.has_mutable_borrow) {
-        addError(BorrowError::Kind::MutableBorrowWhileShared, name,
-                "Cannot create shared borrow of '" + name + "': mutable borrow active");
+    if (auto issue = sharedBorrowViolation(info.state, info.has_mutable_borrow)) {
+        if (*issue == BorrowError::Kind::MutableBorrowWhileShared)
+            addError(*issue, name, "Cannot create shared borrow of '" + name + "': mutable borrow active");
+        else
+            addError(*issue, name, "Cannot borrow '" + name +
+                     (*issue == BorrowError::Kind::UseAfterMove ? "': already moved" : "': already dropped"));
         return false;
     }
 

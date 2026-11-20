@@ -19,6 +19,8 @@ def main():
                  "Use of moved value 'x'"),
         "borrow": ("(define x (owned 17))\n(borrow x (borrow x 0) (move x))\n",
                    "Cannot move 'x' while it is borrowed"),
+        "joined_borrow": ("(define x (owned 17))\n(if (> x 1) (move x) 0)\n(borrow x 0)\n",
+                          "Cannot borrow moved value 'x'"),
     }[case]
     with tempfile.TemporaryDirectory() as directory:
         work = Path(directory)
