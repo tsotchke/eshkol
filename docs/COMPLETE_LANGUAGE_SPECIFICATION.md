@@ -2334,6 +2334,11 @@ See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 ; native: data's memory freed here; bytecode VM: same value, not yet freed
 ```
 
+JIT, AOT, the REPL and the hosted bytecode compiler apply ownership checks by
+default. Use `--unsafe` to run legacy code with static ownership and type
+checking disabled. The native `--strict-resources` profile additionally checks
+the acquisition and closing contracts of resource APIs.
+
 #### 6.2.2 `owned` - Mark Ownership
 **Syntax:** `(owned expr)`
 

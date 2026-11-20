@@ -3952,6 +3952,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     // from code that legitimately executed must not be mistaken for a
     // compile-time objection to this batch.
     CompilationUnit compilation_unit(*this);
+    OwnershipTransaction ownership(ownership_bindings_);
 
     LLVMModuleRef c_module = source_path.empty()
         ? eshkol_generate_llvm_ir(
@@ -4139,6 +4140,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+    ownership.commit();
 
     for (const auto& [source_name, func_name_export, arity] : exported_function_infos) {
         uint64_t func_addr_export = lookupSymbol(func_name_export);
@@ -4500,6 +4502,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Compilation span for the addModule() gate; see executeBatch() for why it
     // opens immediately before codegen rather than at function entry.
     CompilationUnit compilation_unit(*this);
+    OwnershipTransaction ownership(ownership_bindings_);
 
     // Generate LLVM IR using the existing Eshkol compiler
     std::string module_name = "__repl_module_" + std::to_string(eval_id);
@@ -4669,6 +4672,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+    ownership.commit();
 
     for (const auto& [func_name_export, arity] : exported_function_infos) {
         uint64_t func_addr_export = lookupSymbol(func_name_export);

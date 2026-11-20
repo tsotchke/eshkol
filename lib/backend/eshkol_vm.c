@@ -1573,12 +1573,11 @@ static int vm_reject_dependent_violations(const char* source, const char* source
  * @return 0 to proceed, nonzero when the VM must refuse this program.
  */
 static int vm_reject_linear_violations(const char* source, const char* source_name) {
-    if (!source || (!vm_source_carries_linear_annotation(source) &&
-                    !vm_source_carries_structural_types(source))) return 0;
+    if (!source) return 0;
 
     if (!g_vm_linear_check) {
-        /* No front end installed — a freestanding or embedded build. Refuse
-         * rather than accept unchecked: silent acceptance is the defect. */
+        if (!vm_source_carries_linear_annotation(source) &&
+            !vm_source_carries_structural_types(source)) return 0;
         vm_compile_error("this build cannot verify linear (no-cloning) typing",
                          "no linear checker is installed; link a driver that "
                          "calls eshkol_vm_install_linear_check(), or remove the "
@@ -1597,8 +1596,7 @@ static int vm_reject_linear_violations(const char* source, const char* source_na
         return 1;
     }
     if (violations < 0) {
-        vm_compile_error("refusing to compile a program carrying a linear type "
-                         "annotation that the front end could not analyse",
+        vm_compile_error("refusing to compile source that the front end could not analyse",
                          "the no-cloning guarantee cannot be verified for this "
                          "source, and an unverified linear program must not run");
         return 1;
@@ -3087,6 +3085,7 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
 }
 
 #if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
+#include <eshkol/core/config.h>
 int main(int argc, char** argv) {
     /* Engine parity: this binary links the front end, so it installs the REAL
      * linear (no-cloning) judgment — the same TypeChecker the LLVM engine uses,
@@ -3125,6 +3124,10 @@ int main(int argc, char** argv) {
         for (int i = 1; i < argc; i++) {
             if (!positional_only && strcmp(argv[i], "--") == 0) {
                 positional_only = 1;
+            } else if (!input && !positional_only && strcmp(argv[i], "--unsafe") == 0) {
+                eshkol_config_t config = *eshkol_config_get();
+                config.unsafe_mode = true;
+                eshkol_config_set(&config);
             } else if (!positional_only && strcmp(argv[i], "--trace") == 0) {
                 trace = 1; g_trace_on = 1;
             } else if (!positional_only && strcmp(argv[i], "--emit-eskb") == 0 && i + 1 < argc) {

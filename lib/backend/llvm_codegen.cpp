@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <eshkol/frontend/ownership.h>
 #include <functional>
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/core/execution_profile.h>
@@ -2441,6 +2442,16 @@ public:
             // top-level statement order. Flatten once, right after macro
             // expansion, so every downstream pass sees a clean flat list.
             eshkol::splice_toplevel_forms(expanded_asts);   // R7RS 5.1: recursive
+
+            if (!eshkol_config_get()->unsafe_mode) {
+                const auto errors = eshkol::checkOwnership(expanded_asts, nullptr,
+                    eshkol::OwnershipTransaction::current());
+                if (!errors.empty()) {
+                    eshkol_error("Ownership analysis failed:");
+                    for (const auto& error : errors) eshkol_error("%s", error.c_str());
+                    return std::make_pair(nullptr, nullptr);
+                }
+            }
 
             // Resolve the expanded unit against the shared NodeId-keyed
             // semantic substrate before backend-specific lowering. The result
@@ -40349,7 +40360,6 @@ private:
     }
 
     // Codegen for (move value) - transfers ownership
-    // Sets CONSUMED flag on source object and nulls out the source binding
     Value* codegenMove(const eshkol_operations_t* op) {
         if (!op || !op->move_op.value) {
             eshkol_error("Invalid move expression: missing value");
@@ -40367,50 +40377,24 @@ private:
     Value* codegenMoveValue(const eshkol_operations_t* op, Value* value) {
         if (!op || !op->move_op.value || !value) return packNullToTaggedValue();
 
-        // Check if value is heap-allocated (has object header)
-        Value* type = getTaggedValueType(value);
-        Value* base_type = getBaseType(type);
-        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* has_header = builder->CreateOr(is_heap, is_callable);
-
-        Function* func = builder->GetInsertBlock()->getParent();
-        BasicBlock* consume_bb = BasicBlock::Create(*context, "move_consume", func);
-        BasicBlock* done_bb = BasicBlock::Create(*context, "move_done", func);
-        builder->CreateCondBr(has_header, consume_bb, done_bb);
-
-        // Set CONSUMED flag on the source object header
-        builder->SetInsertPoint(consume_bb);
-        Value* ptr_int = unpackInt64FromTaggedValue(value);
-        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
-        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "move_flags");
-        Value* new_flags = builder->CreateOr(old_flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_CONSUMED));
-        builder->CreateStore(new_flags, flags_ptr);
-
-        // Null out the source binding if it's a variable reference
-        if (op->move_op.value->type == ESHKOL_VAR && op->move_op.value->variable.id) {
-            std::string var_name = op->move_op.value->variable.id;
-            auto it = symbol_table.find(var_name);
-            if (it != symbol_table.end()) {
-                Value* binding = it->second;
-                if (isa<AllocaInst>(binding) || isa<GlobalVariable>(binding)) {
-                    builder->CreateStore(packNullToTaggedValue(), binding);
-                }
-            }
+        const eshkol_ast_t* source = op->move_op.value;
+        if (source->type != ESHKOL_VAR || !source->variable.id) return value;
+        Value* storage = nullptr;
+        auto local = symbol_table.find(source->variable.id);
+        if (local != symbol_table.end()) {
+            storage = local->second;
+        } else {
+            auto global = global_symbol_table.find(source->variable.id);
+            if (global != global_symbol_table.end()) storage = global->second;
         }
-
-        // Clear the CONSUMED flag on the object for the new owner.
-        // The source binding is nulled out above, so the CONSUMED flag
-        // only needs to live on the source (which is now null).
-        // The new owner (receiver of move) gets a clean object.
-        Value* cleared_flags = builder->CreateAnd(old_flags,
-            ConstantInt::get(int8_type, ~ESHKOL_OBJ_FLAG_CONSUMED));
-        builder->CreateStore(cleared_flags, flags_ptr);
-
-        builder->CreateBr(done_bb);
-
-        builder->SetInsertPoint(done_bb);
+        // Ownership belongs to a binding. Clear only mutable tagged slots.
+        if (auto* slot = dyn_cast_or_null<AllocaInst>(storage)) {
+            if (slot->getAllocatedType() == tagged_value_type)
+                builder->CreateStore(packNullToTaggedValue(), slot);
+        } else if (auto* global = dyn_cast_or_null<GlobalVariable>(storage)) {
+            if (!global->isConstant() && global->getValueType() == tagged_value_type)
+                builder->CreateStore(packNullToTaggedValue(), global);
+        }
         return value;
     }
 

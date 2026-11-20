@@ -39,6 +39,8 @@
 #include "eshkol/types/type_checker.h"
 #include "eshkol/types/refinement.h"
 #include "eshkol/frontend/macro_expander.h"
+#include "eshkol/frontend/ownership.h"
+#include "eshkol/logger.h"
 
 #include <sstream>
 #include <string>
@@ -138,11 +140,14 @@ extern "C" {
  */
 int eshkol_linear_check_source(const char* source, const char* source_name) {
     return checkSource(source, source_name,
-                       [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>&) {
+                       [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>& forms) {
+                           const auto errors = eshkol_config_get()->unsafe_mode
+                               ? std::vector<std::string>{} : eshkol::checkOwnership(forms);
+                           for (const auto& error : errors) eshkol_error("%s", error.c_str());
                            // Structural violations (ADR-0046: rows, higher
                            // rank, session protocols) travel with the linear
                            // verdict, and the VM refuses them the same way.
-                           return static_cast<int>(checker.linearityViolations() +
+                           return static_cast<int>(errors.size() + checker.linearityViolations() +
                                                    checker.structuralViolations());
                        });
 }

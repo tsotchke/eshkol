@@ -7,6 +7,7 @@
 #ifndef ESHKOL_REPL_JIT_H
 #define ESHKOL_REPL_JIT_H
 
+#include <eshkol/frontend/ownership.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -305,6 +306,7 @@ private:
     // files are compiled in one batch, while following top-level forms are
     // compiled in fresh batches with fresh MacroExpander instances. Keep
     // define-syntax forms here so macro visibility matches AOT load semantics.
+    OwnershipBindings ownership_bindings_;
     std::vector<eshkol_ast_t> persistent_macro_asts_;
 
     // SHARED ARENA: Single persistent arena shared across all evaluations
