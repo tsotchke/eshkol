@@ -2114,8 +2114,11 @@ static int compile_and_run(const char* source) {
     /* Run peephole optimization before execution */
     peephole_optimize(&main_chunk);
 
-    /* Execute using full VM */
-    return run_compiled_chunk(&main_chunk);
+    /* Execute using full VM. The VM copies the chunk's code and constants,
+     * so the compiled chunk is released once the run returns. */
+    int run_status = run_compiled_chunk(&main_chunk);
+    chunk_free_arrays(&main_chunk);
+    return run_status;
 }
 
 /*******************************************************************************
