@@ -2509,14 +2509,24 @@ static void compile_quote_datum(FuncChunk* c, Node* datum, QuoteWorkStack* st) {
             seed = datum->children[n - 1];
             n -= 2;                       /* drop the tail AND the dot */
         }
-        /* Pushed in reverse: the seed (the final cdr, or '()) runs first,
-         * then each element followed by its CONS, exactly as before. */
-        for (int i = 0; i < n; i++) {
+        /* The LAST element is built first, while nothing of this list is on
+         * the operand stack yet; the seed (the final cdr, or '()) follows it
+         * and the cons native (202, car pushed first) joins them. Each earlier
+         * element is then built on top of the growing list and joined by
+         * OP_CONS (car on top). So a datum nested through last elements --
+         * '((((...)))) at any depth -- holds one operand slot in all, not one
+         * per level, and only nesting through an earlier element costs the
+         * one slot of the list under construction.
+         *
+         * Pushed in reverse, so the pop order is that emission order. */
+        for (int i = 0; i < n - 1; i++) {
             qw_push_op(st, OP_CONS, 0);
             qw_push_datum(st, datum->children[i]);
         }
+        qw_push_op(st, OP_NATIVE_CALL, 202);
         if (seed) qw_push_datum(st, seed);
         else      qw_push_op(st, OP_NIL, 0);
+        qw_push_datum(st, datum->children[n - 1]);
         return;
     }
     chunk_emit(c, OP_NIL, 0); /* fallback */

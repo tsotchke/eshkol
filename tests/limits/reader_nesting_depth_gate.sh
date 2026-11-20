@@ -104,16 +104,6 @@ check_quoted_datum() {
         return
     fi
     if [ "$status" -ne 0 ]; then
-        # The bytecode VM builds a datum on its OPERAND STACK, whose width is
-        # this VM profile's one fixed capacity (ESHKOL_VM_STACK_SIZE).  Reading
-        # the datum has no depth limit; carrying it on that stack does.  Past
-        # that width the VM must say so in words and name the ceiling -- which
-        # is what is asserted here.  The native paths carry the same datum on
-        # the heap and so are held to building and printing it in full.
-        if [ "$label" = "vm" ] && printf '%s' "$out" | grep -q 'ESHKOL_VM_STACK_SIZE'; then
-            note "$label: depth $depth named the operand-stack width of this VM profile"
-            return
-        fi
         fail "$label: depth $depth did not run (status $status): $(printf '%s' "$out" | tail -3)"
         return
     fi
@@ -164,10 +154,8 @@ for depth in 10000 100000 1000000; do
     fi
 done
 
-# AOT compiles and links, so it runs the two smaller depths; the deepest is
-# covered on the two paths above and by the code-form half below.
 echo "=== quoted data: ahead-of-time ==="
-for depth in 10000 100000; do
+for depth in 10000 100000 1000000; do
     prog="$WORK/quoted-aot-$depth.esk"
     write_quoted_datum_program "$prog" "$depth"
     binary="$WORK/quoted-aot-$depth.bin"
