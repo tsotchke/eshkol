@@ -8362,6 +8362,11 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203, SW-218, SW-219, SW-220,
         # SW-222, SW-224, SW-225.
         find_program(ESHKOL_VM_CARRIER_NODE node)
+        if(ESHKOL_VM_CARRIER_NODE)
+            add_test(NAME wasm_repl_source_contract COMMAND ${ESHKOL_VM_CARRIER_NODE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/wasm_repl_source_contract.js"
+                "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js")
+        endif()
         add_test(NAME gensym_sequence_aot
             COMMAND sh -c
                 "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence' '${CMAKE_CURRENT_SOURCE_DIR}/tests/control_flow/gensym_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence'")
