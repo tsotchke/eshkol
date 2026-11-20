@@ -141,6 +141,12 @@ static uint32_t fg_read_numeric(const eshkol_tagged_value_t* tv, double* out, ui
     return 0;
 }
 
+/* A count or state count admitted by make-factor-graph: a finite integer in
+ * [1, INT_MAX], the range both engines represent. */
+static bool fg_positive_integer(double value) {
+    return isfinite(value) && value == floor(value) && value >= 1.0 && value <= (double)INT_MAX;
+}
+
 /* ===== Log-Space Arithmetic ===== */
 
 static const double LOG_ZERO = -1e30;  /* Approximate -infinity for log-space */
@@ -795,46 +801,68 @@ void eshkol_make_factor_graph_tagged(arena_t* arena,
         return;
     }
 
-    /* Extract num_vars from integer */
-    uint32_t num_vars = 0;
-    if (num_vars_tv->type == ESHKOL_VALUE_INT64) {
-        num_vars = (uint32_t)num_vars_tv->data.int_val;
-    } else {
+    /* Admission matches the VM (native call 520 in vm_native.c): a positive
+     * integer variable count and one positive integer state count per
+     * variable, each refusal a catchable condition. */
+    double count = 0.0;
+    uint8_t count_tag = num_vars_tv->type & 0x0F;
+    if (count_tag == ESHKOL_VALUE_INT64) count = (double)num_vars_tv->data.int_val;
+    else if (count_tag == ESHKOL_VALUE_DOUBLE) count = num_vars_tv->data.double_val;
+    else count = NAN;
+    if (!fg_positive_integer(count)) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "make-factor-graph: variable count must be a positive integer");
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
+    uint32_t num_vars = (uint32_t)count;
 
     /* Extract var_dims from a tensor (#(…)), a runtime vector ((vector …)), a
      * list ('(…)), or a BARE SCALAR meaning "every variable has this many
-     * states".  The scalar spelling is what the VM has always accepted, and
-     * `(make-factor-graph 2 2)` silently produced `()` here — and therefore
-     * `()` from every later fg-marginal — because a tagged INT64 is not a heap
-     * pointer and fg_read_numeric answered 0 (SW-07). */
-    double* dims_buf = (double*)alloca(num_vars * sizeof(double));
+     * states". */
+    double* dims_buf = (double*)malloc((size_t)num_vars * sizeof(double));
+    uint32_t* var_dims = (uint32_t*)malloc((size_t)num_vars * sizeof(uint32_t));
+    if (!dims_buf || !var_dims) {
+        free(dims_buf);
+        free(var_dims);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "make-factor-graph: allocation failed");
+        result->type = ESHKOL_VALUE_NULL;
+        return;
+    }
     uint8_t dims_tag = var_dims_tv->type & 0x0F;
     if (dims_tag == ESHKOL_VALUE_INT64 || dims_tag == ESHKOL_VALUE_DOUBLE) {
         double d = (dims_tag == ESHKOL_VALUE_INT64)
                        ? (double)var_dims_tv->data.int_val
                        : var_dims_tv->data.double_val;
-        if (d < 1.0) {
-            result->type = ESHKOL_VALUE_NULL;
-            return;
-        }
         for (uint32_t i = 0; i < num_vars; i++) dims_buf[i] = d;
     } else if (fg_read_numeric(var_dims_tv, dims_buf, num_vars) < num_vars) {
+        free(dims_buf);
+        free(var_dims);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "make-factor-graph: supply one dimension per variable");
         result->type = ESHKOL_VALUE_NULL;
         return;
     }
-    uint32_t* var_dims = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
     for (uint32_t i = 0; i < num_vars; i++) {
+        if (!fg_positive_integer(dims_buf[i])) {
+            free(dims_buf);
+            free(var_dims);
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "make-factor-graph: state counts must be positive integers");
+            result->type = ESHKOL_VALUE_NULL;
+            return;
+        }
         var_dims[i] = (uint32_t)dims_buf[i];
     }
+    free(dims_buf);
 
     eshkol_factor_graph_t* fg = eshkol_make_factor_graph(arena, num_vars, var_dims);
+    free(var_dims);
     if (fg) {
         result->type = ESHKOL_VALUE_HEAP_PTR;
         result->data.ptr_val = (uint64_t)fg;
     } else {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "make-factor-graph: allocation failed");
         result->type = ESHKOL_VALUE_NULL;
     }
 }

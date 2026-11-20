@@ -13086,59 +13086,50 @@ tensor_inverse_done:
      * ══════════════════════════════════════════════════════════════════════ */
     case 520: { /* make-factor-graph(num_vars, var_dims) */
         Value dims_val = vm_pop(vm), nvars_val = vm_pop(vm);
+        /* Admission matches eshkol_make_factor_graph_tagged() in
+         * lib/core/inference.cpp: a positive integer variable count, one
+         * positive integer state count per variable (a bare number gives
+         * every variable that many states), each condition catchable. */
         double count = as_number_vm(vm, nvars_val);
-        if (!isfinite(count) || count != floor(count) || count < 1 || count > 64) {
-            vm_raise_error_msg(vm, "make-factor-graph: supports at most 64 variables");
+        if (!isfinite(count) || count != floor(count) || count < 1 || count > INT_MAX) {
+            vm_raise_error_msg(vm, "make-factor-graph: variable count must be a positive integer");
             break;
         }
         int nv = (int)count;
-        int var_dims[64]; int nd = 0;
         /* var-dims is read by the one factor-graph sequence reader, so the
          * documented `#(2 2 2)` literal (a VECTOR in the VM, a TENSOR
          * natively), a `(2 2 2)` list and a bare scalar all mean the same
-         * thing.  The tensor-or-list reader this replaces matched neither the
-         * documented literal nor a vector: dims collapsed to a single
-         * degenerate dimension, so every multi-variable factor graph silently
-         * became single-variable and inference/free-energy went degenerate. */
+         * thing. */
         int dseq_n = 0;
         const double* dseq = vm_fg_seq_doubles(vm, dims_val, &dseq_n);
-        if (dseq_n > 64) {
-            vm_raise_error_msg(vm, "make-factor-graph: supports at most 64 dimensions");
-            break;
-        }
-        int valid_dims = 1;
-        for (int i = 0; i < dseq_n; ++i) {
-            double extent = dseq[i];
-            if (!isfinite(extent)) {
-                valid_dims = 0;
-                break;
-            }
-            var_dims[nd++] = extent >= 1.0 ? (int)extent : 2;
-        }
-        if (!valid_dims) {
-            vm_raise_error_msg(vm, "make-factor-graph: state counts must be finite");
-            break;
-        }
-        /* A BARE SCALAR dims argument means "every variable has this many
-         * states", so `(make-factor-graph 2 2)` is a two-variable graph and
-         * `(fg-marginal fg 1)` is a marginal rather than `()`.  Read as a
-         * one-element sequence it hits the clamp below and cuts num_vars to 1,
-         * where the native engine broadcasts — SW-07's own reproducer.  Only a
-         * genuine scalar leaf broadcasts. A dimension sequence supplies one
-         * entry per variable. */
-        if (nd == 1 && nv > 1 && vm_tensor_collection_len(vm, dims_val) < 0) {
-            for (int i = 1; i < nv; i++) var_dims[i] = var_dims[0];
-            nd = nv;
-        }
-        if (nd == 0) {                          /* dims omitted/unreadable */
-            for (int i = 0; i < nv; i++) var_dims[nd++] = 2;
-        }
-        if (nd < nv) {
+        int broadcast = dseq_n == 1 && vm_tensor_collection_len(vm, dims_val) < 0;
+        if (!dseq || (dseq_n < nv && !broadcast)) {
             vm_raise_error_msg(vm, "make-factor-graph: supply one dimension per variable");
             break;
         }
+        int* var_dims = (int*)vm_alloc(&vm->heap.regions, (size_t)nv * sizeof(int));
+        if (!var_dims) {
+            vm_raise_error_msg(vm, "make-factor-graph: allocation failed");
+            break;
+        }
+        int valid_dims = 1;
+        for (int i = 0; i < nv; ++i) {
+            double extent = dseq[broadcast ? 0 : i];
+            if (!isfinite(extent) || extent != floor(extent) || extent < 1 || extent > INT_MAX) {
+                valid_dims = 0;
+                break;
+            }
+            var_dims[i] = (int)extent;
+        }
+        if (!valid_dims) {
+            vm_raise_error_msg(vm, "make-factor-graph: state counts must be positive integers");
+            break;
+        }
         VmFactorGraph* fg = vm_make_factor_graph(&vm->heap.regions, nv, var_dims);
-        if (!fg) { vm_push(vm, NIL_VAL); break; }
+        if (!fg) {
+            vm_raise_error_msg(vm, "make-factor-graph: allocation failed");
+            break;
+        }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_FACTOR_GRAPH, VAL_FACTOR_GRAPH, fg);
         break;
     }
