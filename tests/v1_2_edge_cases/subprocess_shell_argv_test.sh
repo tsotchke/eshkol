@@ -214,6 +214,13 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
   (process-destroy stale-proc))
 (define stale-pid (if stale-proc (process-pid stale-proc) 0))
 (define stale-wait (if stale-proc (process-wait stale-proc 0) -999))
+;; A destroyed handle stays closed after its table slot (and the record's
+;; address) is reused by a new process; the new handle stays independent.
+(define reuse-proc (process-spawn-argv (list "true") "."))
+(define stale-pid-after-reuse (if stale-proc (process-pid stale-proc) 0))
+(define reuse-pid (if reuse-proc (process-pid reuse-proc) 0))
+(define reuse-wait (if reuse-proc (process-wait reuse-proc 5000) -999))
+(when reuse-proc (process-destroy reuse-proc))
 
 ;; Keep a handle in a suite closure, close it once, and then exercise the
 ;; captured handle again. The second call must reach the tombstone diagnostic,
@@ -290,6 +297,8 @@ cat > "$WORK/subprocess_api.esk" <<'EOF'
        (cons "left\0right" 10))
 (check "destroyed process handle is tombstoned" stale-pid 0)
 (check "use after close returns diagnostic sentinel" stale-wait -1)
+(check "destroyed handle stays closed after its slot is reused" stale-pid-after-reuse 0)
+(check "reused slot serves the new process" (and (> reuse-pid 0) (= reuse-wait 0)) #t)
 (check "captured closed handle remains a diagnostic tombstone"
        closure-after-close
        0)

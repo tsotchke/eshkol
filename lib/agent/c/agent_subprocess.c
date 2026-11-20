@@ -51,6 +51,7 @@ typedef struct {
     uint64_t magic;
     int closed;
     int spawn_slot_reserved;
+    size_t handle_index;  /* slot in the process handle table */
     int64_t pid;
 #ifndef _WIN32
     int stdin_fd;   /* parent writes to child's stdin */
@@ -166,6 +167,189 @@ static int process_handle_live(eshkol_subprocess_t* proc, const char* operation)
         return 0;
     }
     return 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Process handle table
+ *
+ * Callers never hold the address of an eshkol_subprocess_t. A spawn returns
+ * an opaque handle that packs a table slot and that slot's generation, and
+ * every operation resolves it here. process-destroy retires the slot by
+ * advancing its generation, so a destroyed handle is reported as closed
+ * forever after, even once the slot (and the allocator's address) is reused
+ * for a new process. The process record itself is freed as soon as the last
+ * operation that resolved it returns, so memory is bounded by the number of
+ * live processes, not by the number ever spawned.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+typedef struct {
+    eshkol_subprocess_t* body;  /* NULL when the slot is free */
+    uintptr_t generation;       /* advanced on every retire */
+    size_t refs;                /* operations in flight on body */
+    int retired;                /* destroyed; free body when refs reaches 0 */
+} process_slot_t;
+
+#define PROCESS_HANDLE_INDEX_BITS 20u
+#define PROCESS_HANDLE_INDEX_MASK ((((uintptr_t)1) << PROCESS_HANDLE_INDEX_BITS) - 1u)
+#define PROCESS_HANDLE_GENERATION_MASK (UINTPTR_MAX >> PROCESS_HANDLE_INDEX_BITS)
+
+static process_slot_t* g_process_slots = NULL;
+static size_t g_process_slot_count = 0;
+static size_t g_process_slot_cap = 0;
+static size_t* g_process_free_slots = NULL;
+static size_t g_process_free_count = 0;
+#ifndef _WIN32
+static pthread_mutex_t g_process_table_mu = PTHREAD_MUTEX_INITIALIZER;
+#define PROCESS_TABLE_LOCK() pthread_mutex_lock(&g_process_table_mu)
+#define PROCESS_TABLE_UNLOCK() pthread_mutex_unlock(&g_process_table_mu)
+#else
+static SRWLOCK g_process_table_mu = SRWLOCK_INIT;
+#define PROCESS_TABLE_LOCK() AcquireSRWLockExclusive(&g_process_table_mu)
+#define PROCESS_TABLE_UNLOCK() ReleaseSRWLockExclusive(&g_process_table_mu)
+#endif
+
+/* Stand-ins handed to an operation whose handle did not resolve, so the
+ * operation reports the failure through process_handle_live exactly as it
+ * reports a NULL handle, and returns its ordinary failure value. Neither is
+ * ever written: process_handle_live rejects both before any field is used. */
+static eshkol_subprocess_t g_process_invalid_handle;
+static eshkol_subprocess_t g_process_closed_handle;
+
+static int g_process_sentinels_ready = 0;
+
+static void process_handle_sentinels_init(void) {
+    /* Called with the table lock held; the stand-ins are written once, and
+     * every reader reaches them through process_acquire, after that lock. */
+    if (g_process_sentinels_ready) return;
+    g_process_invalid_handle.magic = 0;
+    g_process_closed_handle.magic = ESHKOL_PROCESS_HANDLE_MAGIC;
+    g_process_closed_handle.closed = 1;
+    g_process_invalid_handle.stdin_fd = g_process_invalid_handle.stdout_fd =
+        g_process_invalid_handle.stderr_fd = -1;
+    g_process_closed_handle.stdin_fd = g_process_closed_handle.stdout_fd =
+        g_process_closed_handle.stderr_fd = -1;
+    g_process_sentinels_ready = 1;
+}
+
+static eshkol_subprocess_t* process_handle_encode(size_t index, uintptr_t generation) {
+    return (eshkol_subprocess_t*)(((generation & PROCESS_HANDLE_GENERATION_MASK)
+                                   << PROCESS_HANDLE_INDEX_BITS) |
+                                  (uintptr_t)(index + 1));
+}
+
+/* Register a freshly spawned record and return its handle. On failure the
+ * spawn is abandoned (child killed and reaped, record freed) and NULL is
+ * returned, as for any other spawn failure. */
+static void process_destroy_record(eshkol_subprocess_t* proc);
+
+static eshkol_subprocess_t* process_publish(eshkol_subprocess_t* body) {
+    if (!body) return NULL;
+    size_t index = 0;
+    uintptr_t generation = 0;
+    int ok = 1;
+    PROCESS_TABLE_LOCK();
+    process_handle_sentinels_init();
+    if (g_process_free_count > 0) {
+        index = g_process_free_slots[--g_process_free_count];
+    } else if (g_process_slot_count <= PROCESS_HANDLE_INDEX_MASK - 1u) {
+        if (g_process_slot_count == g_process_slot_cap) {
+            size_t cap = g_process_slot_cap ? g_process_slot_cap * 2u : 16u;
+            process_slot_t* slots =
+                (process_slot_t*)realloc(g_process_slots, cap * sizeof(process_slot_t));
+            size_t* free_slots = slots ? (size_t*)realloc(g_process_free_slots, cap * sizeof(size_t))
+                                       : NULL;
+            if (slots) g_process_slots = slots;
+            if (free_slots) g_process_free_slots = free_slots;
+            if (slots && free_slots) {
+                memset(g_process_slots + g_process_slot_cap, 0,
+                       (cap - g_process_slot_cap) * sizeof(process_slot_t));
+                g_process_slot_cap = cap;
+            } else {
+                ok = 0;
+            }
+        }
+        if (ok) index = g_process_slot_count++;
+    } else {
+        ok = 0;
+    }
+    if (ok) {
+        process_slot_t* slot = &g_process_slots[index];
+        slot->body = body;
+        slot->refs = 0;
+        slot->retired = 0;
+        generation = slot->generation;
+        body->handle_index = index;
+    }
+    PROCESS_TABLE_UNLOCK();
+    if (!ok) {
+        fprintf(stderr, "process-spawn: unable to register the process handle\n");
+        process_destroy_record(body);
+        free(body);
+        return NULL;
+    }
+    return process_handle_encode(index, generation);
+}
+
+/* Resolve @p handle for one operation. Returns the live record with an
+ * operation reference taken, or a stand-in that makes the operation report
+ * a NULL, invalid or closed handle. */
+static eshkol_subprocess_t* process_acquire(eshkol_subprocess_t* handle) {
+    if (!handle) return NULL;
+    const uintptr_t raw = (uintptr_t)handle;
+    const uintptr_t index_plus_one = raw & PROCESS_HANDLE_INDEX_MASK;
+    const uintptr_t generation = raw >> PROCESS_HANDLE_INDEX_BITS;
+    eshkol_subprocess_t* body = &g_process_invalid_handle;
+    PROCESS_TABLE_LOCK();
+    process_handle_sentinels_init();
+    if (index_plus_one != 0 && index_plus_one <= g_process_slot_count) {
+        process_slot_t* slot = &g_process_slots[index_plus_one - 1u];
+        const uintptr_t current = slot->generation & PROCESS_HANDLE_GENERATION_MASK;
+        if (generation == current && slot->body && !slot->retired) {
+            slot->refs++;
+            body = slot->body;
+        } else if (generation < current || (generation == current && slot->retired)) {
+            body = &g_process_closed_handle;
+        }
+    }
+    PROCESS_TABLE_UNLOCK();
+    return body;
+}
+
+static int process_is_stand_in(const eshkol_subprocess_t* body) {
+    return !body || body == &g_process_invalid_handle || body == &g_process_closed_handle;
+}
+
+/* Drop an operation reference; free a retired record when it was the last. */
+static void process_release(eshkol_subprocess_t* body) {
+    if (process_is_stand_in(body)) return;
+    eshkol_subprocess_t* to_free = NULL;
+    PROCESS_TABLE_LOCK();
+    process_slot_t* slot = &g_process_slots[body->handle_index];
+    if (slot->refs > 0) slot->refs--;
+    if (slot->retired && slot->refs == 0 && slot->body == body) {
+        to_free = body;
+        slot->body = NULL;
+        slot->retired = 0;
+        g_process_free_slots[g_process_free_count++] = body->handle_index;
+    }
+    PROCESS_TABLE_UNLOCK();
+    if (to_free) {
+        to_free->magic = 0;
+        free(to_free);
+    }
+}
+
+/* Retire the handle of @p body: every later resolution of it reports a
+ * closed handle, and the record is freed when its last operation returns. */
+static void process_retire(eshkol_subprocess_t* body) {
+    if (process_is_stand_in(body)) return;
+    PROCESS_TABLE_LOCK();
+    process_slot_t* slot = &g_process_slots[body->handle_index];
+    if (slot->body == body && !slot->retired) {
+        slot->retired = 1;
+        slot->generation = (slot->generation + 1u) & PROCESS_HANDLE_GENERATION_MASK;
+    }
+    PROCESS_TABLE_UNLOCK();
 }
 
 #ifndef _WIN32
@@ -1198,7 +1382,7 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
 eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg,
                                          const char* unused_arg, int64_t flags) {
     (void)unused_arg;
-    return qllm_process_spawn_command_impl(command, cwd_arg, flags, 0);
+    return process_publish(qllm_process_spawn_command_impl(command, cwd_arg, flags, 0));
 }
 
 /**
@@ -1213,7 +1397,7 @@ eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg
 eshkol_subprocess_t* qllm_process_spawn_shell(const char* command,
                                                const char* cwd_arg,
                                                int64_t flags) {
-    return qllm_process_spawn_command_impl(command, cwd_arg, flags, 1);
+    return process_publish(qllm_process_spawn_command_impl(command, cwd_arg, flags, 1));
 }
 
 /**
@@ -1544,14 +1728,16 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
 eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
                                                     const char* cwd_arg,
                                                     int64_t flags) {
-    return qllm_process_spawn_argv_flags_impl(tab_packed_argv, cwd_arg, flags, NULL);
+    return process_publish(
+        qllm_process_spawn_argv_flags_impl(tab_packed_argv, cwd_arg, flags, NULL));
 }
 
 eshkol_subprocess_t* qllm_process_spawn_argv_env_flags(const char* tab_packed_argv,
                                                        const char* cwd_arg,
                                                        const char* packed_env,
                                                        int64_t flags) {
-    return qllm_process_spawn_argv_flags_impl(tab_packed_argv, cwd_arg, flags, packed_env);
+    return process_publish(
+        qllm_process_spawn_argv_flags_impl(tab_packed_argv, cwd_arg, flags, packed_env));
 }
 
 /* Back-compat shim: original 2-arg signature, still referenced by the
@@ -1585,7 +1771,7 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
  * @return Number of bytes actually written, or -1 on a NULL/invalid
  *         argument or a write error (including the /dev/null-stdin case).
  */
-int64_t qllm_process_write_stdin(eshkol_subprocess_t* proc, const char* data, int64_t len) {
+static int64_t process_write_stdin_record(eshkol_subprocess_t* proc, const char* data, int64_t len) {
     if (!process_handle_live(proc, "process-write-stdin") || !data || len <= 0) return -1;
 #ifndef _WIN32
     if (proc->stdin_fd < 0) {
@@ -1612,7 +1798,7 @@ int64_t qllm_process_write_stdin(eshkol_subprocess_t* proc, const char* data, in
 /**
  * @brief Close the child's stdin pipe/handle, signalling EOF to the child.
  */
-void qllm_process_close_stdin(eshkol_subprocess_t* proc) {
+static void process_close_stdin_record(eshkol_subprocess_t* proc) {
     if (!process_handle_live(proc, "process-close-stdin")) return;
 #ifndef _WIN32
     if (proc->stdin_fd >= 0) { close(proc->stdin_fd); proc->stdin_fd = -1; }
@@ -1715,7 +1901,7 @@ static char* read_all_stream_windows(HANDLE pipe,
  * @return Number of bytes read, 0 if no data is currently available
  *         (EAGAIN), or -1 on a NULL/invalid argument, closed fd, or error.
  */
-int64_t qllm_process_read_stdout(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
+static int64_t process_read_stdout_record(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
     if (!process_handle_live(proc, "process-read-stdout") || !buf || buf_size <= 0) return -1;
 #ifndef _WIN32
     if (proc->stdout_fd < 0) return -1;
@@ -1734,7 +1920,7 @@ int64_t qllm_process_read_stdout(eshkol_subprocess_t* proc, char* buf, int64_t b
  * @return Number of bytes read, 0 if no data is currently available
  *         (EAGAIN), or -1 on a NULL/invalid argument, closed fd, or error.
  */
-int64_t qllm_process_read_stderr(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
+static int64_t process_read_stderr_record(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
     if (!process_handle_live(proc, "process-read-stderr") || !buf || buf_size <= 0) return -1;
 #ifndef _WIN32
     if (proc->stderr_fd < 0) return -1;
@@ -1844,7 +2030,7 @@ static char* read_all_stream_posix(int fd,
  *         qllm_process_free_buffer), or NULL on NULL @p proc, OOM, or
  *         non-positive @p max_size. Always NULL on Windows.
  */
-char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
+static char* process_read_all_stdout_record(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
     if (!process_handle_live(proc, "process-read-all-stdout")) return NULL;
 #ifndef _WIN32
     int64_t native_len = 0;
@@ -1875,7 +2061,7 @@ char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, 
  *         qllm_process_free_buffer), or NULL on NULL @p proc, OOM, or
  *         non-positive @p max_size. Always NULL on Windows.
  */
-char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
+static char* process_read_all_stderr_record(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
     if (!process_handle_live(proc, "process-read-all-stderr")) return NULL;
 #ifndef _WIN32
     int64_t native_len = 0;
@@ -1902,7 +2088,7 @@ char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, 
  * The count is captured before the malloc-owned buffer crosses the FFI, so a
  * caller can copy embedded NUL bytes with a length-aware string primitive.
  */
-int64_t qllm_process_last_stdout_read_length(eshkol_subprocess_t* proc) {
+static int64_t process_last_stdout_read_length_record(eshkol_subprocess_t* proc) {
     if (!process_handle_live(proc, "process-last-stdout-read-length")) return -1;
     return (int64_t)proc->last_stdout_read_len;
 }
@@ -1910,7 +2096,7 @@ int64_t qllm_process_last_stdout_read_length(eshkol_subprocess_t* proc) {
 /**
  * @brief Return the byte count from the most recent stderr read-all call.
  */
-int64_t qllm_process_last_stderr_read_length(eshkol_subprocess_t* proc) {
+static int64_t process_last_stderr_read_length_record(eshkol_subprocess_t* proc) {
     if (!process_handle_live(proc, "process-last-stderr-read-length")) return -1;
     return (int64_t)proc->last_stderr_read_len;
 }
@@ -2201,7 +2387,7 @@ static void check_exit_status(eshkol_subprocess_t* proc) {
  *         qllm_process_exit_code), 1 if @p timeout_ms elapsed first, or -1
  *         on error (NULL @p proc, waitpid failure, kqueue setup failure).
  */
-int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
+static int32_t process_wait_record(eshkol_subprocess_t* proc, int32_t timeout_ms) {
     if (!process_handle_live(proc, "process-wait")) return -1;
     if (proc->exited) return 0;
 #ifndef _WIN32
@@ -2465,7 +2651,7 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
  * @return 1 if still running (or @p proc has no recorded exit yet), 0 if
  *         it has exited or @p proc is NULL.
  */
-int32_t qllm_process_running(eshkol_subprocess_t* proc) {
+static int32_t process_running_record(eshkol_subprocess_t* proc) {
     if (!process_handle_live(proc, "process-running")) return 0;
     check_exit_status(proc);
     return !proc->exited;
@@ -2478,7 +2664,7 @@ int32_t qllm_process_running(eshkol_subprocess_t* proc) {
  *         @p proc is NULL, or the still-pending sentinel if it hasn't
  *         exited yet.
  */
-int32_t qllm_process_exit_code(eshkol_subprocess_t* proc) {
+static int32_t process_exit_code_record(eshkol_subprocess_t* proc) {
     if (!process_handle_live(proc, "process-exit-code")) return -1;
     check_exit_status(proc);
     return proc->exit_code;
@@ -2495,7 +2681,7 @@ int32_t qllm_process_exit_code(eshkol_subprocess_t* proc) {
  * ignored and TerminateProcess is used unconditionally. No-op if @p proc
  * is NULL.
  */
-void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
+static void process_kill_record(eshkol_subprocess_t* proc, int32_t signal) {
     if (!process_handle_live(proc, "process-kill")) return;
 #ifndef _WIN32
     kill((pid_t)proc->pid, signal);
@@ -2531,23 +2717,23 @@ void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
  * @return The child's PID (always > 0 for a live OS process), or 0 if
  *         @p proc is NULL.
  */
-int64_t qllm_process_pid(eshkol_subprocess_t* proc) {
+static int64_t process_pid_record(eshkol_subprocess_t* proc) {
     if (!process_handle_live(proc, "process-pid")) return 0;
     return proc->pid;
 }
 
-int32_t qllm_process_stdout_fd(eshkol_subprocess_t* proc) {
+static int32_t process_stdout_fd_record(eshkol_subprocess_t* proc) {
     return proc ? proc->stdout_fd : -1;
 }
 
-int32_t qllm_process_stderr_fd(eshkol_subprocess_t* proc) {
+static int32_t process_stderr_fd_record(eshkol_subprocess_t* proc) {
     return proc ? proc->stderr_fd : -1;
 }
 
 /**
  * @brief Tear down @p proc: terminate the child if still running, close
- *        all pipe fds/handles, free accumulated drain buffers, and free
- *        the handle itself.
+ *        all pipe fds/handles, free accumulated drain buffers, and mark the
+ *        record closed. The handle table frees the record itself.
  *
  * On POSIX, a still-running child is first sent SIGTERM and given up to
  * ~500ms (50 * 10ms polls) to exit gracefully before SIGKILL is used to
@@ -2556,7 +2742,7 @@ int32_t qllm_process_stderr_fd(eshkol_subprocess_t* proc) {
  * boundary; callers wanting a graceful shutdown should signal/wait
  * explicitly beforehand. No-op if @p proc is NULL.
  */
-void qllm_process_destroy(eshkol_subprocess_t* proc) {
+static void process_destroy_record(eshkol_subprocess_t* proc) {
     if (!proc) {
         fprintf(stderr, "process-destroy: invalid NULL process handle\n");
         return;
@@ -2638,3 +2824,63 @@ void qllm_process_destroy(eshkol_subprocess_t* proc) {
     proc->pid = 0;
     proc->closed = 1;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Public handle operations
+ *
+ * Each resolves the caller's handle through the process handle table for the
+ * duration of one call, so a concurrent process-destroy cannot free the
+ * record underneath it.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#define PROCESS_OP(ret_type, name, params, args)                       \
+    ret_type qllm_process_##name params {                              \
+        eshkol_subprocess_t* proc = process_acquire(handle);           \
+        ret_type result = process_##name##_record args;                \
+        process_release(proc);                                         \
+        return result;                                                 \
+    }
+#define PROCESS_VOID_OP(name, params, args)                            \
+    void qllm_process_##name params {                                  \
+        eshkol_subprocess_t* proc = process_acquire(handle);           \
+        process_##name##_record args;                                  \
+        process_release(proc);                                         \
+    }
+
+PROCESS_OP(int64_t, write_stdin, (eshkol_subprocess_t* handle, const char* data, int64_t len),
+           (proc, data, len))
+PROCESS_VOID_OP(close_stdin, (eshkol_subprocess_t* handle), (proc))
+PROCESS_OP(int64_t, read_stdout, (eshkol_subprocess_t* handle, char* buf, int64_t buf_size),
+           (proc, buf, buf_size))
+PROCESS_OP(int64_t, read_stderr, (eshkol_subprocess_t* handle, char* buf, int64_t buf_size),
+           (proc, buf, buf_size))
+PROCESS_OP(char*, read_all_stdout,
+           (eshkol_subprocess_t* handle, int64_t max_size, int64_t* out_len),
+           (proc, max_size, out_len))
+PROCESS_OP(char*, read_all_stderr,
+           (eshkol_subprocess_t* handle, int64_t max_size, int64_t* out_len),
+           (proc, max_size, out_len))
+PROCESS_OP(int64_t, last_stdout_read_length, (eshkol_subprocess_t* handle), (proc))
+PROCESS_OP(int64_t, last_stderr_read_length, (eshkol_subprocess_t* handle), (proc))
+PROCESS_OP(int32_t, wait, (eshkol_subprocess_t* handle, int32_t timeout_ms), (proc, timeout_ms))
+PROCESS_OP(int32_t, running, (eshkol_subprocess_t* handle), (proc))
+PROCESS_OP(int32_t, exit_code, (eshkol_subprocess_t* handle), (proc))
+PROCESS_VOID_OP(kill, (eshkol_subprocess_t* handle, int32_t signal), (proc, signal))
+PROCESS_OP(int64_t, pid, (eshkol_subprocess_t* handle), (proc))
+PROCESS_OP(int32_t, stdout_fd, (eshkol_subprocess_t* handle), (proc))
+PROCESS_OP(int32_t, stderr_fd, (eshkol_subprocess_t* handle), (proc))
+
+/**
+ * @brief Tear down the process behind @p handle (see process_destroy_record)
+ *        and retire the handle: every later use of it reports a closed
+ *        handle, and the process record is freed once no operation holds it.
+ */
+void qllm_process_destroy(eshkol_subprocess_t* handle) {
+    eshkol_subprocess_t* proc = process_acquire(handle);
+    process_destroy_record(proc);
+    if (!process_is_stand_in(proc)) process_retire(proc);
+    process_release(proc);
+}
+
+#undef PROCESS_OP
+#undef PROCESS_VOID_OP
