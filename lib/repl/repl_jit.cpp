@@ -68,6 +68,7 @@
 #include <llvm/Support/xxhash.h>                 // For content-hashing stdlib.bc
 #include <llvm/Support/FileSystem.h>             // For atomic cache writes
 #include <llvm/ADT/StringExtras.h>               // For utohexstr
+#include <llvm/ADT/SmallString.h>
 #include <llvm/Object/ObjectFile.h>              // For reading an object's ABI guard symbol
 
 #include <iostream>
@@ -3220,23 +3221,32 @@ llvm::Error ReplJITContext::loadStdlib() {
                                     eshkol::expose_jit_parallel_initializer(
                                         **emit_mod,
                                         eshkol::kJitStdlibParallelInitializer);
-                                    std::filesystem::path tmp_o = cache_o;
-                                    tmp_o += ".tmp";
-                                    std::error_code wec;
-                                    raw_fd_ostream os(tmp_o.string(), wec,
-                                                      sys::fs::OF_None);
+                                    // Each process owns its temporary inode. A shared
+                                    // .tmp lets another writer truncate a published object.
+                                    SmallString<256> tmp_o;
+                                    int tmp_fd = -1;
+                                    std::error_code wec = sys::fs::createUniqueFile(
+                                        cache_o.string() + ".%%%%%%.tmp", tmp_fd, tmp_o);
                                     if (!wec) {
+                                        raw_fd_ostream os(tmp_fd, true);
                                         legacy::PassManager pm;
-                                        if (!(*emit_tm)->addPassesToEmitFile(
+                                        bool emitted = !(*emit_tm)->addPassesToEmitFile(
                                                 pm, os, nullptr,
-                                                CodeGenFileType::ObjectFile)) {
+                                                CodeGenFileType::ObjectFile);
+                                        if (emitted) {
                                             pm.run(**emit_mod);
                                             os.flush();
-                                            os.close();
-                                            std::filesystem::rename(tmp_o, cache_o, ec);
-                                            have_obj = !ec &&
-                                                       std::filesystem::exists(cache_o, ec);
                                         }
+                                        os.close();
+                                        if (emitted && !os.has_error()) {
+                                                std::filesystem::rename(
+                                                    tmp_o.c_str(), cache_o, ec);
+                                                // Another process may have published first.
+                                                have_obj = std::filesystem::exists(cache_o, ec);
+                                        } else if (os.has_error()) {
+                                            os.clear_error();
+                                        }
+                                        sys::fs::remove(tmp_o);
                                     }
                                 } else {
                                     consumeError(emit_tm.takeError());
