@@ -363,10 +363,14 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (make-fact . args) (_make-fact1 (if (and (not (null? args)) (null? (cdr args)) (pair? (car args))) (car args) args)))\n"
     "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
     /* ── Tensor reduction wrappers ────────────────────────────────────── */
-    "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t #f) (_tensor-reduce-sum t (car args))))\n"
-    "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t #f) (_tensor-reduce-mean t (car args))))\n"
-    "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t #f) (_tensor-reduce-max t (car args))))\n"
-    "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t #f) (_tensor-reduce-min t (car args))))\n"
+    /* The reduction natives take the optional-argument list itself: '() is
+     * "no axis" (a full reduction) and (axis) carries the axis a program
+     * wrote, whatever its value, so no operand a program can write is read
+     * as "no axis". */
+    "(define (tensor-sum t . args) (_tensor-reduce-sum t args))\n"
+    "(define (tensor-mean t . args) (_tensor-reduce-mean t args))\n"
+    "(define (tensor-max t . args) (_tensor-reduce-max t args))\n"
+    "(define (tensor-min t . args) (_tensor-reduce-min t args))\n"
     "(define (bytevector . bytes)\n"
     "  (let ((result (_bytevector-from-list bytes))) result))\n";
 

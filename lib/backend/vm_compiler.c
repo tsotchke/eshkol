@@ -5465,8 +5465,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         if (native_id >= 0) {
             compile_expr(c, node->children[2], 0);
             /* gpu-reduce is a FULL reduction to a number, as on native: pass
-             * #f ("no axis"), not -1, which names the last axis (SW-202). */
-            chunk_emit(c, OP_CONST, chunk_add_const(c, BOOL_VAL(0)));
+             * the empty optional-argument list ("no axis"), as the prelude's
+             * tensor-sum does when it is called without an axis. */
+            chunk_emit(c, OP_NIL, 0);
             chunk_emit(c, OP_NATIVE_CALL, native_id);
             return;
         }

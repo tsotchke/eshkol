@@ -12498,19 +12498,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VM_PUSH_TENSOR(vm, out);
         break;
     }
-    case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis) */
-        Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
+    case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis list) */
+        Value axis_arg = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
-        /* SW-202: no axis (the prelude passes #f) is a FULL reduction to a
-         * number, as on native; an explicit axis, negative ones counted from
-         * the last, reduces that axis. -1 used to mean both, so a full
-         * reduction answered a 1-element tensor on a vector and a row of
-         * partial results on a matrix. */
-        /* The axis is structural: an exact integer selects it and #f (no
-         * axis) selects the full reduction. Any other value is a type error,
-         * as on the native engines, never a truncated or ignored axis. */
-        int full = axis_val.type == VAL_BOOL && !axis_val.as.b;
+        /* The second operand is the wrappers' optional-argument list (the
+         * prelude's tensor-sum/-mean/-max/-min and gpu-reduce): '() means no
+         * axis, a FULL reduction to a number, as on native; (axis ...) carries
+         * the axis the program wrote, negative ones counted from the last.
+         * Because "no axis" is the shape of the list and never a value, every
+         * value a program can write -- #f and the unspecified value included
+         * -- is an axis operand and is checked as one. A bare value (a direct
+         * call of the private name) is taken as the axis itself. */
+        int full = axis_arg.type == VAL_NIL;
+        Value axis_val = axis_arg;
+        if (axis_arg.type == VAL_PAIR && is_valid_heap_ptr(vm, axis_arg.as.ptr)) {
+            HeapObject* cell = vm->heap.objects[axis_arg.as.ptr];
+            if (cell && cell->type == HEAP_CONS) axis_val = cell->cons.car;
+        }
+        /* The axis is structural: an exact integer selects it. Any other
+         * value is a type error, as on the native engines, never a truncated
+         * or ignored axis. */
         if (!full && axis_val.type != VAL_INT) {
             /* The native engines' message: operation, expectation, and the
              * operand's type in the runtime's error vocabulary. */
