@@ -10,7 +10,8 @@ native, vm, case, engine = sys.argv[1:]
 if case == "reserved_identifiers":
     diagnostic = b"reserved syntax identifier"
     inputs = [b"'_v10.name", b"'|_v10.name|", b"'|a\\x1d;|", b"'a\x1d",
-              b"'__eshkol_macro_binding_7"]
+              b"'__eshkol_macro_binding_7", b"'__eshkol_desugar_cl_args",
+              b"(define |__eshkol_desugar_pz_param_0| 1)"]
 elif case == "character_encoding":
     diagnostic = b"invalid UTF-8 character literal"
     inputs = [b"#\\" + bytes.fromhex(payload) for payload in

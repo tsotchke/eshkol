@@ -15200,7 +15200,8 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
    AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
-    foreach(_case IN ITEMS interpolation_ranges character_scalars)
+    foreach(_case IN ITEMS interpolation_ranges character_scalars
+                           desugar_temporaries)
         foreach(_engine IN ITEMS jit aot vm)
             add_test(NAME ${_case}_${_engine}
                 COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}

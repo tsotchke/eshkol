@@ -113,3 +113,22 @@ foo
 > everywhere, including inside a `guard` form (**ESH-0106**, closed). See
 > [error-handling.md](error-handling.md) and
 > [quote-and-quasiquote.md](quote-and-quasiquote.md).
+
+### Reserved spellings
+
+The compiler names the bindings it generates with spellings that no program
+can write, so a generated binding never captures a program's identifier and a
+program never reaches a generated one. Both readers refuse these spellings with
+the diagnostic `reserved syntax identifier`, including inside a quoted datum
+and inside `|vertical bars|`:
+
+| Spelling | Used for |
+|----------|----------|
+| any name containing the byte U+001D | the macro expander's syntax colors |
+| `_v<digits>.` followed by anything | the macro expander's fresh binder names |
+| `__eshkol_macro_binding_<digits>` | macro-introduced definitions |
+| `__eshkol_desugar_` followed by anything | temporaries of the forms the parser lowers (`parameterize`, `case-lambda`, keyword parameters, `define-values`) |
+
+A symbol made at run time with one of these spellings (`string->symbol`) is an
+ordinary symbol. Passing a datum that contains one to `eval` or `compile`
+raises a condition naming the symbol.

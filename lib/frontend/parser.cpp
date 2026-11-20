@@ -1636,7 +1636,7 @@ struct KeywordFormal {
  * location.
  */
 static std::string make_keyword_rest_name(uint32_t line, uint32_t column) {
-    return "__eshkol_kw_rest_" + std::to_string(line) + "_" +
+    return ESHKOL_SYNTAX_DESUGAR_PREFIX "kw_rest_" + std::to_string(line) + "_" +
            std::to_string(column);
 }
 
@@ -6028,7 +6028,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             std::vector<eshkol_ast_t> assignments;
             temp_names.reserve(names.size());
             for (size_t i = 0; i < names.size(); i++) {
-                std::string temp = "__eshkol_define_values_" +
+                std::string temp = ESHKOL_SYNTAX_DESUGAR_PREFIX "define_values_" +
                     std::to_string(form_line) + "_" +
                     std::to_string(form_column) + "_" + std::to_string(i);
                 temp_names.push_back(temp);
@@ -6039,7 +6039,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             std::string temp_rest;
             const std::string* temp_rest_ptr = nullptr;
             if (has_rest) {
-                temp_rest = "__eshkol_define_values_rest_" +
+                temp_rest = ESHKOL_SYNTAX_DESUGAR_PREFIX "define_values_rest_" +
                     std::to_string(form_line) + "_" + std::to_string(form_column);
                 temp_rest_ptr = &temp_rest;
                 assignments.push_back(make_parser_set_ast(
@@ -8345,7 +8345,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             };
             // Extract Nth arg from list: car(cdr^N(list))
             auto clMakeNthArg = [&clMakeCall1, &clMakeVar](int n) -> eshkol_ast_t {
-                eshkol_ast_t cur = clMakeVar("__cl_args");
+                eshkol_ast_t cur = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                 for (int i = 0; i < n; i++) {
                     cur = clMakeCall1("cdr", cur);
                 }
@@ -8439,7 +8439,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     let_ast.operation.let_op.bindings[0].cons_cell.car = new eshkol_ast_t;
                     *let_ast.operation.let_op.bindings[0].cons_cell.car = clMakeVar(cl.rest_param.c_str());
                     let_ast.operation.let_op.bindings[0].cons_cell.cdr = new eshkol_ast_t;
-                    *let_ast.operation.let_op.bindings[0].cons_cell.cdr = clMakeVar("__cl_args");
+                    *let_ast.operation.let_op.bindings[0].cons_cell.cdr = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                     let_ast.operation.let_op.body = new eshkol_ast_t;
                     *let_ast.operation.let_op.body = cl.body;
                     dispatch_body = let_ast;
@@ -8455,10 +8455,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // N=2: (if (null? __cl_args) #f (if (null? (cdr __cl_args)) #f (null? (cdr (cdr __cl_args)))))
                 eshkol_ast_t cond;
                 if (nparams == 0) {
-                    cond = clMakeCall1("null?", clMakeVar("__cl_args"));
+                    cond = clMakeCall1("null?", clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args"));
                 } else {
                     // Build: (null? (cdr^N __cl_args))
-                    eshkol_ast_t nth_cdr = clMakeVar("__cl_args");
+                    eshkol_ast_t nth_cdr = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                     for (uint64_t k = 0; k < nparams; k++) {
                         nth_cdr = clMakeCall1("cdr", nth_cdr);
                     }
@@ -8477,7 +8477,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                     cond = tail_null;
                     for (int64_t k = (int64_t)nparams - 1; k >= 0; k--) {
-                        eshkol_ast_t kth_cdr = clMakeVar("__cl_args");
+                        eshkol_ast_t kth_cdr = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                         for (int64_t m = 0; m < k; m++) {
                             kth_cdr = clMakeCall1("cdr", kth_cdr);
                         }
@@ -8510,7 +8510,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         *let_ast.operation.let_op.bindings[j].cons_cell.cdr = clMakeNthArg((int)j);
                     }
                     if (cl.is_variadic) {
-                        eshkol_ast_t rest_tail = clMakeVar("__cl_args");
+                        eshkol_ast_t rest_tail = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                         for (uint64_t j = 0; j < nparams; j++) {
                             rest_tail = clMakeCall1("cdr", rest_tail);
                         }
@@ -8534,7 +8534,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_LAMBDA_OP;
             ast.operation.lambda_op.is_variadic = 1;
-            ast.operation.lambda_op.rest_param = eshkol_ast_strdup("__cl_args");
+            ast.operation.lambda_op.rest_param = eshkol_ast_strdup(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
             ast.operation.lambda_op.num_params = 0;
             ast.operation.lambda_op.parameters = nullptr;
             ast.operation.lambda_op.param_types = nullptr;
@@ -9184,10 +9184,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             };
 
             for (size_t i = 0; i < n; ++i) {
-                std::string param_name = "__pz_param_" + std::to_string(i);
-                std::string raw_name = "__pz_raw_" + std::to_string(i);
-                std::string value_name = "__pz_value_" + std::to_string(i);
-                std::string saved_name = "__pz_saved_" + std::to_string(i);
+                std::string param_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_param_" + std::to_string(i);
+                std::string raw_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_raw_" + std::to_string(i);
+                std::string value_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_value_" + std::to_string(i);
+                std::string saved_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_saved_" + std::to_string(i);
 
                 port_parameter_names[i] = pmRuntimePortParameterName(params[i]);
                 if (port_parameter_names[i]) {
@@ -9215,11 +9215,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 if (port_parameter_names[i]) {
                     pop_expressions.push_back(
                         pmMakeCall(port_parameter_names[i],
-                                   {pmMakeVar(("__pz_saved_" + std::to_string(i)).c_str())}));
+                                   {pmMakeVar((ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_saved_" + std::to_string(i)).c_str())}));
                     continue;
                 }
                 pop_expressions.push_back(
-                    pmMakeCall("__eshkol_parameter_pop", {pmMakeVar(("__pz_param_" + std::to_string(i)).c_str())}));
+                    pmMakeCall("__eshkol_parameter_pop", {pmMakeVar((ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_param_" + std::to_string(i)).c_str())}));
             }
 
             eshkol_ast_t wind = {};
