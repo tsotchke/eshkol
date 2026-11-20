@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <float.h>
+#include <limits.h>
 
 extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
 
@@ -876,48 +877,63 @@ void eshkol_fg_add_factor_tagged(arena_t* arena,
     }
     if (num_vars == 0) return;
 
-    uint32_t* var_indices = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
-    for (uint32_t i = 0; i < num_vars; i++) {
-        var_indices[i] = (uint32_t)idx_buf[i];
-    }
-
-    /* Build dims array from the factor graph's var_dims */
-    uint32_t* dims = (uint32_t*)alloca(num_vars * sizeof(uint32_t));
-    for (uint32_t i = 0; i < num_vars; i++) {
-        if (var_indices[i] < fg->num_vars) {
-            dims[i] = fg->var_dims[var_indices[i]];
-        } else {
-            return; /* invalid variable index */
-        }
-    }
-
-    /* Compute expected CPT size = product of variable dimensions */
+    /* Each index must be an integer naming a variable of this graph, and
+     * the configuration count must stay representable; both refusals are
+     * the catchable conditions the VM raises (native call 522). */
+    uint32_t var_indices[max_factor_vars];
+    uint32_t dims[max_factor_vars];
     uint32_t cpt_size = 1;
-    for (uint32_t i = 0; i < num_vars; i++) cpt_size *= dims[i];
-    double* cpt_data = (double*)alloca(cpt_size * sizeof(double));
+    for (uint32_t i = 0; i < num_vars; i++) {
+        double index = idx_buf[i];
+        if (!isfinite(index) || index != floor(index) || index < 0.0 ||
+            index >= (double)fg->num_vars) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "fg-add-factor!: invalid variable index");
+            return;
+        }
+        var_indices[i] = (uint32_t)index;
+        dims[i] = fg->var_dims[var_indices[i]];
+    }
+    for (uint32_t i = 0; i < num_vars; i++) {
+        if (dims[i] == 0 || cpt_size > (uint32_t)INT_MAX / dims[i]) {
+            eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                                 "fg-add-factor!: invalid variables or configuration count");
+            return;
+        }
+        cpt_size *= dims[i];
+    }
+    double* cpt_data = (double*)malloc((size_t)cpt_size * sizeof(double));
+    if (!cpt_data) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "fg-add-factor!: allocation failed");
+        return;
+    }
 
     /* CPT may be a homogeneous tensor (#(…)) or a heterogeneous vector. */
+    bool cpt_ok = true;
     tensor_layout_t* cpt_tensor = extract_tensor(cpt_tv);
     if (cpt_tensor) {
         if ((uint32_t)cpt_tensor->total_elements != cpt_size) {
             eshkol_error(
                 "fg-add-factor!: tensor has %llu elements but factor expects %u",
                 (unsigned long long)cpt_tensor->total_elements, cpt_size);
-            return;
-        }
-        for (uint32_t i = 0; i < cpt_size; i++) {
-            cpt_data[i] = tensor_get(cpt_tensor, i);
+            cpt_ok = false;
+        } else {
+            for (uint32_t i = 0; i < cpt_size; i++) {
+                cpt_data[i] = tensor_get(cpt_tensor, i);
+            }
         }
     } else if (!extract_doubles_from_vector(cpt_tv, cpt_size, cpt_data)) {
         eshkol_error(
             "fg-add-factor!: CPT must be a tensor or vector of %u numbers", cpt_size);
-        return;
+        cpt_ok = false;
     }
 
-    eshkol_factor_t* factor = eshkol_make_factor(arena, var_indices, num_vars, cpt_data, dims);
-    if (factor) {
-        eshkol_fg_add_factor(arena, fg, factor);
+    if (cpt_ok) {
+        eshkol_factor_t* factor = eshkol_make_factor(arena, var_indices, num_vars, cpt_data, dims);
+        if (factor) {
+            eshkol_fg_add_factor(arena, fg, factor);
+        }
     }
+    free(cpt_data);
 }
 
 /**

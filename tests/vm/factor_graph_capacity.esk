@@ -34,6 +34,14 @@
        (near? (tensor-ref big-marginal 256) (/ 2.0 258.0))
        (near? (fg-entropy big 0) big-entropy)))
 
-(display (if (and wide boundary-factor large-domain)
+;; A factor naming a variable outside the graph is refused, not dropped.
+(define pair (make-factor-graph 2 #(2 2)))
+(define index-msg "fg-add-factor!: invalid variable index")
+(define invalid-indices
+  (and (refuses? (lambda () (fg-add-factor! pair #(0 2) #(0.0 0.0 0.0 0.0))) index-msg)
+       (refuses? (lambda () (fg-add-factor! pair #(-1) #(0.0 0.0))) index-msg)
+       (refuses? (lambda () (fg-add-factor! pair #(0.5) #(0.0 0.0))) index-msg)))
+
+(display (if (and wide boundary-factor large-domain invalid-indices)
              "PASS factor_graph_capacity" "FAIL factor_graph_capacity"))
 (newline)

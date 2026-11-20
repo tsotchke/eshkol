@@ -2886,6 +2886,9 @@ the CPT has |S_a| × |S_b| entries. Entry at index `i * |S_b| + j` corresponds t
 log P(v_a = i, v_b = j) (or the conditional log P(v_b = j | v_a = i), depending on the
 model structure).
 
+**Admission:** a factor connects at most 32 variables, and each index must be an integer naming
+a variable of `fg`. Any other index list raises a catchable error and adds no factor.
+
 **Implementation:** `LogicWorkspaceCodegen::codegenFGAddFactor` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_fg_add_factor_tagged`.
 
