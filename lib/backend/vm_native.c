@@ -12502,15 +12502,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
-        /* SW-202: no axis (the prelude passes #f) is a FULL reduction to a
+        /* No axis (the prelude and gpu-reduce pass the unspecified value) is a FULL reduction to a
          * number, as on native; an explicit axis, negative ones counted from
          * the last, reduces that axis. -1 used to mean both, so a full
          * reduction answered a 1-element tensor on a vector and a row of
          * partial results on a matrix. */
-        /* The axis is structural: an exact integer selects it and #f (no
-         * axis) selects the full reduction. Any other value is a type error,
-         * as on the native engines, never a truncated or ignored axis. */
-        int full = axis_val.type == VAL_BOOL && !axis_val.as.b;
+        /* The axis is structural: an exact integer selects it, and only the
+         * absence of an axis selects the full reduction. Any other value,
+         * #f included, is a type error, as on the native engines, never a
+         * truncated or ignored axis. */
+        int full = axis_val.type == VAL_VOID;
         if (!full && axis_val.type != VAL_INT) {
             /* The native engines' message: operation, expectation, and the
              * operand's type in the runtime's error vocabulary. */
