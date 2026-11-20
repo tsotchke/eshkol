@@ -21,6 +21,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include <eshkol/core/event_loop.h>
 #include "../../lib/platform/platform_internal.h"
 
 #include <math.h>
@@ -61,9 +62,9 @@ static void paint(eshkol_window_t* w) {
                 ((x * 5u) & 0xFFu) << 16 | ((y * 7u) & 0xFFu) << 8 | ((x ^ y) & 0xFFu);
 }
 
-static int drain_until(eshkol_window_t* w, int type, eshkol_event_t* out, int timeout_ms) {
+static int drain_until(eshkol_window_t* w, int type, eshkol_platform_event_t* out, int timeout_ms) {
     uint64_t end = eshkol_plat_now_ns() + (uint64_t)timeout_ms * 1000000ull;
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     while (eshkol_plat_now_ns() < end) {
         if (eshkol_window_wait_event_timeout(w, &ev, 20) == 1 && ev.type == type) {
             if (out) *out = ev;
@@ -99,7 +100,7 @@ static void window_contract(int backend) {
 
     /* Resize: the surface follows and a WINDOW_RESIZE event reports it. */
     CHECK_EQ(eshkol_window_set_size(w, 80, 60), ESHKOL_PLATFORM_OK);
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     CHECK(drain_until(w, ESHKOL_EVENT_WINDOW_RESIZE, &ev, 2000));
     CHECK_EQ(ev.u.window.width, 80);
     CHECK_EQ(ev.u.window.height, 60);
@@ -112,7 +113,7 @@ static void window_contract(int backend) {
     CHECK_EQ(eshkol_window_set_size(w, 0, 10), ESHKOL_PLATFORM_EINVAL);
 
     /* Pushed events arrive in order, stamped with the window and a time. */
-    eshkol_event_t key;
+    eshkol_platform_event_t key;
     memset(&key, 0, sizeof(key));
     key.type = ESHKOL_EVENT_USER;
     key.u.user.code = 4242;
@@ -133,7 +134,7 @@ static void window_contract(int backend) {
 static void* pusher(void* arg) {
     eshkol_window_t* w = (eshkol_window_t*)arg;
     for (int i = 0; i < 200; ++i) {
-        eshkol_event_t ev;
+        eshkol_platform_event_t ev;
         memset(&ev, 0, sizeof(ev));
         ev.type = ESHKOL_EVENT_MOUSE_MOVE;
         ev.u.mouse.x = i;
@@ -168,7 +169,7 @@ static void headless_windows(void) {
     eshkol_window_t* w = eshkol_window_create("headless", 32, 32, 0);
     CHECK(w != NULL);
     if (!w) return;
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     CHECK(eshkol_window_poll_event(w, &ev) && ev.type == ESHKOL_EVENT_WINDOW_SHOW);
     CHECK(!eshkol_window_poll_event(w, &ev));
     CHECK_EQ(eshkol_window_read_presented(w, 0, 0, &(uint32_t){0}), ESHKOL_PLATFORM_ESTATE);
@@ -197,7 +198,7 @@ static void headless_windows(void) {
 
     /* A full queue drops new events and counts them. */
     for (unsigned i = 0; i < ESHKOL_PLAT_EVENT_QUEUE_CAP + 50; ++i) {
-        eshkol_event_t u;
+        eshkol_platform_event_t u;
         memset(&u, 0, sizeof(u));
         u.type = ESHKOL_EVENT_USER;
         u.u.user.code = i;
@@ -608,7 +609,7 @@ static int x11_mode(void) {
     CHECK(drain_until(w, ESHKOL_EVENT_WINDOW_SHOW, NULL, 2000));
     CHECK(drain_until(w, ESHKOL_EVENT_WINDOW_EXPOSE, NULL, 2000));
     CHECK_EQ(eshkol_window_set_position(w, 13, 17), ESHKOL_PLATFORM_OK);
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     CHECK(drain_until(w, ESHKOL_EVENT_WINDOW_MOVE, &ev, 2000));
     eshkol_window_destroy(w);
     return 0;
@@ -651,7 +652,7 @@ static int macos_mode(void) {
         CHECK_EQ(eshkol_window_create_ex(ESHKOL_BACKEND_COCOA, "cocoa events", 60, 40,
                                          ESHKOL_WINDOW_HIDDEN, &w), ESHKOL_PLATFORM_OK);
         if (w) {
-            eshkol_event_t ev;
+            eshkol_platform_event_t ev;
             CHECK(eshkol_test_cocoa_post(w, 0));
             CHECK(drain_until(w, ESHKOL_EVENT_KEY_DOWN, &ev, 2000));
             CHECK_EQ(ev.u.key.keycode, 'a');

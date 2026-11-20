@@ -28,7 +28,7 @@ static int off_create(eshkol_window_t* w, const char* title) {
     strncpy(o->title, title, sizeof(o->title) - 1);
     w->impl = o;
     if (!(w->flags & ESHKOL_WINDOW_HIDDEN)) {
-        eshkol_event_t ev;
+        eshkol_platform_event_t ev;
         memset(&ev, 0, sizeof(ev));
         ev.type = ESHKOL_EVENT_WINDOW_SHOW;
         eshkol_plat_window_emit(w, &ev);
@@ -47,7 +47,7 @@ static void off_destroy(eshkol_window_t* w) {
 static int off_set_size(eshkol_window_t* w, int width, int height) {
     int st = eshkol_plat_window_resize_surface(w, width, height);
     if (st != ESHKOL_PLATFORM_OK) return st;
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = ESHKOL_EVENT_WINDOW_RESIZE;
     ev.u.window.x = w->x;
@@ -61,7 +61,7 @@ static int off_set_size(eshkol_window_t* w, int width, int height) {
 static int off_set_position(eshkol_window_t* w, int x, int y) {
     w->x = x;
     w->y = y;
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = ESHKOL_EVENT_WINDOW_MOVE;
     ev.u.window.x = x;
