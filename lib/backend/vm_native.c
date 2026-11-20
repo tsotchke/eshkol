@@ -9013,6 +9013,31 @@ static void vm_raise_error_msg(VM* vm, const char* msg) {
     vm_raise_error_msg_with_irritants(vm, msg, NIL_VAL);
 }
 
+static void vm_push_matmul(VM* vm, VmTensor* a, VmTensor* b) {
+    const int mm_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
+    /* Try GPU first, fall through to CPU */
+    VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
+    if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
+    if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); return; }
+    out->dtype = vm_tensor_promote_dtype(a, b);
+    if (mm_tangent) {
+        /* d(AB) = dA B + A dB */
+        VmRegionStack* rs = &vm->heap.regions;
+        VmTensor* ta = vm_tensor_tangent_of(vm, a, "matmul");
+        VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "matmul") : NULL;
+        if (!ta || !tb) return;
+        VmTensor* l = vm_tensor_matmul(rs, ta, b);
+        VmTensor* r = vm_tensor_matmul(rs, a, tb);
+        VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
+        if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
+            vm_raise_error_msg(vm, "matmul: could not propagate the derivative");
+            return;
+        }
+    }
+    VM_PUSH_TENSOR(vm, out);
+}
+
+
 typedef int64_t (*VmSqliteOpenFn)(const char*);
 typedef void (*VmSqliteCloseFn)(int64_t);
 typedef int64_t (*VmSqlitePrepareFn)(int64_t, const char*);
@@ -12303,27 +12328,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "matmul");
         if (!b) break;   /* raised: push nothing */
-        const int mm_tangent = vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b);
-        /* Try GPU first, fall through to CPU */
-        VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
-        if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
-        if (!out) { vm_raise_error_msg(vm, "tensor operation: invalid shape or allocation limit"); break; }
-        out->dtype = vm_tensor_promote_dtype(a, b);
-        if (mm_tangent) {
-            /* d(AB) = dA B + A dB */
-            VmRegionStack* rs = &vm->heap.regions;
-            VmTensor* ta = vm_tensor_tangent_of(vm, a, "matmul");
-            VmTensor* tb = ta ? vm_tensor_tangent_of(vm, b, "matmul") : NULL;
-            if (!ta || !tb) break;
-            VmTensor* l = vm_tensor_matmul(rs, ta, b);
-            VmTensor* r = vm_tensor_matmul(rs, a, tb);
-            VmTensor* tout = (l && r) ? vm_tensor_add(rs, l, r) : NULL;
-            if (!tout || !vm_tensor_attach_tangent(vm, out, tout)) {
-                vm_raise_error_msg(vm, "matmul: could not propagate the derivative");
-                break;
-            }
-        }
-        VM_PUSH_TENSOR(vm, out);
+        vm_push_matmul(vm, a, b);
         break;
     }
     case 441: case 442: case 443: case 444: case 445: case 446: case 447: { /* tensor binary: +,-,*,/,pow,max,min */
@@ -12414,6 +12419,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand_carrier(vm, b_val, "tensor-dot");
         if (!b) break;   /* raised: push nothing */
+        if (a->n_dims != 1 || b->n_dims != 1) {
+            char message[128];
+            int rank = (a->n_dims != 1 && a->n_dims != 2) ? a->n_dims : b->n_dims;
+            if (rank != 1 && rank != 2) {
+                snprintf(message, sizeof message,
+                         "tensor-dot: only supports 1D and 2D tensors (got %dD)", rank);
+                vm_raise_error_msg(vm, message);
+                break;
+            }
+            int64_t inner_a = a->shape[a->n_dims - 1];
+            if (inner_a != b->shape[0]) {
+                snprintf(message, sizeof message,
+                         "tensor-dot: matmul inner dimensions mismatch (%lld vs %lld)",
+                         (long long)inner_a, (long long)b->shape[0]);
+                vm_raise_error_msg(vm, message);
+                break;
+            }
+            vm_push_matmul(vm, a, b);
+            break;
+        }
+        if (a->total != b->total) {
+            int scheme_vector = a_val.type == VAL_VECTOR &&
+                vm->heap.objects[a_val.as.ptr]->opaque.subtype != VM_SUBTYPE_TENSOR_LITERAL;
+            vm_raise_error_msg(vm, scheme_vector
+                ? "tensor-dot: Scheme vector lengths must match"
+                : "tensor-dot: tensor ranks and extents must match");
+            break;
+        }
         double dot_value = vm_tensor_dot(a, b);
         if (vm_tensor_has_tangent(a) || vm_tensor_has_tangent(b)) {
             /* d(a . b) = da . b + a . db */

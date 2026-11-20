@@ -9020,6 +9020,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    function(add_vm_transcript_test name source)
+        add_test(NAME ${name}
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/check_program.py"
+                "$<TARGET_FILE:eshkol-run>" "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 600)
+    endfunction()
+    add_vm_transcript_test(vm_tensor_dot_shapes tests/vm_parity/corpus/tensor_dot_shapes.esk)
+endif()
+
 # BI-5 gate: the linear (no-cloning) rule is enforced on BOTH engines. The
 # bytecode VM used to enforce nothing — it ran a qubit clone to completion with
 # exit 0 and `--emit-eskb` wrote the bytecode for it — while the LLVM engine
