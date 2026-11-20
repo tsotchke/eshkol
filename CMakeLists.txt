@@ -8254,6 +8254,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         add_test(NAME llvm_codegen_definition COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/codegen_definition_test.py" "${CMAKE_CURRENT_BINARY_DIR}")
     endif()
+    foreach(_fixture vm_parity/corpus/58_rationalize_r7rs)
+        get_filename_component(_name "${_fixture}" NAME)
+        set(_src "${CMAKE_CURRENT_SOURCE_DIR}/tests/${_fixture}.esk")
+        add_test(NAME ${_name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r "${_src}" "-L${CMAKE_CURRENT_BINARY_DIR}")
+        add_test(NAME ${_name}_aot COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${_name}' '${_src}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${_name}'")
+        set(_engines ${_name}_jit ${_name}_aot)
+        if(NOT WIN32)
+            add_test(NAME ${_name}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test> "${_src}")
+            list(APPEND _engines ${_name}_vm)
+        endif()
+        set_tests_properties(${_engines} PROPERTIES PASS_REGULAR_EXPRESSION "PASS: (rational intervals|matrix dimensions|Butterworth response|condition counts)" TIMEOUT 300 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            ENVIRONMENT "${STDLIB_CODEGEN_ENV};ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR};ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1")
+    endforeach()
     # VM-semantics fixtures also run through the native JIT and AOT so the
     # shared contracts are checked in every execution lane, not only by the
     # VM differential harness.
