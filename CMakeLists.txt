@@ -2198,6 +2198,8 @@ endif()
 # non-sanitized build.
 if(ESHKOL_ENABLE_ASAN)
     eshkol_append_host_runtime_link_arg("-fsanitize=address")
+elseif(ESHKOL_ENABLE_LSAN)
+    eshkol_append_host_runtime_link_arg("-fsanitize=leak")
 endif()
 if(ESHKOL_ENABLE_UBSAN)
     eshkol_append_host_runtime_link_arg("-fsanitize=undefined")
@@ -8204,7 +8206,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             ENVIRONMENT "ESHKOL_ARENA_POISON=1"
             PASS_REGULAR_EXPRESSION "PASS: region-evac mixed-mode AD jet"
-            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|(ERROR|WARNING|SUMMARY): [A-Za-z]+Sanitizer|AddressSanitizer:DEADLYSIGNAL|runtime error:")
     add_test(
         NAME region_evac_ad_jet_aot_smoke
         COMMAND sh -c
@@ -8215,7 +8217,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 600
             ENVIRONMENT "ESHKOL_ARENA_POISON=1"
             PASS_REGULAR_EXPRESSION "PASS: region-evac mixed-mode AD jet"
-            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|(ERROR|WARNING|SUMMARY): [A-Za-z]+Sanitizer|AddressSanitizer:DEADLYSIGNAL|runtime error:")
     # The standalone VM binary is only built under `NOT WIN32` (see the
     # `eshkol-vm-standalone-test` target below), so a `$<TARGET_FILE:...>` on it
     # here has no target to resolve on Windows and fails the whole configure.
@@ -8230,7 +8232,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 TIMEOUT 600
                 ENVIRONMENT "ESHKOL_ARENA_POISON=1;ESHKOL_VM_NO_DISASM=1"
                 PASS_REGULAR_EXPRESSION "PASS: VM region-evac AD"
-                FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal")
+                FAIL_REGULAR_EXPRESSION "FAIL:|fatal signal|(ERROR|WARNING|SUMMARY): [A-Za-z]+Sanitizer|AddressSanitizer:DEADLYSIGNAL|runtime error:")
     endif()
 
     # IF-08: parameters are arena objects whose current value, converter, and

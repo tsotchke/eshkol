@@ -54,6 +54,14 @@ assert_runtime_paths "LLVM link args" "$(config_value ESHKOL_HOST_LLVM_LINK_ARGS
 assert_runtime_paths "runtime link args" "$(config_value ESHKOL_HOST_RUNTIME_LINK_ARGS)"
 assert_runtime_paths "agent FFI link args" "$(config_value ESHKOL_HOST_AGENT_FFI_LINK_ARGS)"
 
+if grep -Fxq 'ESHKOL_ENABLE_LSAN:BOOL=ON' "$BUILD_DIR/CMakeCache.txt" &&
+   grep -Fxq 'ESHKOL_ENABLE_ASAN:BOOL=OFF' "$BUILD_DIR/CMakeCache.txt"; then
+    case ";$(config_value ESHKOL_HOST_RUNTIME_LINK_ARGS);" in
+        *';-fsanitize=leak;'*) ;;
+        *) fail "standalone LSan AOT link requires -fsanitize=leak" ;;
+    esac
+fi
+
 HOST_CXX="$(config_value ESHKOL_HOST_CXX_COMPILER)"
 LLVM_ARGS="$(config_value ESHKOL_HOST_LLVM_LINK_ARGS)"
 if [ -n "$HOST_CXX" ] && [ -x "$HOST_CXX" ]; then
