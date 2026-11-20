@@ -18,6 +18,12 @@ goals:
     reason: sync HTTP shipped 2026-05-06; streaming is still stubbed. Without it the agent must batch-poll, which breaks the conversational UX
     tags: [http, streaming, agent]
 
+  - id: or-null-workaround-cleanup-agent
+    priority: low
+    goal: Replace the remaining `(if X X '())` spellings in the eshkol-agent sources with `(or X '())`
+    reason: "`(or X '())` answers the R7RS value on JIT, AOT and VM (and_or_operand_kinds_{jit,aot,vm}). This tree's lib/ and stdlib carry no Eshkol-level instance; the 20 textual matches in lib/core/compiler/mix/source.esk are quoted Mix-language program data whose `if` is that language's own and stay as they are. The instances left are in the agent repository: lib/services/mcp-client.esk (2), lib/services/messages.esk (2), lib/services/mcp-transport.esk (1); they change there once it builds against a compiler carrying these tests."
+    tags: [agent, cleanup]
+
   - id: parallel-test-fork-exhaustion
     priority: medium
     goal: "Diagnose and fix subprocess fork-exhaustion under heavy ctest load (`/bin/sh: fork: Resource temporarily unavailable`)"
