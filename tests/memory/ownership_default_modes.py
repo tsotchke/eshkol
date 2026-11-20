@@ -22,7 +22,7 @@ ACCEPTED = (
     "(show (car (car y)))\n"
     "(show (peek))\n"
     "(borrow x (show (cadr x)))\n"
-    "(show (let loop ((acc '()) (n 2)) (if (= n 0) (length acc) (loop (cons y acc) (- n 1)))))\n"
+    "(show (let loop ((acc '()) (n 2)) (if (= n 0) (car (car (car acc))) (loop (cons y acc) (- n 1)))))\n"
     "(define z (move x))\n"
     "(show (car z))\n"
 )
@@ -30,7 +30,7 @@ ACCEPTED = (
 
 def accepted():
     compiler, vm, repl = (Path(arg).resolve() for arg in sys.argv[1:4])
-    expected = ["1", "1", "2", "2", "1"]
+    expected = ["1", "1", "2", "1", "1"]
     with tempfile.TemporaryDirectory() as directory:
         work = Path(directory)
         env = dict(os.environ, ESHKOL_JIT_CACHE="0", ESHKOL_VM_NO_DISASM="1")
