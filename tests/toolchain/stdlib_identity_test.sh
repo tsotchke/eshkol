@@ -23,7 +23,7 @@ cat > "$WORK/source/stdlib.esk" <<'ESK'
 ESK
 cat > "$WORK/source/main.esk" <<'ESK'
 (require stdlib)
-(display (identity-probe))
+(display (url-decode "%31%37"))
 (newline)
 ESK
 
@@ -42,7 +42,9 @@ build_control() {
 OTHER_ABI=object_abi_v1
 [[ "$OBJECT_ABI" == object_abi_v1 ]] && OTHER_ABI=object_abi_v2
 ZERO_SOURCE="$(printf '%064d' 0)"
-build_control "$WORK/matching" "$EXPECTED_IDENTITY"
+# The admitted pair provides the exports in this build's source manifest.
+# A private copy keeps cache-admission probes isolated from the installation.
+cp "$WORK_ROOT/stdlib.o" "$WORK_ROOT/stdlib.bc" "$WORK/matching/"
 build_control "$WORK/wrong-release" \
     "eshkol_stdlib_identity_release_0_0_0_abi_${OBJECT_ABI}_source_${SOURCE_FINGERPRINT}"
 build_control "$WORK/wrong-source" \

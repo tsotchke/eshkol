@@ -2135,9 +2135,8 @@ static void compile_source_to_chunk_with_options(const char* source,
     g_vm_n_private_imports = 0;
     int include_desktop_prelude = 1;
     if (options) include_desktop_prelude = options->include_desktop_prelude ? 1 : 0;
-    vm_seed_entry_module_path(g_source_file_path);
-
     vm_reset_compilation_unit_modules();
+    vm_seed_entry_module_path(g_source_file_path);
 
     if (include_desktop_prelude) {
 #ifdef ESHKOL_VM_NO_DISASM

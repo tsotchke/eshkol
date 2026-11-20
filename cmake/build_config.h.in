@@ -22,3 +22,7 @@
  * resolve in the produced binary. Empty when agent-FFI wasn't
  * configured or its deps weren't found at configure time. */
 #define ESHKOL_HOST_AGENT_FFI_LINK_ARGS "@ESHKOL_HOST_AGENT_FFI_LINK_ARGS@"
+
+/* Source-tree installation for executables in this build directory. */
+#define ESHKOL_MODULE_BUILD_DIR "@CMAKE_CURRENT_BINARY_DIR@"
+#define ESHKOL_MODULE_SOURCE_DIR "@CMAKE_CURRENT_SOURCE_DIR@/lib"

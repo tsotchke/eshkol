@@ -12,6 +12,7 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/module_resolver.h>
 #include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
 #include "../core/keychain_native.h"
@@ -2908,9 +2909,8 @@ static std::string findStdlibBitcode() {
 /**
  * @brief Discovers all stdlib functions and data globals by parsing stdlib.bc's IR, and registers them with the REPL's compiler-visible symbol tables.
  *
- * Marks the built-in stdlib module names as already-loaded (to prevent
- * circular re-import), then, if stdlib.bc can be located and parsed,
- * iterates every non-declaration, non-internal-linkage function to register
+ * When stdlib.bc is available, iterates every non-declaration,
+ * non-internal-linkage function to register
  * its name/arity (via eshkol_repl_register_function() and
  * defined_lambdas_/registered_lambdas_), reading back the `eshkol-variadic`
  * function attribute where present so REPL callers know how many trailing
@@ -2924,31 +2924,6 @@ static std::string findStdlibBitcode() {
  * is disabled.
  */
 void ReplJITContext::registerStdlibSymbols() {
-    // Mark stdlib modules as loaded to prevent re-loading
-    loaded_modules.insert("stdlib");
-    loaded_modules.insert("core.io");
-    loaded_modules.insert("core.operators.arithmetic");
-    loaded_modules.insert("core.operators.compare");
-    loaded_modules.insert("core.logic.predicates");
-    loaded_modules.insert("core.logic.types");
-    loaded_modules.insert("core.logic.boolean");
-    loaded_modules.insert("core.functional.compose");
-    loaded_modules.insert("core.functional.curry");
-    loaded_modules.insert("core.functional.flip");
-    loaded_modules.insert("core.control.trampoline");
-    loaded_modules.insert("core.list.compound");
-    loaded_modules.insert("core.list.generate");
-    loaded_modules.insert("core.list.transform");
-    loaded_modules.insert("core.list.query");
-    loaded_modules.insert("core.list.sort");
-    loaded_modules.insert("core.list.higher_order");
-    loaded_modules.insert("core.list.search");
-    loaded_modules.insert("core.list.convert");
-    loaded_modules.insert("core.strings");
-    loaded_modules.insert("core.json");
-    loaded_modules.insert("core.data.csv");
-    loaded_modules.insert("core.data.base64");
-
     // Dynamic discovery: parse .bc to find all exported functions and globals.
     // Bitcode preserves original IR types (struct params, not scalarized),
     // so F.arg_size() gives the real arity.
@@ -3452,10 +3427,10 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
 /**
  * @brief Loads @p module_name into the REPL, parsing and batch-compiling its source unless it can be satisfied from the precompiled stdlib.
  *
- * If @p allow_precompiled_stdlib is set and @p module_name is "stdlib" or a
- * `core.*` module, first tries loadStdlib(); if the precompiled stdlib
- * genuinely provides that module name, returns immediately. Otherwise
- * resolves the module's source path (resolveModulePath()), reads and parses
+ * If @p allow_precompiled_stdlib is set, the build manifest determines
+ * which requests the precompiled image satisfies. Import modifiers recover
+ * the provider's exports from its verified source. For a source module,
+ * the resolver selects its canonical path and the loader reads and parses
  * it into ASTs, and processes it in two passes: `(provide ...)` and
  * `(define ...)` forms determine each module's exported vs. private symbol
  * surface (recorded into module_exports_) and qualifies private names in the
@@ -3465,33 +3440,20 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
  * (continuing past a failed dependency with a warning rather than aborting
  * the whole module), while all remaining top-level forms are collected and
  * compiled together in one executeBatch() call so later definitions can
- * forward-reference earlier ones. Idempotent per module name and per
- * resolved path via the loaded_modules set.
+ * forward-reference earlier ones. The loaded_modules set tracks canonical paths.
  * @return true on success; false if the module cannot be found/opened.
  */
 bool ReplJITContext::loadModule(const std::string& module_name,
                                bool allow_precompiled_stdlib,
-                               bool enforce_visibility) {
-    // Check if already loaded by NAME first (for stdlib.o preloaded modules)
-    if (loaded_modules.count(module_name)) {
-        return true;  // Already loaded via stdlib.o
-    }
-
-    // For stdlib or core.* modules, use precompiled stdlib.o if available.
-    // stdlib.o does NOT include every core.* module (core.testing is the
-    // obvious example — heavy state, not commonly used). After loading
-    // stdlib.o we re-check whether the requested name was registered by
-    // registerStdlibSymbols; if it wasn't, fall through to JIT compile
-    // the individual source file.
+                               bool enforce_visibility, bool need_exports) {
+    bool precompiled = false;
     if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
-        (module_name == "stdlib" || module_name.find("core.") == 0)) {
+        eshkol_stdlib_module_path(module_name.c_str())) {
         if (llvm::Error error = loadStdlib()) {
             throw std::runtime_error(toString(std::move(error)));
         }
-        if (loaded_modules.count(module_name)) {
-            return true;  // Module is genuinely in stdlib.o — done.
-        }
-        // The matching stdlib omits this core module; compile its source.
+        precompiled = eshkol_module_is_precompiled(module_name.c_str());
+        if (precompiled && !need_exports) return true;
     }
 
     std::string module_path = resolveModulePath(module_name);
@@ -3503,10 +3465,11 @@ bool ReplJITContext::loadModule(const std::string& module_name,
 
     // Check if already loaded by PATH
     if (loaded_modules.count(module_path)) {
-        return true;  // Already loaded, success
+        auto known = module_exports_.find(module_path);
+        if (known != module_exports_.end()) module_exports_[module_name] = known->second;
+        return true;
     }
     loaded_modules.insert(module_path);
-    loaded_modules.insert(module_name);  // Also track by name
 
     // Read the module file
     std::ifstream module_file(module_path);
@@ -3565,6 +3528,10 @@ bool ReplJITContext::loadModule(const std::string& module_name,
     // symbols are importable.
     module_exports_[module_name] = has_provide ? exported_symbols : defined_symbols;
     module_exports_[module_path] = module_exports_[module_name];
+    if (precompiled) {
+        for (auto& form : module_asts) eshkol_ast_clean(&form);
+        return true;
+    }
 
     // Establish the module boundary in the module's own AST before it is
     // compiled. Private names become module-qualified, while lexical binders
@@ -3806,20 +3773,6 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
 }
 
 /**
- * @brief Searches a set of platform-specific candidate paths for the Eshkol `lib` directory (module source root).
- * @return The first existing candidate directory path, or an empty string if none is found.
- */
-// Find the lib directory. The selection rule itself lives in
-// platform::module_source_root(), shared with the AOT driver, so the two
-// lanes cannot disagree about which tree carries stdlib.esk.
-static std::string findLibDir() {
-    return platform::module_source_root().path.string();
-}
-
-// Global lib directory cache
-static std::string g_lib_dir;
-
-/**
  * @brief Resolves a `(require ...)` module name (or a literal `(load ...)` /
  *        `(import "...")` path) to a canonical, existing `.esk` file path.
  *
@@ -3832,17 +3785,7 @@ static std::string g_lib_dir;
  * module is not on any tier of the search path.
  */
 static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir) {
-    // Initialize lib dir if needed
-    if (g_lib_dir.empty()) {
-        g_lib_dir = findLibDir();
-    }
-
-    // One resolver, shared with the AOT driver. Everything about the search
-    // order — path-literal detection, the requiring file's directory ahead of
-    // the working directory, $ESHKOL_PATH ahead of the install, the
-    // directory-as-module entry points — is stated once, in
-    // platform::resolve_module_source_path().
-    return platform::resolve_module_source_path(module_name, base_dir, g_lib_dir);
+    return platform::resolve_module_source_path(module_name, base_dir);
 }
 
 /**
@@ -4325,12 +4268,6 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 return nullptr;
             }
 
-            // X3: Reject paths that escape the project directory via ".." traversal
-            if (canonical_path.find("..") != std::string::npos) {
-                std::cerr << "Import path escapes project directory: " << canonical_path << std::endl;
-                return nullptr;
-            }
-
             if (loaded_modules.count(canonical_path)) {
                 // Already loaded, return nil
                 return nullptr;
@@ -4426,6 +4363,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 // unit. Its bindings are in the top-level environment already,
                 // so importing it loads nothing (R7RS-small 5.6.1).
                 if (const std::set<std::string>* unit_exports =
+                        eshkol_stdlib_module_path(module_name.c_str()) ? nullptr :
                         eshkol::library_registry::exports(module_name)) {
                     auto& known = module_exports_[module_name];
                     known.insert(unit_exports->begin(), unit_exports->end());
@@ -4433,7 +4371,11 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                     continue;
                 }
 
-                if (!loadModule(module_name, true, !inline_load)) {
+                const auto& request = ast->operation.require_op;
+                const bool need_exports = (request.import_prefixes && request.import_prefixes[i] &&
+                                           *request.import_prefixes[i]) ||
+                                          (request.num_import_renames && request.num_import_renames[i]);
+                if (!loadModule(module_name, true, !inline_load, need_exports)) {
                     uint32_t defined_at = 0;
                     if (eshkol::library_registry::plannedLater(module_name, &defined_at)) {
                         throw std::runtime_error(

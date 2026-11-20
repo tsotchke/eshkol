@@ -28,20 +28,20 @@ invalidation and the stdlib object cache.
 
 | Variable | Effect |
 |----------|--------|
-| `ESHKOL_PATH` | Module/include search path for `require`. Searched after the requiring file's own directory and the project root, and **before** the installed `lib/` tree, so a path you name overrides a module that ships with the compiler. `-I` directories are merged into it. |
+| `ESHKOL_PATH` | Project module search path. The resolver checks the referring file's directory and working directory first. It merges `-I` directories into this path. Installed stdlib names are reserved. |
 | `ESHKOL_LIB_DIR` | Directory holding the precompiled stdlib (`stdlib.o`, `stdlib.bc`) and the runtime archives (`libeshkol-runtime.a`, or the legacy `libeshkol-static.a`). Highest precedence of all: it is searched — together with its `eshkol/` subdirectory — before `-L` paths, before the compiler's own install, and before any system location. |
 | `ESHKOL_SYSTEM_PREFIXES` | Replaces the built-in list of system install prefixes searched as a last resort (`/usr/local`, `/usr`, `/opt/homebrew`). Path-list syntax; each entry contributes `<prefix>/lib`, `<prefix>/lib/eshkol` and `<prefix>/share/eshkol/lib`. For unusual installs and for packaging tests that must not read the host's real system directories. |
 | `ESHKOL_PROJECT_ROOT` | Project root used for relative paths in exception/backtrace reporting. |
 
 ### Resolution precedence
 
-Every install artifact the toolchain resolves at run time — the runtime
-archive, the agent-FFI archives beside it, `stdlib.o`, `stdlib.bc`, and the
-`lib/**.esk` module tree — is looked up in one order, highest precedence
-first:
+Project module lookup and stdlib source identity are described in the
+[modules reference](../language/modules.md). Native archives and precompiled
+stdlib artifacts use the following search order. The precompiled stdlib must
+carry this compiler's identity.
 
-1. `$ESHKOL_LIB_DIR` (native artifacts) / `$ESHKOL_PATH` (module sources).
-2. Directories named by `-L` (native) or `-I` (modules) flags.
+1. `$ESHKOL_LIB_DIR`.
+2. Directories named by `-L`.
 3. The install the running compiler belongs to: the directory holding its
    **real** path (symlinks resolved, so a `bin/eshkol-run` symlink into a
    Homebrew Cellar keg resolves inside the keg), plus that directory's

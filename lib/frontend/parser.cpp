@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <eshkol/module_resolver.h>
 #include <eshkol/builtin_libraries.h>
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/eshkol.h>
@@ -4758,6 +4759,11 @@ struct R7rsImportSpec {
     std::string prefix;
 };
 
+static eshkol_ast_t refused_module(const std::string& name, uint32_t line, uint32_t column) {
+    auto message = make_parser_string_ast(ESHKOL_MODULE_REFUSAL_PREFIX + name, line, column);
+    return make_parser_call_ast("error", {message}, line, column);
+}
+
 /**
  * @brief Builds an ESHKOL_REQUIRE_OP AST node requiring @p modules, with empty
  * per-module import-set metadata.
@@ -4810,6 +4816,8 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
     std::vector<std::string> modules;
     modules.reserve(specs.size());
     for (const auto& spec : specs) {
+        if (!eshkol_module_name_allowed(spec.module.c_str()))
+            return refused_module(spec.module, line, column);
         modules.push_back(spec.module);
     }
 
@@ -5288,6 +5296,12 @@ static ParserTask<eshkol_ast_t> parse_define_library_form(SchemeTokenizer& token
     std::string library_name;
     if (!parse_r7rs_library_name(tokenizer, form_token, &library_name,
                                  "define-library")) {
+        co_return {.type = ESHKOL_INVALID};
+    }
+
+    if (eshkol_stdlib_module_path(library_name.c_str())) {
+        PARSE_ERROR_AT(form_token, "library name belongs to the installed stdlib: %s",
+                       library_name.c_str());
         co_return {.type = ESHKOL_INVALID};
     }
 
@@ -10806,7 +10820,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            ast.operation.import_op.path = eshkol_ast_string_copy(token.value);
+            const std::string import_path = token.value;
 
             // Expect closing paren
             token = tokenizer.nextToken();
@@ -10816,6 +10830,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
+            if (!eshkol_module_name_allowed(import_path.c_str()))
+                co_return refused_module(import_path, ast.line, ast.column);
+            ast.operation.import_op.path = eshkol_ast_string_copy(import_path);
             co_return ast;
         } else if (ast.operation.op == ESHKOL_REQUIRE_OP) {
             // Module system syntax: (require module.name ...)
@@ -10858,30 +10875,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 co_return ast;
             }
 
-            // Allocate and copy module names
-            ast.operation.require_op.num_modules = modules.size();
-            ast.operation.require_op.module_names = new char*[modules.size()];
-            ast.operation.require_op.import_prefixes = new char*[modules.size()];
-            ast.operation.require_op.import_except_names = new char**[modules.size()];
-            ast.operation.require_op.num_import_except_names = new uint64_t[modules.size()];
-            ast.operation.require_op.is_load = first_symbol == "load";
-            ast.operation.require_op.import_only_names = new char**[modules.size()];
-            ast.operation.require_op.num_import_only_names = new uint64_t[modules.size()];
-            ast.operation.require_op.import_rename_from = new char**[modules.size()];
-            ast.operation.require_op.import_rename_to = new char**[modules.size()];
-            ast.operation.require_op.num_import_renames = new uint64_t[modules.size()];
-            for (size_t i = 0; i < modules.size(); i++) {
-                ast.operation.require_op.module_names[i] = eshkol_ast_string_copy(modules[i]);
-                ast.operation.require_op.import_prefixes[i] = nullptr;
-                ast.operation.require_op.import_except_names[i] = nullptr;
-                ast.operation.require_op.num_import_except_names[i] = 0;
-                ast.operation.require_op.import_only_names[i] = nullptr;
-                ast.operation.require_op.num_import_only_names[i] = 0;
-                ast.operation.require_op.import_rename_from[i] = nullptr;
-                ast.operation.require_op.import_rename_to[i] = nullptr;
-                ast.operation.require_op.num_import_renames[i] = 0;
+            for (const auto& name : modules) {
+                if (!eshkol_module_name_allowed(name.c_str()))
+                    co_return refused_module(name, ast.line, ast.column);
             }
-
+            ast = make_require_ast(modules, ast.line, ast.column);
+            ast.operation.require_op.is_load = first_symbol == "load";
             co_return ast;
         } else if (ast.operation.op == ESHKOL_PROVIDE_OP) {
             // Module system syntax: (provide name1 name2 ...)
