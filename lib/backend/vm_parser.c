@@ -4,6 +4,7 @@
  ******************************************************************************/
 
 #include "eshkol/backend/vm_limits.h"
+#include "eshkol/frontend/syntax_color.h"
 #include "../../inc/eshkol/core/string_escape.h"
 #include "../../inc/eshkol/core/number_syntax.h"
 #include "eshkol/backend/mutation_observation.h"
@@ -984,6 +985,10 @@ static Node* parse_sexp_impl(void) {
             return NULL;
         }
         pipe_buf[pipe_len] = 0;
+        if (eshkol_syntax_source_name_reserved(pipe_buf, pipe_len)) {
+            vm_compile_error("reserved syntax identifier", NULL);
+            return NULL;
+        }
         Node* pipe_node = make_node(N_SYMBOL);
         if (!pipe_node) return NULL;
         memcpy(pipe_node->symbol, pipe_buf, (size_t)pipe_len + 1);
@@ -1003,6 +1008,10 @@ static Node* parse_sexp_impl(void) {
     if (g_compiler_ctx.fold_case_symbols) {
         for (int j = 0; j < i; j++)
             buf[j] = (char)tolower((unsigned char)buf[j]);
+    }
+    if (eshkol_syntax_source_name_reserved(buf, i)) {
+        vm_compile_error("reserved syntax identifier", NULL);
+        return NULL;
     }
     Node* n = make_node(N_SYMBOL); if (!n) return NULL; strncpy(n->symbol, buf, 127); n->symbol[127] = 0; return n;
 }

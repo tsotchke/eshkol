@@ -108,6 +108,14 @@ static void check(const char* label, const char* const* literals, int n_literals
 }
 
 int main(void) {
+    const char padded_alias[64] = ESHKOL_SYNTAX_MACRO_ALIAS_PREFIX "7";
+    const char ordinary_name[] = ESHKOL_SYNTAX_MACRO_ALIAS_PREFIX "7x";
+    if (!eshkol_syntax_source_name_reserved(padded_alias, sizeof(padded_alias)) ||
+        eshkol_syntax_source_name_reserved(ordinary_name, strlen(ordinary_name))) {
+        fprintf(stderr, "macro alias classification differs from its binding key\n");
+        ++failures;
+    }
+
     const char* my_or[] = {
         "(_)", "#f",
         "(_ e)", "e",
