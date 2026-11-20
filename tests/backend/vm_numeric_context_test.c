@@ -1,6 +1,23 @@
 #define ESHKOL_VM_LIBRARY_MODE 1
 #include "../../lib/backend/eshkol_vm.c"
 
+static int rational_limits(void) {
+    VmArena arena;
+    vm_arena_init(&arena, VM_ARENA_DEFAULT_BLOCK_SIZE);
+    VmRational* small = vm_rational_make(&arena, 2, INT64_MIN);
+    VmRational* unit = vm_rational_make(&arena, INT64_MIN, INT64_MIN);
+    VmRational* positive = vm_rational_make(&arena, INT64_MIN, -1);
+    VmRational* reciprocal = vm_rational_make(&arena, 1, INT64_MIN);
+    int ok = small && !small->is_big && small->num == -1 && small->denom == (INT64_C(1) << 62)
+          && unit && !unit->is_big && unit->num == 1 && unit->denom == 1
+          && positive && positive->is_big && bignum_to_double(positive->big_num) == 0x1p63
+          && vm_bn_is_i64(positive->big_den, 1)
+          && reciprocal && reciprocal->is_big && vm_bn_is_i64(reciprocal->big_num, -1)
+          && bignum_to_double(reciprocal->big_den) == 0x1p63;
+    vm_arena_destroy(&arena);
+    return ok;
+}
+
 static int symbolic_variable_power(void) {
     VmArena arena;
     vm_arena_init(&arena, sizeof(SymNode) * 4);
@@ -31,6 +48,7 @@ static int symbolic_variable_power(void) {
 
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
+    if (!strcmp(argv[1], "rational_limits")) return !rational_limits();
     if (!strcmp(argv[1], "symbolic_variable_power")) return !symbolic_variable_power();
     return 2;
 }
