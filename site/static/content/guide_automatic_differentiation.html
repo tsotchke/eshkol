@@ -23,7 +23,8 @@
 <li><a href="/docs#page=guide_automatic_differentiation&amp;9-differentiable-control-flow" data-url="/content/guide_automatic_differentiation.html">Differentiable control flow</a></li>
 <li><a href="/docs#page=guide_automatic_differentiation&amp;10-tower-numerics--odes-roots-inversion" data-url="/content/guide_automatic_differentiation.html">Tower numerics — ODEs, roots, inversion</a></li>
 <li><a href="/docs#page=guide_automatic_differentiation&amp;11-perturbation-safety--how-it-works" data-url="/content/guide_automatic_differentiation.html">Perturbation safety &amp; how it works</a></li>
-<li><a href="/docs#page=guide_automatic_differentiation&amp;12-api-quick-reference" data-url="/content/guide_automatic_differentiation.html">API quick reference</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;12-differentiating-through-optimization-and-discrete-solvers" data-url="/content/guide_automatic_differentiation.html">Differentiating through optimization and discrete solvers</a></li>
+<li><a href="/docs#page=guide_automatic_differentiation&amp;13-api-quick-reference" data-url="/content/guide_automatic_differentiation.html">API quick reference</a></li>
 </ol>
 <hr />
 <h2 id="1-the-classic-operators">1. The classic operators</h2>
@@ -268,6 +269,7 @@
 3</code></pre>
 <p>The Hessian is <code>H_ii = 2</code>, <code>H_{i,i+1} = 1</code>, everything else 0. <code>sparse-hessian</code> probes the structure automatically, recovers it in <strong>3 colors (AD passes)</strong> — independent of the dimension <code>m</code> — and gives CSR accessors (<code>sparse-hessian-row-ptr</code>/<code>-col-idx</code>/<code>-values</code>). A fully-dense function is detected and falls back to the dense path. (An explicit <code>sparse-hessian-pat</code> lets you supply a known sparsity pattern instead of probing.)</p>
 <p><strong>When to use:</strong> large partially-separable Hessians — banded/block problems, finite-element stencils, structured ML second-order methods — where a dense Hessian would be prohibitively expensive.</p>
+<p>For exact algebraic coefficients, <code>core.ad.algebraic_sparse</code> accepts a certified owner domain and an explicit, complete structural pattern. Its scalar mode uses hyperdual probes; callers can instead supply a whole-column <code>H*v</code> callback, whose outputs are copied before caching. The summary reports actual callback invocations, which describe performed work but establish no runtime speedup. <code>core.ad.sparsity</code> owns the deterministic distance-two coloring shared with numeric sparse-Hessian recovery. See the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_algebraic_sparse.md" target="_blank" rel="noopener noreferrer">exact sparse curvature reference</a> and <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_sparsity.md" target="_blank" rel="noopener noreferrer">shared coloring reference</a>.</p>
 <hr />
 <h2 id="8-reverse-mode--checkpointing">8. Reverse mode &amp; checkpointing</h2>
 <h3 id="reverse-over-taylor-high-order-gradients">Reverse-over-Taylor: high-order gradients</h3>
@@ -402,12 +404,89 @@
 (display (derivative (lambda (a) (derivative-n (lambda (b) (* a a b b b)) 1/2 2)) 1/3)) (newline)</code></pre>
 <pre><code>2/3
 2</code></pre>
-<p>Gated by <code>tests/ad/nested_towers_matrix_test.esk</code> (every operator and order pairing, the depth-3 order sweep, nesting through the point, exact seeds, and the perturbation-confusion controls), <code>tests/ad/nested_operator_matrix_test.esk</code> (the captured-variable matrix) and <code>tests/ad/ad_carrier_nesting_test.esk</code>, on the JIT and AOT lanes. The table, with the verified output of every row, is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting" target="_blank" rel="noopener noreferrer">the AD support matrix</a>.</p>
+<p>Forward and reverse passes nest in every combination too. A vector-point <code>gradient</code>, <code>jacobian</code> or <code>hessian</code> inside a live pass is computed as forward columns, each a level of the enclosing passes, and an inner pass that meets an enclosing reverse pass’s values records its exact linearisation against them (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0057-nested-differentiation-in-every-mode.md" target="_blank" rel="noopener noreferrer">ADR-0057</a>):</p>
+<pre class="scheme"><code>(define (w4 w) (* (vref w 0) (vref w 0) (vref w 0) (vref w 0)))
+;; reverse over reverse over reverse: d3/dw3 w^4 = 24 w at w = 2
+(display (vref (gradient (lambda (u) (vref (gradient (lambda (v) (vref (gradient w4 v) 0)) u) 0))
+               (vector 2.0)) 0)) (newline)
+;; forward over forward over reverse: d/ds d/dt [2 s t v] at v = 3
+(display (derivative (lambda (s)
+           (derivative (lambda (t)
+             (vref (gradient (lambda (v) (* s t (vref v 0) (vref v 0))) (vector 3.0)) 0)) 2.0)) 1.0)) (newline)
+;; reverse over forward, the inner pass capturing a value the outer pass computed
+(display (gradient (lambda (v) (let ((p (* 2.0 (vref v 0))))
+                                 (derivative (lambda (x) (* p x x)) 2.0)))
+                   #(3.0))) (newline)</code></pre>
+<pre><code>48.0
+6.0
+#(8.0)</code></pre>
+<p>Perturbation tags are 64-bit and never reused, so these hold however many passes a program has already run.</p>
+<p>Gated by <code>tests/ad/nested_towers_matrix_test.esk</code> (every operator and order pairing, the depth-3 order sweep, nesting through the point, exact seeds, and the perturbation-confusion controls), <code>tests/ad/nested_operator_matrix_test.esk</code> (the captured-variable matrix), <code>tests/ad/ad_carrier_nesting_test.esk</code>, and <code>tests/ad/nested_depth_matrix_test.esk</code> (depth 4 in every mode, exact Taylor coefficients, and more than 65536 passes in one process, on JIT, AOT and the VM). The table, with the verified output of every row, is in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/support-matrix.md#nesting" target="_blank" rel="noopener noreferrer">the AD support matrix</a>.</p>
 <h3 id="how-it-works-in-one-paragraph">How it works (in one paragraph)</h3>
 <p>The single computational kernel is <strong>truncated-Taylor arithmetic</strong>: a function’s behavior near <code>x₀</code> is represented by its Taylor coefficients <code>c[0..K]</code>, and each primitive operation has a closed recurrence that maps input coefficient arrays to output ones — Cauchy convolution for multiplication, coupled recurrences for <code>sin</code>/<code>cos</code>, divided recurrences for <code>/</code> and <code>log</code>, and so on. Because these recurrences are O(K²), high-order AD is <em>polynomial</em> in the order, not the 2ᴷ growth of stacking dual numbers. When the order <code>K</code> is a literal at the call site (the common case in a compiler), an un-nested tower can be emitted as unrolled, stack-allocated IR. A nested pass uses a recursive level carrier; each level has its own <strong>epoch tag</strong>, and its coefficients can themselves carry enclosing levels. Un-nested first-order passes retain the fast jet path.</p>
 <p>For the full design — the recurrence table, the compile-time monomorphization, the FP-contraction policy that makes <code>mono ≡ runtime</code> bit-exact, the exact and tensor coefficient layouts, and the Taylor-model remainder arithmetic — see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/AD_TAYLOR_TOWER.md" target="_blank" rel="noopener noreferrer"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>.</p>
 <hr />
-<h2 id="12-api-quick-reference">12. API quick reference</h2>
+<h2 id="12-differentiating-through-optimization-and-discrete-solvers">12. Differentiating through optimization and discrete solvers</h2>
+<p>Some layers return the <em>solution</em> of an optimization problem: a ranking, a shortest path, a top-k set, a ridge fit, a fixed point, a projection onto the simplex. Differentiating the solver’s instructions gives zero almost everywhere for a combinatorial solver and an unrolled, unstable chain for an iterative one. <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ml_diffopt.md" target="_blank" rel="noopener noreferrer"><code>core.ml.diffopt</code></a> instead installs the pullback the <em>problem</em> defines, as one custom op on the <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_tape.md" target="_blank" rel="noopener noreferrer">reverse-mode tape</a> per rule (<a href="https://github.com/tsotchke/eshkol/blob/master/docs/design/adr/0031-differentiable-optimization.md" target="_blank" rel="noopener noreferrer">ADR-0031</a>):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Pullback of <code>g = dL/dy</code></th>
+<th>Layer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Blackbox solver, <code>y = argmin_{y in Y} &lt;w, y&gt;</code></td>
+<td><code>-(y(w) - y(w + λg)) / λ</code></td>
+<td><code>blackbox-solve</code></td>
+</tr>
+<tr>
+<td>Perturbed optimizer, <code>y_ε = E[argmax &lt;y, θ + εZ&gt;]</code></td>
+<td><code>(1/ε) E[&lt;y*(θ+εZ), g&gt; ∇ν(Z)]</code></td>
+<td><code>perturbed-solve</code>, <code>perturbed-argmax</code>, <code>perturbed-top-k</code></td>
+</tr>
+<tr>
+<td>Fenchel-Young loss</td>
+<td><code>g (ŷ − y)</code></td>
+<td><code>perturbed-fenchel-young</code>, <code>fenchel-young-softmax</code>, <code>fenchel-young-sparsemax</code></td>
+</tr>
+<tr>
+<td>Implicit function theorem, <code>F(x*, θ) = 0</code></td>
+<td><code>−(∂_θF)ᵀ u</code>, <code>(∂_xF)ᵀ u = g</code></td>
+<td><code>implicit-root</code>, <code>implicit-fixed-point</code>, <code>implicit-argmin</code></td>
+</tr>
+<tr>
+<td>Simplex projection</td>
+<td><code>softmax-vjp</code>, <code>sparsemax-vjp</code></td>
+<td><code>tape-softmax</code>, <code>tape-sparsemax</code></td>
+</tr>
+</tbody>
+</table>
+<p>The implicit rule solves its adjoint system with <code>exact-solve</code> when every entry is exact, so a ridge least-squares sensitivity comes back as an exact rational:</p>
+<pre class="scheme"><code>(require core.exact_linalg)
+(require core.ml.diffopt)
+;; d_w F = X^T X + lambda I and d_lambda F = w* for ridge least squares
+;; with X = ((1 2) (3 -1) (0 1/2)), y = (1 2/3 -1), lambda = 1/3
+(define A (vector (vector 31/3 -1) (vector -1 67/12)))
+(define w* (exact-solve A (vector 3 5/6)))
+(display w*) (newline)
+(display (implicit-root-vjp A (vector (vector (vector-ref w* 0)) (vector (vector-ref w* 1)))
+                            (vector 2 -3/7)))
+(newline)</code></pre>
+<p>Output:</p>
+<pre><code>#(633/2041 418/2041)
+#(-1457082/29159767)</code></pre>
+<p>That is <code>gᵀ dw*/dλ = −gᵀ (XᵀX + λI)⁻¹ w*</code> exactly. Passing no partial Jacobians makes <code>implicit-root</code> take them from the compiled <code>jacobian</code> (and <code>implicit-argmin</code> from <code>hessian</code> and the Jacobian of <code>gradient</code>), in f64. Perturbed optimizers draw their noise once, from a seeded generator, and use the same draws in the forward value and the pullback; with Gumbel noise the perturbed argmax is <code>softmax(θ/ε)</code> in expectation, which the tests check together with its Jacobian. No pullback in the module evaluates a finite difference.</p>
+<p><strong>When to use:</strong> training through a combinatorial solver (blackbox or perturbed), a structured-prediction loss (Fenchel-Young), or a layer defined by an equation or an inner optimization (implicit), without unrolling the solver. The reference page has a runnable example for every rule.</p>
+<hr />
+<h2 id="13-api-quick-reference">13. API quick reference</h2>
 <h3 id="built-in-operators-no-require">Built-in operators (no <code>require</code>)</h3>
 <table>
 <colgroup>
@@ -484,6 +563,12 @@
 <td>ℝⁿ→ℝ</td>
 <td><code>(directional-derivative f pt dir)</code></td>
 <td>∇f·dir</td>
+</tr>
+<tr>
+<td><code>stop-gradient</code></td>
+<td>any</td>
+<td><code>(stop-gradient x)</code></td>
+<td><code>x</code>’s value as a constant to every enclosing pass (ADR-0049)</td>
 </tr>
 </tbody>
 </table>
@@ -592,6 +677,16 @@
 <td>colored sparse-Hessian recovery</td>
 </tr>
 <tr>
+<td><code>core.ad.algebraic_sparse</code></td>
+<td><code>algebraic-sparse-hessian</code>, <code>algebraic-sparse-hessian-ref</code>, <code>algebraic-sparse-hessian-dense</code>, <code>algebraic-sparse-hessian-summary</code></td>
+<td>exact algebraic sparse-Hessian recovery</td>
+</tr>
+<tr>
+<td><code>core.ad.sparsity</code></td>
+<td><code>hessian-color-graph</code></td>
+<td>shared deterministic Hessian coloring</td>
+</tr>
+<tr>
 <td><code>core.ad.checkpoint</code></td>
 <td><code>dense-gradient</code>, <code>checkpointed-gradient</code>, <code>dense-tower-reverse</code>, <code>checkpointed-tower-reverse</code>, <code>checkpoint-block-size</code></td>
 <td>Griewank-checkpointed high-order reverse</td>
@@ -606,8 +701,19 @@
 <td><code>make-tape</code>, <code>tape-input</code>, <code>tape-mul</code>/<code>-add</code>/…, <code>tape-gradient</code>, <code>tape-node-count</code>, …</td>
 <td>explicit reverse-mode tape (Scheme level)</td>
 </tr>
+<tr>
+<td><code>core.ad.algebraic_reverse</code></td>
+<td><code>algebraic-value-and-pullback</code>, <code>algebraic-hvp</code>, <code>algebraic-reverse-*</code></td>
+<td>exact reverse-mode pullbacks and Hessian-vector products over algebraic coefficient domains</td>
+</tr>
+<tr>
+<td><code>core.ml.diffopt</code></td>
+<td><code>blackbox-solve</code>, <code>perturbed-solve</code>, <code>perturbed-fenchel-young</code>, <code>implicit-root</code>, <code>implicit-argmin</code>, <code>sparsemax</code>, …</td>
+<td>differentiating through optimization and discrete solvers (§12)</td>
+</tr>
 </tbody>
 </table>
+<p>Example: <a href="https://github.com/tsotchke/eshkol/blob/master/examples/algebraic_reverse.esk" target="_blank" rel="noopener noreferrer"><code>algebraic_reverse.esk</code></a> checks the exact value, gradient, and HVP against closed-form formulas.</p>
 <p><strong>Running module examples:</strong> because these modules are loaded via <code>require</code>, run them with the build directory on the library path:</p>
 <pre><code>./build/eshkol-run -r your-file.esk -L build</code></pre>
 <p>The built-in-operator examples in §1–§2 need only <code>./build/eshkol-run -r your-file.esk</code>.</p>
@@ -617,5 +723,6 @@
 <li><a href="/docs#page=api_reference" data-url="/content/api_reference.html"><code>docs/API_REFERENCE.md</code></a> — the built-in AD operators in the context of the whole language surface.</li>
 <li><a href="/docs#page=reference_ad" data-url="/content/reference_ad.html"><code>docs/reference/ad/INDEX.md</code></a> — the machine-verified AD operator reference and support matrix.</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/ad/tape.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/ad/tape.md</code></a> — the <strong>explicit reverse-mode tape builtins</strong> (<code>ad-tape-new</code>, <code>ad-var</code>, <code>ad-mul</code>, <code>ad-backward</code>, <code>ad-gradient</code>, …) and the AD instrumentation counters. These are the low-level counterpart to the operators in §1: you record the graph by hand and run one reverse sweep yourself. The same page documents <code>(ad-finite-difference-evals)</code> and <code>(ad-note-finite-difference!)</code>, which are what make “no finite-difference fallback anywhere in the gradient path” a measurement a program can perform on itself rather than a claim it has to take on trust.</li>
+<li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_algebraic_reverse.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/stdlib/ad_algebraic_reverse.md</code></a> — exact whole-vector pullbacks and Hessian-vector products over bounded algebraic coefficient domains.</li>
 <li><a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/ad_tape.md" target="_blank" rel="noopener noreferrer"><code>docs/reference/stdlib/ad_tape.md</code></a> — the pure-Scheme <code>core.ad.tape</code> module listed in the table above: a separate tape that records an explicit backward closure per operation, so custom ops and vector-valued nodes differentiate alongside the builtin ones.</li>
 </ul>

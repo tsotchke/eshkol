@@ -1,0 +1,125 @@
+;; fibers_stress_test.esk — ten thousand fibers, with stacks that come back.
+;;
+;; Each wave spawns 10,000 fibers that are all live at once, and each yields
+;; ten times: 100,000 context switches a wave, interleaved round-robin. A
+;; ping-pong section then runs 5,000 fiber pairs exchanging messages over
+;; capacity-1 channels (10,000 fibers parked and woken through the channel
+;; path). After every wave the coroutine runtime must hold no stack and no
+;; handle for a finished fiber, and must have kept at most its bounded reuse
+;; pool. The peak-RSS comparison between one wave and several, which shows the
+;; memory is flat, is made by scripts/run_fibers_gate.py around this program;
+;; FIBER_STRESS_WAVES selects the number of waves (default 3).
+
+(require stdlib)
+(require core.fibers)
+(require core.channels)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (stat key) (cdr (assq key (coroutine-stats))))
+
+(define waves
+  (let ((v (get-environment-variable "FIBER_STRESS_WAVES")))
+    (if v (string->number v) 3)))
+
+(define N
+  (let ((v (get-environment-variable "FIBER_STRESS_N")))
+    (if v (string->number v) 10000)))
+(define ROUNDS 10)
+
+;; progress[i] = rounds fiber i has completed. Round-robin scheduling keeps
+;; every fiber within one round of every other; spread records the worst gap.
+(define progress (make-vector N 0))
+(define spread 0)
+
+(define (run-wave)
+  (vector-fill! progress 0)
+  (let spawn-all ((i 0))
+    (if (< i N)
+        (begin
+          (spawn (lambda ()
+                   (let loop ((r 0))
+                     (if (< r ROUNDS)
+                         (begin
+                           (vector-set! progress i (+ r 1))
+                           (let ((gap (- (+ r 1) (vector-ref progress (modulo (+ i 1) N)))))
+                             (if (> (abs gap) spread) (set! spread (abs gap))))
+                           (fiber-yield)
+                           (loop (+ r 1)))))))
+          (spawn-all (+ i 1)))))
+  (check "every fiber of the wave is live at once before it runs"
+         (>= (cdr (assq 'live (fiber-scheduler-stats))) N))
+  (run-fibers)
+  (let sum ((i 0) (total 0))
+    (if (< i N)
+        (sum (+ i 1) (+ total (vector-ref progress i)))
+        total)))
+
+(define handles-before (stat 'handles-open))
+
+(let wave ((w 1))
+  (if (<= w waves)
+      (let ((total (run-wave)))
+        (check "every fiber completed every round" (= total (* N ROUNDS)))
+        (check "round-robin: no fiber ever got more than one round ahead" (<= spread 1))
+        (check "no coroutine holds a stack after the wave" (= (stat 'live) 0))
+        (check "every finished fiber released its coroutine handle"
+               (= (stat 'handles-open) handles-before))
+        (check "at most the bounded reuse pool of stacks is kept"
+               (<= (stat 'stacks-pooled) 64))
+        (wave (+ w 1)))))
+
+(check "every fiber of a wave held a coroutine at the peak" (>= (stat 'peak-live) N))
+
+;; ─── 5,000 ping-pong pairs over channels ───────────────────────────
+
+(define PAIRS
+  (let ((v (get-environment-variable "FIBER_STRESS_PAIRS")))
+    (if v (string->number v) 5000)))
+(define MESSAGES 10)
+(define pong-total 0)
+(let pair ((p 0))
+  (if (< p PAIRS)
+      (let ((ping (make-channel 1))
+            (pong (make-channel 1)))
+        (spawn (lambda ()
+                 (let loop ((m 0))
+                   (if (< m MESSAGES)
+                       (begin (channel-send! ping m)
+                              ;; receive first: the receive parks, and the sum
+                              ;; must be read after other fibers updated it
+                              (let ((reply (channel-recv! pong)))
+                                (set! pong-total (+ pong-total reply)))
+                              (loop (+ m 1)))))))
+        (spawn (lambda ()
+                 (let loop ((m 0))
+                   (if (< m MESSAGES)
+                       (begin (channel-send! pong (+ 1 (channel-recv! ping)))
+                              (loop (+ m 1)))))))
+        (pair (+ p 1)))))
+(run-fibers)
+(check "every ping-pong pair completed every exchange"
+       (= pong-total (* PAIRS (/ (* MESSAGES (+ MESSAGES 1)) 2))))
+(check "no coroutine holds a stack after the ping-pong" (= (stat 'live) 0))
+
+(display "coroutine-stats: ") (display (coroutine-stats)) (newline)
+;; The arena holds the Scheme records every spawned fiber's program made
+;; (closures, fiber records); arena memory is reclaimed by regions, not per
+;; object, so it grows with the number of fibers spawned. The gate subtracts it
+;; from the peak-RSS growth to isolate what the coroutine runtime holds.
+(display "arena-bytes: ") (display (__arena-used)) (newline)
+
+;; ─── Summary ───────────────────────────────────────────────────────
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: fibers_stress_test") (newline))
+    (begin (display "FAIL: fibers_stress_test") (newline) (exit 1)))

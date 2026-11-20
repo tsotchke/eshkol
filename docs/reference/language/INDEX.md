@@ -28,6 +28,7 @@ it is called out explicitly.
 | 6 | Tail-call guarantees | [tail-calls.md](tail-calls.md) |
 | 7 | `raise`, `guard`, `error`, `with-exception-handler` | [error-handling.md](error-handling.md) |
 | 8 | `call/cc`, `dynamic-wind` | [continuations.md](continuations.md) |
+| — | HoTT: identity types, univalence, higher inductive types (`hott`, `hott-eval`) | [hott.md](hott.md) |
 | 9 | `match` | [pattern-matching.md](pattern-matching.md) |
 | 10 | `values`, `call-with-values`, `let-values` | [multiple-values.md](multiple-values.md) |
 | 11 | Function parameters: variadic, keyword args, `apply` | [functions-and-parameters.md](functions-and-parameters.md) |
@@ -39,6 +40,11 @@ it is called out explicitly.
 | 17 | Type annotations and the gradual checker: what is checked where, function types, branch joins, loop typing, diagnostics | [../../guide/GRADUAL_TYPING.md](../../guide/GRADUAL_TYPING.md) |
 | 18 | Macros: `define-syntax`, `let-syntax`, `letrec-syntax`, `syntax-rules`, hygiene | [macros.md](macros.md) |
 | 19 | Explicit compiler differentiation graph: scalar admission and numeric lowering | [differentiation.md](differentiation.md) |
+| 20 | Refinement types `(Refine T phi)`: what is proved, diagnostics, solvers | [refinement-types.md](refinement-types.md) |
+| 21 | Synthesis holes `??`: type-directed completion by the compiler | [synthesis-holes.md](synthesis-holes.md) |
+| 22 | Algebraic effects: `define-effect`, `handle`, `handle-shallow`, effect rows, `declare-effects`, `core.effects` | [effects.md](effects.md) |
+| 23 | Structural types: row-polymorphic records, higher-rank polymorphism, session types | [structural-types.md](structural-types.md) |
+| 24 | Linear handles: `open → borrowed → closed`, the borrow pattern, `--strict-resources` | [linear-handles.md](linear-handles.md) |
 
 ## Known-issue conventions
 

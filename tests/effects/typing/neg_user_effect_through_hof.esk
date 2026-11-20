@@ -1,0 +1,6 @@
+;;; Effects of a procedure argument flow through map.
+;; expect-error: 'uses-ask' is declared Pure but may perform Ask
+(define-effect Ask (ask))
+(declare-effects uses-ask Pure)
+(define (uses-ask xs) (map (lambda (x) (+ x (ask))) xs))
+(display (handle (uses-ask '(1 2)) (fun (ask) 10)))

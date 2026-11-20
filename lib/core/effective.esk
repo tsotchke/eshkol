@@ -1,0 +1,34 @@
+;;; core.effective -- effective homology as one library: reductions and the
+;;; basic perturbation lemma, discrete vector fields, objects with effective
+;;; homology (products, twisted products, classifying spaces, K(pi, n)), the
+;;; Whitehead tower and homotopy groups, hypercovers and descent.
+;;;
+;;; Usage: (require core.effective)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.effective.chain         linear combinations, locally effective
+;;;                                complexes, reductions and their identities
+;;;   core.effective.perturbation  the basic perturbation lemma, vector-field
+;;;                                reductions, collapse matchings, tensor
+;;;                                products and bar constructions of reductions
+;;;   core.effective.simplicial    normalized chains, Eilenberg-Zilber (vector
+;;;                                field and AW / EML / SHI), simplicial groups,
+;;;                                twisted products, W-bar G, K(Z, n), K(Z/m, n)
+;;;   core.effective.homotopy      cocycles as maps into K(pi, n), principal
+;;;                                fibrations, the Whitehead tower, pi_n
+;;;   core.effective.hypercover    hypercovers of finite spaces by cones, Cech
+;;;                                nerves, mapping spaces into 2-types and
+;;;                                3-types on both sides of a cover
+;;;
+;;; Reference: docs/reference/stdlib/effective.md; design: ADR-0038
+;;; (docs/design/adr/0038-effective-homology.md).
+;;; Sources: F. Sergeraert, J. Rubio, "Constructive algebraic topology",
+;;; Bull. Sci. Math. 126 (2002); the Kenzo program (X. Dousson, J. Rubio,
+;;; F. Sergeraert, Y. Siret); A. Romero, F. Sergeraert, "Discrete vector
+;;; fields and fundamental algebraic topology", arXiv:1005.5685 (2010).
+
+(require core.effective.chain)
+(require core.effective.perturbation)
+(require core.effective.simplicial)
+(require core.effective.homotopy)
+(require core.effective.hypercover)

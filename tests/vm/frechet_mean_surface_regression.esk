@@ -16,6 +16,11 @@
 ;;   x* = tanh(t*/2) = tanh(artanh(0.8)/2)
 ;; and tanh(artanh(0.5)) = 0.5 with artanh(0.8)/2 = artanh(0.5), so x* = 0.5
 ;; EXACTLY, against a Euclidean average of 0.4.
+;;
+;; Curvature K = -4 is the ADR-0018 chart whose ball has radius 2/sqrt(4) = 1
+;; (Mobius parameter 1). The mean is fixed by the geodesics alone, which a
+;; constant rescale of the metric does not change, so the unit-disc closed
+;; forms above hold in these coordinates exactly.
 
 (define (approx= a b tol) (< (abs (- a b)) tol))
 
@@ -32,7 +37,7 @@
 (tensor-set! sym '(0 0) 0.8)
 (tensor-set! sym '(1 0) -0.8)
 (define w-eq (make-tensor '(2) 1.0))
-(define m1 (frechet-mean sym w-eq -1.0))
+(define m1 (frechet-mean sym w-eq -4.0))
 (check "symmetric pair means the origin"
        (and (approx= (tensor-ref m1 '(0)) 0.0 TOL)
             (approx= (tensor-ref m1 '(1)) 0.0 TOL)))
@@ -40,7 +45,7 @@
 ;; ---- Case 2: closed form on a diameter, weights 3:1 -> exactly 0.5 ------
 (define w-31 (make-tensor '(2) 1.0))
 (tensor-set! w-31 '(0) 3.0)
-(define m2 (frechet-mean sym w-31 -1.0))
+(define m2 (frechet-mean sym w-31 -4.0))
 (check "weighted mean matches the 1-D closed form (0.5)"
        (and (approx= (tensor-ref m2 '(0)) 0.5 TOL)
             (approx= (tensor-ref m2 '(1)) 0.0 TOL)))
@@ -57,7 +62,7 @@
 ;; purely relative to the log magnitudes would divide by noise and reject the
 ;; most exact input there is.
 (define same (make-tensor '(2 2) 0.1))
-(define m4 (frechet-mean same w-eq -1.0))
+(define m4 (frechet-mean same w-eq -4.0))
 (check "coincident points mean that point"
        (and (approx= (tensor-ref m4 '(0)) 0.1 TOL)
             (approx= (tensor-ref m4 '(1)) 0.1 TOL)))
@@ -69,11 +74,11 @@
 (define outside (make-tensor '(2 2) 0.0))
 (tensor-set! outside '(0 0) 1.5)
 (check "point outside the ball raises a catchable error"
-       (eq? 'caught (guard (e (#t 'caught)) (frechet-mean outside w-eq -1.0))))
+       (eq? 'caught (guard (e (#t 'caught)) (frechet-mean outside w-eq -4.0))))
 
 (define w-zero (make-tensor '(2) 0.0))
 (check "zero total weight raises a catchable error"
-       (eq? 'caught (guard (e (#t 'caught)) (frechet-mean sym w-zero -1.0))))
+       (eq? 'caught (guard (e (#t 'caught)) (frechet-mean sym w-zero -4.0))))
 
 (check "positive curvature raises a catchable error"
        (eq? 'caught (guard (e (#t 'caught)) (frechet-mean sym w-eq 1.0))))
@@ -93,7 +98,7 @@
     (tensor-set! pts '(0 0) x0)
     (tensor-set! pts '(1 0) (- x0))
     (tensor-set! w '(0) 2.0)
-    (guard (e (#t 'caught)) (tensor-ref (frechet-mean pts w -1.0) '(0)))))
+    (guard (e (#t 'caught)) (tensor-ref (frechet-mean pts w -4.0) '(0)))))
 
 ;; 6a. Inside the resolvable region the answer is accurate, not merely accepted.
 ;; This is the control: the refusals below must not be a blanket refusal of

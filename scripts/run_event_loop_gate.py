@@ -31,8 +31,19 @@ def require_source_owner(actual:str, expected:str)->None:
     if str(Path(actual).resolve()) != str(Path(expected).resolve()):
         raise GateFailure(f'wrong CMake source: {actual} (expected {expected})')
 
-def require_freshness_status(status:int, output:str)->None:
-    if status != 0: raise GateFailure('check_build_fingerprint rejected stale build: '+output[-1200:])
+def require_freshness_status(status:int, output:str, diagnostics:str="")->int:
+    if status != 0: raise GateFailure('check_build_fingerprint rejected stale build: '+(output + diagnostics)[-1200:])
+    report = json.loads(output)
+    epoch = report.get('source_freshness_epoch')
+    if (report.get('status') != 'PASS' or report.get('passed') is not True
+            or 'eshkol-run' not in report.get('binaries_checked', []) or type(epoch) is not int):
+        raise GateFailure('incomplete compiler freshness report')
+    return epoch
+
+def require_source_hashes(state: dict) -> None:
+    if state['source_hashes_before'] != state['source_hashes_after']:
+        raise GateFailure('CMake/event-loop/backend/fixture content changed during gate')
+
 
 def reset_trace(trace:Path)->None:
     trace.parent.mkdir(parents=True,exist_ok=True)
@@ -85,18 +96,21 @@ def main()->int:
     reset_trace(trace)
     work=evidence/f'run-{os.getpid()}-{int(time.time())}'; work.mkdir(parents=True,exist_ok=False)
     receipt_path=evidence/'event-loop-receipt.json'
-    state={'source_root':str(HERE),'build_dir':str(build),'trace_file':str(trace),'work_dir':str(work),'commands':{},'statuses':{},'env':{},'backend':None,'source_revision':None}
+    state={'source_root':str(HERE),'build_dir':str(build),'trace_file':str(trace),'work_dir':str(work),'commands':{},'env':{},'backend':None,'source_revision':None}
+    state['statuses'] = {}
     payload={'receipt_path':str(receipt_path),'receipt_sha256':None,'source_revision':None,'backend':None,'commands':{},'env':{}}
     def finish(status:str,why:str)->int:
         state['result']=status; state['detail']=why; state['finished_utc']=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
         receipt_path.write_text(json.dumps(state,indent=2,sort_keys=True)+'\n',encoding='utf-8')
         payload.update({'receipt_sha256':sha(receipt_path),'source_revision':state.get('source_revision'),'backend':state.get('backend'),'commands':state['commands'],'env':state['env']})
-        append_event(trace,status,why,payload)
+        payload['finished_utc'] = state['finished_utc']
+        append_event(trace, state['result'], state['detail'], payload)
         print(f"event-loop gate: {status}: {why}",file=sys.stderr if status!='PASS' else sys.stdout)
         return 0 if status=='PASS' else 1
     try:
         rev,_=clean_source(); state['source_revision']=rev; payload['source_revision']=rev
-        tree_oid=git('rev-parse','HEAD^{tree}'); state['source_tree_oid']=tree_oid; payload['source_tree_oid']=tree_oid
+        state['source_tree_oid'] = git('rev-parse','HEAD^{tree}')
+        payload['source_tree_oid'] = state['source_tree_oid']
         run=build/'eshkol-run'; lib=build/'libeshkol-runtime.a'; cache=build/'CMakeCache.txt'; stdobj=build/'stdlib.o'; stdbc=build/'stdlib.bc'
         for p in (run,lib,cache,stdobj,stdbc,FIXTURE):
             if not p.is_file(): raise GateFailure(f'missing required artifact/input: {p}')
@@ -108,9 +122,10 @@ def main()->int:
         freshness=[sys.executable,str(HERE/'scripts/check_build_fingerprint.py'),'--repo-root',str(HERE),'--build-dir',str(build),'--no-trace','--format','json']
         state['commands']['freshness_before']=freshness
         fp=subprocess.run(freshness,cwd=HERE,capture_output=True,text=True); state['statuses']['freshness_before']=fp.returncode; state['freshness_before_stdout']=fp.stdout; state['freshness_before_stderr']=fp.stderr
-        require_freshness_status(fp.returncode,fp.stdout+fp.stderr)
+        epoch_before = require_freshness_status(state['statuses']['freshness_before'],
+                                 state['freshness_before_stdout'], state['freshness_before_stderr'])
         inputs=[cache,HERE/'CMakeLists.txt',HERE/'lib/core/event_loop.c',backend_src,FIXTURE]
-        pre={str(p):sha(p) for p in inputs}; state['source_hashes_before']=pre
+        state['source_hashes_before'] = {str(p):sha(p) for p in inputs}
         tracked=[run,lib,stdobj,stdbc,FIXTURE]
         state['artifact_hashes_before']={str(p):sha(p) for p in tracked}
         cache_dir=work/'empty-orc-cache'; cache_dir.mkdir()
@@ -119,10 +134,20 @@ def main()->int:
         state['commands']['orc_cache0']=jitcmd; state['env']['orc_cache0']=jit_env
         def execute(key,cmd,env=None):
             merged=os.environ.copy(); merged.update(env or {})
-            try: p=subprocess.run(cmd,cwd=HERE,env=merged,capture_output=True,text=True,timeout=180)
-            except (OSError,subprocess.TimeoutExpired) as e: state['statuses'][key]=124; state[key+'_log']=str(e); return 124
-            state['statuses'][key]=p.returncode; state[key+'_stdout']=p.stdout; state[key+'_stderr']=p.stderr
-            (work/(key+'.log')).write_text(p.stdout+p.stderr,encoding='utf-8'); return p.returncode
+            try:
+                result = subprocess.run(cmd, cwd=HERE, env=merged, capture_output=True,
+                                        text=True, timeout=180)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                state['statuses'][key] = 124
+                state[key + '_log'] = str(exc)
+                (work / (key + '.log')).write_text(state[key + '_log'], encoding='utf-8')
+            else:
+                state['statuses'][key] = result.returncode
+                state[key + '_stdout'] = result.stdout
+                state[key + '_stderr'] = result.stderr
+                (work / (key + '.log')).write_text(
+                    state[key + '_stdout'] + state[key + '_stderr'], encoding='utf-8')
+            return state['statuses'][key]
         rc=execute('orc_cache0',jitcmd,jit_env); jitlog=work/'orc_cache0.log'
         aot=work/'event_loop_test_aot'; compilecmd=[str(run),str(FIXTURE),'-o',str(aot),'-L'+str(build)]; state['commands']['aot_compile']=compilecmd; state['env']['aot_compile']={}
         crc=execute('aot_compile',compilecmd); clog=work/'aot_compile.log';
@@ -140,14 +165,16 @@ def main()->int:
         from verify_event_loop_gate import verify_compile_log
         verify_compile_log(clog,crc)
         fresh_after=subprocess.run(freshness,cwd=HERE,capture_output=True,text=True); state['commands']['freshness_after']=freshness; state['statuses']['freshness_after']=fresh_after.returncode; state['freshness_after_stdout']=fresh_after.stdout; state['freshness_after_stderr']=fresh_after.stderr
-        try: require_freshness_status(fresh_after.returncode,fresh_after.stdout+fresh_after.stderr)
+        try: epoch_after = require_freshness_status(state['statuses']['freshness_after'],
+                                      state['freshness_after_stdout'], state['freshness_after_stderr'])
         except GateFailure as e: raise GateFailure('post-run whole-input freshness check failed: '+str(e))
+        if epoch_after != epoch_before: raise GateFailure('source freshness epoch changed during gate')
         rev_after,_=clean_source()
         if rev_after!=rev: raise GateFailure(f'source revision changed during gate: {rev}->{rev_after}')
         tree_after=git('rev-parse','HEAD^{tree}')
-        if tree_after!=tree_oid: raise GateFailure(f'source tree changed during gate: {tree_oid}->{tree_after}')
-        post={str(p):sha(p) for p in inputs}; state['source_hashes_after']=post
-        if post!=pre: raise GateFailure('CMake/event-loop/backend/fixture content changed during gate')
+        if tree_after != state['source_tree_oid']: raise GateFailure('source tree changed during gate')
+        state['source_hashes_after'] = {str(p):sha(p) for p in inputs}
+        require_source_hashes(state)
         state['artifact_hashes_after']={str(p):sha(p) for p in tracked}
         if state['artifact_hashes_after']!=state['artifact_hashes_before']: raise GateFailure('compiler/runtime/stdlib/fixture changed during gate')
         if state.get('aot_binary_hash_before_run')!=state.get('aot_binary_hash_after_run'): raise GateFailure('fresh AOT binary changed during execution')

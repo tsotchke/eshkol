@@ -12,9 +12,13 @@
 ;; expected values are the closed forms in inc/eshkol/backend/riemannian_core.h,
 ;; which are the same formulas the AD bridge computes
 ;; (lib/bridge/qllm_bridge.cpp: ad_hyperbolic_distance, ad_poincare_exp_map,
-;; ad_poincare_log_map). Curvature is the SECTIONAL curvature K: K < 0 is the
-;; Poincare ball of radius 1/sqrt(-K), K = 0 is Euclidean, K > 0 is the sphere
-;; of radius 1/sqrt(K).
+;; ad_poincare_log_map). Curvature is the SECTIONAL curvature K of the ADR-0018
+;; chart (metric I/(1 + K|x|^2/4)^2, alpha = 1): K < 0 is the ball of radius
+;; 2/sqrt(-K), K = 0 is Euclidean, K > 0 is the sphere of radius 1/sqrt(K)
+;; minus its pole. The hyperbolic assertions use K = -4, whose ball is the unit
+;; disc (Mobius parameter 1): its coordinate maps are those of the unit
+;; Poincare disc, its conformal factor is 1/(1 - |x|^2), and its distances are
+;; artanh-form, half the alpha = 2 values of the same coordinates.
 
 (define (near? a b) (< (abs (- a b)) 0.000000001))
 ;; For quantities whose MAGNITUDE is what is being asserted, an absolute
@@ -25,11 +29,10 @@
 (define (report ok name)
   (display (if ok "PASS" "FAIL")) (display ": ") (display name) (newline))
 
-;; Keep the convention-sensitive assertions parameterised by the two named
-;; constants they measure. The implementation has one corresponding ruling in
-;; riemannian_core.h; these values are declared before the first K = 0 assertion.
+;; The gauge of the chart (ESHKOL_RM_ALPHA): the conformal factor at the
+;; origin for every K, and therefore also at K = 0.
 (define flat-lambda 1.0)
-(define lambda0 2.0)
+(define lambda0 1.0)
 
 (define (vec2 a b)
   (let ((t (make-tensor '(2) 0.0)))
@@ -46,17 +49,17 @@
 
 ;; ── geodesic distance is not the chord ───────────────────────────────────────
 ;; Two points 1.8 apart in L2, one tenth of a unit inside the boundary of the
-;; unit ball. The hyperbolic distance between them is 4 artanh(0.9) = 5.8889 —
-;; more than three times the flat answer, and it diverges as the points approach
+;; unit ball (K = -4). The geodesic distance between them is 2 artanh(0.9) =
+;; 2.944 -- well above the flat answer, and it diverges as the points approach
 ;; the boundary while the chord stays bounded by the diameter.
 (define near-a (vec2 0.9 0.0))
 (define near-b (vec2 -0.9 0.0))
-(define d-boundary (geodesic-distance near-a near-b -1.0))
-(report (near? d-boundary 5.8888779583328814) "geodesic-distance near the ball boundary")
+(define d-boundary (geodesic-distance near-a near-b -4.0))
+(report (near? d-boundary 2.9444389791664407) "geodesic-distance near the ball boundary")
 (report (far? d-boundary 1.8) "geodesic-distance is not the L2 chord")
 
 ;; poincare-distance is the same op under its other name.
-(report (near? (poincare-distance near-a near-b -1.0) 5.8888779583328814)
+(report (near? (poincare-distance near-a near-b -4.0) 2.9444389791664407)
         "poincare-distance agrees with geodesic-distance")
 
 ;; At K = 0 the geodesic distance IS the chord, exactly. The old body was right
@@ -67,36 +70,36 @@
 ;; ── exp and log are mutually inverse, and neither is +/- ─────────────────────
 (define px (vec2 0.3 -0.1))
 (define py (vec2 -0.5 0.2))
-(define lg (hyperbolic-log-map px py -1.0))
+(define lg (hyperbolic-log-map px py -4.0))
 (report (near? (tensor-ref lg 0) -0.78553136001518009) "log-map component 0")
 (report (near? (tensor-ref lg 1) 0.28694063523451202) "log-map component 1")
 (report (far? (tensor-ref lg 0) -0.8) "log-map is not the difference y - x")
 
-(define back (hyperbolic-exp-map px lg -1.0))
+(define back (hyperbolic-exp-map px lg -4.0))
 (report (near? (tensor-ref back 0) -0.5) "exp-map inverts log-map, component 0")
 (report (near? (tensor-ref back 1) 0.2) "exp-map inverts log-map, component 1")
 
 ;; The Riemannian length of log_x(y) is the geodesic distance: the tangent space
-;; carries the conformal metric lambda_x^2 <.,.>, lambda_x = 2/(1 - |x|^2).
-(define lam-x (/ 2.0 (- 1.0 (+ (* 0.3 0.3) (* 0.1 0.1)))))
+;; carries the conformal metric lambda_x^2 <.,.>, lambda_x = 1/(1 - |x|^2) at K = -4.
+(define lam-x (/ 1.0 (- 1.0 (+ (* 0.3 0.3) (* 0.1 0.1)))))
 (define lg-len (sqrt (+ (* (tensor-ref lg 0) (tensor-ref lg 0))
                         (* (tensor-ref lg 1) (tensor-ref lg 1)))))
-(report (near? (* lam-x lg-len) (geodesic-distance px py -1.0))
+(report (near? (* lam-x lg-len) (geodesic-distance px py -4.0))
         "lambda_x * |log_x(y)| equals the geodesic distance")
 
 ;; ── Mobius addition is not commutative ───────────────────────────────────────
 ;; This is the whole content of the gyrogroup structure: gyr[x,y] is exactly the
 ;; failure of commutativity. Plain vector addition, the old body, commutes.
-(define xy (mobius-add px py -1.0))
-(define yx (mobius-add py px -1.0))
+(define xy (mobius-add px py -4.0))
+(define yx (mobius-add py px -4.0))
 (report (near? (tensor-ref xy 0) -0.23947750362844705) "mobius-add component 0")
 (report (near? (tensor-ref xy 1) 0.12336719883889698) "mobius-add component 1")
 (report (far? (tensor-ref xy 1) (tensor-ref yx 1)) "mobius-add is NOT commutative")
 (report (far? (tensor-ref xy 0) (+ 0.3 -0.5)) "mobius-add is not vector addition")
 
 ;; 2 (x) x = x (+) x — the gyrovector scalar multiple agrees with the addition.
-(define twice (mobius-scalar-mul 2.0 px -1.0))
-(define selfsum (mobius-add px px -1.0))
+(define twice (mobius-scalar-mul 2.0 px -4.0))
+(define selfsum (mobius-add px px -4.0))
 (report (near? (tensor-ref twice 0) (tensor-ref selfsum 0)) "2 (x) x = x (+) x, component 0")
 (report (near? (tensor-ref twice 1) (tensor-ref selfsum 1)) "2 (x) x = x (+) x, component 1")
 (report (far? (tensor-ref twice 0) 0.6) "mobius-scalar-mul is not r*x")
@@ -105,14 +108,14 @@
 ;; It was, for every curvature. Transport IS the holonomy of the connection: the
 ;; identity map is the statement that the manifold is flat.
 (define tv (vec2 0.2 0.4))
-(define pt (parallel-transport px py tv -1.0))
+(define pt (parallel-transport px py tv -4.0))
 (report (near? (tensor-ref pt 0) 0.16314844574304069) "parallel-transport component 0")
 (report (near? (tensor-ref pt 1) 0.31281259638016379) "parallel-transport component 1")
 (report (far? (tensor-ref pt 0) 0.2) "parallel-transport is NOT the identity")
 
 ;; Transport is an isometry of the Riemannian metric even though it changes the
 ;; ambient components: lambda_y |P v| = lambda_x |v|.
-(define lam-y (/ 2.0 (- 1.0 (+ (* 0.5 0.5) (* 0.2 0.2)))))
+(define lam-y (/ 1.0 (- 1.0 (+ (* 0.5 0.5) (* 0.2 0.2)))))
 (define v-len (sqrt (+ (* 0.2 0.2) (* 0.4 0.4))))
 (define pt-len (sqrt (+ (* (tensor-ref pt 0) (tensor-ref pt 0))
                         (* (tensor-ref pt 1) (tensor-ref pt 1)))))
@@ -120,7 +123,7 @@
         "parallel-transport preserves Riemannian length")
 
 ;; Transporting from a point to itself is the identity.
-(define pt-self (parallel-transport px px tv -1.0))
+(define pt-self (parallel-transport px px tv -4.0))
 (report (near? (tensor-ref pt-self 0) 0.2) "parallel-transport x -> x is the identity")
 
 ;; At K = 0 transport IS the identity, exactly.
@@ -129,10 +132,10 @@
 
 ;; ── riemannian-grad rescales by the metric ───────────────────────────────────
 ;; Was a copy of the Euclidean gradient with the point discarded. On the ball the
-;; conversion factor is (1 - |x|^2)^2 / 4, which vanishes at the boundary.
+;; conversion factor is (1 - |x|^2)^2 at K = -4, which vanishes at the boundary.
 (define eg (vec2 1.0 0.0))
-(define rg (riemannian-grad eg px -1.0))
-(report (near? (tensor-ref rg 0) 0.2025) "riemannian-grad applies the inverse metric")
+(define rg (riemannian-grad eg px -4.0))
+(report (near? (tensor-ref rg 0) 0.81) "riemannian-grad applies the inverse metric")
 (report (far? (tensor-ref rg 0) 1.0) "riemannian-grad is not a copy")
 (report (near? (tensor-ref (riemannian-grad eg px 0.0) 0)
                (/ 1.0 (* flat-lambda flat-lambda)))
@@ -141,7 +144,7 @@
 ;; ── manifold-project puts a point back on the manifold ───────────────────────
 ;; Was a copy, so a point outside the ball stayed outside.
 (define outside (vec2 3.0 4.0))
-(define projected (manifold-project outside -1.0))
+(define projected (manifold-project outside -4.0))
 (report (near? (tensor-ref projected 0) 0.59999999999940001) "manifold-project component 0")
 ;; Component 1 as well: a projection that returned (0.6, 0) would pass a
 ;; component-0-and-norm check while pointing somewhere else entirely.
@@ -154,7 +157,7 @@
 
 ;; ── the SGD step follows the geodesic ────────────────────────────────────────
 ;; Was point - lr*grad, which leaves the ball for a large enough step.
-(define sgd (riemannian-sgd-step px tv 0.5 -1.0))
+(define sgd (riemannian-sgd-step px tv 0.5 -4.0))
 (report (near? (tensor-ref sgd 0) 0.2166917684430178) "riemannian-sgd-step component 0")
 (report (near? (tensor-ref sgd 1) -0.30456057908269812) "riemannian-sgd-step component 1")
 (report (far? (tensor-ref sgd 0) 0.2) "riemannian-sgd-step is not the flat update")
@@ -186,61 +189,66 @@
 (report (near? (tensor-ref slog 1) 1.5707963267948966) "spherical-log component 1")
 (report (near? (tensor-ref slog 2) 0.0) "spherical-log component 2")
 
-(report (near? (geodesic-distance e1 e2 1.0) 1.5707963267948966)
-        "geodesic-distance on the unit sphere is the great-circle distance")
+;; geodesic-distance at K = 1 reads CHART coordinates: e1 and e2 are the sphere
+;; points (0.8, 0, 0, 0.6) and (0, 0.8, 0, 0.6), at angle acos(0.36).
+(report (rel-near? (geodesic-distance e1 e2 1.0) (acos 0.36))
+        "geodesic-distance at K = 1 is the arc between the chart points' sphere images")
 
 ;; ── refusals name the builtin instead of returning a flat answer ─────────────
 ;; A point outside the ball has no geodesic relation to one inside it. The op
 ;; raises a catchable condition rather than falling back to the chord.
 (define outside-guarded
   (guard (e (#t 'refused))
-    (geodesic-distance outside near-a -1.0)))
+    (geodesic-distance outside near-a -4.0)))
 (report (eq? outside-guarded 'refused) "geodesic-distance refuses a point outside the ball")
 
-(define mobius-sphere-guarded
-  (guard (e (#t 'refused))
-    (mobius-add px py 1.0)))
-(report (eq? mobius-sphere-guarded 'refused) "mobius-add refuses positive curvature")
+;; Mobius addition is the gyrovector addition of the chart for every sign of K.
+(define mobius-sphere (mobius-add px px 1.0))
+(define mobius-sphere-2 (mobius-scalar-mul 2.0 px 1.0))
+(report (near? (tensor-ref mobius-sphere 0) (tensor-ref mobius-sphere-2 0))
+        "mobius-add is defined on the positive chart: x (+) x = 2 (x) x")
 
 ;; ═══ Curvature scale: every assertion above uses |K| = 1 ═════════════════════
 ;; At |K| = 1 every sqrt(c) and 1/sqrt(c) factor is 1, so an implementation that
 ;; dropped all of them would pass every test above. These fix the scale.
 
-;; Ball of curvature K = -4: radius 1/2, and two points at +/- 1/4 on a diameter.
-;; d = (2/sqrt c) artanh(sqrt(c) |y|) doubled = 2 artanh(1/2) = ln 3, the SAME
-;; number the |x| = 0.5 pair gives at K = -1 -- because halving the radius and
-;; quadrupling the curvature is an isometry. An implementation missing the
-;; sqrt(c) scaling gets 2 artanh(1) = infinity or 2 artanh(1/4), not ln 3.
+;; Ball of curvature K = -16: radius 1/2, and two points at +/- 1/4 on a diameter.
+;; d = 2 artanh(1/2)/2 = ln 3 / 2, the SAME number the |x| = 0.5 pair gives at
+;; K = -4 -- because halving the radius and quadrupling the curvature is an
+;; isometry. An implementation missing the sqrt(-K) scaling gets artanh(1) =
+;; infinity or artanh(1/4), not ln 3 / 2.
 (define k4-a (vec2 0.25 0.0))
 (define k4-b (vec2 -0.25 0.0))
-(report (rel-near? (geodesic-distance k4-a k4-b -4.0) 1.0986122886681098)
-        "K = -4 geodesic distance is ln 3 (the scale-invariance of the ball)")
-(report (far? (geodesic-distance k4-a k4-b -4.0)
-              (geodesic-distance k4-a k4-b -1.0))
-        "K = -4 and K = -1 disagree on the same coordinates")
-;; A point of the K = -4 ball at radius 0.6 is OUTSIDE it (the radius is 0.5).
-(define k4-out (guard (e (#t 'refused)) (geodesic-distance (vec2 0.6 0.0) k4-a -4.0)))
-(report (eq? k4-out 'refused) "the K = -4 ball has radius 1/2, not 1")
-;; riemannian-grad at K = -4: lambda = 2/(1 - 4|x|^2) = 8/3, so g/lambda^2 is
-;; 9/64 = 0.140625 of the Euclidean gradient.
-(report (near? (tensor-ref (riemannian-grad (vec2 1.0 0.0) k4-a -4.0) 0) 0.140625)
-        "K = -4 riemannian-grad applies the inverse metric at that curvature")
-;; exp and log remain mutually inverse at a curvature that is not -1.
-(define k4-lg (hyperbolic-log-map k4-a (vec2 -0.1 0.2) -4.0))
-(define k4-back (hyperbolic-exp-map k4-a k4-lg -4.0))
-(report (near? (tensor-ref k4-back 0) -0.1) "K = -4 exp inverts log, component 0")
-(report (near? (tensor-ref k4-back 1) 0.2) "K = -4 exp inverts log, component 1")
-(report (near? (* (/ 2.0 (- 1.0 (* 4.0 0.0625)))
+(report (rel-near? (geodesic-distance k4-a k4-b -16.0) 0.5493061443340549)
+        "K = -16 geodesic distance is ln 3 / 2 (the scale-invariance of the ball)")
+(report (far? (geodesic-distance k4-a k4-b -16.0)
+              (geodesic-distance k4-a k4-b -4.0))
+        "K = -16 and K = -4 disagree on the same coordinates")
+;; A point of the K = -16 ball at radius 0.6 is OUTSIDE it (the radius is 0.5).
+(define k4-out (guard (e (#t 'refused)) (geodesic-distance (vec2 0.6 0.0) k4-a -16.0)))
+(report (eq? k4-out 'refused) "the K = -16 ball has radius 1/2, not 1")
+;; riemannian-grad at K = -16: lambda = 1/(1 - 4|x|^2) = 4/3, so g/lambda^2 is
+;; 9/16 = 0.5625 of the Euclidean gradient.
+(report (near? (tensor-ref (riemannian-grad (vec2 1.0 0.0) k4-a -16.0) 0) 0.5625)
+        "K = -16 riemannian-grad applies the inverse metric at that curvature")
+;; exp and log remain mutually inverse at a curvature that is not -4.
+(define k4-lg (hyperbolic-log-map k4-a (vec2 -0.1 0.2) -16.0))
+(define k4-back (hyperbolic-exp-map k4-a k4-lg -16.0))
+(report (near? (tensor-ref k4-back 0) -0.1) "K = -16 exp inverts log, component 0")
+(report (near? (tensor-ref k4-back 1) 0.2) "K = -16 exp inverts log, component 1")
+(report (near? (* (/ 1.0 (- 1.0 (* 4.0 0.0625)))
                   (sqrt (+ (* (tensor-ref k4-lg 0) (tensor-ref k4-lg 0))
                            (* (tensor-ref k4-lg 1) (tensor-ref k4-lg 1)))))
-               (geodesic-distance k4-a (vec2 -0.1 0.2) -4.0))
-        "K = -4 lambda_x |log_x(y)| equals the geodesic distance")
+               (geodesic-distance k4-a (vec2 -0.1 0.2) -16.0))
+        "K = -16 lambda_x |log_x(y)| equals the geodesic distance")
 
-;; Sphere of curvature K = 4: radius 1/2, quarter turn = R pi/2 = pi/4.
+;; Sphere chart of curvature K = 4: R = 1/2. The chart points (1/2, 0, 0) and
+;; (0, 1/2, 0) are the K = 1 points e1, e2 scaled by R, so their distance is
+;; R acos(0.36).
 (define s4-a (vec3 0.5 0.0 0.0))
 (define s4-b (vec3 0.0 0.5 0.0))
-(report (rel-near? (geodesic-distance s4-a s4-b 4.0) 0.7853981633974483)
-        "K = 4 sphere distance is R pi/2 with R = 1/2")
+(report (rel-near? (geodesic-distance s4-a s4-b 4.0) (* 0.5 (acos 0.36)))
+        "K = 4 chart distance is R times the K = 1 angle, R = 1/2")
 (define s1-a (vec3 1.0 0.0 0.0))
 (define s1-b (vec3 0.0 1.0 0.0))
 (report (far? (geodesic-distance s4-a s4-b 4.0)
@@ -249,29 +257,29 @@
 
 ;; ═══ Near-coincident and near-boundary: where the old forms lost everything ══
 
-;; d(0, 1e-9) at K = -1 is 2 artanh(1e-9) = 2e-9. The arccosh(1 + 2c|x-y|^2/P)
+;; d(0, 1e-9) at K = -4 is artanh(1e-9) = 1e-9. The arccosh(1 + 2B|x-y|^2/P)
 ;; form computes 1 + 2e-18, which rounds to 1 in f64, and returns EXACTLY ZERO.
 ;; The tolerance here is RELATIVE, so returning 0 fails it.
 (define tiny-a (vec2 0.0 0.0))
 (define tiny-b (vec2 0.000000001 0.0))
-(report (rel-near? (geodesic-distance tiny-a tiny-b -1.0) 0.000000002)
-        "a 2e-9 geodesic distance is not rounded away to zero")
-(report (> (geodesic-distance tiny-a tiny-b -1.0) 0.0)
+(report (rel-near? (geodesic-distance tiny-a tiny-b -4.0) 0.000000001)
+        "a 1e-9 geodesic distance is not rounded away to zero")
+(report (> (geodesic-distance tiny-a tiny-b -4.0) 0.0)
         "a near-coincident distance is strictly positive")
 
 ;; Two points a billionth of a unit inside the boundary, on opposite sides. The
-;; geodesic distance is 4 artanh(0.999999999) = 42.83, and the LOG MAP HAS A
+;; geodesic distance is 2 artanh(0.999999999) = 21.42, and the LOG MAP HAS A
 ;; FINITE VALUE -- every pair of strictly interior ball points does. This op used
 ;; to refuse here, on the grounds that no finite log existed; the refusal was a
 ;; numerical failure of the artanh route, not a fact about the manifold. (The AD
 ;; bridge, on the same input, clamped and returned a fabricated 28.32.)
 (define far-a (vec2 0.999999999 0.0))
 (define far-b (vec2 -0.999999999 0.0))
-(define far-d (geodesic-distance far-a far-b -1.0))
-(report (rel-near? far-d 42.832826090576575) "a 42.8-unit interior distance is computed")
-(define far-lg (guard (e (#t 'refused)) (hyperbolic-log-map far-a far-b -1.0)))
+(define far-d (geodesic-distance far-a far-b -4.0))
+(report (rel-near? far-d 21.416413045288288) "a 21.4-unit interior distance is computed")
+(define far-lg (guard (e (#t 'refused)) (hyperbolic-log-map far-a far-b -4.0)))
 (report (not (eq? far-lg 'refused)) "the log of a far interior pair is not refused")
-(report (rel-near? (* (/ 2.0 (- 1.0 (* 0.999999999 0.999999999)))
+(report (rel-near? (* (/ 1.0 (- 1.0 (* 0.999999999 0.999999999)))
                       (abs (tensor-ref far-lg 0)))
                    far-d)
         "lambda_x |log_x(y)| equals the distance for the far pair")
@@ -281,7 +289,7 @@
 ;; WITHOUT scaling the numerator and returned 0.003 for a sum whose value is
 ;; about 1/3 -- a valid interior result, wrong by two orders of magnitude, with
 ;; no diagnostic.
-(define mob-near (mobius-add (vec2 0.999999999 0.0) (vec2 -0.999999998 0.0) -1.0))
+(define mob-near (mobius-add (vec2 0.999999999 0.0) (vec2 -0.999999998 0.0) -4.0))
 (report (< (abs (- (tensor-ref mob-near 0) 0.33333335822717813)) 0.00000001)
         "a near-boundary Mobius sum is computed, not floored")
 (report (far? (tensor-ref mob-near 0) 0.003)
@@ -292,37 +300,37 @@
 ;; used to return a point ON the ball boundary -- not a point of the open ball,
 ;; and the one place these ops could return a value outside their own codomain.
 (define exp-far (guard (e (#t 'refused))
-                  (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 20.0 0.0) -1.0)))
+                  (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 20.0 0.0) -4.0)))
 (report (eq? exp-far 'refused) "exp refuses a step whose image is not strictly interior")
 (define scal-far (guard (e (#t 'refused))
-                   (mobius-scalar-mul 100.0 (vec2 0.5 0.0) -1.0)))
+                   (mobius-scalar-mul 100.0 (vec2 0.5 0.0) -4.0)))
 (report (eq? scal-far 'refused) "mobius-scalar-mul refuses a result on the boundary")
 ;; The same ops at representable magnitudes still work.
-(report (near? (tensor-ref (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 1.0 0.0) -1.0) 0)
+(report (near? (tensor-ref (hyperbolic-exp-map (vec2 0.0 0.0) (vec2 1.0 0.0) -4.0) 0)
                0.76159415595576485)
-        "exp_0(1) = tanh(1) at K = -1")
-(report (near? (tensor-ref (mobius-scalar-mul 2.0 (vec2 0.5 0.0) -1.0) 0) 0.8)
-        "2 (x) 0.5 = 0.8 at K = -1")
+        "exp_0(1) = tanh(1) at K = -4")
+(report (near? (tensor-ref (mobius-scalar-mul 2.0 (vec2 0.5 0.0) -4.0) 0) 0.8)
+        "2 (x) 0.5 = 0.8 at K = -4")
 
 ;; ═══ Parallel transport on a tangent vector OUTSIDE the ball ═════════════════
 ;; A tangent vector is not constrained to the ball. The gyration used to be
 ;; expanded through Mobius POINT addition, which fed the tangent vector into an
-;; operation whose denominator can then vanish: at K = -1, x = y = (0.5, 0) with
+;; operation whose denominator can then vanish: at K = -4, x = y = (0.5, 0) with
 ;; v = (2, 0), every gyration in this direction is the identity and transport
 ;; from a point to itself MUST return v -- the old body returned (0.5, 0),
 ;; because the intermediate 0/0 was floored to zero.
 (define big-v (vec2 2.0 0.0))
-(define self-big (parallel-transport (vec2 0.5 0.0) (vec2 0.5 0.0) big-v -1.0))
+(define self-big (parallel-transport (vec2 0.5 0.0) (vec2 0.5 0.0) big-v -4.0))
 (report (near? (tensor-ref self-big 0) 2.0)
         "transport x -> x returns a tangent vector of norm 2 unchanged")
 (report (far? (tensor-ref self-big 0) 0.5)
         "transport does not collapse a large tangent vector")
 ;; And it is still an isometry for such a vector between distinct points.
-(define big-pt (parallel-transport px py big-v -1.0))
-(report (near? (* (/ 2.0 (- 1.0 (+ (* 0.5 0.5) (* 0.2 0.2))))
+(define big-pt (parallel-transport px py big-v -4.0))
+(report (near? (* (/ 1.0 (- 1.0 (+ (* 0.5 0.5) (* 0.2 0.2))))
                   (sqrt (+ (* (tensor-ref big-pt 0) (tensor-ref big-pt 0))
                            (* (tensor-ref big-pt 1) (tensor-ref big-pt 1)))))
-               (* (/ 2.0 (- 1.0 (+ (* 0.3 0.3) (* 0.1 0.1)))) 2.0))
+               (* (/ 1.0 (- 1.0 (+ (* 0.3 0.3) (* 0.1 0.1)))) 2.0))
         "transport preserves Riemannian length for a vector outside the ball")
 
 ;; ═══ Spherical tangency ══════════════════════════════════════════════════════
@@ -334,35 +342,27 @@
 (define radial-tiny (vec3 0.0000000001 0.0 0.0))
 (define exp-radial (guard (e (#t 'refused)) (spherical-exp sph-x radial-tiny)))
 (report (eq? exp-radial 'refused) "spherical-exp refuses a wholly radial 1e-10 vector")
-(define tr-radial (guard (e (#t 'refused))
-                    (parallel-transport sph-x sph-y (vec3 1.0 0.0 0.0) 1.0)))
-(report (eq? tr-radial 'refused) "spherical transport refuses a radial vector")
-;; The closed form: P_{x->y} v = v - (<y,v>/(R^2 + <x,y>)) (x + y). For
-;; x = e1, y = e2, v = e2 that is (-1, 0, 0) -- tangent at y, norm preserved.
-;; The old code returned v unchanged, which is not even tangent at the
-;; destination.
+;; parallel-transport at K = 1 transports in the CHART: (lambda_x/lambda_y)
+;; gyr[y, -x] v. For the chart points e1 and e2 and v = e2 that is
+;; (-8/17, 15/17, 0): a rotation, so the Riemannian length is preserved.
 (define tr-ok (parallel-transport sph-x sph-y sph-y 1.0))
-(report (near? (tensor-ref tr-ok 0) -1.0) "spherical transport component 0")
-(report (near? (tensor-ref tr-ok 1) 0.0) "spherical transport component 1")
-(report (near? (tensor-ref tr-ok 2) 0.0) "spherical transport component 2")
-(report (near? (+ (* (tensor-ref tr-ok 0) (tensor-ref sph-y 0))
-                  (* (tensor-ref tr-ok 1) (tensor-ref sph-y 1))
-                  (* (tensor-ref tr-ok 2) (tensor-ref sph-y 2)))
-               0.0)
-        "the transported vector is tangent at the destination")
-;; Antipodal endpoints have no unique connecting geodesic.
+(report (near? (tensor-ref tr-ok 0) -0.47058823529411764) "positive-chart transport component 0")
+(report (near? (tensor-ref tr-ok 1) 0.88235294117647056) "positive-chart transport component 1")
+(report (near? (tensor-ref tr-ok 2) 0.0) "positive-chart transport component 2")
+(report (near? (sqrt (+ (* (tensor-ref tr-ok 0) (tensor-ref tr-ok 0))
+                        (* (tensor-ref tr-ok 1) (tensor-ref tr-ok 1))))
+               1.0)
+        "positive-chart transport preserves the Riemannian length (lambda_x = lambda_y)")
+;; The antipode of e1 on the K = 1 chart is -e1/(|x|^2/4) = (-4, 0, 0): the cut
+;; locus, where the connecting geodesic and hence the transport is not unique.
 (define tr-anti (guard (e (#t 'refused))
-                  (parallel-transport sph-x (vec3 -1.0 0.0 0.0) sph-y 1.0)))
-(report (eq? tr-anti 'refused) "spherical transport refuses antipodal endpoints")
+                  (parallel-transport sph-x (vec3 -4.0 0.0 0.0) sph-y 1.0)))
+(report (eq? tr-anti 'refused) "positive-chart transport refuses antipodal endpoints")
 
-;; ═══ The K = 0 branch and the K -> 0 limit ═══════════════════════════════════
-;; PARAMETERISED ON THE CONVENTION. The ball chart's conformal factor at the
-;; origin is ESHKOL_RM_LAMBDA0 = 2, so the K -> 0- limit of the ball branch is
-;; flat space with the metric 4<.,.>, i.e. distance 2|x-y|. The K = 0 branch
-;; uses ESHKOL_RM_FLAT_LAMBDA, which is 1 -- the canonical Euclidean metric.
-;; Those two cannot both hold, and which to keep is a convention ruling; see
-;; docs/reference/stdlib/geometry.md. `flat-lambda` above mirrors the header
-;; constant and is the ONE line to change if the ruling equalises them.
+;; ═══ The K = 0 member and the K -> 0 limits ══════════════════════════════════
+;; In the alpha = 1 chart the conformal factor at the origin is 1 for every K,
+;; so K = 0 is the canonical Euclidean metric AND the limit of both curved
+;; signs: the family is real-analytic through zero (ADR-0018).
 (report (near? (geodesic-distance near-a near-b 0.0) (* flat-lambda 1.8))
         "the K = 0 distance is flat-lambda times the chord")
 (report (near? (tensor-ref (riemannian-grad (vec2 1.0 0.0) px 0.0) 0)
@@ -378,12 +378,14 @@
                            (* (tensor-ref flat-lg 1) (tensor-ref flat-lg 1)))))
                (geodesic-distance px py 0.0))
         "at K = 0, flat-lambda |log_x(y)| equals the distance")
-;; The limit itself, measured: the ball branch at K = -1e-9 is lambda0 |x-y|,
-;; NOT flat-lambda |x-y|. This is the discontinuity, asserted rather than
-;; assumed, so the ruling flips one number here and nothing else.
+;; The limits, measured: at K = -1e-9 and K = +1e-9 the distance is the K = 0
+;; chord to within the curvature correction.
 (report (< (abs (- (geodesic-distance near-a near-b -0.000000001) (* lambda0 1.8)))
            0.0001)
-        "the K -> 0- limit of the ball branch is lambda0 times the chord")
+        "the K -> 0- limit equals the K = 0 distance")
+(report (< (abs (- (geodesic-distance near-a near-b 0.000000001) (* lambda0 1.8)))
+           0.0001)
+        "the K -> 0+ limit equals the K = 0 distance")
 
 ;; ═══ Accessors and attention ═════════════════════════════════════════════════
 (define acc-m (make-hyperbolic-manifold-handle 3 -0.5))
@@ -397,20 +399,24 @@
 (report (= (manifold-handle-type (make-spherical-manifold-handle 2)) 2) "manifold-type of a sphere is 2")
 (report (= (manifold-dim (make-euclidean-manifold-handle 5)) 5) "manifold-dim of a Euclidean manifold")
 
-;; geodesic-attention-scores is -d_K(q_i, k_j), row-major over (nq, nk). With one
-;; query at the origin and two keys, the scores are the negatives of two known
-;; geodesic distances -- and the second key is chosen so the ambient chord and
-;; the geodesic distance differ, which is what the old body returned.
+;; geodesic-attention-scores is -d_K(q_i, k_j)^2/(2 sqrt(dim)), row-major over
+;; (nq, nk). With one query at the origin and two keys on the K = -4 unit disc,
+;; d = artanh(|k|) -- and the second key is chosen so the ambient chord and the
+;; geodesic distance differ.
 (define att-q (make-tensor '(1 2) 0.0))
 (define att-k (make-tensor '(2 2) 0.0))
 (tensor-set! att-k 0 0.5)      ; key 0 = (0.5, 0)
 (tensor-set! att-k 2 0.9)      ; key 1 = (0.9, 0)
-(define att (geodesic-attention-scores att-q att-k -1.0))
-(report (near? (tensor-ref att 0) -1.0986122886681098)
-        "attention score 0 is minus the geodesic distance to (0.5, 0)")
-(report (near? (tensor-ref att 1) -2.9444389791664407)
-        "attention score 1 is minus the geodesic distance to (0.9, 0)")
-(report (far? (tensor-ref att 1) -0.9) "attention is not scored by the ambient chord")
+(define att (geodesic-attention-scores att-q att-k -4.0))
+(define (att-score r)
+  (let ((d (* 0.5 (log (/ (+ 1.0 r) (- 1.0 r))))))
+    (- (/ (* d d) (* 2.0 (sqrt 2.0))))))
+(report (near? (tensor-ref att 0) (att-score 0.5))
+        "attention score 0 is -d^2/(2 sqrt 2) to (0.5, 0)")
+(report (near? (tensor-ref att 1) (att-score 0.9))
+        "attention score 1 is -d^2/(2 sqrt 2) to (0.9, 0)")
+(report (far? (tensor-ref att 1) (- (/ 0.81 (* 2.0 (sqrt 2.0)))))
+        "attention is not scored by the ambient chord")
 
 ;; ── spherical-project refuses the origin ─────────────────────────────────────
 ;; It used to return the zero vector unchanged, which is not a point of the unit
@@ -437,7 +443,7 @@
 
 ;; A huge finite vector still has a direction. Projection must scale it to the
 ;; open-ball margin rather than treating an overflowing norm as the origin.
-(define huge-ball (manifold-project (vec2 1e308 0.0) -1.0))
+(define huge-ball (manifold-project (vec2 1e308 0.0) -4.0))
 (report (near? (tensor-ref huge-ball 0) 0.999999999999)
         "hyperbolic projection preserves the direction of 1e308")
 (report (near? (tensor-ref huge-ball 1) 0.0)
@@ -644,39 +650,41 @@
 ;; the total geodesic distance over the point pairs the second argument packs,
 ;; laid out (x_0, y_0, x_1, y_1, ...) — with exact closed-form derivatives.
 ;;
-;; ONE PAIR, the origin and (1/2, 0) on the ball of curvature K = -1. There
-;; d(c) = 2 artanh(sqrt(c)/2)/sqrt(c) with c = -K, so
-;;   dd/dK   = -[ t/(c(1-c t^2)) - artanh(sqrt(c) t)/c^{3/2} ]
-;;           = -(2/3 - artanh(1/2)) = -0.1173605223326118
-;;   d2d/dK2 =  0.0461814387233047
-;; Both are values the old sum (0.5) and the old constant (0.0) miss outright.
-(define hm (make-hyperbolic-manifold-handle 2 -1.0))
+;; ONE PAIR, the origin and (1/2, 0) at fixed chart coordinates. On the chart
+;; of curvature K < 0 with B = -K/4, d(K) = artanh(sqrt(B)/2)/sqrt(B); at K = -4
+;; (B = 1) this is artanh(1/2), and
+;;   dd/dK   = -(1/4) [ (1/4)/(1 - 1/4) - artanh(1/2)/2 ]
+;;           = -(2/3 - artanh(1/2))/8 = -0.014670065291576478
+;;   d2d/dK2 =  0.0014431699601032651
+;; (one eighth and one thirty-second of the unit-ball values at K = -1 in the
+;; alpha = 2 coordinates: d(K) here is half that distance at K/4). Both are
+;; values the old sum (0.5) and the old constant (0.0) miss outright.
+(define hm (make-hyperbolic-manifold-handle 2 -4.0))
 (define one-pair (fill! (make-tensor '(4) 0.0) '(0.0 0.0  0.5 0.0)))
 (define cg (curvature-gradient hm one-pair))
-(report (near? cg -0.1173605223326118) "curvature-gradient is dL/dK on one pair")
+(report (near? cg -0.014670065291576478) "curvature-gradient is dL/dK on one pair")
 (report (far? cg 0.5) "curvature-gradient is not the sum of its argument's elements")
 (define ch (curvature-hessian hm one-pair))
-(report (near? ch 0.0461814387233047) "curvature-hessian is d2L/dK2 on one pair")
+(report (rel-near? ch 0.0014431699601032651) "curvature-hessian is d2L/dK2 on one pair")
 (report (far? ch 0.0) "curvature-hessian is not the constant 0.0")
 
 ;; Small-argument curvature Hessian: w = 0.0099 for this pair. The second
-;; derivative series must include the a[5] term; the old Horner loop omitted it
-;; and returned 7.774090445633817e-6 instead of the analytic
-;; 7.774071860110411e-6.
+;; derivative series must include the a[5] term; without it the result is
+;; 7.774090445633817e-6/32 instead of the analytic 7.774071860110411e-6/32.
 (define small-pair
   (fill! (make-tensor '(4) 0.0)
          '(0.0 0.0  0.09900985197043097 0.0)))
 (define small-h (curvature-hessian hm small-pair))
-(report (rel-near? small-h 0.000007774071860110411)
+(report (rel-near? small-h (/ 0.000007774071860110411 32.0))
         "curvature-hessian includes the small-argument a[5] series term")
-(report (> (abs (- small-h 0.000007774090445633817)) 0.000000000001)
+(report (> (abs (- small-h (/ 0.000007774090445633817 32.0))) 0.00000000000001)
         "curvature-hessian is not the truncated small-argument series")
 
 ;; The objective is a SUM over pairs, so two copies of the pair double both.
 (define two-pairs (fill! (make-tensor '(8) 0.0) '(0.0 0.0  0.5 0.0  0.0 0.0  0.5 0.0)))
-(report (near? (curvature-gradient hm two-pairs) (* 2.0 -0.1173605223326118))
+(report (near? (curvature-gradient hm two-pairs) (* 2.0 -0.014670065291576478))
         "curvature-gradient sums over the batch")
-(report (near? (curvature-hessian hm two-pairs) (* 2.0 0.0461814387233047))
+(report (rel-near? (curvature-hessian hm two-pairs) (* 2.0 0.0014431699601032651))
         "curvature-hessian sums over the batch")
 
 ;; A batch whose length is not a whole number of point pairs of the manifold's
@@ -684,63 +692,55 @@
 (report (null? (curvature-gradient hm (make-tensor '(3) 0.1)))
         "curvature-gradient returns () for a batch that is not whole pairs")
 
-;; On the sphere of radius 1/sqrt(K) the pair is held at fixed ANGULAR position
-;; and the radius follows K, since a point of one sphere is not a point of
-;; another. With theta = pi/2: d = theta K^{-1/2}, so dd/dK = -theta/2 and
-;; d2d/dK2 = 3 theta/4 at K = 1.
+;; The positive chart holds the pair at FIXED CHART COORDINATES too, so the
+;; objective is one analytic family in K across both signs. For e1, e2 at K = 1
+;; the jet comes from the closed tan form.
 (define sm (make-spherical-manifold-handle 2))
 (define sphere-pair (fill! (make-tensor '(4) 0.0) '(1.0 0.0  0.0 1.0)))
-(report (near? (curvature-gradient sm sphere-pair) -0.7853981633974483)
-        "curvature-gradient on the sphere is -theta/2")
-(report (near? (curvature-hessian sm sphere-pair) 1.1780972450961724)
-        "curvature-hessian on the sphere is 3 theta/4")
+(report (near? (curvature-gradient sm sphere-pair) -0.18966761233710711)
+        "curvature-gradient on the positive chart")
+(report (near? (curvature-hessian sm sphere-pair) 0.040771664561953996)
+        "curvature-hessian on the positive chart")
 
-;; K = 0 is refused, and the refusal is a fact about the metric family, not
-;; squeamishness: the ball branch tends to 2|x-y| as K -> 0- while the flat
-;; branch returns |x-y|, so no number is the derivative there.
+;; K = 0 is a point of the family, not a refusal: the jet there is the series
+;; at zero. d'(0) = -(1/4)|x-y|((|x|^2 + |y|^2)/2 - |x-y|^2/6) = -1/96.
 (define em (make-euclidean-manifold-handle 2))
-(define flat-guarded (guard (e (#t 'refused)) (curvature-gradient em one-pair)))
-(report (eq? flat-guarded 'refused) "curvature-gradient refuses K = 0")
+(report (near? (curvature-gradient em one-pair) -0.010416666666666668)
+        "curvature-gradient is defined at K = 0")
+(report (near? (curvature-hessian em one-pair) 0.00078125)
+        "curvature-hessian is defined at K = 0")
 
 ;; ── the adaptive step is a damped Newton step ────────────────────────────────
-;; K - t L'(K)/max(L''(K), floor), with t halved until the new curvature keeps
-;; its sign, keeps every point on the manifold and does not increase L. The full
-;; Newton step here would land at K = +1.54, changing which geometry the
-;; manifold is, so the first two trials are rejected and t = 1/4 is taken:
-;; K = -1 + 0.25 * 2.5412920337059086 = -0.36467699157352285.
-(define step-m (make-hyperbolic-manifold-handle 2 -1.0))
+;; K - t L'(K)/max(L''(K), floor), with t halved until every point stays in the
+;; chart and L does not increase. The distance shrinks as K grows, so the full
+;; damped Newton step from K = -4 is admissible and crosses zero: the sign of
+;; the curvature is learnable.
+(define step-m (make-hyperbolic-manifold-handle 2 -4.0))
 (define l-before (geodesic-distance (vec2 0.0 0.0) (vec2 0.5 0.0) (get-curvature step-m)))
 (adaptive-curvature-step step-m one-pair)
 (define k-after (get-curvature step-m))
-(report (near? k-after -0.36467699157352285) "adaptive-curvature-step takes the backtracked Newton step")
-(report (< k-after 0.0) "adaptive-curvature-step never changes the sign of K")
-(report (far? k-after -1.005) "adaptive-curvature-step is not K - 0.01 * sum(grad)")
+(report (near? k-after 6.1651681348236842) "adaptive-curvature-step takes the damped Newton step")
+(report (> k-after 0.0) "adaptive-curvature-step may cross K = 0")
+(report (far? k-after -4.005) "adaptive-curvature-step is not K - 0.01 * sum(grad)")
 (define l-after (geodesic-distance (vec2 0.0 0.0) (vec2 0.5 0.0) k-after))
 (report (< l-after l-before) "adaptive-curvature-step decreases the objective")
-(report (near? l-after 1.032168667276747) "the objective after the step")
+(report (near? l-after 0.44747349943486031) "the objective after the step")
 
-;; A Euclidean manifold has no admissible step for the same reason it has no
-;; derivative.
+;; From K = 0 the step is taken as well.
 (define step-flat (make-euclidean-manifold-handle 2))
-(define step-guarded (guard (e (#t 'refused)) (adaptive-curvature-step step-flat one-pair)))
-(report (eq? step-guarded 'refused) "adaptive-curvature-step refuses K = 0")
+(adaptive-curvature-step step-flat one-pair)
+(report (near? (get-curvature step-flat) 13.333333333333334)
+        "adaptive-curvature-step from K = 0")
 
-;; For K = 1 and x=e1,y=e2, L=pi/2, L'=-pi/4, L''=3pi/8. The full
-;; Newton trial is K=5/3. Its points are rescaled by sqrt(3/5) to remain on
-;; the same angular-position family, and L=pi/(2 sqrt(5/3)). An implementation
-;; that evaluates the old, unscaled points must reject the trial and fails the
-;; K assertion below.
+;; On the positive chart the trial family is the same fixed chart points.
 (define sphere-step (make-spherical-manifold-handle 2))
 (adaptive-curvature-step sphere-step sphere-pair)
 (define sphere-k-after (get-curvature sphere-step))
-(report (near? sphere-k-after 1.6666666666666667)
-        "spherical adaptive-curvature-step uses the fixed-angle trial family")
-(define sphere-trial-distance
-  (geodesic-distance (vec2 0.7745966692414834 0.0)
-                     (vec2 0.0 0.7745966692414834)
-                     sphere-k-after))
-(report (near? sphere-trial-distance 1.2167336027920836)
-        "spherical adaptive trial has the rescaled fixed-angle distance")
+(report (near? sphere-k-after 5.6519467472047999)
+        "positive-chart adaptive-curvature-step")
+(report (near? (geodesic-distance (vec2 1.0 0.0) (vec2 0.0 1.0) sphere-k-after)
+               0.64840190986420521)
+        "positive-chart adaptive step lowers the objective at fixed chart points")
 
 (display "PASS: Riemannian geometry numeric regression complete")
 (newline)

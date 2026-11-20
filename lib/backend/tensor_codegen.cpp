@@ -311,27 +311,47 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
         // dual rule: jetTensorArithmetic (tensorArithmeticInternal)
         "tensor-add", "tensor-sub", "tensor-mul", "tensor-div",
     };
-    bool carrier_aware = false;
-    for (const char* name : kDualTensorCarriers) {
-        if (op_name && std::strcmp(op_name, name) == 0) { carrier_aware = true; break; }
-    }
-    const char* symbol = carrier_aware ? "eshkol_tensor_operand_carrier_checked"
-                                       : "eshkol_tensor_operand_checked";
-    if (mode == TensorOperandMode::RequireTensor) {
-        symbol = "eshkol_tensor_destination_checked";
-    } else if (mode == TensorOperandMode::RequireMatrix) {
-        symbol = "eshkol_tensor_matrix_operand_checked";
-    }
-    llvm::Function* fn = ctx_.module().getFunction(symbol);
-    if (!fn) {
-        // void* <symbol>(const eshkol_tagged_value_t*, const char*)
-        llvm::FunctionType* ft = llvm::FunctionType::get(
-            ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
-        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                    symbol, &ctx_.module());
-    }
+    // The operators with an exact rule (ADR-0058): they read an exact
+    // tensor's tagged slots through the generic exact ring, or only its shape.
+    // Every other operator refuses an exact tensor by name, so its slots are
+    // never read as doubles and it is never rounded implicitly. Add an
+    // operator here only with its exact rule.
+    static const char* const kExactTensorCarriers[] = {
+        "tensor-get", "tensor-length", "tensor-shape", "reshape", "tensor-sum",
+        "matmul",     // exact rule: the tagged matmul kernel (codegenMatmul)
+        "transpose",  // exact rule: eshkol_tagged_tensor_transpose
+        "tensor-set!",  // exact rule: the slot store boundary
+        // exact rule: the tagged elementwise kernel (tensorArithmeticInternal)
+        "tensor-add", "tensor-sub", "tensor-mul", "tensor-div",
+    };
+    auto listed = [op_name](const char* const* names, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            if (op_name && std::strcmp(op_name, names[i]) == 0) return true;
+        }
+        return false;
+    };
+    const int32_t accept =
+        (listed(kDualTensorCarriers, sizeof(kDualTensorCarriers) / sizeof(*kDualTensorCarriers))
+             ? 1 : 0) |
+        (listed(kExactTensorCarriers, sizeof(kExactTensorCarriers) / sizeof(*kExactTensorCarriers))
+             ? 2 : 0);
     llvm::Value* name = ctx_.internCString(op_name ? op_name : "tensor-op");
-    return b.CreateCall(fn, {slot, name}, "tensor_ptr_checked");
+    if (mode == TensorOperandMode::RequireMatrix) {
+        // void* eshkol_tensor_matrix_operand_checked(const eshkol_tagged_value_t*, const char*)
+        llvm::FunctionCallee fn = ctx_.module().getOrInsertFunction(
+            "eshkol_tensor_matrix_operand_checked",
+            llvm::FunctionType::get(ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+        return b.CreateCall(fn, {slot, name}, "tensor_ptr_checked");
+    }
+    // void* <symbol>(const eshkol_tagged_value_t*, const char*, int32_t accept)
+    const char* symbol = mode == TensorOperandMode::RequireTensor
+                             ? "eshkol_tensor_destination_policy_checked"
+                             : "eshkol_tensor_operand_policy_checked";
+    llvm::FunctionCallee fn = ctx_.module().getOrInsertFunction(
+        symbol, llvm::FunctionType::get(
+                    ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.int32Type()}, false));
+    return b.CreateCall(fn, {slot, name, llvm::ConstantInt::get(ctx_.int32Type(), accept)},
+                        "tensor_ptr_checked");
 }
 
 /** @brief Runtime axis validation for the axis-reduce family (see header).
@@ -958,7 +978,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::BasicBlock* scalar_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_scalar", func);
     llvm::BasicBlock* slice_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_slice", func);
     llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "tget_done", func);
-    llvm::Value* is_dual_tensor = isDualTensor(tensor_ptr);
+    llvm::Value* is_dual_tensor = isTaggedNumericTensor(tensor_ptr);
     ctx_.builder().CreateCondBr(is_full_index, scalar_bb, slice_bb);
 
     // ===== SCALAR PATH: Full indexing - preserve dual tensor elements =====
@@ -1081,7 +1101,7 @@ llvm::Value* TensorCodegen::vectorRef(const eshkol_operations_t* op) {
 llvm::Value* TensorCodegen::loadTensorScalar(llvm::Value* tensor_ptr,
                                              llvm::Value* elements_ptr,
                                              llvm::Value* index) {
-    llvm::Value* is_dual_tensor = isDualTensor(tensor_ptr);
+    llvm::Value* is_dual_tensor = isTaggedNumericTensor(tensor_ptr);
     llvm::Value* tget_ad_active = ctx_.builder().CreateLoad(
         ctx_.int1Type(), ctx_.adModeActive());
     llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), elements_ptr, index);

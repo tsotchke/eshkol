@@ -22,6 +22,7 @@ TESTS=(
     tests/vm/ad_tape_lowlevel_regression.esk
     tests/vm/vm_kb_tensor_test.esk
     tests/vm/bignum_rational_literals_test.esk
+    tests/vm/signed_curvature_surface.esk
 )
 
 # Every *_surface_regression probe is deterministic and self-checking.  Keep

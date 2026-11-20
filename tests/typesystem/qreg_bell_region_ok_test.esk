@@ -1,0 +1,19 @@
+;; Type System Test: a Bell pair in a quantum region type-checks and runs
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-NO-STDERR: Type error
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+;; EXPECT-NO-STDERR: dimension mismatch
+
+(require core.quantum)
+
+(define-quantum-region qr (bell)
+  (let* ((r (qalloc qr 2))
+         (r (qh r 0))
+         (r (qcnot r 0 1)))
+    (qmeasure r)))
+
+(define b (bell))
+(display (if (= (car b) (cadr b)) "bell: correlated" "bell: uncorrelated"))
+(newline)

@@ -1,0 +1,3 @@
+;; expect-error: structurally smaller
+(hott (import numbers)
+  (define loopy : (-> Nat Nat) (split (zero zero) ((suc n) (loopy (suc n))))))

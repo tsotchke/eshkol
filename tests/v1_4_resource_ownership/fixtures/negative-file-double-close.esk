@@ -1,0 +1,3 @@
+(define out (open-output-file "strict-double.txt"))
+(close-port out)
+(close-output-port out)

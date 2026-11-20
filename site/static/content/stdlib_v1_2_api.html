@@ -1577,7 +1577,7 @@
 <td><code>core.threads</code></td>
 <td><code>lib/core/threads.esk</code></td>
 <td><strong>No</strong> — <code>(require core.threads)</code></td>
-<td>POSIX-mutex / condvar / thread primitives</td>
+<td>POSIX-mutex / condvar / semaphore / barrier / thread primitives</td>
 </tr>
 <tr>
 <td><code>core.plot</code></td>
@@ -1620,6 +1620,18 @@
 <td><code>lib/core/msgpack.esk</code></td>
 <td><strong>No</strong> — <code>(require core.msgpack)</code></td>
 <td>MessagePack bytevector encoder/decoder substrate</td>
+</tr>
+<tr>
+<td><code>core.protobuf</code></td>
+<td><code>lib/core/protobuf.esk</code></td>
+<td><strong>No</strong> — <code>(require core.protobuf)</code></td>
+<td>Protocol Buffers (proto3): <code>.proto</code> parser, schema compiler, generated encoders/decoders</td>
+</tr>
+<tr>
+<td><code>core.utf8</code></td>
+<td><code>lib/core/utf8.esk</code></td>
+<td><strong>No</strong> — <code>(require core.utf8)</code></td>
+<td>Strict UTF-8 validation shared by the wire formats</td>
 </tr>
 <tr>
 <td><code>core.memory</code></td>
@@ -1702,9 +1714,14 @@
 <p>Exports (<code>threads.esk</code>):</p>
 <pre class="scheme"><code>(provide
   make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
-  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!
+  make-condvar condvar-wait! condvar-wait-timeout! condvar-signal!
+  condvar-broadcast! condvar-destroy!
+  make-semaphore semaphore? semaphore-acquire! semaphore-try-acquire!
+  semaphore-release! semaphore-value semaphore-destroy!
+  make-barrier barrier? barrier-wait! barrier-parties barrier-generation
+  barrier-destroy!
   make-thread thread-join thread? thread-result-ready?)</code></pre>
-<p>POSIX-pthread wrappers. Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). <code>make-thread</code> spawns the thunk on a thread-pool worker; <code>thread-join</code> blocks until completion. The Windows path is currently stubbed (returns <code>NULL</code> / error from every entry point pending the v1.4-platform program).</p>
+<p>POSIX-pthread wrappers. Counting semaphores (blocking, try and timed acquire) and reusable generation-counted barriers are built on the same mutex and condition variable; see <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/threads.md" target="_blank" rel="noopener noreferrer">reference/stdlib/threads.md</a>. Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). <code>make-thread</code> spawns the thunk on a thread-pool worker; <code>thread-join</code> blocks until completion. The Windows path is currently stubbed (returns <code>NULL</code> / error from every entry point pending the v1.4-platform program).</p>
 <h3 id="b7-coreplot">B.7 <code>core.plot</code></h3>
 <pre class="scheme"><code>(require core.plot)</code></pre>
 <p>Exports (<code>plot.esk</code>):</p>
@@ -1815,6 +1832,18 @@
   msgpack-bytes-&gt;bytevector msgpack-bytevector-&gt;bytes)</code></pre>
 <p>Initial MessagePack wire-format substrate for the v1.8 distributed track. <code>msgpack-encode</code> returns a bytevector and <code>msgpack-decode</code> consumes exactly one object from a bytevector, raising on trailing bytes. <code>msgpack-decode-prefix</code> returns <code>(value next-index)</code> for stream framing. The supported deterministic subset is MessagePack nil via <code>(msgpack-null)</code>, booleans, exact integers through the signed/unsigned 32-bit encodings, UTF-8 strings, binary bytevectors, list arrays, and explicit maps created with <code>(msgpack-map entries)</code>.</p>
 <p>Maps decode back to the explicit map wrapper so alists are not confused with arrays. Array decode returns lists. Arbitrary vectors are intentionally not an encode surface yet; vector numeric-slot lowering is tracked separately, so the wire-format module avoids a lossy vector path until that compiler/runtime boundary is fixed.</p>
+<p>Text payloads are validated by <code>core.utf8</code> (<code>utf8-require-valid</code>), the strict UTF-8 check shared with <code>core.protobuf</code>.</p>
+<h4 id="b15a-coreprotobuf">B.15a <code>core.protobuf</code></h4>
+<pre class="scheme"><code>(require core.protobuf)</code></pre>
+<p>Exports (<code>protobuf.esk</code>):</p>
+<pre class="scheme"><code>(provide
+  protobuf-schema protobuf-schema? protobuf-schema-from-proto protobuf-parse-proto
+  protobuf-message protobuf-message? protobuf-message-type
+  protobuf-message-entries protobuf-message-unknown
+  protobuf-ref protobuf-has?
+  protobuf-encode protobuf-decode protobuf-encoder protobuf-decoder
+  protobuf-enum-number protobuf-enum-name)</code></pre>
+<p>Protocol Buffers (proto3) over bytevectors. Schemas are Eshkol data (<code>(message NAME (field N name TYPE) ...)</code>, <code>(enum NAME (VALUE n) ...)</code>) or are parsed from proto3 <code>.proto</code> text; <code>protobuf-encoder</code>/<code>protobuf-decoder</code> return the codec closures for one message type. All scalar types, packed and unpacked repeated fields, maps, oneof, explicit and implicit presence, message merging and unknown-field preservation follow the proto3 rules; malformed input raises a catchable error. Full reference: <code>docs/reference/stdlib/protobuf.md</code>.</p>
 <h3 id="b16-corememory">B.16 <code>core.memory</code></h3>
 <pre class="scheme"><code>(require core.memory)</code></pre>
 <p>Exports (<code>memory.esk</code>):</p>

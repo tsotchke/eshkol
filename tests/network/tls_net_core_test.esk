@@ -1,0 +1,124 @@
+;; core.tls over leased core.net TCP streams, against the local test authority
+;; generated under the build directory (ESHKOL_TLS_TEST_PKI): client and server
+;; handshakes on owned TCP handles, verification on by default, untrusted and
+;; mismatched certificates refused, the explicit insecure option, the session's
+;; exclusive TCP lease, guaranteed close, and a >16 MiB round trip.
+(require stdlib)
+(require core.net)
+(require core.tls)
+(require core.threads)
+
+(define failures 0)
+(define (check value label)
+  (if value #t
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display label) (newline))))
+(define (tls-reason? value reason)
+  (and (tls-error? value) (eq? (tls-error-reason value) reason)))
+(define pki (get-environment-variable "ESHKOL_TLS_TEST_PKI"))
+(define (pki-file name) (string-append pki "/" name))
+(define ca (pki-file "ca.pem"))
+
+(define (fill! bv seed)
+  (let loop ((i 0))
+    (if (< i (bytevector-length bv))
+        (begin (bytevector-u8-set! bv i (modulo (+ seed (* i 13) (quotient i 4093)) 256))
+               (loop (+ i 1))))))
+;; Content comparison of two bytevectors, byte by byte.
+(define (bytes=? a b)
+  (and (= (bytevector-length a) (bytevector-length b))
+       (let loop ((i 0))
+         (or (= i (bytevector-length a))
+             (and (= (bytevector-u8-ref a i) (bytevector-u8-ref b i)) (loop (+ i 1)))))))
+(define (read-exactly! session bv count)
+  (let loop ((got 0))
+    (if (< got count)
+        (let ((n (tls-read! session bv got (min 1048576 (- count got)) 20000)))
+          (if (or (tls-error? n) (eof-object? n)) got (loop (+ got n))))
+        got)))
+
+;; One server: accept a TCP stream, start TLS on it, echo `echo` bytes, then
+;; wait for the client's close-notify.
+(define (serve listener cert key echo)
+  (make-thread
+    (lambda ()
+      (let ((context (tls-server-context cert key))
+            (stream (tcp-accept listener 10000)))
+        (if (network-error? stream) (list 'accept stream)
+            (let ((result
+                   (call-with-tls-server context stream 10000
+                     (lambda (session)
+                       (if (> echo 0)
+                           (let* ((buf (make-bytevector echo 0))
+                                  (got (read-exactly! session buf echo)))
+                             (tls-write-all! session buf 0 got 30000)
+                             (tls-read! session (make-bytevector 1 0) 0 1 10000)
+                             got)
+                           (begin (tls-read! session (make-bytevector 1 0) 0 1 10000) 'ok))))))
+              (tls-context-close context)
+              result))))))
+(define (connect-session context port name proc)
+  (let ((stream (tcp-connect "127.0.0.1" port 5000)))
+    (if (network-error? stream) stream
+        (call-with-tls-client context stream name 10000 (lambda (s) (proc s stream))))))
+
+(define listener (tcp-listen "127.0.0.1" 0))
+(define port (net-local-port listener))
+(define client-context (tls-client-context ca))
+(check (not (tls-error? client-context)) "client context with the test authority")
+
+;; ── Verified handshake, exclusive lease, >16 MiB round trip ────────────
+(define total (+ (* 17 1024 1024) 77))
+(define payload (make-bytevector total 0))
+(define echoed (make-bytevector total 0))
+(fill! payload 9)
+(define server-thread (serve listener (pki-file "server-cert.pem") (pki-file "server-key.pem") total))
+(define held-stream #f)
+(define roundtrip
+  (connect-session client-context port "localhost"
+    (lambda (session stream)
+      (set! held-stream stream)
+      (check (eq? (network-error-reason (tcp-read! stream payload 0 4 0)) 'busy)
+             "the session holds its TCP stream lease")
+      (check (= (tls-write-all! session payload 0 total 60000) total)
+             "write a >16 MiB payload under one deadline")
+      (read-exactly! session echoed total))))
+(check (eqv? roundtrip total) "a verified client handshake on an owned TCP stream")
+(check (bytes=? echoed payload) ">16 MiB TLS round trip preserves every byte")
+(check (eq? (network-error-reason (tcp-close held-stream)) 'invalid)
+       "closing the session closed its TCP stream")
+(check (eqv? (thread-join server-thread) total) "a server handshake on an owned TCP stream echoes")
+
+;; ── Refusals ───────────────────────────────────────────────────────────
+(define rogue-thread (serve listener (pki-file "rogue-cert.pem") (pki-file "rogue-key.pem") 0))
+(define untrusted (connect-session client-context port "localhost" (lambda (s t) 'connected)))
+(check (tls-reason? untrusted 'untrusted-certificate) "an untrusted certificate is refused")
+(thread-join rogue-thread)
+(define mismatch-thread (serve listener (pki-file "server-cert.pem") (pki-file "server-key.pem") 0))
+(define mismatch (connect-session client-context port "other.example" (lambda (s t) 'connected)))
+(check (tls-reason? mismatch 'identity-mismatch) "a hostname mismatch is refused")
+(thread-join mismatch-thread)
+(check (tls-reason? (tls-client-context/options ca '(trust-everything)) 'invalid)
+       "unknown client options are refused")
+(define insecure (tls-client-context/options ca '(insecure-no-verify)))
+(define insecure-thread (serve listener (pki-file "rogue-cert.pem") (pki-file "rogue-key.pem") 0))
+(check (eq? (connect-session insecure port "localhost" (lambda (s t) 'connected)) 'connected)
+       "only the explicit insecure option accepts an unverified peer")
+(thread-join insecure-thread)
+(tls-context-close insecure)
+
+;; ── Guaranteed close of a session on an exception ──────────────────────
+(define seen #f)
+(define raise-thread (serve listener (pki-file "server-cert.pem") (pki-file "server-key.pem") 0))
+(define raised
+  (guard (e ((symbol? e) e))
+    (connect-session client-context port "localhost" (lambda (s t) (set! seen s) (raise 'boom)))))
+(check (eq? raised 'boom) "an exception leaves the session scope")
+(check (tls-reason? (tls-session-close seen) 'invalid) "the exception closed the session")
+(thread-join raise-thread)
+
+(tls-context-close client-context)
+(tcp-close listener)
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

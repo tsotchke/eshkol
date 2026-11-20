@@ -19,6 +19,8 @@ case "$BUILD_DIR" in /*) ;; *) BUILD_DIR="$REPO_ROOT/$BUILD_DIR" ;; esac
 ESHKOL_RUN="$BUILD_DIR/eshkol-run"
 [ -x "$ESHKOL_RUN" ] || { echo "run_math_sweep.sh: $ESHKOL_RUN not found" >&2; exit 2; }
 PROGRAM="$REPO_ROOT/examples/mathematics_group_cohomology_sweep.esk"
+# the program requires core.simplicial and core.homological from this checkout
+export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 BIN="$BUILD_DIR/mathematics_group_cohomology_sweep_aot"
 "$ESHKOL_RUN" -O 0 -o "$BIN" "$PROGRAM" >/dev/null 2>&1 || { echo "run_math_sweep.sh: compile failed" >&2; exit 2; }
 HOST="$(hostname -s 2>/dev/null || echo unknown)"

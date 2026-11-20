@@ -304,11 +304,9 @@ extern "C" void eshkol_jet_tensor_sum(arena_t* arena, const eshkol_tensor_t* ten
                                       eshkol_tagged_value_t* out) {
     if (!out) return;
     if (!tensor || tensor->total_elements == 0 || !tensor->elements) {
-        eshkol_tagged_value_t zero{};
-        zero.type = ESHKOL_VALUE_DOUBLE;
-        zero.flags = ESHKOL_VALUE_INEXACT_FLAG;
-        zero.data.double_val = 0.0;
-        *out = zero;
+        // The empty sum is the ring's zero: exact 0 for an exact tensor.
+        *out = (tensor && tensor->dtype == ESHKOL_TENSOR_DTYPE_EXACT)
+                   ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
         return;
     }
     const auto* slots = reinterpret_cast<const eshkol_tagged_value_t*>(tensor->elements);
@@ -325,12 +323,11 @@ extern "C" void eshkol_jet_tensor_sum(arena_t* arena, const eshkol_tensor_t* ten
                                                jet_from_tagged(e, "tensor-sum")),
                                 "tensor-sum");
         } else {
-            eshkol_tagged_value_t sum{};
-            sum.type = ESHKOL_VALUE_DOUBLE;
-            sum.flags = ESHKOL_VALUE_INEXACT_FLAG;
-            sum.data.double_val = jet_from_tagged(acc, "tensor-sum").c[0] +
-                                  jet_from_tagged(e, "tensor-sum").c[0];
-            acc = sum;
+            // Two plain numbers: the language's own `+`, which keeps an exact
+            // sum exact (an exact tensor, ADR-0058) and follows contagion.
+            eshkol_tagged_value_t next{};
+            eshkol_taylor_binary_tagged(arena, &acc, &e, /*add=*/0, &next);
+            acc = next;
         }
     }
     *out = acc;
@@ -374,6 +371,48 @@ static eshkol_tagged_value_t tensor_slot_tagged(const eshkol_tensor_t* t, int64_
     v.flags = ESHKOL_VALUE_INEXACT_FLAG;
     std::memcpy(&v.data.double_val, &bits, sizeof(double));
     return v;
+}
+
+extern "C" int32_t eshkol_tensor_real_to_double(const eshkol_tagged_value_t* value,
+                                                 double* out);
+extern "C" double eshkol_tensor_reduce_precision_value(double value, int64_t dtype);
+
+/* The representation of a tagged-kernel result (ADR-0058), decided from the
+ * operand dtypes by R7RS contagion, never by inspecting the values:
+ *   - a jet operand makes a jet tensor (the derivative is carried);
+ *   - two exact operands make an exact tensor (every slot an exact rational,
+ *     since the generic exact ring is closed under + - * and nonzero /);
+ *   - an exact operand meeting a numeric (inexact) tensor makes a numeric
+ *     tensor of the inexact operand's dtype: each slot is the inexact result
+ *     the scalar operator gave, stored as that dtype stores a real.
+ * `result` was built with tagged slots; the third case re-encodes it densely. */
+static eshkol_tensor_t* finish_tagged_result(arena_t* arena, eshkol_tensor_t* result,
+                                             uint64_t a_dtype, uint64_t b_dtype) {
+    if (!result) return result;
+    if (a_dtype == ESHKOL_TENSOR_DTYPE_DUAL || b_dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
+        result->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
+        return result;
+    }
+    if (a_dtype == ESHKOL_TENSOR_DTYPE_EXACT && b_dtype == ESHKOL_TENSOR_DTYPE_EXACT) {
+        result->dtype = ESHKOL_TENSOR_DTYPE_EXACT;
+        return result;
+    }
+    const uint64_t numeric = a_dtype == ESHKOL_TENSOR_DTYPE_EXACT ? b_dtype : a_dtype;
+    const uint64_t n = result->total_elements;
+    const auto* slots = reinterpret_cast<const eshkol_tagged_value_t*>(result->elements);
+    auto* dense = static_cast<double*>(arena_allocate(arena, (size_t)(n ? n : 1) * sizeof(double)));
+    if (!dense) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "tensor arithmetic: out of memory");
+        return nullptr;
+    }
+    for (uint64_t i = 0; i < n; ++i) {
+        double value = 0.0;
+        eshkol_tensor_real_to_double(&slots[i], &value);
+        dense[i] = eshkol_tensor_reduce_precision_value(value, (int64_t)numeric);
+    }
+    result->elements = reinterpret_cast<int64_t*>(dense);
+    result->dtype = numeric;
+    return result;
 }
 
 /* Elementwise binary arithmetic over jet tensors (ADR-0020 amendment 2).
@@ -445,7 +484,7 @@ extern "C" eshkol_tensor_t* eshkol_jet_tensor_binary(arena_t* arena,
         const eshkol_tagged_value_t y = tensor_slot_tagged(b, ib, arena, name);
         eshkol_taylor_binary_tagged(arena, &x, &y, op, &out[i]);
     }
-    return result;
+    return finish_tagged_result(arena, result, a->dtype, b->dtype);
 }
 
 static bool tensor_product_checked(int64_t a, int64_t b, int64_t* out);
@@ -466,18 +505,26 @@ extern "C" eshkol_tensor_t* eshkol_jet_tensor_matmul(arena_t* arena,
     if (!arena) arena = get_global_arena();
     const char* name = op_name ? op_name : "matmul";
     if (reverse_operand) refuse_jet_meets_reverse(name);
-    if (!a || !b || a->num_dimensions != 2 || b->num_dimensions != 2 ||
-        a->dimensions[1] != b->dimensions[0]) {
+    /* PEP 465 promotion, as the numeric kernel applies it: a 1-D left operand
+     * is a row [1,K] and a 1-D right operand a column [K,1]; the promoted
+     * axis is dropped from the result. */
+    const bool a_vec = a && a->num_dimensions == 1;
+    const bool b_vec = b && b->num_dimensions == 1;
+    if (!a || !b || (a->num_dimensions != 2 && !a_vec) ||
+        (b->num_dimensions != 2 && !b_vec) ||
+        (a_vec ? a->dimensions[0] : a->dimensions[1]) != b->dimensions[0]) {
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
-                             "%s: forward-mode (jet) matmul requires 2-D operands with "
-                             "A.cols == B.rows", name);
+                             "%s: matmul of tagged tensors requires 1-D or 2-D operands "
+                             "with A.cols == B.rows", name);
         return nullptr;
     }
     static const int op_mul = eshkol_taylor_binary_opcode("*");
     static const int op_add = eshkol_taylor_binary_opcode("+");
-    const int64_t M = (int64_t)a->dimensions[0];
-    const int64_t K = (int64_t)a->dimensions[1];
-    const int64_t N = (int64_t)b->dimensions[1];
+    const int64_t M = a_vec ? 1 : (int64_t)a->dimensions[0];
+    const int64_t K = a_vec ? (int64_t)a->dimensions[0] : (int64_t)a->dimensions[1];
+    const int64_t N = b_vec ? 1 : (int64_t)b->dimensions[1];
+    const bool exact_ring = a->dtype == ESHKOL_TENSOR_DTYPE_EXACT &&
+                            b->dtype == ESHKOL_TENSOR_DTYPE_EXACT;
     int64_t total = 0;
     if (!tensor_product_checked(M, N, &total)) {
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s: result shape overflows", name);
@@ -495,19 +542,26 @@ extern "C" eshkol_tensor_t* eshkol_jet_tensor_matmul(arena_t* arena,
                              "%s: failed to allocate forward dual tensor", name);
         return nullptr;
     }
-    result->dimensions[0] = (uint64_t)M;
-    result->dimensions[1] = (uint64_t)N;
-    result->num_dimensions = 2;
+    if (a_vec && b_vec) {
+        result->num_dimensions = 1;
+        result->dimensions[0] = 1;
+    } else if (a_vec || b_vec) {
+        result->num_dimensions = 1;
+        result->dimensions[0] = (uint64_t)(a_vec ? N : M);
+    } else {
+        result->dimensions[0] = (uint64_t)M;
+        result->dimensions[1] = (uint64_t)N;
+        result->num_dimensions = 2;
+    }
     result->total_elements = (uint64_t)total;
     result->dtype = ESHKOL_TENSOR_DTYPE_DUAL;
 
     auto* out = reinterpret_cast<eshkol_tagged_value_t*>(result->elements);
     for (int64_t i = 0; i < M; ++i) {
         for (int64_t j = 0; j < N; ++j) {
-            eshkol_tagged_value_t acc{};
-            acc.type = ESHKOL_VALUE_DOUBLE;
-            acc.flags = ESHKOL_VALUE_INEXACT_FLAG;
-            acc.data.double_val = 0.0;
+            // The empty sum is the ring's zero: exact 0 over the exact ring.
+            eshkol_tagged_value_t acc = exact_ring ? eshkol_make_int64(0, true)
+                                                   : eshkol_make_double(0.0);
             for (int64_t k = 0; k < K; ++k) {
                 const eshkol_tagged_value_t x = tensor_slot_tagged(a, i * K + k, arena, name);
                 const eshkol_tagged_value_t y = tensor_slot_tagged(b, k * N + j, arena, name);
@@ -524,7 +578,7 @@ extern "C" eshkol_tensor_t* eshkol_jet_tensor_matmul(arena_t* arena,
             out[i * N + j] = acc;
         }
     }
-    return result;
+    return finish_tagged_result(arena, result, a->dtype, b->dtype);
 }
 
 /* The tensor a tagged value names, or nullptr (HEAP_PTR + TENSOR subtype). */

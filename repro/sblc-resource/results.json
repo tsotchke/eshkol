@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "jit_executable_cache": "disabled",
+  "checks_per_engine": 84,
+  "cost_profiles": 11,
+  "independent_operational_observations": 16,
+  "engines": [
+    "jit",
+    "aot-O2"
+  ],
+  "termination_probabilities": [
+    "5/9",
+    "4/9"
+  ],
+  "conditional_total_work": [
+    15,
+    16
+  ],
+  "producer_free_replay": true,
+  "stdout_sha256": "230f8ff48b7ef6615514ab10e709aec4d08826e52760df621a377890e1eb7248",
+  "compiler_sha256": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+  "source_sha256": {
+    "lib/core/sblc/resource.esk": "6507191739cccf3412711a582ff0f0801dcde1077c53d469a2e9c3f1cef1f047",
+    "tests/stdlib/sblc_resource_test.esk": "ee4a69e3f714002f7883d848ce8beeebb5d3d60b98643370cb8296d02a7ee695",
+    "scripts/run_sblc_resource_gate.py": "0e4358b2e8bb394855b0d5886903c39db4e097ee259932f801a14ed22e6e4fc7",
+    "lib/core/sblc.esk": "a19ae694a84934a3f94dcd8a203e77aa1f3bfa8a5411ff54ab1e1a60141834ee",
+    "lib/core/blc.esk": "25048643f33b8b24f5e1602e4ec13d85f745bf88fda49c504dce13138cf38d6c"
+  }
+}

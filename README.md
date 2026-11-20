@@ -57,12 +57,12 @@ See the [latest published release](https://github.com/tsotchke/eshkol/releases/l
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
 
 - **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on both the LLVM backend and the bytecode VM. `divergence`/`curl` were central-difference approximations (`h=1e-7`) on the VM until 2026-08-26; both now seed one forward dual per input variable and read the tangent of each output component, so a gradient field's curl is exactly `#(0 0 0)` rather than `#(1.1102230246251565e-09 ...)`, and `(ad-finite-difference-evals)` reads 0. Cross-engine agreement is measured, not asserted: `tests/vm_parity/corpus/72_curl_field_shapes.esk`
-- **Zero-overhead abstractions** - Arena allocation is O(1), no runtime penalties for safety. Ownership annotations (`owned`/`move`/`borrow`) and `(the <type> expr)` ascription are erased at compile time today, but this is *not yet* backed by discharged type-level proofs — no proof obligation is checked before erasure (`BorrowChecker` has zero production callers; `(the ...)` is a trusted no-op). Proof-carrying erasure is a build item under ADR-0004 (target v1.9.0/v2.0) — corrected 2026-08-25, conformity audit item f3
-- **Deterministic performance** - No garbage collector means no unpredictable pauses. Critical for real-time systems and production ML
+- **Ownership and type annotations** - `owned`, `move`, and `borrow` express ownership intent. The native runner performs ownership analysis, while LLVM code generation emits flag operations and selected runtime checks. These mechanisms do not establish complete alias-safe lifetime checking or proof-carrying erasure. `(the <type> expr)` is a trusted ascription; the remaining proof obligations are tracked in ADR-0004.
+- **Explicit reclamation points** - Region teardown runs synchronously, including escape traversal and promotion. Eshkol does not run an independently scheduled heap collector; region-exit cost still depends on the objects and graph being processed.
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
 - **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`). The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 72-opcode core bytecode VM
 - **Consciousness engine** - 22 compiled primitives: logic programming (unification, knowledge bases), active inference (factor graphs, belief propagation, free energy), and global workspace theory (softmax competition, content broadcasting)
-- **Mathematical rigor** - HoTT type foundations provide the language's dependent-type surface; no proof obligation is currently discharged by the compiler (no SMT solving, no Lean/proof-assistant export, `TypeEnvironment::areEquivalent` is identity-only) — "provable, not just tested" is the ADR-0000 Stage 14b / v2.0 target, not the present state. Corrected 2026-08-25, conformity audit item f4
+- **Mathematical rigor** - HoTT type foundations: a cubical type theory in the compiler checks proofs about identity types, univalence and higher inductive types at compile time and computes with them (ADR-0043, [HoTT guide](docs/guide/HOTT.md)); the gradual checker of ordinary code reaches "provable, not just tested" at the ADR-0000 Stage 14b / v2.0 target
 
 ---
 
@@ -223,7 +223,7 @@ The gradual type system, grounded in Homotopy Type Theory, enables compile-time 
 Eshkol is implemented as a **production compiler** written in C17/C++20, utilizing LLVM for native code generation. The implementation comprises:
 
 - **Parser driven by an explicit continuation stack** — a child parse suspends into a heap-allocated coroutine frame, so native stack consumption is independent of grammar nesting — with comprehensive macro expansion (syntax-rules)
-- **HoTT type checker** with bidirectional *inference* (synthesis today; the checking direction for lambdas is planned for v1.9.0 under ADR-0004 — at v1.3.6 `TypeChecker::checkLambdaTask` synthesizes the lambda's type without consulting its `expected` parameter, `lib/types/type_checker.cpp:4516-4520`) and dependent type support
+- **HoTT type checker** with bidirectional checking: synthesis, and the checking direction for lambdas, applications, `let`, `define`, declarations and `(the T e)`, judged tail by tail; dependent types (Pi, Sigma, universe levels, length-indexed vectors, `define-type` families) with definitional equality by normalization, enforced at compile time (ADR-0042)
 - **LLVM backend** with 39 code generation modules totalling 120,420 lines (`find lib -iname '*codegen*.cpp'`); the extraction from the original monolith is ongoing, not complete — `llvm_codegen.cpp` itself is still 47,407 lines — measured at the v1.3.6-evolve source (`60f345def`)
 - **Arena memory allocator** with optimized allocation primitives
 - **Production JIT REPL** enabling interactive development with persistent state
@@ -294,7 +294,7 @@ Performs **compile-time AST transformation** for symbolic differentiation with a
 Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 
 - **116 special forms**: `define`, `lambda`, `let`/`let*`/`letrec`, `if`/`cond`/`case`/`match`, `quote`/`quasiquote`, `guard`/`raise`, `call/cc`, `dynamic-wind`, and more — corrected 2026-08-25 from "39", conformity audit item f10
-- **1,058 built-in functions** (1,118-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled against the generated language-surface manifest
+- **1,067 built-in functions** (1,470-construct canonical language surface with special forms/AST ops/prelude, see [docs/FEATURE_MATRIX.md](docs/FEATURE_MATRIX.md)): Complete numeric tower (int64/bignum/rational/double/complex), list operations, string manipulation, I/O, ML builtins — reconciled against the generated language-surface manifest
 - **Hygienic macros**: Full `syntax-rules` implementation with pattern matching
 - **Lexical closures**: First-class functions with captured environment support
 - **Tail call optimization**: Direct elimination and trampoline-based constant-stack recursion
@@ -526,9 +526,13 @@ Each cons cell stores **complete type information** in both car and cdr position
 `ESHKOL_VALUE_CALLABLE`. `type-name` gives the readable name as a symbol:
 `(map type-name mixed-list)` is `(integer string procedure tensor)`.
 
-### 3. Zero-Overhead Memory Safety
+### 3. Region Memory Management and Ownership Checks
 
-Arena allocation with **compile-time ownership tracking** provides memory safety without runtime cost. Linear types and borrow checking prevent use-after-free and double-free errors at compilation time.
+Native ownership analysis and selected runtime flag checks enforce particular
+constraints. Region arenas, escape promotion, and borrow checks do not provide
+general alias-safe lifetime proofs or guarantee compile-time prevention of every
+use-after-free or double-free. See the [memory model](docs/reference/runtime/memory-model.md)
+for reclamation triggers and backend limits.
 
 ### 4. Three-Mode Automatic Differentiation
 
@@ -554,6 +558,13 @@ Dependent types enable **compile-time verification** of array bounds, matrix dim
 (define (safe-matmul (A : Matrix<Float64, m, k>) 
                     (B : Matrix<Float64, k, n>)) : Matrix<Float64, m, n>
   (matmul A B))  ; k dimensions must match - verified statically
+```
+
+Identity types, univalence and higher inductive types are checked and computed by the compiler's cubical kernel (ADR-0043). The fundamental group of the circle, by encode-decode, with the winding number computed at compile time:
+
+```scheme
+(hott (import circle))
+(display (hott-eval (winding (trans 0 S1 base base base loop loop))))  ; => (pos 2)
 ```
 
 ---
@@ -672,7 +683,7 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient` (or `eshkol-run -r 
 - **Model serialization**: `.eshkol-model` ESKB-extended binary format for round-tripping trained networks
 - **Stable C FFI**: pybind11 Python bindings with NumPy zero-copy interop
 - **Per-thread arenas**: Safe concurrent memory allocation; deep recursion (100K stack frames) on a 512 MB thread stack
-- **Image I/O**: PNG/JPEG/WebP/BMP read/write/resize for vision pipelines via native platform/system codecs
+- **Image I/O**: PNG/JPEG/WebP/BMP read/write/resize for vision pipelines through codecs built into the runtime (no external library on any platform)
 - **Plotting stdlib**: Inline matplotlib-style charts via PNG output
 - **Actionable error messages**: Compile errors point at the exact source line and column with caret underline
 - **JSON Schema validation**: Draft 7 subset for experiment-manifest / preregistration enforcement (`json-schema-valid?`, `json-schema-validate`)
@@ -1237,7 +1248,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: v1.3.6-evolve publication requires the aggregate suite at 46/46 suites, <!-- release-record:ctest -->CTest **823/823**<!-- /release-record -->, executable language coverage 1,118/1,118 constructs and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record --> over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), regenerated by the Release workflow at the tagged commit. [docs/TEST_COVERAGE.md](docs/TEST_COVERAGE.md) distinguishes required final-source qualification from historical measurements.
+- **Testing**: v1.3.6-evolve publication requires the aggregate suite at 46/46 suites, <!-- release-record:ctest -->CTest **823/823**<!-- /release-record -->, execution-backed coverage of 1,118 names at the tagged source and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record --> over a 961-row manifest (604 `vm-supported`, 46 `native-only-justified`, 311 `gap`), regenerated by the Release workflow at the tagged commit. [docs/TEST_COVERAGE.md](docs/TEST_COVERAGE.md) distinguishes required final-source qualification from historical measurements.
 - **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---

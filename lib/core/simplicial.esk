@@ -1,0 +1,28 @@
+;;; core.simplicial -- simplicial sets as one library.
+;;;
+;;; Usage: (require core.simplicial)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.simplicial.sset    simplices as degeneracy operators on nondegenerate
+;;;                           simplices, simplicial sets, Delta-complexes,
+;;;                           simplicial complexes, standard simplices, horns,
+;;;                           spheres, skeleta, products, joins, cones,
+;;;                           suspensions
+;;;   core.simplicial.group   finite groups by tables, crossed modules, their
+;;;                           homotopy groups and k-invariant
+;;;   core.simplicial.nerve   nerves of finite categories and posets, order
+;;;                           complexes, face posets and McCord models,
+;;;                           classifying spaces BG, nerves of crossed modules
+;;;   core.simplicial.kan     horns and fillers, Kan complexes and
+;;;                           quasi-categories, Kan's homotopy groups,
+;;;                           simplicial maps Map(X, Y)
+;;;
+;;; Reference: docs/reference/stdlib/simplicial.md; design: ADR-0037
+;;; (docs/design/adr/0037-simplicial-and-homological-algebra.md).
+;;; Sources: J. P. May, "Simplicial Objects in Algebraic Topology" (1967);
+;;; P. G. Goerss, J. F. Jardine, "Simplicial Homotopy Theory" (1999).
+
+(require core.simplicial.sset)
+(require core.simplicial.group)
+(require core.simplicial.nerve)
+(require core.simplicial.kan)

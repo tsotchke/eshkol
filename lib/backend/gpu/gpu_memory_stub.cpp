@@ -4,6 +4,14 @@
  * All GPU functions return proper error codes with eshkol_error() messages.
  * NOT silent stubs — every function logs an actionable error.
  *
+ * With ESHKOL_GPU_VULKAN_ENABLED (Linux builds without CUDA) this file is the
+ * host side of the Vulkan compute backend: eshkol_gpu_init() opens a Vulkan
+ * device through gpu_vulkan.c and the buffer/kernel entry points route
+ * ESHKOL_GPU_VULKAN buffers there. Operations the device does not run
+ * (anything outside matmul/elementwise/reduce, or a kernel that failed its
+ * admission probe) use the CPU implementations below on host_ptr, which for
+ * Vulkan buffers is always the caller-visible data.
+ *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
  */
@@ -11,8 +19,24 @@
 #include <eshkol/backend/gpu/gpu_memory.h>
 #include <eshkol/logger.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
+
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+#include "gpu_vulkan.h"
+#include <atomic>
+#include <mutex>
+
+static EshkolGPUBackend g_stub_backend = ESHKOL_GPU_NONE;
+static std::atomic<bool> g_stub_initialized{false};
+static std::mutex g_stub_init_mutex;
+extern size_t g_gpu_threshold;
+
+static bool is_vk(const EshkolGPUBuffer* b) {
+    return b && b->backend == ESHKOL_GPU_VULKAN;
+}
+#endif
 
 /* Forward declaration: dispatched matmul from blas_backend.cpp */
 extern "C" void eshkol_matmul_f64(const double*, const double*, double*,
@@ -20,19 +44,61 @@ extern "C" void eshkol_matmul_f64(const double*, const double*, double*,
 
 // ===== Device Management =====
 
-/** @brief Stub GPU init: always reports zero devices found. */
+/** @brief GPU init. Without Vulkan support compiled in this always reports
+ *         zero devices. With it, opens a Vulkan compute device unless
+ *         ESHKOL_GPU_BACKEND says cpu/cuda; auto selection takes GPU-type
+ *         devices only, ESHKOL_GPU_BACKEND=vulkan also accepts CPU-type ones.
+ *         Idempotent and thread-safe. Returns 1 when a backend is active. */
 int eshkol_gpu_init(void) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (g_stub_initialized.load(std::memory_order_acquire)) {
+        return g_stub_backend != ESHKOL_GPU_NONE ? 1 : 0;
+    }
+    std::lock_guard<std::mutex> lock(g_stub_init_mutex);
+    if (g_stub_initialized.load(std::memory_order_relaxed)) {
+        return g_stub_backend != ESHKOL_GPU_NONE ? 1 : 0;
+    }
+    if (const char* env = std::getenv("ESHKOL_GPU_THRESHOLD")) {
+        size_t val = static_cast<size_t>(std::atol(env));
+        if (val > 0) g_gpu_threshold = val;
+    }
+    const EshkolGPURequest req = eshkol_gpu_backend_request();
+    if (req == ESHKOL_GPU_REQUEST_AUTO || req == ESHKOL_GPU_REQUEST_VULKAN) {
+        const unsigned flags = (req == ESHKOL_GPU_REQUEST_VULKAN) ? ESHKOL_VK_ALLOW_CPU_DEVICE : 0u;
+        if (eshkol_vk_init(flags)) {
+            g_stub_backend = ESHKOL_GPU_VULKAN;
+            eshkol_info("GPU initialized: Vulkan compute (%s)", eshkol_vk_device_name());
+        } else if (req == ESHKOL_GPU_REQUEST_VULKAN) {
+            eshkol_warn("ESHKOL_GPU_BACKEND=vulkan: no usable Vulkan device (%s); using CPU",
+                        eshkol_vk_status());
+        }
+    }
+    g_stub_initialized.store(true, std::memory_order_release);
+    return g_stub_backend != ESHKOL_GPU_NONE ? 1 : 0;
+#else
     return 0;  // No GPU devices found
+#endif
 }
 
-/** @brief Stub GPU shutdown: no-op, since no GPU resources were ever acquired. */
+/** @brief GPU shutdown: closes the Vulkan device when one is open; otherwise
+ *         a no-op. A later eshkol_gpu_init() re-runs selection. */
 void eshkol_gpu_shutdown(void) {
-    // No-op: no GPU resources to free
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    std::lock_guard<std::mutex> lock(g_stub_init_mutex);
+    if (g_stub_backend == ESHKOL_GPU_VULKAN) eshkol_vk_shutdown();
+    g_stub_backend = ESHKOL_GPU_NONE;
+    g_stub_initialized.store(false, std::memory_order_release);
+#endif
 }
 
-/** @brief Stub backend query: always reports no GPU backend. */
+/** @brief Active backend: ESHKOL_GPU_VULKAN when a Vulkan device is open,
+ *         otherwise ESHKOL_GPU_NONE. */
 EshkolGPUBackend eshkol_gpu_get_backend(void) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    return g_stub_backend;
+#else
     return ESHKOL_GPU_NONE;
+#endif
 }
 
 /** @brief Human-readable name for a GPU backend enum value (stub build: all
@@ -42,26 +108,40 @@ const char* eshkol_gpu_backend_name(EshkolGPUBackend backend) {
         case ESHKOL_GPU_NONE:   return "CPU only";
         case ESHKOL_GPU_METAL:  return "Apple Metal (not available)";
         case ESHKOL_GPU_CUDA:   return "NVIDIA CUDA (not available)";
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+        case ESHKOL_GPU_VULKAN: return "Vulkan compute";
+#else
         case ESHKOL_GPU_VULKAN: return "Vulkan (not available)";
+#endif
         case ESHKOL_GPU_WEBGPU: return "WebGPU (not available)";
         default:                return "Unknown";
     }
 }
 
-/** @brief Stub availability check: no GPU backend is ever available in this build. */
+/** @brief Availability check: true only for the active backend (Vulkan when
+ *         a device is open); no other GPU backend exists in this build. */
 int eshkol_gpu_backend_available(EshkolGPUBackend backend) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    return (backend != ESHKOL_GPU_NONE && backend == g_stub_backend) ? 1 : 0;
+#else
     (void)backend;
     return 0;  // No GPU backend available
+#endif
 }
 
-/** @brief Stub fp64 support check: always false (no GPU present). */
+/** @brief fp64 support: a Vulkan device is only selected when it has
+ *         shaderFloat64, so this is true exactly when Vulkan is active. */
 int eshkol_gpu_supports_f64(void) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    return g_stub_backend == ESHKOL_GPU_VULKAN ? 1 : 0;
+#else
     return 0;
+#endif
 }
 
 /** @brief Stub fp64 support check (alternate name): always false. */
 int eshkol_gpu_has_fp64(void) {
-    return 0;
+    return eshkol_gpu_supports_f64();
 }
 
 // ===== Memory Allocation =====
@@ -70,6 +150,12 @@ int eshkol_gpu_has_fp64(void) {
  *         no GPU backend was compiled in; zeroes `*out_buffer` if given. */
 int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type,
                      EshkolGPUBuffer* out_buffer) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (g_stub_backend == ESHKOL_GPU_VULKAN) {
+        (void)mem_type;  // Vulkan buffers are host-mapped, with a VRAM twin when the device has one
+        return eshkol_vk_alloc(size_bytes, out_buffer) == ESHKOL_VK_OK ? 0 : -1;
+    }
+#endif
     (void)size_bytes;
     (void)mem_type;
     eshkol_error("GPU allocation failed: no GPU backend available (build with Metal or CUDA support)");
@@ -91,6 +177,12 @@ int eshkol_gpu_alloc_aligned(size_t size_bytes, size_t alignment,
 /** @brief Stub GPU free: zeroes the buffer descriptor (there is no GPU
  *         resource to actually release). */
 void eshkol_gpu_free(EshkolGPUBuffer* buffer) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(buffer)) {
+        eshkol_vk_free(buffer);
+        return;
+    }
+#endif
     if (buffer) {
         memset(buffer, 0, sizeof(*buffer));
     }
@@ -100,6 +192,11 @@ void eshkol_gpu_free(EshkolGPUBuffer* buffer) {
  *         backend to wrap the pointer for). */
 int eshkol_gpu_wrap_host(void* host_ptr, size_t size_bytes,
                           EshkolGPUBuffer* out_buffer) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (g_stub_backend == ESHKOL_GPU_VULKAN) {
+        return eshkol_vk_wrap_host(host_ptr, size_bytes, out_buffer) == ESHKOL_VK_OK ? 0 : -1;
+    }
+#endif
     (void)host_ptr;
     (void)size_bytes;
     eshkol_error("GPU wrap_host failed: no GPU backend available");
@@ -113,6 +210,11 @@ int eshkol_gpu_wrap_host(void* host_ptr, size_t size_bytes,
 
 /** @brief Stub host/device sync: always fails with a logged error. */
 int eshkol_gpu_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(buffer)) {
+        return eshkol_vk_sync(buffer, direction) == ESHKOL_VK_OK ? 0 : -1;
+    }
+#endif
     (void)buffer;
     (void)direction;
     eshkol_error("GPU sync failed: no GPU backend available");
@@ -143,6 +245,12 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
                            EshkolGPUBuffer* C,
                            uint64_t M, uint64_t K, uint64_t N) {
     if (!A || !B || !C) return -1;
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(A) && is_vk(B) && is_vk(C) &&
+        eshkol_vk_matmul_f64(A, B, C, M, K, N) == ESHKOL_VK_OK) {
+        return 0;
+    }
+#endif
     const double* a = static_cast<const double*>(A->host_ptr);
     const double* b = static_cast<const double*>(B->host_ptr);
     double* c = static_cast<double*>(C->host_ptr);
@@ -159,6 +267,12 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
                            EshkolGPUBuffer* C,
                            uint64_t M, uint64_t K, uint64_t N) {
     if (!A || !B || !C) return -1;
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(A) && is_vk(B) && is_vk(C) &&
+        eshkol_vk_matmul_f32(A, B, C, M, K, N) == ESHKOL_VK_OK) {
+        return 0;
+    }
+#endif
 
     // CPU fallback: f32 scalar matmul
     const float* a = (const float*)A->host_ptr;
@@ -195,10 +309,15 @@ size_t eshkol_gpu_get_threshold(void) {
     return g_gpu_threshold;
 }
 
-/** @brief Stub dispatch decision: always false, since there is no GPU backend to use. */
+/** @brief Dispatch decision: true when a backend (Vulkan) is active and
+ *         `num_elements` meets the threshold; always false without one. */
 int eshkol_gpu_should_use(size_t num_elements) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    return (g_stub_backend != ESHKOL_GPU_NONE && num_elements >= g_gpu_threshold) ? 1 : 0;
+#else
     (void)num_elements;
     return 0;  // Never use GPU — no backend available
+#endif
 }
 
 // ===== Elementwise / Reduce / Transpose =====
@@ -211,6 +330,12 @@ int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
                                 EshkolGPUBuffer* out, uint64_t n,
                                 EshkolElementwiseOp op) {
     if (!a || !out || n == 0) return -1;
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(a) && is_vk(out) && (!b || is_vk(b)) &&
+        eshkol_vk_elementwise_f64(a, b, out, n, op) == ESHKOL_VK_OK) {
+        return 0;
+    }
+#endif
     // CPU fallback
     const double* ap = static_cast<const double*>(a->host_ptr);
     const double* bp = (b && b->host_ptr) ? static_cast<const double*>(b->host_ptr) : nullptr;
@@ -244,6 +369,11 @@ int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
 int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                            uint64_t n, EshkolReduceOp op) {
     if (!in || !out || n == 0) return -1;
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    if (is_vk(in) && is_vk(out) && eshkol_vk_reduce_f64(in, out, n, op) == ESHKOL_VK_OK) {
+        return 0;
+    }
+#endif
     const double* inp = static_cast<const double*>(in->host_ptr);
     double* outp = static_cast<double*>(out->host_ptr);
     if (!inp || !outp) return -1;
@@ -391,6 +521,23 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
  *         logical dtype, so plain f64 matmul stays correct. */
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t /*dtype*/) {
+#if defined(ESHKOL_GPU_VULKAN_ENABLED)
+    // Same shape as the CUDA dispatcher: lazy init, then the GPU above the
+    // element threshold, CPU on any refusal. dtype is ignored (no 16-bit path).
+    eshkol_gpu_init();
+    if (eshkol_gpu_should_use(M * N)) {
+        EshkolGPUBuffer ba{}, bb{}, bc{};
+        const bool wa = eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &ba) == 0;
+        const bool wb = eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &bb) == 0;
+        const bool wc = eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &bc) == 0;
+        const bool done = wa && wb && wc &&
+                          eshkol_vk_matmul_f64(&ba, &bb, &bc, M, K, N) == ESHKOL_VK_OK;
+        if (wa) eshkol_gpu_free(&ba);
+        if (wb) eshkol_gpu_free(&bb);
+        if (wc) eshkol_gpu_free(&bc);
+        if (done) return;
+    }
+#endif
     // GPU not available — dispatch directly to BLAS/SIMD via eshkol_matmul_f64.
     // dtype is ignored (no tensor-core path without a GPU); storage is already
     // f64 precision-reduced for the logical dtype, so this stays correct.

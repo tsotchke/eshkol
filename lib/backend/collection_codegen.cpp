@@ -1741,11 +1741,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     // below.
     llvm::Value* vref_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 4), "vref_dtype");
-    llvm::Value* vref_is_tagged = ctx_.builder().CreateOr(
-        ctx_.builder().CreateICmpEQ(vref_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
-        ctx_.builder().CreateICmpEQ(vref_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+    llvm::Value* vref_is_tagged = ctx_.emitDtypeHasTaggedSlots(vref_dtype);
     llvm::BasicBlock* vref_tagged_bb = llvm::BasicBlock::Create(ctx_.context(), "vref_tagged_slot", current_func);
     llvm::BasicBlock* vref_numeric_bb = llvm::BasicBlock::Create(ctx_.context(), "vref_numeric_slot", current_func);
     ctx_.builder().CreateCondBr(vref_is_tagged, vref_tagged_bb, vref_numeric_bb);
@@ -1874,11 +1870,7 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     // derivative, ADR-0027) has 16-byte slots, and the row view keeps its dtype.
     llvm::Value* nd_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(ctx_.tensorType(), tensor_ptr, 4), "vref_nd_dtype");
-    llvm::Value* nd_is_tagged = ctx_.builder().CreateOr(
-        ctx_.builder().CreateICmpEQ(nd_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
-        ctx_.builder().CreateICmpEQ(nd_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+    llvm::Value* nd_is_tagged = ctx_.emitDtypeHasTaggedSlots(nd_dtype);
     llvm::Value* slot_bytes = ctx_.builder().CreateSelect(nd_is_tagged,
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(eshkol_tagged_value_t)),
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
@@ -2405,11 +2397,7 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
     // the copy is itself a promoted carrier.
     llvm::Value* vcopy_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 4), "vcopy_dtype");
-    llvm::Value* vcopy_is_tagged = ctx_.builder().CreateOr(
-        ctx_.builder().CreateICmpEQ(vcopy_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
-        ctx_.builder().CreateICmpEQ(vcopy_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+    llvm::Value* vcopy_is_tagged = ctx_.emitDtypeHasTaggedSlots(vcopy_dtype);
     ctx_.builder().CreateStore(vcopy_dtype,
         ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 4));
     llvm::Value* vcopy_slot_bytes = ctx_.builder().CreateSelect(vcopy_is_tagged,
@@ -2542,11 +2530,7 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
         // values, so they are copied, not decoded.
         llvm::Value* vappend_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
             ctx_.builder().CreateStructGEP(ctx_.tensorType(), ptr, 4), "vappend_dtype");
-        llvm::Value* vappend_tagged_slots = ctx_.builder().CreateOr(
-            ctx_.builder().CreateICmpEQ(vappend_dtype,
-                llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
-            ctx_.builder().CreateICmpEQ(vappend_dtype,
-                llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+        llvm::Value* vappend_tagged_slots = ctx_.emitDtypeHasTaggedSlots(vappend_dtype);
         ctx_.builder().CreateBr(meta_merge);
         tensor_meta = ctx_.builder().GetInsertBlock();
 
@@ -2806,11 +2790,7 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     llvm::Value* tensor_elem_base = ctx_.builder().CreateLoad(ctx_.ptrType(), tensor_elems_field, "v2l_tensor_elems");
     llvm::Value* v2l_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(),
         ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 4), "v2l_dtype");
-    llvm::Value* v2l_tensor_is_tagged = ctx_.builder().CreateOr(
-        ctx_.builder().CreateICmpEQ(v2l_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_BOXED)),
-        ctx_.builder().CreateICmpEQ(v2l_dtype,
-            llvm::ConstantInt::get(ctx_.int64Type(), ESHKOL_TENSOR_DTYPE_DUAL)));
+    llvm::Value* v2l_tensor_is_tagged = ctx_.emitDtypeHasTaggedSlots(v2l_dtype);
     llvm::Value* tensor_total_field = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 3);
     llvm::Value* tensor_len = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_total_field, "v2l_tensor_len");
     ctx_.builder().CreateBr(length_merge);

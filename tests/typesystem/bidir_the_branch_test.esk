@@ -1,0 +1,8 @@
+;; Bidirectional checking (ADR-0042): (the T e) is checked tail by tail; a
+;; branch no value of which is a T contradicts the ascription.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: ascription (the Int64 ...): expected Int64, got String
+
+(define flag #f)
+(display (the integer (if flag 1 "one")))

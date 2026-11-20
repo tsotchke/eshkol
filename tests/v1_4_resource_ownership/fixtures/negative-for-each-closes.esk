@@ -1,0 +1,4 @@
+;; for-each may run its procedure many times; closing an outer port inside it
+;; changes the handle on an iteration.
+(define out (open-output-file "strict-each-close.txt"))
+(for-each (lambda (s) (write-string s out) (close-port out)) (list "a" "b"))

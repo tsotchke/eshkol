@@ -249,6 +249,80 @@ int main() {
     CHECK(throws.calls == 1);
     check_status(eshkol_handle_close(registry, throwing_id), ESHKOL_HANDLE_ENOENT);
 
+    // Tags, interruption and close-after-release: a borrower is woken, keeps
+    // its lease until release, and the scheduled close runs exactly once then.
+    {
+        CloseContext deferred;
+        eshkol_handle_id_t tagged = 0;
+        check_status(eshkol_handle_create_tagged(registry, ESHKOL_HANDLE_KIND_SOCKET, 3, 905,
+            close_fake, &deferred, &tagged), ESHKOL_HANDLE_OK);
+        eshkol_handle_kind_t kind = ESHKOL_HANDLE_KIND_INVALID;
+        uint32_t tag = 0;
+        check_status(eshkol_handle_get_kind(registry, tagged, &kind, &tag), ESHKOL_HANDLE_OK);
+        CHECK(kind == ESHKOL_HANDLE_KIND_SOCKET && tag == 3);
+        uintptr_t value = 0;
+        uint64_t lease = 0;
+        check_status(eshkol_handle_borrow(registry, tagged, &value, &lease), ESHKOL_HANDLE_OK);
+        std::atomic<int> wakes{0};
+        auto wake = [](void *opaque) { ++*static_cast<std::atomic<int> *>(opaque); };
+        check_status(eshkol_handle_set_waker(registry, tagged, lease, wake, &wakes),
+                     ESHKOL_HANDLE_OK);
+        check_status(eshkol_handle_set_waker(registry, tagged, lease + 1, wake, &wakes),
+                     ESHKOL_HANDLE_ESTATE);
+        check_status(eshkol_handle_interrupt(registry, tagged), ESHKOL_HANDLE_OK);
+        CHECK(wakes == 1);
+        CHECK(eshkol_handle_take_interrupt(registry, tagged, lease) == 1);
+        CHECK(eshkol_handle_take_interrupt(registry, tagged, lease) == 0);
+        check_status(eshkol_handle_close(registry, tagged), ESHKOL_HANDLE_EBUSY);
+        check_status(eshkol_handle_close_after_release(registry, tagged), ESHKOL_HANDLE_OK);
+        CHECK(wakes == 2 && deferred.calls == 0);
+        eshkol_handle_state_t state = ESHKOL_HANDLE_STATE_INVALID;
+        check_status(eshkol_handle_get_state(registry, tagged, &state), ESHKOL_HANDLE_OK);
+        CHECK(state == ESHKOL_HANDLE_STATE_CLOSING);
+        uintptr_t other_value = 0;
+        uint64_t other_lease = 0;
+        check_status(eshkol_handle_borrow(registry, tagged, &other_value, &other_lease),
+                     ESHKOL_HANDLE_ENOENT);
+        check_status(eshkol_handle_get_kind(registry, tagged, &kind, &tag), ESHKOL_HANDLE_ENOENT);
+        check_status(eshkol_handle_close_after_release(registry, tagged), ESHKOL_HANDLE_ENOENT);
+        check_status(eshkol_handle_close(registry, tagged), ESHKOL_HANDLE_ENOENT);
+        check_status(eshkol_handle_release(registry, tagged, lease), ESHKOL_HANDLE_OK);
+        CHECK(deferred.calls == 1);
+        check_status(eshkol_handle_get_state(registry, tagged, &state), ESHKOL_HANDLE_OK);
+        CHECK(state == ESHKOL_HANDLE_STATE_CLOSED);
+        check_status(eshkol_handle_release(registry, tagged, lease), ESHKOL_HANDLE_ENOENT);
+
+        // An interrupt with no borrower waits for the next borrower.
+        CloseContext pending;
+        eshkol_handle_id_t later = 0;
+        check_status(eshkol_handle_create(registry, ESHKOL_HANDLE_KIND_SOCKET, 906,
+            close_fake, &pending, &later), ESHKOL_HANDLE_OK);
+        check_status(eshkol_handle_interrupt(registry, later), ESHKOL_HANDLE_OK);
+        check_status(eshkol_handle_borrow(registry, later, &value, &lease), ESHKOL_HANDLE_OK);
+        check_status(eshkol_handle_set_waker(registry, later, lease, wake, &wakes),
+                     ESHKOL_HANDLE_EINTERRUPTED);
+        CHECK(eshkol_handle_take_interrupt(registry, later, lease) == 1);
+        check_status(eshkol_handle_release(registry, later, lease), ESHKOL_HANDLE_OK);
+        check_status(eshkol_handle_close_after_release(registry, later), ESHKOL_HANDLE_OK);
+        CHECK(pending.calls == 1);
+    }
+
+    // Exact registries keep identities within binary64's exact integer range.
+    {
+        eshkol_handle_registry_t *exact = eshkol_handle_registry_create_exact();
+        CHECK(exact != nullptr);
+        CloseContext cycles;
+        eshkol_handle_id_t id = 0;
+        for (int i = 0; i < (1 << 21) + 2; ++i) {  // past slot retirement
+            check_status(eshkol_handle_create(exact, ESHKOL_HANDLE_KIND_SOCKET, 907,
+                close_fake, &cycles, &id), ESHKOL_HANDLE_OK);
+            CHECK(id <= UINT64_C(9007199254740991));
+            check_status(eshkol_handle_close(exact, id), ESHKOL_HANDLE_OK);
+        }
+        CHECK(cycles.calls == (1 << 21) + 2);
+        check_status(eshkol_handle_registry_destroy(exact), ESHKOL_HANDLE_OK);
+    }
+
     // Destroy is busy during an outstanding borrow, then consumes all remaining
     // resources. It continues after callback failure and frees even on ECLOSE.
     CloseContext destroy_failure;

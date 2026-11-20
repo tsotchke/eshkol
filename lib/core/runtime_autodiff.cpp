@@ -192,6 +192,29 @@ void eshkol_ad_state_restore(unsigned char mode_active, uint64_t tape_depth,
     __eshkol_ad_mixed_record_count = mixed_record_count;
 }
 
+// ADR-0057: the tape of an outermost reverse pass that has armed the
+// forward-column retry for its first primal. An inner reverse pass at a tensor
+// point that meets this tape -- a reverse over reverse the tape cannot carry --
+// defers (eshkol_ad_defer_to_forward_columns) instead of refusing, because the
+// armed pass discards that primal and recomputes its derivative as forward
+// columns, in which the inner pass is a level and answers exactly.
+thread_local void* __ad_retry_tape = nullptr;
+
+void* eshkol_ad_retry_arm(void* tape) {
+    void* previous = __ad_retry_tape;
+    __ad_retry_tape = tape;
+    return previous;
+}
+
+int32_t eshkol_ad_retry_armed(void) {
+    return (__ad_retry_tape && __ad_retry_tape == (void*)__current_ad_tape) ? 1 : 0;
+}
+
+void eshkol_ad_defer_to_forward_columns(void) {
+    // The armed pass reads this counter after its first primal.
+    __eshkol_ad_mixed_record_count++;
+}
+
 // Publish a new active seed node; returns the previous one so callers can
 // save/restore around nested gradient passes.
 void* eshkol_ad_seed_swap(void* node) {
@@ -485,13 +508,15 @@ void eshkol_ad_node_set_exact_value(void* arena_ptr, void* node_ptr,
 // plain scalar as before.
 void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double dseed) {
     if (!arena_v || !tape_v) return nullptr;
+    // A forward-mode derivative returned while a reverse tape is live: this
+    // pass is reverse-over-forward. Mark it before every early-out (no seed
+    // published, no dependency) so a reverse pass's snapshot delta detects it
+    // even when this component's partial happens to be zero; the reverse pass
+    // then takes its gradient as forward columns (ADR-0057) or per-component
+    // replay.
+    __eshkol_ad_mixed_record_count++;
     ad_node_t* seed = (ad_node_t*)__ad_active_seed_node;
     if (!seed) return nullptr;
-    // A forward-mode derivative returned while a reverse seed is live: this pass
-    // is reverse-over-forward. Mark it (before the no-dependency early-out) so the
-    // one-pass gradient's snapshot delta detects it even when this component's
-    // partial happens to be zero, and falls back to per-component replay.
-    __eshkol_ad_mixed_record_count++;
     if (dseed == 0.0) return nullptr;  // no dependency on this pass's variable
 
     ad_tape_t* tape = (ad_tape_t*)tape_v;
@@ -527,6 +552,79 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     arena_tape_add_node(tape, coeff);
     arena_tape_add_node(tape, offset);
     arena_tape_add_node(tape, scaled);
+    arena_tape_add_node(tape, result);
+    return result;
+}
+
+// ADR-0057: record an inner pass's exact local linearisation against several
+// tape nodes of the active (enclosing) reverse tape:
+//
+//     result = value + sum_k partials[k] * (nodes[k] - nodes[k]->value)
+//
+// built from MUL/ADD/CONSTANT nodes, so the enclosing backward pass propagates
+// result.grad * partials[k] into nodes[k] and from there through whatever
+// computed it. Unlike eshkol_ad_mixed_record this does not depend on which
+// variable the enclosing pass is seeding: every edge is to the component
+// itself. Returns the result node, or NULL when there is no tape or every
+// partial is 0 (the result does not depend on the enclosing pass) -- the
+// caller then returns the plain value.
+void* eshkol_ad_linear_record(void* arena_v, void* tape_v, double value,
+                              void* const* nodes, const double* partials,
+                              int64_t count) {
+    if (!arena_v || !tape_v || !nodes || !partials || count <= 0) return nullptr;
+    int64_t live = 0;
+    for (int64_t k = 0; k < count; ++k)
+        if (nodes[k] && partials[k] != 0.0) ++live;
+    if (live == 0) return nullptr;
+
+    ad_tape_t* tape = (ad_tape_t*)tape_v;
+    /* Retained by this tape after the current lexical region may have popped
+     * (see eshkol_ad_mixed_record). */
+    arena_t* arena = tape->owner_arena
+        ? tape->owner_arena : (arena_t*)arena_v;
+
+    ad_node_t* sum = nullptr;
+    double base = value;
+    for (int64_t k = 0; k < count; ++k) {
+        ad_node_t* x = (ad_node_t*)nodes[k];
+        const double h = partials[k];
+        if (!x || h == 0.0) continue;
+        ad_node_t* coeff  = arena_allocate_ad_node_with_header(arena);
+        ad_node_t* scaled = arena_allocate_ad_node_with_header(arena);
+        if (!coeff || !scaled) return nullptr;
+        coeff->type = AD_NODE_CONSTANT;
+        coeff->value = h;
+        scaled->type = AD_NODE_MUL;          // backward: x.grad += grad * h
+        scaled->value = h * x->value;
+        scaled->input1 = x;
+        scaled->input2 = coeff;
+        arena_tape_add_node(tape, coeff);
+        arena_tape_add_node(tape, scaled);
+        base -= h * x->value;
+        if (!sum) {
+            sum = scaled;
+        } else {
+            ad_node_t* acc = arena_allocate_ad_node_with_header(arena);
+            if (!acc) return nullptr;
+            acc->type = AD_NODE_ADD;
+            acc->value = sum->value + scaled->value;
+            acc->input1 = sum;
+            acc->input2 = scaled;
+            arena_tape_add_node(tape, acc);
+            sum = acc;
+        }
+    }
+    ad_node_t* offset = arena_allocate_ad_node_with_header(arena);
+    ad_node_t* result = arena_allocate_ad_node_with_header(arena);
+    if (!offset || !result) return nullptr;
+    offset->type = AD_NODE_CONSTANT;
+    offset->value = base;
+    result->type = AD_NODE_ADD;              // value = `value` exactly
+    result->value = value;
+    result->input1 = sum;
+    result->input2 = offset;
+    // Topological order for the reverse traversal: result last.
+    arena_tape_add_node(tape, offset);
     arena_tape_add_node(tape, result);
     return result;
 }

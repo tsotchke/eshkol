@@ -278,6 +278,11 @@ from pathlib import Path
 args = sys.argv[1:]
 names = ['fixedpoint_one', 'runtime_closure_arity_spread_one', 'define_library_same_unit_one', 'load_path_engine_parity_test', 'squared_distance_gradcheck']
 names += [base + '_' + mode + '_smoke' for base in ('taylor_tower', 'taylor_tower_mono', 'exact_taylor', 'reverse_over_taylor', 'taylor_numerics', 'region_evac_taylor_exact') for mode in ('runtime', 'aot')]
+names += ['image_codecs_test', 'image_io_language_test', 'test_native_image_io_contract', 'runtime_regions_test', 'doc_truth_ratchet_unit', 'doc_truth_ratchet_phase1']
+names += ['quantum_circuit_export_aot', 'quantum_circuit_export_driver_selftest']
+names += ['cross_entropy_gradient_harness_selftest']
+names += ['cross_entropy_gradient_' + ce_mode + '_dense' + ce_dense for ce_mode in ('jit', 'aot') for ce_dense in ('0', '1')]
+names += ['tensor_backward_dual_impl_gradcheck', 'qllm_bridge_gradcheck']
 if '--show-only=json-v1' in args:
     print(json.dumps({'kind': 'ctestInfo', 'version': {'major': 1, 'minor': 0}, 'tests': [{'name': name} for name in names]})); sys.exit(0)
 if '-N' in args: sys.exit(0)
@@ -309,7 +314,7 @@ sys.exit(8 if timeout else 0)
                     self.assertIsNone(receipt['passed'])
                     self.assertIn('validation_errors', receipt)
                 else:
-                    self.assertEqual(receipt['passed'], 17)
+                    self.assertEqual(receipt['passed'], 32)  # every fixture test name above
 
     def test_metadata_proof_requires_bound_complete_phases_and_runtime_counts(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:

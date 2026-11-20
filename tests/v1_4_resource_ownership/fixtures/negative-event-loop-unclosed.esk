@@ -1,0 +1,2 @@
+(define loop (make-event-loop 4))
+(if loop (event-loop-poll loop 0) #f)

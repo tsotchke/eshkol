@@ -11,6 +11,7 @@ against their behavior, not hidden.
 |------|----------|
 | [creation.md](creation.md) | `vector` vs `tensor` (heterogeneous 16-byte tagged values vs homogeneous 8-byte doubles), literals `#(…)`, `make-tensor`/`make-vector`, and dtypes (f16/bf16/f32/f64/i8). |
 | [operations.md](operations.md) | Shape ops, elementwise & unary math, linear algebra + decompositions, reductions, conv1d/2d/3d, pooling, normalization, attention, embedding, activations, the PR-#79 type guards, pixel fills, and save/load — with known-broken ops flagged. |
+| [loss-autodiff.md](loss-autodiff.md) | Native cross-entropy gradients, constant-label contract, and explicit refusal of loss functions without a reverse rule. |
 | [eskm-v1.md](eskm-v1.md) | Normative ESKM v1 checkpoint wire format, decoder requirements, historical provenance, and executable compatibility fixtures. |
 | [gpu.md](gpu.md) | Honest GPU-dispatch status: the `gpu-*` builtins, the cost-model threshold, what actually runs on Metal in `-r` vs AOT, and how that squares with ESH-0022/0023. |
 | [ml-modules.md](ml-modules.md) | `ml.optimization`, `core.manifold`, `signal.fft` — every `provide` with signature and a run example. |
@@ -37,10 +38,10 @@ independently. Scalar broadcast is a **separate operator**, `tensor-scale`.
   `Type error in tensor-mul: expected tensor, got integer`.
 - A pair the broadcast computation refuses raises
   `Shape mismatch in tensor-mul: shapes (3) and (2) are not broadcast-compatible`.
-- A length-1 operand still broadcasts: `(* #(2.0) #(1.0 2.0 3.0))` is `#(2 4 6)`.
+- A length-1 operand still broadcasts: `(* #(2.0) #(1.0 2.0 3.0))` is `#(2.0 4.0 6.0)`.
 - A vector and a rank-1 tensor are two spellings of one value, so a mixed pair
   is the element-wise result: `(* (vector 1.0 2.0) (tensor 3.0 4.0))` is
-  `#(3 8)`.
+  `#(3.0 8.0)`.
 
 Every one of those was previously a silent wrong answer or an uncatchable fatal
 signal (ledger LE-18, LE-19, LE-22). Element-wise arithmetic over

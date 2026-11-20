@@ -1,0 +1,15 @@
+;; Type System Test: a register allocated in a region and never measured or released is rejected
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'r' was not consumed
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+;; A region may close only after every qubit was measured, released or
+;; otherwise consumed (ADR-0004, ADR-0048).
+(define-quantum-region qr (forgets)
+  (let ((r (qalloc qr 2)))
+    42))
+
+(display (forgets))

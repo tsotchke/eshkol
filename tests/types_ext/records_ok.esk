@@ -1,0 +1,47 @@
+;; Row-polymorphic records (ADR-0046): principal types, extension,
+;; restriction, update, width subtyping at a closed annotation, and an
+;; explicit row variable in a signature.
+;; ENGINES: jit aot vm
+;; EXPECT-SCHEME: get-x : (forall (a r) (-> (record (x a) r) a))
+;; EXPECT-SCHEME: norm1 : (forall (r) (-> (record (x number) (y number) r) number))
+;; EXPECT-SCHEME: with-z : (forall (r) (-> (record r) (record (z number) r)))
+;; EXPECT-SCHEME: drop-x : (forall (a r) (-> (record (x a) r) (record r)))
+;; EXPECT-SCHEME: move-x : (forall (r) (-> (record (x number) r) number (record (x number) r)))
+;; EXPECT-OUTPUT: 3
+;; EXPECT-OUTPUT: 1
+;; EXPECT-OUTPUT: 7
+;; EXPECT-OUTPUT: 3
+;; EXPECT-OUTPUT: 0
+;; EXPECT-OUTPUT: (y z name)
+;; EXPECT-OUTPUT: 13
+;; EXPECT-OUTPUT: 1
+;; EXPECT-OUTPUT: (y z name)
+;; EXPECT-OUTPUT: pt
+(require stdlib)
+(require core.records)
+
+(define (get-x p) (record-ref p 'x))
+(define (norm1 p) (+ (abs (record-ref p 'x)) (abs (record-ref p 'y))))
+(define (with-z p) (record-extend p 'z 0))
+(define (drop-x p) (record-remove p 'x))
+(define (move-x p dx) (record-update p 'x (+ (record-ref p 'x) dx)))
+
+(define p2 (record 'x 3 'y -4))
+(define p3 (record 'x 1 'y 2 'z 9 'name "pt"))
+
+(display (get-x p2)) (newline)
+(display (get-x p3)) (newline)
+(display (norm1 p2)) (newline)
+(display (norm1 p3)) (newline)
+(display (record-ref (with-z p2) 'z)) (newline)
+(display (record-labels (drop-x p3))) (newline)
+(display (record-ref (move-x p2 10) 'x)) (newline)
+
+;; Width subtyping: a record with more fields where a closed record is expected.
+(define (only-x (p : (record (x number)))) : number (record-ref p 'x))
+(display (only-x p3)) (newline)
+
+;; A row variable in a signature: whatever else p has survives the removal.
+(define (keep-rest (p : (record (x number) r))) : (record r) (record-remove p 'x))
+(display (record-labels (keep-rest p3))) (newline)
+(display (record-ref (keep-rest p3) 'name)) (newline)

@@ -1,0 +1,1 @@
+{"schema":"eshkol.transcript.v1","program":"transcript_unicode_utf8","claims":[{"kind":"determinant","label":"café 😀","inputs":{"matrix":{"t":"mat","rows":2,"cols":2,"data":[[{"t":"z","v":"1"},{"t":"z","v":"2"}],[{"t":"z","v":"3"},{"t":"z","v":"4"}]]},"note":{"t":"str","v":"café 😀"}},"output":{"t":"z","v":"-2"},"hash":"93217cf53dc7c9e7"}]}

@@ -1,0 +1,53 @@
+;; Binary session types over local channels (ADR-0046): choice, branching,
+;; a recursive protocol driven by a named let, duality, and a forked peer.
+;; ENGINES: jit aot
+;; EXPECT-SCHEME: adder-server : (-> (chan (offer (add (? number (? number (! number end)))) (quit end))) null)
+;; EXPECT-OUTPUT: 42
+;; EXPECT-OUTPUT: quit
+;; EXPECT-OUTPUT: 10
+(require stdlib)
+(require core.sessions)
+
+(define-type Adder (offer (add (? number (? number (! number end))))
+                          (quit end)))
+
+(define (adder-server (c : (chan Adder))) : null
+  (session-offer c
+    'add (lambda (c)
+           (let-values (((x c) (session-recv c)))
+             (let-values (((y c) (session-recv c)))
+               (session-close (session-send c (+ x y))))))
+    'quit (lambda (c) (session-close c))))
+
+(define (add-remote (c : (chan (dual Adder))) (a : number) (b : number)) : number
+  (let-values (((sum c) (session-recv (session-send (session-send (session-select c 'add) a) b))))
+    (session-close c)
+    sum))
+
+(define (quit-remote (c : (chan (dual Adder)))) : symbol
+  (session-close (session-select c 'quit))
+  'quit)
+
+(display (add-remote (session-fork adder-server) 20 22)) (newline)
+(display (quit-remote (session-fork adder-server))) (newline)
+
+;; A recursive protocol: the client streams numbers, then asks for the sum.
+(define-type Summer (rec loop (offer (more (? number loop))
+                                     (done (! number end)))))
+
+(define (summer (c : (chan Summer))) : null
+  (let loop ((c c) (acc 0))
+    (session-offer c
+      'more (lambda (c)
+              (let-values (((x c) (session-recv c)))
+                (loop c (+ acc x))))
+      'done (lambda (c) (session-close (session-send c acc))))))
+
+(define (send-all (c : (chan (dual Summer))) (xs : any)) : number
+  (if (null? xs)
+      (let-values (((total c) (session-recv (session-select c 'done))))
+        (session-close c)
+        total)
+      (send-all (session-send (session-select c 'more) (car xs)) (cdr xs))))
+
+(display (send-all (session-fork summer) '(1 2 3 4))) (newline)

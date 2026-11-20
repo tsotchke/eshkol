@@ -18,9 +18,11 @@
 #include <eshkol/core/string_escape.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
+#include <eshkol/types/quantum_types.h>
 #include <eshkol/frontend/binding_forms.h>
 #include <eshkol/frontend/syntax_color.h>
 #include <eshkol/frontend/syntax_datum.h>
+#include <eshkol/frontend/effect_syntax_core.h>
 #include "parser_task.h"
 
 #include <string.h>
@@ -204,7 +206,16 @@ static inline void stamp_node(eshkol_ast_t& node, uint32_t line, uint32_t column
 
 /* Emit error with file:line:col + caret underline.
  * Falls back to plain eshkol_error if source text unavailable. */
+// A type-family application whose head the parser does not know is read
+// as a trial (see parseTypeExpression): an argument list that is not a type
+// language phrase keeps the historical reading (the bare head name) instead
+// of becoming a parse error. While a trial is running an error only marks
+// the trial failed.
+static thread_local int g_type_parse_trial_depth = 0;
+static thread_local bool g_type_parse_trial_failed = false;
+
 #define PARSE_ERROR_AT(tok, ...) do { \
+    if (g_type_parse_trial_depth > 0) { g_type_parse_trial_failed = true; break; } \
     g_parse_had_error = true; \
     if (g_parse_source) { \
         eshkol_error_at(g_parse_filename.c_str(), (tok).line, (tok).column, \
@@ -260,20 +271,34 @@ static bool check_stack_space() {
     size_t used = (size_t)((char*)stack_addr - here_ptr);
     return (stack_size > used) && ((stack_size - used) > STACK_SAFETY_MARGIN);
 #elif defined(__linux__)
-    pthread_attr_t attr;
-    if (pthread_getattr_np(pthread_self(), &attr) != 0) return true;
-    void* stack_addr;
-    size_t stack_size;
-    pthread_attr_getstack(&attr, &stack_addr, &stack_size);
-    pthread_attr_destroy(&attr);
+    // The thread's stack extent is measured once per thread and kept. For the
+    // main thread glibc's pthread_getattr_np() derives the extent by reading
+    // and parsing /proc/self/maps, so querying it on every parser frame made
+    // the check cost grow with the program's size and its address space; that
+    // was most of the time spent reading source. The extent is queried again
+    // only when the frame lies outside the kept one (a different stack).
+    static thread_local uintptr_t t_stack_bottom = 0;
+    static thread_local size_t t_stack_extent = 0;
+    static thread_local bool t_stack_measured = false;
     // Real frame address, not a local's address: see the macOS branch for why
     // (the AddressSanitizer fake stack makes a local's address lie outside the
     // thread's stack bounds, which reads as exhaustion).
+    const uintptr_t here = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+    if (!t_stack_measured || here < t_stack_bottom || (here - t_stack_bottom) > t_stack_extent) {
+        pthread_attr_t attr;
+        if (pthread_getattr_np(pthread_self(), &attr) != 0) return true;
+        void* stack_addr;
+        size_t stack_size;
+        pthread_attr_getstack(&attr, &stack_addr, &stack_size);
+        pthread_attr_destroy(&attr);
+        t_stack_bottom = reinterpret_cast<uintptr_t>(stack_addr);
+        t_stack_extent = stack_size;
+        t_stack_measured = true;
+    }
     // On Linux the stack grows toward its BOTTOM (lowest address).
     // The distance to that bound is remaining space, not consumed space.
-    const uintptr_t bottom = reinterpret_cast<uintptr_t>(stack_addr);
-    const uintptr_t here = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
-    return here >= bottom && (here - bottom) <= stack_size &&
+    const uintptr_t bottom = t_stack_bottom;
+    return here >= bottom && (here - bottom) <= t_stack_extent &&
            (here - bottom) > STACK_SAFETY_MARGIN;
 #else
     // Unknown platform: assume stack is fine
@@ -1507,6 +1532,82 @@ static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Tok
     }
 }
 
+/* ── Algebraic-effect forms (ADR-0045) ──────────────────────────────────────
+ * `define-effect`, `handle`, `handle-shallow` and `declare-effects` are
+ * lowered by the one lowering both engines share (effect_syntax_core.h). This
+ * adapter converts reader syntax to that neutral tree and back. Atoms keep the
+ * datum they were read from (the lowering never makes new atoms); symbols and
+ * lists the lowering introduces take the form's own position. */
+static eshkol_syn* effect_datum_to_syn(const eshkol::SyntaxDatum& datum) {
+    using Kind = eshkol::SyntaxDatum::Kind;
+    eshkol_syn_kind kind = ESHKOL_SYN_ATOM;
+    switch (datum.kind) {
+        case Kind::Symbol: kind = ESHKOL_SYN_SYMBOL; break;
+        case Kind::Atom: kind = ESHKOL_SYN_ATOM; break;
+        case Kind::List: kind = ESHKOL_SYN_LIST; break;
+        case Kind::Vector: kind = ESHKOL_SYN_VECTOR; break;
+        case Kind::Prefix: kind = ESHKOL_SYN_PREFIX; break;
+    }
+    eshkol_syn* node = eshkol_syn_new(kind, datum.text.c_str(), &datum);
+    if (!node) return nullptr;
+    node->dotted = datum.dotted ? 1 : 0;
+    for (const auto& item : datum.items) {
+        if (!eshkol_syn_push(node, effect_datum_to_syn(item))) {
+            eshkol_syn_free(node);
+            return nullptr;
+        }
+    }
+    return node;
+}
+
+static eshkol::SyntaxDatum effect_syn_to_datum(const eshkol_syn* node, uint32_t line,
+                                               uint32_t column) {
+    using Kind = eshkol::SyntaxDatum::Kind;
+    const auto* origin = static_cast<const eshkol::SyntaxDatum*>(node->origin);
+    eshkol::SyntaxDatum datum;
+    if (origin && (node->kind == ESHKOL_SYN_ATOM || node->kind == ESHKOL_SYN_VECTOR ||
+                   node->kind == ESHKOL_SYN_PREFIX || node->kind == ESHKOL_SYN_SYMBOL)) {
+        datum.token_type = origin->token_type;
+        datum.verbatim = origin->verbatim;
+        datum.text = origin->text;
+    }
+    datum.line = origin ? origin->line : line;
+    datum.column = origin ? origin->column : column;
+    switch (node->kind) {
+        case ESHKOL_SYN_SYMBOL: datum.kind = Kind::Symbol; datum.text = node->text; break;
+        case ESHKOL_SYN_ATOM: datum.kind = Kind::Atom; break;
+        case ESHKOL_SYN_PREFIX: datum.kind = Kind::Prefix; datum.text = node->text; break;
+        case ESHKOL_SYN_LIST: datum.kind = Kind::List; datum.text = "("; break;
+        case ESHKOL_SYN_VECTOR: datum.kind = Kind::Vector; break;
+    }
+    datum.dotted = node->dotted != 0;
+    for (int i = 0; i < node->n_items; ++i)
+        datum.items.push_back(effect_syn_to_datum(node->items[i], datum.line, datum.column));
+    return datum;
+}
+
+/** @return 1 lowered into @p out, 0 not an effect form, -1 error in @p error. */
+static int lower_effect_datum(const eshkol::SyntaxDatum& form, eshkol::SyntaxDatum& out,
+                              std::string& error) {
+    eshkol_syn* syn = effect_datum_to_syn(form);
+    if (!syn) { error = "out of memory reading an effect form"; return -1; }
+    if (eshkol_effect_form_of(syn) == ESHKOL_EFFECT_FORM_NONE) {
+        eshkol_syn_free(syn);
+        return 0;
+    }
+    char message[256];
+    eshkol_syn* lowered = eshkol_effect_lower(syn, message, sizeof(message));
+    eshkol_syn_free(syn);
+    if (!lowered) { error = message; return -1; }
+    out = effect_syn_to_datum(lowered, form.line, form.column);
+    eshkol_syn_free(lowered);
+    return 1;
+}
+
+/* Set when a form headed by an effect keyword turned out not to be one: the
+ * re-parse of that same form is an ordinary call, not a second lowering. */
+static thread_local bool g_effect_form_is_call = false;
+
 /** @brief Read a `(syntax-rules [ellipsis] (literal ...) (pattern template) ...)`
  *         transformer whose opening `(` has been consumed. */
 static bool read_syntax_rules(SchemeTokenizer& tokenizer, const Token& open,
@@ -1874,8 +1975,8 @@ static ParserTask<eshkol_ast_t> parse_interpolated_string_token(const Token& tok
  *  - TOKEN_CHAR: decodes the token's UTF-8 byte sequence into a single
  *    Unicode codepoint for eshkol_ast_make_char().
  *  - TOKEN_SYMBOL: logic-variable syntax (`?x`, `?name`, ...) becomes an
- *    ESHKOL_LOGIC_VAR_OP node; all other symbols become a plain
- *    ESHKOL_VAR reference.
+ *    ESHKOL_LOGIC_VAR_OP node; all other symbols, including the synthesis
+ *    hole `??`, become a plain ESHKOL_VAR reference.
  *  - Any other token type: returns an ESHKOL_INVALID node.
  *
  * Malformed numeric literals report a parse error via PARSE_ERROR_AT and
@@ -2038,8 +2139,12 @@ static ParserTask<eshkol_ast_t> parse_atom(const Token& token) {
         }
 
         case TOKEN_SYMBOL:
-            // Check for logic variable syntax: ?x, ?name, etc.
-            if (!token.value.empty() && token.value[0] == '?' && token.value.length() > 1) {
+            // Check for logic variable syntax: ?x, ?name, etc. `??` is not a
+            // logic variable: it is the synthesis hole identifier (ADR-0052),
+            // an ordinary variable reference that the type checker completes
+            // when it is unbound.
+            if (!token.value.empty() && token.value[0] == '?' && token.value.length() > 1 &&
+                token.value != "??") {
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_LOGIC_VAR_OP;
                 // A logic variable is named data, never a lexical binding.
@@ -2611,6 +2716,24 @@ static hott_type_expr_t* parsePrimitiveType(const std::string& spelled) {
 // result: the public constructors copy borrowed children recursively, which
 // would reintroduce native recursion and quadratic allocation while unwinding
 // a deeply nested type. Parsed children never have another mutable owner.
+// An integer written in an index position of a type, e.g. the 3 of
+// (vector real 3). Only exact integers index types.
+static bool parseIndexLiteralToken(const Token& token, int64_t& out) {
+    if (token.type != TOKEN_NUMBER || token.value.empty()) return false;
+    errno = 0;
+    char* end = nullptr;
+    const long long value = std::strtoll(token.value.c_str(), &end, 10);
+    if (errno != 0 || !end || *end != '\0') return false;
+    out = static_cast<int64_t>(value);
+    return true;
+}
+
+// Restores the trial depth however the trial ends.
+struct TypeParseTrialScope {
+    TypeParseTrialScope() { ++g_type_parse_trial_depth; }
+    ~TypeParseTrialScope() { --g_type_parse_trial_depth; }
+};
+
 static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
     decolor_symbol_token(token);
@@ -2618,6 +2741,17 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
     if (token.type == TOKEN_SYMBOL) {
         // Simple type name or type variable
         co_return parsePrimitiveType(token.value);
+    }
+
+    if (token.type == TOKEN_NUMBER) {
+        // An index literal: (vector real 3), (Matrix real 2 3).
+        int64_t value = 0;
+        if (!parseIndexLiteralToken(token, value)) {
+            PARSE_ERROR_AT(token, "only an exact integer can index a type, found %s",
+                           token.value.c_str());
+            co_return nullptr;
+        }
+        co_return hott_make_index_literal(value);
     }
 
     if (token.type == TOKEN_ARROW) {
@@ -2699,8 +2833,25 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
             }
 
             if (lower == "vector") {
-                // (vector element-type)
+                // (vector element-type) or the length-indexed family
+                // (vector element-type length), ADR-0042.
                 hott_type_expr_t* elem = (co_await parseTypeExpression(tokenizer));
+                if (!elem) co_return nullptr;
+                Token after = tokenizer.peekToken();
+                if (after.type != TOKEN_RPAREN && after.type != TOKEN_EOF) {
+                    hott_type_expr_t* length = (co_await parseTypeExpression(tokenizer));
+                    if (!length) co_return nullptr;
+                    Token rparen = tokenizer.nextToken();
+                    if (rparen.type != TOKEN_RPAREN) {
+                        PARSE_ERROR_AT(token, "expected ) after vector length index");
+                        co_return nullptr;
+                    }
+                    hott_type_expr_t* result = hott_make_app_type(HOTT_TYPE_APP, "vector",
+                                                                  nullptr, 2);
+                    result->app.args[0] = elem;
+                    result->app.args[1] = length;
+                    co_return result;
+                }
                 Token rparen = tokenizer.nextToken();
                 if (rparen.type != TOKEN_RPAREN) {
                     PARSE_ERROR_AT(token, "expected ) after vector element type");
@@ -2757,38 +2908,189 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
                 co_return result;
             }
 
-            if (lower == "*" || lower == "product") {
-                // (* left right)
-                hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
-                hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after product types");
-                    hott_free_type_expr(left);
-                    hott_free_type_expr(right);
+            if (lower == "*" || lower == "product" ||
+                lower == "+" || lower == "sum" || lower == "either") {
+                // (* A B ...) product / (+ A B ...) sum, read as nested binary
+                // nodes. In an index position the same spellings are index
+                // multiplication and addition; the type checker reads them by
+                // the position they occupy (ADR-0042).
+                const bool is_sum = lower == "+" || lower == "sum" || lower == "either";
+                std::vector<hott_type_expr_t*> parts;
+                while (true) {
+                    Token peek = tokenizer.peekToken();
+                    if (peek.type == TOKEN_RPAREN) {
+                        tokenizer.nextToken();
+                        break;
+                    }
+                    if (peek.type == TOKEN_EOF) {
+                        PARSE_ERROR_AT(token, is_sum ? "expected ) after sum types"
+                                                     : "expected ) after product types");
+                        co_return nullptr;
+                    }
+                    hott_type_expr_t* part = (co_await parseTypeExpression(tokenizer));
+                    if (!part) co_return nullptr;
+                    parts.push_back(part);
+                }
+                if (parts.size() < 2) {
+                    PARSE_ERROR_AT(token, is_sum ? "a sum type needs at least two arms"
+                                                 : "a product type needs at least two components");
                     co_return nullptr;
                 }
-                hott_type_expr_t* result = hott_make_product_type(nullptr, nullptr);
-                result->pair.left = left;
-                result->pair.right = right;
+                hott_type_expr_t* result = parts.back();
+                for (size_t i = parts.size() - 1; i-- > 0;) {
+                    hott_type_expr_t* node = is_sum ? hott_make_sum_type(nullptr, nullptr)
+                                                    : hott_make_product_type(nullptr, nullptr);
+                    if (is_sum) {
+                        node->sum.left = parts[i];
+                        node->sum.right = result;
+                    } else {
+                        node->pair.left = parts[i];
+                        node->pair.right = result;
+                    }
+                    result = node;
+                }
                 co_return result;
             }
 
-            if (lower == "+" || lower == "sum" || lower == "either") {
-                // (+ left right)
-                hott_type_expr_t* left = (co_await parseTypeExpression(tokenizer));
-                hott_type_expr_t* right = (co_await parseTypeExpression(tokenizer));
-                Token rparen = tokenizer.nextToken();
-                if (rparen.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected ) after sum types");
-                    hott_free_type_expr(left);
-                    hott_free_type_expr(right);
+            if (type_name == "-") {
+                // (- m n ...) index subtraction; (- n) negation.
+                std::vector<hott_type_expr_t*> args;
+                while (true) {
+                    Token peek = tokenizer.peekToken();
+                    if (peek.type == TOKEN_RPAREN) {
+                        tokenizer.nextToken();
+                        break;
+                    }
+                    if (peek.type == TOKEN_EOF) {
+                        PARSE_ERROR_AT(token, "expected ) after index subtraction");
+                        co_return nullptr;
+                    }
+                    hott_type_expr_t* arg = (co_await parseTypeExpression(tokenizer));
+                    if (!arg) co_return nullptr;
+                    args.push_back(arg);
+                }
+                if (args.empty()) {
+                    PARSE_ERROR_AT(token, "index subtraction needs an operand");
                     co_return nullptr;
                 }
-                hott_type_expr_t* result = hott_make_sum_type(nullptr, nullptr);
-                result->sum.left = left;
-                result->sum.right = right;
+                hott_type_expr_t* result = hott_make_app_type(HOTT_TYPE_INDEX_OP, "-", nullptr,
+                                                              args.size());
+                for (size_t i = 0; i < args.size(); ++i) result->app.args[i] = args[i];
                 co_return result;
+            }
+
+            if (type_name == "Pi" || type_name == "\xCE\xA0" ||
+                type_name == "Sigma" || type_name == "\xCE\xA3") {
+                // (Pi ((x : A) (y : B) ...) Body) dependent function type,
+                // (Sigma ((x : A) ...) Body) dependent pair type. Each binder
+                // type may mention the earlier binders; Body may mention all.
+                const bool is_sigma = type_name == "Sigma" || type_name == "\xCE\xA3";
+                const char* form = is_sigma ? "Sigma" : "Pi";
+                Token open = tokenizer.nextToken();
+                if (open.type != TOKEN_LPAREN) {
+                    PARSE_ERROR_AT(token, "expected ( to open the binders of %s", form);
+                    co_return nullptr;
+                }
+                std::vector<std::string> names;
+                std::vector<hott_type_expr_t*> types;
+                while (true) {
+                    Token binder = tokenizer.nextToken();
+                    if (binder.type == TOKEN_RPAREN) break;
+                    if (binder.type != TOKEN_LPAREN) {
+                        PARSE_ERROR_AT(binder, "a %s binder is written (name : type)", form);
+                        co_return nullptr;
+                    }
+                    Token name = tokenizer.nextToken();
+                    decolor_symbol_token(name);
+                    if (name.type != TOKEN_SYMBOL) {
+                        PARSE_ERROR_AT(name, "expected a binder name in %s", form);
+                        co_return nullptr;
+                    }
+                    Token colon = tokenizer.nextToken();
+                    if (colon.type != TOKEN_COLON) {
+                        PARSE_ERROR_AT(colon, "expected ':' after the %s binder %s", form,
+                                       name.value.c_str());
+                        co_return nullptr;
+                    }
+                    hott_type_expr_t* binder_type = (co_await parseTypeExpression(tokenizer));
+                    if (!binder_type) co_return nullptr;
+                    Token close = tokenizer.nextToken();
+                    if (close.type != TOKEN_RPAREN) {
+                        PARSE_ERROR_AT(close, "expected ) after the type of the %s binder %s",
+                                       form, name.value.c_str());
+                        co_return nullptr;
+                    }
+                    names.push_back(name.value.substr(
+                        0, eshkol_syntax_base_length(name.value.c_str())));
+                    types.push_back(binder_type);
+                }
+                if (names.empty()) {
+                    PARSE_ERROR_AT(token, "%s needs at least one binder", form);
+                    co_return nullptr;
+                }
+                hott_type_expr_t* body = (co_await parseTypeExpression(tokenizer));
+                if (!body) co_return nullptr;
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(token, "expected ) after the body of %s", form);
+                    co_return nullptr;
+                }
+                hott_type_expr_t* result = hott_make_dependent_type(
+                    is_sigma ? HOTT_TYPE_SIGMA : HOTT_TYPE_DEPENDENT, nullptr, nullptr,
+                    names.size(), nullptr);
+                for (size_t i = 0; i < names.size(); ++i) {
+                    result->dependent.binder_names[i] = eshkol_ast_strdup(names[i].c_str());
+                    result->dependent.binder_types[i] = types[i];
+                }
+                result->dependent.body = body;
+                co_return result;
+            }
+
+            if (lower == "universe") {
+                // (universe n): the universe at level n. (universe 0) holds
+                // the ground types; (universe n) lives in (universe n+1).
+                Token level = tokenizer.nextToken();
+                int64_t value = 0;
+                if (!parseIndexLiteralToken(level, value) || value < 0 || value > 254) {
+                    PARSE_ERROR_AT(level, "a universe level is an integer from 0 to 254");
+                    co_return nullptr;
+                }
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(token, "expected ) after the universe level");
+                    co_return nullptr;
+                }
+                co_return hott_make_universe_type(static_cast<uint32_t>(value));
+            }
+
+            if (lower == "refine") {
+                // (Refine base predicate) or (Refine base binder predicate):
+                // the refinement type {binder : base | predicate} (ADR-0044).
+                // The predicate is an ordinary expression; which forms it may
+                // use is decided by the refinement checker, not here.
+                hott_type_expr_t* base = (co_await parseTypeExpression(tokenizer));
+                if (!base) co_return nullptr;
+                eshkol_ast_t first_expr = (co_await parse_expression(tokenizer));
+                if (first_expr.type == ESHKOL_INVALID) co_return nullptr;
+                std::string binder;
+                eshkol_ast_t predicate = first_expr;
+                if (tokenizer.peekToken().type != TOKEN_RPAREN) {
+                    if (first_expr.type != ESHKOL_VAR || !first_expr.variable.id) {
+                        PARSE_ERROR_AT(token, "expected a binder name in (Refine type binder predicate)");
+                        co_return nullptr;
+                    }
+                    binder = first_expr.variable.id;
+                    predicate = (co_await parse_expression(tokenizer));
+                    if (predicate.type == ESHKOL_INVALID) co_return nullptr;
+                }
+                Token rparen = tokenizer.nextToken();
+                if (rparen.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(token, "expected ) after refinement predicate");
+                    co_return nullptr;
+                }
+                eshkol_ast_t* pred = new eshkol_ast_t(predicate);
+                co_return hott_make_refine_type(base, binder.empty() ? nullptr : binder.c_str(),
+                                                pred);
             }
 
             if (lower == "forall") {
@@ -2830,14 +3132,75 @@ static ParserTask<hott_type_expr_t*> parseTypeExpression(SchemeTokenizer& tokeni
                 co_return result;
             }
 
-            // Unknown type constructor - treat as type application or just type name
-            // Skip remaining tokens until )
+            if (lower == "qreg" || lower == "qidx") {
+                // (qreg e) / (qidx e): the indexed quantum families (ADR-0048),
+                // spelled canonically as qreg<e> for the checker. The index is
+                // a natural, a name, or (+ ...) (- ...) (* k e) over them.
+                std::string index_text;
+                int depth = 0;
+                while (true) {
+                    Token t = tokenizer.nextToken();
+                    decolor_symbol_token(t);
+                    if (t.type == TOKEN_EOF) {
+                        PARSE_ERROR_AT(token, "unexpected end of input in %s type", lower.c_str());
+                        co_return nullptr;
+                    }
+                    if (t.type == TOKEN_RPAREN && depth == 0) break;
+                    if (t.type == TOKEN_LPAREN) { index_text += "("; ++depth; continue; }
+                    if (t.type == TOKEN_RPAREN) { index_text += ")"; --depth; continue; }
+                    if (!index_text.empty() && index_text.back() != '(') index_text += " ";
+                    index_text += t.value;
+                }
+                auto spelled = eshkol::hott::quantum::canonicalIndexedSpelling(lower, index_text);
+                if (!spelled) {
+                    PARSE_ERROR_AT(token, "malformed index '%s' in (%s ...): an index is a natural, a name, "
+                                   "or (+ ...), (- ...), (* k ...) of them", index_text.c_str(), lower.c_str());
+                    co_return nullptr;
+                }
+                co_return hott_make_type_var(spelled->c_str());
+            }
+
+            // Any other head is a type-family application (F arg ...): a
+            // define-type family such as (Matrix real 2 3), each argument a
+            // type or an index term (ADR-0042). The argument list is read as
+            // a trial: a list that is not a type-language phrase keeps the
+            // historical reading, the bare head name, rather than becoming a
+            // parse error in a program that always compiled.
+            std::vector<Token> arg_tokens;
             int depth = 1;
             while (depth > 0) {
                 Token t = tokenizer.nextToken();
                 if (t.type == TOKEN_LPAREN) depth++;
                 else if (t.type == TOKEN_RPAREN) depth--;
                 else if (t.type == TOKEN_EOF) break;
+                if (depth > 0) arg_tokens.push_back(t);
+            }
+            if (!arg_tokens.empty()) {
+                SchemeTokenizer replay(arg_tokens);
+                std::vector<hott_type_expr_t*> args;
+                bool ok = true;
+                {
+                    TypeParseTrialScope trial;
+                    const bool outer_failed = g_type_parse_trial_failed;
+                    g_type_parse_trial_failed = false;
+                    while (replay.peekToken().type != TOKEN_EOF) {
+                        hott_type_expr_t* arg = (co_await parseTypeExpression(replay));
+                        if (!arg || g_type_parse_trial_failed) {
+                            ok = false;
+                            break;
+                        }
+                        args.push_back(arg);
+                    }
+                    g_type_parse_trial_failed = outer_failed;
+                }
+                if (ok && !args.empty()) {
+                    const std::string head =
+                        type_name.substr(0, eshkol_syntax_base_length(type_name.c_str()));
+                    hott_type_expr_t* result = hott_make_app_type(HOTT_TYPE_APP, head.c_str(),
+                                                                  nullptr, args.size());
+                    for (size_t i = 0; i < args.size(); ++i) result->app.args[i] = args[i];
+                    co_return result;
+                }
             }
             co_return parsePrimitiveType(type_name);
         }
@@ -3436,7 +3799,7 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                             ESHKOL_EXTERN_VAR_OP, ESHKOL_LETREC_STAR_OP, ESHKOL_AND_OP, ESHKOL_OR_OP,
                             ESHKOL_COND_OP, ESHKOL_CASE_OP, ESHKOL_MATCH_OP, ESHKOL_DO_OP,
                             ESHKOL_WHEN_OP, ESHKOL_UNLESS_OP, ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP,
-                            ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP,
+                            ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP, ESHKOL_SET_OP, ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP,
                             ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP, ESHKOL_WITH_REGION_OP,
                             ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
                             ESHKOL_WEAK_REF_OP, ESHKOL_TENSOR_OP, ESHKOL_DIFF_OP, ESHKOL_JACOBIAN_OP,
@@ -5232,6 +5595,9 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
     // Consume the top-level-form flag before anything nested is parsed.
     const bool toplevel_form = g_parse_toplevel_form;
     g_parse_toplevel_form = false;
+    // Consumed the same way: it applies to this list only, never a nested one.
+    const bool effect_form_is_call = g_effect_form_is_call;
+    g_effect_form_is_call = false;
     ast.type = ESHKOL_OP;
     std::vector<eshkol_ast_t> elements;
 
@@ -5270,6 +5636,64 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         }
         eshkol::syntax_record_use(call.node_id, std::move(use));
         co_return call;
+    }
+    // HoTT kernel forms (ADR-0043): their operands are kernel syntax, kept as
+    // the reader datum for the cubical kernel, never parsed as expressions.
+    if (token.type == TOKEN_SYMBOL && (token.value == "hott" || token.value == "hott-eval")) {
+        eshkol::SyntaxDatum form;
+        tokenizer.pushBack(token);
+        Token open = head_token;
+        open.type = TOKEN_LPAREN;
+        open.value = "(";
+        if (!read_syntax_datum(tokenizer, open, form)) {
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        if (ast.node_id == ESHKOL_NODE_ID_NONE) {
+            PARSE_ERROR_AT(token, "node identity space exhausted recording a HoTT form");
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        ast.operation.op = ESHKOL_HOTT_OP;
+        ast.operation.hott_op.is_eval = token.value == "hott-eval" ? 1 : 0;
+        eshkol::syntax_record_use(ast.node_id, std::move(form));
+        co_return ast;
+    }
+    // Algebraic-effect forms (ADR-0045): read as syntax, lowered by the shared
+    // lowering, and the lowered form parsed in its place. A user macro of the
+    // same name was handled just above and takes precedence.
+    if (token.type == TOKEN_SYMBOL && !effect_form_is_call &&
+        eshkol_effect_keyword(token.value.c_str()) &&
+        !eshkol_syntax_is_colored(token.value.c_str())) {
+        eshkol::SyntaxDatum form;
+        tokenizer.pushBack(token);
+        Token open = head_token;
+        open.type = TOKEN_LPAREN;
+        open.value = "(";
+        if (!read_syntax_datum(tokenizer, open, form)) {
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        eshkol::SyntaxDatum lowered;
+        std::string error;
+        const int status = lower_effect_datum(form, lowered, error);
+        if (status < 0) {
+            PARSE_ERROR_AT(token, "%s", error.c_str());
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        g_effect_form_is_call = status == 0;
+        std::set<std::string> names = g_parser_macro_names ? *g_parser_macro_names
+                                                           : std::set<std::string>{};
+        eshkol_ast_t result;
+        if (toplevel_form) {
+            eshkol::ToplevelFormParseScope toplevel_scope;
+            result = eshkol::parse_syntax_datum(status > 0 ? lowered : form, names);
+        } else {
+            result = eshkol::parse_syntax_datum(status > 0 ? lowered : form, names);
+        }
+        g_effect_form_is_call = false;
+        co_return result;
     }
     // A head that a macro expansion colored names whatever its spelling meant
     // where the macro was defined (ADR-0026). Keyword grammar dispatches on the
@@ -5470,6 +5894,106 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         // else: not an ascription — fall through to ordinary symbol handling.
     }
 
+    // Quantum regions (ADR-0048) are syntax over define, lambda and the
+    // core.quantum procedure call-with-quantum-region, rewritten here at the
+    // token level so every later stage (macro expansion, the checker, both
+    // engines) sees only ordinary forms:
+    //   (define-quantum-region R (name . formals) [: type] body ...)
+    //     => (define (name . formals) [: type]
+    //          (call-with-quantum-region (lambda ((R : qregion)) body ...)))
+    //   (with-quantum-region (R) body ...)
+    //     => (call-with-quantum-region (lambda ((R : qregion)) body ...))
+    // The body's own tokens keep their positions and tape indices.
+    if (token.type == TOKEN_SYMBOL &&
+        (token_base(token) == "define-quantum-region" || token_base(token) == "with-quantum-region")) {
+        const bool is_define = token_base(token) == "define-quantum-region";
+        const std::string form = is_define ? "define-quantum-region" : "with-quantum-region";
+        std::vector<Token> rest;
+        int depth = 0;
+        while (true) {
+            Token t = tokenizer.nextToken();
+            if (t.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(token, "unexpected end of input in %s", form.c_str());
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            if (t.type == TOKEN_LPAREN || t.type == TOKEN_VECTOR_START) ++depth;
+            if (t.type == TOKEN_RPAREN) {
+                if (depth == 0) { rest.push_back(t); break; }
+                --depth;
+            }
+            rest.push_back(t);
+        }
+        const auto synth = [&](TokenType type, const char* value) {
+            Token k{type, value, token.pos, token.line, token.column};
+            k.index = 0;  // not on the tape: never a macro re-read anchor
+            return k;
+        };
+        // index just past the balanced datum that starts at rest[i]
+        const auto datum_end = [&](size_t i) -> size_t {
+            if (i >= rest.size()) return i;
+            if (rest[i].type != TOKEN_LPAREN && rest[i].type != TOKEN_VECTOR_START) return i + 1;
+            int d = 0;
+            for (size_t j = i; j < rest.size(); ++j) {
+                if (rest[j].type == TOKEN_LPAREN || rest[j].type == TOKEN_VECTOR_START) ++d;
+                else if (rest[j].type == TOKEN_RPAREN && --d == 0) return j + 1;
+            }
+            return rest.size();
+        };
+        std::vector<Token> out;
+        size_t body_start = 0;
+        Token region_name;
+        if (is_define) {
+            if (rest.size() < 3 || rest[0].type != TOKEN_SYMBOL || rest[1].type != TOKEN_LPAREN) {
+                PARSE_ERROR_AT(token, "define-quantum-region expects a region name and a procedure header: "
+                               "(define-quantum-region R (name formals ...) body ...)");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            region_name = rest[0];
+            const size_t header_end = datum_end(1);
+            out.push_back(synth(TOKEN_SYMBOL, "define"));
+            for (size_t j = 1; j < header_end; ++j) out.push_back(rest[j]);
+            body_start = header_end;
+            if (body_start < rest.size() && rest[body_start].type == TOKEN_COLON) {
+                const size_t type_end = datum_end(body_start + 1);
+                for (size_t j = body_start; j < type_end; ++j) out.push_back(rest[j]);
+                body_start = type_end;
+            }
+            out.push_back(synth(TOKEN_LPAREN, "("));
+        } else {
+            if (rest.size() < 4 || rest[0].type != TOKEN_LPAREN || rest[1].type != TOKEN_SYMBOL ||
+                rest[2].type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "with-quantum-region expects (R) then a body: (with-quantum-region (R) body ...)");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            region_name = rest[1];
+            body_start = 3;
+        }
+        if (body_start + 1 >= rest.size()) {
+            PARSE_ERROR_AT(token, "%s requires a body", form.c_str());
+            ast.type = ESHKOL_INVALID;
+            co_return ast;
+        }
+        out.push_back(synth(TOKEN_SYMBOL, "call-with-quantum-region"));
+        out.push_back(synth(TOKEN_LPAREN, "("));
+        out.push_back(synth(TOKEN_SYMBOL, "lambda"));
+        out.push_back(synth(TOKEN_LPAREN, "("));
+        out.push_back(synth(TOKEN_LPAREN, "("));
+        out.push_back(region_name);
+        out.push_back(synth(TOKEN_COLON, ":"));
+        out.push_back(synth(TOKEN_SYMBOL, "qregion"));
+        out.push_back(synth(TOKEN_RPAREN, ")"));
+        out.push_back(synth(TOKEN_RPAREN, ")"));
+        for (size_t j = body_start; j + 1 < rest.size(); ++j) out.push_back(rest[j]);
+        out.push_back(synth(TOKEN_RPAREN, ")"));      // lambda
+        if (is_define) out.push_back(synth(TOKEN_RPAREN, ")"));  // call
+        out.push_back(rest.back());                    // the form's own ')'
+        for (auto it = out.rbegin(); it != out.rend(); ++it) tokenizer.pushBack(*it);
+        token = tokenizer.nextToken();
+    }
+
     // First element should determine the operation
     if (token.type == TOKEN_SYMBOL) {
         std::string first_symbol = token.value;  // Store the function name
@@ -5655,6 +6179,51 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.operation.call_op.variables = new eshkol_ast_t[1];
             ast.operation.call_op.variables[0] = lambda_ast;
             co_return ast;
+        }
+
+        // ADR-0047: (certify (f arg ...)) -> (certify-call "f" f (list arg ...)).
+        // The operator must be a name: core.certificate looks up the
+        // certifying producer registered under that name, and certify-call
+        // returns the value of (f arg ...) whether or not a sink is active.
+        if (first_symbol == "certify") {
+            Token open = tokenizer.nextToken();
+            if (open.type != TOKEN_LPAREN) {
+                PARSE_ERROR_AT(open, "certify expects one call (f arg ...)");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            Token op_name = tokenizer.nextToken();
+            if (op_name.type != TOKEN_SYMBOL || op_name.verbatim) {
+                PARSE_ERROR_AT(op_name, "certify expects a call whose operator is a name");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            std::vector<eshkol_ast_t> call_args;
+            while (tokenizer.peekToken().type != TOKEN_RPAREN) {
+                if (tokenizer.peekToken().type == TOKEN_EOF) {
+                    PARSE_ERROR_AT(op_name, "unterminated call in certify");
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
+                }
+                eshkol_ast_t arg = (co_await parse_expression(tokenizer));
+                if (arg.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    co_return ast;
+                }
+                call_args.push_back(arg);
+            }
+            tokenizer.nextToken();  // ) of the call
+            Token close = tokenizer.nextToken();
+            if (close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(close, "certify takes exactly one call");
+                ast.type = ESHKOL_INVALID;
+                co_return ast;
+            }
+            std::vector<eshkol_ast_t> certify_args;
+            certify_args.push_back(make_parser_string_ast(op_name.value, op_name.line, op_name.column));
+            certify_args.push_back(make_parser_var_ast(op_name.value.c_str(), op_name.line, op_name.column));
+            certify_args.push_back(make_parser_call_ast("list", call_args, token.line, token.column));
+            co_return make_parser_call_ast("certify-call", certify_args, token.line, token.column);
         }
 
         // Special handling for define - we need to check if next token is LPAREN for function definitions
@@ -5884,6 +6453,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
             std::string type_name;
             std::vector<std::string> type_params;
+            std::vector<hott_type_expr_t*> type_param_kinds;
 
             if (token.type == TOKEN_SYMBOL) {
                 // Simple type alias: (define-type Name type-expr)
@@ -5898,16 +6468,41 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
                 type_name = token.value;
 
-                // Parse type parameters
+                // Parse type parameters: a bare name, or a name with a
+                // declared sort, (m : integer) for an index parameter or
+                // (a : (universe 0)) for a type parameter (ADR-0042).
                 while (true) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
+                    if (token.type == TOKEN_LPAREN) {
+                        Token pname = tokenizer.nextToken();
+                        decolor_symbol_token(pname);
+                        Token colon = tokenizer.nextToken();
+                        if (pname.type != TOKEN_SYMBOL || colon.type != TOKEN_COLON) {
+                            PARSE_ERROR_AT(token, "a define-type parameter is a name or (name : sort)");
+                            ast.type = ESHKOL_INVALID;
+                            co_return ast;
+                        }
+                        hott_type_expr_t* kind = (co_await parseTypeExpression(tokenizer));
+                        Token close = tokenizer.nextToken();
+                        if (!kind || close.type != TOKEN_RPAREN) {
+                            PARSE_ERROR_AT(token, "expected ) after the sort of define-type parameter %s",
+                                           pname.value.c_str());
+                            ast.type = ESHKOL_INVALID;
+                            co_return ast;
+                        }
+                        type_params.push_back(pname.value);
+                        type_param_kinds.resize(type_params.size(), nullptr);
+                        type_param_kinds.back() = kind;
+                        continue;
+                    }
                     if (token.type != TOKEN_SYMBOL) {
                         PARSE_ERROR_AT(token, "define-type parameters must be symbols");
                         ast.type = ESHKOL_INVALID;
                         co_return ast;
                     }
                     type_params.push_back(token.value);
+                    type_param_kinds.resize(type_params.size(), nullptr);
                 }
             } else {
                 PARSE_ERROR_AT(token, "define-type requires type name or (name params...)");
@@ -5944,6 +6539,17 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 }
             } else {
                 ast.operation.define_type_op.type_params = nullptr;
+            }
+            ast.operation.define_type_op.type_param_kinds = nullptr;
+            bool any_kind = false;
+            for (auto* kind : type_param_kinds) any_kind = any_kind || kind;
+            if (any_kind) {
+                ast.operation.define_type_op.type_param_kinds =
+                    new hott_type_expr_t*[type_params.size()];
+                for (size_t i = 0; i < type_params.size(); i++) {
+                    ast.operation.define_type_op.type_param_kinds[i] =
+                        i < type_param_kinds.size() ? type_param_kinds[i] : nullptr;
+                }
             }
 
             eshkol_debug("Parsed define-type '%s' with %zu type parameters",

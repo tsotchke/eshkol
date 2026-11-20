@@ -1,0 +1,93 @@
+;;; core.reasoning.sat: CDCL answers cross-checked on standard CNF families.
+;;; SAT answers are checked by evaluating the model; UNSAT answers by the
+;;; independent DRAT checker; random 3-SAT verdicts by exhaustive search.
+(require stdlib)
+(require core.reasoning.sat)
+
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+
+(define (verified? cnf r)
+  (cond ((eq? (sat-status r) 'sat) (sat-satisfies? cnf (sat-model r)))
+        ((eq? (sat-status r) 'unsat) (drat-check cnf (sat-proof r)))
+        (else #f)))
+
+;; ---- small known instances
+(define xor2 '((1 2) (-1 2) (1 -2) (-1 -2)))
+(define r0 (sat-solve xor2))
+(check "all four 2-clauses over two variables are unsat" (eq? (sat-status r0) 'unsat))
+(check "its DRAT proof checks" (drat-check xor2 (sat-proof r0)))
+(check "the proof ends with the empty clause" (equal? (car (reverse (sat-proof r0))) '(add)))
+(check "a proof with an invalid step is rejected" (not (drat-check '((1 2) (-1 2)) '((add -2) (add)))))
+(check "a proof without the empty clause is rejected" (not (drat-check xor2 '((add 2)))))
+(define r1 (sat-solve '((1 2 3) (-1 -2) (-2 -3) (-1 -3) (2))))
+(check "small sat instance" (and (eq? (sat-status r1) 'sat) (equal? (sat-model r1) '(-1 2 -3))))
+(check "empty formula is sat" (eq? (sat-status (sat-solve '())) 'sat))
+(check "empty clause is unsat" (eq? (sat-status (sat-solve '((1) ()))) 'unsat))
+(check "contradicting units" (and (eq? (sat-status (sat-solve '((1) (-1)))) 'unsat)
+                                  (drat-check '((1) (-1)) (sat-proof (sat-solve '((1) (-1)))))))
+(check "tautologies are ignored" (eq? (sat-status (sat-solve '((1 -1) (2)))) 'sat))
+(check "zero literal refused" (raises? (lambda () (sat-solve '((1 0))))))
+(check "num-vars option" (= (length (sat-model (sat-solve '((1)) '((num-vars . 4))))) 4))
+
+;; ---- pigeonhole PHP(n+1, n): unsat with checked proofs, n = 1..5
+(let loop ((n 1))
+  (if (<= n 5)
+      (let* ((cnf (cnf-pigeonhole n)) (r (sat-solve cnf)))
+        (check (string-append "pigeonhole " (number->string n) " unsat") (eq? (sat-status r) 'unsat))
+        (check (string-append "pigeonhole " (number->string n) " DRAT") (drat-check cnf (sat-proof r)))
+        (loop (+ n 1)))))
+;; the learned-clause reduction path emits deletions that the checker replays
+(define php5 (cnf-pigeonhole 5))
+(define r-small-db (sat-solve php5 '((learned-limit . 20))))
+(check "reduction emits deletions"
+       (pair? (filter (lambda (s) (eq? (car s) 'delete)) (sat-proof r-small-db))))
+(check "proof with deletions checks" (and (eq? (sat-status r-small-db) 'unsat)
+                                          (drat-check php5 (sat-proof r-small-db))))
+
+;; ---- n-queens: sat for n = 1, 4..8; unsat for n = 2, 3
+(for-each (lambda (n)
+            (let* ((cnf (cnf-queens n)) (r (sat-solve cnf)))
+              (check (string-append "queens " (number->string n))
+                     (and (eq? (sat-status r) (if (memv n '(2 3)) 'unsat 'sat)) (verified? cnf r)))))
+          '(1 2 3 4 5 6 7 8))
+
+;; ---- random 3-SAT near the threshold vs brute force
+(define agree 0)
+(define sat-count 0)
+(let loop ((seed 1))
+  (if (<= seed 40)
+      (let* ((nv (+ 8 (modulo seed 5))) (m (exact (round (* 4.26 nv))))
+             (cnf (cnf-random-ksat nv m 3 seed)) (r (sat-solve cnf))
+             (truth (sat-brute-force cnf)))
+        (if (and (eq? (sat-status r) (if truth 'sat 'unsat)) (verified? cnf r))
+            (set! agree (+ agree 1)))
+        (if truth (set! sat-count (+ sat-count 1)))
+        (loop (+ seed 1)))))
+(check "40 random 3-SAT instances agree with exhaustive search" (= agree 40))
+(check "the random set contains both verdicts" (and (> sat-count 0) (< sat-count 40)))
+;; larger random instances: models check, proofs check
+(let loop ((seed 100) (ok #t))
+  (if (< seed 106)
+      (let* ((cnf (cnf-random-ksat 60 256 3 seed)) (r (sat-solve cnf)))
+        (loop (+ seed 1) (and ok (verified? cnf r))))
+      (check "60-variable random 3-SAT verified" ok)))
+
+;; ---- DIMACS round trip and DRAT text
+(define text "c example\np cnf 3 2\n1 -3 0\n2 3 -1 0\n")
+(define parsed (dimacs-parse text))
+(check "dimacs parse" (equal? parsed '(3 (1 -3) (2 3 -1))))
+(check "dimacs format/parse round trip" (equal? (cdr (dimacs-parse (dimacs-format (cdr parsed)))) (cdr parsed)))
+(check "drat text" (string=? (drat-format '((add 1 -2) (delete 3) (add))) "1 -2 0\nd 3 0\n0\n"))
+(check "stats are reported" (and (assq 'conflicts (sat-stats r0)) (assq 'decisions (sat-stats r0))))
+(check "conflict budget gives unknown"
+       (eq? (sat-status (sat-solve (cnf-pigeonhole 6) '((max-conflicts . 5)))) 'unknown))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: reasoning_sat_test") (newline)
+(display "RESULT: PASS") (newline)

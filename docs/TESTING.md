@@ -68,6 +68,18 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target eshkol-run stdlib -j
 ```
 
+The native cross-entropy regression is
+`tests/ad/cross_entropy_gradient_test.py`. CTest registers JIT and AOT runs
+under both tensor AD lowerings, plus its deliberate-failure self-test. It
+checks analytical logit derivatives, all eight weights of a composed
+two-layer network against numerical slopes, constant indexed/probability
+labels, scalar loss composition, and explicit unsupported-loss refusals.
+The `native_cross_entropy_gradient_gate` readiness group requires all five
+entries together with `tensor_backward_dual_impl_gradcheck` and
+`qllm_bridge_gradcheck` (seven-member floor). Empty output, wrong verdicts,
+nonzero exits, reported errors hidden behind a success marker, and crashes
+masquerading as refusals are rejected by the harness self-test.
+
 ---
 
 ## The CTest gate
@@ -102,8 +114,8 @@ To gate a new pillar: give it CTest entries with a shared name prefix, add one
 ### Oracle binding gate
 
 `scripts/check_oracle_bindings.py` is the source-level companion to the CTest
-gate. It extracts registered test names and labels from `CMakeLists.txt` and
-`tests/**/CMakeLists.txt`, then fails if an oracle action's `ctest -R` or
+gate. It extracts registered test names and labels from `CMakeLists.txt`,
+`cmake/**/*.cmake` and `tests/**/CMakeLists.txt`, then fails if an oracle action's `ctest -R` or
 `ctest -L` selector matches nothing. It also checks that script paths named by
 oracle actions exist; directly invoked scripts must be executable.
 
@@ -132,6 +144,48 @@ value-position and compound-accessor regression is green. Superseded CTest
 figures that older documents quote: 541/541 and 198/198, each measured on an
 earlier commit; and 183/183, superseded by 190/190 for the v1.3.4-evolve cut
 (remeasured on 2026-08-25 against `4bf871a0`).
+
+### Library AOT suites: one verdict contract
+
+Every `<suite>_aot` CTest entry runs `scripts/run_stdlib_aot.cmake`, which
+compiles the suite (natively, or to bytecode for the VM when `ESHKOL_VM` is
+given), runs it, and accepts it only when all of these hold:
+
+- the compile exits 0 and prints no failure marker;
+- for a native compile, the build tree's own `stdlib.o` and `stdlib.bc` are
+  present in `ESHKOL_LINK_DIR` (`scripts/require_local_stdlib.cmake`), so a
+  suite never links an installed standard library;
+- the program exits 0 and prints no `FAIL:`, `RESULT: FAIL` or fatal signal;
+- the program prints its verdict line on a line of its own.
+
+The verdict line is selected with `ESHKOL_VERDICT`, which takes exactly two
+values: `PASS` (the default, `RESULT: PASS`) and `ALL PASS`
+(`RESULT: ALL PASS`, for suites that report a catalogue, such as the DBSP
+acceptance programs and `signed_curvature_test`). Any other value stops the
+test, so a registration can choose a verdict but never widen what counts as
+one. `ESHKOL_COMPILE_TIMEOUT` and `ESHKOL_RUN_TIMEOUT` (defaults 720 and 120
+seconds) give long suites their time. `tests/toolchain/test_stdlib_aot_runner.py`
+checks each rule with a fake compiler, including the refusal of a mismatched
+or unknown verdict and of a missing local standard library.
+### Static quantum circuit export
+
+`cmake/QuantumCircuitTests.cmake` registers `quantum_circuit_export_aot` and
+`quantum_circuit_export_driver_selftest` when tests and the native compiler
+target are enabled. The `quantum_circuit_contract_gate` CTest evidence group
+requires both members, so removing either test cannot leave its readiness
+criterion green. The AOT lane checks 50 assertions, including cycle rejection
+at construction and after mutation, and compiles the Bell export example.
+The compiler-free driver self-test rejects eight deliberately invalid results.
+
+The independent `quantum_circuit_export_qiskit_oracle` lane is enabled by
+`ESHKOL_QUANTUM_CIRCUIT_QISKIT_ORACLE=ON`. It requires the documented Python
+extras and fails if they are missing. It covers 25 gate kinds and 134 exports,
+including 100 deterministic generated circuits, with parser, operator,
+statevector and measurement/reset checks. Its separate
+`quantum-circuit-interoperability` oracle consumes the executed CTest event;
+it is not a dependency of default compiler readiness. The
+[static circuit reference](reference/stdlib/quantum_circuit.md) gives commands,
+tolerances and scope. Neither lane executes quantum hardware.
 
 ### ABI semantic inventory dependency
 
@@ -162,6 +216,26 @@ The gate fails on any real failure, any stale XFAIL that now XPASSes, or any
 missing full-book system probe. Trace: `scripts/icc_traces/sicp_smoke.jsonl`.
 To add a probe, drop a self-checking `.esk` file in `tests/sicp/` and register
 it in the script's coverage manifest.
+
+---
+
+## nLab conformance
+
+`tests/nlab/` decides claims quoted from nLab pages exactly on the mathematics
+libraries (`core.sheaf`, `core.topos`, `core.ring`, `core.multimodular`,
+`core.integer_linalg`, `core.category`, `core.simplicial`, `core.homological`),
+one `PASS: [page#k] ... => value` line per claim, in five suites registered as
+`nlab_{topos,space,ring,category,simplicial}_{jit,aot}`.
+`scripts/run_nlab_conformance.sh` runs them and checks every claim line against
+the manifest `tests/nlab/claims.tsv` and the coverage line of
+[the nLab conformance report](reports/NLAB_CONFORMANCE.md).
+
+```bash
+BUILD_DIR=build scripts/run_nlab_conformance.sh
+# => nLab conformance gate: PASS (ctest 10/10; claims PASS jit 132/132, aot 132/132; coverage pages=51 computed-pages=50 computed=132 planned=9)
+```
+
+Trace: `scripts/icc_traces/v14_nlab_conformance.jsonl`.
 
 ---
 
@@ -625,6 +699,24 @@ each gate CAN fail before it reports that nothing failed.
 
 ### Release evidence and documentation gates
 
+- **Documentation claims are ranked and held to a quota** (v1.4.0, phase 1).
+  `scripts/doc_truth_ratchet.py` ranks every claim `icc doc-typed-claims`
+  extracts from `docs/` as verified, unverified, table-contradicted or
+  contradicted, per document. `doc_truth_ratchet_phase1` re-indexes the tree
+  in a private ICC state inside the build directory, writes
+  `<build>/doc_truth/ranking.json` and `comparison.json`, and reports each
+  document against `docs/reports/doc_truth/quota.json` without failing;
+  `doc_truth_ratchet_unit` pins the ranking order, the comparison and the
+  phase-2 `--enforce` behaviour. The generated summary and the phase-2 plan
+  are in [reports/DOC_TRUTH_RANKING.md](reports/DOC_TRUTH_RANKING.md).
+- **Image codecs keep the bytes and pixels of the previous system codecs.**
+  `image_codecs_test` decodes the fixtures in `tests/core/image_fixtures` and
+  encodes deterministic images, comparing against goldens recorded from
+  libpng/libjpeg-turbo/libwebp before the codecs moved into the runtime, then
+  round-trips PNG/JPEG/BMP/WebP at 1, 3 and 4 channels, the zlib
+  encoder/decoder pair and a mutation pass. `image_io_language_test`
+  runs `tests/v1_2_edge_cases/image_io_test.esk` through `eshkol-run -r`.
+
 - **Evidence paths are absolute before first use** (#695).
   `scripts/lib/evidence_paths.sh` fixes the meaning of a relative evidence
   path once: a relative `TRACE_DIR` or `ICC_TRACE_DIR` is relative to the
@@ -904,10 +996,9 @@ The docs-only predicate above answers one narrow question — "does this
 touch only documentation" — but plenty of PRs are just as inert to the
 build and test suite without touching `docs/`. Two examples that shipped
 before this classifier existed: #624 touched only
-`lib/backend/eshkol_compiler.c`, a file `CMakeLists.txt` explicitly
-excludes from the source list it compiles (kept as a reference-only
-standalone program); #618 and #619 each touched a single test shell
-script. All three ran the full 25-job cross-platform matrix anyway,
+`lib/backend/eshkol_compiler.c`, the standalone hosted compiler source that
+was already excluded from build inputs and has since been retired; #618 and #619
+each touched a single test shell script. All three ran the full 25-job cross-platform matrix anyway,
 because nothing in `changes` could tell a build-irrelevant source edit
 from a real one.
 

@@ -1,0 +1,9 @@
+;; An endpoint is linear: sending twice on the same endpoint is rejected.
+;; ENGINES: jit aot vm
+;; EXPECT-STDERR: was consumed more than once
+(require stdlib)
+(require core.sessions)
+(define (twice (c : (chan (! number end)))) : null
+  (let ((a (session-send c 1)))
+    (session-close (session-send c 2))
+    (session-close a)))

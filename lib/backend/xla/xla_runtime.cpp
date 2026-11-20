@@ -20,6 +20,8 @@
 #include <chrono>
 #include <mutex>
 #include <limits>
+#include <new>
+#include <stdexcept>
 #include <eshkol/tensor_validation.h>
 
 // Use the existing BLAS matmul for now
@@ -37,6 +39,18 @@ extern "C" {
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
 #include "eshkol/backend/xla/pjrt_client.h"
 #endif
+
+namespace eshkol { namespace xla {
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+// The client references its plugin, so declare the plugin first for reverse
+// destruction. Programs retain this immutable session after runtime teardown.
+struct PjrtSession {
+    std::unique_ptr<PjrtPlugin> plugin;
+    std::unique_ptr<PjrtClient> client;
+    int device_index = -1;
+};
+#endif
+}}
 
 // Lazy GPU initialization for XLA runtime functions
 // Uses std::call_once for thread-safe one-time initialization
@@ -1175,13 +1189,26 @@ public:
     bool pjrt_active_ = false;
     std::string pjrt_status_;   // empty unless PJRT was requested (diagnostic either way)
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
-    // Members are destroyed in reverse declaration order: keep the plugin
-    // first so the client is destroyed before the plugin it references.
-    std::unique_ptr<PjrtPlugin> pjrt_plugin_;
-    std::unique_ptr<PjrtClient> pjrt_client_;
-    int pjrt_device_index_ = -1;   // index into pjrt_client_->devices() chosen at init
+    std::shared_ptr<const PjrtSession> pjrt_session_;
 #endif
 };
+
+class StableHLOProgram::Impl {
+public:
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    std::shared_ptr<const PjrtSession> session;
+    PJRT_LoadedExecutable* executable = nullptr;
+    ~Impl() {
+        if (executable && session && session->client)
+            session->client->destroyExecutable(executable);
+    }
+#endif
+};
+
+StableHLOProgram::StableHLOProgram(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+StableHLOProgram::~StableHLOProgram() = default;
+StableHLOProgram::StableHLOProgram(StableHLOProgram&&) noexcept = default;
+StableHLOProgram& StableHLOProgram::operator=(StableHLOProgram&&) noexcept = default;
 
 /** @brief Construct an uninitialized XLA runtime; call initialize() before use. */
 XLARuntime::XLARuntime()
@@ -1260,9 +1287,7 @@ bool XLARuntime::initialize(Target target) {
     impl_->pjrt_active_ = false;
     impl_->pjrt_status_.clear();
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
-    impl_->pjrt_client_.reset();   // destroyed before pjrt_plugin_ — see the Impl comment
-    impl_->pjrt_plugin_.reset();
-    impl_->pjrt_device_index_ = -1;
+    impl_->pjrt_session_.reset();
 
     const char* want_pjrt = std::getenv("ESHKOL_XLA_PJRT");
     if (want_pjrt && std::strcmp(want_pjrt, "1") == 0) {
@@ -1284,8 +1309,9 @@ bool XLARuntime::initialize(Target target) {
             std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
         } else {
             std::string load_error;
-            impl_->pjrt_plugin_ = PjrtPlugin::load(plugin_path, &load_error);
-            if (!impl_->pjrt_plugin_) {
+            auto session = std::make_shared<PjrtSession>();
+            session->plugin = PjrtPlugin::load(plugin_path, &load_error);
+            if (!session->plugin) {
                 impl_->pjrt_status_ =
                     "ESHKOL_XLA_PJRT=1 was set; failed to load PJRT plugin '" +
                     plugin_path + "': " + load_error +
@@ -1293,41 +1319,38 @@ bool XLARuntime::initialize(Target target) {
                 std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
             } else {
                 std::string create_error;
-                impl_->pjrt_client_ =
-                    PjrtClient::create(impl_->pjrt_plugin_.get(), &create_error);
-                if (!impl_->pjrt_client_) {
+                session->client = PjrtClient::create(session->plugin.get(), &create_error);
+                if (!session->client) {
                     impl_->pjrt_status_ =
                         "ESHKOL_XLA_PJRT=1 was set; plugin '" + plugin_path +
                         "' loaded but PjrtClient::create failed: " + create_error +
                         ". Falling back to LLVM-direct dispatch.";
                     std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
-                    impl_->pjrt_plugin_.reset();
                 } else {
                     // Pick the first addressable device up front, rather than
                     // deferring to the first execute() call, so a plugin that
                     // loads but exposes nothing this process can use is
                     // reported here — at init, where a human is looking —
                     // instead of surfacing later as an opaque execute() failure.
-                    const auto& devices = impl_->pjrt_client_->devices();
+                    const auto& devices = session->client->devices();
                     for (size_t i = 0; i < devices.size(); ++i) {
                         if (devices[i].is_addressable) {
-                            impl_->pjrt_device_index_ = static_cast<int>(i);
+                            session->device_index = static_cast<int>(i);
                             break;
                         }
                     }
-                    if (impl_->pjrt_device_index_ < 0) {
+                    if (session->device_index < 0) {
                         impl_->pjrt_status_ =
                             "ESHKOL_XLA_PJRT=1 was set; plugin '" + plugin_path +
-                            "' loaded (platform=" + impl_->pjrt_client_->platformName() +
+                            "' loaded (platform=" + session->client->platformName() +
                             ") but reports no addressable device. Falling back to "
                             "LLVM-direct dispatch.";
                         std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
-                        impl_->pjrt_client_.reset();
-                        impl_->pjrt_plugin_.reset();
                     } else {
+                        impl_->pjrt_session_ = std::move(session);
                         impl_->pjrt_active_ = true;
                         impl_->pjrt_status_ =
-                            "PJRT active: platform=" + impl_->pjrt_client_->platformName() +
+                            "PJRT active: platform=" + impl_->pjrt_session_->client->platformName() +
                             ", plugin=" + plugin_path;
                         std::fprintf(stderr, "eshkol: XLA PJRT: %s\n", impl_->pjrt_status_.c_str());
                     }
@@ -1422,17 +1445,11 @@ ExecutionResult XLARuntime::executeStableHLO(
                                .execution_time_ns = 0};
     }
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
-    std::string compile_error;
-    PJRT_LoadedExecutable* executable =
-        impl_->pjrt_client_->compile(module_text, "mlir", &compile_error);
-    if (!executable) {
-        return ExecutionResult{.success = false,
-                               .error_message = "PJRT StableHLO compile failed: " + compile_error,
-                               .execution_time_ns = 0};
-    }
-    ExecutionResult result = executePjrt(executable, inputs, outputs);
-    impl_->pjrt_client_->destroyExecutable(executable);
-    return result;
+    std::string diagnostic;
+    auto program = compileStableHLO(module_text, &diagnostic);
+    if (!program) return ExecutionResult{.success = false, .error_message = diagnostic,
+                                         .execution_time_ns = 0};
+    return executeCompiledStableHLO(*program, inputs, outputs);
 #else
     (void)inputs;
     (void)outputs;
@@ -1442,23 +1459,145 @@ ExecutionResult XLARuntime::executeStableHLO(
 #endif
 }
 
+ExecutionResult XLARuntime::executeStableHLO(
+    const std::string& module_text,
+    const std::vector<TypedBufferDescriptor>& inputs,
+    std::vector<TypedBufferDescriptor>& outputs) {
+    if (!impl_->initialized_)
+        return ExecutionResult{.success = false, .error_message = "Runtime not initialized", .execution_time_ns = 0};
+    if (!impl_->pjrt_active_)
+        return ExecutionResult{.success = false, .error_message = impl_->pjrt_status_.empty()
+            ? "PJRT device execution is not active" : impl_->pjrt_status_, .execution_time_ns = 0};
+    if (module_text.empty())
+        return ExecutionResult{.success = false, .error_message = "empty StableHLO module text", .execution_time_ns = 0};
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    std::string diagnostic;
+    auto program = compileStableHLO(module_text, &diagnostic);
+    if (!program) return ExecutionResult{.success = false, .error_message = diagnostic, .execution_time_ns = 0};
+    return executeCompiledStableHLO(*program, inputs, outputs);
+#else
+    (void)inputs; (void)outputs;
+    return ExecutionResult{.success = false, .error_message = "this build has no PJRT client compiled in", .execution_time_ns = 0};
+#endif
+}
+
+std::unique_ptr<StableHLOProgram> XLARuntime::compileStableHLO(
+    const std::string& module_text, std::string* diagnostic) {
+    auto refuse = [&](const std::string& message) -> std::unique_ptr<StableHLOProgram> {
+        if (diagnostic) *diagnostic = message;
+        return nullptr;
+    };
+    if (!impl_->initialized_) return refuse("Runtime not initialized");
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (!impl_->pjrt_active_ || !impl_->pjrt_session_)
+        return refuse(impl_->pjrt_status_.empty() ? "PJRT device execution is not active" : impl_->pjrt_status_);
+#else
+    return refuse("this build has no PJRT client compiled in");
+#endif
+    if (module_text.empty()) return refuse("empty StableHLO module text");
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    std::string error;
+    auto owner = std::make_unique<StableHLOProgram::Impl>();
+    owner->session = impl_->pjrt_session_;
+    owner->executable = owner->session->client->compile(module_text, "mlir", &error);
+    if (!owner->executable) return refuse("PJRT StableHLO compile failed: " + error);
+    if (diagnostic) diagnostic->clear();
+    return std::unique_ptr<StableHLOProgram>(new StableHLOProgram(std::move(owner)));
+#else
+    return refuse("this build has no PJRT client compiled in");
+#endif
+}
+
+ExecutionResult XLARuntime::executeCompiledStableHLO(
+    const StableHLOProgram& program,
+    const std::vector<BufferDescriptor>& inputs,
+    std::vector<BufferDescriptor>& outputs) {
+    if (!impl_->initialized_)
+        return ExecutionResult{.success = false, .error_message = "Runtime not initialized", .execution_time_ns = 0};
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (!impl_->pjrt_active_ || !impl_->pjrt_session_)
+        return ExecutionResult{.success = false, .error_message = "PJRT device execution is not active", .execution_time_ns = 0};
+    if (!program.impl_ || !program.impl_->session || !program.impl_->executable ||
+        program.impl_->session.get() != impl_->pjrt_session_.get())
+        return ExecutionResult{.success = false,
+            .error_message = "StableHLO program belongs to a different or inactive PJRT session",
+            .execution_time_ns = 0};
+    return executePjrt(program.impl_->executable, program.impl_->session.get(), inputs, outputs);
+#else
+    (void)program; (void)inputs; (void)outputs;
+    return ExecutionResult{.success = false, .error_message = "this build has no PJRT client compiled in", .execution_time_ns = 0};
+#endif
+}
+
+ExecutionResult XLARuntime::executeCompiledStableHLO(
+    const StableHLOProgram& program,
+    const std::vector<TypedBufferDescriptor>& inputs,
+    std::vector<TypedBufferDescriptor>& outputs) {
+    if (!impl_->initialized_)
+        return ExecutionResult{.success = false, .error_message = "Runtime not initialized", .execution_time_ns = 0};
+#ifdef ESHKOL_XLA_PJRT_AVAILABLE
+    if (!impl_->pjrt_active_ || !impl_->pjrt_session_)
+        return ExecutionResult{.success = false, .error_message = "PJRT device execution is not active", .execution_time_ns = 0};
+    if (!program.impl_ || !program.impl_->session || !program.impl_->executable ||
+        program.impl_->session.get() != impl_->pjrt_session_.get())
+        return ExecutionResult{.success = false, .error_message = "StableHLO program belongs to a different or inactive PJRT session", .execution_time_ns = 0};
+    return executePjrt(program.impl_->executable, program.impl_->session.get(), inputs, outputs);
+#else
+    (void)program; (void)inputs; (void)outputs;
+    return ExecutionResult{.success = false, .error_message = "this build has no PJRT client compiled in", .execution_time_ns = 0};
+#endif
+}
+
 /** @brief Run a PJRT executable; called only with a handle returned internally above. */
 ExecutionResult XLARuntime::executePjrt(
     void* executable,
+    const void* session_opaque,
     const std::vector<BufferDescriptor>& inputs,
     std::vector<BufferDescriptor>& outputs) {
+    std::vector<TypedBufferDescriptor> typed_inputs, typed_outputs;
+    typed_inputs.reserve(inputs.size()); typed_outputs.reserve(outputs.size());
+    for (const auto& in : inputs) {
+        if (in.element_size != sizeof(double))
+            return ExecutionResult{.success = false, .error_message = "PJRT execute: legacy descriptors support f64 only", .execution_time_ns = 0};
+        typed_inputs.push_back({in.data, in.shape, BufferElementType::kF64, in.on_device});
+    }
+    for (const auto& out : outputs) {
+        if (out.element_size != sizeof(double))
+            return ExecutionResult{.success = false, .error_message = "PJRT execute: legacy descriptors support f64 only", .execution_time_ns = 0};
+        typed_outputs.push_back({out.data, out.shape, BufferElementType::kF64, out.on_device});
+    }
+    return executePjrt(executable, session_opaque, typed_inputs, typed_outputs);
+}
+
+ExecutionResult XLARuntime::executePjrt(
+    void* executable,
+    const void* session_opaque,
+    const std::vector<TypedBufferDescriptor>& inputs,
+    std::vector<TypedBufferDescriptor>& outputs) {
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
-    if (!impl_->pjrt_active_ || !executable) {
+    auto* session = static_cast<const PjrtSession*>(session_opaque);
+    if (!session || !session->client || !executable) {
         return ExecutionResult{.success = false,
                                .error_message = "PJRT executable or active client is unavailable",
                                .execution_time_ns = 0};
     }
     auto start = std::chrono::high_resolution_clock::now();
     auto* pjrt_executable = reinterpret_cast<PJRT_LoadedExecutable*>(executable);
-    auto f64_bytes = [](const BufferDescriptor& descriptor, size_t* bytes) {
-        if (!bytes || descriptor.on_device ||
-            descriptor.element_size != sizeof(double)) return false;
-        size_t size = sizeof(double);  // An empty shape denotes one scalar.
+    auto element_type = [](BufferElementType type) -> PjrtElementType {
+        switch (type) {
+            case BufferElementType::kF64: return PjrtElementType::kF64;
+            case BufferElementType::kF32: return PjrtElementType::kF32;
+            case BufferElementType::kBF16: return PjrtElementType::kBf16;
+        }
+        return PjrtElementType::kInvalid;
+    };
+    auto typed_bytes = [&](const TypedBufferDescriptor& descriptor, size_t* bytes) {
+        if (!bytes || descriptor.on_device) return false;
+        const size_t element_size = descriptor.element_type == BufferElementType::kF64 ? 8
+            : descriptor.element_type == BufferElementType::kF32 ? 4
+            : descriptor.element_type == BufferElementType::kBF16 ? 2 : 0;
+        if (element_size == 0) return false;
+        size_t size = element_size;  // An empty shape denotes one scalar.
         for (int64_t dim : descriptor.shape) {
             if (dim < 0) return false;
             const size_t extent = static_cast<size_t>(dim);
@@ -1472,8 +1611,8 @@ ExecutionResult XLARuntime::executePjrt(
     auto fail = [&](const std::string& message,
                     const std::vector<PJRT_Buffer*>& to_release1,
                     const std::vector<PJRT_Buffer*>& to_release2) -> ExecutionResult {
-        for (auto* b : to_release1) impl_->pjrt_client_->destroyBuffer(b);
-        for (auto* b : to_release2) impl_->pjrt_client_->destroyBuffer(b);
+        for (auto* b : to_release1) session->client->destroyBuffer(b);
+        for (auto* b : to_release2) session->client->destroyBuffer(b);
         auto end = std::chrono::high_resolution_clock::now();
         auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
         return ExecutionResult{.success = false, .error_message = message,
@@ -1481,18 +1620,32 @@ ExecutionResult XLARuntime::executePjrt(
     };
 
     std::vector<size_t> output_bytes(outputs.size());
+    std::vector<std::vector<uint8_t>> staged_outputs;
     for (size_t i = 0; i < outputs.size(); ++i) {
         if (outputs[i].on_device) {
             return fail("PJRT execute: output " + std::to_string(i) +
                             " must be a host-resident buffer descriptor",
                         {}, {});
         }
-        if (!f64_bytes(outputs[i], &output_bytes[i]) ||
+        if (!typed_bytes(outputs[i], &output_bytes[i]) ||
             (output_bytes[i] != 0 && !outputs[i].data)) {
             return fail("PJRT execute: output " + std::to_string(i) +
-                            " must have a valid host-resident f64 shape and buffer",
+                            " must have a valid typed host shape and buffer",
                         {}, {});
         }
+    }
+    try {
+        staged_outputs.resize(outputs.size());
+        for (size_t i = 0; i < outputs.size(); ++i)
+            staged_outputs[i].resize(output_bytes[i]);
+    } catch (const std::bad_alloc&) {
+        return ExecutionResult{.success = false,
+            .error_message = "PJRT execute: unable to allocate staged host outputs",
+            .execution_time_ns = 0};
+    } catch (const std::length_error&) {
+        return ExecutionResult{.success = false,
+            .error_message = "PJRT execute: staged host output size is not representable",
+            .execution_time_ns = 0};
     }
 
     std::vector<PJRT_Buffer*> pjrt_inputs;
@@ -1503,13 +1656,13 @@ ExecutionResult XLARuntime::executePjrt(
                         pjrt_inputs, {});
         }
         size_t input_bytes = 0;
-        if (!f64_bytes(in, &input_bytes) || (input_bytes != 0 && !in.data)) {
-            return fail("PJRT execute: input must have a valid host-resident f64 shape and buffer",
+        if (!typed_bytes(in, &input_bytes) || (input_bytes != 0 && !in.data)) {
+            return fail("PJRT execute: input must have a valid typed host shape and buffer",
                         pjrt_inputs, {});
         }
         std::string stage_error;
-        PJRT_Buffer* buf = impl_->pjrt_client_->bufferFromHost(
-            in.data, PjrtElementType::kF64, in.shape, impl_->pjrt_device_index_,
+        PJRT_Buffer* buf = session->client->bufferFromHost(
+            in.data, element_type(in.element_type), in.shape, session->device_index,
             &stage_error);
         if (!buf) {
             return fail("PJRT execute: bufferFromHost failed: " + stage_error,
@@ -1519,7 +1672,7 @@ ExecutionResult XLARuntime::executePjrt(
     }
 
     std::vector<PJRT_Buffer*> pjrt_outputs;
-    PjrtStatus status = impl_->pjrt_client_->execute(pjrt_executable, pjrt_inputs, pjrt_outputs);
+    PjrtStatus status = session->client->execute(pjrt_executable, pjrt_inputs, pjrt_outputs);
     if (!status.ok())
         return fail("PJRT execute failed: " + status.message(), pjrt_inputs, pjrt_outputs);
     if (pjrt_outputs.size() != outputs.size()) {
@@ -1532,17 +1685,17 @@ ExecutionResult XLARuntime::executePjrt(
     for (size_t i = 0; i < outputs.size(); ++i) {
         PjrtBufferMetadata metadata;
         PjrtStatus metadata_status =
-            impl_->pjrt_client_->bufferMetadata(pjrt_outputs[i], &metadata);
+            session->client->bufferMetadata(pjrt_outputs[i], &metadata);
         if (!metadata_status.ok()) {
             return fail("PJRT execute: could not validate output " +
                             std::to_string(i) + ": " + metadata_status.message(),
                         pjrt_inputs, pjrt_outputs);
         }
-        if (metadata.element_type != PjrtElementType::kF64) {
+        if (metadata.element_type != element_type(outputs[i].element_type)) {
             return fail("PJRT execute: output " + std::to_string(i) +
                             " has device element type " +
                             std::to_string(static_cast<int>(metadata.element_type)) +
-                            "; expected f64",
+                            "; expected descriptor element type",
                         pjrt_inputs, pjrt_outputs);
         }
         if (metadata.dimensions != outputs[i].shape) {
@@ -1552,20 +1705,23 @@ ExecutionResult XLARuntime::executePjrt(
         }
     }
     for (size_t i = 0; i < outputs.size(); ++i) {
-        PjrtStatus copy_status = impl_->pjrt_client_->bufferToHost(
-            pjrt_outputs[i], outputs[i].data, output_bytes[i]);
+        PjrtStatus copy_status = session->client->bufferToHost(
+            pjrt_outputs[i], staged_outputs[i].data(), output_bytes[i]);
         if (!copy_status.ok())
             return fail("PJRT execute: bufferToHost failed for output " +
                             std::to_string(i) + ": " + copy_status.message(),
                         pjrt_inputs, pjrt_outputs);
     }
-    for (auto* b : pjrt_inputs) impl_->pjrt_client_->destroyBuffer(b);
-    for (auto* b : pjrt_outputs) impl_->pjrt_client_->destroyBuffer(b);
+    for (size_t i = 0; i < outputs.size(); ++i)
+        if (output_bytes[i] != 0) std::memcpy(outputs[i].data, staged_outputs[i].data(), output_bytes[i]);
+    for (auto* b : pjrt_inputs) session->client->destroyBuffer(b);
+    for (auto* b : pjrt_outputs) session->client->destroyBuffer(b);
     auto end = std::chrono::high_resolution_clock::now();
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
     return ExecutionResult{.success = true, .error_message = "", .execution_time_ns = ns};
 #else
     (void)executable;
+    (void)session_opaque;
     (void)inputs;
     (void)outputs;
     return ExecutionResult{.success = false,
@@ -1713,10 +1869,10 @@ std::string XLARuntime::getDescription() const {
     if (impl_->initialized_) {
 #ifdef ESHKOL_XLA_PJRT_AVAILABLE
         if (impl_->pjrt_active_) {
-            size_t total = impl_->pjrt_client_->devices().size();
-            size_t addressable = impl_->pjrt_client_->addressableDevices().size();
+            size_t total = impl_->pjrt_session_->client->devices().size();
+            size_t addressable = impl_->pjrt_session_->client->addressableDevices().size();
             desc += "PJRT device active for StableHLO, platform=" +
-                    impl_->pjrt_client_->platformName() +
+                    impl_->pjrt_session_->client->platformName() +
                     ", devices=" + std::to_string(addressable) + "/" +
                     std::to_string(total) + " addressable";
             desc += ")";

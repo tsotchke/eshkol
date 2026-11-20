@@ -293,7 +293,7 @@ to a tensor alike:
 (adam quad #(5.0 5.0) 0.1)                         ;; => ~#(0.0 0.0)
 
 ;; L-BFGS for second-order optimization
-(l-bfgs quad #(5.0 5.0))                           ;; => #(0 0)
+(l-bfgs quad #(5.0 5.0))                           ;; => #(0.0 0.0)
 ```
 
 These all compose with autodiff — you can differentiate through any of

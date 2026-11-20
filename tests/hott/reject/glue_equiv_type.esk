@@ -1,0 +1,4 @@
+;; expect-error: type mismatch
+(hott (import numbers)
+  (define bad : (Path U Int Int)
+    (lambda (i) (Glue Int (((= i 0) Nat (idEquiv 0 Int)) ((= i 1) Int (idEquiv 0 Int)))))))

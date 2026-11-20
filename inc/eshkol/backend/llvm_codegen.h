@@ -1114,6 +1114,8 @@ private:
 
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
+    Value* codegenWasmSmallClosureCall(Value* function_ptr, Value* captures,
+        Value* capture_count, const std::vector<Value*>& arguments);
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
                               bool parameter_dispatch = true,

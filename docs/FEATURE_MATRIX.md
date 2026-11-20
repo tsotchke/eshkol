@@ -1,31 +1,27 @@
-# Eshkol v1.3.5-evolve Feature Matrix
+# Eshkol Feature Matrix
 
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
 This matrix lists every implemented and planned feature in the Eshkol ecosystem. Feature implementation status is recorded here; release verification is recorded separately, in the "Final verification" section of [RELEASE_NOTES.md](../RELEASE_NOTES.md), and is bound to the tagged commit.
 
 **Language surface count (canonical):** the declared language surface is
-**1,118** constructs — 1,058 builtins, 116 special forms, 113 AST ops and 16
-prelude entries, deduplicated by name with internal-only helpers excluded.
-Older cited figures — 1,107, 1,091 and 1,106 here and in
-`docs/COMPILER_ROADMAP.md`, 1,078 in `.icc/architecture-model.yaml`,
-"550+ built-in functions"/"39 special forms" in `README.md` — were each
-correct on the day they were written but drifted as the surface grew; the
-gate has ratcheted upward since. The "1,058 in ADR-0011 §2.1" citation from
-the previous reconciliation pass was itself wrong: ADR-0011 is the
-guest-collector adapter design and contains no surface-count section — there
-is no §2.1 that states 1,058. The only correct citation for this number is
-the coverage manifest itself: `tests/coverage/language_surface.json` (1,058
-builtins + 116 special forms + 113 AST ops + 16 prelude), deduplicated by
-name and with internal-only helpers excluded exactly the way
-`scripts/language_coverage.py` already deduplicates it to compute the
-number the coverage gate enforces: `tests/coverage/coverage_policy.json`
-`baseline_surface_total` = `tests/coverage/execution_deficit.json`
-`surface_total` = **1,118**, confirmed by regenerating
-`tests/coverage/language_surface.json` at the release commit. This
-is the figure this doc, README.md, and `.icc/architecture-model.yaml` use;
-`scripts/check_surface_counts.py` fails CI if any of them drift from the
-manifest again.
+**1,470** constructs. The generated manifest records 1,067 builtins,
+116 special forms, 113 internal AST operations and 469 prelude records;
+the categories overlap, and the public count deduplicates names and excludes
+internal-only entries. See `tests/coverage/language_surface.json` and
+`scripts/language_coverage.py` for the exact inventory and counting rules.
+
+The required coverage floor is 1,470 entries at 100%, with no new execution
+deficit permitted. This is a target, not a measurement. The committed historical
+execution ledger still certifies 1,118 names; it has not been rewritten to claim
+coverage for the expanded candidate. Current execution evidence must close that
+gap before the coverage gate can pass. Exported data bindings also need an
+execution observation appropriate to reading data; a function name appearing in
+source or IR earns no invocation credit.
+
+`scripts/check_surface_counts.py` checks the declared counts in these docs
+against the machine sources. Release verification remains bound to its tagged
+commit and is recorded separately in [RELEASE_NOTES.md](../RELEASE_NOTES.md).
 
 ---
 
@@ -277,6 +273,7 @@ manifest again.
 | S-expression parser | Yes | Explicit continuation stack | Stack use independent of nesting depth; gated at 16,000 levels on an 8 MiB stack |
 | Macro system | Yes | Hygienic macros | `define-syntax` |
 | HoTT type checker | Yes | Bidirectional | Gradual typing |
+| HoTT identity types, univalence, HITs | Yes | Cubical kernel (ADR-0043): path types, transp/hcomp, Glue, circle, suspension, truncations | `(hott ...)`, `(hott-eval ...)`; JIT, AOT, VM |
 | LLVM IR generation | Yes | LLVM 18-24 (one major pinned per build, 21 by default) | 39 codegen modules; `lib/backend/llvm_codegen.cpp` is 47,548 lines |
 | Native code emission | Yes | x86-64, ARM64 | Object files |
 | Executable linking | Yes | System linker | Standalone binaries |
@@ -491,7 +488,7 @@ manifest again.
 | Debugger | Planned | Interactive debugging | Planned |
 | Profiler | Planned | Performance analysis | Planned |
 | **Documentation** |
-| API Reference | Yes | Complete | 1,058 builtins across a 1,118-construct declared surface (canonical count, see below) |
+| API Reference | Yes | Complete | 1,067 builtins across a 1,470-construct declared surface (canonical count, see below) |
 | Quickstart Guide | Yes | Tutorial | 15-minute intro |
 | Architecture Guide | Yes | Internals | System design |
 | Type System Guide | Yes | HoTT types | Dependent types |
@@ -680,7 +677,7 @@ manifest again.
 | CSV | Yes | - | Read and write |
 | Base64 | Yes | - | Encode and decode |
 | MessagePack | Yes | Stable | `lib/core/msgpack.esk`; see `docs/reference/stdlib/msgpack.md` |
-| Protocol Buffers | Planned | - | Planned |
+| Protocol Buffers | Yes | v1.4.0 | proto3: `.proto` parser, schema compiler and generated encoders/decoders in `lib/core/protobuf.esk`; see `docs/reference/stdlib/protobuf.md` |
 | **Databases** |
 | SQLite | Yes | v1.2 | `agent.sqlite` FFI module; see `docs/reference/agent/sqlite.md` |
 | PostgreSQL | Planned | - | Planned |
@@ -792,8 +789,9 @@ gated on the locked interop-first sequence.
 > independently added making the same point.
 
 Advanced type-theory items (refinement types, effect types, higher-rank
-types, row polymorphism) did not ship in the v1.3 line; they remain staged
-at v1.9.0-types. PGO remains a build-time scaffold (workload selection is
+types, row polymorphism) did not ship in the v1.3 line; they are staged at
+v1.9.0-types, where refinement types are implemented with a built-in decision
+procedure (ADR-0044). PGO remains a build-time scaffold (workload selection is
 the open gap); whole-program optimization and polyhedral loop optimization
 are not yet scheduled to a specific release.
 
@@ -828,12 +826,22 @@ are not yet scheduled to a specific release.
 
 ### v1.7.0-synthesis (target: Q3-Q4 2027)
 
-- **Program Synthesis**: Type-directed holes, neural-guided search
-- **Advanced Neural**: Graph Neural Networks
+- **Program Synthesis**: Type-directed holes (`??`, completed by the native
+  compiler under JIT and AOT, [synthesis-holes.md](reference/language/synthesis-holes.md));
+  synthesis from input-output examples (`core.synthesis`: enumeration with
+  observational equivalence, FlashFill and map/filter deduction, 42/42
+  benchmark tasks verified on held-out examples,
+  [synthesis.md](reference/stdlib/synthesis.md)); neural-guided search: the
+  cost hook ships, the learned engines are in Noesis (ADR-0052)
+- **Advanced Neural**: Graph Neural Networks (`ml.gnn`: message passing,
+  sum/mean/max aggregation, GCN, GraphSAGE, graph attention, exact reverse-mode
+  gradients through `ml.autograd`, [gnn.md](reference/stdlib/gnn.md))
 
 ### v1.9.0 (per ADR-0004/ADR-0007, ADR-0000 Stage 12)
 
-- **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: Refinement types, effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
+- **Refinement types (ADR-0044)**: `(Refine T phi)` with verification conditions from contracts, branches, arithmetic and index bounds, decided by a built-in procedure (Omega test, exact simplex, congruence closure, DPLL(T)) with an optional z3 backend; counterexamples in diagnostics; native and VM engines. See [refinement types](reference/language/refinement-types.md).
+- **Advanced Types (BUILD ITEM, moved from v1.3-evolve, ADR-0004)**: effect types, higher-rank types, row polymorphism — `NominalTypeId`/`TypeRef`/`EffectRowRef` do not exist yet; tracked as ADR-0000 Stage 12
+- **Row polymorphism, higher-rank types, session types (ADR-0046)**: extensible records with principal row types and width subtyping (`core.records`), predicative arbitrary-rank polymorphism checked bidirectionally, binary session types with duality and exactly-once endpoints over local channels and TCP (`core.sessions`); compile-time errors on JIT, AOT and the bytecode VM — see [structural-types.md](reference/language/structural-types.md)
 - **Whole-Program Optimization + polyhedral loop optimization (BUILD ITEM, moved from v1.3-evolve, ADR-0007)**: no closed-world root analysis, no LTO/ThinLTO exists yet
 
 ### v2.0-starlight (target: Q4 2028)
@@ -854,7 +862,7 @@ are not yet scheduled to a specific release.
 
 ### Production-Ready (v1.1)
 
-- Core language (116 special forms, 1,058 builtins — 1,118-construct canonical surface, see "Language surface count" below)
+- Core language (116 special forms, 1,067 builtins — 1,470-construct canonical surface, see "Language surface count" below)
 - Automatic differentiation (3 modes)
 - Tensor operations (30+ functions)
 - List processing (50+ operations)
@@ -911,7 +919,7 @@ not-yet-production, and is listed above accordingly.)
 | Feature | Status | Notes |
 |---------|--------|-------|
 | **Bytecode VM** |
-| 72-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 72` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. `lib/backend/eshkol_compiler.c` mirrors the enum exactly; `lib/backend/eshkol_benchmark.c` still declares its own `OpCode` stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc |
+| 72-opcode core ISA | Yes | Register+stack architecture, computed-goto dispatch; `OP_COUNT = 72` in `lib/backend/vm_core.c`, the enum `vm_run.c`'s dispatch table indexes — corrected 2026-08-25 from "64" (conformity audit item d7) and remeasured here after the long-closure, secondary-raise, popped-tail-call and per-form-coverage opcodes (67-71) landed. The old standalone hosted compiler snapshot was retired; current VM source uses its own production opcode table; `lib/backend/eshkol_benchmark.c` still declares its own `OpCode` stopping at 63, a separate ODR-cleanup code issue tracked independently of this doc |
 | 741 VM-reachable builtins | Yes | Math, string, IO, complex, rational, bignum, dual, AD, tensor, logic, inference, workspace, hash, bytevector, parameter; `tests/coverage/language_surface.json` `counts.builtins_in_vm_table` — 741 on the v1.3.5-evolve cut, dispatched through 743 distinct native-call IDs spanning 0–2230 in `lib/backend/vm_native.c`; corrected 2026-08-25 from "694" (conformity audit item d7) and remeasured since |
 | ESKB binary format | Yes | Section-based layout, LEB128 encoding, CRC32 checksums |
 | `-B` flag (bytecode emission) | Yes | `eshkol-run input.esk -B output.eskb` |

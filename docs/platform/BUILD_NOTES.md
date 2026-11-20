@@ -129,7 +129,7 @@ Install LLVM 21 from apt.llvm.org plus dev libraries:
 
 ```sh
 # llvm-21 llvm-21-dev lld-21 libreadline-dev pkg-config libssl-dev
-# libncurses-dev libpcre2-dev libsqlite3-dev libpng/jpeg/webp-dev
+# libncurses-dev libpcre2-dev libsqlite3-dev
 sudo ln -sf "$(command -v ld.lld-21)" /usr/local/bin/ld.lld   # AArch64 links use lld
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 ```

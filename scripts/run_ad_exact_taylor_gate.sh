@@ -12,6 +12,8 @@ case "$BUILD_DIR" in
   *) BUILD_PATH="$REPO_ROOT/$BUILD_DIR" ;;
 esac
 TRACE_DIR="${TRACE_DIR:-$REPO_ROOT/scripts/icc_traces}"
+. "$REPO_ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$REPO_ROOT" || exit $?
 TRACE_FILE="$TRACE_DIR/ad_exact_taylor.jsonl"
 emit_event() {
   python3 - "$TRACE_FILE" "$1" "$2" <<'PY'

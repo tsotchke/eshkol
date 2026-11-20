@@ -1,0 +1,3 @@
+;; expect-error: type mismatch
+(hott (import numbers)
+  (example (Path Int (transport 0 Int Int sucPathInt (pos 0)) (negsuc 0)) (refl 0 Int (negsuc 0))))

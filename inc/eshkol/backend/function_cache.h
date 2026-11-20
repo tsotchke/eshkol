@@ -25,7 +25,9 @@ namespace eshkol {
  *
  * Each function is declared in the LLVM module only when first requested,
  * then cached for subsequent calls. This avoids cluttering the module with
- * unused function declarations.
+ * unused function declarations. Existing names must denote functions with
+ * exactly the expected type; incompatible declarations throw std::runtime_error
+ * before they are cached or used to emit a call.
  *
  * Usage:
  *   FunctionCache funcs(module, types);

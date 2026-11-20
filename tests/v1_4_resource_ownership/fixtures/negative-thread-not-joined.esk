@@ -1,0 +1,3 @@
+(require core.threads)
+;; A spawned thread that is never joined is an unclosed handle.
+(define t (make-thread (lambda () 1)))

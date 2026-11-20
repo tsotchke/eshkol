@@ -1,0 +1,587 @@
+;; fibers.esk — cooperative fibers scheduled over the portable event loop
+;;
+;; (require core.fibers)
+;;
+;; A fiber is a lightweight task: a procedure running on a stackful coroutine
+;; (make-coroutine, inc/eshkol/core/coroutine.h) that the scheduler in this
+;; module resumes. A fiber runs until it yields, sleeps, waits for a file
+;; descriptor, a future, a condition or another fiber, or finishes. While it
+;; waits, other fibers run; when every fiber waits, the scheduler blocks in the
+;; event loop (kqueue / epoll / IOCP) until a descriptor is ready or the next
+;; sleeper is due.
+;;
+;;   (spawn thunk)                 → fiber, queued to run
+;;   (fiber-yield)                 let every other ready fiber run first
+;;   (fiber-sleep ms)              park for at least ms milliseconds
+;;   (fiber-await-readable fd)     park until fd is readable; returns the ready bits
+;;   (fiber-await-writable fd)     park until fd is writable; returns the ready bits
+;;   (fiber-await future)          park until a (future thunk) / make-thread
+;;                                 handle is ready, then return its value
+;;   (fiber-wait-until pred)       park until (pred) is true
+;;   (fiber-join f)                wait for f; its value, or its raise re-raised
+;;   (fiber-cancel! f)             cancel f at its next suspension point
+;;   (run-fibers)                  run until no fiber is left
+;;
+;; Semantics worth knowing:
+;;
+;;   * Scheduling is FIFO and cooperative: a fiber that becomes ready goes to
+;;     the back of the run queue, so every ready fiber runs once before any
+;;     runs twice. A fiber that never suspends keeps the thread.
+;;   * Each fiber has its own dynamic extent. Switching fibers runs no
+;;     dynamic-wind thunks; a fiber's `after` thunks run exactly once, when its
+;;     body leaves the extent — by returning, by a raise, or by cancellation.
+;;   * A raise that escapes a fiber's body finishes the fiber as `failed`.
+;;     fiber-join re-raises the same object in the joiner.
+;;   * Cancellation raises a fiber-cancelled condition inside the fiber at its
+;;     current suspension point (or before it first runs). It unwinds like any
+;;     raise, so dynamic-wind after thunks run once; a body may intercept it
+;;     with `guard`. A fiber that ends with the condition is `cancelled`, and
+;;     joining it raises the condition.
+;;   * Joining from outside any fiber runs the scheduler until the joined
+;;     fiber finishes, so a program can simply (spawn ...) and (fiber-join ...).
+;;   * The scheduler belongs to the thread that runs it; a coroutine refuses
+;;     to be resumed by any other thread.
+;;
+;; core.channels' blocking channel-send! / channel-recv! park the calling
+;; fiber instead of blocking the thread when called from inside a fiber.
+
+(require stdlib)
+
+(provide
+  spawn fiber? fiber-status fiber-result fiber-id current-fiber
+  fiber-yield fiber-sleep fiber-await-readable fiber-await-writable
+  fiber-await fiber-wait-until fiber-wait-for fiber-join fiber-cancel!
+  fiber-cancelled? fiber-cancelled-fiber
+  run-fibers fiber-scheduler-stats)
+
+;; ── Fiber record ────────────────────────────────────────────────────
+;;
+;;   0 tag 'eshkol-fiber          8  what it waits on: sleep cond join io #f
+;;   1 coroutine or #f            9  value for the next resume
+;;   2 state                      10 queued?
+;;   3 result / condition         11 cancellation condition
+;;   4 joiners (list of fibers)   12 started?
+;;   5 cancel requested?          13 wait argument: deadline, predicate,
+;;   6 id                            joined fiber or fd
+;;   7 index in the waiter        14 descriptor interest bits, or the
+;;     structure, or -1              predicate's argument
+;;
+;; state ∈ ready running waiting done failed cancelled
+;;
+;; A fiber waits on at most one thing at a time, so everything a wait needs
+;; lives in the fiber's own record, and the scheduler's waiting structures
+;; hold fibers directly. Parking, waking and checking allocate nothing.
+
+(define +fiber-slots+ 15)
+
+(define (fiber? x)
+  (and (vector? x) (= (vector-length x) +fiber-slots+) (eq? (vector-ref x 0) 'eshkol-fiber)))
+
+(define (fiber-id f) (vector-ref f 6))
+(define (fiber-status f) (vector-ref f 2))
+
+(define (-fiber-finished? f)
+  (let ((s (vector-ref f 2)))
+    (or (eq? s 'done) (eq? s 'failed) (eq? s 'cancelled))))
+
+(define (fiber-result f)
+  "The value a finished fiber returned. Raises its condition when it failed or
+   was cancelled, and raises when it has not finished."
+  (let ((s (vector-ref f 2)))
+    (cond ((eq? s 'done) (vector-ref f 3))
+          ((or (eq? s 'failed) (eq? s 'cancelled)) (raise (vector-ref f 3)))
+          (else (error "fiber-result: the fiber has not finished" (fiber-id f))))))
+
+;; ── Cancellation condition ──────────────────────────────────────────
+
+(define (-make-cancelled f)
+  (let ((c (make-vector 2 f)))
+    (vector-set! c 0 'eshkol-fiber-cancelled)
+    c))
+
+(define (fiber-cancelled? x)
+  (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'eshkol-fiber-cancelled)))
+
+(define (fiber-cancelled-fiber c) (vector-ref c 1))
+
+;; ── Scheduler state (owned by the thread that runs the scheduler) ───
+
+(define *current* #f)
+(define *next-id* 1)
+(define *live* 0)                            ; fibers spawned and not finished
+
+;; Requests a fiber hands the scheduler when it suspends. Their arguments are
+;; already in the fiber's record, so each request is a preallocated constant.
+(define +yield-request+ (cons 'fiber 'yield))
+(define +sleep-request+ (cons 'fiber 'sleep))
+(define +io-request+ (cons 'fiber 'io))
+(define +join-request+ (cons 'fiber 'join))
+(define +wait-request+ (cons 'fiber 'wait))
+
+;; A growable vector of fibers with O(1) removal (swap with last); each member
+;; records its index in slot 7. Used for condition waiters.
+(define (-make-bag) (vector (make-vector 64 #f) 0))
+(define (-bag-count b) (vector-ref b 1))
+(define (-bag-ref b i) (vector-ref (vector-ref b 0) i))
+(define (-bag-add! b f)
+  (let ((items (vector-ref b 0)) (n (vector-ref b 1)))
+    (if (= n (vector-length items))
+        (let ((new (make-vector (* 2 n) #f)))
+          (let copy ((i 0))
+            (if (< i n) (begin (vector-set! new i (vector-ref items i)) (copy (+ i 1)))))
+          (vector-set! b 0 new)))
+    (vector-set! (vector-ref b 0) n f)
+    (vector-set! f 7 n)
+    (vector-set! b 1 (+ n 1))))
+(define (-bag-remove! b f)
+  (let* ((items (vector-ref b 0))
+         (i (vector-ref f 7))
+         (last (- (vector-ref b 1) 1))
+         (moved (vector-ref items last)))
+    (vector-set! items i moved)
+    (vector-set! moved 7 i)
+    (vector-set! items last #f)
+    (vector-set! b 1 last)
+    (vector-set! f 7 -1)))
+
+;; Run queue: a growable ring buffer of fibers.
+(define *rq* (make-vector 64 #f))
+(define *rq-head* 0)
+(define *rq-count* 0)
+
+(define (-rq-grow!)
+  (let* ((old *rq*)
+         (n (vector-length old))
+         (new (make-vector (* 2 n) #f)))
+    (let copy ((i 0))
+      (if (< i *rq-count*)
+          (begin
+            (vector-set! new i (vector-ref old (modulo (+ *rq-head* i) n)))
+            (copy (+ i 1)))))
+    (set! *rq* new)
+    (set! *rq-head* 0)))
+
+(define (-enqueue! f)
+  (if (not (vector-ref f 10))
+      (begin
+        (if (= *rq-count* (vector-length *rq*)) (-rq-grow!))
+        (vector-set! *rq* (modulo (+ *rq-head* *rq-count*) (vector-length *rq*)) f)
+        (set! *rq-count* (+ *rq-count* 1))
+        (vector-set! f 10 #t))))
+
+(define (-dequeue!)
+  (let ((f (vector-ref *rq* *rq-head*)))
+    (vector-set! *rq* *rq-head* #f)
+    (set! *rq-head* (modulo (+ *rq-head* 1) (vector-length *rq*)))
+    (set! *rq-count* (- *rq-count* 1))
+    (vector-set! f 10 #f)
+    f))
+
+;; Sleepers: a binary min-heap of fibers keyed by their deadline (slot 13);
+;; each records its heap index in slot 7.
+(define *sleep-heap* (make-vector 64 #f))
+(define *sleep-count* 0)
+
+(define (-heap-key i) (vector-ref (vector-ref *sleep-heap* i) 13))
+
+(define (-heap-set! i f)
+  (vector-set! *sleep-heap* i f)
+  (vector-set! f 7 i))
+
+(define (-heap-swap! i j)
+  (let ((a (vector-ref *sleep-heap* i)) (b (vector-ref *sleep-heap* j)))
+    (-heap-set! i b)
+    (-heap-set! j a)))
+
+(define (-heap-up! i)
+  (if (> i 0)
+      (let ((p (quotient (- i 1) 2)))
+        (if (< (-heap-key i) (-heap-key p))
+            (begin (-heap-swap! i p) (-heap-up! p))))))
+
+(define (-heap-down! i)
+  (let* ((l (+ (* 2 i) 1))
+         (r (+ l 1))
+         (m (if (and (< l *sleep-count*) (< (-heap-key l) (-heap-key i))) l i))
+         (m (if (and (< r *sleep-count*) (< (-heap-key r) (-heap-key m))) r m)))
+    (if (not (= m i))
+        (begin (-heap-swap! i m) (-heap-down! m)))))
+
+(define (-heap-push! f)
+  (if (= *sleep-count* (vector-length *sleep-heap*))
+      (let ((new (make-vector (* 2 *sleep-count*) #f)))
+        (let copy ((i 0))
+          (if (< i *sleep-count*)
+              (begin (vector-set! new i (vector-ref *sleep-heap* i)) (copy (+ i 1)))))
+        (set! *sleep-heap* new)))
+  (-heap-set! *sleep-count* f)
+  (set! *sleep-count* (+ *sleep-count* 1))
+  (-heap-up! (- *sleep-count* 1)))
+
+;; Remove the fiber at heap index i (the top, or a cancelled sleeper).
+(define (-heap-remove-at! i)
+  (let ((f (vector-ref *sleep-heap* i)))
+    (set! *sleep-count* (- *sleep-count* 1))
+    (if (< i *sleep-count*)
+        (let ((moved (vector-ref *sleep-heap* *sleep-count*)))
+          (-heap-set! i moved)
+          (vector-set! *sleep-heap* *sleep-count* #f)
+          (-heap-up! i)
+          (-heap-down! (vector-ref moved 7)))
+        (vector-set! *sleep-heap* *sleep-count* #f))
+    (vector-set! f 7 -1)
+    f))
+
+;; Descriptor waiters: fd → list of waiting fibers (interest in slot 14).
+;; *io-count* is the number of descriptors registered with the loop.
+(define *loop* #f)
+(define *io-waiters* (make-hash-table))
+(define *io-count* 0)
+
+;; Condition waiters (predicate in slot 13, its argument in slot 14, or
+;; +no-argument+ for a thunk).
+(define *cond-waiters* (-make-bag))
+(define +no-argument+ (cons 'fiber 'no-argument))
+
+(define (-condition-holds? f)
+  (let ((pred (vector-ref f 13)) (arg (vector-ref f 14)))
+    (if (eq? arg +no-argument+) (pred) (pred arg))))
+(define *idle-backoff* 1)
+
+;; ── Parking and waking ──────────────────────────────────────────────
+
+(define (-park! f on)
+  (vector-set! f 2 'waiting)
+  (vector-set! f 8 on))
+
+(define (-wake! f value)
+  (vector-set! f 8 #f)
+  (vector-set! f 9 value)
+  (vector-set! f 2 'ready)
+  (-enqueue! f))
+
+(define (-io-interest waiters)
+  (let loop ((ws waiters) (bits 0))
+    (if (null? ws) bits (loop (cdr ws) (bitwise-or bits (vector-ref (car ws) 14))))))
+
+(define (-io-register! fd waiters)
+  (let ((had (pair? (hash-table-ref/default *io-waiters* fd '()))))
+    (if (null? waiters)
+        (if had
+            (begin
+              (hash-table-delete! *io-waiters* fd)
+              (event-loop-remove-fd! *loop* fd)
+              (set! *io-count* (- *io-count* 1))))
+        (begin
+          (if (not had) (set! *io-count* (+ *io-count* 1)))
+          (hash-table-set! *io-waiters* fd waiters)
+          (event-loop-add-fd! *loop* fd (-io-interest waiters))))))
+
+(define (-without f ws)
+  (cond ((null? ws) '())
+        ((eq? (car ws) f) (cdr ws))
+        (else (cons (car ws) (-without f (cdr ws))))))
+
+(define (-park-io! f)
+  (if (not *loop*)
+      (begin
+        (set! *loop* (make-event-loop 4096))
+        (if (not *loop*)
+            (error "fiber-await-readable: this platform has no event loop"))))
+  (let ((fd (vector-ref f 13)))
+    (-park! f 'io)
+    (-io-register! fd (cons f (hash-table-ref/default *io-waiters* fd '())))))
+
+(define (-dispatch-io! fd ready)
+  (let loop ((ws (hash-table-ref/default *io-waiters* fd '())) (keep '()))
+    (if (null? ws)
+        (-io-register! fd keep)
+        (let ((f (car ws)))
+          (if (not (= 0 (bitwise-and ready (bitwise-or (vector-ref f 14) 4))))
+              (begin (-wake! f ready) (loop (cdr ws) keep))
+              (loop (cdr ws) (cons f keep)))))))
+
+;; Wake every condition waiter whose predicate now holds. Walks the bag from
+;; the end so a removal (swap with last) never skips a member.
+(define (-check-conditions!)
+  (let loop ((i (- (-bag-count *cond-waiters*) 1)))
+    (if (>= i 0)
+        (let ((f (-bag-ref *cond-waiters* i)))
+          (if (-condition-holds? f)
+              (begin (-bag-remove! *cond-waiters* f) (-wake! f #t)))
+          (loop (- i 1))))))
+
+(define (-wake-sleepers! now)
+  (let loop ()
+    (if (and (> *sleep-count* 0) (<= (-heap-key 0) now))
+        (begin (-wake! (-heap-remove-at! 0) #t) (loop)))))
+
+;; Remove a parked fiber from whatever it waits on (cancellation).
+(define (-unregister! f)
+  (let ((on (vector-ref f 8)))
+    (cond
+      ((eq? on 'sleep) (-heap-remove-at! (vector-ref f 7)))
+      ((eq? on 'cond) (-bag-remove! *cond-waiters* f))
+      ((eq? on 'io)
+       (let ((fd (vector-ref f 13)))
+         (-io-register! fd (-without f (hash-table-ref/default *io-waiters* fd '())))))
+      ((eq? on 'join)
+       (let ((target (vector-ref f 13)))
+         (vector-set! target 4 (-without f (vector-ref target 4)))))
+      (else #t))
+    (vector-set! f 8 #f)))
+
+;; ── Running one fiber ───────────────────────────────────────────────
+
+(define (-finish! f state value)
+  (let ((co (vector-ref f 1)))
+    (vector-set! f 2 state)
+    (vector-set! f 3 value)
+    (vector-set! f 1 #f)
+    (vector-set! f 13 #f)
+    (set! *live* (- *live* 1))
+    (coroutine-release! co)
+    (let loop ((js (vector-ref f 4)))
+      (if (pair? js) (begin (-wake! (car js) #t) (loop (cdr js)))))
+    (vector-set! f 4 '())))
+
+(define (-handle-request! f r)
+  (cond
+    ((eq? r +sleep-request+) (-park! f 'sleep) (-heap-push! f))
+    ((eq? r +io-request+) (-park-io! f))
+    ((eq? r +join-request+)
+     (let ((target (vector-ref f 13)))
+       (if (-fiber-finished? target)
+           (begin (vector-set! f 2 'ready) (vector-set! f 9 #t) (-enqueue! f))
+           (begin (-park! f 'join)
+                  (vector-set! target 4 (cons f (vector-ref target 4)))))))
+    ((eq? r +wait-request+) (-park! f 'cond) (-bag-add! *cond-waiters* f))
+    ;; +yield-request+, or a bare coroutine-yield inside a fiber body: a yield.
+    (else (vector-set! f 2 'ready) (vector-set! f 9 #t) (-enqueue! f))))
+
+;; A fiber's body runs under one guard of its own (-fiber-body), entered once
+;; per fiber on the fiber's stack: a raise that escapes the body — including a
+;; cancellation, after the body's dynamic-wind after thunks ran — is parked in
+;; *raised* and the body returns the private +raised+ marker. A scheduling
+;; step therefore installs no handler and allocates nothing.
+(define +raised+ (cons 'fiber 'raised))
+(define *raised* #f)
+
+(define (-fiber-body thunk)
+  (guard (e (#t (set! *raised* e) +raised+))
+    (thunk)))
+
+(define (-step! f)
+  (let ((co (vector-ref f 1))
+        (cancel (and (vector-ref f 5) (vector-ref f 11))))
+    (if (and cancel (not (vector-ref f 12)))
+        ;; Cancelled before it ever ran: its body entered no extent, so
+        ;; there is nothing to unwind.
+        (-finish! f 'cancelled cancel)
+        (begin
+          (set! *current* f)
+          (vector-set! f 2 'running)
+          (vector-set! f 12 #t)
+          (let ((outcome (if cancel
+                             (begin (vector-set! f 5 #f) (coroutine-raise co cancel))
+                             (coroutine-resume co (vector-ref f 9)))))
+            (set! *current* #f)
+            (cond
+              ((not (eq? (coroutine-status co) 'done)) (-handle-request! f outcome))
+              ((eq? outcome +raised+)
+               (let ((e *raised*))
+                 (set! *raised* #f)
+                 (-finish! f (if (and (fiber-cancelled? e) (eq? (fiber-cancelled-fiber e) f))
+                                 'cancelled 'failed)
+                           e)))
+              (else (-finish! f 'done outcome))))))))
+
+;; ── Waiting for the outside world ───────────────────────────────────
+
+(define (-waiting?)
+  (or (> *sleep-count* 0) (> *io-count* 0) (> (-bag-count *cond-waiters*) 0)))
+
+(define (-wait-for-events!)
+  (let* ((now (current-time-ms))
+         (sleep-left (if (> *sleep-count* 0) (max 0 (- (-heap-key 0) now)) -1))
+         (cond-bound (if (> (-bag-count *cond-waiters*) 0) *idle-backoff* -1))
+         (timeout (cond ((< sleep-left 0) cond-bound)
+                        ((< cond-bound 0) sleep-left)
+                        (else (min sleep-left cond-bound)))))
+    (if (and *loop* (> *io-count* 0))
+        (let loop ((ready (event-loop-poll *loop* timeout)))
+          (if (pair? ready)
+              (begin (-dispatch-io! (car (car ready)) (cdr (car ready)))
+                     (loop (cdr ready)))))
+        (if (> timeout 0) (sleep-ms timeout)))
+    (-wake-sleepers! (current-time-ms))
+    (if (> (-bag-count *cond-waiters*) 0)
+        (begin
+          (-check-conditions!)
+          ;; Back off while nothing changes, up to 10 ms between checks.
+          (set! *idle-backoff* (if (> *rq-count* 0) 1 (min 10 (* 2 *idle-backoff*))))))))
+
+;; Condition waiters are re-checked whenever the run queue drains and, while
+;; it stays busy, once every max(64, waiters) steps: amortised O(1) per step,
+;; and a satisfied condition never waits behind a fiber that always yields.
+(define *steps-since-check* 0)
+
+(define (-run-until done?)
+  (let loop ()
+    (cond
+      ((done?) #t)
+      ((> *rq-count* 0)
+       (-step! (-dequeue!))
+       (if (> (-bag-count *cond-waiters*) 0)
+           (begin
+             (set! *steps-since-check* (+ *steps-since-check* 1))
+             (if (>= *steps-since-check* (max 64 (-bag-count *cond-waiters*)))
+                 (begin (set! *steps-since-check* 0) (-check-conditions!)))))
+       (loop))
+      ((-waiting?) (-wait-for-events!) (loop))
+      (else #f))))
+
+(define (-no-live-fibers?) (= *live* 0))
+
+(define (run-fibers)
+  "Run fibers until none is left. Raises when every remaining fiber waits on
+   something no fiber can provide."
+  (if (current-fiber) (error "run-fibers: called from inside a fiber"))
+  (if (not (-run-until -no-live-fibers?))
+      (error "run-fibers: every remaining fiber waits on something no fiber can provide"))
+  #t)
+
+;; ── The fiber API ───────────────────────────────────────────────────
+
+(define (spawn thunk)
+  "Create a fiber running (thunk) and queue it. Returns the fiber."
+  (let ((f (make-vector +fiber-slots+ #f)))
+    (vector-set! f 0 'eshkol-fiber)
+    (vector-set! f 2 'ready)
+    (vector-set! f 4 '())
+    (vector-set! f 6 *next-id*)
+    (vector-set! f 7 -1)
+    (vector-set! f 9 #t)
+    (vector-set! f 14 0)
+    (vector-set! f 1 (make-coroutine (lambda () (-fiber-body thunk))))
+    (vector-set! f 11 (-make-cancelled f))
+    (set! *next-id* (+ *next-id* 1))
+    (set! *live* (+ *live* 1))
+    (-enqueue! f)
+    f))
+
+(define (current-fiber)
+  "The fiber whose body is running, or #f outside every fiber."
+  (and *current* (eqv? (vector-ref *current* 1) (current-coroutine)) *current*))
+
+(define (-suspend! request where)
+  (let ((f (current-fiber)))
+    (if (not f) (error (string-append where ": not inside a fiber")))
+    (coroutine-yield request)))
+
+(define (fiber-yield)
+  "Let every other ready fiber run, then continue."
+  (if (current-fiber) (coroutine-yield +yield-request+))
+  #t)
+
+(define (fiber-sleep ms)
+  "Park the calling fiber for at least ms milliseconds. Outside a fiber, runs
+   the scheduler for that long."
+  (let ((deadline (+ (current-time-ms) ms))
+        (f (current-fiber)))
+    (if f
+        (begin (vector-set! f 13 deadline)
+               (-suspend! +sleep-request+ "fiber-sleep"))
+        (if (not (-run-until (lambda () (>= (current-time-ms) deadline))))
+            ;; Nothing left to run: the remaining time is plain waiting.
+            (let ((left (- deadline (current-time-ms))))
+              (if (> left 0) (sleep-ms left)))))
+    #t))
+
+(define (-await-fd fd interest where)
+  (let ((f (current-fiber)))
+    (if (not f) (error (string-append where ": not inside a fiber")))
+    (vector-set! f 13 fd)
+    (vector-set! f 14 interest)
+    (coroutine-yield +io-request+)))
+
+(define (fiber-await-readable fd)
+  "Park the calling fiber until fd is readable (or reports an error or hangup).
+   Returns the ready bits: 1 readable, 2 writable, 4 error/hangup."
+  (-await-fd fd 1 "fiber-await-readable"))
+
+(define (fiber-await-writable fd)
+  "Park the calling fiber until fd is writable. Returns the ready bits."
+  (-await-fd fd 2 "fiber-await-writable"))
+
+(define (-wait-for pred arg where)
+  (let ((f (current-fiber)))
+    (cond ((if (eq? arg +no-argument+) (pred) (pred arg)) #t)
+          (f (vector-set! f 13 pred)
+             (vector-set! f 14 arg)
+             (-suspend! +wait-request+ where)
+             #t)
+          ((-run-until (lambda () (if (eq? arg +no-argument+) (pred) (pred arg)))) #t)
+          (else (error (string-append where ": no fiber is left that could make the condition true"))))))
+
+(define (fiber-wait-until pred)
+  "Park the calling fiber until (pred) returns true; checked when the run
+   queue drains and periodically while it is busy. Outside a fiber, runs the
+   scheduler until (pred) holds."
+  (-wait-for pred +no-argument+ "fiber-wait-until"))
+
+(define (fiber-wait-for pred obj)
+  "Park the calling fiber until (pred obj) returns true. The same as
+   (fiber-wait-until (lambda () (pred obj))) without making a procedure per
+   wait, which is what blocking channel operations use."
+  (-wait-for pred obj "fiber-wait-for"))
+
+(define (fiber-await x)
+  "Wait for a future made by (future thunk), or a core.threads handle, without
+   blocking the other fibers; return its value (force re-raises its raise)."
+  (let ((fut (if (and (vector? x) (= (vector-length x) 2) (eq? (vector-ref x 0) 'eshkol-thread))
+                 (vector-ref x 1)
+                 x)))
+    (fiber-wait-until (lambda () (future-ready? fut)))
+    (force fut)))
+
+(define (fiber-join f)
+  "Wait for fiber f to finish. Returns its value; re-raises its raise; raises
+   its fiber-cancelled condition when it was cancelled."
+  (let ((self (current-fiber)))
+    (cond
+      ((-fiber-finished? f) (fiber-result f))
+      ((eq? f self) (error "fiber-join: a fiber cannot join itself" (fiber-id f)))
+      (self
+       (vector-set! self 13 f)
+       (-suspend! +join-request+ "fiber-join")
+       (fiber-result f))
+      (else
+       (if (not (-run-until (lambda () (-fiber-finished? f))))
+           (error "fiber-join: the fiber waits on something no fiber can provide" (fiber-id f)))
+       (fiber-result f)))))
+
+(define (fiber-cancel! f)
+  "Cancel f: a fiber-cancelled condition is raised inside it at its current
+   suspension point, or before it first runs. Returns #f when f had already
+   finished, #t otherwise. Cancelling the running fiber raises at once."
+  (cond
+    ((-fiber-finished? f) #f)
+    ((eq? f (current-fiber)) (raise (vector-ref f 11)))
+    (else
+     (vector-set! f 5 #t)
+     (if (eq? (vector-ref f 2) 'waiting)
+         (begin
+           (-unregister! f)
+           (vector-set! f 2 'ready)
+           (-enqueue! f)))
+     #t)))
+
+(define (fiber-scheduler-stats)
+  "Scheduler counters: live fibers, ready queue length, sleepers, descriptors
+   with waiters, and condition waiters."
+  (list (cons 'live *live*)
+        (cons 'ready *rq-count*)
+        (cons 'sleeping *sleep-count*)
+        (cons 'io-waiting *io-count*)
+        (cons 'condition-waiting (-bag-count *cond-waiters*))))

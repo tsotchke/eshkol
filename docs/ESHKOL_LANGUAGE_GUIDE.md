@@ -89,7 +89,7 @@ cmake .. && make -j8
 ```scheme
 ;; Compute derivative of f(x) = x^2 at x = 3
 (define f (lambda (x) (* x x)))
-(display (derivative f 3.0))  ;; -> 6
+(display (derivative f 3.0))  ;; -> 6.0
 ```
 
 ---
@@ -162,9 +162,9 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 | Factor Graph | `(make-factor-graph n)` | Probabilistic graphical model |
 | Workspace | `(make-workspace dim max-modules)` | Global workspace (consciousness) |
 
-### 1,053 Built-in Functions
+### 1,066 Built-in Functions
 
-Eshkol provides 1,058 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol provides 1,067 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 
@@ -220,7 +220,7 @@ Numerical derivatives using dual numbers:
 
 ```scheme
 (define f (lambda (x) (* x x x)))  ;; f(x) = x^3
-(derivative f 2.0)                  ;; -> 12 (f'(x) = 3x^2)
+(derivative f 2.0)                  ;; -> 12.0 (f'(x) = 3x^2)
 
 (define g (lambda (x) (sin (* x x))))
 (derivative g 1.0)                  ;; -> 1.0806046117362795 (2x*cos(x^2))
@@ -236,7 +236,7 @@ Computation graph-based differentiation for multivariate functions:
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
 
-(gradient f (vector 3.0 4.0))  ;; -> #(6 8)
+(gradient f (vector 3.0 4.0))  ;; -> #(6.0 8.0)
 
 ;; Jacobian matrix for vector-valued functions
 (define polar->cartesian (lambda (v)
@@ -245,15 +245,15 @@ Computation graph-based differentiation for multivariate functions:
             (* r (sin theta))))))
 
 (jacobian polar->cartesian (vector 1.0 0.0))
-;; -> #((1 0) (0 1))
+;; -> #((1.0 0.0) (0.0 1.0))
 
 ;; Hessian matrix (second derivatives)
-(hessian f (vector 1.0 1.0))  ;; -> #((2 0) (0 2))
+(hessian f (vector 1.0 1.0))  ;; -> #((2.0 0.0) (0.0 2.0))
 ```
 
-An inexact result with no fractional part prints without a decimal point, so
-the `6`, `8` and `2` above are the doubles 6.0, 8.0 and 2.0 — ask `exact?` if
-the distinction matters. See [the numeric tower
+An inexact result with no fractional part prints with its decimal point, so
+the derivatives above, taken at inexact points, show as `6.0`, `8.0` and
+`2.0`. See [the numeric tower
 reference](reference/language/numeric-tower.md).
 
 ### Vector Calculus Operators
@@ -263,21 +263,21 @@ Built-in operators for physics and engineering:
 ```scheme
 ;; Divergence: div(F)
 (define F (lambda (v) (vector (* 2 (vref v 0)) (* 3 (vref v 1)))))
-(divergence F (vector 1.0 1.0))  ;; -> 5
+(divergence F (vector 1.0 1.0))  ;; -> 5.0
 
 ;; Curl: curl(F) (3D only)
 (define rotating (lambda (v)
   (vector (- 0 (vref v 1)) (vref v 0) 0.0)))
-(curl rotating (vector 1.0 1.0 0.0))  ;; -> #(0 0 2)
+(curl rotating (vector 1.0 1.0 0.0))  ;; -> #(0.0 0.0 2.0)
 
 ;; Laplacian: laplacian(f)
 (define harmonic (lambda (v)
   (- (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1)))))
-(laplacian harmonic (vector 1.0 1.0))  ;; -> 0 (it's harmonic!)
+(laplacian harmonic (vector 1.0 1.0))  ;; -> 0.0 (it's harmonic!)
 
 ;; Directional derivative: D_u f
-(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6
+(directional-derivative harmonic (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6.0
 ```
 
 ### Arbitrary-Order AD: Taylor Towers
@@ -294,7 +294,7 @@ numerics).
 
 ```scheme
 ;; The k-th derivative of f at x, for any order k -- no require needed
-(derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -> 27 (f'(x) = 3x^2 at x=3)
+(derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -> 27.0 (f'(x) = 3x^2 at x=3)
 
 ;; All K+1 Taylor coefficients c[0..K] where c[n] = f^(n)(x)/n!
 (taylor (lambda (x) (exp x)) 0.5 4)
@@ -314,7 +314,7 @@ partial derivatives of a multivariate function:
 (define (f xs) (* (vref xs 0) (* (vref xs 1) (vref xs 1))))  ;; f(x,y) = x*y^2
 
 ;; d^3f/dx dy^2 at (2.0, 3.0) -- idxs is a multi-index with repetition
-(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -> 2
+(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -> 2.0
 
 ;; The full order->=3 symmetric derivative tensor, as (multi-index . value) pairs
 (gradient-n f (vector 2.0 3.0) 3)
@@ -523,25 +523,25 @@ Eshkol supports complex numbers as a first-class numeric type, with heap-allocat
 
 ```scheme
 ;; Rectangular form
-(make-rectangular 3.0 4.0)     ;; -> 3+4i
+(make-rectangular 3.0 4.0)     ;; -> 3.0+4.0i
 
 ;; Polar form
 (make-polar 5.0 0.9273)        ;; -> 2.9999808719721477+4.000014345949428i
-                               ;;    (3+4i, up to the rounding of the angle)
+                               ;;    (3.0+4.0i, up to the rounding of the angle)
 ```
 
-A component with no fractional part prints without a decimal point, and a zero
-real part or a unit imaginary part is elided, so `3+4i` above is the pair of
-doubles 3.0 and 4.0.
+An inexact component with no fractional part prints with its decimal point, so
+the pair of doubles 3.0 and 4.0 above shows as `3.0+4.0i`; a zero real part or
+a unit imaginary part is elided.
 
 ### Accessors
 
 ```scheme
 (define z (make-rectangular 3.0 4.0))
 
-(real-part z)      ;; -> 3
-(imag-part z)      ;; -> 4
-(magnitude z)      ;; -> 5
+(real-part z)      ;; -> 3.0
+(imag-part z)      ;; -> 4.0
+(magnitude z)      ;; -> 5.0
 (angle z)          ;; -> 0.9272952180016122 (radians)
 ```
 
@@ -550,10 +550,10 @@ doubles 3.0 and 4.0.
 ```scheme
 ;; All standard arithmetic works on complex numbers
 (+ (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -> 4+6i
+   (make-rectangular 3.0 4.0))     ;; -> 4.0+6.0i
 
 (* (make-rectangular 1.0 2.0)
-   (make-rectangular 3.0 4.0))     ;; -> -5+10i
+   (make-rectangular 3.0 4.0))     ;; -> -5.0+10.0i
 
 ;; Division uses Smith's formula (overflow-safe)
 (/ (make-rectangular 1.0 0.0)
@@ -705,6 +705,46 @@ Eshkol v1.1 provides built-in parallel execution primitives that automatically d
   (lambda () (train-model-b data))
   (lambda () (train-model-c data)))
 ```
+
+### Coroutines and Fibers
+
+Threads run work in parallel; fibers interleave many lightweight tasks on one
+thread. A fiber is a procedure on a stackful coroutine, scheduled by
+[`core.fibers`](reference/stdlib/fibers.md) over the event loop: it runs until
+it yields, sleeps, waits for a descriptor, a future, a channel or another
+fiber, or finishes. Each fiber keeps its own `dynamic-wind` extent, handlers
+and `parameterize` bindings, so switching between fibers runs no thunks, and
+cancelling a fiber unwinds it like a raise: its `after` thunks run exactly
+once.
+
+```scheme
+(require core.fibers)
+(require core.channels)
+
+(define ch (make-channel 1))
+(define producer
+  (spawn (lambda ()
+           (let loop ((i 1))
+             (if (<= i 3)
+                 (begin (channel-send! ch i) (loop (+ i 1)))
+                 (channel-close! ch))))))
+(define consumer
+  (spawn (lambda ()
+           (let loop ((sum 0))
+             (let ((v (channel-recv! ch)))
+               (if (eq? v (channel-closed-sentinel))
+                   sum
+                   (loop (+ sum v))))))))
+(display (fiber-join consumer)) (newline)
+```
+```
+6
+```
+
+The coroutine builtins underneath — `make-coroutine`, `coroutine-resume`,
+`coroutine-yield`, `coroutine-raise` — are documented in
+[the coroutines reference](reference/runtime/coroutines.md). Fibers run on
+native JIT and AOT; the bytecode VM is Planned for v1.4.1.
 
 ### Performance
 
@@ -1224,7 +1264,7 @@ Map Eshkol names to C names:
 
 ### Features
 
-- **Tab completion** for all 1,053 builtins
+- **Tab completion** for all 1,067 builtins
 - **Syntax highlighting** with ANSI colors
 - **Command history** (persistent across sessions)
 - **Multi-line input** with balanced parenthesis detection

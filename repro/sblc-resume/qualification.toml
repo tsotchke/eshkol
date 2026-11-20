@@ -1,0 +1,66 @@
+format = "eshkol-sblc-resumption-qualification-v1"
+parent_revision = "f7c1727f2d113f1400b34139f331225bd14044d5"
+upstream_sblc_revision = "14dd4d0fbb2714e6fc40e99f53eb91b18a7f68be"
+compiler_release = "v1.3.6-evolve Linux x64 lite"
+compiler_sha256 = "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb"
+compiler_rebuilt = false
+jit_cache_enabled = false
+scope = "fixed-context trusted in-memory exact search; no serialized checkpoints or distributed shards"
+
+[resumption_gate]
+command = "ESHKOL_BIN=/path/to/eshkol-run bash scripts/run_sblc_resume_gate.sh"
+verdict = "pass"
+checks_per_engine = 530
+context_bound_combinations = 168
+jit_aot_stdout_identical = true
+selected_transitions_resumed_panel = 1690
+selected_transitions_restarted_panel = 8200
+counts_include_normality_inspection_or_witness_replay = false
+elapsed_speedup_claim = false
+
+[negative_control]
+mutation = "discard previously completed outcomes during resume"
+verdict = "rejected"
+failed_assertion = "completed-equals-fresh"
+
+[existing_gate]
+command = "BUILD_DIR=/path/to/build bash scripts/run_sblc_gate.sh"
+verdict = "pass"
+checks_per_engine = 104
+jit_aot_stdout_identical = true
+stdout_sha256 = "e82bf364938646cd8476f3e3764d391c394e0b924c29ca36945541b68d5ac30d"
+
+[independent_comparison]
+verdict = "pass"
+rows_per_engine = 15611
+jit_aot_stdout_identical = true
+byte_identical_to_status_fixed_parent = true
+output_sha256 = "a60daa8e24892a91dcc20e06a2d757915e16b6a5e8a418008b938081480a5137"
+expected_sha256 = "be8235414659b65e92e585743d556d565f4fe138e6f3b7a4f157ee48d98761db"
+probe_sha256 = "577cb9bf3b9b04d32049f743198a66fa92dba1edd802ad476bc7dd147a466d12"
+dataset_shipped = false
+public_reproducer = "scripts/run_sblc_resume_gate.sh"
+
+[[input]]
+path = "lib/core/sblc.esk"
+sha256 = "170e8d1977a1d9b6da457b4d61f5c4905fd80673fe091c79b6187756061f55fc"
+
+[[input]]
+path = "tests/stdlib/sblc_resume_test.esk"
+sha256 = "4f7d8956a72d816d7e65be110efe9fd1bc45aabcc9368ad80c295c4620ea522f"
+
+[[input]]
+path = "scripts/run_sblc_resume_gate.sh"
+sha256 = "b6e0cbe08ceacf046bbe014a944e78e231b7ee86abde740dd45b7dd5b88d66e7"
+
+[[input]]
+path = "CMakeLists.txt"
+sha256 = "9f06a2ffbf2cc7d10e986285bd47807910fe185dbdf5475e18edd34a7cd46029"
+
+[[input]]
+path = "docs/reference/stdlib/sblc.md"
+sha256 = "61c271e9f47c6dd5f8ae44a967738f02ef88304edef32b35260fcbdf2f21481a"
+
+[[input]]
+path = "docs/design/adr/0017-stochastic-binary-lambda-calculus.md"
+sha256 = "ea17aa404ece8abe537eaf9571125df99fccaa48bfd71b9c2ed0242be6e19764"

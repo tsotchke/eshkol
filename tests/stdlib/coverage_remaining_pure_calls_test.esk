@@ -1,0 +1,73 @@
+;; Small CPU-only probes for callable names still missing from the focused
+;; execution-backed coverage ledger. Keep calls explicit for trace attribution.
+
+(require core.data.base64)
+(require core.logic.boolean)
+(require core.ad.taylor_models)
+
+(define checks 0)
+(define (check name ok)
+  (if ok
+      (set! checks (+ checks 1))
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (error name))))
+
+(define (near? a b)
+  (< (abs (- a b)) 1e-9))
+
+;; Base64 alphabet lookup and byte-list encoder/helper branches.
+(check "base64-char-at 51 is z" (char=? (base64-char-at 51) #\z))
+(check "base64-encode Man" (string=? (base64-encode '(77 97 110)) "TWFu"))
+(check "base64-encode-helper one-byte padding"
+       (string=? (base64-encode-helper '(77) "") "TQ=="))
+
+;; Pure predicate combinator with the empty-hit case.
+(check "none? finds no even values" (none? even? '(1 3 5)))
+
+;; The standard-library wrapper exposes a wall-clock value; assert shape only.
+(define now-us (current-time-us))
+(check "current-time-us is positive numeric"
+       (and (number? now-us) (> now-us 0)))
+
+;; Bounded timing loop: verify both its result and its requested iteration count.
+(define timed-calls 0)
+(define elapsed-ns
+  (time-it (lambda () (set! timed-calls (+ timed-calls 1))) 2))
+(check "time-it returns nonnegative elapsed time"
+       (and (number? elapsed-ns) (>= elapsed-ns 0)))
+(check "time-it invokes thunk twice" (= timed-calls 2))
+
+;; A low-order polynomial keeps the 65-point derivative sampling inexpensive.
+(define tm (taylor-model (lambda (x) (* x x)) 0.0 0.25 2))
+(check "taylor-model? accepts constructor result" (taylor-model? tm))
+(check "tm-order preserves requested order" (= (tm-order tm) 2))
+(define coeffs (tm-coeffs tm))
+(check "tm-coeffs are x squared coefficients"
+       (and (= (length coeffs) 3)
+            (near? (list-ref coeffs 0) 0.0)
+            (near? (list-ref coeffs 1) 0.0)
+            (near? (list-ref coeffs 2) 1.0)))
+(define domain (tm-domain tm))
+(check "tm-domain is [-0.25, 0.25]"
+       (and (near? (interval-lo domain) -0.25)
+            (near? (interval-hi domain) 0.25)))
+(define tm-sum (tm-add tm tm))
+(define sum-coeffs (tm-coeffs tm-sum))
+(check "tm-add doubles x squared coefficients"
+       (and (= (tm-order tm-sum) 2)
+            (= (length sum-coeffs) 3)
+            (near? (list-ref sum-coeffs 0) 0.0)
+            (near? (list-ref sum-coeffs 1) 0.0)
+            (near? (list-ref sum-coeffs 2) 2.0)))
+(check "tm-eval encloses x squared at 0.25"
+       (interval-contains? (tm-eval tm 0.25) 0.0625))
+
+(display "Checks: ")
+(display checks)
+(newline)
+(display "PASS: coverage_remaining_pure_calls")
+(newline)
+
+(display "RESULT: PASS")
+(newline)

@@ -1,0 +1,271 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.interval_tensor — tensors with interval and Taylor-model
+;;  elements  (ADR-0050)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  An element tensor is (vector 'itensor shape data): `shape` a list of
+;;  dimensions, `data` a Scheme vector in row-major order whose entries are
+;;  any carrier of core.ad.interval_jet's generic operators:
+;;
+;;    binary64 / exact numbers   ordinary tensor values (and native AD values)
+;;    intervals (lo . hi)        interval tensor: every entry is enclosed
+;;    interval Taylor jets       derivative enclosures in a scalar parameter
+;;    interval gradients         first-order enclosures in several parameters
+;;    rigorous Taylor models     Taylor-model tensor in a scalar parameter
+;;
+;;  Every operation (elementwise arithmetic, elementary functions, matmul,
+;;  sums) applies the generic operators entry by entry, so ONE tensor
+;;  program evaluates to a tensor value, an interval enclosure, a tensor of
+;;  derivative enclosures or a tensor-valued Taylor model depending only on
+;;  the carrier of its input, and the native `derivative` / `gradient`
+;;  operators differentiate it when its input is a plain number. The AD
+;;  rules are the element rules of core.ad.interval_jet (Taylor recurrences,
+;;  product rule) composed with the bilinear structure of matmul.
+;;
+;;  Dense storage: an interval tensor converts to and from a PAIR of f64
+;;  tensors (lower, upper) with outward rounding (`itensor->bounds`,
+;;  `bounds->itensor`), so it interoperates with the existing tensor runtime
+;;  and the tensor-valued Taylor towers of core.ad.tensor_tower: a tower
+;;  coefficient tensor is a point element tensor (`tensor->itensor`).
+;;
+;;  Boxed entries are a deliberate representation choice: the runtime's
+;;  dense tensors hold raw binary64 bit patterns (see the header of
+;;  lib/core/ad/tensor_tower.esk), so an element type that carries an
+;;  enclosure or a derivative lives in a Scheme vector and is lowered to
+;;  dense f64 pairs only at the storage boundary.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.rigorous_interval)
+(require core.ad.interval_jet)
+
+(provide itensor? itensor-shape itensor-data itensor-size
+         make-itensor itensor-from-list itensor-ref itensor-flat-ref
+         tensor->itensor itensor->bounds bounds->itensor
+         itensor-map itensor-map2
+         itensor+ itensor- itensor* itensor-scale itensor-neg
+         itensor-exp itensor-log itensor-sin itensor-cos itensor-sqrt
+         itensor-sqr itensor-atan
+         itensor-matmul itensor-sum itensor-transpose
+         itensor-intervals itensor-contains-tensor?)
+
+;; ── Representation ────────────────────────────────────────────────────────
+(define (itensor? x)
+  (and (vector? x) (not (tensor? x)) (= (vector-length x) 3) (eq? (vector-ref x 0) 'itensor)))
+(define (itensor-shape x) (vector-ref x 1))
+(define (itensor-data x) (vector-ref x 2))
+(define (itensor-size x) (vector-length (vector-ref x 2)))
+(define (it-make shape data) (vector 'itensor shape data))
+
+(define (it-product l) (if (null? l) 1 (* (car l) (it-product (cdr l)))))
+(define (it-list->vector l)
+  (let* ((n (let c ((l l) (i 0)) (if (pair? l) (c (cdr l) (+ i 1)) i)))
+         (v (make-vector n 0)))
+    (let loop ((l l) (i 0)) (if (pair? l) (begin (vector-set! v i (car l)) (loop (cdr l) (+ i 1))) v))))
+(define (it-vector->list v)
+  (let loop ((i (- (vector-length v) 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons (vector-ref v i) acc)))))
+(define (it-shape-equal? a b)
+  (cond ((and (null? a) (null? b)) #t)
+        ((or (null? a) (null? b)) #f)
+        (else (and (= (car a) (car b)) (it-shape-equal? (cdr a) (cdr b))))))
+
+(define (make-itensor shape fill)
+  (it-make shape (make-vector (it-product shape) fill)))
+
+;; (itensor-from-list shape entries): entries in row-major order
+(define (itensor-from-list shape entries)
+  (let ((v (it-list->vector entries)))
+    (if (not (= (vector-length v) (it-product shape)))
+        (error "itensor-from-list: entry count does not match the shape")
+        (it-make shape v))))
+
+(define (itensor-flat-ref x k) (vector-ref (itensor-data x) k))
+
+(define (it-flat-index shape idx)
+  (let loop ((s shape) (i idx) (acc 0))
+    (if (null? s) acc (loop (cdr s) (cdr i) (+ (* acc (car s)) (car i))))))
+(define (itensor-ref x . idx) (vector-ref (itensor-data x) (it-flat-index (itensor-shape x) idx)))
+
+;; ── Dense f64 boundary ────────────────────────────────────────────────────
+;; Element access goes through a flat reshape plus tensor-ref / tensor-set!,
+;; which both engines (native and bytecode VM) provide.
+(define (it-tensor-flat t)                  ; Scheme vector of a tensor's entries
+  (let* ((shape (tensor-shape t)) (n (it-product shape))
+         (flat (reshape t (list n))) (v (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! v i (tensor-ref flat i)) (loop (+ i 1))) v))))
+
+(define (tensor->itensor t)
+  (it-make (tensor-shape t) (it-tensor-flat t)))
+
+;; an f64 tensor from a Scheme vector of numbers, with the given shape
+(define (it-dense shape v)
+  (let* ((n (vector-length v)) (t (make-tensor (list n) 0.0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (tensor-set! t i (vector-ref v i)) (loop (+ i 1))) (reshape t shape)))))
+
+;; (lower . upper) f64 tensors; each bound rounded outward to binary64
+(define (itensor->bounds x)
+  (let* ((d (itensor-data x)) (n (vector-length d))
+         (lo (make-vector n 0.0)) (hi (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((iv (rn->interval (vector-ref d i))))
+            (vector-set! lo i (exact->inexact (ia-to-double-down (car iv))))
+            (vector-set! hi i (exact->inexact (ia-to-double-up (cdr iv))))
+            (loop (+ i 1)))
+          (cons (it-dense (itensor-shape x) lo) (it-dense (itensor-shape x) hi))))))
+
+(define (bounds->itensor lo hi)
+  (let* ((lv (it-tensor-flat lo)) (hv (it-tensor-flat hi))
+         (n (vector-length lv)) (d (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! d i (cons (vector-ref lv i) (vector-ref hv i))) (loop (+ i 1)))
+          (it-make (tensor-shape lo) d)))))
+
+;; ── Elementwise operations ────────────────────────────────────────────────
+(define (itensor-map f x)
+  (let* ((d (itensor-data x)) (n (vector-length d)) (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (f (vector-ref d i))) (loop (+ i 1)))
+          (it-make (itensor-shape x) out)))))
+
+(define (it-broadcast f x scalar tensor-first?)
+  (let* ((d (itensor-data x)) (n (vector-length d)) (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (if tensor-first? (f (vector-ref d i) scalar) (f scalar (vector-ref d i))))
+                 (loop (+ i 1)))
+          (it-make (itensor-shape x) out)))))
+
+;; binary elementwise; a non-tensor operand is broadcast as a scalar
+(define (itensor-map2 f x y)
+  (cond ((and (itensor? x) (itensor? y))
+         (if (not (it-shape-equal? (itensor-shape x) (itensor-shape y)))
+             (error "itensor: elementwise operands must have the same shape")
+             (let* ((a (itensor-data x)) (b (itensor-data y))
+                    (n (vector-length a)) (out (make-vector n 0)))
+               (let loop ((i 0))
+                 (if (< i n)
+                     (begin (vector-set! out i (f (vector-ref a i) (vector-ref b i))) (loop (+ i 1)))
+                     (it-make (itensor-shape x) out))))))
+        ;; scalar broadcast by a direct loop: the scalar (possibly a native
+        ;; AD value) is passed as an argument, never captured in a closure
+        ((itensor? x) (it-broadcast f x y #t))
+        ((itensor? y) (it-broadcast f y x #f))
+        (else (error "itensor: at least one operand must be an element tensor"))))
+
+;; The named operations call the generic operators DIRECTLY (selected by an
+;; operation code) rather than through a procedure argument, so a native AD
+;; value entering here keeps an exact tangent at an exact point.
+(define (it-apply2 code a b)
+  (cond ((= code 0) (rn+ a b)) ((= code 1) (rn- a b)) (else (rn* a b))))
+(define (it-apply1 code a)
+  (cond ((= code 0) (rn-neg a)) ((= code 1) (rn-exp a)) ((= code 2) (rn-log a))
+        ((= code 3) (rn-sin a)) ((= code 4) (rn-cos a)) ((= code 5) (rn-sqrt a))
+        ((= code 6) (rn-sqr a)) (else (rn-atan a))))
+
+(define (it-op1 code x)
+  (let* ((d (itensor-data x)) (n (vector-length d)) (out (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! out i (it-apply1 code (vector-ref d i))) (loop (+ i 1)))
+          (it-make (itensor-shape x) out)))))
+
+(define (it-op2 code x y)
+  (let ((tx (itensor? x)) (ty (itensor? y)))
+    (if (and tx ty (not (it-shape-equal? (itensor-shape x) (itensor-shape y))))
+        (error "itensor: elementwise operands must have the same shape")
+        (if (not (or tx ty))
+            (error "itensor: at least one operand must be an element tensor")
+            (let* ((shape (if tx (itensor-shape x) (itensor-shape y)))
+                   (n (it-product shape)) (out (make-vector n 0)))
+              (let loop ((i 0))
+                (if (< i n)
+                    (begin
+                      (vector-set! out i (it-apply2 code
+                                                    (if tx (vector-ref (itensor-data x) i) x)
+                                                    (if ty (vector-ref (itensor-data y) i) y)))
+                      (loop (+ i 1)))
+                    (it-make shape out))))))))
+
+(define (itensor+ x y) (it-op2 0 x y))
+(define (itensor- x y) (it-op2 1 x y))
+(define (itensor* x y) (it-op2 2 x y))                    ; Hadamard
+(define (itensor-scale x s) (it-op2 2 x s))
+(define (itensor-neg x) (it-op1 0 x))
+(define (itensor-exp x) (it-op1 1 x))
+(define (itensor-log x) (it-op1 2 x))
+(define (itensor-sin x) (it-op1 3 x))
+(define (itensor-cos x) (it-op1 4 x))
+(define (itensor-sqrt x) (it-op1 5 x))
+(define (itensor-sqr x) (it-op1 6 x))
+(define (itensor-atan x) (it-op1 7 x))
+
+;; sum of all entries (a carrier value)
+(define (itensor-sum x)
+  (let* ((d (itensor-data x)) (n (vector-length d)))
+    (let loop ((i 0) (acc 0))
+      (if (< i n) (loop (+ i 1) (if (= i 0) (vector-ref d 0) (rn+ acc (vector-ref d i)))) acc))))
+
+;; ── Matrix operations (rank 2) ────────────────────────────────────────────
+(define (it-rows x) (car (itensor-shape x)))
+(define (it-cols x) (car (cdr (itensor-shape x))))
+
+(define (itensor-transpose x)
+  (let* ((m (it-rows x)) (n (it-cols x)) (d (itensor-data x)) (out (make-vector (* m n) 0)))
+    (let loop ((i 0))
+      (if (< i m)
+          (begin
+            (let inner ((j 0))
+              (if (< j n)
+                  (begin (vector-set! out (+ (* j m) i) (vector-ref d (+ (* i n) j))) (inner (+ j 1)))
+                  #t))
+            (loop (+ i 1)))
+          (it-make (list n m) out)))))
+
+;; C = A B with C_ij = sum_l A_il B_lj, accumulated with the generic operators
+;; (outward-rounded for intervals, Cauchy products for jets, Makino-Berz
+;; products for Taylor models).
+(define (itensor-matmul a b)
+  (let ((m (it-rows a)) (k (it-cols a)) (k2 (it-rows b)) (n (it-cols b)))
+    (if (not (= k k2))
+        (error "itensor-matmul: inner dimensions differ")
+        (let ((ad (itensor-data a)) (bd (itensor-data b)) (out (make-vector (* m n) 0)))
+          (let iloop ((i 0))
+            (if (< i m)
+                (begin
+                  (let jloop ((j 0))
+                    (if (< j n)
+                        (begin
+                          (vector-set! out (+ (* i n) j)
+                            (let lloop ((l 0) (acc 0))
+                              (if (< l k)
+                                  (lloop (+ l 1)
+                                         (let ((p (rn* (vector-ref ad (+ (* i k) l))
+                                                       (vector-ref bd (+ (* l n) j)))))
+                                           (if (= l 0) p (rn+ acc p))))
+                                  acc)))
+                          (jloop (+ j 1)))
+                        #t))
+                  (iloop (+ i 1)))
+                (it-make (list m n) out)))))))
+
+;; ── Enclosure views ───────────────────────────────────────────────────────
+;; Entry enclosures as an element tensor of intervals.
+(define (itensor-intervals x) (itensor-map rn->interval x))
+
+;; #t when every entry of the f64 (or exact) tensor-like value t lies in the
+;; enclosure of the corresponding entry of x. t may be an f64 tensor or an
+;; element tensor of exact numbers.
+(define (itensor-contains-tensor? x t)
+  (let* ((d (itensor-data x))
+         (tv (if (itensor? t) (itensor-data t) (it-tensor-flat t)))
+         (n (vector-length d)))
+    (and (= n (vector-length tv))
+         (let loop ((i 0))
+           (if (< i n)
+               (let ((iv (rn->interval (vector-ref d i))) (v (vector-ref tv i)))
+                 (and (<= (car iv) v) (<= v (cdr iv)) (loop (+ i 1))))
+               #t)))))

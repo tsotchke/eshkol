@@ -1,0 +1,5 @@
+;;; call/cc is Control.
+;; expect-error: 'jumpy' is declared (IO) but may perform Control
+(declare-effects jumpy (IO))
+(define (jumpy) (call/cc (lambda (k) (display "x") (k 1))))
+(display (jumpy))

@@ -1,0 +1,280 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.compact_bounds — certified bounds over a parameter box (ADR-0050)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Supremum and infimum of a function over a compact box, and proofs that a
+;;  function stays inside a band on a box, computed by branch and bound on
+;;  directed-rounding enclosures. The output is a certified interval
+;;  [L, U] with L <= sup f <= U (or the same for inf): a compactness constant
+;;  is produced, not asserted.
+;;
+;;  The function f takes ONE argument, a Scheme vector (one entry per
+;;  parameter), and is written with the generic operators of
+;;  core.ad.interval_jet (rn+ rn* rn-exp ...). The same f then runs on
+;;  plain numbers (and is differentiable by the native AD operators), on
+;;  interval boxes, and on interval gradients.
+;;
+;;  ── Enclosure of f over a box X (Moore; Neumaier 1990, ch. 2) ────────────
+;;    natural extension     N(X)  = f evaluated on the intervals of X
+;;    mean-value form       M(X)  = f([c,c]) + sum_i D_i (X_i - c_i)
+;;  where c is the (exact) midpoint of X and D_i encloses df/dx_i over X,
+;;  both from ONE forward pass of interval gradients (interval-gradient).
+;;  The enclosure used is N(X) intersected with M(X); M converges
+;;  quadratically in the box width, N supplies the bound on wide boxes.
+;;
+;;  ── Branch and bound for sup f (Hansen and Walster, Global Optimization
+;;     Using Interval Analysis, 2nd ed. 2004; Kearfott, Rigorous Global
+;;     Search, 1996) ───────────────────────────────────────────────────────
+;;  * lower bound L: the largest certified lower endpoint of f at an
+;;    evaluated point (every box midpoint is evaluated on point intervals,
+;;    so L <= f(point) <= sup f holds exactly);
+;;  * upper bound U: the largest upper endpoint of the enclosure of any box
+;;    still in the work list; boxes whose upper endpoint falls below L are
+;;    discarded (they cannot hold the supremum);
+;;  * monotonicity pruning: if D_i >= 0 on a box the supremum over that box
+;;    is attained on the face x_i = hi(X_i), and if D_i <= 0 on the face
+;;    x_i = lo(X_i), so that coordinate collapses to a point;
+;;  * splitting: the box with the largest U is bisected along the coordinate
+;;    maximizing width(X_i) * |D_i| (the smear heuristic), at the exact
+;;    midpoint when its endpoints are exact.
+;;  The search stops when U - L <= tol or when the box budget is spent; the
+;;  returned [L, U] encloses sup f in both cases, and the certificate says
+;;  which happened.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.rigorous_interval)
+(require core.ad.interval_jet)
+
+(provide box-enclose box-sup box-inf box-certify-bound
+         compact-bound? compact-bound-kind compact-bound-enclosure
+         compact-bound-witness compact-bound-converged? compact-bound-boxes
+         compact-bound-pruned compact-bound-monotone
+         box-midpoint box-width)
+
+;; ── Box helpers ───────────────────────────────────────────────────────────
+(define (cb-exact x) (if (exact? x) x (inexact->exact x)))
+
+(define (cb-mid-number lo hi)              ; a point m with lo <= m <= hi
+  (if (and (exact? lo) (exact? hi))
+      (/ (+ lo hi) 2)
+      (let ((m (exact->inexact (/ (+ (cb-exact lo) (cb-exact hi)) 2))))
+        (cond ((< m lo) lo) ((> m hi) hi) (else m)))))
+
+(define (box-midpoint box)
+  (let* ((n (vector-length box)) (c (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((iv (vector-ref box i)))
+            (vector-set! c i (cb-mid-number (car iv) (cdr iv)))
+            (loop (+ i 1)))
+          c))))
+
+(define (cb-point-box c)                   ; vector of point intervals
+  (let* ((n (vector-length c)) (b (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! b i (cons (vector-ref c i) (vector-ref c i))) (loop (+ i 1)))
+          b))))
+
+(define (cb-width iv) (- (cb-exact (cdr iv)) (cb-exact (car iv))))   ; exact
+
+(define (box-width box)
+  (let loop ((i 0) (w 0))
+    (if (< i (vector-length box))
+        (loop (+ i 1) (let ((wi (cb-width (vector-ref box i)))) (if (> wi w) wi w)))
+        w)))
+
+(define (cb-copy box)
+  (let* ((n (vector-length box)) (b (make-vector n 0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! b i (vector-ref box i)) (loop (+ i 1))) b))))
+
+(define (cb-mag iv)
+  (let ((a (cb-exact (car iv))) (b (cb-exact (cdr iv))))
+    (let ((aa (if (< a 0) (- a) a)) (bb (if (< b 0) (- b) b)))
+      (if (> aa bb) aa bb))))
+
+;; ── Enclosure ─────────────────────────────────────────────────────────────
+;; Returns (enclosure . partials) for f over the box.
+(define (cb-enclose-with-partials f box)
+  (let* ((g (interval-gradient f box))
+         (natural (car g))
+         (d (cdr g))
+         (c (box-midpoint box))
+         (fc (interval-eval f (cb-point-box c)))
+         (mv (let loop ((i 0) (acc fc))
+               (if (< i (vector-length box))
+                   (loop (+ i 1)
+                         (ia+ acc (ia* (vector-ref d i)
+                                       (ia- (vector-ref box i)
+                                            (cons (vector-ref c i) (vector-ref c i))))))
+                   acc)))
+         (both (ia-intersect natural mv)))
+    ;; Both are enclosures of the same range, so they always intersect; the
+    ;; fallback keeps the natural extension should rounding ever make the
+    ;; intersection empty.
+    (cons (if both both natural) d)))
+
+(define (box-enclose f box) (car (cb-enclose-with-partials f box)))
+
+;; ── Certificates ──────────────────────────────────────────────────────────
+;; #(compact-bound kind enclosure witness converged? boxes pruned monotone)
+(define (cb-cert kind enc witness conv boxes pruned mono)
+  (vector 'compact-bound kind enc witness conv boxes pruned mono))
+(define (compact-bound? x)
+  (and (vector? x) (not (tensor? x)) (= (vector-length x) 8) (eq? (vector-ref x 0) 'compact-bound)))
+(define (compact-bound-kind c) (vector-ref c 1))
+(define (compact-bound-enclosure c) (vector-ref c 2))
+(define (compact-bound-witness c) (vector-ref c 3))
+(define (compact-bound-converged? c) (vector-ref c 4))
+(define (compact-bound-boxes c) (vector-ref c 5))
+(define (compact-bound-pruned c) (vector-ref c 6))
+(define (compact-bound-monotone c) (vector-ref c 7))
+
+;; ── Work list: entries #(ub enclosure partials box), sorted by ub, largest first
+(define (cb-entry box ep) (vector (cdr (car ep)) (car ep) (cdr ep) box))
+(define (cb-ub e) (vector-ref e 0))
+(define (cb-entry-box e) (vector-ref e 3))
+(define (cb-entry-partials e) (vector-ref e 2))
+
+(define (cb-insert e lst)
+  (if (or (null? lst) (>= (cb-ub e) (cb-ub (car lst))))
+      (cons e lst)
+      (cons (car lst) (cb-insert e (cdr lst)))))
+
+;; drop entries whose upper bound is below L; returns (kept . dropped-count)
+(define (cb-prune lst lbound)
+  (let loop ((l lst) (kept '()) (dropped 0))
+    (if (null? l)
+        (cons (let rev ((k kept) (acc '())) (if (null? k) acc (rev (cdr k) (cons (car k) acc)))) dropped)
+        (if (< (cb-ub (car l)) lbound)
+            (loop (cdr l) kept (+ dropped 1))
+            (loop (cdr l) (cons (car l) kept) dropped)))))
+
+;; Collapse every coordinate on which f is monotone over the box to the face
+;; holding the supremum. Returns the new box, or #f when nothing collapses.
+(define (cb-monotone-face box d)
+  (let ((nb (cb-copy box)) (changed #f))
+    (let loop ((i 0))
+      (if (< i (vector-length box))
+          (let ((xi (vector-ref box i)) (di (vector-ref d i)))
+            (if (> (cb-width xi) 0)
+                (cond ((>= (car di) 0)
+                       (vector-set! nb i (cons (cdr xi) (cdr xi))) (set! changed #t))
+                      ((<= (cdr di) 0)
+                       (vector-set! nb i (cons (car xi) (car xi))) (set! changed #t))
+                      (else #f))
+                #f)
+            (loop (+ i 1)))
+          (if changed nb #f)))))
+
+;; Coordinate to bisect: maximal width * |D_i| among non-degenerate ones,
+;; falling back to the widest. #f for a point box.
+(define (cb-split-index box d)
+  (let loop ((i 0) (best #f) (bestscore -1) (wide #f) (widew 0))
+    (if (< i (vector-length box))
+        (let* ((w (cb-width (vector-ref box i)))
+               (score (* w (cb-mag (vector-ref d i)))))
+          (if (> w 0)
+              (loop (+ i 1)
+                    (if (> score bestscore) i best) (if (> score bestscore) score bestscore)
+                    (if (> w widew) i wide) (if (> w widew) w widew))
+              (loop (+ i 1) best bestscore wide widew)))
+        (if (and best (> bestscore 0)) best wide))))
+
+(define (cb-bisect box i)
+  (let* ((xi (vector-ref box i))
+         (m (cb-mid-number (car xi) (cdr xi)))
+         (a (cb-copy box)) (b (cb-copy box)))
+    (vector-set! a i (cons (car xi) m))
+    (vector-set! b i (cons m (cdr xi)))
+    (cons a b)))
+
+;; certified lower endpoint of f at the midpoint of box, with that point
+(define (cb-point-lower f box)
+  (let* ((c (box-midpoint box))
+         (v (interval-eval f (cb-point-box c))))
+    (cons (car v) c)))
+
+;; ── box-sup ───────────────────────────────────────────────────────────────
+;; (box-sup f box tol [max-boxes]) -> certificate; enclosure = [L, U] with
+;; L <= sup_{x in box} f(x) <= U.
+(define cb-default-budget 4000)
+
+(define (box-sup f box tol . opt)
+  (let* ((budget (if (pair? opt) (car opt) cb-default-budget))
+         (root (cb-entry box (cb-enclose-with-partials f box)))
+         (p0 (cb-point-lower f box)))
+    (let loop ((work (list root)) (lbound (car p0)) (witness (cdr p0))
+               (boxes 1) (pruned 0) (mono 0))
+      ;; The box holding the witness always keeps an upper bound >= L, so
+      ;; the work list cannot run empty.
+      (let ((top (if (pair? work) (car work) (error "box-sup: work list emptied"))))
+        (if (or (<= (- (cb-exact (cb-ub top)) (cb-exact lbound)) (cb-exact tol))
+                (>= boxes budget))
+            (cb-cert 'sup (cons lbound (cb-ub top)) witness
+                     (<= (- (cb-exact (cb-ub top)) (cb-exact lbound)) (cb-exact tol))
+                     boxes pruned mono)
+            (let* ((bx (cb-entry-box top)) (d (cb-entry-partials top))
+                   (face (cb-monotone-face bx d)))
+              (if face
+                  ;; monotone: replace the box by its supremum face
+                  (let* ((e (cb-entry face (cb-enclose-with-partials f face)))
+                         (pl (cb-point-lower f face))
+                         (nl (if (> (car pl) lbound) (car pl) lbound))
+                         (nw (if (> (car pl) lbound) (cdr pl) witness))
+                         (pr (cb-prune (cb-insert e (cdr work)) nl)))
+                    (loop (car pr) nl nw (+ boxes 1) (+ pruned (cdr pr)) (+ mono 1)))
+                  (let ((i (cb-split-index bx d)))
+                    (if (not i)
+                        ;; a point box at the top: nothing left to refine
+                        (cb-cert 'sup (cons lbound (cb-ub top)) witness #f boxes pruned mono)
+                        (let* ((halves (cb-bisect bx i))
+                               (ea (cb-entry (car halves) (cb-enclose-with-partials f (car halves))))
+                               (eb (cb-entry (cdr halves) (cb-enclose-with-partials f (cdr halves))))
+                               (pa (cb-point-lower f (car halves)))
+                               (pb (cb-point-lower f (cdr halves)))
+                               (best (if (> (car pa) (car pb)) pa pb))
+                               (nl (if (> (car best) lbound) (car best) lbound))
+                               (nw (if (> (car best) lbound) (cdr best) witness))
+                               (pr (cb-prune (cb-insert eb (cb-insert ea (cdr work))) nl)))
+                          (loop (car pr) nl nw (+ boxes 2) (+ pruned (cdr pr)) mono)))))))))))
+
+;; ── box-inf: sup of -f, negated ──────────────────────────────────────────
+(define (box-inf f box tol . opt)
+  (let* ((budget (if (pair? opt) (car opt) cb-default-budget))
+         (c (box-sup (lambda (x) (rn-neg (f x))) box tol budget))
+         (e (compact-bound-enclosure c)))
+    (cb-cert 'inf (cons (- (cdr e)) (- (car e))) (compact-bound-witness c)
+             (compact-bound-converged? c) (compact-bound-boxes c)
+             (compact-bound-pruned c) (compact-bound-monotone c))))
+
+;; ── box-certify-bound ─────────────────────────────────────────────────────
+;; Prove lo <= f(x) <= hi for every x in box. Returns a certificate whose
+;; kind is 'proven (enclosure = hull of the box enclosures), 'refuted
+;; (witness = a point where f is certified outside [lo, hi]) or 'undecided
+;; (budget spent).
+(define (box-certify-bound f box lo hi . opt)
+  (let ((budget (if (pair? opt) (car opt) cb-default-budget)))
+    (let loop ((work (list box)) (hull #f) (boxes 0))
+      (cond
+        ((null? work)
+         (cb-cert 'proven hull #f #t boxes 0 0))
+        ((>= boxes budget)
+         (cb-cert 'undecided hull #f #f boxes 0 0))
+        (else
+         (let* ((bx (car work))
+                (ep (cb-enclose-with-partials f bx))
+                (enc (car ep)))
+           (if (and (>= (car enc) lo) (<= (cdr enc) hi))
+               (loop (cdr work) (if hull (ia-hull hull enc) enc) (+ boxes 1))
+               (let* ((c (box-midpoint bx))
+                      (v (interval-eval f (cb-point-box c))))
+                 (if (or (< (cdr v) lo) (> (car v) hi))
+                     (cb-cert 'refuted v c #t (+ boxes 1) 0 0)
+                     (let ((i (cb-split-index bx (cdr ep))))
+                       (if (not i)
+                           (cb-cert 'undecided hull c #f (+ boxes 1) 0 0)
+                           (let ((halves (cb-bisect bx i)))
+                             (loop (cons (car halves) (cons (cdr halves) (cdr work)))
+                                   hull (+ boxes 1))))))))))))))

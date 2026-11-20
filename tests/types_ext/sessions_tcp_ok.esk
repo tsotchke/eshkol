@@ -1,0 +1,28 @@
+;; A session-typed protocol over a TCP connection between two processes
+;; (ADR-0046): the same protocol type and operations as local endpoints, the
+;; transport a core.net socket. The server peer is sessions_tcp_server.esk;
+;; this side holds the dual protocol, and session-offer on the server checks
+;; every label it receives.
+;; ENGINES: jit aot
+;; PEER: sessions_tcp_server.esk
+;; EXPECT-OUTPUT: ("ping:a" "ping:b" "ping:c")
+(require stdlib)
+(require core.sessions)
+(require core.net)
+
+(define-type Echo (rec loop (offer (ping (? string (! string loop)))
+                                   (stop end))))
+
+(define (echo-all (c : (chan (dual Echo))) (msgs : any)) : any
+  (if (null? msgs)
+      (begin (session-close (session-select c 'stop)) '())
+      (let-values (((reply c) (session-recv (session-send (session-select c 'ping) (car msgs)))))
+        (cons reply (echo-all c (cdr msgs))))))
+
+(define port
+  (let* ((in (open-input-file (get-environment-variable "TYPES_EXT_PORT_FILE")))
+         (p (read in)))
+    (close-port in)
+    p))
+(write (echo-all (tcp-session (tcp-connect "127.0.0.1" port 10000)) '("a" "b" "c")))
+(newline)

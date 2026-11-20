@@ -9094,7 +9094,7 @@ entries:
       for an oversight. The alternative was to keep shipping an optimizer whose two callers silently interfere.'
   - id: SW-79
     bucket: SILENT-WRONG
-    status: open
+    status: closed
     title: the metric family is discontinuous at K = 0 -- the ball branch tends to 2|x-y| as K -> 0- while
       the K = 0 branch returns |x-y| -- and the AD bridge reads the same curvature argument as a BALL PARAMETER,
       so VM and tape disagree for every K >= 0
@@ -9137,15 +9137,30 @@ entries:
       2|x-y| and riemannian-grad becomes g/4 -- or ESHKOL_RM_LAMBDA0 becomes 1, re-charting the ball to radius
       2/sqrt(c) so the flat limit is canonical, which moves every published hyperbolic constant. The bridge
       must in either case branch on the SIGN of K and refuse K >= 0 on its Poincare-only producers.
-    fixed_by: 'Not fixed. Parked, with the VM side centralized so the ruling is one line and the tests parameterised
-      on it: the regression defines `flat-lambda` and `lambda0` at the top of its K = 0 section, asserts the
-      shipped values through them, AND asserts the internal consistency flat-lambda |log_x(y)| = d(x,y) at
-      K = 0, which must hold under EITHER ruling and is what catches a K = 0 branch whose distance and gradient
-      disagree about the metric they are in. The K -> 0- limit is asserted directly, so the discontinuity
-      is a measured fact in the suite rather than an inference.'
-    evidence: tests/vm/geometric_riemannian_surface_regression.esk, section "The K = 0 branch and the K ->
-      0 limit". docs/reference/stdlib/geometry.md, section "The K = 0 branch", states the question, both resolutions
-      and what each costs.
+    fixed_by: >-
+      ADR-0018 canonical-flat signed-curvature backport from PR #854: the shared
+      f64 core uses alpha = 1 and rho = K/4 for every sign of K, including the
+      analytic K = 0 jets. VM geometry, native core.curvature, AD/space-form and
+      Frechet consumers use that core. Legacy coordinates and temperatures have
+      explicit versioned migrations; unversioned and legacy headers refuse.
+      The expired waiver block is retained as historical context, without renewal.
+    evidence: >-
+      tests/bridge/signed_curvature_reference_grid_test.cpp (binary128: 134683
+      checks, zero failures); tests/geometry/signed_curvature_test.esk (88 JIT
+      and 88 AOT assertions, zero failures); tests/vm/signed_curvature_surface.esk
+      plus geometric_riemannian_surface_regression, geometric_adversarial_surface_regression,
+      frechet_mean_surface_regression and riemannian_adam_state_regression
+      (all five VM fixtures pass). Seven C++ CTests including squared-distance,
+      bridge/scaled/producer, adversarial core and Frechet gradchecks pass.
+      Independently retained native qualification used source archive SHA256
+      4d7a200de12576191d38c5785185cc1b77771fd20fb0444ba2519d0240262bef;
+      receipt archive SHA256 0b2d6b0f9e86293bfbed7fd0e5aeb8d59227d7a663c867872384c07dac1b871b.
+      Both normal cache generations were byte-identical (SHA256
+      97f77e49ce6ba841d741abcc28828987c55b9038a2ee8b4f4bd168498ac12c90).
+      .github/workflows/ci.yml requires the seven C++ tests, signed-curvature
+      JIT/AOT, exact generated-cache currentness and the five VM fixtures in
+      the existing Linux lanes before merge; this record makes no whole-release
+      qualification claim.
     caught_by:
     - adversarial-model-audit-gpt-5.6-sol
     missed_by:

@@ -106,23 +106,19 @@
 (report (eq? implicit-guarded 'refused)
         "riemannian-adam-step refuses its shape-keyed implicit state")
 
-;; ── the sphere accepts a valid tangent gradient ──────────────────────────────
-;; x = (1,1,1)/sqrt 3 with g = (1,1,-2) satisfies <x,g> = 0 exactly, so g is a
-;; legitimate tangent vector. The coordinate-wise delta was proportional to
-;; (1,1,-1), whose inner product with x is -lr/sqrt 3, and the exponential map
-;; REFUSED a valid optimizer input. The scalar second moment keeps the delta
-;; parallel to g, hence tangent, hence accepted.
+;; ── the positive chart (K = 1, ADR-0018) ─────────────────────────────────────
+;; On the stereographic chart every finite vector is a tangent vector. The
+;; scalar second moment keeps the delta parallel to g, and the exponential map
+;; retracts it to a step of Riemannian length lr.
 (define r3 (/ 1.0 (sqrt 3.0)))
 (define sx (vec3 r3 r3 r3))
 (define sg (vec3 1.0 1.0 -2.0))
 (define sst (make-riemannian-adam-state sx))
 (define sstep (riemannian-adam-step! sst sx sg 0.1 0.9 0.999 1.0))
-(report (if sstep #t #f) "Adam accepts a valid tangent gradient on the sphere")
-(report (near? (sqrt (+ (* (tensor-ref sstep 0) (tensor-ref sstep 0))
-                        (* (tensor-ref sstep 1) (tensor-ref sstep 1))
-                        (* (tensor-ref sstep 2) (tensor-ref sstep 2))))
-               1.0)
-        "the spherical Adam iterate stays on the sphere")
+(report (if sstep #t #f) "Adam accepts a gradient on the positive chart")
+(report (and (near? (tensor-ref sstep 0) 0.5245025188107475)
+             (near? (tensor-ref sstep 2) 0.67762746942450691))
+        "the positive-chart Adam iterate is exp_x(-lr g/|g|_x)")
 (report (near? (geodesic-distance sx sstep 1.0) 0.1)
         "the spherical Adam step has Riemannian length lr")
 
@@ -130,14 +126,14 @@
 ;; The moments and the step counter used to be written before the exponential
 ;; map and the transport could refuse, so a failed call changed the answer the
 ;; retry gave. Two states start identical; one of them is offered a gradient
-;; that is not tangent to the sphere, which raises; both are then given the same
+;; with a non-finite component, which raises; both are then given the same
 ;; valid gradient and must produce the same point.
 (define st-a (make-riemannian-adam-state sx))
 (define st-b (make-riemannian-adam-state sx))
-(define radial (vec3 r3 r3 r3))
+(define radial (vec3 r3 (/ 0.0 0.0) r3))
 (define failed (guard (e (#t 'refused))
                  (riemannian-adam-step! st-a sx radial 0.1 0.9 0.999 1.0)))
-(report (eq? failed 'refused) "Adam refuses a non-tangent gradient on the sphere")
+(report (eq? failed 'refused) "Adam refuses a non-finite gradient on the positive chart")
 (define after-a (riemannian-adam-step! st-a sx sg 0.1 0.9 0.999 1.0))
 (define after-b (riemannian-adam-step! st-b sx sg 0.1 0.9 0.999 1.0))
 (report (and (near? (tensor-ref after-a 0) (tensor-ref after-b 0))
@@ -152,13 +148,13 @@
 (define ball-g (make-tensor '(2) 0.5))
 (define ball-st (make-riemannian-adam-state ball-p))
 (define curved (riemannian-adam-step! ball-st ball-p ball-g 0.1 0.9 0.999 -1.0))
-(report (near? (tensor-ref curved 0) 0.2185340511268253)
+(report (near? (tensor-ref curved 0) 0.18094621172843617)
         "the ball Adam step is exp_p(-lr g/|g|_x)")
 (report (> (abs (- (tensor-ref curved 0) 0.15)) 0.0001)
         "the ball Adam step is not the ambient update")
 (report (< (+ (* (tensor-ref curved 0) (tensor-ref curved 0))
-              (* (tensor-ref curved 1) (tensor-ref curved 1))) 1.0)
-        "the ball Adam step stays on the manifold")
+              (* (tensor-ref curved 1) (tensor-ref curved 1))) 4.0)
+        "the ball Adam step stays inside the ball of radius 2")
 (report (near? (geodesic-distance ball-p curved -1.0) 0.1)
         "the ball Adam step has Riemannian length lr")
 

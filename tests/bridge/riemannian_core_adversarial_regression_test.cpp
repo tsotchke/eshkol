@@ -68,7 +68,7 @@ static void check_adversarial_roots() {
     const double sphere_x[1] = {1.0 / std::sqrt(sphere_k)};
     const double radial_v[1] = {1e-170};
     check("sphere_tangent_rejects_scaled_radial_vector",
-          eshkol_rm_check_tangent(sphere_x, radial_v, sphere_k, 1) != nullptr);
+          eshkol_rm_sphere_check_tangent(sphere_x, radial_v, sphere_k, 1) != nullptr);
 
     const double huge_y[2] = {0.0, 9.99999999999e149};
     double d = 0.0, d1 = 0.0, d2 = 0.0;
@@ -85,9 +85,10 @@ static void check_adversarial_roots() {
     for (double c : extreme_curvatures) {
         const double positive = eshkol_rm_ball_param(c);
         const double negative = eshkol_rm_ball_param(-c);
+        /* the alpha = 1 chart parameter is exactly c/4 at the top binades */
         ball_param_ok = ball_param_ok && std::isfinite(positive) &&
-                        positive == c && std::isfinite(negative) &&
-                        negative == -c;
+                        positive == 0.25 * c && std::isfinite(negative) &&
+                        negative == -0.25 * c;
     }
     check("ball_parameter_preserves_top_finite_binades", ball_param_ok);
 

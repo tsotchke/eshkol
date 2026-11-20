@@ -1,0 +1,11 @@
+;; Focused regression control for Taylor-model point evaluation. This remains
+;; unregistered in CMake; coverage_remaining_pure_calls carries the same case.
+(require core.ad.taylor_models)
+
+(define tm (taylor-model (lambda (x) (* x x)) 0.0 0.25 2))
+(define enclosure (tm-eval tm 0.25))
+(if (interval-contains? enclosure 0.0625)
+    (begin
+      (display "PASS: coverage_taylor_eval_contract")
+      (newline))
+    (error "tm-eval failed to enclose x^2 at 0.25"))

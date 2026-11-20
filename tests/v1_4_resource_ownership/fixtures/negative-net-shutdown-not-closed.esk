@@ -1,0 +1,7 @@
+(require core.net)
+;; A half-close is an observation, not a close: the stream is still open.
+(define stream (tcp-connect "127.0.0.1" 9 100))
+(if (network-error? stream)
+    (display "connect failed")
+    (tcp-shutdown stream 'both))
+(newline)

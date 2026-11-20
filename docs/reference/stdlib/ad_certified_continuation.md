@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.4.0-connection
+sources:
+  - lib/core/ad/certified_continuation.esk
+  - tests/stdlib/certified_continuation_test.esk
+  - tests/stdlib/certified_continuation_independent_test.esk
+---
+
 # Adaptive certified coupled continuation
 
 `(require core.ad.certified_continuation)` tracks a selected nonsingular real

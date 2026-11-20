@@ -1,0 +1,7 @@
+;; The principal type of add-one requires a numeric field x.
+;; ENGINES: jit aot vm
+;; EXPECT-STDERR: cannot match `string` with `number`
+(require stdlib)
+(require core.records)
+(define (add-one p) (+ (record-ref p 'x) 1))
+(display (add-one (record 'x "one")))

@@ -1,0 +1,2 @@
+(require test.strict.fake_inexact_to_exact)
+(define value (inexact->exact 2.5))

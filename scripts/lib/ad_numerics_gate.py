@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) tsotchke
 # SPDX-License-Identifier: MIT
-"""Non-vacuous checks for the scoped P11 and P6 v1.4 AD evidence gates.
+"""Non-vacuous checks for the scoped P11, P6 and nested v1.4 AD evidence gates.
 
 This module validates CTest configuration/report evidence. It never emits an
 ICC PASS event; only the production runner writes an event after source/build
@@ -36,6 +36,12 @@ PROFILES = {
         "kind": "ad_numerics",
         "event": "ad_taylor_p11_v14_user_numerics",
         "harness": "run_ad_numerics_gate",
+        "runtime_test": "taylor_numerics_runtime_smoke",
+        "aot_test": "taylor_numerics_aot_smoke",
+        "aot_stem": "taylor_numerics_aot",
+        "vm_test": None,
+        "jit_lib": False,
+        "aot_receipt": False,
     },
     "p6": {
         "tests": {"exact_taylor_runtime_smoke", "exact_taylor_aot_smoke",
@@ -49,6 +55,32 @@ PROFILES = {
         "kind": "ad_exact",
         "event": "ad_taylor_p6_exact_coefficients",
         "harness": "run_ad_p6_gate",
+        "runtime_test": "exact_taylor_runtime_smoke",
+        "aot_test": "exact_taylor_aot_smoke",
+        "aot_stem": "exact_taylor_aot",
+        "vm_test": "exact_taylor_vm_runtime_smoke",
+        "jit_lib": True,
+        "aot_receipt": True,
+    },
+    # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every mode.
+    "nested": {
+        "tests": {"nested_depth_matrix_jit", "nested_depth_matrix_aot",
+                  "nested_depth_matrix_vm"},
+        "fixture": "tests/ad/nested_depth_matrix_test.esk",
+        "verdict": "PASS: nested depth matrix 64/64 checks",
+        "checks": 64,
+        "scope": "v1.4 nested differentiation in every mode",
+        "schema": "eshkol.ad-numerics-gate.v1",
+        "binary": "eshkol-run",
+        "kind": "ad_exact",
+        "event": "ad_nested_every_mode",
+        "harness": "run_ad_nested_gate",
+        "runtime_test": "nested_depth_matrix_jit",
+        "aot_test": "nested_depth_matrix_aot",
+        "aot_stem": "nested_depth_matrix_aot",
+        "vm_test": "nested_depth_matrix_vm",
+        "jit_lib": True,
+        "aot_receipt": True,
     },
 }
 PROFILES = MappingProxyType({
@@ -105,23 +137,18 @@ def validate_test_commands(payload: str, repo_root: Path, build_dir: Path,
     by_name = {item.get("name"): item for item in decoded["tests"] if isinstance(item, dict)}
     binary = str((build_dir / "eshkol-run").resolve())
     fixture = str((repo_root / profile["fixture"]).resolve())
-    if profile_name == "p11":
-        runtime_name, aot_name = "taylor_numerics_runtime_smoke", "taylor_numerics_aot_smoke"
-        runtime = by_name[runtime_name].get("command")
-    else:
-        runtime_name, aot_name = "exact_taylor_runtime_smoke", "exact_taylor_aot_smoke"
-        runtime = by_name[runtime_name].get("command")
+    runtime_name, aot_name = profile["runtime_test"], profile["aot_test"]
+    runtime = by_name[runtime_name].get("command")
     if (not isinstance(runtime, list) or len(runtime) < 3 or runtime[0] != binary
             or runtime[1:3] != ["-r", fixture]):
         raise GateError("runtime CTest command does not run the source-bound fixture with this build binary")
-    if profile_name == "p6" and (len(runtime) != 4 or runtime[3] != "-L" + str(build_dir.resolve())):
-        raise GateError("P6 JIT command does not use the owned build's standard library path")
+    if profile["jit_lib"] and (len(runtime) != 4 or runtime[3] != "-L" + str(build_dir.resolve())):
+        raise GateError(f"{profile_name.upper()} JIT command does not use the owned build's standard library path")
     aot = by_name[aot_name].get("command")
     if (not isinstance(aot, list) or len(aot) != 3
             or not isinstance(aot[0], str) or Path(aot[0]).name != "sh" or aot[1] != "-c"):
         raise GateError("AOT CTest command is not the expected shell compile-and-run command")
-    stem = "taylor_numerics_aot" if profile_name == "p11" else "exact_taylor_aot"
-    aot_output = str((build_dir / stem).resolve())
+    aot_output = str((build_dir / profile["aot_stem"]).resolve())
     try:
         lexer = shlex.shlex(str(aot[2]), posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
@@ -131,12 +158,11 @@ def validate_test_commands(payload: str, repo_root: Path, build_dir: Path,
     expected_compile = [binary, "-o", aot_output, fixture, "-L" + str(build_dir.resolve())]
     if tokens != expected_compile + ["&&", aot_output]:
         raise GateError("AOT CTest command does not compile and run the source-bound fixture")
-    if profile_name == "p6":
-        vm_name = "exact_taylor_vm_runtime_smoke"
-        vm = by_name[vm_name].get("command")
+    if profile["vm_test"]:
+        vm = by_name[profile["vm_test"]].get("command")
         vm_binary = str((build_dir / "eshkol-vm-standalone-test").resolve())
         if not isinstance(vm, list) or vm != [vm_binary, fixture]:
-            raise GateError("P6 VM CTest command does not directly execute the source-bound fixture")
+            raise GateError(f"{profile_name.upper()} VM CTest command does not directly execute the source-bound fixture")
     return names
 
 
@@ -230,10 +256,10 @@ def validate_build_source(repo_root: Path, build_dir: Path,
         "binary_sha256": sha256_file(binary),
         "binary_size": binary.stat().st_size,
     }
-    if profile_name == "p6":
+    if get_profile(profile_name)["vm_test"]:
         vm_binary = build_dir / "eshkol-vm-standalone-test"
         if not vm_binary.is_file() or not vm_binary.stat().st_mode & 0o111:
-            raise GateError("P6 requires executable build/eshkol-vm-standalone-test; refusing without the VM lane")
+            raise GateError(f"{profile_name.upper()} requires executable build/eshkol-vm-standalone-test; refusing without the VM lane")
         result["vm_binary"] = {
             "path": str(vm_binary.resolve()), "sha256": sha256_file(vm_binary),
             "size": vm_binary.stat().st_size,
@@ -272,7 +298,7 @@ def fingerprint_events(run_dir: Path, build: dict, source: dict,
     harness = get_profile(profile_name)["harness"]
     records = [record for record in records if record.get("harness") == harness]
     expected_binaries = {"eshkol-run": build["binary_path"]}
-    if profile_name == "p6":
+    if get_profile(profile_name)["vm_test"]:
         expected_binaries["eshkol-vm-standalone-test"] = build["vm_binary"]["path"]
     groups = {name: [record for record in records if record.get("binary") == name]
               for name in expected_binaries}
@@ -309,7 +335,7 @@ def verify_build_freshness(repo_root: Path, build_dir: Path, run_dir: Path,
         raise GateError(f"build fingerprint freshness check returned invalid JSON: {exc}; {proc.stderr.strip()}") from exc
     if proc.returncode or report.get("status") != "PASS":
         raise GateError(f"build fingerprint freshness check failed: {report}")
-    if profile_name == "p6":
+    if get_profile(profile_name)["vm_test"]:
         vm_command = command.copy()
         vm_command[vm_command.index("eshkol-run")] = "eshkol-vm-standalone-test"
         vm_proc = subprocess.run(vm_command, cwd=repo_root, capture_output=True, text=True, check=False)
@@ -366,10 +392,10 @@ def verify_and_write(repo_root: Path, build_dir: Path, run_dir: Path,
         "tests": result,
         "recorded_epoch": int(time.time()),
     }
-    if profile_name == "p6":
-        aot_path = build_dir / "exact_taylor_aot"
+    if profile["aot_receipt"]:
+        aot_path = build_dir / profile["aot_stem"]
         if not aot_path.is_file() or not aot_path.stat().st_mode & 0o111:
-            raise GateError("P6 AOT CTest did not leave its compiled executable")
+            raise GateError(f"{profile_name.upper()} AOT CTest did not leave its compiled executable")
         receipt["aot_binary"] = {"path": str(aot_path.resolve()), "sha256": sha256_file(aot_path),
                                  "size": aot_path.stat().st_size}
     write_json_exclusive(run_dir / "receipt.json", receipt)
@@ -519,36 +545,33 @@ def self_test(profile_name: str = DEFAULT_PROFILE) -> None:
         (build / "CTestTestfile.cmake").write_text("", encoding="utf-8")
         binary.write_text("fixture", encoding="utf-8")
         binary.chmod(0o755)
-        if profile_name == "p6":
+        if profile["vm_test"]:
             try:
                 validate_build_source(source, build, profile_name)
             except GateError:
                 pass
             else:
-                raise AssertionError("P6 build without standalone VM was accepted")
+                raise AssertionError(f"{profile_name.upper()} build without standalone VM was accepted")
             vm_binary = build / "eshkol-vm-standalone-test"
             vm_binary.write_text("fixture", encoding="utf-8")
             vm_binary.chmod(0o755)
             validate_build_source(source, build, profile_name)
         fixture = str((source / profile["fixture"]).resolve())
         binary_path = str((build / "eshkol-run").resolve())
-        if profile_name == "p11":
-            aot_path = str((build / "taylor_numerics_aot").resolve())
-            good_commands = {"tests": [
-                {"name": "taylor_numerics_runtime_smoke", "command": [binary_path, "-r", fixture]},
-                {"name": "taylor_numerics_aot_smoke", "command": ["sh", "-c", f"{binary_path} -o {aot_path} {fixture} -L{build.resolve()} && {aot_path}"]},
-            ]}
-        else:
-            aot_path = str((build / "exact_taylor_aot").resolve())
+        aot_path = str((build / profile["aot_stem"]).resolve())
+        runtime_command = [binary_path, "-r", fixture]
+        if profile["jit_lib"]:
+            runtime_command.append("-L" + str(build.resolve()))
+        good_commands = {"tests": [
+            {"name": profile["runtime_test"], "command": runtime_command},
+            {"name": profile["aot_test"], "command": ["sh", "-c", f"{binary_path} -o {aot_path} {fixture} -L{build.resolve()} && {aot_path}"]},
+        ]}
+        if profile["vm_test"]:
             vm_path = str((build / "eshkol-vm-standalone-test").resolve())
-            good_commands = {"tests": [
-                {"name": "exact_taylor_runtime_smoke", "command": [binary_path, "-r", fixture, "-L" + str(build.resolve())]},
-                {"name": "exact_taylor_aot_smoke", "command": ["sh", "-c", f"{binary_path} -o {aot_path} {fixture} -L{build.resolve()} && {aot_path}"]},
-                {"name": "exact_taylor_vm_runtime_smoke", "command": [vm_path, fixture]},
-            ]}
+            good_commands["tests"].append({"name": profile["vm_test"], "command": [vm_path, fixture]})
         validate_test_commands(json.dumps(good_commands), source, build, profile_name)
         absolute_shell = json.loads(json.dumps(good_commands))
-        aot_case = "taylor_numerics_aot_smoke" if profile_name == "p11" else "exact_taylor_aot_smoke"
+        aot_case = profile["aot_test"]
         next(test for test in absolute_shell["tests"] if test["name"] == aot_case)["command"][0] = "/bin/sh"
         validate_test_commands(json.dumps(absolute_shell), source, build, profile_name)
         junit, verbose = fixtures("good", root)

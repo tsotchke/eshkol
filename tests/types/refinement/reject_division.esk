@@ -1,0 +1,4 @@
+;; expect: refinement not proved: divisor of quotient
+(define (ratio (a : Integer) (b : Integer)) : (Refine Integer r #t)
+  (quotient a b))
+(display (ratio 6 3))

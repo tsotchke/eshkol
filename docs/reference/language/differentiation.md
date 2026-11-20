@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.4.0-connection
+sources:
+  - lib/frontend/differentiation_graph.cpp
+  - tests/frontend/differentiation_graph_test.cpp
+  - tests/ad/compiler_differentiation_test.esk
+---
+
 # Compiler differentiation graph
 
 The native frontend supports an explicit numeric interpretation of a pure scalar

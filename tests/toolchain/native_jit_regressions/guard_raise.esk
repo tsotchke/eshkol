@@ -1,0 +1,3 @@
+;; A raised value reaches its handler and normal execution resumes.
+(display (guard (e (else 42)) (raise 'test-error)))
+(newline)

@@ -1,0 +1,19 @@
+;;; Handlers inside regions and under automatic differentiation.
+(require core.effects)
+
+(define (show label v) (display label) (display ": ") (display v) (newline))
+
+;; A handled computation inside a region; values flow out of the region.
+(show "region-light"
+      (with-region
+        (with-store 0 (lambda () (put (list 1 2 3)) (length (get))))))
+(show "region-general"
+      (with-region
+        (all-choices (lambda () (list (if (decide) 'x 'y) (vector 1 2))))))
+
+;; Derivatives flow through operations handled in place.
+(define (scaled x) (with-reader 3 (lambda () (* (ask) x x))))
+(show "d/dx 3x^2 at 2" (derivative scaled 2.0))
+(define (stateful x) (with-store x (lambda () (put (* (get) (get))) (+ (get) x))))
+(show "d/dx x^2+x at 3" (derivative stateful 3.0))
+(show "gradient" (gradient (lambda (v) (with-reader 2 (lambda () (* (ask) (vector-ref v 0) (vector-ref v 1))))) (vector 3.0 4.0)))

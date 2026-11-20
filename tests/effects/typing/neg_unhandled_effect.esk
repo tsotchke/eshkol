@@ -1,0 +1,6 @@
+;;; A handler that does not cover every operation leaves the effect in the row.
+;; expect-error: 'leaky' is declared Pure but may perform Tally
+(define-effect Tally (tally) (reset-tally))
+(declare-effects leaky Pure)
+(define (leaky) (handle (begin (tally) (reset-tally) 1) (fun (tally) 0)))
+(display (leaky))

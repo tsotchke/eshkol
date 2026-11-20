@@ -1,0 +1,5 @@
+;; expect: refinement not proved: result of 'clamp'
+(define (clamp (lo : Integer) (hi : (Refine Integer (>= hi lo))) (x : Integer))
+  : (Refine Integer v (and (<= lo v) (<= v hi)))
+  (if (< x lo) lo x))
+(display (clamp 0 10 5))

@@ -1,0 +1,29 @@
+;; core.effective.hypercover, long-run check (stage S6.3, the 3-type step):
+;; the product of the level-4 hypercovers of the pseudo-2-sphere is a
+;; hypercover of S2p x S2p refining its cover by the four maximal opens; the
+;; 3-type K(Z/4,3) x_k K(Z/2,2) with k the Pontryagin square has the values
+;; of the space (computed in effective_hypercover_test): 2-types 1/2, 8, 4;
+;; 1/8 for k = 0 and 3/32 for the Pontryagin square; 1 and 1 for the
+;; cup-square 3-type. About 3 minutes and 29 GB on Linux x64: run by
+;; scripts/run_effective_gate.sh, not by the default CTest suite.
+(require stdlib)
+(require core.sheaf.site)
+(require core.simplicial)
+(require core.effective)
+(define passes 0) (define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (show label v) (display "  ") (display label) (display " = ") (display v) (newline))
+(define S2p (make-finite-space 6 (list (cons 0 2) (cons 1 2) (cons 0 3) (cons 1 3) (cons 2 4) (cons 3 4) (cons 2 5) (cons 3 5))))
+(define cover2 (map (lambda (x) (finite-space-down-set S2p x)) (finite-space-maximal-points S2p)))
+(define vX (list (list 1/2 8 4) (list 1/8 3/32) (list 1 1)))
+(define H4 (finite-space-hypercover S2p cover2 4))
+(define HH (product-space "H x H" (hypercover-space H4 4) (hypercover-space H4 4)))
+(define vHH (postnikov-cardinalities HH))
+(show "the product hypercover H x H" vHH)
+(check "S6.3, the 3-type step: the product of the hypercovers (a hypercover of S2p x S2p refining its maximal-open cover) gives the values of the space, 3/32 for the Pontryagin square and 1/8 for k = 0, where the Cech nerve gives 1/2"
+       (equal? vHH vX))
+
+(display "core.effective hypercover 3-type: ") (display passes) (display " passed, ") (display failures) (display " failed") (newline)
+(if (= failures 0) (begin (display "PASS: effective_hypercover_3type_test") (newline)) (begin (display "FAIL: effective_hypercover_3type_test") (newline)))

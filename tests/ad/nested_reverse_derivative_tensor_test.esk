@@ -1,0 +1,16 @@
+;;; A scalar forward derivative around a tensor-point reverse gradient: the
+;;; gradient inside a live pass is forward columns (ADR-0057).
+;;; d/ds [d/dx0 (s x0^2)] at x = (2, 1) = d/ds [4 s] = 4.
+(define d
+  (derivative
+   (lambda (s)
+     (vector-ref
+      (gradient
+       (lambda (x) (* s (vector-ref x 0) (vector-ref x 0)))
+       #(2.0 1.0))
+      0))
+   3.0))
+(display d) (newline)
+(if (= d 4.0)
+    (begin (display "PASS: nested reverse derivative-tensor") (newline))
+    (begin (display "FAIL: nested reverse derivative-tensor") (newline)))

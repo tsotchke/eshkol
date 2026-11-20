@@ -1,0 +1,8 @@
+(require core.net)
+;; A borrow scope opens the listener, lends it for the call, and closes it on
+;; every exit, so the program names no close site of its own.
+(define port
+  (call-with-tcp-listener "127.0.0.1" 0
+    (lambda (listener) (net-local-port listener))))
+(if (network-error? port) (display "listen failed") (display port))
+(newline)

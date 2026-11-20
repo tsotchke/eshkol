@@ -152,7 +152,8 @@ typedef enum {
      * every lowered form; reaching it is execution evidence for that
      * construct. Normal compilation never emits this opcode. */
     OP_LANGUAGE_COVERAGE_FORM = 71,
-    OP_COUNT = 72
+    OP_LANGUAGE_COVERAGE_READ = 72, /* follows an executed binding load */
+    OP_COUNT = 73
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -310,6 +311,7 @@ typedef enum {
     HEAP_RIEMANNIAN_ADAM_STATE = 25,
     HEAP_FUTURE = 26,
     HEAP_I128 = 27,
+    HEAP_PRNG = 28,
 } HeapType;
 
 typedef struct {
@@ -338,6 +340,7 @@ typedef struct {
             int32_t* open_slots;
         } closure;
         struct { void* ptr; int subtype; } opaque;  /* for complex, rational, tensor, logic, etc. */
+        struct { uint64_t state; } prng; /* leaf, no pointers or external allocation */
     };
 } HeapObject;
 
@@ -985,6 +988,7 @@ typedef struct VM {
 
     uint32_t language_coverage_call_hash;
     int32_t language_coverage_call_pc;
+    int32_t language_coverage_load_pc; /* only the immediately executed load */
 
     /* Reverse-mode AD tracing context.
      * When active_tape != NULL, arithmetic operations (+,-,*,/,sin,cos,...)
@@ -1127,6 +1131,12 @@ typedef struct VM {
         int active;
         int fd;
         int closed;
+        /* An open fragment sequence: the data opcode it began with and the
+         * bytes gathered so far. A fragment is never surfaced as a whole
+         * frame; the message is delivered on FIN (RFC 6455 section 5.4). */
+        int fragment_opcode;
+        char* fragment_data;
+        size_t fragment_length;
     } websocket_clients[16];
 
     char http_proxy_url[512];
@@ -1826,6 +1836,7 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
         case VAL_MANIFOLD:    printf("<manifold>"); break;
         case VAL_RIEMANNIAN_ADAM_STATE: printf("<riemannian-adam-state>"); break;
         case VAL_PORT:        printf("<port>"); break;
+        case VAL_PRNG:        printf("#<prng>"); break;
         case VAL_FUTURE:      printf("<future>"); break;
         case VAL_EOF:         printf("#<eof>"); break;
         case VAL_VOID:        break; /* unspecified — produces no output */

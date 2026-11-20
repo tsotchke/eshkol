@@ -76,7 +76,10 @@ int main(void) {
     assert(recv(raw, buf, sizeof(buf), 0) == sizeof(payload));
     assert(memcmp(buf, payload, sizeof(payload)) == 0);
     assert(sendto(raw, payload, sizeof(payload), 0, (struct sockaddr *)&a, sizeof(a)) == sizeof(payload));
-    assert(eshkol_net_recvfrom(udp, buf, 1, peer, sizeof(peer), 1000) == -4);
+    /* Truncation is explicit: the prefix and sender are stored, the datagram consumed. */
+    buf[0] = 0;
+    assert(eshkol_net_recvfrom(udp, buf, 1, peer, sizeof(peer), 1000) == -8);
+    assert(buf[0] == payload[0] && strcmp(peer, expected) == 0);
     assert(eshkol_net_recvfrom(udp, buf, sizeof(buf), peer, sizeof(peer), 0) == -2);
     close(raw); assert(eshkol_net_close(udp) == 0);
     for (int i = 0; i < 1000; i++) {

@@ -15,7 +15,7 @@
 #include <math.h>
 #include <stdio.h>
 
-static uint32_t vm_taylor_epoch_counter;
+static uint64_t vm_taylor_epoch_counter;
 
 /* SW-219: an operation with no value -- exact division by exact zero --
  * records its diagnostic here and the native dispatcher raises it, as the
@@ -23,7 +23,7 @@ static uint32_t vm_taylor_epoch_counter;
 const char* vm_dual_error = NULL;
 static const char* const VM_DUAL_EXACT_DIV_ZERO = "rational division by zero";
 
-uint32_t vm_dual_next_taylor_epoch(void) {
+uint64_t vm_dual_next_taylor_epoch(void) {
     vm_taylor_epoch_counter++;
     if (vm_taylor_epoch_counter == 0) vm_taylor_epoch_counter = 1;
     return vm_taylor_epoch_counter;
@@ -177,7 +177,7 @@ static VmDual* taylor_alloc(VmRegionStack* rs, uint32_t order, int exact) {
 
 VmDual* vm_dual_make_taylor_seed(VmRegionStack* rs, VmRational* point,
                                  double point_value, uint32_t order, int exact,
-                                 uint32_t epoch) {
+                                 uint64_t epoch) {
     if (order > 4096u) return NULL;
     VmDual* d = taylor_alloc(rs, order, exact && point != NULL);
     if (!d) return NULL;
@@ -299,7 +299,7 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
                              const VmDual* b, char op) {
     uint32_t n = a->kind == VM_DUAL_KIND_TAYLOR ? a->order : UINT32_MAX;
     if (b->kind == VM_DUAL_KIND_TAYLOR && b->order < n) n = b->order;
-    uint32_t epoch = a->kind == VM_DUAL_KIND_TAYLOR ? a->epoch : b->epoch;
+    uint64_t epoch = a->kind == VM_DUAL_KIND_TAYLOR ? a->epoch : b->epoch;
     int exact = dual_exact_operand(a) && dual_exact_operand(b);
     /* Test exact denominators as exact values: very small nonzero rationals
      * round to 0.0, so a double comparison would silently drop exactness. */
@@ -524,7 +524,7 @@ int vm_dual_is_level(const VmDual* d) {
     return d && d->kind == VM_DUAL_KIND_LEVEL;
 }
 
-uint32_t vm_dual_carrier_epoch(const VmDual* d) {
+uint64_t vm_dual_carrier_epoch(const VmDual* d) {
     return d && d->kind != VM_DUAL_KIND_SCALAR ? d->epoch : 0u;
 }
 
@@ -577,14 +577,14 @@ static VmDual* lv_own(VmRegionStack* rs, const VmDual* d) {
     return copy;
 }
 
-static uint32_t lv_order_at(const VmDual* d, uint32_t epoch) {
+static uint32_t lv_order_at(const VmDual* d, uint64_t epoch) {
     if (d && d->kind != VM_DUAL_KIND_SCALAR && d->epoch == epoch) return d->order;
     return UINT32_MAX;          /* a constant of this level: every order */
 }
 
 /* Coefficient k of @p d read as a series in @p epoch. NULL is a structural
  * zero: beyond the series' order, or above c[0] of a constant. */
-static VmDual* lv_coeff(VmRegionStack* rs, const VmDual* d, uint32_t epoch,
+static VmDual* lv_coeff(VmRegionStack* rs, const VmDual* d, uint64_t epoch,
                         uint32_t k) {
     if (d->kind == VM_DUAL_KIND_LEVEL && d->epoch == epoch)
         return k <= d->order ? d->lcoeff[k] : NULL;
@@ -596,7 +596,7 @@ static VmDual* lv_coeff(VmRegionStack* rs, const VmDual* d, uint32_t epoch,
     return k == 0 ? (VmDual*)d : NULL;
 }
 
-static VmDual* lv_alloc(VmRegionStack* rs, uint32_t epoch, uint32_t order) {
+static VmDual* lv_alloc(VmRegionStack* rs, uint64_t epoch, uint32_t order) {
     if (order > 4096u) return NULL;
     VmDual* d = vm_dual_new(rs, 0.0, 0.0);
     if (!d) return NULL;
@@ -678,8 +678,8 @@ static VmDual* lv_binary(VmRegionStack* rs, const VmDual* a0, const VmDual* b0,
     VmDual* a = lv_own(rs, a0);
     VmDual* b = lv_own(rs, b0);
     if (!a || !b) return NULL;
-    uint32_t ea = vm_dual_carrier_epoch(a), eb = vm_dual_carrier_epoch(b);
-    uint32_t epoch = ea > eb ? ea : eb;
+    uint64_t ea = vm_dual_carrier_epoch(a), eb = vm_dual_carrier_epoch(b);
+    uint64_t epoch = ea > eb ? ea : eb;
     uint32_t na = lv_order_at(a, epoch), nb = lv_order_at(b, epoch);
     uint32_t n = na < nb ? na : nb;
     VmDual* r = lv_alloc(rs, epoch, n);
@@ -746,7 +746,8 @@ static VmDual* lv_dconv(VmRegionStack* rs, VmDual** u, VmDual** v, uint32_t k) {
 static VmDual* lv_unary(VmRegionStack* rs, const VmDual* a0, int op) {
     VmDual* a = lv_own(rs, a0);
     if (!a) return NULL;
-    uint32_t epoch = a->epoch, n = a->order;
+    uint64_t epoch = a->epoch;
+    uint32_t n = a->order;
     VmDual* r = lv_alloc(rs, epoch, n);
     if (!r) return NULL;
     VmDual** u = a->lcoeff;
@@ -906,7 +907,7 @@ uint32_t vm_dual_nilpotent_degree(const VmDual* d) {
 }
 
 VmDual* vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
-                           uint32_t order, uint32_t epoch) {
+                           uint32_t order, uint64_t epoch) {
     if (!rs || !point) return NULL;
     VmDual* d = lv_alloc(rs, epoch, order);
     if (!d) return NULL;
@@ -917,14 +918,14 @@ VmDual* vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
 }
 
 VmDual* vm_dual_level_coefficient(VmRegionStack* rs, const VmDual* r,
-                                  uint32_t epoch, uint32_t k) {
+                                  uint64_t epoch, uint32_t k) {
     if (!r || r->kind == VM_DUAL_KIND_SCALAR || r->epoch != epoch) return NULL;
     VmDual* c = lv_coeff(rs, r, epoch, k);
     return c ? c : lv_int(rs, 0, vm_dual_exact_value(r) != NULL);
 }
 
 VmDual* vm_dual_level_derivative(VmRegionStack* rs, const VmDual* r,
-                                 uint32_t epoch, uint32_t k) {
+                                 uint64_t epoch, uint32_t k) {
     VmDual* c = vm_dual_level_coefficient(rs, r, epoch, k);
     if (!c || k < 2) return c;
     VmRational* fact = vm_rational_from_int(vm_active_arena(rs), 1);

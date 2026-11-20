@@ -314,8 +314,8 @@ cmake .. &amp;&amp; make -j8
 </tr>
 </tbody>
 </table>
-<h3 id="1053-built-in-functions">1,053 Built-in Functions</h3>
-<p>Eshkol provides 1,058 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
+<h3 id="1066-built-in-functions">1,066 Built-in Functions</h3>
+<p>Eshkol provides 1,067 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.</p>
 <p><strong>Arithmetic:</strong> <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>abs</code>, <code>floor</code>, <code>ceiling</code>, <code>round</code>, <code>truncate</code>, <code>modulo</code>, <code>remainder</code>, <code>quotient</code>, <code>gcd</code>, <code>lcm</code>, <code>min</code>, <code>max</code>, <code>expt</code>, <code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code></p>
 <p><strong>Math:</strong> <code>sin</code>, <code>cos</code>, <code>tan</code>, <code>asin</code>, <code>acos</code>, <code>atan</code>, <code>sinh</code>, <code>cosh</code>, <code>tanh</code>, <code>exp</code>, <code>log</code>, <code>log10</code>, <code>sqrt</code>, <code>pow</code>, <code>fl-next-up</code>, <code>fl-next-down</code> (directed rounding — the next representable double above / below its argument; the primitive beneath certified enclosures)</p>
 <p><strong>Comparison:</strong> <code>&lt;</code>, <code>&gt;</code>, <code>=</code>, <code>&lt;=</code>, <code>&gt;=</code>, <code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
@@ -669,6 +669,28 @@ cmake .. &amp;&amp; make -j8
   (lambda () (train-model-a data))
   (lambda () (train-model-b data))
   (lambda () (train-model-c data)))</code></pre>
+<h3 id="coroutines-and-fibers">Coroutines and Fibers</h3>
+<p>Threads run work in parallel; fibers interleave many lightweight tasks on one thread. A fiber is a procedure on a stackful coroutine, scheduled by <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/stdlib/fibers.md" target="_blank" rel="noopener noreferrer"><code>core.fibers</code></a> over the event loop: it runs until it yields, sleeps, waits for a descriptor, a future, a channel or another fiber, or finishes. Each fiber keeps its own <code>dynamic-wind</code> extent, handlers and <code>parameterize</code> bindings, so switching between fibers runs no thunks, and cancelling a fiber unwinds it like a raise: its <code>after</code> thunks run exactly once.</p>
+<pre class="scheme"><code>(require core.fibers)
+(require core.channels)
+
+(define ch (make-channel 1))
+(define producer
+  (spawn (lambda ()
+           (let loop ((i 1))
+             (if (&lt;= i 3)
+                 (begin (channel-send! ch i) (loop (+ i 1)))
+                 (channel-close! ch))))))
+(define consumer
+  (spawn (lambda ()
+           (let loop ((sum 0))
+             (let ((v (channel-recv! ch)))
+               (if (eq? v (channel-closed-sentinel))
+                   sum
+                   (loop (+ sum v))))))))
+(display (fiber-join consumer)) (newline)</code></pre>
+<pre><code>6</code></pre>
+<p>The coroutine builtins underneath — <code>make-coroutine</code>, <code>coroutine-resume</code>, <code>coroutine-yield</code>, <code>coroutine-raise</code> — are documented in <a href="https://github.com/tsotchke/eshkol/blob/master/docs/reference/runtime/coroutines.md" target="_blank" rel="noopener noreferrer">the coroutines reference</a>. Fibers run on native JIT and AOT; the bytecode VM is Planned for v1.4.1.</p>
 <h3 id="performance">Performance</h3>
 <p>Parallel primitives use work-stealing thread pools and are optimized for scientific computing workloads. For small collections, they automatically fall back to sequential execution to avoid overhead.</p>
 <hr />
@@ -1035,7 +1057,7 @@ eshkol-run program.esk --wasm -o program.wasm
 <h2 id="interactive-repl">Interactive REPL</h2>
 <h3 id="features">Features</h3>
 <ul>
-<li><strong>Tab completion</strong> for all 1,053 builtins</li>
+<li><strong>Tab completion</strong> for all 1,067 builtins</li>
 <li><strong>Syntax highlighting</strong> with ANSI colors</li>
 <li><strong>Command history</strong> (persistent across sessions)</li>
 <li><strong>Multi-line input</strong> with balanced parenthesis detection</li>

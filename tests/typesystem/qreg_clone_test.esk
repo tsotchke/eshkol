@@ -1,0 +1,13 @@
+;; Type System Test: a quantum register used twice is a no-cloning violation
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: linear variable 'r' was consumed more than once
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define-quantum-region qr (twice)
+  (let ((r (qalloc qr 2)))
+    (cons (qmeasure r) (qmeasure r))))
+
+(display (twice))

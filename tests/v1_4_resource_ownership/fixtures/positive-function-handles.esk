@@ -1,0 +1,13 @@
+;; Functions are checked at each call site: a helper that borrows, a helper
+;; that closes its parameter, and a factory that returns a fresh port.
+(define (write-greeting out name)
+  (write-string "hello " out)
+  (write-string name out))
+(define (finish out)
+  (newline out)
+  (close-port out))
+(define (open-log path)
+  (open-output-file path))
+(define log (open-log "strict-fn.txt"))
+(write-greeting log "strict")
+(finish log)

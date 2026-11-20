@@ -456,6 +456,21 @@ llvm::Value* HashCodegen::hashRef(const eshkol_operations_t* op) {
     llvm::Value* key_arg = codegenAST(&op->call_op.variables[1]);
     if (!table_arg || !key_arg) return nullptr;
 
+    // Scheme evaluates every argument before entering the lookup, including
+    // the optional default on a hit. Keep this in the current block so effects
+    // also happen before hash_table_get examines the table.
+    llvm::Value* default_val;
+    if (op->call_op.num_vars == 3) {
+        llvm::Value* default_raw = codegenAST(&op->call_op.variables[2]);
+        if (!default_raw) {
+            default_val = tagged_.packBool(llvm::ConstantInt::getFalse(context));
+        } else {
+            default_val = ensureTaggedValue(default_raw, "hash_ref_default");
+        }
+    } else {
+        default_val = tagged_.packBool(llvm::ConstantInt::getFalse(context));
+    }
+
     // Extract table pointer
     llvm::Value* table_ptr = tagged_.unpackPtr(table_arg);
 
@@ -483,21 +498,7 @@ llvm::Value* HashCodegen::hashRef(const eshkol_operations_t* op) {
 
     // Not found case: return default or #f
     builder.SetInsertPoint(not_found_block);
-    llvm::Value* not_found_val;
-    if (op->call_op.num_vars == 3) {
-        // Use provided default - ensure it's a tagged value
-        llvm::Value* default_raw = codegenAST(&op->call_op.variables[2]);
-        if (!default_raw) {
-            not_found_val = tagged_.packBool(
-                llvm::ConstantInt::getFalse(context));
-        } else {
-            // Ensure the default value is a tagged value (may be raw i64/double from literal)
-            not_found_val = ensureTaggedValue(default_raw, "hash_ref_default");
-        }
-    } else {
-        // Return #f
-        not_found_val = tagged_.packBool(llvm::ConstantInt::getFalse(context));
-    }
+    llvm::Value* not_found_val = default_val;
     builder.CreateBr(merge_block);
     llvm::BasicBlock* not_found_exit = builder.GetInsertBlock();
 

@@ -1,0 +1,2 @@
+;; expect-error: unbound name
+(hott (define bad : U Nope))

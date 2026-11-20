@@ -66,10 +66,8 @@ fi
 # build-relevant source change. The ICC test receipt separately stamps the
 # clean source tree and declares this runner as measured data.
 TRACE_DIR="${TRACE_DIR:-$ROOT/scripts/icc_traces}"
-case "$TRACE_DIR" in
-    /*) ;;
-    *) TRACE_DIR="$ROOT/$TRACE_DIR" ;;
-esac
+. "$ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$ROOT" || exit $?
 mkdir -p "$TRACE_DIR"
 . "$ROOT/scripts/lib/build_fingerprint.sh"
 eshkol_emit_build_fingerprint_event "$TRACE_DIR" "v14_http_server_roundtrip" "$BUILD_DIR_PATH" eshkol-run

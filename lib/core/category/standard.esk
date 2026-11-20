@@ -1,0 +1,594 @@
+;;; core.category.standard -- the standard infinite categories as effective
+;;; categories, with the limits and colimits that exist in them computed
+;;; exactly and the ones that do not refused by name with a witness:
+;;; countable posets ((N, <=), (Z, <=), divisibility), one-object categories
+;;; of monoids and groups ((N, +), (Z, +)), the simplex category Delta and
+;;; FinOrd, the skeleton of FinSet, and Mat_R over core.ring carriers.
+;;;
+;;; Usage: (require core.category.standard)
+;;;
+;;; Sources: S. Mac Lane, "Categories for the Working Mathematician", 2nd ed.
+;;; (1998), I.2 (Delta, FinOrd, matrices), III.3-III.4 and V.2 (limits from
+;;; products and equalizers), VII.5 (the simplicial category and its
+;;; presentation by faces and degeneracies); P. Gabriel, M. Zisman,
+;;; "Calculus of Fractions and Homotopy Theory" (1967), II.2 (the epi-mono
+;;; factorization in Delta); P. Goerss, J. Jardine, "Simplicial Homotopy
+;;; Theory" (1999), I.1 (the cosimplicial identities); H. Cohen, "A Course
+;;; in Computational Algebraic Number Theory", GTM 138, 2.4 (kernels over Z by
+;;; the Smith normal form); nLab: "simplex category", "FinSet",
+;;; "Mat", "matrix category", "biproduct", "partial order", "meet".
+;;;
+;;; Design: ADR-0054; reference: docs/reference/stdlib/category-effective.md.
+;;;
+;;; Arrow values (public):
+;;;   posets         (a . b) for a <= b
+;;;   monoids        the element itself; the one object is 0
+;;;   Delta          (m n images): a monotone map [m] -> [n], images the list
+;;;                  of the values at 0..m ([m] = {0 < ... < m}, m >= 0)
+;;;   FinOrd         (m n images): a monotone map {0..m-1} -> {0..n-1}
+;;;   FinSet         (m n images): any map {0..m-1} -> {0..n-1}
+;;;   Mat_R          (n m M): an m x n matrix over the carrier R, the map
+;;;                  R^n -> R^m; M is a vector of m rows (core.exact_linalg's
+;;;                  convention); composition is the matrix product.
+;;;
+;;; Limits. A limit is returned as (apex leg ...) with legs arrows of the
+;;; category; a colimit likewise with the legs into the apex. Over Mat_R the
+;;; carrier must be Z or a field (Q, Z/p, number fields): kernels over Z
+;;; are saturated lattices found from the Smith normal form, and the
+;;; cokernel in Mat_Z is the torsion-free quotient Z^m / sat(im A) (a map
+;;; into a free module that kills im A kills its saturation), which is the
+;;; colimit among free modules; the module cokernel with its torsion is
+;;; core.category.linear's. Other carriers are refused with
+;;; limit-not-computable. In Delta and FinOrd a (co)product either exists
+;;; for a reason the library constructs (a terminal or initial factor) or
+;;; is refused with limit-does-not-exist and a counting witness: the test
+;;; object X at which |hom(X, P)| differs from |hom(X, a)| |hom(X, b)| for
+;;; the only candidate P that |hom(point, P)| allows.
+
+(require stdlib)
+(require core.ring)
+(require core.integer_linalg)
+(require core.sheaf.site)
+(require core.category.effective)
+(require core.category.presented)
+
+(provide poset-effective-category naturals-poset integers-poset rationals-poset divisibility-poset
+         rationals-enumerator floor-ceiling-adjunctions
+         pointed-finset-category pointed-set-adjunction
+         poset-meet poset-join poset-top poset-bottom
+         monoid-effective-category naturals-additive-monoid integers-additive-group
+         simplex-category finord-category finset-category
+         delta-face delta-degeneracy delta-cosimplicial-identity-violations delta-normal-form delta-from-normal-form
+         delta-truncated-presentation delta-truncated-functor monotone-maps
+         ordinal-terminal ordinal-initial ordinal-product ordinal-coproduct
+         finset-terminal finset-initial finset-product finset-coproduct finset-equalizer finset-coequalizer
+         finset-pullback finset-pushout finset-limit finset-colimit finset-cones finset-factor
+         matrix-category matrix-category-ring make-matrix-arrow matrix-arrow-matrix matrix-identity-arrow
+         mat-kernel mat-cokernel mat-equalizer mat-coequalizer mat-product mat-coproduct mat-pullback mat-pushout
+         mat-terminal mat-initial mat-limit mat-colimit mat-factor-through-mono mat-factor-through-epi mat-rank)
+
+;; ---------------------------------------------------------------------------
+;; Private helpers (prefix cs-)
+;; ---------------------------------------------------------------------------
+(define (cs-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (cs-range-from lo hi) (let loop ((i (- hi 1)) (acc '())) (if (< i lo) acc (loop (- i 1) (cons i acc)))))
+(define (cs-flatmap f xs) (let loop ((l xs) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (append (reverse (f (car l))) acc)))))
+(define (cs-all? p xs) (cond ((null? xs) #t) ((p (car xs)) (cs-all? p (cdr xs))) (else #f)))
+(define (cs-any? p xs) (cond ((null? xs) #f) ((p (car xs)) #t) (else (cs-any? p (cdr xs)))))
+(define (cs-nat? x) (and (integer? x) (exact? x) (>= x 0)))
+(define (cs-position x xs) (let loop ((l xs) (i 0)) (cond ((null? l) #f) ((equal? (car l) x) i) (else (loop (cdr l) (+ i 1))))))
+(define (cs-binomial n k) (if (or (< k 0) (> k n)) 0 (let loop ((i 0) (acc 1)) (if (= i k) acc (loop (+ i 1) (quotient (* acc (- n i)) (+ i 1)))))))
+;; nondecreasing lists of length k with values in lo..l-1
+(define (cs-monotone k l lo)
+  (if (= k 0) (list '())
+      (cs-flatmap (lambda (v) (map (lambda (rest) (cons v rest)) (cs-monotone (- k 1) l v))) (cs-range-from lo l))))
+(define (monotone-maps k l) (cs-monotone k l 0))
+(define (cs-functions k l)
+  (if (= k 0) (list '()) (cs-flatmap (lambda (v) (map (lambda (rest) (cons v rest)) (cs-functions (- k 1) l))) (cs-range l))))
+(define (cs-tuples k xs)
+  (if (= k 0) (list '()) (cs-flatmap (lambda (v) (map (lambda (rest) (cons v rest)) (cs-tuples (- k 1) xs))) xs)))
+
+;; ---------------------------------------------------------------------------
+;; Countable posets
+;; ---------------------------------------------------------------------------
+;; props may declare 'meet, 'join (procedures, or absent), 'top, 'bottom
+;; (an object, or 'none when the poset provably has none)
+(define (poset-effective-category name objects object? leq? . props)
+  (make-effective-category name objects object?
+                           (lambda (a b) (if (leq? a b) (list (cons a b)) '()))
+                           (lambda (g f) (cons (car f) (cdr g)))
+                           (lambda (x) (cons x x))
+                           (lambda (f) (car f)) (lambda (f) (cdr f))
+                           (lambda (f g) (equal? f g))
+                           (cons (cons 'thin #t) (if (null? props) '() (car props)))))
+(define (naturals-poset)
+  (poset-effective-category "(N, <=)" (naturals-enumerator) (lambda (x) (cs-nat? x)) (lambda (a b) (<= a b))
+                            (list (cons 'meet (lambda (a b) (min a b))) (cons 'join (lambda (a b) (max a b)))
+                                  (cons 'bottom 0) (cons 'top 'none))))
+(define (integers-poset)
+  (poset-effective-category "(Z, <=)" (integers-enumerator) (lambda (x) (and (integer? x) (exact? x))) (lambda (a b) (<= a b))
+                            (list (cons 'meet (lambda (a b) (min a b))) (cons 'join (lambda (a b) (max a b)))
+                                  (cons 'bottom 'none) (cons 'top 'none))))
+;; the rationals by height max(|numerator|, denominator): stage s is finite
+(define (rationals-enumerator)
+  (make-enumerator (lambda (s) (if (= s 0) (list 0)
+                                   (cs-flatmap (lambda (q) (let ((den (car q)) (num (cdr q))) (if (= (gcd num den) 1) (list (/ num den) (- (/ num den))) '())))
+                                               (append (map (lambda (num) (cons s num)) (cs-range-from 1 (+ s 1)))
+                                                       (map (lambda (den) (cons den s)) (cs-range-from 1 s))))))))
+(define (rationals-poset)
+  (poset-effective-category "(Q, <=)" (rationals-enumerator) (lambda (x) (and (rational? x) (exact? x))) (lambda (a b) (<= a b))
+                            (list (cons 'meet (lambda (a b) (min a b))) (cons 'join (lambda (a b) (max a b)))
+                                  (cons 'bottom 'none) (cons 'top 'none))))
+;; ceiling -| i -| floor for the inclusion i : (Z, <=) -> (Q, <=), as two
+;; effective adjunctions (ceiling-adjunction . floor-adjunction): the
+;; Galois connections ceil(q) <= n <=> q <= n and n <= q <=> n <= floor(q)
+(define (floor-ceiling-adjunctions)
+  (let* ((Z (integers-poset)) (Q (rationals-poset))
+         (i (make-effective-functor Z Q (lambda (n) n) (lambda (f) f) "Z -> Q"))
+         (ceil-f (make-effective-functor Q Z (lambda (q) (ceiling q)) (lambda (f) (cons (ceiling (car f)) (ceiling (cdr f)))) "ceiling"))
+         (floor-f (make-effective-functor Q Z (lambda (q) (floor q)) (lambda (f) (cons (floor (car f)) (floor (cdr f)))) "floor")))
+    (cons (make-effective-adjunction ceil-f i (lambda (q) (cons q (ceiling q))) (lambda (n) (cons n n)))
+          (make-effective-adjunction i floor-f (lambda (n) (cons n n)) (lambda (q) (cons (floor q) q))))))
+;; positive integers under divisibility: meet gcd, join lcm, bottom 1, no top
+(define (divisibility-poset)
+  (poset-effective-category "(N+, |)" (make-enumerator (lambda (n) (list (+ n 1)))) (lambda (x) (and (cs-nat? x) (> x 0)))
+                            (lambda (a b) (= 0 (remainder b a)))
+                            (list (cons 'meet (lambda (a b) (gcd a b))) (cons 'join (lambda (a b) (lcm a b)))
+                                  (cons 'bottom 1) (cons 'top 'none))))
+;; products, coproducts, terminal and initial objects of a thin category are
+;; meets, joins, top and bottom: returned as (apex leg ...)
+(define (poset-meet P a b)
+  (let ((m (effective-category-property P 'meet)))
+    (if (not m) (category-refuse 'limit-not-computable 'poset-meet (effective-category-name P) 'no-meet-declared))
+    (let ((c (m a b))) (list c (cons c a) (cons c b)))))
+(define (poset-join P a b)
+  (let ((j (effective-category-property P 'join)))
+    (if (not j) (category-refuse 'limit-not-computable 'poset-join (effective-category-name P) 'no-join-declared))
+    (let ((c (j a b))) (list c (cons a c) (cons b c)))))
+(define (poset-top P)
+  (let ((t (effective-category-property P 'top)))
+    (cond ((eq? t 'none) (category-refuse 'limit-does-not-exist 'poset-top (effective-category-name P) 'terminal-object 'no-greatest-element))
+          ((not t) (category-refuse 'limit-not-computable 'poset-top (effective-category-name P) 'no-top-declared))
+          (else (list t)))))
+(define (poset-bottom P)
+  (let ((b (effective-category-property P 'bottom)))
+    (cond ((eq? b 'none) (category-refuse 'limit-does-not-exist 'poset-bottom (effective-category-name P) 'initial-object 'no-least-element))
+          ((not b) (category-refuse 'limit-not-computable 'poset-bottom (effective-category-name P) 'no-bottom-declared))
+          (else (list b)))))
+
+;; ---------------------------------------------------------------------------
+;; One-object categories of monoids and groups
+;; ---------------------------------------------------------------------------
+;; elements: an enumerator (or list); mul (g f) is g o f; arrows are elements
+(define (monoid-effective-category name elements mul unit . same?)
+  (make-effective-category name (list 0) (lambda (x) (eqv? x 0))
+                           (lambda (a b) elements)
+                           (lambda (g f) (mul g f)) (lambda (x) unit)
+                           (lambda (f) 0) (lambda (f) 0)
+                           (if (null? same?) (lambda (f g) (equal? f g)) (car same?))))
+(define (naturals-additive-monoid) (monoid-effective-category "(N, +)" (naturals-enumerator) (lambda (g f) (+ g f)) 0))
+(define (integers-additive-group) (monoid-effective-category "(Z, +)" (integers-enumerator) (lambda (g f) (+ g f)) 0))
+
+;; ---------------------------------------------------------------------------
+;; The simplex category, FinOrd, FinSet
+;; ---------------------------------------------------------------------------
+(define (cs-compose-maps g f) (list (car f) (cadr g) (map (lambda (i) (list-ref (caddr g) i)) (caddr f))))
+(define (simplex-category)
+  (make-effective-category "Delta" (naturals-enumerator) (lambda (x) (cs-nat? x))
+                           (lambda (m n) (map (lambda (im) (list m n im)) (cs-monotone (+ m 1) (+ n 1) 0)))
+                           (lambda (g f) (cs-compose-maps g f))
+                           (lambda (n) (list n n (cs-range (+ n 1))))
+                           (lambda (f) (car f)) (lambda (f) (cadr f)) (lambda (f g) (equal? f g))))
+(define (finord-category)
+  (make-effective-category "FinOrd" (naturals-enumerator) (lambda (x) (cs-nat? x))
+                           (lambda (m n) (map (lambda (im) (list m n im)) (cs-monotone m n 0)))
+                           (lambda (g f) (cs-compose-maps g f))
+                           (lambda (n) (list n n (cs-range n)))
+                           (lambda (f) (car f)) (lambda (f) (cadr f)) (lambda (f g) (equal? f g))))
+(define (finset-category)
+  (make-effective-category "FinSet" (naturals-enumerator) (lambda (x) (cs-nat? x))
+                           (lambda (m n) (map (lambda (im) (list m n im)) (cs-functions m n)))
+                           (lambda (g f) (cs-compose-maps g f))
+                           (lambda (n) (list n n (cs-range n)))
+                           (lambda (f) (car f)) (lambda (f) (cadr f)) (lambda (f g) (equal? f g))))
+;; d^i : [n-1] -> [n] misses i;  s^j : [n+1] -> [n] hits j twice
+(define (delta-face n i) (list (- n 1) n (map (lambda (k) (if (< k i) k (+ k 1))) (cs-range n))))
+(define (delta-degeneracy n j) (list (+ n 1) n (map (lambda (k) (if (<= k j) k (- k 1))) (cs-range (+ n 2)))))
+;; the five cosimplicial identities, for every index with all objects <= N
+(define (delta-cosimplicial-identity-violations N)
+  (let* ((out '()) (d delta-face) (s delta-degeneracy) (o cs-compose-maps)
+        (note (lambda (v) (lambda (ok) (if (not ok) (set! out (cons v out)))))))
+    (for-each (lambda (n)
+                ;; d^j d^i = d^i d^(j-1), i < j : [n-1] -> [n+1]
+                (if (and (>= n 1) (<= (+ n 1) N))
+                    (for-each (lambda (j) (for-each (lambda (i) ((note (list 'dd n i j)) (equal? (o (d (+ n 1) j) (d n i)) (o (d (+ n 1) i) (d n (- j 1))))))
+                                                    (cs-range j)))
+                              (cs-range-from 1 (+ n 2))))
+                ;; s^j s^i = s^i s^(j+1), i <= j : [n+2] -> [n]
+                (if (<= (+ n 2) N)
+                    (for-each (lambda (j) (for-each (lambda (i) ((note (list 'ss n i j)) (equal? (o (s n j) (s (+ n 1) i)) (o (s n i) (s (+ n 1) (+ j 1))))))
+                                                    (cs-range (+ j 1))))
+                              (cs-range (+ n 1))))
+                ;; s^j d^i : [n] -> [n+1] -> [n]
+                (if (<= (+ n 1) N)
+                    (for-each (lambda (j)
+                                (for-each (lambda (i)
+                                            (let ((lhs (o (s n j) (d (+ n 1) i))))
+                                              (cond ((< i j) ((note (list 'sd< n i j)) (equal? lhs (o (d n i) (s (- n 1) (- j 1))))))
+                                                    ((or (= i j) (= i (+ j 1))) ((note (list 'sd= n i j)) (equal? lhs (list n n (cs-range (+ n 1))))))
+                                                    (else ((note (list 'sd> n i j)) (equal? lhs (o (d n (- i 1)) (s (- n 1) j))))))))
+                                          (cs-range (+ n 2))))
+                              (cs-range (+ n 1)))))
+              (cs-range (+ N 1)))
+    (reverse out)))
+;; f = d^(i1) ... d^(is) s^(j1) ... s^(jt) with n >= i1 > ... > is >= 0 the
+;; values missed by f and 0 <= j1 < ... < jt < m the j with f(j) = f(j+1):
+;; returns (faces degeneracies) as those index lists
+(define (delta-normal-form f)
+  (let* ((m (car f)) (n (cadr f)) (im (caddr f)))
+    (list (reverse (filter (lambda (v) (not (memv v im))) (cs-range (+ n 1))))
+          (filter (lambda (j) (= (list-ref im j) (list-ref im (+ j 1)))) (cs-range m)))))
+(define (delta-from-normal-form m n faces degeneracies)
+  ;; s^(j1) ... s^(jt): the rightmost acts first, from [m] down to [m - t]
+  (let* ((epi (let loop ((js (reverse degeneracies)) (acc (list m m (cs-range (+ m 1)))))
+                (if (null? js) acc (loop (cdr js) (cs-compose-maps (delta-degeneracy (- (cadr acc) 1) (car js)) acc)))))
+         (k (cadr epi)))
+    (let loop ((is (reverse faces)) (acc epi))
+      (if (null? is) acc (loop (cdr is) (cs-compose-maps (delta-face (+ (cadr acc) 1) (car is)) acc))))))
+;; Delta_{<=N} by generators and relations: faces (d n i) : n-1 -> n and
+;; degeneracies (s n j) : n+1 -> n with every cosimplicial identity whose
+;; objects are <= N
+(define (delta-truncated-presentation N)
+  (let* ((gens (append (cs-flatmap (lambda (n) (map (lambda (i) (list (- n 1) n (list 'd n i))) (cs-range (+ n 1)))) (cs-range-from 1 (+ N 1)))
+                       (cs-flatmap (lambda (n) (map (lambda (j) (list (+ n 1) n (list 's n j))) (cs-range (+ n 1)))) (cs-range N))))
+         (rels '()) (add (lambda (l r) (set! rels (cons (list l r) rels)))))
+    (for-each (lambda (n)
+                (if (and (>= n 1) (<= (+ n 1) N))
+                    (for-each (lambda (j) (for-each (lambda (i) (add (list (list 'd (+ n 1) j) (list 'd n i)) (list (list 'd (+ n 1) i) (list 'd n (- j 1)))))
+                                                    (cs-range j)))
+                              (cs-range-from 1 (+ n 2))))
+                (if (<= (+ n 2) N)
+                    (for-each (lambda (j) (for-each (lambda (i) (add (list (list 's n j) (list 's (+ n 1) i)) (list (list 's n i) (list 's (+ n 1) (+ j 1)))))
+                                                    (cs-range (+ j 1))))
+                              (cs-range (+ n 1))))
+                (if (<= (+ n 1) N)
+                    (for-each (lambda (j)
+                                (for-each (lambda (i)
+                                            (let ((lhs (list (list 's n j) (list 'd (+ n 1) i))))
+                                              (cond ((< i j) (add lhs (list (list 'd n i) (list 's (- n 1) (- j 1)))))
+                                                    ((or (= i j) (= i (+ j 1))) (add lhs '()))
+                                                    (else (add lhs (list (list 'd n (- i 1)) (list 's (- n 1) j)))))))
+                                          (cs-range (+ n 2))))
+                              (cs-range (+ n 1)))))
+              (cs-range (+ N 1)))
+    (make-presentation (+ N 1) gens (reverse rels) (list 'Delta<= N))))
+;; the functor from the completed presentation to Delta sending each
+;; generator to its face or degeneracy map
+(define (delta-truncated-functor PC)
+  (presented-functor PC (simplex-category) (lambda (x) x)
+                     (lambda (name) (if (eq? (car name) 'd) (delta-face (cadr name) (caddr name)) (delta-degeneracy (cadr name) (caddr name))))))
+
+;; (Co)products and terminal/initial objects in Delta and FinOrd. kind is
+;; 'delta or 'finord. The point is [0] (Delta) or 1 (FinOrd).
+(define (cs-ordinal-category kind) (if (eq? kind 'delta) (simplex-category) (finord-category)))
+(define (cs-hom-count E a b) (length (effective-category-hom-list E a b)))
+(define (ordinal-terminal kind) (if (eq? kind 'delta) (list 0) (list 1)))
+(define (ordinal-initial kind)
+  (if (eq? kind 'finord) (list 0)
+      (category-refuse 'limit-does-not-exist 'ordinal-initial "Delta" 'initial-object
+                       (list 'test-object 1 'maps-from-every-object-at-least 2))))
+;; the candidate apex P is forced by the count at the point; the next test
+;; objects either refute it (refusal with the witness) or the product has a
+;; terminal factor and is constructed
+(define (ordinal-product kind a b)
+  (let* ((E (cs-ordinal-category kind)) (pt (if (eq? kind 'delta) 0 1)) (id (lambda (x) (effective-category-identity E x)))
+         (bang (lambda (x) (car (effective-category-hom-list E x pt)))))
+    (cond ((and (eq? kind 'finord) (or (= a 0) (= b 0)))
+           (list 0 (car (effective-category-hom-list E 0 a)) (car (effective-category-hom-list E 0 b))))
+          ((= a pt) (list b (bang b) (id b)))
+          ((= b pt) (list a (id a) (bang a)))
+          (else
+           (let* ((points (* (cs-hom-count E pt a) (cs-hom-count E pt b)))
+                  (p (if (eq? kind 'delta) (- points 1) points)))
+             (let loop ((x (+ pt 1)))
+               (let ((cones (* (cs-hom-count E x a) (cs-hom-count E x b))) (maps (cs-hom-count E x p)))
+                 (if (not (= cones maps))
+                     (category-refuse 'limit-does-not-exist 'ordinal-product (effective-category-name E) (list a b)
+                                      (list 'candidate p 'test-object x 'cones cones 'maps-into-candidate maps))
+                     (if (< x (+ pt 3)) (loop (+ x 1))
+                         (category-refuse 'limit-not-computable 'ordinal-product (effective-category-name E) (list a b)))))))))))
+(define (ordinal-coproduct kind a b)
+  (let* ((E (cs-ordinal-category kind)) (id (lambda (x) (effective-category-identity E x))))
+    (cond ((and (eq? kind 'finord) (= a 0)) (list b (car (effective-category-hom-list E 0 b)) (id b)))
+          ((and (eq? kind 'finord) (= b 0)) (list a (id a) (car (effective-category-hom-list E 0 a))))
+          (else
+           ;; test object t0: |hom(Q, t0)| determines Q; then t0 + 1 refutes
+           (let* ((t0 (if (eq? kind 'delta) 1 2))
+                  (count (* (cs-hom-count E a t0) (cs-hom-count E b t0)))
+                  (q (if (eq? kind 'delta) (- count 2) (- count 1))))
+             (let loop ((x (+ t0 1)))
+               (let ((cocones (* (cs-hom-count E a x) (cs-hom-count E b x))) (maps (cs-hom-count E q x)))
+                 (if (not (= cocones maps))
+                     (category-refuse 'limit-does-not-exist 'ordinal-coproduct (effective-category-name E) (list a b)
+                                      (list 'candidate q 'test-object x 'cocones cocones 'maps-from-candidate maps))
+                     (if (< x (+ t0 2)) (loop (+ x 1))
+                         (category-refuse 'limit-not-computable 'ordinal-coproduct (effective-category-name E) (list a b)))))))))))
+
+;; Pointed finite sets: objects n >= 1 ({0..n-1} pointed at 0), arrows the
+;; maps fixing 0. Free -| forgetful: F n = n + 1 (a new base point 0, i |->
+;; i + 1), U forgets the base point; eta_n : i |-> i + 1, eps_m : F U m -> m
+;; sends 0 to 0 and i + 1 to i.
+(define (pointed-finset-category)
+  (make-effective-category "FinSet*" (make-enumerator (lambda (n) (list (+ n 1)))) (lambda (x) (and (cs-nat? x) (> x 0)))
+                           (lambda (m n) (map (lambda (im) (list m n (cons 0 im))) (cs-functions (- m 1) n)))
+                           (lambda (g f) (cs-compose-maps g f))
+                           (lambda (n) (list n n (cs-range n)))
+                           (lambda (f) (car f)) (lambda (f) (cadr f)) (lambda (f g) (equal? f g))))
+(define (pointed-set-adjunction)
+  (let* ((S (finset-category)) (P (pointed-finset-category))
+         (F (make-effective-functor S P (lambda (n) (+ n 1))
+                                    (lambda (f) (list (+ (car f) 1) (+ (cadr f) 1) (cons 0 (map (lambda (y) (+ y 1)) (caddr f))))) "free"))
+         (U (make-effective-functor P S (lambda (n) n) (lambda (f) f) "forget")))
+    (make-effective-adjunction F U
+                               (lambda (n) (list n (+ n 1) (map (lambda (i) (+ i 1)) (cs-range n))))
+                               (lambda (m) (list (+ m 1) m (cons 0 (cs-range m)))))))
+
+;; ---------------------------------------------------------------------------
+;; Limits and colimits in FinSet (skeleton: n = {0..n-1})
+;; ---------------------------------------------------------------------------
+(define (cs-fs m n im) (list m n im))
+(define (finset-terminal) (list 1))
+(define (finset-initial) (list 0))
+;; (i, j) <-> i * b + j
+(define (finset-product a b)
+  (list (* a b) (cs-fs (* a b) a (map (lambda (k) (quotient k b)) (cs-range (* a b))))
+        (cs-fs (* a b) b (map (lambda (k) (remainder k b)) (cs-range (* a b))))))
+(define (finset-coproduct a b)
+  (list (+ a b) (cs-fs a (+ a b) (cs-range a)) (cs-fs b (+ a b) (map (lambda (j) (+ a j)) (cs-range b)))))
+(define (finset-equalizer f g)
+  (let ((xs (filter (lambda (x) (= (list-ref (caddr f) x) (list-ref (caddr g) x))) (cs-range (car f)))))
+    (list (length xs) (cs-fs (length xs) (car f) xs))))
+;; classes of the equivalence relation generated by f(x) ~ g(x), numbered by first element
+(define (cs-quotient n pairs)
+  (let ((parent (list->vector (cs-range n))))
+    (define (root x) (if (= x (vector-ref parent x)) x (root (vector-ref parent x))))
+    (for-each (lambda (p) (let ((r1 (root (car p))) (r2 (root (cdr p))))
+                            (if (not (= r1 r2)) (if (< r1 r2) (vector-set! parent r2 r1) (vector-set! parent r1 r2)))))
+              pairs)
+    (let* ((roots (filter (lambda (x) (= x (root x))) (cs-range n))))
+      (list (length roots) (map (lambda (x) (cs-position (root x) roots)) (cs-range n))))))
+(define (finset-coequalizer f g)
+  (let ((q (cs-quotient (cadr f) (map (lambda (x) (cons (list-ref (caddr f) x) (list-ref (caddr g) x))) (cs-range (car f))))))
+    (list (car q) (cs-fs (cadr f) (car q) (cadr q)))))
+(define (finset-pullback f g)
+  (let* ((pairs (cs-flatmap (lambda (x) (map (lambda (y) (cons x y)) (filter (lambda (y) (= (list-ref (caddr f) x) (list-ref (caddr g) y))) (cs-range (car g)))))
+                            (cs-range (car f))))
+         (k (length pairs)))
+    (list k (cs-fs k (car f) (map car pairs)) (cs-fs k (car g) (map cdr pairs)))))
+(define (finset-pushout f g)
+  ;; f : c -> a, g : c -> b; quotient of a + b by f(z) ~ a + g(z)
+  (let* ((a (cadr f)) (b (cadr g))
+         (q (cs-quotient (+ a b) (map (lambda (z) (cons (list-ref (caddr f) z) (+ a (list-ref (caddr g) z)))) (cs-range (car f))))))
+    (list (car q) (cs-fs a (car q) (map (lambda (x) (list-ref (cadr q) x)) (cs-range a)))
+          (cs-fs b (car q) (map (lambda (y) (list-ref (cadr q) (+ a y))) (cs-range b))))))
+;; A diagram is a finite category J (core.sheaf.site) with objects a vector
+;; j -> size and arrows a vector u -> FinSet arrow. The limit is the set of
+;; compatible families (x_j), found by a propagating search; legs L -> D(j).
+(define (cs-compatible? J objs arrs fam)
+  (cs-all? (lambda (u) (let ((xj (vector-ref fam (arrow-source J u))) (xk (vector-ref fam (arrow-target J u))))
+                         (or (not xj) (not xk) (= xk (list-ref (caddr (vector-ref arrs u)) xj)))))
+           (cs-range (category-arrow-count J))))
+(define (cs-families J objs arrs)
+  (let ((n (category-object-count J)))
+    (let search ((j 0) (fam (make-vector n #f)))
+      (if (= j n) (list (vector->list fam))
+          (cs-flatmap (lambda (x) (let ((f2 (list->vector (vector->list fam)))) (vector-set! f2 j x)
+                                    (if (cs-compatible? J objs arrs f2) (search (+ j 1) f2) '())))
+                      (cs-range (vector-ref objs j)))))))
+(define (finset-limit J objs arrs)
+  (let* ((fams (cs-families J objs arrs)) (L (length fams)))
+    (cons L (map (lambda (j) (cs-fs L (vector-ref objs j) (map (lambda (fam) (list-ref fam j)) fams))) (cs-range (category-object-count J))))))
+(define (finset-colimit J objs arrs)
+  (let* ((n (category-object-count J))
+         (offsets (let loop ((j 0) (acc '()) (s 0)) (if (= j n) (list->vector (reverse acc)) (loop (+ j 1) (cons s acc) (+ s (vector-ref objs j))))))
+         (total (fold-left + 0 (vector->list objs)))
+         (q (cs-quotient total (cs-flatmap (lambda (u) (let ((j (arrow-source J u)) (k (arrow-target J u)) (im (caddr (vector-ref arrs u))))
+                                                         (map (lambda (x) (cons (+ (vector-ref offsets j) x) (+ (vector-ref offsets k) (list-ref im x))))
+                                                              (cs-range (vector-ref objs j)))))
+                                           (cs-range (category-arrow-count J))))))
+    (cons (car q) (map (lambda (j) (cs-fs (vector-ref objs j) (car q) (map (lambda (x) (list-ref (cadr q) (+ (vector-ref offsets j) x))) (cs-range (vector-ref objs j)))))
+                       (cs-range n)))))
+;; every cone from the test object x (a list of legs x -> D(j)), by search
+(define (finset-cones J objs arrs x)
+  (let ((n (category-object-count J)))
+    (let search ((j 0) (legs '()))
+      (if (= j n) (list (reverse legs))
+          (cs-flatmap (lambda (im) (let* ((leg (cs-fs x (vector-ref objs j) im)) (ls (cons leg legs)) (lv (list->vector (reverse ls))))
+                                     (if (cs-all? (lambda (u) (let ((s (arrow-source J u)) (t (arrow-target J u)))
+                                                                (or (> s j) (> t j)
+                                                                    (equal? (cs-compose-maps (vector-ref arrs u) (vector-ref lv s)) (vector-ref lv t)))))
+                                                  (cs-range (category-arrow-count J)))
+                                         (search (+ j 1) ls) '())))
+                      (cs-functions x (vector-ref objs j)))))))
+;; the maps u : x -> L with leg_j o u = cone_j for all j (exactly one for a limit)
+(define (finset-factor limit cone)
+  (let ((L (car limit)) (legs (cdr limit)) (x (car (car cone))))
+    (filter (lambda (u) (cs-all? (lambda (p) (equal? (cs-compose-maps (car p) u) (cdr p))) (map cons legs cone)))
+            (map (lambda (im) (cs-fs x L im)) (cs-functions x L)))))
+
+;; ---------------------------------------------------------------------------
+;; Mat_R over a core.ring carrier
+;; ---------------------------------------------------------------------------
+(define (cs-family R) (ring-carrier-family R))
+(define (cs-integers? R) (eq? (cs-family R) 'integers))
+(define (cs-field? R) (if (ring-ref R 'field?) #t #f))
+(define (cs-matrix rows cols f) (list->vector (map (lambda (i) (list->vector (map (lambda (j) (f i j)) (cs-range cols)))) (cs-range rows))))
+(define (cs-ref M i j) (vector-ref (vector-ref M i) j))
+(define (make-matrix-arrow n m M) (list n m M))
+(define (matrix-arrow-matrix f) (caddr f))
+(define (cs-mat-mul R A B p q r) ;; A p x q, B q x r
+  (cs-matrix p r (lambda (i j) (let loop ((k 0) (acc (r0 R))) (if (= k q) acc (loop (+ k 1) (r+ R acc (r* R (cs-ref A i k) (cs-ref B k j)))))))))
+(define (matrix-identity-arrow R n) (list n n (cs-matrix n n (lambda (i j) (if (= i j) (r1 R) (r0 R))))))
+(define (cs-mat-equal? R A B rows cols)
+  (cs-all? (lambda (i) (cs-all? (lambda (j) (r= R (cs-ref A i j) (cs-ref B i j))) (cs-range cols))) (cs-range rows)))
+;; elements of height n: Z by |x|, Q by max(|numerator|, denominator), Z/m all at stage 0
+(define (cs-element-stage R)
+  (cond ((cs-integers? R) (lambda (s) (if (= s 0) (list 0) (list s (- s)))))
+        ((eq? (cs-family R) 'rationals)
+         (lambda (s) (if (= s 0) (list 0)
+                         (cs-flatmap (lambda (q) (let ((den (car q)) (num (cdr q))) (if (= (gcd num den) 1) (list (/ num den) (- (/ num den))) '())))
+                                     (append (map (lambda (num) (cons s num)) (cs-range-from 1 (+ s 1)))
+                                             (map (lambda (den) (cons den s)) (cs-range-from 1 s)))))))
+        ((eq? (cs-family R) 'zmod) (let ((m (car (ring-carrier-parameters R)))) (lambda (s) (if (= s 0) (cs-range m) '()))))
+        (else #f)))
+(define (matrix-category R)
+  (let* ((stage (cs-element-stage R)) (finite (eq? (cs-family R) 'zmod)))
+    (make-effective-category
+     (list 'Mat (ring-carrier-name R)) (naturals-enumerator) (lambda (x) (cs-nat? x))
+     (lambda (n m)
+       (if (not stage) (category-refuse 'hom-not-enumerated 'matrix-category (ring-carrier-name R) 'no-element-enumeration))
+       (let ((k (* n m)) (shape (lambda (es) (list n m (let ((v (list->vector es))) (cs-matrix m n (lambda (i j) (vector-ref v (+ (* i n) j)))))))))
+         (if (or finite (= k 0))
+             (list->enumerator (map shape (cs-tuples k (stage 0))))
+             ;; stage s: entries of height <= s with at least one of height s
+             (make-enumerator (lambda (s) (let ((low (cs-flatmap stage (cs-range s))) (top (stage s)))
+                                            (map shape (filter (lambda (es) (cs-any? (lambda (e) (member e top)) es))
+                                                               (cs-tuples k (append low top))))))))))
+     (lambda (g f) (list (car f) (cadr g) (cs-mat-mul R (caddr g) (caddr f) (cadr g) (car g) (car f))))
+     (lambda (n) (matrix-identity-arrow R n))
+     (lambda (f) (car f)) (lambda (f) (cadr f))
+     (lambda (f g) (cs-mat-equal? R (caddr f) (caddr g) (cadr f) (car f)))
+     (list (cons 'ring R)))))
+(define (matrix-category-ring E) (effective-category-property E 'ring))
+
+;; kernels: a basis of {x in R^n : A x = 0} as column vectors (saturated over Z)
+(define (cs-require-computable R who)
+  (if (not (or (cs-integers? R) (cs-field? R)))
+      (category-refuse 'limit-not-computable who (ring-carrier-name R) 'carrier-neither-integers-nor-field)))
+(define (cs-field-kernel R A rows cols)
+  (let ((M (list->vector (map (lambda (i) (list->vector (map (lambda (j) (cs-ref A i j)) (cs-range cols)))) (cs-range rows))))
+        (pivots '()))
+    (let loop ((r 0) (c 0))
+      (if (and (< r rows) (< c cols))
+          (let ((p (let find ((i r)) (cond ((= i rows) #f) ((not (r-zero? R (cs-ref M i c))) i) (else (find (+ i 1)))))))
+            (if (not p) (loop r (+ c 1))
+                (let ((tmp (vector-ref M p)))
+                  (vector-set! M p (vector-ref M r)) (vector-set! M r tmp)
+                  (let ((inv (r-inv R (cs-ref M r c))))
+                    (vector-set! M r (list->vector (map (lambda (x) (r* R inv x)) (vector->list (vector-ref M r))))))
+                  (for-each (lambda (i) (if (and (not (= i r)) (not (r-zero? R (cs-ref M i c))))
+                                            (let ((f (cs-ref M i c)))
+                                              (vector-set! M i (list->vector (map (lambda (x y) (r- R x (r* R f y))) (vector->list (vector-ref M i)) (vector->list (vector-ref M r))))))))
+                            (cs-range rows))
+                  (set! pivots (cons (cons r c) pivots))
+                  (loop (+ r 1) (+ c 1)))))))
+    (let* ((pcols (map cdr pivots)) (free (filter (lambda (c) (not (memv c pcols))) (cs-range cols))))
+      (map (lambda (fc) (let ((v (make-vector cols (r0 R))))
+                          (vector-set! v fc (r1 R))
+                          (for-each (lambda (p) (vector-set! v (cdr p) (r-neg R (cs-ref M (car p) fc)))) pivots)
+                          v))
+           free))))
+(define (cs-kernel-basis R A rows cols)
+  (cond ((= cols 0) '())
+        ((= rows 0) (map (lambda (j) (let ((v (make-vector cols (r0 R)))) (vector-set! v j (r1 R)) v)) (cs-range cols)))
+        ((cs-integers? R) (integer-kernel A cols))
+        (else (cs-field-kernel R A rows cols))))
+(define (cs-transpose A rows cols) (cs-matrix cols rows (lambda (i j) (cs-ref A j i))))
+(define (cs-columns->arrow R cols n) (list (length cols) n (cs-matrix n (length cols) (lambda (i j) (vector-ref (list-ref cols j) i)))))
+(define (mat-rank R f)
+  (cs-require-computable R 'mat-rank)
+  (- (car f) (length (cs-kernel-basis R (caddr f) (cadr f) (car f)))))
+;; ker f : k -> n
+(define (mat-kernel R f)
+  (cs-require-computable R 'mat-kernel)
+  (cs-columns->arrow R (cs-kernel-basis R (caddr f) (cadr f) (car f)) (car f)))
+;; coker f : m -> c, the rows a basis of {y : y A = 0} (saturated over Z)
+(define (mat-cokernel R f)
+  (cs-require-computable R 'mat-cokernel)
+  (let* ((n (car f)) (m (cadr f)) (ys (cs-kernel-basis R (cs-transpose (caddr f) m n) n m)) (c (length ys)))
+    (list m c (cs-matrix c m (lambda (i j) (vector-ref (list-ref ys i) j))))))
+(define (cs-sub R f g) (list (car f) (cadr f) (cs-matrix (cadr f) (car f) (lambda (i j) (r- R (cs-ref (caddr f) i j) (cs-ref (caddr g) i j))))))
+(define (mat-equalizer R f g) (let ((k (mat-kernel R (cs-sub R f g)))) (list (car k) k)))
+(define (mat-coequalizer R f g) (let ((q (mat-cokernel R (cs-sub R f g)))) (list (cadr q) q)))
+(define (mat-terminal R) (list 0))
+(define (mat-initial R) (list 0))
+;; biproduct a + b: projections and injections
+(define (cs-proj R a b which) (let ((k (if (= which 0) a b)) (off (if (= which 0) 0 a)))
+                                (list (+ a b) k (cs-matrix k (+ a b) (lambda (i j) (if (= j (+ i off)) (r1 R) (r0 R)))))))
+(define (cs-inj R a b which) (let ((k (if (= which 0) a b)) (off (if (= which 0) 0 a)))
+                               (list k (+ a b) (cs-matrix (+ a b) k (lambda (i j) (if (= i (+ j off)) (r1 R) (r0 R)))))))
+(define (mat-product R a b) (list (+ a b) (cs-proj R a b 0) (cs-proj R a b 1)))
+(define (mat-coproduct R a b) (list (+ a b) (cs-inj R a b 0) (cs-inj R a b 1)))
+(define (cs-compose R g f) (list (car f) (cadr g) (cs-mat-mul R (caddr g) (caddr f) (cadr g) (car g) (car f))))
+;; f : a -> c, g : b -> c; P = ker [f, -g]
+(define (mat-pullback R f g)
+  (cs-require-computable R 'mat-pullback)
+  (let* ((a (car f)) (b (car g)) (c (cadr f))
+         (h (list (+ a b) c (cs-matrix c (+ a b) (lambda (i j) (if (< j a) (cs-ref (caddr f) i j) (r-neg R (cs-ref (caddr g) i (- j a))))))))
+         (k (mat-kernel R h)))
+    (list (car k) (cs-compose R (cs-proj R a b 0) k) (cs-compose R (cs-proj R a b 1) k))))
+;; f : c -> a, g : c -> b; Q = coker [f; -g]
+(define (mat-pushout R f g)
+  (cs-require-computable R 'mat-pushout)
+  (let* ((a (cadr f)) (b (cadr g)) (c (car f))
+         (h (list c (+ a b) (cs-matrix (+ a b) c (lambda (i j) (if (< i a) (cs-ref (caddr f) i j) (r-neg R (cs-ref (caddr g) (- i a) j)))))))
+         (q (mat-cokernel R h)))
+    (list (cadr q) (cs-compose R q (cs-inj R a b 0)) (cs-compose R q (cs-inj R a b 1)))))
+;; a finite diagram J -> Mat_R: objects a vector of dimensions, arrows a
+;; vector of matrix arrows. lim = ker of (+)_j D(j) -> (+)_u D(tgt u),
+;; x |-> (D(u) x_src - x_tgt)_u; colim = coker of the dual map.
+(define (cs-offsets dims) (let loop ((l dims) (s 0) (acc '())) (if (null? l) (list->vector (reverse acc)) (loop (cdr l) (+ s (car l)) (cons s acc)))))
+(define (mat-limit R J objs arrs)
+  (cs-require-computable R 'mat-limit)
+  (let* ((n (category-object-count J)) (dims (map (lambda (j) (vector-ref objs j)) (cs-range n))) (N (fold-left + 0 dims)) (off (cs-offsets dims))
+         (us (cs-range (category-arrow-count J)))
+         (rdims (map (lambda (u) (vector-ref objs (arrow-target J u))) us)) (M (fold-left + 0 rdims)) (roff (cs-offsets rdims))
+         (H (let ((A (cs-matrix M N (lambda (i j) (r0 R)))))
+              (for-each (lambda (u) (let* ((s (arrow-source J u)) (t (arrow-target J u)) (Du (caddr (vector-ref arrs u))) (r (vector-ref roff u)))
+                                      (for-each (lambda (i)
+                                                  (for-each (lambda (j) (vector-set! (vector-ref A (+ r i)) (+ (vector-ref off s) j)
+                                                                                     (r+ R (cs-ref A (+ r i) (+ (vector-ref off s) j)) (cs-ref Du i j))))
+                                                            (cs-range (vector-ref objs s)))
+                                                  (vector-set! (vector-ref A (+ r i)) (+ (vector-ref off t) i)
+                                                               (r- R (cs-ref A (+ r i) (+ (vector-ref off t) i)) (r1 R))))
+                                                (cs-range (vector-ref objs t)))))
+                        us)
+              A))
+         (K (cs-columns->arrow R (cs-kernel-basis R H M N) N)) (L (car K)))
+    (cons L (map (lambda (j) (list L (vector-ref objs j) (cs-matrix (vector-ref objs j) L (lambda (i c) (cs-ref (caddr K) (+ (vector-ref off j) i) c)))))
+                 (cs-range n)))))
+(define (mat-colimit R J objs arrs)
+  (cs-require-computable R 'mat-colimit)
+  ;; the colimit of D is the limit of the transposed diagram on J^op, transposed back
+  (let* ((n (category-object-count J)) (Jop (category-opposite J))
+         (tarrs (list->vector (map (lambda (u) (let ((f (vector-ref arrs u))) (list (cadr f) (car f) (cs-transpose (caddr f) (cadr f) (car f)))))
+                                   (cs-range (category-arrow-count J)))))
+         (lim (mat-limit R Jop objs tarrs)) (C (car lim)))
+    (cons C (map (lambda (leg) (list (cadr leg) C (cs-transpose (caddr leg) (cadr leg) C))) (cdr lim)))))
+;; the unique u with m o u = h for a mono m (a kernel or limit leg system
+;; given as one arrow), or #f when h does not factor
+(define (mat-factor-through-mono R m h)
+  (let* ((k (car m)) (n (cadr m)) (x (car h)))
+    (if (cs-integers? R)
+        (let ((snf (smith-normal-form (caddr m))))
+          (let ((cols (map (lambda (c) (integer-solve-in-basis snf k (list->vector (map (lambda (i) (cs-ref (caddr h) i c)) (cs-range n))))) (cs-range x))))
+            (if (cs-all? (lambda (v) v) cols) (cs-columns->arrow R cols k) #f)))
+        ;; over a field: solve [m | h] by the kernel of [m, -h]
+        (let* ((aug (cs-matrix n (+ k x) (lambda (i j) (if (< j k) (cs-ref (caddr m) i j) (r-neg R (cs-ref (caddr h) i (- j k)))))))
+               (kb (cs-kernel-basis R aug n (+ k x))))
+          ;; kernel vectors whose last x coordinates form the identity give u
+          (let ((cols (map (lambda (c)
+                             (let ((v (let find ((l kb)) (cond ((null? l) #f)
+                                                               ((cs-all? (lambda (t) (if (= t c) (r= R (vector-ref (car l) (+ k t)) (r1 R)) (r-zero? R (vector-ref (car l) (+ k t))))) (cs-range x)) (car l))
+                                                               (else (find (cdr l)))))))
+                               (if v (list->vector (map (lambda (i) (vector-ref v i)) (cs-range k))) #f)))
+                           (cs-range x))))
+            (if (cs-all? (lambda (v) v) cols)
+                (let ((u (cs-columns->arrow R cols k)))
+                  (if (cs-mat-equal? R (caddr (cs-compose R m u)) (caddr h) n x) u #f))
+                #f))))))
+;; the unique u with u o e = h for an epi e (a cokernel), or #f
+(define (mat-factor-through-epi R e h)
+  (let* ((tr (lambda (f) (list (cadr f) (car f) (cs-transpose (caddr f) (cadr f) (car f)))))
+         (u (mat-factor-through-mono R (tr e) (tr h))))
+    (if u (tr u) #f)))

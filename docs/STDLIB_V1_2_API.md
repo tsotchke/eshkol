@@ -1799,7 +1799,7 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.capabilities` | `lib/core/capabilities.esk` | Yes | Hosted allow-list capability policy |
 | `core.collections` | `lib/core/collections.esk` | **No** — `(require core.collections)` | Priority queue, hash set, deque |
 | `core.channels` | `lib/core/channels.esk` | **No** — `(require core.channels)` | Go-style bounded channels |
-| `core.threads` | `lib/core/threads.esk` | **No** — `(require core.threads)` | POSIX-mutex / condvar / thread primitives |
+| `core.threads` | `lib/core/threads.esk` | **No** — `(require core.threads)` | POSIX-mutex / condvar / semaphore / barrier / thread primitives |
 | `core.plot` | `lib/core/plot.esk` | Yes | Terminal sparkline / bar chart / histogram |
 | `core.sexp` | `lib/core/sexp.esk` | Yes | S-expression string + canonical-string formatters |
 | `core.files` | `lib/core/files.esk` | Yes | Path-component helpers + atomic-write |
@@ -1807,6 +1807,8 @@ exact set of auto-loaded modules is the `(require …)` chain in
 | `core.manifold` | `lib/core/manifold.esk` | Yes | Constant-curvature Riemannian manifolds: exp/log maps, geodesic distance, metric, Christoffel, Ricci, Riemann |
 | `core.distributed` | `lib/core/distributed.esk` | **No** — `(require core.distributed)` | Lamport/vector clocks, counters, OR-Set, LWW register/map, RGA sequence |
 | `core.msgpack` | `lib/core/msgpack.esk` | **No** — `(require core.msgpack)` | MessagePack bytevector encoder/decoder substrate |
+| `core.protobuf` | `lib/core/protobuf.esk` | **No** — `(require core.protobuf)` | Protocol Buffers (proto3): `.proto` parser, schema compiler, generated encoders/decoders |
+| `core.utf8` | `lib/core/utf8.esk` | **No** — `(require core.utf8)` | Strict UTF-8 validation shared by the wire formats |
 | `core.memory` | `lib/core/memory.esk` | **No** — `(require core.memory)` | Append-only, content-addressed, hash-chained, CRDT-merged event log |
 | `core.memory_store` | `lib/core/memory_store.esk` | **No** — `(require core.memory_store)` | Durable fsync-on-append file backing for a `core.memory` log |
 
@@ -1927,11 +1929,16 @@ Exports (`threads.esk`):
 ```scheme
 (provide
   make-mutex mutex-lock! mutex-trylock! mutex-unlock! mutex-destroy! with-mutex
-  make-condvar condvar-wait! condvar-signal! condvar-broadcast! condvar-destroy!
+  make-condvar condvar-wait! condvar-wait-timeout! condvar-signal!
+  condvar-broadcast! condvar-destroy!
+  make-semaphore semaphore? semaphore-acquire! semaphore-try-acquire!
+  semaphore-release! semaphore-value semaphore-destroy!
+  make-barrier barrier? barrier-wait! barrier-parties barrier-generation
+  barrier-destroy!
   make-thread thread-join thread? thread-result-ready?)
 ```
 
-POSIX-pthread wrappers. Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). `make-thread` spawns the thunk on a thread-pool worker; `thread-join` blocks until completion. The Windows path is currently stubbed (returns `NULL` / error from every entry point pending the v1.4-platform program).
+POSIX-pthread wrappers. Counting semaphores (blocking, try and timed acquire) and reusable generation-counted barriers are built on the same mutex and condition variable; see [reference/stdlib/threads.md](reference/stdlib/threads.md). Mutexes are recursive (SRFI 18-compatible — re-entering the same mutex from the same thread does not deadlock). `make-thread` spawns the thunk on a thread-pool worker; `thread-join` blocks until completion. The Windows path is currently stubbed (returns `NULL` / error from every entry point pending the v1.4-platform program).
 
 ### B.7 `core.plot`
 
@@ -2167,6 +2174,35 @@ arrays. Array decode returns lists. Arbitrary vectors are intentionally not an
 encode surface yet; vector numeric-slot lowering is tracked separately, so the
 wire-format module avoids a lossy vector path until that compiler/runtime
 boundary is fixed.
+
+Text payloads are validated by `core.utf8` (`utf8-require-valid`), the strict
+UTF-8 check shared with `core.protobuf`.
+
+#### B.15a `core.protobuf`
+
+```scheme
+(require core.protobuf)
+```
+
+Exports (`protobuf.esk`):
+
+```scheme
+(provide
+  protobuf-schema protobuf-schema? protobuf-schema-from-proto protobuf-parse-proto
+  protobuf-message protobuf-message? protobuf-message-type
+  protobuf-message-entries protobuf-message-unknown
+  protobuf-ref protobuf-has?
+  protobuf-encode protobuf-decode protobuf-encoder protobuf-decoder
+  protobuf-enum-number protobuf-enum-name)
+```
+
+Protocol Buffers (proto3) over bytevectors. Schemas are Eshkol data
+(`(message NAME (field N name TYPE) ...)`, `(enum NAME (VALUE n) ...)`) or are
+parsed from proto3 `.proto` text; `protobuf-encoder`/`protobuf-decoder` return
+the codec closures for one message type. All scalar types, packed and unpacked
+repeated fields, maps, oneof, explicit and implicit presence, message merging
+and unknown-field preservation follow the proto3 rules; malformed input raises
+a catchable error. Full reference: `docs/reference/stdlib/protobuf.md`.
 
 ### B.16 `core.memory`
 

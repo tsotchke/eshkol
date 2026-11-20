@@ -1,0 +1,7 @@
+;; Without an annotation a lambda-bound function is monomorphic, so using it
+;; at two types is rejected (inference is predicative and rank-1 by default).
+;; ENGINES: jit aot vm
+;; EXPECT-STDERR: cannot match `number` with `string`
+(require stdlib)
+(define (both f n s) (+ (f n) (string-length (f s))))
+(define (use (g : (forall (a) (-> a a)))) : number (both g 1 "s"))

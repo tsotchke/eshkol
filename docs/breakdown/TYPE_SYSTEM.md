@@ -278,7 +278,20 @@ lower universe.
 | U₂ | Propositions (proof types, erased at runtime) | `Eq<A,a,b>`, `LessThan<a,b>`, `Bounded<n,lo,hi>`, `Subtype<A,B>` |
 | Uω | Universe-polymorphic operations *(target: v1.3+)* | Polymorphic combinators that work across universe levels |
 
-Universes U₀–U₂ are realised by the v1.2 type checker; the Uω row records the intended elaboration target for the next round of type-system work and is not currently exercised by the inference engine.
+Universes U₀–U₂ are realised by the type checker, and `(universe n)` names the universe at any level `n` (ADR 0042): `(universe n)` lives in `(universe n+1)`, so the hierarchy is predicative. The Uω row records the intended elaboration target for universe-polymorphic operations and is not exercised by the inference engine.
+
+**Checking universes.** A `define-type` family parameter declared with a universe sort,
+`(a : (universe k))`, accepts a type whose universe is at most `k` (cumulativity). The universe of
+a type is computed by the formation rules below over the levels the nominal types are registered
+at. Passing `(universe 0)` itself where `(universe 0)` is required is a compile-time error, the
+predicativity check:
+
+```scheme
+(define-type (Box (a : (universe 0))) (list a))
+(define (open-box (b : (Box (universe 0)))) b)
+;; [ERROR] Type error: ill-formed type: universe inconsistency: argument 1 of Box,
+;;   (universe 0), lives in (universe 1), but parameter a ranges over (universe 0)
+```
 
 **Formation rule:**
 
@@ -329,18 +342,27 @@ type `A → B`.
     (λx.b)(a) ≡ b[a/x]
 ```
 
-**Eshkol implementation:** Pi-types are represented as `PiType` structs in
-[hott_types.h](../../inc/eshkol/types/hott_types.h) with parameters that can be either
-type parameters or value parameters (for dimensions). The `is_dependent` flag distinguishes
-true dependent types from simple function types.
+**Eshkol implementation:** a Pi type is a term of the core term language
+([type_term.h](../../inc/eshkol/types/type_term.h), ADR 0042): an n-ary telescope whose
+domains may mention the earlier binders and whose codomain may mention all of them. A Pi that
+does not depend on its binders is the ordinary function signature (`PiType` in
+[hott_types.h](../../inc/eshkol/types/hott_types.h)). It is written `(Pi ((x : A) ...) B)`, or
+arises from a definition whose annotations name earlier parameters. Application is the
+elimination rule above: the arguments' index terms are substituted for the binders, so
+`(replicate 3 1.5)` has type `(vector real 3)`. An index variable no parameter binds (the `n` of
+`dot` below) is an implicit binder, solved at each call by unification.
 
-**Example — dimension-dependent function:**
+**Example — dimension-dependent functions:**
 
 ```scheme
-;; Type: Π(n:Nat). Vector<Float64, n> → Vector<Float64, n>
-(define (normalize (v : (vector real)))
-  (let ((n (norm v)))
-    (tensor-apply (lambda (x) (/ x n)) v)))
+;; replicate : (Pi ((n : integer) (x : real)) (vector real n))
+(define (replicate (n : integer) (x : real)) : (vector real n)
+  (make-vector n x))
+
+;; dot : for every n, (vector real n) -> (vector real n) -> real
+(define (dot (u : (vector real n)) (v : (vector real n))) : real ...)
+(dot (vector 1.0 2.0 3.0) (vector 4.0 5.0))
+;; [ERROR] Type error: argument 2 of 'dot': expected (vector Float64 3), got (vector Value 2)
 ```
 
 ### Dependent Pair Types (Sigma-Types)
@@ -377,19 +399,21 @@ to the ordinary product type `A × B`.
        Γ ⊢ π₂(p) : B[π₁(p)/x]
 ```
 
-**Eshkol implementation:** Sigma-types are represented as `SigmaType` structs in
-[dependent.h](../../inc/eshkol/types/dependent.h) with a witness name, witness type, body
-type, and dependency flag.
+**Eshkol implementation:** a Sigma type is a term of the core term language (ADR 0042),
+written `(Sigma ((x : A) ...) B)`; its values are pairs. Construction is checked component by
+component: `(cons a b)` against `Σ(x:A).B` checks `a` against `A` and `b` against `B[a/x]`. The
+first projection `(car p)` has type `A`; the second `(cdr p)` has type `B[(car p)/x]` when `p` is
+a stable variable.
 
 **Example — existential type (length-indexed vector):**
 
 ```scheme
-;; Type: Σ(n:Nat). Vector<Float64, n>
 ;; "A vector of some length n, bundled with that length"
-(define (read-data filename)
-  ;; Returns a pair: (length . data-vector)
-  (let ((data (parse-csv filename)))
-    (cons (length data) (list->tensor data))))
+(: sized (Sigma ((n : integer)) (vector real n)))
+(define sized (cons 3 (vector 1.0 2.0 3.0)))
+
+(define (payload (p : (Sigma ((n : integer)) (vector real n)))) : (vector real (car p))
+  (cdr p))
 ```
 
 ### Identity and Path Types
@@ -507,15 +531,42 @@ null           ; Empty list / null value
 any                      ; Top type (accepts anything)
 nothing                  ; Bottom type (uninhabited)
 
+;; Dependent types (ADR 0042)
+(Pi ((x : A) ...) B)     ; Dependent function type: B may mention x
+(Sigma ((x : A) ...) B)  ; Dependent pair type
+(vector A n)             ; Length-indexed vector family
+(F arg ...)              ; A define-type family applied to types and index terms
+;; Index terms: integers, (+ m n), (- m n), (* m n), stable variables,
+;; (car p), (cdr p), (vector-length v)
+
 ;; Type-level constructs (U₂ — erased at runtime)
 (path A a b)             ; Identity/path type: proof that a ≡ b in A
 (universe n)             ; Universe at level n
 ```
 
+A `define-type` family declares the sort of each parameter that is not an ordinary type
+argument: `(define-type (Matrix (a : (universe 0)) (m : integer) (n : integer)) (vector (vector a n) m))`.
+`(Matrix real 2 3)` is expanded with its arguments when it is resolved, so it is the type
+`(vector (vector real 3) 2)`. A standalone declaration `(: name type)` is the type the
+following definition of `name` is checked against.
+
 **Implementation:** Type expressions are parsed into `hott_type_expr_t` AST nodes
 ([eshkol.h](../../inc/eshkol/eshkol.h)) with kind tags (`hott_type_kind_t`) for each
-construct: `HOTT_TYPE_ARROW`, `HOTT_TYPE_LIST`, `HOTT_TYPE_FORALL`, `HOTT_TYPE_DEPENDENT`,
-`HOTT_TYPE_PATH`, `HOTT_TYPE_UNIVERSE`, `HOTT_TYPE_SUM`, `HOTT_TYPE_PRODUCT`, etc.
+construct: `HOTT_TYPE_ARROW`, `HOTT_TYPE_LIST`, `HOTT_TYPE_FORALL`, `HOTT_TYPE_DEPENDENT`
+(Pi), `HOTT_TYPE_SIGMA`, `HOTT_TYPE_APP` (family application), `HOTT_TYPE_INDEX_LIT` and
+`HOTT_TYPE_INDEX_OP` (index terms), `HOTT_TYPE_PATH`, `HOTT_TYPE_UNIVERSE`, `HOTT_TYPE_SUM`,
+`HOTT_TYPE_PRODUCT`, etc. An annotation in the dependent language is resolved to a core term by
+`TypeChecker::resolveTerm`; every other annotation resolves to the nominal type it always has.
+
+### Definitional Equality
+
+Two types are definitionally equal when their normal forms are the same term
+(`TypeEnvironment::areEquivalent`, ADR 0042). Normalization unfolds a `let`-bound index variable
+to its value, expands `define-type` families with their arguments, and puts index arithmetic in
+polynomial normal form over the integers, which decides equality of polynomial index
+expressions: `(vector real (+ n 1))` and `(vector real (+ 1 n))` are one type, and
+`(vector real (+ m n))` at `m = 2`, `n = 3` is `(vector real 5)`. Terms are interned with binder
+names excluded, so alpha-equivalent types are one term.
 
 ---
 
@@ -555,6 +606,10 @@ the expected type is known from context (e.g., function parameter types, explici
     ──────────────────────── (Chk-Lambda)
     Γ ⊢ (lambda (x) e) ⇐ (→ A B)
 
+    Γ ⊢ c ⇒ Boolean    Γ ⊢ e₁ ⇐ B    Γ ⊢ e₂ ⇐ B
+    ──────────────────────────────────────────── (Chk-If)
+         Γ ⊢ (if c e₁ e₂) ⇐ B
+
     Γ ⊢ e ⇒ A      A ~ B
     ─────────────────────── (Chk-Subsumption)
          Γ ⊢ e ⇐ B
@@ -565,6 +620,26 @@ The subsumption rule uses **consistent subtyping** from gradual typing (see
 untyped code to interoperate seamlessly. Arguments, return annotations, branch results and
 `the` ascriptions all go through the same judgment, so a type that fits in one position fits
 in the others.
+
+**How checking runs (ADR 0042).** Checking is synthesis followed by the tail rule: synthesis
+records the precise type of every node, and each expression whose value becomes the value of the
+checked expression (each branch of `if`, `cond`, `case`, `when`, `unless`, the last expression
+of a body) is judged against the expected type at its own type. The join of two branches can be
+`Value`, which is consistent with anything; judging the branches one by one finds the branch that
+does not fit and reports it there, with the expected type, the type found and the source span:
+
+```scheme
+(define (f (b : boolean)) : integer (if b 1 "no"))
+;; [WARN] Type warning: result of 'f': expected Int64, got String (line 1:45)
+```
+
+Expected types come from: a call's parameter types (`argument i of 'f'`); a parameter's function
+type, against which a lambda argument is checked with its parameters at the domains and its body
+against the codomain (`result of the lambda in argument i of 'f'`); return annotations
+(`result of 'f'`); annotated `let` bindings (`binding 'x'`); `(: name type)` declarations
+(`definition of 'name'`); and `(the T e)`, whose branches are judged by castability. Checking
+never changes the types written into the AST, which code generation reads: a pass that binds
+variables at types synthesis did not see leaves the AST untouched and adds only new diagnostics.
 
 ### Constraint Generation and Unification
 
@@ -581,9 +656,11 @@ via **unification**:
    `Number <: Value`, etc. The type environment caches subtype judgments in a
    `map<(sub_id, super_id), bool>` for O(1) amortized lookup.
 
-4. **Error reporting** — When unification fails, the checker emits a **warning** (not an
-   error) with diagnostic context: expected type, actual type, source location, and a
-   suggested fix. The program compiles regardless.
+4. **Error reporting** — When a judgment fails, the checker reports the expected type, the
+   type found and the source location (and the span, when the reader measured one); each
+   diagnostic is also emitted as a structured Diagnostic v1 record (`E-TYPE`,
+   `E-TYPE-DEPENDENT`). Severity follows the enforcement mode (see
+   [Enforcement Modes](#enforcement-modes)).
 
 **Implementation:** The `Context` class ([type_checker.cpp](../../lib/types/type_checker.cpp))
 maintains a scope stack for lexical scoping, type aliases from `define-type`, and tracks
@@ -667,8 +744,23 @@ function `define`, an internal `define` and non-tail recursion.
 ## Gradual Typing Semantics
 
 Eshkol implements **gradual typing** (Siek & Taha, 2006), where type annotations are
-optional and type mismatches produce warnings rather than errors. This design enables
-rapid prototyping with progressive type safety.
+optional and, in the default mode, nominal type mismatches produce warnings rather than errors.
+This design enables rapid prototyping with progressive type safety.
+
+### Enforcement Modes
+
+| Finding | `--types=gradual` (default) | `--types=strict` (`--strict-types`) | `--unsafe` |
+|---|---|---|---|
+| A failed dependent-type obligation: an index that is not definitionally equal to the one required, a universe inconsistency, an ill-formed Pi/Sigma/family type, a family or dependent call whose number of arguments is not its arity, assigning a variable an annotation uses as an index | error | error | not reported |
+| A nominal type mismatch, including those the checking direction finds, and a vector index known statically to be outside a length known statically | warning | error | not reported |
+| A linearity violation | error | error | not reported |
+| An index not known statically at a typed boundary | accepted | accepted | accepted |
+
+A dependent obligation is fatal in every mode but `--unsafe` because only a program that writes
+a dependent type can incur one. A rejected program writes no artifact on any engine: the
+bytecode VM asks the same front end before compiling (ADR 0042). A runtime check of an index that
+is not known statically is planned for v1.9.1; the ladder that makes strict mode the default is
+in [ADR 0042](../design/adr/0042-dependent-type-enforcement.md).
 
 ### Consistency Relation
 

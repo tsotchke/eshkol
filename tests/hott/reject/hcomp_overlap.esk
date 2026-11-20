@@ -1,0 +1,4 @@
+;; expect-error: disagree
+(hott (import circle)
+  (define bad : (Path S1 base base)
+    (lambda (i) (hcomp S1 (j) (((= i 0) base) ((= i 0) (loop j))) base))))

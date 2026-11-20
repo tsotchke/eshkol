@@ -106,8 +106,8 @@ helpers `__keyword-member?` / `__keyword-args-validate` / `__keyword-arg`.
 `core.testing`, `core.cache`, `core.threads`, `core.channels`,
 `core.collections`, `core.metrics`, `core.logging`, `core.argparse`,
 `core.memory`, `core.memory_store`, `core.merkle`, `core.distributed`,
-`core.msgpack`, `core.ad.tape`, `core.dnc`, `core.sdnc`,
-`core.ml.gradient_estimators`, `core.ml.neurosymbolic`, `core.http_server`,
+`core.msgpack`, `core.protobuf`, `core.utf8`, `core.ad.tape`, `core.dnc`, `core.sdnc`,
+`core.ml.gradient_estimators`, `core.ml.diffopt`, `core.ml.neurosymbolic`, `core.http_server`,
 `core.reflection`'s siblings under other trees, `ml.activations`.
 
 > `core.testing` is deliberately excluded from `stdlib.esk`. Baking it into the

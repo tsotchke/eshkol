@@ -12,6 +12,7 @@
 #include <eshkol/core/resource_limits.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/logger.h>
+#include <eshkol/core/coroutine.h>
 
 #include <atomic>
 #include <mutex>
@@ -539,6 +540,16 @@ void eshkol_stack_pop(void) {
 /** Return the current thread's tracked recursion depth. */
 size_t eshkol_get_stack_depth(void) {
     return t_stack_depth;
+}
+
+/* The recursion depth counts frames on the running stack, so each coroutine
+ * (one stack each) keeps its own count (inc/eshkol/core/coroutine.h). */
+extern "C" void eshkol_resource_limits_context_save(eshkol_exec_context_t* ctx) {
+    ctx->limit_stack_depth = (uint64_t)t_stack_depth;
+}
+
+extern "C" void eshkol_resource_limits_context_load(const eshkol_exec_context_t* ctx) {
+    t_stack_depth = (size_t)ctx->limit_stack_depth;
 }
 
 // ----------------------------------------------------------------------------

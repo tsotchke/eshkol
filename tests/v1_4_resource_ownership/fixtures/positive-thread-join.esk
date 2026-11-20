@@ -1,0 +1,9 @@
+(require core.threads)
+;; A thread handle is joined on every path; a mutex is borrowed by with-mutex
+;; and destroyed.
+(define m (make-mutex))
+(define t (make-thread (lambda () (* 6 7))))
+(define answer (thread-join t))
+(with-mutex m (lambda () (display answer)))
+(mutex-destroy! m)
+(newline)

@@ -1,0 +1,405 @@
+;;; core.reasoning.fd -- finite-domain constraint solving.
+;;;
+;;; Usage: (require core.reasoning.fd)
+;;;
+;;;   (define m (make-fd-model))
+;;;   (define x (fd-var m 'x (fd-range 0 9)))
+;;;   (define y (fd-var m 'y (fd-range 0 9)))
+;;;   (fd-linear! m (list (cons 1 x) (cons 1 y)) '= 10)
+;;;   (fd-ne! m x y 0)
+;;;   (fd-count m)                     ;; => 8
+;;;
+;;; Variables range over finite sets of exact integers. Constraints carry a
+;;; propagator and a checker. Propagation runs a constraint queue to a fixed
+;;; point (AC-3 scheduling): linear constraints are bounds-consistent,
+;;; binary relations and tables are arc-consistent (generalized arc
+;;; consistency for tables), and all-different is domain-consistent by
+;;; Regin's matching algorithm (a maximum matching plus strongly connected
+;;; components of the value graph). Search is depth-first with a binding
+;;; trail; variable order first-fail (default), dom/deg or input order;
+;;; value order ascending or descending; branch and bound for optimization.
+;;;
+;;; SAT integration: `fd->cnf` produces the direct encoding (one Boolean per
+;;; variable-value pair, exactly-one per variable, every disallowed tuple of
+;;; every constraint as a clause) and `fd-solve-sat` solves a model with the
+;;; CDCL solver of core.reasoning.sat and decodes the model.
+;;;
+;;; Reference: docs/reference/stdlib/reasoning.md; design: ADR-0051.
+;;; Sources: A. K. Mackworth, "Consistency in networks of relations" (1977);
+;;; J.-C. Regin, "A filtering algorithm for constraints of difference in
+;;; CSPs" (AAAI 1994); C. Bessiere, "Constraint propagation", Handbook of
+;;; Constraint Programming ch. 3 (2006); R. M. Haralick, G. L. Elliott,
+;;; "Increasing tree search efficiency for constraint satisfaction" (1980);
+;;; T. Walsh, "SAT v CSP" (CP 2000).
+
+(require stdlib)
+(require core.reasoning.sat)
+
+(provide make-fd-model fd-model? fd-var fd-range fd-domain fd-var-name
+         fd-linear! fd-sum! fd-all-different! fd-ne! fd-relation! fd-table! fd-predicate!
+         fd-propagate! fd-solve fd-solutions fd-count fd-minimize fd-stats
+         fd->cnf fd-solve-sat)
+
+;; model: #(fd-model vars constraints trail queue stats)
+;;   stats: #(nodes failures propagations)
+;; var:   #(fd-var id name domain watchers)
+;; con:   #(fd-con scope propagate check queued?)
+(define (make-fd-model) (vector 'fd-model '() '() '() '() (vector 0 0 0)))
+(define (fd-model? m) (and (vector? m) (= (vector-length m) 6) (eq? (vector-ref m 0) 'fd-model)))
+(define (fd-check-model m) (if (not (fd-model? m)) (error "fd: expected a model made by make-fd-model")))
+(define (fd-range lo hi) (if (> lo hi) '() (cons lo (fd-range (+ lo 1) hi))))
+
+(define (fd-sorted-set xs)
+  (let loop ((xs (sort xs <)) (out '()))
+    (cond ((null? xs) (reverse out))
+          ((and (pair? out) (= (car out) (car xs))) (loop (cdr xs) out))
+          (else (loop (cdr xs) (cons (car xs) out))))))
+
+(define (fd-var m name domain)
+  (fd-check-model m)
+  (for-each (lambda (x) (if (not (and (integer? x) (exact? x))) (error "fd-var: domain values are exact integers" x)))
+            domain)
+  (let ((v (vector 'fd-var (length (vector-ref m 1)) name (fd-sorted-set domain) '())))
+    (vector-set! m 1 (append (vector-ref m 1) (list v)))
+    v))
+(define (fd-domain v) (vector-ref v 3))
+(define (fd-var-name v) (vector-ref v 2))
+(define (fd-lo v) (car (vector-ref v 3)))
+(define (fd-hi v) (let loop ((d (vector-ref v 3))) (if (null? (cdr d)) (car d) (loop (cdr d)))))
+(define (fd-fixed? v) (null? (cdr (vector-ref v 3))))
+(define (fd-stats m)
+  (let ((s (vector-ref m 5)))
+    (list (cons 'nodes (vector-ref s 0)) (cons 'failures (vector-ref s 1)) (cons 'propagations (vector-ref s 2)))))
+
+;; Replace a domain (a subset of the current one). Returns #f on wipe-out.
+(define (fd-set-domain! m v d)
+  (cond ((null? d) #f)
+        ((= (length d) (length (vector-ref v 3))) #t)
+        (else
+         (vector-set! m 3 (cons (cons v (vector-ref v 3)) (vector-ref m 3)))
+         (vector-set! v 3 d)
+         (for-each (lambda (c) (fd-enqueue! m c)) (vector-ref v 4))
+         #t)))
+(define (fd-filter-domain! m v keep?) (fd-set-domain! m v (filter keep? (vector-ref v 3))))
+(define (fd-undo! m mark)
+  (let loop ((tr (vector-ref m 3)))
+    (if (eq? tr mark) (vector-set! m 3 mark)
+        (begin (vector-set! (car (car tr)) 3 (cdr (car tr))) (loop (cdr tr))))))
+
+(define (fd-enqueue! m c)
+  (if (not (vector-ref c 4))
+      (begin (vector-set! c 4 #t) (vector-set! m 4 (cons c (vector-ref m 4))))))
+
+(define (fd-post! m scope propagate check)
+  (let ((c (vector 'fd-con (list->vector scope) propagate check #f)))
+    (vector-set! m 2 (append (vector-ref m 2) (list c)))
+    (for-each (lambda (v) (vector-set! v 4 (cons c (vector-ref v 4)))) scope)
+    c))
+
+;; Run the queue to a fixed point; #f on inconsistency (queue is cleared).
+(define (fd-fixpoint! m)
+  (let loop ()
+    (let ((q (vector-ref m 4)))
+      (if (null? q) #t
+          (let ((c (car q)))
+            (vector-set! m 4 (cdr q))
+            (vector-set! c 4 #f)
+            (vector-set! (vector-ref m 5) 2 (+ 1 (vector-ref (vector-ref m 5) 2)))
+            (if ((vector-ref c 2) m)
+                (loop)
+                (begin
+                  (for-each (lambda (c) (vector-set! c 4 #f)) (vector-ref m 4))
+                  (vector-set! m 4 '())
+                  #f)))))))
+
+(define (fd-propagate! m)
+  (fd-check-model m)
+  (for-each (lambda (c) (fd-enqueue! m c)) (vector-ref m 2))
+  (fd-fixpoint! m))
+
+;; ---------------------------------------------------------------------------
+;; Constraints
+;; ---------------------------------------------------------------------------
+
+;; Linear: sum of coef*var  OP  c, OP in = <= >= /=. Bounds consistency.
+(define (fd-term-min a v) (if (> a 0) (* a (fd-lo v)) (* a (fd-hi v))))
+(define (fd-term-max a v) (if (> a 0) (* a (fd-hi v)) (* a (fd-lo v))))
+(define (fd-linear! m terms op c)
+  (fd-check-model m)
+  (if (not (memq op '(= <= >= /=))) (error "fd-linear!: operator is = <= >= or /=" op))
+  (for-each (lambda (t) (if (not (and (integer? (car t)) (exact? (car t)) (not (= (car t) 0))))
+                            (error "fd-linear!: coefficients are nonzero exact integers")))
+            terms)
+  (let ((vars (map cdr terms)))
+    (define (check vals)
+      (let ((s (let loop ((ts terms) (vs vals) (s 0))
+                 (if (null? ts) s (loop (cdr ts) (cdr vs) (+ s (* (car (car ts)) (car vs))))))))
+        (cond ((eq? op '=) (= s c)) ((eq? op '<=) (<= s c)) ((eq? op '>=) (>= s c)) (else (not (= s c))))))
+    (define (propagate m)
+      (if (eq? op '/=)
+          ;; forward checking: when one variable is open, remove its value
+          (let ((open (filter (lambda (t) (not (fd-fixed? (cdr t)))) terms)))
+            (cond ((null? open) (check (map (lambda (t) (fd-lo (cdr t))) terms)))
+                  ((null? (cdr open))
+                   (let* ((a (car (car open))) (v (cdr (car open)))
+                          (rest (fold-left (lambda (s t) (if (eq? (cdr t) v) s (+ s (* (car t) (fd-lo (cdr t))))))
+                                           0 terms)))
+                     (fd-filter-domain! m v (lambda (x) (not (= (+ rest (* a x)) c))))))
+                  (else #t)))
+          (let ((smin (fold-left (lambda (s t) (+ s (fd-term-min (car t) (cdr t)))) 0 terms))
+                (smax (fold-left (lambda (s t) (+ s (fd-term-max (car t) (cdr t)))) 0 terms)))
+            (let loop ((ts terms))
+              (if (null? ts) #t
+                  (let* ((a (car (car ts))) (v (cdr (car ts)))
+                         (rmin (- smin (fd-term-min a v))) (rmax (- smax (fd-term-max a v)))
+                         ;; bounds on a*x
+                         (hi (if (memq op '(= <=)) (- c rmin) #f))
+                         (lo (if (memq op '(= >=)) (- c rmax) #f))
+                         (xlo (cond ((> a 0) (and lo (ceiling (/ lo a)))) (else (and hi (ceiling (/ hi a))))))
+                         (xhi (cond ((> a 0) (and hi (floor (/ hi a)))) (else (and lo (floor (/ lo a)))))))
+                    (if (fd-filter-domain! m v (lambda (x) (and (or (not xlo) (>= x xlo)) (or (not xhi) (<= x xhi)))))
+                        (loop (cdr ts))
+                        #f)))))))
+    (fd-post! m vars propagate check)))
+(define (fd-sum! m vars op c) (fd-linear! m (map (lambda (v) (cons 1 v)) vars) op c))
+
+;; x /= y + offset
+(define (fd-ne! m x y . opt)
+  (let ((k (if (null? opt) 0 (car opt))))
+    (fd-post! m (list x y)
+      (lambda (m)
+        (cond ((fd-fixed? y) (let ((z (+ (fd-lo y) k))) (fd-filter-domain! m x (lambda (a) (not (= a z))))))
+              ((fd-fixed? x) (let ((z (- (fd-lo x) k))) (fd-filter-domain! m y (lambda (b) (not (= b z))))))
+              (else #t)))
+      (lambda (vals) (not (= (car vals) (+ (cadr vals) k)))))))
+
+;; Binary relation (pred x-value y-value), arc consistent (AC-3 revise).
+(define (fd-relation! m x y pred)
+  (fd-post! m (list x y)
+    (lambda (m)
+      (and (fd-filter-domain! m x (lambda (a) (let any ((bs (fd-domain y))) (and (pair? bs) (or (pred a (car bs)) (any (cdr bs)))))))
+           (fd-filter-domain! m y (lambda (b) (let any ((as (fd-domain x))) (and (pair? as) (or (pred (car as) b) (any (cdr as)))))))))
+    (lambda (vals) (if (pred (car vals) (cadr vals)) #t #f))))
+
+;; Extensional constraint: the scope takes one of the listed tuples (GAC).
+(define (fd-table! m vars tuples)
+  (let ((k (length vars)))
+    (for-each (lambda (t) (if (not (= (length t) k)) (error "fd-table!: tuple arity differs from scope"))) tuples)
+    (fd-post! m vars
+      (lambda (m)
+        (let ((live (filter (lambda (t) (let all ((vs vars) (xs t))
+                                          (or (null? vs) (and (memv (car xs) (fd-domain (car vs))) (all (cdr vs) (cdr xs))))))
+                            tuples)))
+          (let loop ((vs vars) (i 0))
+            (or (null? vs)
+                (and (fd-filter-domain! m (car vs) (lambda (x) (let any ((ts live)) (and (pair? ts) (or (= (list-ref (car ts) i) x) (any (cdr ts)))))))
+                     (loop (cdr vs) (+ i 1)))))))
+      (lambda (vals) (if (member vals tuples) #t #f)))))
+
+;; Arbitrary predicate on the scope's values, checked when all but one
+;; variable is fixed (forward checking).
+(define (fd-predicate! m vars pred)
+  (fd-post! m vars
+    (lambda (m)
+      (let ((open (filter (lambda (v) (not (fd-fixed? v))) vars)))
+        (cond ((null? open) (if (apply pred (map fd-lo vars)) #t #f))
+              ((null? (cdr open))
+               (let ((v (car open)))
+                 (fd-filter-domain! m v (lambda (x) (apply pred (map (lambda (w) (if (eq? w v) x (fd-lo w))) vars))))))
+              (else #t))))
+    (lambda (vals) (if (apply pred vals) #t #f))))
+
+;; all-different, domain consistent (Regin 1994).
+(define (fd-all-different! m vars)
+  (fd-post! m vars
+    (lambda (m) (fd-alldiff-filter! m (list->vector vars)))
+    (lambda (vals) (let distinct ((xs vals)) (or (null? xs) (and (not (memv (car xs) (cdr xs))) (distinct (cdr xs))))))))
+
+(define (fd-alldiff-filter! m vs)
+  (let* ((k (vector-length vs))
+         (values (fd-sorted-set (apply append (map fd-domain (vector->list vs)))))
+         (nv (length values))
+         (vals (list->vector values))
+         (index-of (lambda (x) (let loop ((i 0)) (if (= (vector-ref vals i) x) i (loop (+ i 1))))))
+         (match-var (make-vector k -1))       ; var -> value index
+         (match-val (make-vector nv -1)))     ; value index -> var
+    (define (augment x seen)
+      (let try ((d (fd-domain (vector-ref vs x))))
+        (if (null? d) #f
+            (let ((j (index-of (car d))))
+              (if (vector-ref seen j) (try (cdr d))
+                  (begin
+                    (vector-set! seen j #t)
+                    (if (or (< (vector-ref match-val j) 0) (augment (vector-ref match-val j) seen))
+                        (begin (vector-set! match-var x j) (vector-set! match-val j x) #t)
+                        (try (cdr d)))))))))
+    (let matching ((x 0))
+      (cond
+        ((< x k) (if (augment x (make-vector nv #f)) (matching (+ x 1)) #f))
+        (else
+         ;; Nodes: vars 0..k-1, values k..k+nv-1. Matched edges var->value,
+         ;; other edges value->var. Keep an edge when it is matched, inside an
+         ;; SCC, or when its value is reachable from a free value.
+         (let* ((n (+ k nv)) (adj (make-vector n '())))
+           (let edges ((x 0))
+             (if (< x k)
+                 (begin
+                   (for-each (lambda (a)
+                               (let ((j (index-of a)))
+                                 (if (= (vector-ref match-var x) j)
+                                     (vector-set! adj x (cons (+ k j) (vector-ref adj x)))
+                                     (vector-set! adj (+ k j) (cons x (vector-ref adj (+ k j)))))))
+                             (fd-domain (vector-ref vs x)))
+                   (edges (+ x 1)))))
+           (let ((reach (make-vector n #f)) (comp (make-vector n -1))
+                 (low (make-vector n 0)) (num (make-vector n -1))
+                 (stack '()) (on (make-vector n #f)) (counter 0) (ncomp 0))
+             ;; reachability from free values
+             (define (mark! u)
+               (if (not (vector-ref reach u))
+                   (begin (vector-set! reach u #t) (for-each mark! (vector-ref adj u)))))
+             ;; Tarjan SCC
+             (define (visit u)
+               (vector-set! num u counter) (vector-set! low u counter) (set! counter (+ counter 1))
+               (set! stack (cons u stack)) (vector-set! on u #t)
+               (for-each (lambda (w)
+                           (cond ((< (vector-ref num w) 0)
+                                  (visit w) (vector-set! low u (min (vector-ref low u) (vector-ref low w))))
+                                 ((vector-ref on w) (vector-set! low u (min (vector-ref low u) (vector-ref num w))))))
+                         (vector-ref adj u))
+               (if (= (vector-ref low u) (vector-ref num u))
+                   (let pop ()
+                     (let ((w (car stack)))
+                       (set! stack (cdr stack)) (vector-set! on w #f) (vector-set! comp w ncomp)
+                       (if (= w u) (set! ncomp (+ ncomp 1)) (pop))))))
+             (let free ((j 0))
+               (if (< j nv) (begin (if (< (vector-ref match-val j) 0) (mark! (+ k j))) (free (+ j 1)))))
+             (let all ((u 0)) (if (< u n) (begin (if (< (vector-ref num u) 0) (visit u)) (all (+ u 1)))))
+             (let prune ((x 0))
+               (or (= x k)
+                   (and (fd-filter-domain! m (vector-ref vs x)
+                          (lambda (a)
+                            (let ((j (index-of a)))
+                              (or (= (vector-ref match-var x) j)
+                                  (= (vector-ref comp x) (vector-ref comp (+ k j)))
+                                  (vector-ref reach (+ k j))))))
+                        (prune (+ x 1))))))))))))
+
+;; ---------------------------------------------------------------------------
+;; Search
+;; ---------------------------------------------------------------------------
+(define (fd-option opts key default)
+  (let ((e (assq key opts))) (if e (cdr e) default)))
+
+(define (fd-select m order)
+  (let ((open (filter (lambda (v) (not (fd-fixed? v))) (vector-ref m 1))))
+    (cond ((null? open) #f)
+          ((eq? order 'input) (car open))
+          (else
+           (let ((score (if (eq? order 'dom-deg)
+                            (lambda (v) (/ (length (fd-domain v)) (+ 1 (length (vector-ref v 4)))))
+                            (lambda (v) (length (fd-domain v))))))
+             (fold-left (lambda (best v) (if (< (score v) (score best)) v best)) (car open) (cdr open)))))))
+
+(define (fd-solution m)
+  (map (lambda (v) (cons (vector-ref v 2) (fd-lo v))) (vector-ref m 1)))
+
+;; Depth-first search; (on-solution alist) returns true to continue.
+;; BOUND, when given, is a procedure called at every node that may tighten
+;; domains (branch and bound). Returns #t when stopped by on-solution.
+(define (fd-search m opts on-solution bound)
+  (let ((var-order (fd-option opts 'var-order 'first-fail))
+        (value-order (fd-option opts 'value-order 'min))
+        (stats (vector-ref m 5)))
+    (define (node)
+      (vector-set! stats 0 (+ 1 (vector-ref stats 0)))
+      (if (not (and (or (not bound) (bound m)) (fd-fixpoint! m)))
+          (begin (vector-set! stats 1 (+ 1 (vector-ref stats 1))) #f)
+          (let ((v (fd-select m var-order)))
+            (if (not v)
+                (not (on-solution (fd-solution m)))
+                (let try ((vals (if (eq? value-order 'max) (reverse (fd-domain v)) (fd-domain v))))
+                  (if (null? vals) #f
+                      (let ((mark (vector-ref m 3)))
+                        (fd-set-domain! m v (list (car vals)))
+                        (if (node) #t
+                            (begin (fd-undo! m mark) (try (cdr vals)))))))))))
+    (let ((mark (vector-ref m 3)))
+      (for-each (lambda (c) (fd-enqueue! m c)) (vector-ref m 2))
+      (let ((stopped (node)))
+        (fd-undo! m mark)
+        stopped))))
+
+(define (fd-opts rest) (if (null? rest) '() (car rest)))
+(define (fd-solve m . rest)
+  (fd-check-model m)
+  (let ((found #f))
+    (fd-search m (fd-opts rest) (lambda (s) (set! found s) #f) #f)
+    found))
+(define (fd-solutions m . rest)
+  (fd-check-model m)
+  (let ((limit (if (null? rest) #f (car rest))) (out '()) (n 0))
+    (fd-search m '() (lambda (s) (set! out (cons s out)) (set! n (+ n 1)) (or (not limit) (< n limit))) #f)
+    (reverse out)))
+(define (fd-count m)
+  (fd-check-model m)
+  (let ((n 0)) (fd-search m '() (lambda (s) (set! n (+ n 1)) #t) #f) n))
+
+;; Minimize VAR: returns (best-value . solution) or #f.
+(define (fd-minimize m var . rest)
+  (fd-check-model m)
+  (let ((best #f) (best-sol #f))
+    (fd-search m (fd-opts rest)
+               (lambda (s) (set! best (fd-lo var)) (set! best-sol s) #t)
+               (lambda (m) (or (not best) (fd-filter-domain! m var (lambda (x) (< x best))))))
+    (if best (cons best best-sol) #f)))
+
+;; ---------------------------------------------------------------------------
+;; Direct encoding to CNF and solving with the CDCL solver
+;; ---------------------------------------------------------------------------
+(define fd-encoding-limit 65536)
+(define (fd->cnf m)
+  (fd-check-model m)
+  (let* ((vars (vector-ref m 1)) (table '()) (next 1))
+    ;; Boolean for (var = value)
+    (for-each (lambda (v)
+                (for-each (lambda (a) (set! table (cons (cons (cons (vector-ref v 1) a) next) table))
+                                      (set! next (+ next 1)))
+                          (fd-domain v)))
+              vars)
+    (let* ((lit (lambda (v a) (cdr (assoc (cons (vector-ref v 1) a) table))))
+           (exactly-one
+            (apply append
+                   (map (lambda (v)
+                          (let ((ls (map (lambda (a) (lit v a)) (fd-domain v))))
+                            (cons ls (let pairs ((xs ls))
+                                       (if (null? xs) '()
+                                           (append (map (lambda (y) (list (- (car xs)) (- y))) (cdr xs))
+                                                   (pairs (cdr xs))))))))
+                        vars)))
+           (forbidden
+            (apply append
+                   (map (lambda (c)
+                          (let* ((scope (vector->list (vector-ref c 1)))
+                                 (size (fold-left (lambda (p v) (* p (length (fd-domain v)))) 1 scope)))
+                            (if (> size fd-encoding-limit)
+                                (error "fd->cnf: a constraint scope is too large for the direct encoding" size))
+                            (let tuples ((vs scope) (chosen '()) (out '()))
+                              (if (null? vs)
+                                  (let ((vals (reverse (map cdr chosen))))
+                                    (if ((vector-ref c 3) vals) out
+                                        (cons (map (lambda (p) (- (lit (car p) (cdr p)))) (reverse chosen)) out)))
+                                  (fold-left (lambda (acc a) (tuples (cdr vs) (cons (cons (car vs) a) chosen) acc))
+                                             out (fd-domain (car vs)))))))
+                        (vector-ref m 2)))))
+      (cons (append exactly-one forbidden)
+            (lambda (model)
+              (map (lambda (v)
+                     (cons (vector-ref v 2)
+                           (let find ((d (fd-domain v)))
+                             (if (memv (lit v (car d)) model) (car d) (find (cdr d))))))
+                   vars))))))
+
+(define (fd-solve-sat m)
+  (let* ((enc (fd->cnf m)) (r (sat-solve (car enc))))
+    (if (eq? (sat-status r) 'sat) ((cdr enc) (sat-model r)) #f)))

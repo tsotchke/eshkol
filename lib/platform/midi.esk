@@ -1,0 +1,108 @@
+;; platform/midi.esk — MIDI 1.0 input and output (ADR-0053).
+;;
+;; (require platform.midi)
+;;
+;; (midi-open-output "name") publishes a virtual source other programs (and
+;; Eshkol input ports) connect to; (midi-open-input "name") connects to the
+;; source with that name (exact, else first containing it). Messages are
+;; lists of bytes: complete channel/system messages or F0 ... F7 SysEx.
+;; Received messages carry an arrival timestamp in microseconds.
+;;
+;; Backends: loopback (in-process; always), ALSA sequencer (Linux), CoreMIDI
+;; (macOS). Select with ESHKOL_PLATFORM_MIDI=loopback|alsa|coremidi|auto.
+;; Opening a port requires the 'midi capability under a capability policy.
+
+(require stdlib)
+(require core.capabilities)
+
+(provide midi-open-output midi-open-input midi-port? midi-close!
+         midi-send! midi-note-on! midi-note-off! midi-control-change!
+         midi-program-change! midi-pitch-bend!
+         midi-receive midi-last-timestamp midi-sources midi-stats midi-backend)
+
+(extern i64 -midi-open i32 ptr :real eshkol_plat_midi_open)
+(extern i32 -midi-close i64 :real eshkol_plat_midi_close)
+(extern i32 -midi-stage i64 i32 :real eshkol_plat_midi_stage)
+(extern i32 -midi-send-staged i64 :real eshkol_plat_midi_send_staged)
+(extern i32 -midi-receive i64 i32 :real eshkol_plat_midi_receive)
+(extern i32 -midi-byte i64 i32 :real eshkol_plat_midi_byte)
+(extern i64 -midi-timestamp i64 :real eshkol_plat_midi_timestamp)
+(extern i64 -midi-stat i64 i32 :real eshkol_plat_midi_stat)
+(extern i32 -midi-source-count :real eshkol_plat_midi_source_count)
+(extern ptr -midi-source-name i32 :real eshkol_plat_midi_source_name)
+(extern ptr -midi-backend-name i32 :real eshkol_plat_backend_name)
+
+(define -midi-status-names
+  (vector "ok" "invalid argument" "out of memory" "backend unavailable" "device error"
+          "invalid state" "handle busy" "not found" "queue full" "malformed data"))
+
+(define (-midi-check r who)
+  (let ((n (inexact->exact r)))
+    (if (< n 0)
+        (error (string-append (symbol->string who) ": "
+                              (if (<= n -10) "error" (vector-ref -midi-status-names (- 0 n)))))
+        n)))
+
+(define (midi-port? p)
+  (and (vector? p) (= (vector-length p) 2) (eq? (vector-ref p 0) 'midi-port)))
+(define (-mh p) (if (midi-port? p) (vector-ref p 1) (error "platform.midi: not a port" p)))
+
+(define (midi-open-output name)
+  (capability-require! 'midi)
+  (vector 'midi-port (-midi-check (-midi-open 0 name) 'midi-open-output)))
+
+(define (midi-open-input source-name)
+  (capability-require! 'midi)
+  (vector 'midi-port (-midi-check (-midi-open 1 source-name) 'midi-open-input)))
+
+(define (midi-close! p) (-midi-check (-midi-close (-mh p)) 'midi-close!) #t)
+
+(define (midi-send! p bytes)
+  "Send one complete message given as a list or vector of bytes."
+  (let ((h (-mh p)) (bs (if (vector? bytes) (vector->list bytes) bytes)))
+    (for-each (lambda (b) (-midi-check (-midi-stage h b) 'midi-send!)) bs)
+    (-midi-check (-midi-send-staged h) 'midi-send!)
+    #t))
+
+(define (-chan status channel) (+ status (remainder channel 16)))
+(define (midi-note-on! p channel note velocity)
+  (midi-send! p (list (-chan 144 channel) note velocity)))
+(define (midi-note-off! p channel note velocity)
+  (midi-send! p (list (-chan 128 channel) note velocity)))
+(define (midi-control-change! p channel controller value)
+  (midi-send! p (list (-chan 176 channel) controller value)))
+(define (midi-program-change! p channel program)
+  (midi-send! p (list (-chan 192 channel) program)))
+(define (midi-pitch-bend! p channel value)
+  "value in 0..16383 (8192 = centre)."
+  (midi-send! p (list (-chan 224 channel) (remainder value 128) (quotient value 128))))
+
+(define (midi-receive p . timeout-ms)
+  "Next message as a list of bytes, or #f (waits up to timeout-ms when given)."
+  (let* ((h (-mh p))
+         (n (-midi-check (-midi-receive h (if (null? timeout-ms) 0 (car timeout-ms)))
+                         'midi-receive)))
+    (if (= n 0) #f
+        (let loop ((i (- n 1)) (acc '()))
+          (if (< i 0) acc
+              (loop (- i 1) (cons (inexact->exact (-midi-byte h i)) acc)))))))
+
+(define (midi-last-timestamp p)
+  "Arrival time (microseconds) of the last message midi-receive returned."
+  (inexact->exact (-midi-timestamp (-mh p))))
+
+(define (midi-sources)
+  "Names of the sources visible on the selected backend."
+  (let ((n (-midi-check (-midi-source-count) 'midi-sources)))
+    (let loop ((i (- n 1)) (acc '()))
+      (if (< i 0) acc (loop (- i 1) (cons (ptr->string (-midi-source-name i)) acc))))))
+
+(define (midi-stats p)
+  (let ((h (-mh p)))
+    (list (cons 'sent (-midi-check (-midi-stat h 0) 'midi-stats))
+          (cons 'received (-midi-check (-midi-stat h 1) 'midi-stats))
+          (cons 'dropped (-midi-check (-midi-stat h 2) 'midi-stats))
+          (cons 'malformed (-midi-check (-midi-stat h 3) 'midi-stats)))))
+
+(define (midi-backend p)
+  (ptr->string (-midi-backend-name (-midi-check (-midi-stat (-mh p) 4) 'midi-backend))))

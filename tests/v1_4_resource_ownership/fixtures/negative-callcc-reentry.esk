@@ -1,0 +1,6 @@
+;; The continuation is stored, so it can re-enter a scope whose port the
+;; program closes afterwards.
+(define saved #f)
+(define in (open-input-file "strict-reentry.txt"))
+(call/cc (lambda (k) (set! saved k) (read-line in)))
+(close-port in)

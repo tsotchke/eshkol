@@ -28,9 +28,15 @@
 
 ;; ── Merkle tree basics ──────────────────────────────────────────────
 (define t1 (merkle-tree (list "alice" "bob" "carol" "dave")))
-(check "single-leaf-tree root = leaf hash"
-       (fnv1a-64 "lonely")
+;; A one-leaf tree's root is that leaf's hash, which is taken over the
+;; leaf domain: the prefix is part of what is hashed.
+(check "single-leaf-tree root = leaf-domain hash"
+       (fnv1a-64 (string-append (merkle-leaf-domain) "lonely"))
        (merkle-root (merkle-tree (list "lonely"))))
+(check "single-leaf-tree root is not the bare data hash"
+       #t (not (= (fnv1a-64 "lonely")
+                  (merkle-root (merkle-tree (list "lonely"))))))
+(check "format version is 2" 2 (merkle-format-version))
 
 ;; Same data → same root
 (define t1-clone (merkle-tree (list "alice" "bob" "carol" "dave")))

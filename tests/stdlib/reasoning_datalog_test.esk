@@ -1,0 +1,152 @@
+;;; core.reasoning.datalog: stratified Datalog on DBSP circuits. Every
+;;; incremental state is compared with a from-scratch evaluation and with an
+;;; independent closure computation.
+(require stdlib)
+(require core.dbsp)
+(require core.reasoning.datalog)
+
+(define passes 0)
+(define failures 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1)) (display "FAIL: ") (display name) (newline))))
+(define (raises? thunk) (guard (e (else #t)) (thunk) #f))
+(define (vals var answers) (map (lambda (s) (walk var s)) answers))
+
+(define tc-rules
+  '((<- (reach ?x ?y) (edge ?x ?y))
+    (<- (reach ?x ?y) (reach ?x ?z) (edge ?z ?y))))
+
+;; independent transitive closure (Warshall over a node list)
+(define (closure nodes edges)
+  (let ((r edges))
+    (for-each (lambda (k)
+                (for-each (lambda (i)
+                            (if (member (list i k) r)
+                                (for-each (lambda (j)
+                                            (if (and (member (list k j) r) (not (member (list i j) r)))
+                                                (set! r (cons (list i j) r))))
+                                          nodes)))
+                          nodes))
+              nodes)
+    r))
+(define (same-set? a b) (and (= (length a) (length b)) (let all ((xs a)) (or (null? xs) (and (member (car xs) b) (all (cdr xs)))))))
+(define (reach-pairs db) (map cdr (datalog-relation db 'reach)))
+
+;; ---- basic derivation
+(define db (make-datalog tc-rules))
+(datalog-assert! db '((edge a b) (edge b c) (edge c d)))
+(check "transitive closure" (equal? (vals '?y (datalog-query db '(reach a ?y))) '(b c d)))
+(check "strata" (equal? (datalog-strata db) '((reach))))
+(define d1 (datalog-retract! db '((edge b c))))
+(check "retraction removes derived facts" (equal? (vals '?y (datalog-query db '(reach a ?y))) '(b)))
+(check "the change reports removed rows"
+       (let ((rows (map cadr (filter (lambda (e) (< (car e) 0)) (zset-entries d1)))))
+         (and (member '(reach a c) rows) (member '(reach a d) rows) (member '(edge b c) rows))))
+(datalog-assert! db '((edge c a)))
+(check "cycle" (same-set? (reach-pairs db) (closure '(a b c d) '((a b) (c d) (c a)))))
+(check "duplicate assert is a no-op" (zset-empty? (datalog-assert! db '((edge a b)))))
+(check "retracting an absent fact is a no-op" (zset-empty? (datalog-retract! db '((edge z z)))))
+
+;; ---- random insert/delete sequence: incremental == scratch == Warshall
+(define seed 7)
+(define (rand! k) (set! seed (modulo (+ (* seed 1103515245) 12345) 2147483648)) (modulo (quotient seed 65536) k))
+(define nodes '(0 1 2 3 4 5 6 7))
+(define inc (make-datalog tc-rules))
+(define current '())
+(define all-agree #t)
+(let step ((t 0))
+  (if (< t 30)
+      (let* ((e (list (rand! 8) (rand! 8))) (insert? (or (null? current) (< (rand! 3) 2))))
+        (if insert?
+            (begin (datalog-assert! inc (list (cons 'edge e))) (if (not (member e current)) (set! current (cons e current))))
+            (let ((victim (list-ref current (rand! (length current)))))
+              (datalog-retract! inc (list (cons 'edge victim)))
+              (set! current (filter (lambda (x) (not (equal? x victim))) current))))
+        (let ((scratch (datalog-eval tc-rules (map (lambda (e) (cons 'edge e)) current))))
+          (if (not (and (equal? (datalog-facts inc) scratch)
+                        (same-set? (reach-pairs inc) (closure nodes current))))
+              (set! all-agree #f)))
+        (step (+ t 1)))))
+(check "30 signed updates: incremental, scratch and Warshall agree" all-agree)
+
+;; ---- stratified negation
+(define neg-rules
+  (append tc-rules
+          '((<- (node ?x) (edge ?x ?_))
+            (<- (node ?y) (edge ?_ ?y))
+            (<- (unreachable ?x ?y) (node ?x) (node ?y) (not (reach ?x ?y)))
+            (<- (sink ?x) (node ?x) (not (edge ?x ?_))))))
+(define ndb (make-datalog neg-rules))
+(define (stratum-of p) (let loop ((ss (datalog-strata ndb)) (i 0)) (if (memq p (car ss)) i (loop (cdr ss) (+ i 1)))))
+(check "negated predicates sit in lower strata"
+       (and (< (stratum-of 'reach) (stratum-of 'unreachable)) (< (stratum-of 'node) (stratum-of 'unreachable))
+            (< (stratum-of 'node) (stratum-of 'sink)) (= (length (datalog-strata ndb)) 4)))
+(datalog-assert! ndb '((edge a b) (edge b c)))
+(check "unreachable pairs" (same-set? (map cdr (datalog-relation ndb 'unreachable))
+                                      '((a a) (b a) (b b) (c a) (c b) (c c))))
+(check "sinks" (equal? (vals '?x (datalog-query ndb '(sink ?x))) '(c)))
+(datalog-assert! ndb '((edge c a)))
+(check "negation retracts when the negated fact appears"
+       (and (null? (datalog-relation ndb 'unreachable)) (null? (datalog-relation ndb 'sink))))
+(datalog-retract! ndb '((edge c a) (edge a b)))
+(check "negation re-derives after retraction"
+       (equal? (datalog-facts ndb) (datalog-eval neg-rules '((edge b c)))))
+(check "unstratifiable program refused"
+       (raises? (lambda () (make-datalog '((<- (win ?x) (move ?x ?y) (not (win ?y))))))))
+(check "unsafe rule refused" (raises? (lambda () (make-datalog '((<- (p ?x ?y) (q ?x)))))))
+(check "unsafe negation refused" (raises? (lambda () (make-datalog '((<- (p ?x) (q ?x) (not (r ?y))))))))
+(check "non-ground fact refused" (raises? (lambda () (datalog-assert! (make-datalog tc-rules) '((edge ?x b))))))
+
+;; ---- comparisons, constants, repeated variables, mutual recursion
+(define cmp (make-datalog
+  '((<- (older ?a ?b) (age ?a ?x) (age ?b ?y) (> ?x ?y))
+    (<- (self-loop ?x) (edge ?x ?x))
+    (<- (from-a ?y) (edge a ?y))
+    (<- (even ?x) (zero ?x))
+    (<- (even ?y) (odd ?x) (succ ?x ?y))
+    (<- (odd ?y) (even ?x) (succ ?x ?y)))))
+(datalog-assert! cmp '((age ann 30) (age bob 25) (age cid 35) (edge a a) (edge a b) (edge b b) (edge c d)
+                       (zero 0) (succ 0 1) (succ 1 2) (succ 2 3) (succ 3 4) (succ 4 5)))
+(check "comparison filter" (same-set? (map cdr (datalog-relation cmp 'older)) '((ann bob) (cid ann) (cid bob))))
+(check "repeated variable" (equal? (vals '?x (datalog-query cmp '(self-loop ?x))) '(a b)))
+(check "constant in body" (equal? (vals '?y (datalog-query cmp '(from-a ?y))) '(a b)))
+(check "mutual recursion in one stratum" (equal? (vals '?x (datalog-query cmp '(even ?x))) '(0 2 4)))
+(check "odd" (equal? (vals '?x (datalog-query cmp '(odd ?x))) '(1 3 5)))
+
+;; ---- same generation (non-linear recursion)
+(define sg (make-datalog '((<- (sg ?x ?x) (person ?x))
+                           (<- (sg ?x ?y) (par ?x ?px) (sg ?px ?py) (par ?y ?py)))))
+(datalog-assert! sg '((person c1) (person c2) (person c3) (person p1) (person p2) (person g)
+                      (par c1 p1) (par c2 p1) (par c3 p2) (par p1 g) (par p2 g)))
+(check "same generation" (equal? (vals '?y (datalog-query sg '(sg c1 ?y))) '(c1 c2 c3)))
+
+;; ---- incremental work: a late edge costs less than recomputing
+(define (chain n) (let mk ((i 0)) (if (= i n) '() (cons (list 'edge i (+ i 1)) (mk (+ i 1))))))
+(define big (make-datalog tc-rules))
+(datalog-assert! big (chain 24))
+(define before (datalog-work big))
+(datalog-assert! big '((edge 24 25)))
+(define after (datalog-work big))
+(define fresh (make-datalog tc-rules))
+(datalog-assert! fresh (append (chain 24) '((edge 24 25))))
+(define scratch-work (datalog-work fresh))
+(check "incremental update matches scratch" (equal? (datalog-facts big) (datalog-facts fresh)))
+(check "incremental update does less join work than scratch"
+       (< (- (vector-ref after 3) (vector-ref before 3)) (vector-ref scratch-work 3)))
+
+;; ---- consciousness-engine knowledge base
+(define kb (make-kb))
+(kb-assert! kb '(parent tom bob))
+(kb-assert! kb '(parent bob ann))
+(kb-assert! kb '(parent ann joe))
+(define added (datalog-saturate-kb! kb '((<- (ancestor ?x ?y) (parent ?x ?y))
+                                         (<- (ancestor ?x ?y) (parent ?x ?z) (ancestor ?z ?y)))
+                                    '((parent 2))))
+(check "saturation asserts the derived facts" (= added 6))
+(check "derived facts are queryable with kb-query" (= (length (kb-query kb '(ancestor tom ?who))) 3))
+
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "PASS: reasoning_datalog_test") (newline)
+(display "RESULT: PASS") (newline)

@@ -58,7 +58,7 @@ Read the accumulated gradient at `node` after `ad-backward`. (Builtin aliases `a
 (display " ds/da=")(display (ad-gradient t2 a))(newline)
 ```
 ```
-y=4 dy/dx=4
+y=4.0 dy/dx=4.0
 s=2.128146809304331 ds/da=2.526303832590501
 ```
 (dy/dx = 2x = 4; ds/da = cos 0.5 + exp 0.5 = 2.5263.)
@@ -91,7 +91,7 @@ Return the tape currently installed by `with-tape`, or `#f` outside any `with-ta
 (display "outside: ")(display (current-tape))(newline)
 ```
 ```
-(6)
+(6.0)
 outside: #f
 ```
 
@@ -214,13 +214,13 @@ Each returns a new output node; each takes the **tape first**.
     (list (node-value o) (car (tape-gradient t o (list x))))))))(newline)
 ```
 ```
-square@3 (val grad) (9 6)
-sqrt@4 (2 0.25)
-tanh@0 (0 1)
+square@3 (val grad) (9.0 6.0)
+sqrt@4 (2.0 0.25)
+tanh@0 (0.0 1.0)
 sigmoid@0 (0.5 0.25)
-relu@2 (2 1)
-relu@-2 (0 0)
-pow(3,2) (9 6)
+relu@2 (2.0 1.0)
+relu@-2 (0.0 0.0)
+pow(3,2) (9.0 6.0)
 ```
 
 ### `(tape-gradient t output targets)`
@@ -243,7 +243,7 @@ Write the snapshot values back into the tape's nodes; returns the tape.
 (display (node-value nx))(newline)   ; restored to 3
 ```
 ```
-3
+3.0
 ```
 
 ## Extra builtins (not in `provide`)

@@ -1,0 +1,14 @@
+;; Bidirectional checking (ADR-0042): the body of f is checked against its
+;; return annotation tail by tail. The join of the branches (Int64 and
+;; String) is Value, which is consistent with anything; the branch that does
+;; not fit is reported where it is. Gradual mode warns and compiles.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+;; EXPECT-STDERR: [WARN] Type warning: result of 'f': expected Int64, got String (line 12
+
+(define (f (b : boolean)) : integer
+  (if b
+      1
+      "no"))
+(display (f #t))
+(newline)

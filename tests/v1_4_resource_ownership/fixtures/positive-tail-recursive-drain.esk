@@ -1,0 +1,9 @@
+;; A tail-recursive function closes its parameter only on its base case.
+(define (drain in count)
+  (let ((line (read-line in)))
+    (if (eof-object? line)
+        (begin (close-port in) count)
+        (drain in (+ count 1)))))
+(define in (open-input-file "strict-tail.txt"))
+(display (drain in 0))
+(newline)

@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include "eshkol/types/type_term.h"
 #include <optional>
 #include <memory>
 
@@ -271,6 +272,14 @@ namespace BuiltinTypes {
     // using a qubit more than once (a clone) just like Handle/Stream.
     inline constexpr TypeId Qubit{113, Universe::U0, TYPE_FLAG_LINEAR};
 
+    // Quantum registers and regions (ADR-0048, quantum_types.h). `qreg` is
+    // the register family of any dimension, linear like Qubit; `qreg<e>` and
+    // `qidx<e>` instances are interned per index by internIndexedType().
+    inline constexpr TypeId QReg{130, Universe::U0, TYPE_FLAG_LINEAR};
+    inline constexpr TypeId QIdx{131, Universe::U0, 0};
+    inline constexpr TypeId QRegion{132, Universe::U0, 0};
+    inline constexpr TypeId QRegionBody{133, Universe::U1, 0};
+
     // Proposition types (U2, Proof - erased at runtime)
     inline constexpr TypeId Eq{200, Universe::U2, TYPE_FLAG_PROOF};
     inline constexpr TypeId LessThan{201, Universe::U2, TYPE_FLAG_PROOF};
@@ -439,8 +448,13 @@ struct PiType {
  * - Arithmetic type promotion
  * - Parameterized type instantiation (List<Int64>, etc.)
  */
+namespace cubical { class Kernel; }
+
 class TypeEnvironment {
 private:
+    // The cubical kernel of this compilation (ADR-0043), created on first use.
+    mutable std::shared_ptr<cubical::Kernel> cubical_;
+
     std::map<uint16_t, TypeNode> types_;
     std::map<std::string, TypeId> name_to_id_;
     uint16_t next_user_id_ = 1000;  // User-defined types start at 1000
@@ -483,6 +497,27 @@ private:
     // TypeIds packed into AST nodes and thus codegen).
     mutable uint16_t next_sum_type_id_ = 60000;  // Sum types in range 60000+
 
+    // Indexed family instances (qreg<e>, qidx<e>): ids 58000-59999, below
+    // the sum range and above every other allocator.
+    uint16_t next_indexed_type_id_ = 58000;
+    std::map<uint16_t, std::pair<TypeId, std::string>> indexed_instances_;
+    // Dependent function types by signature key.
+    std::map<std::string, uint16_t> dependent_function_keys_;
+
+    // Dependent types (ADR-0042). A type whose structure the nominal ids
+    // above cannot express -- a Pi or Sigma whose later components mention
+    // earlier binders, a length-indexed (vector A n), a universe above U2 --
+    // is an interned term of the core term language, and its TypeId is a
+    // handle into that store in the range 40000-57999 (58000-59999 are the
+    // indexed family instances above). Types the nominal ids
+    // can express keep their nominal id, so typeFromTerm() and termOf() are
+    // inverse on normal forms and definitional equality coincides with TypeId
+    // equality.
+    mutable TermStore terms_;
+    mutable std::map<uint16_t, TermRef> term_of_type_;
+    mutable std::map<TermRef, uint16_t> type_of_term_;
+    mutable uint16_t next_term_type_id_ = 40000;
+
 public:
     /**
      * Construct a TypeEnvironment with all builtin types registered.
@@ -494,6 +529,9 @@ public:
     /**
      * Register a builtin type.
      */
+    /** The cubical HoTT kernel holding this compilation's `(hott ...)` declarations. */
+    cubical::Kernel& cubicalKernel() const;
+
     TypeId registerBuiltinType(uint16_t id, const std::string& name,
                                Universe level, uint8_t flags,
                                RuntimeRep rep,
@@ -771,7 +809,67 @@ public:
      */
     TypeId codegenReprOf(TypeId id) const;
 
+    // ========== Indexed families (ADR-0048) ==========
+
+    /**
+     * Intern the instance `family<index>` of an indexed family such as
+     * `qreg<3>` or `qidx<n+1>`: a nominal subtype of @p family carrying its
+     * flags (so a register instance is linear), named by its canonical
+     * spelling. Equal spellings give the same TypeId.
+     */
+    TypeId internIndexedType(TypeId family, const std::string& index_spelling);
+
+    /** The family and index spelling of an interned instance, or nullopt. */
+    std::optional<std::pair<TypeId, std::string>> indexedInstanceOf(TypeId id) const;
+
+    /**
+     * A function type that also records its parameter names (a dependent
+     * signature: an index in a parameter or result type may name a
+     * parameter). Identified by @p key, so two signatures that erase to the
+     * same parameter types but differ in their dependency stay distinct.
+     */
+    TypeId makeDependentFunctionType(const std::vector<PiType::Parameter>& params,
+                                     TypeId return_type, bool is_variadic,
+                                     const std::string& key);
+
+    // ========== Dependent Types (ADR-0042) ==========
+
+    /** @brief The interned core term store (types and index terms). */
+    TermStore& terms() const { return terms_; }
+
+    /**
+     * @brief The TypeId of a type term, after normalization: the nominal id
+     *        when one expresses it (a non-dependent Pi is a function
+     *        signature, a non-dependent Sigma a tracked pair), otherwise a
+     *        term-backed id.
+     */
+    TypeId typeFromTerm(TermRef term) const;
+
+    /** @brief The core term of a type: the inverse of typeFromTerm() on normal forms. */
+    TermRef termOf(TypeId id) const;
+
+    /** @brief True if @p id is a term-backed (dependent) type. */
+    bool isTermType(TypeId id) const;
+
+    /**
+     * @brief Erasure: the nominal type a value of @p id is represented by at
+     *        runtime. Pi erases to its function signature, Sigma to a pair,
+     *        (vector A n) to Vector, a universe to Value; nominal types are
+     *        unchanged except that signatures and pairs are erased componentwise.
+     */
+    TypeId erase(TypeId id) const;
+
+    /** @brief The universe a type lives in, by the formation rules; nullopt for a non-type. */
+    std::optional<uint32_t> universeOf(TypeId id) const;
+
+    /** @brief Spell a type term (the printer of TypeRelation::print for term-backed types). */
+    std::string printTerm(TermRef term) const;
+
+    /** @brief Erasure of a type term that may still contain metavariables or loose binders. */
+    TypeId eraseTerm(TermRef term) const;
+
 private:
+
     /**
      * Initialize all builtin types.
      */

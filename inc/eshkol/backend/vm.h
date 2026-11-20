@@ -111,6 +111,40 @@ void eshkol_vm_install_linear_check(EshkolLinearCheckFn fn);
  * analysed at all. Only available where the front end is linked. */
 int eshkol_linear_check_source(const char* source, const char* source_name);
 
+/* Refinement types (ADR-0044) reach the VM by the same route and for the same
+ * reasons: the VM calls the installed checker before compiling any source that
+ * writes `(Refine ...`, and refuses the program when it reports errors (or when
+ * nothing is installed: an unverified refinement is not a proved one). */
+typedef int (*EshkolSourceCheckFn)(const char* source, const char* source_name);
+void eshkol_vm_install_refinement_check(EshkolSourceCheckFn fn);
+
+/* The implementation, in lib/types/linear_check_bridge.cpp: the number of
+ * refinement errors, or -1 when the source could not be analysed. */
+int eshkol_refinement_check_source(const char* source, const char* source_name);
+
+/* HoTT forms (ADR-0043). `(hott decl...)` and `(hott-eval term)` are handled
+ * by the cubical kernel, which lives in the C++ front end; like the linear
+ * check, the VM reaches it through a hook the driver installs. The hook gets
+ * one form as text (NULL starts a new compilation unit) and returns a
+ * malloc'd string: the normal form for hott-eval, "" for hott, or the
+ * diagnostic with *ok = 0. A build that installs nothing refuses HoTT forms. */
+typedef char* (*EshkolHottFormFn)(const char* form_text, int* ok);
+void eshkol_vm_install_hott_form(EshkolHottFormFn fn);
+/* The implementation, in lib/types/hott_forms.cpp. */
+char* eshkol_hott_form_source(const char* form_text, int* ok);
+
+/* The dependent-type counterpart (ADR-0042). A program that writes a type in
+ * the dependent language -- a Pi or Sigma, a universe, a length-indexed
+ * vector, a define-type family with declared parameter sorts -- can fail an
+ * obligation the native engine refuses to compile. The VM asks the same
+ * front end, through this hook, and refuses the same programs. The
+ * implementation, eshkol_dependent_check_source() in
+ * lib/types/linear_check_bridge.cpp, returns the number of failed
+ * obligations, or -1 when the source could not be analysed. A build that
+ * installs nothing refuses dependent-typed programs. */
+void eshkol_vm_install_dependent_check(EshkolSourceCheckFn fn);
+int eshkol_dependent_check_source(const char* source, const char* source_name);
+
 /* Decode an ESKB chunk from an in-memory buffer and create a runnable VM.
  * Returns NULL on bad magic, version mismatch, CRC mismatch, allocation
  * failure, profile-limit violation, or NULL/zero-size input. */

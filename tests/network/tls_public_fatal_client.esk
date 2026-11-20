@@ -1,0 +1,17 @@
+;;; A fatal TLS record error must not trigger another SSL_shutdown call.
+(require stdlib)
+(require core.tls)
+(define port __TLS_PORT__)
+(define ca-file __TLS_CERT__)
+(define context (tls-client-context ca-file))
+(define session
+  (if (tls-error? context) context
+      (tls-connect context "127.0.0.1" port "localhost" 2000)))
+(if (not (tls-error? context)) (tls-context-close context) #f)
+(define result (if (tls-error? session) session (tls-read session 32 1000)))
+(define failed-as-tls-error?
+  (and (tls-error? result) (= (tls-error-code result) -1)))
+(define closed (if (tls-error? session) session (tls-session-close session)))
+(if (not failed-as-tls-error?) (error "malformed TLS record was not rejected"))
+(if (not (= closed 0)) (error "failed TLS session did not close"))
+(display "PASS: fatal TLS errors close without another SSL operation") (newline)

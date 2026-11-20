@@ -1,0 +1,21 @@
+;;; Univalence and function extensionality compute (ADR-0043).
+(hott
+  (import numbers)
+  ;; transport along ua e applies e, definitionally (Int is an inductive type)
+  (example (Path Int (transport 0 Int Int sucPathInt (pos 4)) (pos 5))
+           (refl 0 Int (pos 5)))
+  (example (Pi ((x : Int)) (Path Int (transport 0 Int Int sucPathInt x) (sucInt x)))
+           (lambda (x) (refl 0 Int (sucInt x))))
+  ;; function extensionality is a term, and happly undoes it definitionally
+  (define double : (-> Nat Nat) (lambda (n) (add n n)))
+  (example (Pi ((f g : (-> Nat Nat)) (h : (Pi ((x : Nat)) (Path Nat (f x) (g x)))))
+             (Path (Pi ((x : Nat)) (Path Nat (f x) (g x)))
+                   (happly 0 0 Nat (lambda (_) Nat) f g (funExt 0 0 Nat (lambda (_) Nat) f g h))
+                   h))
+           (lambda (f g h) (refl 0 (Pi ((x : Nat)) (Path Nat (f x) (g x))) h))))
+
+(define (show x) (display x) (newline))
+(show (hott-eval (transport 0 Int Int sucPathInt (pos 4))))
+(show (hott-eval (transport 0 Int Int (sym 1 U Int Int sucPathInt) (pos 0))))
+(show (hott-eval (transport 0 Int Int (trans 1 U Int Int Int sucPathInt sucPathInt) (negsuc 4))))
+(show (hott-eval (double 21)))

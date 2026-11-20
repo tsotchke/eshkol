@@ -21,6 +21,11 @@ TESTS=(
     # takes its execution evidence from that run — a construct exercised only
     # under ctest earns no coverage credit.
     tests/v1_3_edge_cases/event_loop_test.esk
+    # Stackful coroutines and core.fibers: listed here so the coverage
+    # harness sees every coroutine builtin execute (run_all_tests.sh drives
+    # this script); scripts/run_fibers_gate.py adds the JIT route and stress.
+    tests/fibers/coroutine_primitives_test.esk
+    tests/fibers/fibers_test.esk
     tests/ad/one_pass_gradient_test.esk
     # The negative control for the finite-difference counter and the matmul
     # tape-node ratchet. Listed here as well as in the AD exactness gate so the

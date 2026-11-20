@@ -1,0 +1,593 @@
+;;; certificate.esk -- certificates for certified steps, checked outside Eshkol.
+;;;
+;;; (require core.certificate)
+;;;
+;;; A certificate is a core.transcript claim (kind, label, exact inputs,
+;;; output) extended with a WITNESS: the data that lets a small program
+;;; that does not trust the compiler confirm the output by cheap
+;;; recomputation -- multiply out U A V and compare with the Smith form,
+;;; check s a + t b = g, check a Pratt tree, compare P A with L U.  The
+;;; checker is tools/certcheck/eshkol_certcheck.py (Python 3 standard
+;;; library only); tools/certcheck/lean_export.py turns the decidable
+;;; finite facts into Lean 4 theorems that the Lean kernel re-checks.
+;;; Design record: docs/design/adr/0047-certificates-and-independent-checker.md.
+;;;
+;;; ---------------------------------------------------------------------
+;;; Claim and document format (version eshkol.certificate.v1)
+;;; ---------------------------------------------------------------------
+;;; A certificate claim is the ordered JSON object
+;;;
+;;;   {"kind":..., "label":..., "inputs":{...}, "output":<value>,
+;;;    "witness":{...}, "premises":[...],
+;;;    "id":"sha256:<64 hex>", "hash":"<16 hex>"}
+;;;
+;;; Values use core.transcript's canonical encoding (tv-*).  "premises"
+;;; lists every statement the checker takes on trust for this claim (empty
+;;; for every kind except a Taylor-model enclosure, whose remainder bound
+;;; is a premise).  "id" is the sha256 content address of the canonical
+;;; JSON text of the fields before it; "hash" is core.transcript's fnv1a-64
+;;; over every field before it, so transcript tooling reads certificate
+;;; claims unchanged.  A document is
+;;;
+;;;   {"schema":"eshkol.certificate.v1","program":"<name>","claims":[...]}
+;;;
+;;; The identifiers are names, not proofs: a checker recomputes the
+;;; mathematics of every claim from its inputs and witness, and its verdict
+;;; never rests on a hash.
+;;;
+;;; ---------------------------------------------------------------------
+;;; Emission
+;;; ---------------------------------------------------------------------
+;;; Each certify-* procedure computes its value through the library that
+;;; owns it and returns a certificate object: (certificate-value c) is the
+;;; value, (certificate-claim c) the claim.  (certificate-open name) is a
+;;; sink that is active iff ESHKOL_CERTIFICATES names a file;
+;;; (certificate-record! h c) adds a claim and (certificate-close! h)
+;;; writes the document.  The special form (certify (f arg ...)) evaluates
+;;; to (f arg ...) and, when ESHKOL_CERTIFICATES is set, also appends a
+;;; certificate for that call to the file; the compiler rewrites it to
+;;; (certify-call "f" f (list arg ...)).
+
+(require stdlib)
+(require core.json)
+(require core.transcript)
+(require agent.crypto)
+(require core.exact_linalg)
+(require core.integer_linalg)
+(require core.exact_psd)
+(require core.certified_solve)
+(require core.polynomial_exact)
+(require core.ring)
+(require core.symbolic)
+(require core.ad.taylor_models)
+
+(provide
+  ;; objects
+  certificate? certificate-value certificate-claim certificate-kind certificate-label
+  certificate-id certificate->json make-certificate
+  ;; sinks
+  certificate-open certificate-open-path certificate-record! certificate-close!
+  certificate-write-file
+  ;; producers
+  certify-rank certify-determinant certify-smith-normal-form certify-linear-solution
+  certify-solve-enclosure certify-psd certify-integer-gcd certify-poly-gcd
+  certify-polynomial-identity certify-primality certify-polynomial-range
+  certify-taylor-model-range certify-cocycle certify-cohomology-class
+  pratt-certificate
+  ;; the (certify ...) form
+  certify-call register-certifier! certifier-names)
+
+(define cert-schema "eshkol.certificate.v1")
+(define cert-env "ESHKOL_CERTIFICATES")
+
+;; ---------------------------------------------------------------------
+;; Objects
+;; ---------------------------------------------------------------------
+
+(define (cert-exact! x what)
+  (if (not (and (number? x) (exact? x) (rational? x)))
+      (error "certificate: an exact rational is required" what x))
+  x)
+
+(define (cert-rat x) (tv-rat (cert-exact! x "value")))
+(define (cert-int x)
+  (if (not (and (number? x) (exact? x) (integer? x)))
+      (error "certificate: an exact integer is required" x))
+  (tv-int x))
+(define (cert-vec v) (tv-list (map cert-rat (if (vector? v) (vector->list v) v))))
+(define (cert-mat m)
+  (vector-for-each (lambda (row) (vector-for-each (lambda (x) (cert-exact! x "matrix entry")) row)) m)
+  (tv-matrix-vec m))
+(define (cert-mat-cols m ncols)
+  ;; A matrix with no rows still records its column count.
+  (if (= 0 (vector-length m))
+      (list (cons "t" "mat") (cons "rows" 0) (cons "cols" ncols) (cons "data" (vector)))
+      (cert-mat m)))
+(define (cert-int-list xs) (tv-list (map cert-int xs)))
+(define (cert-poly coeffs) (tv-poly "x" (map (lambda (c) (cert-exact! c "coefficient")) coeffs)))
+(define (cert-interval lo hi) (tv-list (list (cert-rat lo) (cert-rat hi))))
+
+(define (make-certificate kind label inputs output witness premises value)
+  "kind/label: strings; inputs/witness: ordered alists of encoded values;
+   output: an encoded value; premises: a list of alists (empty when the
+   checker takes nothing on trust).  Seals the claim with its sha256 id."
+  (let* ((body (list (cons "kind" kind) (cons "label" label) (cons "inputs" inputs)
+                     (cons "output" output) (cons "witness" witness)
+                     (cons "premises" (list->vector premises))))
+         (id (string-append "sha256:" (sha256 (json-stringify body)))))
+    (vector 'eshkol-certificate value (append body (list (cons "id" id))))))
+
+(define (certificate? c) (and (vector? c) (= (vector-length c) 3) (eq? (vector-ref c 0) 'eshkol-certificate)))
+(define (certificate-value c) (vector-ref c 1))
+(define (certificate-claim c) (vector-ref c 2))
+(define (cert-field c name) (cdr (assoc name (certificate-claim c))))
+(define (certificate-kind c) (cert-field c "kind"))
+(define (certificate-label c) (cert-field c "label"))
+(define (certificate-id c) (cert-field c "id"))
+(define (certificate->json c) (json-stringify (transcript-seal-claim (certificate-claim c))))
+
+;; ---------------------------------------------------------------------
+;; Sinks (core.transcript handles with the certificate schema)
+;; ---------------------------------------------------------------------
+
+(define (certificate-open program) (transcript-open-as program cert-env cert-schema))
+(define (certificate-open-path program path) (transcript-open-path program path cert-schema))
+(define (certificate-record! h c) (transcript-record-claim! h (certificate-claim c)))
+(define (certificate-close! h) (transcript-close! h))
+(define (certificate-write-file path program certificates)
+  (let ((h (certificate-open-path program path)))
+    (for-each (lambda (c) (certificate-record! h c)) certificates)
+    (certificate-close! h)))
+
+;; ---------------------------------------------------------------------
+;; Small exact helpers
+;; ---------------------------------------------------------------------
+
+(define (cert-rows m) (vector-length m))
+(define (cert-cols m ncols) (if (= 0 (vector-length m)) ncols (vector-length (vector-ref m 0))))
+(define (cert-transpose m ncols)
+  (let ((out (make-vector ncols #f)))
+    (let loop ((j 0))
+      (if (< j ncols)
+          (begin (vector-set! out j (list->vector (map (lambda (row) (vector-ref row j)) (vector->list m))))
+                 (loop (+ j 1)))
+          out))))
+(define (cert-identity n) (integer-identity-matrix n))
+(define (cert-integral-matrix! m what)
+  (vector-for-each (lambda (row) (vector-for-each (lambda (x)
+    (if (not (and (exact? x) (integer? x))) (error "certificate: integral matrix required" what x))) row)) m)
+  m)
+(define (cert-matvec m v)
+  (list->vector (map (lambda (row)
+    (let loop ((j 0) (acc 0))
+      (if (= j (vector-length row)) acc (loop (+ j 1) (+ acc (* (vector-ref row j) (vector-ref v j)))))))
+    (vector->list m))))
+(define (cert-unimodular-inverse u what)
+  (if (= 0 (vector-length u)) u (cert-integral-matrix! (exact-inverse u) what)))
+(define (cert-list-index xs x)
+  (let loop ((xs xs) (i 0)) (cond ((null? xs) #f) ((equal? (car xs) x) i) (else (loop (cdr xs) (+ i 1))))))
+
+;; ---------------------------------------------------------------------
+;; Exact linear algebra
+;; ---------------------------------------------------------------------
+
+;; Rank over Q.  Witness: a nonsingular rank x rank minor (independent
+;; rows and pivot columns) gives rank >= r; n - r kernel vectors that are
+;; independent (their entries at the free columns form an identity) give
+;; rank <= r.
+(define (certify-rank A . opt)
+  (let* ((label (if (null? opt) "rank" (car opt)))
+         (m (cert-rows A)) (n (if (= m 0) 0 (cert-cols A 0)))
+         (cols (if (or (= m 0) (= n 0)) '() (exact-pivot-columns A)))
+         (rows (if (or (= m 0) (= n 0)) '() (exact-pivot-columns (cert-transpose A n))))
+         (r (length cols))
+         (kernel (if (or (= m 0) (= n 0)) (map (lambda (j) (vector-ref (cert-identity n) j)) (iota n))
+                     (exact-nullspace A)))
+         (free (let loop ((j 0) (acc '()))
+                 (if (= j n) (reverse acc) (loop (+ j 1) (if (memv j cols) acc (cons j acc)))))))
+    (if (not (= (length rows) r)) (error "certify-rank: row and column ranks differ" A))
+    (make-certificate "rank" label
+      (list (cons "matrix" (cert-mat-cols A n)))
+      (cert-int r)
+      (list (cons "rows" (cert-int-list rows)) (cons "cols" (cert-int-list cols))
+            (cons "kernel" (cert-mat-cols (list->vector kernel) n))
+            (cons "kernel_cols" (cert-int-list free)))
+      '() r)))
+
+;; Determinant.  Witness: P A = L U (exact-plu); det = sign(P) prod diag U.
+(define (certify-determinant A . opt)
+  (let* ((label (if (null? opt) "determinant" (car opt)))
+         (plu (exact-plu A)) (perm (car plu)) (L (cadr plu)) (U (caddr plu)) (sign (cadddr plu))
+         (det (let loop ((i 0) (acc sign))
+                (if (= i (vector-length U)) acc (loop (+ i 1) (* acc (exact-matrix-ref U i i)))))))
+    (if (not (= det (exact-det A))) (error "certify-determinant: factorization and Bareiss disagree" A))
+    (make-certificate "determinant" label
+      (list (cons "matrix" (cert-mat A)))
+      (cert-rat det)
+      (list (cons "perm" (cert-int-list perm)) (cons "L" (cert-mat L)) (cons "U" (cert-mat U)))
+      '() det)))
+
+;; Smith normal form over Z.  Witness: U A V = D with U, V and their
+;; integer inverses.  Output: the nonzero invariant factors d_1 | d_2 | ...
+;; Value: core.integer_linalg's (list diag U V).
+(define (certify-smith-normal-form A . opt)
+  (let* ((label (if (null? opt) "smith_normal_form" (car opt)))
+         (m (cert-rows A)) (n (if (= m 0) 0 (cert-cols A 0))))
+    (cert-integral-matrix! A "smith-normal-form input")
+    (let* ((s (if (or (= m 0) (= n 0)) (list '() (cert-identity m) (cert-identity n)) (smith-normal-form A)))
+           (U (cadr s)) (V (caddr s)))
+      (make-certificate "smith_normal_form" label
+        (list (cons "matrix" (cert-mat-cols A n)))
+        (cert-int-list (car s))
+        (list (cons "U" (cert-mat-cols U m)) (cons "V" (cert-mat-cols V n))
+              (cons "U_inv" (cert-mat-cols (cert-unimodular-inverse U "U") m))
+              (cons "V_inv" (cert-mat-cols (cert-unimodular-inverse V "V") n)))
+        '() s))))
+
+;; The unique solution of A x = b.  Witness: A^-1 (A A^-1 = I proves A
+;; nonsingular, A x = b is checked directly).
+(define (certify-linear-solution A b . opt)
+  (let* ((label (if (null? opt) "linear_solution" (car opt)))
+         (x (exact-solve A b)) (inv (exact-inverse A)))
+    (make-certificate "linear_solution" label
+      (list (cons "matrix" (cert-mat A)) (cons "rhs" (cert-vec b)))
+      (cert-vec x)
+      (list (cons "inverse" (cert-mat inv)))
+      '() x)))
+
+;; core.certified_solve's a-posteriori enclosure for a received solution.
+;; The checker recomputes the residual, the defect I - R A, the
+;; contraction bound theta < 1 and the radii from the inputs alone.
+(define (certify-solve-enclosure A b x R . options)
+  (let* ((n (vector-length A))
+         (w (if (null? options) (make-vector n 1) (car options)))
+         (dA (if (< (length options) 2) (list->vector (map (lambda (i) (make-vector n 0)) (iota n))) (cadr options)))
+         (db (if (< (length options) 3) (make-vector n 0) (caddr options)))
+         (c (certify-linear-solve A b x R w dA db))
+         (status (vector-ref c 1)) (boxes (vector-ref c 2)))
+    (make-certificate "linear_solve_enclosure" "linear_solve_enclosure"
+      (list (cons "matrix" (cert-mat A)) (cons "rhs" (cert-vec b)) (cons "received" (cert-vec x))
+            (cons "inverse" (cert-mat R)) (cons "weights" (cert-vec w))
+            (cons "matrix_radii" (cert-mat dA)) (cons "rhs_radii" (cert-vec db)))
+      (list (cons "status" (tv-string (symbol->string status)))
+            (cons "boxes" (if boxes
+                              (tv-list (map (lambda (box) (cert-interval (car box) (cdr box))) (vector->list boxes)))
+                              (tv-list '()))))
+      (list (cons "norm" (tv-string "weighted-max")))
+      '() c)))
+
+;; Positive semidefiniteness of a symmetric rational matrix.  Witness:
+;; M = B^T diag(D) B with D > 0 (PSD), or v with v^T M v < 0 (not PSD).
+;; Value: core.exact_psd's result object.
+(define (certify-psd M . opt)
+  (let* ((label (if (null? opt) "psd" (car opt)))
+         (res (exact-psd-factor M)) (ok (psd-factor? res)))
+    (make-certificate "psd" label
+      (list (cons "matrix" (cert-mat M)))
+      (tv-bool ok)
+      (if ok
+          (list (cons "B" (cert-mat (psd-factor-rows res))) (cons "D" (cert-vec (psd-factor-weights res))))
+          (list (cons "v" (cert-vec (psd-negative-direction res)))))
+      '() res)))
+
+;; ---------------------------------------------------------------------
+;; GCDs
+;; ---------------------------------------------------------------------
+
+;; gcd over Z.  Witness: s a + t b = g and the cofactors a/g, b/g.
+(define (certify-integer-gcd a b . opt)
+  (let* ((label (if (null? opt) "integer_gcd" (car opt)))
+         (gst (exact-gcdext a b)) (g (car gst)))
+    (make-certificate "integer_gcd" label
+      (list (cons "a" (cert-int a)) (cons "b" (cert-int b)))
+      (cert-int g)
+      (list (cons "s" (cert-int (cadr gst))) (cons "t" (cert-int (caddr gst)))
+            (cons "a_over_g" (cert-int (if (= g 0) 0 (quotient a g))))
+            (cons "b_over_g" (cert-int (if (= g 0) 0 (quotient b g)))))
+      '() gst)))
+
+;; Monic gcd in Q[x] (coefficients lowest degree first).  Witness:
+;; s a + t b = g and the cofactors a/g, b/g.
+(define (certify-poly-gcd a b . opt)
+  (let* ((label (if (null? opt) "poly_gcd" (car opt)))
+         (gst (exact-poly-gcdext a b)) (g (car gst))
+         (cof (lambda (p) (if (exact-poly-zero? g) (vector 0)
+                            (let ((qr (exact-poly-divmod p g)))
+                              (if (not (exact-poly-zero? (cdr qr))) (error "certify-poly-gcd: gcd does not divide" p))
+                              (car qr))))))
+    (make-certificate "poly_gcd" label
+      (list (cons "a" (cert-poly (vector->list (exact-poly a)))) (cons "b" (cert-poly (vector->list (exact-poly b)))))
+      (cert-poly (vector->list g))
+      (list (cons "s" (cert-poly (vector->list (cadr gst)))) (cons "t" (cert-poly (vector->list (caddr gst))))
+            (cons "a_over_g" (cert-poly (vector->list (cof a)))) (cons "b_over_g" (cert-poly (vector->list (cof b)))))
+      '() gst)))
+
+;; ---------------------------------------------------------------------
+;; Polynomial identities
+;; ---------------------------------------------------------------------
+;; An expression is a number, a symbol, or (+ e ...), (- e ...), (* e ...),
+;; (expt e k) with k a nonnegative exact integer.
+
+(define (cert-expr->json e)
+  (cond ((number? e) (list (cons "const" (cert-rat e))))
+        ((symbol? e) (list (cons "var" (symbol->string e))))
+        ((and (pair? e) (memq (car e) '(+ - *)))
+         (list (cons "op" (symbol->string (car e))) (cons "args" (list->vector (map cert-expr->json (cdr e))))))
+        ((and (pair? e) (eq? (car e) 'expt) (= (length e) 3)
+              (exact? (caddr e)) (integer? (caddr e)) (>= (caddr e) 0))
+         (list (cons "op" "expt") (cons "args" (vector (cert-expr->json (cadr e)))) (cons "k" (cert-int (caddr e)))))
+        (else (error "certify-polynomial-identity: not a polynomial expression" e))))
+
+(define (cert-expr->poly e)
+  (cond ((number? e) (poly-const (cert-exact! e "constant")))
+        ((symbol? e) (poly-var e))
+        ((eq? (car e) '+) (fold-left poly+ (poly-const 0) (map cert-expr->poly (cdr e))))
+        ((eq? (car e) '*) (fold-left poly* (poly-const 1) (map cert-expr->poly (cdr e))))
+        ((eq? (car e) '-)
+         (if (null? (cddr e))
+             (poly- (poly-const 0) (cert-expr->poly (cadr e)))
+             (fold-left poly- (cert-expr->poly (cadr e)) (map cert-expr->poly (cddr e)))))
+        ((eq? (car e) 'expt) (poly-expt (cert-expr->poly (cadr e)) (caddr e)))
+        (else (error "certify-polynomial-identity: not a polynomial expression" e))))
+
+;; Output: whether lhs = rhs as polynomials.  Witness: the expanded normal
+;; form of lhs - rhs (no terms exactly when the identity holds).
+(define (certify-polynomial-identity lhs rhs . opt)
+  (let* ((label (if (null? opt) "polynomial_identity" (car opt)))
+         (lj (cert-expr->json lhs)) (rj (cert-expr->json rhs))
+         (diff (poly- (cert-expr->poly lhs) (cert-expr->poly rhs)))
+         (vars (cadr diff)) (terms (caddr diff)))
+    (make-certificate "polynomial_identity" label
+      (list (cons "lhs" lj) (cons "rhs" rj))
+      (tv-bool (null? terms))
+      (list (cons "vars" (list->vector (map symbol->string vars)))
+            (cons "difference" (list->vector (map (lambda (term)
+              (list (cons "e" (cert-int-list (vector->list (car term)))) (cons "c" (cert-rat (cdr term)))))
+              terms))))
+      '() (null? terms))))
+
+;; ---------------------------------------------------------------------
+;; Primality: Pratt certificates (Pratt 1975) and compositeness witnesses
+;; ---------------------------------------------------------------------
+
+(define (cert-pollard-rho n c)
+  (let loop ((x 2) (y 2) (d 1) (steps 0))
+    (cond ((> steps 2000000) #f)
+          ((not (= d 1)) (if (= d n) #f d))
+          (else
+           (let* ((x2 (modulo (+ (* x x) c) n))
+                  (y1 (modulo (+ (* y y) c) n))
+                  (y2 (modulo (+ (* y1 y1) c) n)))
+             (loop x2 y2 (gcd (abs (- x2 y2)) n) (+ steps 1)))))))
+
+(define (cert-split n)
+  ;; A nontrivial factor of a composite n.
+  (let trial ((d 2))
+    (cond ((> (* d d) n) n)
+          ((> d 10000)
+           (let rho ((c 1))
+             (let ((f (cert-pollard-rho n c)))
+               (if f f (if (> c 40) (error "pratt-certificate: no factor found" n) (rho (+ c 1)))))))
+          ((= 0 (modulo n d)) d)
+          (else (trial (+ d 1))))))
+
+(define (cert-prime-factors n)
+  ;; Distinct prime factors of n >= 1 with multiplicities, ascending.
+  (let collect ((stack (list n)) (primes '()))
+    (cond ((null? stack)
+           (let tally ((ps (sort primes <)) (acc '()))
+             (if (null? ps) (reverse acc)
+                 (if (and (pair? acc) (= (caar acc) (car ps)))
+                     (tally (cdr ps) (cons (cons (car ps) (+ 1 (cdar acc))) (cdr acc)))
+                     (tally (cdr ps) (cons (cons (car ps) 1) acc))))))
+          ((= (car stack) 1) (collect (cdr stack) primes))
+          ((exact-prime? (car stack)) (collect (cdr stack) (cons (car stack) primes)))
+          (else (let ((f (cert-split (car stack))))
+                  (collect (append (list f (quotient (car stack) f)) (cdr stack)) primes))))))
+
+;; (pratt-certificate p) -> nested alist for a prime p (an error otherwise):
+;; {"n", "a", "factors":[{"q","e","cert"}...]}; a generates (Z/p)^*.
+(define (pratt-certificate p)
+  (if (not (exact-prime? p)) (error "pratt-certificate: not a prime" p))
+  (if (= p 2)
+      (list (cons "n" (cert-int 2)))
+      (let* ((fs (cert-prime-factors (- p 1)))
+             (a (let search ((a 2))
+                  (if (and (= 1 (exact-expt-mod a (- p 1) p))
+                           (let each ((fs fs))
+                             (or (null? fs)
+                                 (and (not (= 1 (exact-expt-mod a (quotient (- p 1) (caar fs)) p)))
+                                      (each (cdr fs))))))
+                      a (search (+ a 1))))))
+        (list (cons "n" (cert-int p)) (cons "a" (cert-int a))
+              (cons "factors" (list->vector (map (lambda (f)
+                (list (cons "q" (cert-int (car f))) (cons "e" (cert-int (cdr f)))
+                      (cons "cert" (pratt-certificate (car f)))))
+                fs)))))))
+
+;; A Miller-Rabin base that proves n composite (Rabin 1980).
+(define (cert-mr-witness n)
+  (let split ((d (- n 1)) (s 0))
+    (if (even? d) (split (quotient d 2) (+ s 1))
+        (let try ((a 2))
+          (if (>= a (- n 1)) #f
+              (let ((x (exact-expt-mod a d n)))
+                (if (or (= x 1) (= x (- n 1))
+                        (let sq ((x x) (r 1))
+                          (cond ((>= r s) #f)
+                                ((= (modulo (* x x) n) (- n 1)) #t)
+                                (else (sq (modulo (* x x) n) (+ r 1))))))
+                    (try (+ a 1))
+                    a)))))))
+
+(define (certify-primality n . opt)
+  (let ((label (if (null? opt) "primality" (car opt))))
+    (cond ((< n 2)
+           (make-certificate "primality" label (list (cons "n" (cert-int n))) (tv-bool #f)
+             (list (cons "reason" (tv-string "less-than-two"))) '() #f))
+          ((exact-prime? n)
+           (make-certificate "primality" label (list (cons "n" (cert-int n))) (tv-bool #t)
+             (list (cons "pratt" (pratt-certificate n))) '() #t))
+          ((even? n)
+           (make-certificate "primality" label (list (cons "n" (cert-int n))) (tv-bool #f)
+             (list (cons "factor" (cert-int 2))) '() #f))
+          (else
+           (make-certificate "primality" label (list (cons "n" (cert-int n))) (tv-bool #f)
+             (list (cons "miller_rabin_base" (cert-int (cert-mr-witness n)))) '() #f)))))
+
+;; ---------------------------------------------------------------------
+;; Enclosures
+;; ---------------------------------------------------------------------
+
+;; Coefficients of p(x) re-expanded about c: p(x) = sum q_i (x - c)^i.
+(define (cert-taylor-shift coeffs c)
+  (let ((q (list->vector coeffs)) (n (length coeffs)))
+    (let outer ((k 0))
+      (if (< k n)
+          (begin
+            (let inner ((i (- n 2)))
+              (if (>= i k)
+                  (begin (vector-set! q i (+ (vector-ref q i) (* c (vector-ref q (+ i 1)))))
+                         (inner (- i 1)))))
+            (outer (+ k 1)))))
+    (vector->list q)))
+
+(define (cert-centered-bound q r)
+  ;; sum_{i>=1} |q_i| r^i
+  (let loop ((qs (if (null? q) '() (cdr q))) (rp r) (acc 0))
+    (if (null? qs) acc (loop (cdr qs) (* rp r) (+ acc (* (abs (car qs)) rp))))))
+
+;; Range of an exact polynomial (coefficients lowest first) on [lo, hi]:
+;; the centred form q_0 +- sum |q_i| r^i, exact.  Witness: the centre and
+;; the re-expanded coefficients.  Nothing is taken on trust.
+(define (certify-polynomial-range coeffs lo hi . opt)
+  (let* ((label (if (null? opt) "polynomial_range" (car opt)))
+         (cs (map (lambda (x) (cert-exact! x "coefficient")) (if (vector? coeffs) (vector->list coeffs) coeffs)))
+         (c (/ (+ lo hi) 2)) (r (/ (- hi lo) 2))
+         (q (cert-taylor-shift cs c)) (s (cert-centered-bound q r))
+         (q0 (if (null? q) 0 (car q))))
+    (make-certificate "polynomial_range" label
+      (list (cons "poly" (cert-poly cs)) (cons "box" (cert-interval lo hi)))
+      (cert-interval (- q0 s) (+ q0 s))
+      (list (cons "center" (cert-rat c)) (cons "shifted" (cert-poly q)))
+      '() (cons (- q0 s) (+ q0 s)))))
+
+;; The enclosure (tm-range tm) of a validated-AD Taylor model
+;; (core.ad.taylor_models).  Every double is recorded exactly (tv-float);
+;; the checker confirms, in exact arithmetic, that the stated range
+;; contains P([-r, r]) + R.  The remainder interval R comes from a
+;; derivative bound sampled on a grid, so it is listed as a premise.
+(define (certify-taylor-model-range tm . opt)
+  (let* ((label (if (null? opt) "taylor_model_range" (car opt)))
+         (range (tm-range tm)) (R (tm-remainder tm)))
+    (make-certificate "taylor_model_range" label
+      (list (cons "coeffs" (tv-list (map tv-float (tm-coeffs tm))))
+            (cons "center" (tv-float (tm-center tm))) (cons "radius" (tv-float (tm-radius tm)))
+            (cons "remainder" (tv-list (list (tv-float (car R)) (tv-float (cdr R))))))
+      (tv-list (list (tv-float (car range)) (tv-float (cdr range))))
+      (list (cons "rounding" (tv-string "outward")) (cons "order" (cert-int (tm-order tm))))
+      (list (list (cons "name" "remainder_bound")
+                  (cons "statement" "f(x) - P(x - center) lies in the remainder interval for every x in [center - radius, center + radius]")
+                  (cons "basis" "a bound on the (order+1)-th derivative sampled on a grid with a safety factor (core.ad.taylor_models)")))
+      range)))
+
+;; ---------------------------------------------------------------------
+;; Cochains
+;; ---------------------------------------------------------------------
+
+;; Output: whether D z = 0 (z is a cocycle for the coboundary map D).
+;; Witness: the product D z itself, which the checker recomputes.
+(define (certify-cocycle D z . opt)
+  (let* ((label (if (null? opt) "cocycle" (car opt)))
+         (n (vector-length z)) (Dz (cert-matvec D z))
+         (ok (let loop ((i 0)) (or (= i (vector-length Dz)) (and (= 0 (vector-ref Dz i)) (loop (+ i 1)))))))
+    (make-certificate "cocycle" label
+      (list (cons "coboundary_map" (cert-mat-cols D n)) (cons "cochain" (cert-vec z)))
+      (tv-bool ok) (list (cons "product" (cert-vec Dz))) '() ok)))
+
+;; Whether the integer cocycle z is a coboundary, z = D w for an integer w.
+;; Witness: w; or, when it is not, the Smith form U D V = diag(d) with
+;; inverses and an index i at which (U z)_i is not a multiple of d_i
+;; (d_i = 0 past the rank), which no element of D Z^n can satisfy.
+(define (certify-cohomology-class D z . opt)
+  (let* ((label (if (null? opt) "cohomology_class" (car opt)))
+         (m (vector-length D)) (n (if (= m 0) 0 (vector-length (vector-ref D 0))))
+         (s (if (or (= m 0) (= n 0)) (list '() (cert-identity m) (cert-identity n)) (smith-normal-form D)))
+         (d (car s)) (U (cadr s)) (V (caddr s)) (y (cert-matvec U z))
+         (bad (let loop ((i 0))
+                (cond ((= i m) #f)
+                      ((< i (length d)) (if (= 0 (modulo (vector-ref y i) (list-ref d i))) (loop (+ i 1)) i))
+                      ((= 0 (vector-ref y i)) (loop (+ i 1)))
+                      (else i)))))
+    (cert-integral-matrix! D "coboundary map")
+    (make-certificate "cohomology_class" label
+      (list (cons "coboundary_map" (cert-mat-cols D n)) (cons "cocycle" (cert-vec z)))
+      (list (cons "t" "str") (cons "v" (if bad "nontrivial" "coboundary")))
+      (if bad
+          (list (cons "U" (cert-mat-cols U m)) (cons "V" (cert-mat-cols V n))
+                (cons "U_inv" (cert-mat-cols (cert-unimodular-inverse U "U") m))
+                (cons "V_inv" (cert-mat-cols (cert-unimodular-inverse V "V") n))
+                (cons "diagonal" (cert-int-list d)) (cons "index" (cert-int bad)))
+          (let ((w (make-vector n 0)))
+            (let loop ((i 0))
+              (if (< i (length d))
+                  (begin (vector-set! w i (quotient (vector-ref y i) (list-ref d i))) (loop (+ i 1)))))
+            (list (cons "w" (cert-vec (cert-matvec V w))))))
+      '() (not bad))))
+
+;; ---------------------------------------------------------------------
+;; The (certify (f arg ...)) form
+;; ---------------------------------------------------------------------
+;; The registry maps a primitive's name to a producer taking the argument
+;; list and returning a certificate whose value is what the primitive
+;; itself returns for those arguments.
+
+(define cert-registry
+  (vector
+    (list (cons "exact-rank" (lambda (args) (certify-rank (car args) "exact-rank")))
+          (cons "exact-det" (lambda (args) (certify-determinant (car args) "exact-det")))
+          (cons "smith-normal-form" (lambda (args) (certify-smith-normal-form (car args) "smith-normal-form")))
+          (cons "exact-solve" (lambda (args) (certify-linear-solution (car args) (cadr args) "exact-solve")))
+          (cons "certify-linear-solve" (lambda (args) (apply certify-solve-enclosure args)))
+          (cons "exact-psd-factor" (lambda (args) (certify-psd (car args) "exact-psd-factor")))
+          (cons "gcd" (lambda (args)
+                        (let ((c (certify-integer-gcd (car args) (cadr args) "gcd")))
+                          (vector 'eshkol-certificate (car (certificate-value c)) (certificate-claim c)))))
+          (cons "exact-gcdext" (lambda (args) (certify-integer-gcd (car args) (cadr args) "exact-gcdext")))
+          (cons "exact-poly-gcdext" (lambda (args) (certify-poly-gcd (car args) (cadr args) "exact-poly-gcdext")))
+          (cons "exact-prime?" (lambda (args) (certify-primality (car args) "exact-prime?")))
+          (cons "tm-range" (lambda (args) (certify-taylor-model-range (car args) "tm-range"))))))
+
+(define (register-certifier! name producer)
+  "producer: (lambda (args) certificate); its value must equal the named
+   primitive's value on args."
+  (vector-set! cert-registry 0 (cons (cons name producer) (vector-ref cert-registry 0)))
+  name)
+
+(define (certifier-names) (map car (vector-ref cert-registry 0)))
+
+;; The process sink: opened on first use from ESHKOL_CERTIFICATES and
+;; rewritten after every record, so no claim is lost if the program exits
+;; without closing it.
+(define cert-sink (vector #f 0))
+
+(define (cert-process-sink)
+  (if (not (vector-ref cert-sink 0))
+      (let ((program (get-environment-variable "ESHKOL_CERTIFICATES_PROGRAM")))
+        (vector-set! cert-sink 0 (certificate-open (if (and program (string? program)) program "eshkol-program")))))
+  (vector-ref cert-sink 0))
+
+(define (certify-call name procedure args)
+  "The expansion of (certify (name arg ...)).  Returns the value of
+   (procedure arg ...); when ESHKOL_CERTIFICATES is set, also appends a
+   certificate for the call to that file."
+  (let ((h (cert-process-sink)))
+    (if (not (transcript-active? h))
+        (apply procedure args)
+        (let ((entry (assoc name (vector-ref cert-registry 0))))
+          (if (not entry) (error "certify: no certifying producer is registered for" name))
+          (let ((c ((cdr entry) args)))
+            (vector-set! cert-sink 1 (+ 1 (vector-ref cert-sink 1)))
+            (certificate-record! h c)
+            (certificate-close! h)
+            (certificate-value c))))))

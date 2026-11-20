@@ -1,0 +1,4 @@
+;; A closure that captures a handle constructor is stored in a global with
+;; set!; the checker cannot see where it is called.
+(define saved #f)
+(set! saved (lambda (path) (open-input-file path)))

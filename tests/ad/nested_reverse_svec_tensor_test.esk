@@ -1,0 +1,16 @@
+;;; A tensor-point reverse gradient inside a vector-point gradient.
+;;; Inner: grad_x [w0 x0] = (w0, 0), so the outer gradient of its component 0
+;;; over w is (1, 0).
+(define g
+  (gradient
+   (lambda (w)
+     (vector-ref
+      (gradient
+       (lambda (x) (* (vector-ref w 0) (vector-ref x 0)))
+       #(1 2))
+      0))
+   (vector 3.0 4.0)))
+(display g) (newline)
+(if (and (= (vref g 0) 1.0) (= (vref g 1) 0.0))
+    (begin (display "PASS: nested reverse svec-tensor") (newline))
+    (begin (display "FAIL: nested reverse svec-tensor") (newline)))

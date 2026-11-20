@@ -245,7 +245,7 @@ their own. See [JIT internals](reference/runtime/jit-internals.md).
 |-------|----------|---------|
 | Run cache (`-r`) | `$ESHKOL_JIT_CACHE_DIR`, else `$XDG_CACHE_HOME/eshkol/jit`, else `$HOME/.cache/eshkol/jit`; `%LOCALAPPDATA%\eshkol\jit` on Windows | `ESHKOL_JIT_CACHE=0` disables it; `ESHKOL_JIT_CACHE_TRACE=1` prints the decision |
 | AOT module cache (`-c` objects) | `$ESHKOL_AOT_MODULE_CACHE_DIR`, else `$XDG_CACHE_HOME/eshkol/modules`, else `$HOME/.cache/eshkol/modules`; `%LOCALAPPDATA%\eshkol\modules` on Windows | `ESHKOL_AOT_MODULE_CACHE_TRACE=1` prints hits and misses |
-| Stdlib JIT object | beside `stdlib.bc`, named `stdlib-jit-v4-<hash>-<triple>-<abi>.o` | keyed on the `stdlib.bc` content, the process triple and the object ABI |
+| Stdlib JIT object | beside `stdlib.bc`, named `stdlib-jit-v5-<hash>-<triple>-<abi>.o` | keyed on the `stdlib.bc` content, the process triple and the object ABI |
 
 ### A run does not seem to pick up a change
 

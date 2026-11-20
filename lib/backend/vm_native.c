@@ -1,10 +1,14 @@
 #include "../../inc/eshkol/core/number_syntax.h"
+#include "../../inc/eshkol/core/http_syntax.h"
+#include "../../inc/eshkol/core/websocket_handshake.h"
 #include <eshkol/core/linear_solve_portable.h>
 #include <eshkol/core/tensor_inverse_checked.h>
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
+#include "eshkol/core/prng_state.h"
 #include <stdlib.h>
+#include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
 #include "../core/value_type_names.h"
@@ -1259,27 +1263,20 @@ static Value vm_base64_decode_value(VM* vm, Value input) {
     return result;
 }
 
-/** @brief Fill `out` with `len` random bytes, preferring /dev/urandom on POSIX
- *         and falling back to a seeded rand() stream (not cryptographically
- *         strong) if the device is unavailable or on other platforms. */
+/** @brief Fill `out` with `len` bytes from the operating system's
+ *         cryptographic source, the one source the VM draws unguessable
+ *         values from. Returns 0 when that source cannot be read, which is a
+ *         refusal rather than a weaker stream: the seeded generator behind
+ *         `(random)` is for reproducible simulation and has no part here. */
 static int vm_random_bytes(unsigned char* out, size_t len) {
-    if (!out) return 0;
-#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        size_t pos = 0;
-        while (pos < len) {
-            ssize_t n = read(fd, out + pos, len - pos);
-            if (n <= 0) break;
-            pos += (size_t)n;
-        }
-        close(fd);
-        if (pos == len) return 1;
-    }
+    if (!out || len == 0) return 0;
+#if defined(__EMSCRIPTEN__)
+    /* A WASM host without the native core CSPRNG refuses rather than
+     * substituting a stream a clock could have produced. */
+    return 0;
+#else
+    return eshkol_random_bytes((char*)out, len) == 0;
 #endif
-    srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)out);
-    for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(rand() & 0xFF);
-    return 1;
 }
 
 /** @brief Generate a random RFC 4122 version-4 UUID string, using
@@ -3057,26 +3054,63 @@ static int vm_ws_send_all(int fd, const void* data, size_t len) {
 /** @brief Encode and send one RFC 6455 WebSocket frame (FIN bit set, given
  *         opcode, RFC-mandated masked payload length encoding with a
  *         zero mask key) followed by the payload. */
+static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len);
+
+/**
+ * @brief Fails a WebSocket connection: reports the close code, then closes.
+ *
+ * The twin of sys_ws_fail_connection(). RFC 6455 section 7.1.7 fails a
+ * connection by sending a Close frame and closing the socket; returning with
+ * the stream mid-frame would put the next frame header under the peer's
+ * control. Any gathered fragment is released with the connection.
+ */
+static void vm_ws_fail_connection(VM* vm, int handle, int close_code) {
+#if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
+    if (close_code > 0) {
+        unsigned char body[2];
+        body[0] = (unsigned char)((close_code >> 8) & 0xff);
+        body[1] = (unsigned char)(close_code & 0xff);
+        (void)vm_ws_send_frame(vm->websocket_clients[handle].fd, 8,
+                               (const char*)body, 2);
+    }
+    if (vm->websocket_clients[handle].fragment_data) {
+        free(vm->websocket_clients[handle].fragment_data);
+        vm->websocket_clients[handle].fragment_data = NULL;
+    }
+    vm->websocket_clients[handle].fragment_length = 0;
+    vm->websocket_clients[handle].fragment_opcode = 0;
+    close(vm->websocket_clients[handle].fd);
+    vm->websocket_clients[handle].closed = 1;
+#else
+    (void)vm; (void)handle; (void)close_code;
+#endif
+}
+
 static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     unsigned char header[14];
-    int hlen = 0;
-    header[hlen++] = (unsigned char)(0x80 | (opcode & 0x0f));
-    if (len < 126) {
-        header[hlen++] = (unsigned char)(0x80 | len);
-    } else if (len <= 65535) {
-        header[hlen++] = 0x80 | 126;
-        header[hlen++] = (unsigned char)((len >> 8) & 0xff);
-        header[hlen++] = (unsigned char)(len & 0xff);
-    } else {
-        header[hlen++] = 0x80 | 127;
-        for (int i = 7; i >= 0; i--)
-            header[hlen++] = (unsigned char)((len >> (i * 8)) & 0xff);
+    int hlen;
+    /* RFC 6455 section 5.3: a fresh masking key per frame from the operating
+     * system's cryptographic source, and the payload masked with it. When the
+     * source cannot be read the frame is not sent. */
+    unsigned char mask[4];
+    if (!eshkol_ws_generate_mask(mask)) return 0;
+    hlen = eshkol_ws_write_frame_header(header, opcode, len, mask);
+    if (!vm_ws_send_all(fd, header, (size_t)hlen)) return 0;
+    if (len == 0) return 1;
+    const unsigned char* payload = (const unsigned char*)data;
+    unsigned char chunk[4096];
+    size_t offset = 0;
+    while (offset < len) {
+        size_t span = len - offset;
+        if (span > sizeof(chunk)) span = sizeof(chunk);
+        memcpy(chunk, payload + offset, span);
+        /* The key index follows the payload offset, not the chunk's, so a
+         * payload larger than one chunk is masked correctly. */
+        eshkol_ws_mask_payload(chunk, span, offset, mask);
+        if (!vm_ws_send_all(fd, chunk, span)) return 0;
+        offset += span;
     }
-    unsigned char mask[4] = {0, 0, 0, 0};
-    memcpy(header + hlen, mask, sizeof(mask));
-    hlen += 4;
-    return vm_ws_send_all(fd, header, (size_t)hlen) &&
-           (len == 0 || vm_ws_send_all(fd, data, len));
+    return 1;
 }
 
 typedef int32_t (*VmTsAvailableFn)(void);
@@ -6471,7 +6505,7 @@ static Value vm_ad_coeff_value(VM* vm, VmDual* c) {
 /** @brief Section 4 on one real component: coefficient k (or k! times it) of
  *         @p part in @p epoch, or, when the part does not depend on this
  *         level, the part itself at order 0 and a zero otherwise. */
-static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint32_t epoch, uint32_t k,
+static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint64_t epoch, uint32_t k,
                                int derivative, int point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
     if (epoch == 0 && part->kind == VM_DUAL_KIND_SCALAR && k <= 1) {
@@ -6494,7 +6528,7 @@ static VmDual* vm_ad_read_part(VM* vm, VmDual* part, uint32_t epoch, uint32_t k,
  *         dual pass): coefficient @p k, or k! times it when @p derivative.
  *         A vector or list result is read element by element, a complex
  *         result part by part. */
-static Value vm_ad_level_read(VM* vm, Value result, uint32_t epoch, uint32_t k,
+static Value vm_ad_level_read(VM* vm, Value result, uint64_t epoch, uint32_t k,
                               int derivative, int point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
     if (result.type == VAL_VECTOR && result.as.ptr >= 0 &&
@@ -6546,9 +6580,9 @@ static Value vm_ad_level_read(VM* vm, Value result, uint32_t epoch, uint32_t k,
  *         point is exact. A complex point perturbs its real coordinate (the
  *         holomorphic dz = 1); the imaginary part is constant in this pass. */
 static Value vm_ad_seed_and_call(VM* vm, Value f, Value point, uint32_t order,
-                                 uint32_t* epoch_out, int* point_exact) {
+                                 uint64_t* epoch_out, int* point_exact) {
     VmRegionStack* rs = &vm->heap.regions;
-    uint32_t epoch = vm_dual_next_taylor_epoch();
+    uint64_t epoch = vm_dual_next_taylor_epoch();
     int level = vm_ad_runs_as_level(vm, point);
     *epoch_out = epoch;
     *point_exact = 0;
@@ -6587,7 +6621,7 @@ static Value vm_taylor_pass(VM* vm, Value f, Value point, uint32_t order,
         Value evaluated = vm_ad_call_closure(vm, f, &point, 1);
         return want_list ? vm_cons_value(vm, evaluated, NIL_VAL) : evaluated;
     }
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     int point_exact = 0;
     Value result = vm_ad_seed_and_call(vm, f, point, order, &epoch, &point_exact);
     if (vm->error) return NIL_VAL;
@@ -6601,7 +6635,7 @@ static Value vm_taylor_pass(VM* vm, Value f, Value point, uint32_t order,
 
 /** @brief A first-order `derivative` that runs as an order-1 level. */
 static Value vm_derivative_level(VM* vm, Value f, Value x) {
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     int point_exact = 0;
     Value result = vm_ad_seed_and_call(vm, f, x, 1, &epoch, &point_exact);
     if (vm->error) return NIL_VAL;
@@ -6638,9 +6672,9 @@ static Value vm_ad_call_components(VM* vm, Value f, Value* args, int n, int arit
  *         when @p dir is NULL. Returns f(x); @p epoch_out names the level. */
 static Value vm_ad_level_pass(VM* vm, Value f, const Value* comps, int n, int arity,
                               int i, const Value* dir, uint32_t order,
-                              uint32_t* epoch_out) {
+                              uint64_t* epoch_out) {
     VmRegionStack* rs = &vm->heap.regions;
-    uint32_t epoch = vm_dual_next_taylor_epoch();
+    uint64_t epoch = vm_dual_next_taylor_epoch();
     *epoch_out = epoch;
     Value* args = vm_ad_arg_slots(vm, n);
     if (!args) return NIL_VAL;
@@ -6731,7 +6765,7 @@ static Value vm_ad_level_jacobian(VM* vm, Value f, const Value* comps, int n, in
     if (!cols) return NIL_VAL;
     int m = -1;
     for (int i = 0; i < n; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         if (r.type != VAL_VECTOR && r.type != VAL_PAIR) {
@@ -6759,7 +6793,7 @@ static Value vm_ad_level_hessian(VM* vm, Value f, const Value* comps, int n, int
     if (!e || !args) return NIL_VAL;
     for (int i = 0; i < n; i++) {
         for (int j = i; j < n; j++) {
-            uint32_t e1 = vm_dual_next_taylor_epoch(), e2 = vm_dual_next_taylor_epoch();
+            uint64_t e1 = vm_dual_next_taylor_epoch(), e2 = vm_dual_next_taylor_epoch();
             for (int k = 0; k < n; k++) {
                 VmDual* x = vm_ad_point_carrier(vm, comps[k]);
                 if (x && k == i) x = vm_dual_level_seed(rs, x, 1, e1);
@@ -6782,7 +6816,7 @@ static Value vm_ad_level_hessian(VM* vm, Value f, const Value* comps, int n, int
 static Value vm_ad_level_divergence(VM* vm, Value f, const Value* comps, int n, int arity) {
     Value acc = INT_VAL(0);
     for (int i = 0; i < n && !vm->error; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         acc = vm_ad_value_axpy(vm, acc, vm_ad_field_part(vm, vm_ad_level_read(vm, r, epoch, 1, 1, 0), i), 1);
@@ -6794,7 +6828,7 @@ static Value vm_ad_level_divergence(VM* vm, Value f, const Value* comps, int n, 
 static Value vm_ad_level_laplacian(VM* vm, Value f, const Value* comps, int n, int arity) {
     Value acc = INT_VAL(0);
     for (int i = 0; i < n && !vm->error; i++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, n, arity, i, NULL, 2, &epoch);
         if (vm->error) return NIL_VAL;
         acc = vm_ad_value_axpy(vm, acc, vm_ad_level_read(vm, r, epoch, 2, 1, 0), 1);
@@ -6808,7 +6842,7 @@ static Value vm_ad_level_curl(VM* vm, Value f, const Value* comps, int n, int ar
     int nc = n < 3 ? n : 3;
     Value col[3] = { INT_VAL(0), INT_VAL(0), INT_VAL(0) };
     for (int j = 0; j < nc; j++) {
-        uint32_t epoch = 0;
+        uint64_t epoch = 0;
         Value r = vm_ad_level_pass(vm, f, comps, nc, arity, j, NULL, 1, &epoch);
         if (vm->error) return NIL_VAL;
         col[j] = vm_ad_level_read(vm, r, epoch, 1, 1, 0);
@@ -6826,7 +6860,7 @@ static Value vm_ad_level_curl(VM* vm, Value f, const Value* comps, int n, int ar
 /** @brief D_v f = d/dt f(x + v t) at t = 0, one level. */
 static Value vm_ad_level_directional(VM* vm, Value f, const Value* comps,
                                      const Value* dir, int n, int arity) {
-    uint32_t epoch = 0;
+    uint64_t epoch = 0;
     Value r = vm_ad_level_pass(vm, f, comps, n, arity, -1, dir, 1, &epoch);
     if (vm->error) return NIL_VAL;
     return vm_ad_level_read(vm, r, epoch, 1, 1, 0);
@@ -6922,7 +6956,7 @@ static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
         Value* args = vm_ad_arg_slots(vm, n);
         if (!args) return FLOAT_VAL(0);
         for (int i = 0; i < n && !vm->error; i++) {
-            uint32_t epoch = vm_dual_next_taylor_epoch();
+            uint64_t epoch = vm_dual_next_taylor_epoch();
             VmDual* p = vm_ad_point_carrier(vm, comps[i]);
             Value seed = vm_make_taylor_val(vm, vm_dual_level_seed(&vm->heap.regions, p, 1, epoch));
             for (int j = 0; j < n; j++) args[j] = j == i ? seed : comps[j];
@@ -10368,7 +10402,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
          * raises "division by zero" for both (modulo 1 0) and (modulo 1 0.0). */
         if (ib==0){ fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
         if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
-        int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
+        int64_t r=vm_i64_remainder_nonzero(ia, ib); if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "remainder") ||
                     vm_ad_reject_untraced_input(vm, vm->sp - 1, "remainder")) break;
@@ -10388,7 +10422,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t ib = b.type == VAL_INT ? b.as.i : (int64_t)as_number(b);
         if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         if (ia == INT64_MIN && ib == -1) { vm_push(vm, INT_VAL(0)); break; }
-        vm_push(vm, INT_VAL(ia%ib)); break; }
+        vm_push(vm, INT_VAL(vm_i64_remainder_nonzero(ia, ib))); break; }
     case 38: { if (vm_ad_reject_untraced_input(vm, vm->sp - 2, "quotient") ||
                     vm_ad_reject_untraced_input(vm, vm->sp - 1, "quotient")) break;
         Value b = vm_pop(vm); Value a = vm_pop(vm);
@@ -10457,7 +10491,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_bignum_arith(vm, a, b, 'q');
             break;
         }
-        int64_t q = ia / ib, r = ia % ib;
+        int64_t q = ia / ib, r = vm_i64_remainder_nonzero(ia, ib);
         if (r != 0 && ((ia < 0) != (ib < 0))) q -= 1;
         vm_push(vm, INT_VAL(q));
         break;
@@ -11713,7 +11747,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
         /* SW-06: `diff` compiles to this same native call (see
-         * eshkol_compiler.c's "diff" entry, both aliased to fid 393), so
+         * the retired compiler's historical "diff" entry, both aliased to fid 393), so
          * `(diff '(* x x) 'x)` — a QUOTED s-expression, not a callable —
          * reaches here as f_val. vm_ad_call_closure() -> vm_call_closure_
          * from_native() silently returns NIL_VAL for anything that isn't
@@ -12260,6 +12294,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
         if (!t || !dtype_name) { vm_push(vm, NIL_VAL); break; }
+        if (vm_tensor_dtype_name_is_exact(dtype_name->data)) {
+            vm_raise_error_msg(vm, "tensor-cast: the exact tensor element type runs on the "
+                                   "native engines; it is planned for the bytecode VM in v1.4.1");
+            break;
+        }
         VmTensor* out = vm_tensor_cast_dtype(&vm->heap.regions, t,
                                              vm_tensor_dtype_from_name(dtype_name->data));
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -12272,6 +12311,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int64_t* shape = vm_extract_tensor_shape_dyn(vm, shape_val, &n_dims);
         VmString* dtype_name = vm_value_as_string(vm, dtype_val);
         if (!shape || n_dims == 0 || !dtype_name) { vm_raise_error_msg(vm, "make-tensor: invalid shape or dtype"); break; }
+        if (vm_tensor_dtype_name_is_exact(dtype_name->data)) {
+            vm_raise_error_msg(vm, "make-tensor: the exact tensor element type runs on the "
+                                   "native engines; it is planned for the bytecode VM in v1.4.1");
+            break;
+        }
         VmTensor* t = vm_tensor_fill(&vm->heap.regions, shape, n_dims, as_number(fill));
         if (!t) { vm_raise_error_msg(vm, "make-tensor: invalid shape or allocation limit"); break; }
         t->dtype = vm_tensor_dtype_from_name(dtype_name->data);
@@ -15214,24 +15258,58 @@ tensor_inverse_done:
         int port = 80;
         int timeout_ms = (int)as_number(timeout_val);
         if (timeout_ms <= 0) timeout_ms = 30000;
-        if (method && method->data && method->byte_len > 0 &&
-            vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+        /* The request line and the header block are decided against the
+         * protocol grammar before a socket exists; the refusal is an ordinary
+         * VM error naming the field that does not fit. */
+        char method_text[64];
+        if (!method || !method->data || method->byte_len <= 0 ||
+            (size_t)method->byte_len >= sizeof(method_text)) {
+            vm_raise_error_msg(vm, "http-request: method does not fit the protocol grammar");
+            break;
+        }
+        memcpy(method_text, method->data, (size_t)method->byte_len);
+        method_text[method->byte_len] = '\0';
+        const char* header_block = (headers && headers->data) ? headers->data : "";
+        const char* offending =
+            eshkol_http_request_offending_field(method_text, NULL, header_block);
+        if (offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "http-request: %s does not fit the protocol grammar", offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char rendered_headers[4096];
+        if (!eshkol_http_render_header_block(header_block, rendered_headers,
+                                             sizeof(rendered_headers), NULL)) {
+            vm_raise_error_msg(vm, "http-request: header does not fit the protocol grammar");
+            break;
+        }
+        if (vm_http_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "http-request: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_authority(host)) {
+                vm_raise_error_msg(vm,
+                    "http-request: Host header does not fit the protocol grammar");
+                break;
+            }
             int fd = vm_http_connect(host, port, timeout_ms);
             if (fd >= 0) {
                 const char* body_data = (body && body->data) ? body->data : "";
                 int64_t body_len = (body && body->data) ? body->byte_len : 0;
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char header[8192];
                 int hlen = snprintf(header, sizeof(header),
-                                    "%.*s %s HTTP/1.1\r\n"
+                                    "%s %s HTTP/1.1\r\n"
                                     "Host: %s\r\n"
                                     "Connection: close\r\n"
-                                    "%s%s"
+                                    "%s"
                                     "Content-Length: %lld\r\n\r\n",
-                                    (int)method->byte_len, method->data,
+                                    method_text,
                                     path, host,
-                                    extra_headers,
-                                    extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "",
+                                    rendered_headers,
                                     (long long)body_len);
                 int ok = hlen > 0 && hlen < (int)sizeof(header);
                 if (ok) {
@@ -15292,10 +15370,47 @@ tensor_inverse_done:
         char host[256];
         char path[2048];
         int port = 80;
+        const char* ws_header_block = (headers && headers->data) ? headers->data : "";
+        const char* ws_offending =
+            eshkol_http_request_offending_field_ex("GET", NULL,
+                                                   ws_header_block, 1);
+        if (ws_offending) {
+            char message[128];
+            snprintf(message, sizeof(message),
+                     "websocket-connect: %s does not fit the protocol grammar",
+                     ws_offending);
+            vm_raise_error_msg(vm, message);
+            break;
+        }
+        char ws_rendered_headers[2048];
+        if (!eshkol_http_render_header_block(ws_header_block, ws_rendered_headers,
+                                             sizeof(ws_rendered_headers), NULL)) {
+            vm_raise_error_msg(vm,
+                "websocket-connect: header does not fit the protocol grammar");
+            break;
+        }
         if (vm_ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+            if (!eshkol_http_valid_request_target(path)) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: request-target does not fit the protocol grammar");
+                break;
+            }
+            if (!eshkol_http_valid_authority(host)) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: Host header does not fit the protocol grammar");
+                break;
+            }
+            /* One key per handshake, from the operating system's
+             * cryptographic source; the server's answer is checked against
+             * it, so without a key there is no handshake to make. */
+            char ws_key[ESHKOL_WS_KEY_CAPACITY];
+            if (!eshkol_ws_generate_key(ws_key, sizeof(ws_key))) {
+                vm_raise_error_msg(vm,
+                    "websocket-connect: the cryptographic source for Sec-WebSocket-Key is unavailable");
+                break;
+            }
             int fd = vm_http_connect(host, port, 5000);
             if (fd >= 0) {
-                const char* extra_headers = (headers && headers->data) ? headers->data : "";
                 char request[4096];
                 int n = snprintf(request, sizeof(request),
                                  "GET %s HTTP/1.1\r\n"
@@ -15303,19 +15418,21 @@ tensor_inverse_done:
                                  "Upgrade: websocket\r\n"
                                  "Connection: Upgrade\r\n"
                                  "Sec-WebSocket-Version: 13\r\n"
-                                 "Sec-WebSocket-Key: ZXNoa29sLXZtLXdlYnNvY2tldA==\r\n"
-                                 "%s%s"
+                                 "Sec-WebSocket-Key: %s\r\n"
+                                 "%s"
                                  "\r\n",
-                                 path, host, extra_headers,
-                                 extra_headers[0] ? (strstr(extra_headers, "\n") ? "" : "\r\n") : "");
+                                 path, host, ws_key, ws_rendered_headers);
                 if (n > 0 && n < (int)sizeof(request) &&
                     vm_ws_send_all(fd, request, (size_t)n)) {
                     char response[4096];
                     ssize_t r = recv(fd, response, sizeof(response) - 1, 0);
                     if (r > 0) {
                         response[r] = '\0';
-                        if (strstr(response, " 101 ") || strstr(response, " 101\r") ||
-                            strstr(response, " 101\n")) {
+                        /* RFC 6455 section 4.1: 101, the Upgrade and
+                         * Connection fields, and a Sec-WebSocket-Accept
+                         * equal to the value derived from this key. */
+                        if (eshkol_ws_handshake_refusal(response, (size_t)r,
+                                                        ws_key) == NULL) {
                             int handle = vm_ws_store(vm, fd);
                             if (handle > 0) {
                                 vm_push(vm, INT_VAL((int64_t)handle));
@@ -15382,45 +15499,144 @@ tensor_inverse_done:
             pfd.revents = 0;
             if (poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN)) {
                 unsigned char hdr[2];
-                if (recv(fd, hdr, 2, MSG_WAITALL) == 2) {
+                if (recv(fd, hdr, 2, MSG_WAITALL) != 2) {
+                    vm_ws_fail_connection(vm, handle, 0);
+                    vm_push(vm, BOOL_VAL(0));
+                    break;
+                }
+                {
+                    int fin = (hdr[0] & 0x80) != 0;
                     int opcode = hdr[0] & 0x0f;
-                    int masked = hdr[1] & 0x80;
                     uint64_t len = hdr[1] & 0x7f;
+                    int short_read = 0;
                     if (len == 126) {
                         unsigned char ext[2];
-                        if (recv(fd, ext, 2, MSG_WAITALL) != 2) len = 65537;
+                        if (recv(fd, ext, 2, MSG_WAITALL) != 2) short_read = 1;
                         else len = ((uint64_t)ext[0] << 8) | ext[1];
                     } else if (len == 127) {
                         unsigned char ext[8];
-                        if (recv(fd, ext, 8, MSG_WAITALL) != 8) len = 65537;
+                        if (recv(fd, ext, 8, MSG_WAITALL) != 8) short_read = 1;
                         else {
                             len = 0;
                             for (int i = 0; i < 8; i++) len = (len << 8) | ext[i];
                         }
                     }
-                    unsigned char mask[4] = {0, 0, 0, 0};
-                    if (masked && recv(fd, mask, 4, MSG_WAITALL) != 4) len = 65537;
-                    if (len <= 65536) {
+                    if (short_read) {
+                        vm_ws_fail_connection(vm, handle, 0);
+                        vm_push(vm, BOOL_VAL(0));
+                        break;
+                    }
+                    /* Judged before a byte of payload is read; a refusal fails
+                     * the connection rather than leaving the stream mid-frame
+                     * with the next frame header under the peer's control. */
+                    {
+                        const int in_fragment =
+                            vm->websocket_clients[handle].fragment_opcode != 0;
+                        const eshkol_ws_frame_verdict verdict =
+                            eshkol_ws_examine_frame(hdr[0], hdr[1], len,
+                                                    in_fragment);
+                        if (verdict != ESHKOL_WS_FRAME_OK) {
+                            vm_ws_fail_connection(
+                                vm, handle, eshkol_ws_frame_close_code(verdict));
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                    }
+                    {
                         char* payload = (char*)malloc((size_t)len + 1);
-                        if (payload) {
-                            if (recv(fd, payload, (size_t)len, MSG_WAITALL) == (ssize_t)len) {
-                                if (masked) {
-                                    for (uint64_t i = 0; i < len; i++) payload[i] ^= (char)mask[i % 4];
-                                }
-                                payload[len] = '\0';
-                                const char* type = opcode == 1 ? "text" :
-                                                   opcode == 2 ? "binary" :
-                                                   opcode == 9 ? "ping" :
-                                                   opcode == 8 ? "close" : "unknown";
-                                if (opcode == 8) vm->websocket_clients[handle].closed = 1;
-                                Value result = vm_cons_value(vm,
-                                    vm_string_value(vm, type, -1),
+                        if (!payload) {
+                            vm_ws_fail_connection(vm, handle, 1011);
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        if (len > 0 &&
+                            recv(fd, payload, (size_t)len, MSG_WAITALL) !=
+                                (ssize_t)len) {
+                            free(payload);
+                            vm_ws_fail_connection(vm, handle, 0);
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        payload[len] = '\0';
+                        if (opcode & 0x08) {
+                            const char* control_type =
+                                opcode == 9 ? "ping" :
+                                opcode == 10 ? "pong" :
+                                opcode == 8 ? "close" : "unknown";
+                            if (opcode == 9)
+                                (void)vm_ws_send_frame(fd, 10, payload,
+                                                       (size_t)len);
+                            if (opcode == 8)
+                                vm->websocket_clients[handle].closed = 1;
+                            {
+                                Value control = vm_cons_value(vm,
+                                    vm_string_value(vm, control_type, -1),
                                     vm_string_value(vm, payload, (int64_t)len));
                                 free(payload);
-                                vm_push(vm, result);
+                                vm_push(vm, control);
+                            }
+                            break;
+                        }
+                        {
+                            int message_opcode =
+                                opcode == 0
+                                    ? vm->websocket_clients[handle].fragment_opcode
+                                    : opcode;
+                            size_t total =
+                                vm->websocket_clients[handle].fragment_length +
+                                (size_t)len;
+                            char* gathered;
+                            if (total > eshkol_ws_max_frame_bytes()) {
+                                free(payload);
+                                vm_ws_fail_connection(vm, handle, 1009);
+                                vm_push(vm, BOOL_VAL(0));
                                 break;
                             }
+                            gathered = (char*)realloc(
+                                vm->websocket_clients[handle].fragment_data,
+                                total + 1);
+                            if (!gathered) {
+                                free(payload);
+                                vm_ws_fail_connection(vm, handle, 1011);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            if (len > 0)
+                                memcpy(gathered +
+                                           vm->websocket_clients[handle]
+                                               .fragment_length,
+                                       payload, (size_t)len);
+                            gathered[total] = '\0';
                             free(payload);
+                            vm->websocket_clients[handle].fragment_data = gathered;
+                            vm->websocket_clients[handle].fragment_length = total;
+                            if (!fin) {
+                                vm->websocket_clients[handle].fragment_opcode =
+                                    message_opcode;
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            vm->websocket_clients[handle].fragment_opcode = 0;
+                            vm->websocket_clients[handle].fragment_data = NULL;
+                            vm->websocket_clients[handle].fragment_length = 0;
+                            if (message_opcode == 1 &&
+                                !eshkol_ws_valid_utf8(gathered, total)) {
+                                free(gathered);
+                                vm_ws_fail_connection(vm, handle, 1007);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            {
+                                Value result = vm_cons_value(vm,
+                                    vm_string_value(vm,
+                                        message_opcode == 1 ? "text" : "binary",
+                                        -1),
+                                    vm_string_value(vm, gathered,
+                                                    (int64_t)total));
+                                free(gathered);
+                                vm_push(vm, result);
+                            }
+                            break;
                         }
                     }
                 }
@@ -15439,6 +15655,8 @@ tensor_inverse_done:
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
             (void)vm_ws_send_frame(vm->websocket_clients[handle].fd, 8, "", 0);
             close(vm->websocket_clients[handle].fd);
+            if (vm->websocket_clients[handle].fragment_data)
+                free(vm->websocket_clients[handle].fragment_data);
 #endif
             memset(&vm->websocket_clients[handle], 0, sizeof(vm->websocket_clients[handle]));
             vm_push(vm, BOOL_VAL(1));
@@ -16336,6 +16554,8 @@ tensor_inverse_done:
     }
     case 661: { /* hash-ref(ht, key, default) */
         Value dflt = vm_pop(vm), key = vm_pop(vm), ht_val = vm_pop(vm);
+        /* The compiler pads an omitted optional operand with VAL_VOID. */
+        if (vm_native_absent(dflt)) dflt = BOOL_VAL(0);
         if (is_heap_type(vm, ht_val, HEAP_HASH)) {
             VmHashTable* ht = (VmHashTable*)vm->heap.objects[ht_val.as.ptr]->opaque.ptr;
             Value* result = (Value*)vm_ht_ref(ht, &key, NULL);
@@ -16967,15 +17187,15 @@ tensor_inverse_done:
             for (int i = 0; i < n; i++) {
                 for (int j = i; j < n; j++) {
                     Value r;
-                    uint32_t hess_e1 = 0, hess_e2 = 0;
+                    uint64_t hess_e1 = 0, hess_e2 = 0;
                     if (vm_closure_arity(vm, f_val) == 1) {
                         /* A unary collection loss receives one vector, just
                          * like gradient. Two nested order-1 levels carry the
                          * two directions (ADR-0027): x_k = p_k + d_ki t1 +
                          * d_kj t2, and H_ij is the t2-coefficient of the
                          * t1-coefficient of the result. */
-                        uint32_t e1 = vm_dual_next_taylor_epoch();
-                        uint32_t e2 = vm_dual_next_taylor_epoch();
+                        uint64_t e1 = vm_dual_next_taylor_epoch();
+                        uint64_t e2 = vm_dual_next_taylor_epoch();
                         for (int k = 0; k < n; k++) {
                             VmDual* x = vm_dual_constant(&vm->heap.regions, point[k], NULL);
                             if (x && k == i) x = vm_dual_level_seed(&vm->heap.regions, x, 1, e1);
@@ -17326,7 +17546,7 @@ tensor_inverse_done:
 
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Compiler-required native functions (merged from eshkol_compiler.c)
+     * VM native-call handlers, including code historically shared with the retired compiler
      * ══════════════════════════════════════════════════════════════════════ */
 
     case 100: /* build-string-from-packed: TOS has packed chars, below that length */
@@ -17990,6 +18210,26 @@ tensor_inverse_done:
         vm_push(vm, FLOAT_VAL(nextafter(as_number_vm(vm, a), -INFINITY)));
         break;
     }
+    case 2252: { /* stop-gradient (ADR-0049): the value of a number with
+                  * every derivative carrier removed, mirroring native
+                  * eshkol_stop_gradient_tagged. A dual (scalar, Taylor tower
+                  * or level) answers its primal, exact when the carrier
+                  * holds it exactly; anything else passes through. */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_DUAL) {
+            VmDual* d = (VmDual*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            VmRational* ex = vm_dual_exact_value(d);
+            if (ex && vm_push_exact_rational(vm, ex)) break;
+            vm_push(vm, FLOAT_VAL(as_number_vm(vm, a)));
+            break;
+        }
+        if (a.type == VAL_HYPER_DUAL) {
+            vm_push(vm, FLOAT_VAL(as_number_vm(vm, a)));
+            break;
+        }
+        vm_push(vm, a);
+        break;
+    }
     case 251: { /* call-with-values-apply: unpack multi-value result */
         Value consumer = vm_pop(vm), result = vm_pop(vm);
         if (consumer.type == VAL_CLOSURE) {
@@ -18393,34 +18633,62 @@ tensor_inverse_done:
     case 908: { /* string-split(str, delim) */
         Value d_val = vm_pop(vm), s_val = vm_pop(vm);
         Value result = NIL_VAL;
-        if (s_val.type == VAL_STRING && d_val.type == VAL_STRING) {
-            VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            VmString* d = (VmString*)vm->heap.objects[d_val.as.ptr]->opaque.ptr;
-            if (s && d && d->byte_len > 0) {
-                const char* p = s->data; int slen = s->byte_len, dlen = d->byte_len;
-                while (1) {
-                    const char* found = (slen >= dlen) ? strstr(p, d->data) : NULL;
-                    int seg_len = found ? (int)(found - p) : (int)(s->data + slen - p);
-                    VmString* seg = vm_string_new(&vm->heap.regions, p, seg_len);
-                    if (seg) { int32_t sp2 = heap_alloc(&vm->heap); if (sp2 >= 0) {
-                        vm->heap.objects[sp2]->type = HEAP_STRING; vm->heap.objects[sp2]->opaque.ptr = seg;
-                        int32_t cp2 = heap_alloc(&vm->heap); if (cp2 >= 0) {
-                            vm->heap.objects[cp2]->type = HEAP_CONS;
-                            vm->heap.objects[cp2]->cons.car = (Value){.type = VAL_STRING, .as.ptr = sp2};
-                            vm->heap.objects[cp2]->cons.cdr = result; result = PAIR_VAL(cp2); } } }
-                    if (!found) break;
-                    p = found + dlen;
+        if (s_val.type == VAL_STRING &&
+            (d_val.type == VAL_STRING || d_val.type == VAL_CHAR)) {
+            VmString* s = vm_value_as_string(vm, s_val);
+            VmString* d = vm_value_as_string_or_char(vm, d_val);
+            if (s && d) {
+                int slen = s->byte_len, dlen = d->byte_len;
+                int failed = 0;
+                int pos = 0;
+                /* The empty delimiter follows the native string-split rule:
+                 * return one element containing the original string. */
+                while (!failed) {
+                    int found = -1;
+                    if (dlen > 0 && pos <= slen - dlen) {
+                        for (int i = pos; i <= slen - dlen; ++i) {
+                            if (memcmp(s->data + i, d->data, (size_t)dlen) == 0) {
+                                found = i;
+                                break;
+                            }
+                        }
+                    }
+                    int end = found >= 0 ? found : slen;
+                    VmString* seg = vm_string_new(&vm->heap.regions,
+                                                   s->data + pos, end - pos);
+                    int32_t sp2 = seg ? heap_alloc(&vm->heap) : -1;
+                    int32_t cp2 = sp2 >= 0 ? heap_alloc(&vm->heap) : -1;
+                    if (!seg || sp2 < 0 || cp2 < 0) {
+                        failed = 1;
+                        break;
+                    }
+                    vm->heap.objects[sp2]->type = HEAP_STRING;
+                    vm->heap.objects[sp2]->opaque.ptr = seg;
+                    vm->heap.objects[cp2]->type = HEAP_CONS;
+                    vm->heap.objects[cp2]->cons.car =
+                        (Value){.type = VAL_STRING, .as.ptr = sp2};
+                    vm->heap.objects[cp2]->cons.cdr = result;
+                    result = PAIR_VAL(cp2);
+                    if (found < 0 || dlen == 0) break;
+                    pos = found + dlen;
+                }
+                if (failed) {
+                    vm_raise_error_msg(vm, "string-split: cannot allocate result");
+                    break;
                 }
                 /* reverse */
                 Value rev2 = NIL_VAL;
                 while (result.type == VAL_PAIR) {
                     Value car2 = vm->heap.objects[result.as.ptr]->cons.car;
-                    int32_t rp2 = heap_alloc(&vm->heap); if (rp2 < 0) break;
+                    int32_t rp2 = heap_alloc(&vm->heap);
+                    if (rp2 < 0) { failed = 1; break; }
                     vm->heap.objects[rp2]->type = HEAP_CONS;
                     vm->heap.objects[rp2]->cons.car = car2; vm->heap.objects[rp2]->cons.cdr = rev2;
                     rev2 = PAIR_VAL(rp2); result = vm->heap.objects[result.as.ptr]->cons.cdr;
                 }
-                vm_push(vm, rev2); break;
+                if (failed) vm_raise_error_msg(vm, "string-split: cannot allocate result");
+                else vm_push(vm, rev2);
+                break;
             }
         }
         vm_push(vm, NIL_VAL); break; }
@@ -19910,6 +20178,38 @@ tensor_inverse_done:
      * Seeded pseudorandom numbers (1863-1865). Native VM uses the same
      * runtime state as AOT/JIT; rand is compiled as a variadic shape form.
      * ══════════════════════════════════════════════════════════════════════ */
+    case 1866: { /* make-prng: backend-owned leaf state */
+        Value seed = vm_pop(vm);
+        if (seed.type != VAL_INT) { vm_raise_error_msg(vm, "make-prng: expected an int64 seed"); break; }
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr < 0) { vm_raise_error_msg(vm, "make-prng: allocation failed"); break; }
+        vm->heap.objects[ptr]->type = HEAP_PRNG;
+        vm->heap.objects[ptr]->prng.state = eshkol_prng_state_seed(seed.as.i);
+        Value result = NIL_VAL; result.type = VAL_PRNG; result.as.ptr = ptr;
+        vm_push(vm, result); break;
+    }
+    case 1867: {
+        Value p = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(p.type == VAL_PRNG && is_valid_heap_ptr(vm, p.as.ptr) &&
+                            vm->heap.objects[p.as.ptr]->type == HEAP_PRNG));
+        break;
+    }
+    case 1868: case 1869: {
+        Value bound = INT_VAL(0);
+        if (fid == 1869) bound = vm_pop(vm);
+        Value p = vm_pop(vm);
+        if (p.type != VAL_PRNG || !is_valid_heap_ptr(vm, p.as.ptr) ||
+            vm->heap.objects[p.as.ptr]->type != HEAP_PRNG) {
+            vm_raise_error_msg(vm, "prng draw: expected an isolated PRNG"); break;
+        }
+        if (fid == 1869 && bound.type != VAL_INT) {
+            vm_raise_error_msg(vm, "prng-random-integer: expected an int64 bound"); break;
+        }
+        uint64_t* state = &vm->heap.objects[p.as.ptr]->prng.state;
+        if (fid == 1868) vm_push(vm, FLOAT_VAL(eshkol_prng_state_random(state)));
+        else vm_push(vm, INT_VAL(eshkol_prng_state_integer(state, bound.as.i)));
+        break;
+    }
     case 1863: { /* random() -> double in [0, 1) */
         vm_push(vm, FLOAT_VAL(vm_prng_next()));
         break;

@@ -1,0 +1,263 @@
+;;; core.simplicial.nerve -- nerves of finite categories, posets and groups,
+;;; order complexes, face posets and McCord finite models, and nerves of
+;;; crossed modules.
+;;;
+;;; Usage: (require core.simplicial.nerve)   or   (require core.simplicial)
+;;;
+;;; Sources: G. Segal, "Classifying spaces and spectral sequences", Publ.
+;;; IHES 34 (1968) (the nerve of a category); J. P. May, "Simplicial Objects
+;;; in Algebraic Topology" (1967), Sec. 21 (W and the classifying space of a
+;;; simplicial group); K. S. Brown, "Cohomology of Groups" (1982), I.5 (the
+;;; normalized bar construction); M. C. McCord, "Singular homology groups and
+;;; homotopy groups of finite topological spaces", Duke Math. J. 33 (1966);
+;;; J. A. Barmak, "Algebraic Topology of Finite Topological Spaces and
+;;; Applications", LNM 2032 (2011); J. Duskin, "Simplicial matrices and the
+;;; nerves of weak n-categories I", TAC 9 (2002) (the nerve of a 2-group).
+;;;
+;;; Values of the simplices (public):
+;;;   finite-category-nerve       (x0 f1 ... fn): the object x0 and n composable
+;;;                        arrow indices, f_{i+1} after f_i
+;;;   poset-nerve          (x0 x1 ... xn) with x0 < x1 < ... < xn
+;;;   classifying-space    (g1 ... gn), elements different from the identity;
+;;;                        d_0 drops g1, d_n drops gn, d_i multiplies g_i g_{i+1}
+;;;   crossed-module-nerve (edges triangles): N-labels g_ij on the edges i < j
+;;;                        and M-labels m_ijk on the triangles, both in
+;;;                        lexicographic order, with
+;;;                          g_ik = d(m_ijk) g_ij g_jk            (triangles)
+;;;                          m_ijl (g_ij . m_jkl) = m_ikl m_ijk   (tetrahedra)
+;;;                        which for abelian groups reads d m_ijk = g_ik - g_ij
+;;;                        - g_jk and m_ijl + g_ij . m_jkl = m_ijk + m_ikl.
+
+(require stdlib)
+(require core.sheaf.site)
+(require core.simplicial.sset)
+(require core.simplicial.group)
+
+(provide finite-category-nerve poset-nerve order-complex classifying-space
+         face-poset face-poset-points barycentric-subdivision mccord-finite-model
+         crossed-module-nerve crossed-module-simplices crossed-module-simplex-face
+         crossed-module-simplex-degeneracy nerve-string-normal-form)
+
+(define (nv-range n) (let loop ((i (- n 1)) (acc '())) (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+(define (nv-remove-nth l i)
+  (let loop ((l l) (k 0) (acc '())) (if (null? l) (reverse acc) (loop (cdr l) (+ k 1) (if (= k i) acc (cons (car l) acc))))))
+(define (nv-all? pred xs) (cond ((null? xs) #t) ((pred (car xs)) (nv-all? pred (cdr xs))) (else #f)))
+
+;; A string (x0 a1 ... an) of n composable arrows in which some arrows may be
+;; identities is eta^* of the string without them: eta(0) = 0 and eta(j+1) =
+;; eta(j) when a_{j+1} is an identity, eta(j) + 1 otherwise.
+(define (nerve-string-normal-form identity? x0 arrows)
+  (let loop ((as arrows) (v 0) (eta (list 0)) (kept '()))
+    (if (null? as)
+        (let ((red (reverse kept)))
+          (if (= v (length arrows))
+              (simplex (cons x0 red) v)
+              (vector 'simplex (reverse eta) (cons x0 red))))
+        (if (identity? (car as))
+            (loop (cdr as) v (cons v eta) kept)
+            (loop (cdr as) (+ v 1) (cons (+ v 1) eta) (cons (car as) kept))))))
+
+;; ---------------------------------------------------------------------------
+;; The nerve of a finite category (core.sheaf.site representation)
+;; ---------------------------------------------------------------------------
+(define (nv-category-extend C nonid k src acc-rev)
+  (if (= k 0)
+      (let ((arrows (reverse acc-rev))) (list (cons (arrow-source C (car arrows)) arrows)))
+      (fold-left (lambda (acc a) (append acc (nv-category-extend C nonid (- k 1) (arrow-target C a) (cons a acc-rev))))
+                 '()
+                 (filter (lambda (a) (or (not src) (= src (arrow-source C a)))) nonid))))
+(define (nv-category-strings C n)               ;; nondegenerate: strings of n non-identity arrows
+  (let ((nonid (filter (lambda (a) (not (= a (category-identity C (arrow-source C a))))) (nv-range (category-arrow-count C)))))
+    (if (= n 0)
+        (map (lambda (x) (list x)) (nv-range (category-object-count C)))
+        (nv-category-extend C nonid n #f '()))))
+(define (nv-head l k) (let loop ((l l) (k k) (acc '())) (if (= k 0) (reverse acc) (loop (cdr l) (- k 1) (cons (car l) acc)))))
+(define (finite-category-nerve C)
+  (let ((identity? (lambda (a) (= a (category-identity C (arrow-source C a))))))
+    (make-simplicial-set
+     "category nerve"
+     (lambda (n) (nv-category-strings C n))
+     (lambda (n i x)
+       (let* ((arrows (cdr x)) (x0 (car x)))
+         (cond ((= i 0) (nerve-string-normal-form identity? (arrow-target C (car arrows)) (cdr arrows)))
+               ((= i n) (nerve-string-normal-form identity? x0 (reverse (cdr (reverse arrows)))))
+               (else
+                (let* ((f (list-ref arrows (- i 1))) (g (list-ref arrows i)) (gf (category-compose C g f)))
+                  (nerve-string-normal-form identity? x0
+                                            (append (nv-head arrows (- i 1)) (cons gf (list-tail arrows (+ i 1))))))))))
+     #f)))
+
+;; ---------------------------------------------------------------------------
+;; Posets: the nerve is the order complex (strict chains are the
+;; nondegenerate simplices)
+;; ---------------------------------------------------------------------------
+;; (order-complex n lt?) for a strict order lt? on 0..n-1
+(define (nv-chains n lt? k partial)
+  (if (< k 0) (list (reverse partial))
+      (fold-left (lambda (acc x) (append acc (nv-chains n lt? (- k 1) (cons x partial))))
+                 '()
+                 (filter (lambda (x) (or (null? partial) (lt? (car partial) x))) (nv-range n)))))
+(define (order-complex n lt?)
+  (make-simplicial-set
+   "order complex"
+   (lambda (d) (nv-chains n lt? d '()))
+   (lambda (d i x) (simplex (nv-remove-nth x i) (- d 1)))
+   #f))
+;; the nerve of a finite space / poset of core.sheaf.site
+(define (poset-nerve X) (order-complex (finite-space-size X) (lambda (x y) (finite-space-lt? X x y))))
+
+;; ---------------------------------------------------------------------------
+;; Face posets, barycentric subdivision, McCord finite models
+;; ---------------------------------------------------------------------------
+;; points: the nondegenerate simplices of dimension <= nmax, as (n . x), by
+;; dimension then basis order
+(define (face-poset-points K nmax)
+  (fold-left append '() (map (lambda (n) (map (lambda (x) (cons n x)) (vector->list (simplicial-set-nondegenerate K n)))) (nv-range (+ nmax 1)))))
+;; sigma <= tau when sigma is a face of tau (iterated faces, nondegenerate);
+;; a finite space of core.sheaf.site, points in face-poset-points order
+(define (face-poset K nmax)
+  (let* ((pts (face-poset-points K nmax)) (pv (list->vector pts)) (n (vector-length pv))
+         (index (make-hash-table)) (covers '()))
+    (let loop ((i 0)) (if (< i n) (begin (hash-table-set! index (vector-ref pv i) i) (loop (+ i 1)))))
+    (let loop ((i 0))
+      (if (< i n)
+          (let* ((p (vector-ref pv i)) (d (car p)))
+            (if (> d 0)
+                (for-each (lambda (f)
+                            (if (simplex-nondegenerate? f)
+                                (set! covers (cons (cons (hash-table-ref/default index (cons (- d 1) (simplex-base f)) -1) i) covers))))
+                          (simplicial-set-faces K (simplex (cdr p) d))))
+            (loop (+ i 1)))))
+    (make-finite-space n covers)))
+;; McCord: the face poset of a simplicial complex K is a finite T_0 space
+;; weakly equivalent to |K|; its order complex is the barycentric subdivision
+(define (mccord-finite-model K nmax) (face-poset K nmax))
+(define (barycentric-subdivision K nmax) (poset-nerve (face-poset K nmax)))
+
+;; ---------------------------------------------------------------------------
+;; The classifying space BG: the nerve of G as a one-object category,
+;; normalized (the nondegenerate n-simplices are the n-tuples of
+;; non-identity elements, the normalized bar construction)
+;; ---------------------------------------------------------------------------
+(define (nv-tuples els k)
+  (if (= k 0) (list '())
+      (let ((rest (nv-tuples els (- k 1))))
+        (fold-left (lambda (acc g) (append acc (map (lambda (t) (cons g t)) rest))) '() els))))
+(define (nv-tuples-nonidentity G n)
+  (nv-tuples (filter (lambda (g) (not (= g (group-identity G)))) (group-elements G)) n))
+(define (classifying-space G)
+  (let ((identity? (lambda (g) (= g (group-identity G)))))
+    (make-simplicial-set
+     "BG"
+     (lambda (n) (nv-tuples-nonidentity G n))
+     (lambda (n i x)
+       (let ((t (cond ((= i 0) (cdr x))
+                      ((= i n) (nv-head x (- n 1)))
+                      (else (append (nv-head x (- i 1))
+                                    (cons (group-mul G (list-ref x (- i 1)) (list-ref x i)) (list-tail x (+ i 1))))))))
+         (let ((s (nerve-string-normal-form identity? 'pt t)))
+           (vector 'simplex (simplex-surjection s) (cdr (simplex-base s))))))
+     #f)))
+
+(define (nv-range-from a b) (let loop ((i (- b 1)) (acc '())) (if (< i a) acc (loop (- i 1) (cons i acc)))))
+;; ---------------------------------------------------------------------------
+;; The nerve of a crossed module (a strict 2-group)
+;; ---------------------------------------------------------------------------
+(define (nv-pairs nv) (fold-left append '() (map (lambda (i) (map (lambda (j) (list i j)) (nv-range-from (+ i 1) nv))) (nv-range nv))))
+(define (nv-triples nv)
+  (fold-left append '() (map (lambda (p) (map (lambda (k) (append p (list k))) (nv-range-from (+ (cadr p) 1) nv))) (nv-pairs nv))))
+(define (nv-position item items) (let loop ((l items) (i 0)) (cond ((null? l) #f) ((equal? (car l) item) i) (else (loop (cdr l) (+ i 1))))))
+
+;; tables per vertex count, built once and kept
+(define nv-xm-table-cache (make-hash-table))
+(define (nv-xm-tables-build nv)
+  (let* ((ps (nv-pairs nv)) (ts (nv-triples nv))
+         (pidx (make-hash-table)) (tidx (make-hash-table)))
+    (let loop ((l ps) (i 0)) (if (not (null? l)) (begin (hash-table-set! pidx (car l) i) (loop (cdr l) (+ i 1)))))
+    (let loop ((l ts) (i 0)) (if (not (null? l)) (begin (hash-table-set! tidx (car l) i) (loop (cdr l) (+ i 1)))))
+    (vector ps ts pidx tidx)))
+(define (nv-xm-tables nv)
+  (or (hash-table-ref/default nv-xm-table-cache nv #f)
+      (let ((T (nv-xm-tables-build nv))) (hash-table-set! nv-xm-table-cache nv T) T)))
+;; the tables for up to 8 vertices are built when the module loads, so that
+;; faces computed inside a memory region never fill the cache from there
+(let loop ((nv 0)) (if (<= nv 8) (begin (nv-xm-tables nv) (loop (+ nv 1)))))
+(define (nv-eidx T i j) (hash-table-ref/default (vector-ref T 2) (list i j) -1))
+(define (nv-tidx T i j k) (hash-table-ref/default (vector-ref T 3) (list i j k) -1))
+
+(define (nv-xm-tetra-ok? X M T g m q)
+  (let ((i (car q)) (j (cadr q)) (k (caddr q)) (l (cadddr q)))
+    (= (group-mul M (vector-ref m (nv-tidx T i j l)) (crossed-module-act X (vector-ref g (nv-eidx T i j)) (vector-ref m (nv-tidx T j k l))))
+       (group-mul M (vector-ref m (nv-tidx T i k l)) (vector-ref m (nv-tidx T i j k))))))
+;; the pruned search: with tl = #f assign the edge ei (every element of N);
+;; otherwise label the triangles in tl, which edge ei completed, by the
+;; solutions of their triangle equations, checking each tetrahedron a
+;; triangle completes
+(define (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out ei tl)
+  (cond ((not tl)
+         (if (= ei ne)
+             (vector-set! out 0 (cons (list (vector->list g) (vector->list m)) (vector-ref out 0)))
+             (let loop ((v 0))
+               (if (< v (group-order N))
+                   (begin
+                     (vector-set! g ei v)
+                     (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out ei (vector-ref tri-by-edge ei))
+                     (loop (+ v 1)))))))
+        ((null? tl) (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out (+ ei 1) #f))
+        (else
+         (let* ((t (car tl)) (i (car t)) (j (cadr t)) (k (caddr t)) (ti (nv-tidx T i j k))
+                ;; d(m) = g_ik (g_ij g_jk)^-1
+                (target (group-mul N (vector-ref g (nv-eidx T i k))
+                                   (group-inv N (group-mul N (vector-ref g (nv-eidx T i j)) (vector-ref g (nv-eidx T j k)))))))
+           (let mloop ((ms (vector-ref preimages target)))
+             (if (not (null? ms))
+                 (begin
+                   (vector-set! m ti (car ms))
+                   (if (nv-all? (lambda (q) (nv-xm-tetra-ok? X M T g m q)) (vector-ref quad-by-tri ti))
+                       (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out ei (cdr tl)))
+                   (mloop (cdr ms)))))))))
+;; every n-simplex of the nerve by a pruned search: edges in lexicographic
+;; order; when an edge completes a triangle its label ranges over the
+;; solutions of the triangle equation, and when a triangle completes a
+;; tetrahedron the tetrahedron equation is checked
+(define (crossed-module-simplices X n)
+  (let* ((M (crossed-module-source X)) (N (crossed-module-target X)) (nv (+ n 1))
+         (T (nv-xm-tables nv)) (ps (vector-ref T 0)) (ts (vector-ref T 1))
+         (ne (length ps)) (nt (length ts))
+         (tri-by-edge (list->vector (map (lambda (e) (filter (lambda (t) (equal? (list (cadr t) (caddr t)) e)) ts)) ps)))
+         (quads (fold-left append '() (map (lambda (t) (map (lambda (l) (append t (list l))) (nv-range-from (+ (caddr t) 1) nv))) ts)))
+         (quad-by-tri (list->vector (map (lambda (t) (filter (lambda (q) (equal? (cdr q) t)) quads)) ts)))
+         (preimages (make-vector (group-order N) '()))
+         (g (make-vector ne 0)) (m (make-vector nt 0)) (out (vector '())))
+    (let loop ((x (- (group-order M) 1)))
+      (if (>= x 0)
+          (let ((d (crossed-module-boundary X x))) (vector-set! preimages d (cons x (vector-ref preimages d))) (loop (- x 1)))))
+    (nv-xm-search X M N T g m ne tri-by-edge quad-by-tri preimages out 0 #f)
+    (reverse (vector-ref out 0))))
+
+;; d_v: delete vertex v and relabel
+(define (crossed-module-simplex-face n v s)
+  (let* ((nv (+ n 1)) (T (nv-xm-tables nv)) (Tn (nv-xm-tables n)) (gl (list->vector (car s))) (ml (list->vector (cadr s)))
+         (old (lambda (t) (if (< t v) t (+ t 1)))))
+    (list (map (lambda (e) (vector-ref gl (nv-eidx T (old (car e)) (old (cadr e))))) (vector-ref Tn 0))
+          (map (lambda (t) (vector-ref ml (nv-tidx T (old (car t)) (old (cadr t)) (old (caddr t))))) (vector-ref Tn 1)))))
+;; s_j: repeat vertex j; collapsed edges and triangles carry identities
+(define (crossed-module-simplex-degeneracy X n j s)
+  (let* ((nv (+ n 1)) (T (nv-xm-tables nv)) (gl (list->vector (car s))) (ml (list->vector (cadr s)))
+         (eN (group-identity (crossed-module-target X))) (eM (group-identity (crossed-module-source X)))
+         (sg (lambda (t) (if (<= t j) t (- t 1)))))
+    (list (map (lambda (e) (let ((a (sg (car e))) (b (sg (cadr e))))
+                             (if (= a b) eN (vector-ref gl (nv-eidx T a b)))))
+               (vector-ref (nv-xm-tables (+ n 2)) 0))
+          (map (lambda (t) (let ((a (sg (car t))) (b (sg (cadr t))) (c (sg (caddr t))))
+                             (if (or (= a b) (= b c)) eM (vector-ref ml (nv-tidx T a b c)))))
+               (vector-ref (nv-xm-tables (+ n 2)) 1)))))
+;; the nerve as a simplicial set (every simplex value is (edges triangles));
+;; all simplices of each degree are enumerated, so this is meant for the
+;; low degrees used by horn and homotopy computations
+(define (crossed-module-nerve X)
+  (simplicial-set-from-all
+   "crossed module nerve"
+   (lambda (n) (crossed-module-simplices X n))
+   (lambda (n i s) (crossed-module-simplex-face n i s))
+   (lambda (n j s) (crossed-module-simplex-degeneracy X n j s))))
