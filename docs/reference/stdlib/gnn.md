@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.7.0-synthesis
+sources:
+  - lib/ml/gnn.esk
+  - tests/ml/gnn_test.esk
+---
 # ml.gnn and ml.autograd — graph neural networks with exact gradients
 
 `(require ml.gnn)` (which loads `ml.autograd`). Design: ADR-0052

@@ -1,7 +1,7 @@
 ---
 kind: explanation
 status: current
-owner-area: numerics
+owner-area: ad
 since: v1.5.0
 sources:
   - lib/core/ad/rigorous_interval.esk

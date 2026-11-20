@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/observable_closure.esk
+  - scripts/run_observable_closure_gate.py
+---
 # `core.observable_closure`
 
 Compile the smallest rational row space containing requested observations and

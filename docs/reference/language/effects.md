@@ -1,3 +1,15 @@
+---
+kind: reference
+status: current
+owner-area: language
+since: v1.9.0
+sources:
+  - lib/core/effects.esk
+  - lib/types/effect_check.cpp
+  - inc/eshkol/frontend/effect_syntax_core.h
+  - tests/effects/bench/handler_overhead.esk
+  - scripts/run_effects_gate.py
+---
 # Algebraic effects and handlers
 
 Eshkol has algebraic effects in the sense of Plotkin and Pretnar: a program

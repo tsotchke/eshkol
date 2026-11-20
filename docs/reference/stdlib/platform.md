@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: platform
+since: v1.8.0-platform
+sources:
+  - lib/platform/window.esk
+  - lib/platform/audio.esk
+  - lib/platform/midi.esk
+---
 # platform.window, platform.audio, platform.midi
 
 Windows with pixel surfaces and events, real-time audio, and MIDI I/O.

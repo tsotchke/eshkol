@@ -1,3 +1,16 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/protobuf.esk
+  - inc/eshkol/core/protobuf_wire.h
+  - scripts/run_wire_format_gate.py
+  - tests/v1_2_edge_cases/protobuf_test.esk
+  - tests/v1_2_edge_cases/protobuf_proto_test.esk
+  - tests/core/protobuf_wire_test.c
+---
 # `core.protobuf` — Protocol Buffers (proto3)
 
 **Source**: [`lib/core/protobuf.esk`](../../../lib/core/protobuf.esk)

@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ml/bpe.esk
+  - tests/ml/bpe_test.esk
+---
 # `core.ml.bpe` — byte-pair-encoding tokenizer
 
 **Source**: [`lib/core/ml/bpe.esk`](../../../lib/core/ml/bpe.esk)

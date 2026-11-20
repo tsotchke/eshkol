@@ -1,3 +1,13 @@
+---
+kind: explanation
+status: current
+owner-area: stdlib
+since: v1.7.0-synthesis
+sources:
+  - lib/core/synthesis.esk
+  - lib/types/hole_synthesis.cpp
+  - lib/ml/gnn.esk
+---
 # ADR-0052: Program synthesis, synthesis holes and graph neural networks (v1.7.0-synthesis)
 
 **Status:** Proposed

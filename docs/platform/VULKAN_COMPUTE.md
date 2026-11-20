@@ -1,3 +1,16 @@
+---
+kind: reference
+status: current
+owner-area: gpu
+since: v1.4.0-connection
+sources:
+  - inc/eshkol/backend/gpu/gpu_memory.h
+  - lib/backend/gpu/gpu_vulkan.c
+  - lib/backend/gpu/vulkan_abi.h
+  - scripts/check_vulkan_abi.sh
+  - lib/backend/gpu/vulkan_spirv.h
+  - scripts/gen_vulkan_spirv.sh
+---
 # Vulkan Compute Backend
 
 Eshkol's GPU dispatch (`inc/eshkol/backend/gpu/gpu_memory.h`) runs on Apple

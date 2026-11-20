@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ml/recurrent.esk
+  - tests/ml/recurrent_test.esk
+---
 # `core.ml.recurrent` — LSTM and GRU cells
 
 **Source**: [`lib/core/ml/recurrent.esk`](../../../lib/core/ml/recurrent.esk)

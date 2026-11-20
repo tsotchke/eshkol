@@ -1,3 +1,13 @@
+---
+kind: explanation
+status: current
+owner-area: stdlib
+since: v1.6.0-reasoning
+sources:
+  - lib/core/reasoning.esk
+  - tests/stdlib/reasoning_prolog_test.esk
+  - scripts/run_reasoning_gate.sh
+---
 # ADR-0051: `core.reasoning` — chaining, constraints and SAT, knowledge graphs
 
 **Status:** Proposed

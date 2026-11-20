@@ -1,3 +1,12 @@
+---
+kind: guide
+status: current
+owner-area: platform
+since: v1.4.0-connection
+sources:
+  - tests/embedded/fib_checksum.esk
+  - tests/embedded/embedded_targets.sh
+---
 # Embedded Targets
 
 Eshkol compiles freestanding programs to bare-metal object code for

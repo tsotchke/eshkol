@@ -1,3 +1,11 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ml/sparse_solve.esk
+---
 # Add CSR Krylov solves with exact implicit sensitivity enclosures
 
 CG and full-orthogonalization symmetric minimum residual over existing CSR, plus explicit implicit JVP/VJP and exact diagonal-dominance enclosures of original-model solution and cotangent errors.

@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/sblc/resource.esk
+  - scripts/run_sblc_resource_gate.py
+---
 # `core.sblc.resource`
 
 Exact source-derived termination and work certificates for one explicitly

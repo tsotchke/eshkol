@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/blc_bytes.esk
+  - scripts/run_blc_bytes_gate.sh
+---
 # Classical BLC byte observations
 
 `(require core.blc_bytes)` provides one function:

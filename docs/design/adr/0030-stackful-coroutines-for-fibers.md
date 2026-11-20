@@ -1,3 +1,15 @@
+---
+kind: explanation
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - inc/eshkol/core/coroutine.h
+  - lib/core/fibers.esk
+  - lib/core/channels.esk
+  - inc/eshkol/core/event_loop.h
+  - scripts/run_fibers_gate.py
+---
 # ADR-0030: Fibers run on stackful coroutines with a per-context dynamic state
 
 - **Status:** Accepted — implemented on native JIT and AOT; the bytecode VM is

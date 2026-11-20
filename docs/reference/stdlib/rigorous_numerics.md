@@ -1,3 +1,16 @@
+---
+kind: reference
+status: current
+owner-area: ad
+since: v1.5.0
+sources:
+  - lib/core/ad/interval_jet.esk
+  - lib/core/ad/compact_bounds.esk
+  - lib/core/torus.esk
+  - lib/core/ad/interval_tensor.esk
+  - tests/stdlib/rigorous_numerics_test.esk
+  - tests/vm_parity/corpus/102_rigorous_numerics.esk
+---
 # Rigorous numerics — interval jets, compact-set bounds, torus fields, element tensors
 
 **Sources**: [`lib/core/ad/interval_jet.esk`](../../../lib/core/ad/interval_jet.esk), [`lib/core/ad/compact_bounds.esk`](../../../lib/core/ad/compact_bounds.esk), [`lib/core/torus.esk`](../../../lib/core/torus.esk), [`lib/core/ad/interval_tensor.esk`](../../../lib/core/ad/interval_tensor.esk)
