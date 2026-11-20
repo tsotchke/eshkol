@@ -1204,7 +1204,7 @@ public:
      * @param op The operation AST node containing:
      *   - lengths: Actual sequence lengths (batch,)
      *   - max_len: Maximum sequence length
-     * @return Mask tensor of shape (batch, max_len)
+     * @return Additive mask of shape (batch, 1, max_len), broadcast across queries
      */
     llvm::Value* paddingMask(const eshkol_operations_t* op);
 
@@ -1641,6 +1641,10 @@ public:
     void emitSetErrorLocation();
 
     llvm::Value* emitBinaryCrossEntropy(const eshkol_operations_t* op, const char* name);
+    llvm::Value* extractStructuralIntOrRaise(llvm::Value* value, const char* name, const char* expected);
+    llvm::Value* checkAttentionMask(llvm::Value* mask, llvm::Value* batch, llvm::Value* queries,
+                                    llvm::Value* keys, const char* operation);
+
     /**
      * Validate the selected index and require a positive reduction extent before either lowering.
      *

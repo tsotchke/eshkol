@@ -38,6 +38,30 @@ namespace eshkol {
 // TRANSFORMER ARCHITECTURE (Track 8)
 // ════════════════════════════════════════════════════════════════════════════════
 
+/* A pairwise mask is shared by every batch. A padding mask has an explicit
+ * singleton query axis so the two layouts remain distinct when batch == queries. */
+llvm::Value* TensorCodegen::checkAttentionMask(llvm::Value* mask, llvm::Value* batch,
+                                              llvm::Value* queries, llvm::Value* keys, const char* operation) {
+    auto& b = ctx_.builder();
+    auto* type = ctx_.tensorType();
+    auto* rank = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(type, mask, 1));
+    auto* padding = b.CreateICmpEQ(rank, b.getInt64(3));
+    const std::string prefix(operation);
+    emitConditionGuard(b.CreateOr(padding, b.CreateICmpEQ(rank, b.getInt64(2))),
+        (prefix + ": expected a pairwise or batch padding mask").c_str(), "mask_rank");
+    auto* dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(type, mask, 0));
+    auto dim = [&](llvm::Value* i) {
+        return b.CreateLoad(ctx_.int64Type(), b.CreateGEP(ctx_.int64Type(), dims, i));
+    };
+    auto* rows = b.CreateSelect(padding, batch, queries);
+    auto* key_axis = b.CreateSelect(padding, b.getInt64(2), b.getInt64(1));
+    emitConditionGuard(b.CreateAnd(b.CreateICmpEQ(dim(b.getInt64(0)), rows),
+        b.CreateAnd(b.CreateICmpEQ(dim(key_axis), keys),
+                    b.CreateOr(b.CreateNot(padding), b.CreateICmpEQ(dim(b.getInt64(1)), b.getInt64(1))))),
+        (prefix + ": mask shape must match Q and K").c_str(), "mask_shape");
+    return padding;
+}
+
 // === Track 8.1: Scaled Dot-Product Attention ===
 
 /**
@@ -218,24 +242,8 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
                           builder.CreateICmpEQ(v_batch, batch_size))),
         "scaled-dot-attention: Q/K/V batch dimensions must match",
         "attn_batch");
-    if (mask_ptr_checked) {
-        llvm::Value* mask_ndim = builder.CreateLoad(ctx_.int64Type(),
-            builder.CreateStructGEP(tensor_type, mask_ptr_checked, 1));
-        llvm::Value* mask_dims = builder.CreateLoad(ctx_.ptrType(),
-            builder.CreateStructGEP(tensor_type, mask_ptr_checked, 0));
-        emitConditionGuard(builder.CreateICmpEQ(mask_ndim,
-            llvm::ConstantInt::get(ctx_.int64Type(), 2)),
-            "scaled-dot-attention: mask must have shape (seq-q, seq-k)",
-            "attn_mask_rank");
-        emitConditionGuard(builder.CreateICmpEQ(
-            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
-                llvm::ConstantInt::get(ctx_.int64Type(), 0))), seq_q),
-            "scaled-dot-attention: mask shape must match Q and K", "attn_mask_q");
-        emitConditionGuard(builder.CreateICmpEQ(
-            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
-                llvm::ConstantInt::get(ctx_.int64Type(), 1))), seq_k),
-            "scaled-dot-attention: mask shape must match Q and K", "attn_mask_k");
-    }
+    llvm::Value* padding_mask = mask_ptr_checked
+        ? checkAttentionMask(mask_ptr_checked, batch_size, seq_q, seq_k, "scaled-dot-attention") : nullptr;
 
     // Compute sqrt(d_k) for scaling — guard against d_k == 0
     llvm::Value* d_k_double = builder.CreateSIToFP(d_k, ctx_.doubleType());
@@ -382,7 +390,8 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
         if (mask_val) {
             ad_i = builder.CreateLoad(ctx_.int64Type(), ad_i_alloca);
             ad_j = builder.CreateLoad(ctx_.int64Type(), ad_j_alloca);
-            llvm::Value* ad_mask_idx = builder.CreateAdd(builder.CreateMul(ad_i, seq_k), ad_j);
+            llvm::Value* ad_mask_idx = builder.CreateAdd(builder.CreateMul(
+            builder.CreateSelect(padding_mask, ad_b, ad_i), seq_k), ad_j);
             llvm::Value* ad_mask_bits = builder.CreateLoad(ctx_.int64Type(),
                 builder.CreateGEP(ctx_.int64Type(), ad_mask_elems, ad_mask_idx));
             llvm::Value* ad_mask_node = adNodeFromTensorElementBits(ad_mask_bits, "attn_ad_mask");
@@ -704,7 +713,8 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
         llvm::Value* mask_elems_field = builder.CreateStructGEP(tensor_type, mask_ptr_checked, 2);
         llvm::Value* mask_elems = builder.CreateLoad(ctx_.ptrType(), mask_elems_field);
         // mask[i, j] or mask[b, i, j]
-        llvm::Value* mask_idx = builder.CreateAdd(builder.CreateMul(i, seq_k), j);
+        llvm::Value* mask_idx = builder.CreateAdd(builder.CreateMul(
+            builder.CreateSelect(padding_mask, b, i), seq_k), j);
         llvm::Value* mask_elem = builder.CreateLoad(ctx_.doubleType(),
             builder.CreateGEP(ctx_.doubleType(), mask_elems, mask_idx));
         scaled_dot = builder.CreateFAdd(scaled_dot, mask_elem, "masked_score");
@@ -1124,10 +1134,10 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
 
     // Handle mask if provided
     llvm::Value* mask_elems = nullptr;
+    llvm::Value* mask_ptr = nullptr;
     if (mask_val) {
-        llvm::Value* mask_ptr = unpackTensorOperandChecked(mask_val, "multi-head-attention");
-        llvm::Value* mask_elems_field = builder.CreateStructGEP(tensor_type, mask_ptr, 2);
-        mask_elems = builder.CreateLoad(ctx_.ptrType(), mask_elems_field);
+        mask_ptr = unpackTensorOperandChecked(mask_val, "multi-head-attention");
+        mask_elems = builder.CreateLoad(ctx_.ptrType(), builder.CreateStructGEP(tensor_type, mask_ptr, 2));
     }
 
     // Rank guard: same dims[1]/dims[2] reasoning as scaled-dot-attention.
@@ -1191,25 +1201,8 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     emitConditionGuard(builder.CreateICmpEQ(
         builder.CreateSRem(d_model, num_heads), llvm::ConstantInt::get(ctx_.int64Type(), 0)),
         "multi-head-attention: model width must be divisible by num-heads", "mha_heads_divisible");
-    if (mask_val) {
-        llvm::Value* mask_ptr = unpackTensorOperandChecked(mask_val, "multi-head-attention");
-        llvm::Value* mask_ndim = builder.CreateLoad(ctx_.int64Type(),
-            builder.CreateStructGEP(tensor_type, mask_ptr, 1));
-        llvm::Value* mask_dims = builder.CreateLoad(ctx_.ptrType(),
-            builder.CreateStructGEP(tensor_type, mask_ptr, 0));
-        emitConditionGuard(builder.CreateICmpEQ(mask_ndim,
-            llvm::ConstantInt::get(ctx_.int64Type(), 2)),
-            "multi-head-attention: mask must have shape (seq-q, seq-k)",
-            "mha_mask_rank");
-        emitConditionGuard(builder.CreateICmpEQ(
-            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
-                llvm::ConstantInt::get(ctx_.int64Type(), 0))), seq_q),
-            "multi-head-attention: mask shape must match Q and K", "mha_mask_q");
-        emitConditionGuard(builder.CreateICmpEQ(
-            builder.CreateLoad(ctx_.int64Type(), builder.CreateGEP(ctx_.int64Type(), mask_dims,
-                llvm::ConstantInt::get(ctx_.int64Type(), 1))), seq_k),
-            "multi-head-attention: mask shape must match Q and K", "mha_mask_k");
-    }
+    llvm::Value* padding_mask = mask_ptr
+        ? checkAttentionMask(mask_ptr, batch_size, seq_q, seq_k, "multi-head-attention") : nullptr;
 
     // d_k = d_model / num_heads
     llvm::Value* d_k = builder.CreateSDiv(d_model, num_heads, "d_k");
@@ -1506,7 +1499,8 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
 
     // Add mask if provided
     if (mask_elems) {
-        llvm::Value* mask_idx = builder.CreateAdd(builder.CreateMul(si, seq_k), sj);
+        llvm::Value* mask_idx = builder.CreateAdd(builder.CreateMul(
+            builder.CreateSelect(padding_mask, hb, si), seq_k), sj);
         llvm::Value* mask_val_elem = builder.CreateLoad(ctx_.doubleType(),
             builder.CreateGEP(ctx_.doubleType(), mask_elems, mask_idx));
         scaled_score = builder.CreateFAdd(scaled_score, mask_val_elem);
@@ -2352,7 +2346,7 @@ llvm::Value* TensorCodegen::causalMask(const eshkol_operations_t* op) {
 
 /**
  * @brief Codegen for `(padding-mask lengths max-len)`: builds an additive
- *        (batch, max_len) mask from a per-batch-element sequence-length
+ *        (batch, 1, max_len) mask from a per-batch-element sequence-length
  *        tensor, where mask[b,i] = 0 for i < lengths[b] and -inf otherwise.
  */
 llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
@@ -2372,11 +2366,10 @@ llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
     auto& builder = ctx_.builder();
     llvm::Type* tensor_type = ctx_.tensorType();
 
-    // Get max_len
-    llvm::Value* max_len = max_len_val;
-    if (max_len->getType() == ctx_.taggedValueType()) {
-        max_len = tagged_.unpackInt64(max_len_val);
-    }
+    llvm::Value* max_len = extractStructuralIntOrRaise(max_len_val,
+        "padding-mask", "nonnegative integer maximum length");
+    emitConditionGuard(builder.CreateICmpSGE(max_len, builder.getInt64(0)),
+        "padding-mask: maximum length must be nonnegative", "pad_length");
 
     // Unpack lengths tensor (runtime-classified; see ESH-0069)
     llvm::Value* lengths_ptr = unpackTensorOperandChecked(lengths_val, "padding-mask");
@@ -2388,7 +2381,12 @@ llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
     // Get arena
     llvm::Value* arena_ptr = ctx_.currentArena();
 
-    // Allocate mask: (batch, max_len)
+    // Allocate a compact key mask with a broadcast query axis.
+    auto* divisor = builder.CreateSelect(builder.CreateICmpEQ(batch_size, builder.getInt64(0)),
+                                         builder.getInt64(1), batch_size);
+    auto* limit = builder.CreateUDiv(builder.getInt64(INT64_MAX / sizeof(double)), divisor);
+    emitConditionGuard(builder.CreateICmpULE(max_len, limit),
+        "padding-mask: dimensions exceed tensor capacity", "pad_size");
     llvm::Value* total_size = builder.CreateMul(batch_size, max_len);
     llvm::Value* elems_bytes = builder.CreateMul(total_size,
         llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
@@ -2466,17 +2464,18 @@ llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
     llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
     llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "pad_mask_result");
 
-    llvm::Value* dims_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 2 * sizeof(int64_t));
+    llvm::Value* dims_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 3 * sizeof(int64_t));
     llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_bytes}, "pad_mask_dims");
     builder.CreateStore(batch_size, builder.CreateGEP(ctx_.int64Type(), result_dims,
         llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    builder.CreateStore(builder.getInt64(1), builder.CreateGEP(ctx_.int64Type(), result_dims, builder.getInt64(1)));
     builder.CreateStore(max_len, builder.CreateGEP(ctx_.int64Type(), result_dims,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+        llvm::ConstantInt::get(ctx_.int64Type(), 2)));
 
     llvm::Value* r_dims_field = builder.CreateStructGEP(tensor_type, result_ptr, 0);
     builder.CreateStore(result_dims, r_dims_field);
     llvm::Value* r_ndim_field = builder.CreateStructGEP(tensor_type, result_ptr, 1);
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 2), r_ndim_field);
+    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 3), r_ndim_field);
     llvm::Value* r_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
     builder.CreateStore(mask_elems, r_elems_field);
     llvm::Value* r_total_field = builder.CreateStructGEP(tensor_type, result_ptr, 3);

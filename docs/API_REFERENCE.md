@@ -4310,7 +4310,8 @@ generation constraint in decoder models (GPT, language models).
 **Syntax:** `(padding-mask lengths max-len)` → Tensor
 
 Creates a padding mask for variable-length sequences. Marks valid positions as 0 and
-padding positions as -∞. Shape: (batch, max-len).
+padding positions as -∞. The shape `(batch, 1, max-len)` applies the same key mask
+to every query within a batch in scaled dot-product and multi-head attention.
 
 `lengths` is a tensor of actual sequence lengths for each batch element.
 

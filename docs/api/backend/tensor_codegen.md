@@ -2375,7 +2375,7 @@ Padding mask: (padding-mask lengths max-len) Creates mask to ignore padding toke
 
 **Returns**
 
-Mask tensor of shape (batch, max_len)
+Additive mask of shape (batch, 1, max_len), broadcast across queries
 
 ### `TensorCodegen::feedForward`
 
