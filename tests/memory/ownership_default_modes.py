@@ -40,7 +40,8 @@ def accepted():
         for command in ([compiler, "-n", "-r", fixture], [vm, fixture],
                         [compiler, "-n", fixture, "-o", out], [out]):
             result = run(command, work, env)
-            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            lines = [line.strip() for line in result.stdout.splitlines()
+                     if line.strip() and not line.startswith(("===", "[WARN]"))]
             if result.returncode or ("-o" not in command and lines[-5:] != expected):
                 raise AssertionError(f"{command}: {result.returncode}\n{result.stdout}")
         checked = run([repl], work, env, ACCEPTED)
