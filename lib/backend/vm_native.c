@@ -11361,22 +11361,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
             else vm_push(vm, INT_VAL(1)); break; }
         case 348: { Value b_v = vm_pop(vm), a_v = vm_pop(vm);
             vm_push(vm, INT_VAL(vm_rational_gcd((int64_t)as_number(a_v), (int64_t)as_number(b_v)))); break; }
-        case 349: { Value tol = vm_pop(vm), x = vm_pop(vm);
-            /* as_number_vm, NOT as_number: `rationalize` is the one operation
-             * whose arguments are USUALLY exact rationals — the R7RS-small
-             * example is `(rationalize (exact .3) 1/10) => 1/3` — and the
-             * plain as_number() reads a VAL_RATIONAL's heap index through the
-             * int64 arm of the union and answers 0.0.  Both arguments then
-             * became 0, and `(rationalize 1/3 1/10000)` returned the exact
-             * integer 0 with exit 0 where the native engine returns 1/3
-             * (SW-08).  Rationals, bignums and duals all need the heap-aware
-             * coercion, exactly as native calls 342-347 above already do. */
-            VmRational* r = vm_rationalize(rat_arena, as_number_vm(vm, x), as_number_vm(vm, tol));
-            if (!r) { vm_push(vm, NIL_VAL); break; }
-            if (r->denom == 1) { vm_push(vm, INT_VAL(r->num)); break; }
-            int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
-            vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = r;
-            vm_push(vm, (Value){.type = VAL_RATIONAL, .as.ptr = ptr}); break; }
+        case 349: {
+            Value tol = vm_pop(vm), x = vm_pop(vm);
+            const double xf = x.type == VAL_FLOAT ? x.as.f : 0.0;
+            const double ef = tol.type == VAL_FLOAT ? tol.as.f : 0.0;
+            if (!isfinite(xf) || !isfinite(ef)) {
+                vm_push(vm, FLOAT_VAL(isfinite(xf) && isinf(ef) ? 0.0 :
+                                      isinf(xf) && isfinite(ef) ? xf : NAN));
+                break;
+            }
+            VmRational xs, ts;
+            const VmRational* value = vm_taylor_exact_primal(vm, x, x.type == VAL_DUAL ? (VmDual*)vm->heap.objects[x.as.ptr]->opaque.ptr : NULL, &xs);
+            const VmRational* epsilon = vm_taylor_exact_primal(vm, tol, tol.type == VAL_DUAL ? (VmDual*)vm->heap.objects[tol.as.ptr]->opaque.ptr : NULL, &ts);
+            VmRational* r = vm_rationalize_exact(&vm->heap.regions, value, epsilon);
+            if (r && (x.type == VAL_FLOAT || tol.type == VAL_FLOAT))
+                vm_push(vm, FLOAT_VAL(vm_rational_to_double(r)));
+            else
+                vm_push_rational_norm(vm, r);
+            break;
+        }
         default: vm_push(vm, NIL_VAL); break;
         }
         break;
