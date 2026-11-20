@@ -14,6 +14,7 @@
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/core/sexp_to_ast.h>
 #include <eshkol/core/eval_bridge.h>
+#include "eval_syntax.h"
 #include <eshkol/llvm_backend.h>
 #include <eshkol/logger.h>
 #include <eshkol/exhaustive_dispatch.h>
@@ -826,14 +827,14 @@ static std::atomic<uint64_t> g_eval_result_counter{0};
 eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     (void)arena;
 
-    // Direct S-expression to AST conversion (O(n) single-pass)
-    eshkol_ast_t* inner = eshkol_sexp_to_ast(sexp);
+    // Parse with the macro bindings of the context that will execute the form.
+    void* jit = get_eval_jit();
+    eshkol_ast_t* inner = eshkol::eval_datum_to_ast(sexp, jit);
     if (!inner) {
         eshkol_error("eshkol_eval: Failed to convert S-expression to AST");
         return make_null();
     }
 
-    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_free_sexp_ast(inner);
         eshkol_error("eshkol_eval: Failed to initialize JIT context");
@@ -845,6 +846,7 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     // expression value to capture. Same for imports/requires.
     if (inner->type == ESHKOL_OP &&
         (inner->operation.op == ESHKOL_DEFINE_OP ||
+         inner->operation.op == ESHKOL_DEFINE_SYNTAX_OP ||
          inner->operation.op == ESHKOL_IMPORT_OP ||
          inner->operation.op == ESHKOL_REQUIRE_OP ||
          inner->operation.op == ESHKOL_PROVIDE_OP)) {
@@ -939,8 +941,9 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
                                        void* arena) {
     (void)arena;  // Arena passed for potential allocation needs
 
-    // Convert the S-expression to AST directly (O(n) single-pass)
-    eshkol_ast_t* body_ast = eshkol_sexp_to_ast(sexp);
+    // The expression and its macro scope belong to this evaluation context.
+    void* jit = get_eval_jit();
+    eshkol_ast_t* body_ast = eshkol::eval_datum_to_ast(sexp, jit);
     if (!body_ast) {
         eshkol_error("eshkol_eval_env: Failed to convert S-expression to AST");
         return make_null();
@@ -1008,7 +1011,6 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
     }
 
     // Get or create the eval JIT context
-    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_free_sexp_ast(final_ast);
         eshkol_error("eshkol_eval_env: Failed to initialize JIT context");

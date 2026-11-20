@@ -15181,6 +15181,11 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
                     ${_case} ${_engine})
         endforeach()
     endforeach()
+    add_test(NAME eval_pattern_syntax_jit
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+            eval_pattern_syntax jit)
     add_test(NAME macro_definition_scope
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_definition_scope_test.py
