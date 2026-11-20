@@ -315,44 +315,68 @@ std::optional<int64_t> literalNatural(const eshkol_ast_t* expr) {
     return std::nullopt;
 }
 
+namespace {
+
+// The primitive table is fixed text, so its signatures are computed once per
+// process, against a builtin-only environment, and every checker binds the
+// same values. Building them per checker would read the table into fresh
+// annotation trees each time, and the type-variable names of those trees go
+// to the AST string owner, which keeps them for the whole session: a REPL
+// constructs a checker for every input.
+const std::vector<Signature>& primitiveSignatures() {
+    static const std::vector<Signature> signatures = [] {
+        TypeEnvironment env;
+        const auto resolve = [&env](const hott_type_expr_t* t) -> TypeId {
+            if (!t) return BuiltinTypes::Value;
+            switch (t->kind) {
+                case HOTT_TYPE_INTEGER: return BuiltinTypes::Int64;
+                case HOTT_TYPE_REAL: return BuiltinTypes::Float64;
+                case HOTT_TYPE_NUMBER: return BuiltinTypes::Number;
+                case HOTT_TYPE_BOOLEAN: return BuiltinTypes::Boolean;
+                case HOTT_TYPE_STRING: return BuiltinTypes::String;
+                case HOTT_TYPE_NULL: return BuiltinTypes::Null;
+                case HOTT_TYPE_ANY: return BuiltinTypes::Value;
+                case HOTT_TYPE_VAR: {
+                    auto found = env.lookupType(t->var_name ? t->var_name : "");
+                    return found ? *found : BuiltinTypes::Value;
+                }
+                default: return BuiltinTypes::Value;
+            }
+        };
+        const auto no_alias = [](const std::string&) { return false; };
+        std::vector<Signature> out;
+        for (const char* text : kPrimitiveSignatures) {
+            const std::string s(text);
+            size_t i = 0;
+            detail::Sx head, result;
+            if (!detail::readSx(s, i, head) || !detail::readSx(s, i, result) || !head.list ||
+                head.items.empty())
+                continue;
+            Signature sig;
+            sig.name = head.items[0].atom;
+            for (size_t k = 1; k < head.items.size(); ++k) {
+                const detail::Sx& p = head.items[k];
+                if (!p.list || p.items.size() != 2) continue;
+                hott_type_expr_t* ann = sxToAnnotation(p.items[1]);
+                sig.params.push_back({p.items[0].atom, specFromAnnotation(env, ann, resolve, no_alias)});
+                hott_free_type_expr(ann);
+            }
+            hott_type_expr_t* ret = sxToAnnotation(result);
+            sig.result = specFromAnnotation(env, ret, resolve, no_alias);
+            hott_free_type_expr(ret);
+            sig.quantum = true;
+            out.push_back(std::move(sig));
+        }
+        return out;
+    }();
+    return signatures;
+}
+
+}  // namespace
+
 void Registry::bindPrimitives(TypeEnvironment& env,
                               const std::function<void(const std::string&, TypeId)>& bind) {
-    const auto resolve = [&env](const hott_type_expr_t* t) -> TypeId {
-        if (!t) return BuiltinTypes::Value;
-        switch (t->kind) {
-            case HOTT_TYPE_INTEGER: return BuiltinTypes::Int64;
-            case HOTT_TYPE_REAL: return BuiltinTypes::Float64;
-            case HOTT_TYPE_NUMBER: return BuiltinTypes::Number;
-            case HOTT_TYPE_BOOLEAN: return BuiltinTypes::Boolean;
-            case HOTT_TYPE_STRING: return BuiltinTypes::String;
-            case HOTT_TYPE_NULL: return BuiltinTypes::Null;
-            case HOTT_TYPE_ANY: return BuiltinTypes::Value;
-            case HOTT_TYPE_VAR: {
-                auto found = env.lookupType(t->var_name ? t->var_name : "");
-                return found ? *found : BuiltinTypes::Value;
-            }
-            default: return BuiltinTypes::Value;
-        }
-    };
-    const auto no_alias = [](const std::string&) { return false; };
-    for (const char* text : kPrimitiveSignatures) {
-        const std::string s(text);
-        size_t i = 0;
-        detail::Sx head, result;
-        if (!detail::readSx(s, i, head) || !detail::readSx(s, i, result) || !head.list || head.items.empty()) continue;
-        Signature sig;
-        sig.name = head.items[0].atom;
-        for (size_t k = 1; k < head.items.size(); ++k) {
-            const detail::Sx& p = head.items[k];
-            if (!p.list || p.items.size() != 2) continue;
-            hott_type_expr_t* ann = sxToAnnotation(p.items[1]);
-            sig.params.push_back({p.items[0].atom, specFromAnnotation(env, ann, resolve, no_alias)});
-            hott_free_type_expr(ann);
-        }
-        hott_type_expr_t* ret = sxToAnnotation(result);
-        sig.result = specFromAnnotation(env, ret, resolve, no_alias);
-        hott_free_type_expr(ret);
-        sig.quantum = true;
+    for (const Signature& sig : primitiveSignatures()) {
         bind(sig.name, registerSignature(env, sig));
     }
 }

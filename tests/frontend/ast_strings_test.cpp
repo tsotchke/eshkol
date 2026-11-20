@@ -24,12 +24,16 @@
  *   3. Consumers never free: eshkol_ast_clean() detaches a literal's text
  *      without releasing it, and a module rename leaves the old spelling
  *      readable until teardown.
+ *
+ *   4. Work repeated for every compilation does not grow the owner: after
+ *      the first, constructing a type checker allocates no AST strings.
  */
 
 #include <eshkol/eshkol.h>
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/module_visibility.h>
+#include <eshkol/types/type_checker.h>
 
 #include <cstdio>
 #include <cstring>
@@ -295,7 +299,35 @@ static void test_teardown() {
     eshkol_ast_strings_teardown();
 }
 
+/* ---- 4. per-compilation work allocates no session strings ------------ */
+
+/* A REPL builds a type environment and a checker for every input, and the
+ * string owner keeps what it hands out for the whole session. Constructing a
+ * checker must therefore not allocate AST strings on each construction: the
+ * core.quantum primitive signatures are computed once per process. */
+static void test_checker_construction_is_flat() {
+    {
+        eshkol::hott::TypeEnvironment env;
+        eshkol::hott::TypeChecker first(env);
+    }
+    eshkol_ast_strings_stats_t before{};
+    eshkol_ast_strings_stats(&before);
+    for (int i = 0; i < 8; ++i) {
+        eshkol::hott::TypeEnvironment env;
+        eshkol::hott::TypeChecker checker(env);
+    }
+    eshkol_ast_strings_stats_t after{};
+    eshkol_ast_strings_stats(&after);
+    if (after.allocations != before.allocations) {
+        std::printf("  checker construction allocated %llu AST strings over 8 constructions\n",
+                    (unsigned long long)(after.allocations - before.allocations));
+    }
+    check(after.allocations == before.allocations,
+          "constructing a type checker allocates no AST strings after the first");
+}
+
 int main() {
+    test_checker_construction_is_flat();
     test_owner_contract();
     test_producers();
     test_clean_detaches();
