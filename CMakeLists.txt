@@ -14574,23 +14574,9 @@ if(ESHKOL_BUILD_AGENT_FFI)
     endif()
 endif()
 
-# Export core JIT symbols even when the optional agent FFI is disabled. Register
-# each table once, after the optional archive is known, for both Windows driver
-# families. Previously the MSVC/ClangCL call lived inside the agent-only block.
-if(WIN32)
-    if(TARGET eshkol-run)
-        eshkol_windows_export_runtime(eshkol-run)
-    endif()
-    if(TARGET eshkol-repl)
-        eshkol_windows_export_runtime(eshkol-repl)
-    endif()
-endif()
-
-# SQLite's byte-preserving column contract is tested against the same agent
-# archive consumed by AOT programs. Keep this test beside the archive wiring so
-# it cannot silently become a standalone system-SQLite test.
-# One bounded export table per native JIT host, with or without optional FFI.
-# Delay until the agent target is known; the seed omits generated runtime output.
+# One bounded export table per native JIT host, with or without optional FFI,
+# for both Windows driver families. Registered once, after the optional agent
+# archive is known; the seed omits generated runtime output.
 if(WIN32)
     foreach(_eshkol_export_host IN ITEMS eshkol-run eshkol-repl eshkol-bootstrap)
         if(TARGET ${_eshkol_export_host})
@@ -14599,6 +14585,9 @@ if(WIN32)
     endforeach()
 endif()
 
+# SQLite's byte-preserving column contract is tested against the same agent
+# archive consumed by AOT programs. Keep this test beside the archive wiring so
+# it cannot silently become a standalone system-SQLite test.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-agent-ffi AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/sqlite_column_roundtrip_test.c")
     add_executable(eshkol-agent-sqlite-column-roundtrip
