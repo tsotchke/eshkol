@@ -31,6 +31,16 @@ class ReleaseGateInputs(unittest.TestCase):
                                          "--tag", tag, "--target", oracle], capture_output=True)
                 self.assertEqual(result.returncode, expected, result.stderr)
 
+    def test_criterion_count_matches_oracle_requires(self):
+        from verify_v1_3_release_evidence import EXPECTED_CRITERION_COUNTS
+        data = yaml.safe_load((ROOT / ".icc/completion-oracles.yaml").read_text(encoding="utf-8"))
+        for target, expected_count in EXPECTED_CRITERION_COUNTS.items():
+            with self.subTest(target=target):
+                oracle = next((item for item in data["oracles"] if item.get("name") == target), None)
+                self.assertIsNotNone(oracle, f"{target} oracle is absent")
+                self.assertEqual(len(oracle.get("requires", [])), expected_count,
+                                  f"{target} pinned criterion count has drifted from the oracle file")
+
     @unittest.skipIf(os.name == "nt", "connection probe uses bash")
     def test_qubit_probe_requires_control_and_specific_refusal(self):
         gate = (SCRIPTS / "run_v14_connection_gate.sh").read_text()
