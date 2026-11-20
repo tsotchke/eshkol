@@ -16857,6 +16857,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
     endif()
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    foreach(_fixture IN ITEMS native_match_corpus native_match_grammar)
+        set(_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/${_fixture}.esk")
+        add_test(NAME ${_fixture}_jit COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_EXE=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DESHKOL_MODE=jit"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_direct.cmake")
+        add_test(NAME ${_fixture}_aot COMMAND ${CMAKE_COMMAND}
+            "-DESHKOL_RUN=$<TARGET_FILE:eshkol-run>" "-DESHKOL_SOURCE=${_source}"
+            "-DESHKOL_BINARY=${CMAKE_CURRENT_BINARY_DIR}/${_fixture}_aot${CMAKE_EXECUTABLE_SUFFIX}"
+            "-DESHKOL_LINK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_stdlib_aot.cmake")
+        set_tests_properties(${_fixture}_jit ${_fixture}_aot PROPERTIES TIMEOUT 360
+            ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE=0")
+    endforeach()
+endif()
+
 # Content hashes are required by DBSP checkpoint identity on every execution route.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
     set(_content_hash_source "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/content_hash_test.esk")

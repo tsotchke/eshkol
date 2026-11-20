@@ -797,12 +797,13 @@ ContinuationTask<eshkol_ast_t> MacroExpander::expandNodeTask(eshkol_ast_t ast) {
                             else if (pattern->type == PATTERN_CONS) {
                                 renamed->cons.car_pattern = rename_pattern(pattern->cons.car_pattern);
                                 renamed->cons.cdr_pattern = rename_pattern(pattern->cons.cdr_pattern);
-                            } else if (pattern->type == PATTERN_LIST || pattern->type == PATTERN_OR) {
-                                const auto count = pattern->type == PATTERN_LIST ? pattern->list.num_patterns : pattern->or_pat.num_patterns;
-                                auto** original = pattern->type == PATTERN_LIST ? pattern->list.patterns : pattern->or_pat.patterns;
+                            } else if (pattern->type == PATTERN_LIST || pattern->type == PATTERN_VECTOR ||
+                                       pattern->type == PATTERN_OR) {
+                                const auto count = pattern->type != PATTERN_OR ? pattern->list.num_patterns : pattern->or_pat.num_patterns;
+                                auto** original = pattern->type != PATTERN_OR ? pattern->list.patterns : pattern->or_pat.patterns;
                                 auto** children = count ? new eshkol_pattern_t*[count] : nullptr;
                                 for (uint64_t j = 0; j < count; ++j) children[j] = rename_pattern(original[j]);
-                                if (pattern->type == PATTERN_LIST) renamed->list.patterns = children;
+                                if (pattern->type != PATTERN_OR) renamed->list.patterns = children;
                                 else renamed->or_pat.patterns = children;
                             } else if (pattern->type == PATTERN_PREDICATE) {
                                 // The predicate sees the scope around the match, not
@@ -819,6 +820,7 @@ ContinuationTask<eshkol_ast_t> MacroExpander::expandNodeTask(eshkol_ast_t ast) {
                             return renamed;
                         };
                         clauses[i].pattern = rename_pattern(clauses[i].pattern);
+                        if (clauses[i].guard) clauses[i].guard = new eshkol_ast_t(co_await expandNodeTask(*clauses[i].guard));
                         if (clauses[i].body) clauses[i].body = new eshkol_ast_t(co_await expandNodeTask(*clauses[i].body));
                     }
                     op->match_op.clauses = clauses;

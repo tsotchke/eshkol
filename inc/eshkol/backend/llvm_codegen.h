@@ -1768,9 +1768,6 @@ private:
 
     // ===== PATTERN MATCHING OPERATIONS =====
 
-    // Helper: Compare two tagged values for equality (eqv? semantics)
-    Value* matchCompareValues(Value* val1, Value* val2);
-
     // Helper: Check if a value is a pair (cons cell)
     Value* matchIsPair(Value* val);
 

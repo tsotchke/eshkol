@@ -1523,6 +1523,10 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
 
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!vec_arg) return nullptr;
+    return vectorLengthValue(vec_arg);
+}
+
+llvm::Value* CollectionCodegen::vectorLengthValue(llvm::Value* vec_arg, bool outer_extent) {
     vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector-length");  // ADR-0023, SW-221
 
     llvm::Value* length = nullptr;
@@ -1560,6 +1564,14 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
         // Tensor path: load total_elements from field 3
         ctx_.builder().SetInsertPoint(tensor_block);
         llvm::Value* total_elem_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), ptr, 3);
+        if (outer_extent) {
+            llvm::Value* rank = ctx_.builder().CreateLoad(ctx_.int64Type(),
+                ctx_.builder().CreateStructGEP(ctx_.tensorType(), ptr, 1));
+            llvm::Value* dims = ctx_.builder().CreateLoad(ctx_.ptrType(),
+                ctx_.builder().CreateStructGEP(ctx_.tensorType(), ptr, 0));
+            total_elem_ptr = ctx_.builder().CreateSelect(
+                ctx_.builder().CreateICmpUGT(rank, ctx_.builder().getInt64(1)), dims, total_elem_ptr);
+        }
         llvm::Value* tensor_len = ctx_.builder().CreateLoad(ctx_.int64Type(), total_elem_ptr);
         ctx_.builder().CreateBr(merge_block);
 
@@ -1624,11 +1636,15 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     void* idx_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
     if (!vec_arg || !idx_typed) return nullptr;
-    vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector-ref");  // ADR-0023, SW-221
 
     llvm::Value* idx_tagged = typed_to_tagged_callback_(idx_typed, callback_context_);
     if (!idx_tagged) return nullptr;
 
+    return vectorRefValue(vec_arg, idx_tagged);
+}
+
+llvm::Value* CollectionCodegen::vectorRefValue(llvm::Value* vec_arg, llvm::Value* idx_tagged) {
+    vec_arg = tagged_.resolveSequenceOperand(vec_arg, "vector-ref");
     // Extract index - handle both raw i64 and tagged values
     llvm::Value* idx = idx_tagged;
     if (idx->getType() == ctx_.taggedValueType()) {
