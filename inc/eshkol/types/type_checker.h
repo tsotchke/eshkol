@@ -562,14 +562,8 @@ public:
      * @brief Whether ascribing @p ascribed to an expression synthesized as
      *        @p actual is believable, i.e. not a provable contradiction.
      *
-     * `(the <type> expr)` is a *trusted* assertion: the checker adopts
-     * `<type>` without re-deriving it, and codegen emits `expr` verbatim
-     * (COMPLETE_LANGUAGE_SPECIFICATION.md 3.6.6 — the IR stays
-     * byte-identical, there is no runtime tag check). Trust is not the same
-     * as silence, though: when the inner expression's type IS statically
-     * known and shares no branch of the type graph with the ascribed type,
-     * the ascription cannot be satisfied by any value and is a mistake worth
-     * reporting rather than propagating.
+     * The checker reports a static contradiction when the inferred and ascribed
+     * types are disjoint. The backend tests the evaluated operand's runtime tag.
      *
      * Deliberately permissive — it only rejects the provably impossible:
      * - widening (`actual <: ascribed`) is fine;

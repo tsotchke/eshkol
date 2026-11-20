@@ -73,7 +73,7 @@ Object-only `-g -c` output keeps DWARF in the requested object file.
 | `--types=gradual` | The default: nominal type mismatches are warnings and compilation continues |
 | `--types=strict` | Every type error is fatal |
 | `--strict-types` | Same as `--types=strict` |
-| `--unsafe` | Skip all type checks |
+| `--unsafe` | Skip static type and ownership checks for a legacy program. Runtime ascription checks still apply. |
 
 "Fatal" is enforced, not advisory: under `--strict-types` a program with type
 errors stops before code generation, the command exits **nonzero**, and **no

@@ -3025,7 +3025,7 @@ typedef enum {
     ESHKOL_SDNC_PRED_OP,            // (sdnc? x) -> bool
     // Expression-level type ascription (checked cast). Appended at the end to
     // preserve the numeric value of every existing operator.
-    ESHKOL_THE_OP,                  // (the type expr) - ascribe expr's type to the checker; runtime no-op (evaluates expr verbatim)
+    ESHKOL_THE_OP,                  // (the type expr) - check the runtime type and return the evaluated expression
     // HoTT kernel forms (ADR-0043): (hott decl...) declares in the cubical
     // kernel; (hott-eval term) is replaced by the normal form of term, as a
     // quoted datum, before code generation. The reader datum is kept in the
@@ -3247,7 +3247,7 @@ typedef struct eshkol_operation {
         } type_annotation_op;
         struct {
             hott_type_expr_t *type_expr;    // Ascribed type
-            struct eshkol_ast *expr;        // Wrapped expression (evaluated verbatim at runtime)
+            struct eshkol_ast *expr;        // Operand evaluated once before its runtime type check
         } the_op;                           // (the type expr) - expression-level checked cast
         struct {
             uint8_t is_eval;                // 1: (hott-eval term); 0: (hott decl...)
