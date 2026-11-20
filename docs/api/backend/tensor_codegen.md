@@ -2848,16 +2848,17 @@ Emit `eshkol_set_error_location(file, line, col)` for the position the next rais
 *Function* — line 1665
 
 ```c
-llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
+llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank, llvm::Value* dims,
  const char* op_name);
 ```
 
-Validate a reduction axis against the operand's rank, at runtime. Emits a call to `eshkol_tensor_axis_checked`, which requires `0 <= axis < rank` and otherwise raises a catchable error. Without it an out-of-range axis produced a result rather than an error: the numeric path returned a NULL tensor that displays as `()`, and the AD path indexed `dims[axis]` past the end of the dimensions array. Reducing the sole axis of a rank-1 tensor is NOT an error — it is a complete reduction and yields a 1-element tensor, matching the VM's vm_tensor_reduce. Both lowerings clamp their output rank to 1 for that case; see the `reduce_to_scalar` handling in emitAxisReduce. Call this ONCE, after the caller has normalized a negative axis and before either the AD or the numeric lowering consumes it.
+Check that the normalized axis is within the operand's rank and that its length is positive. Both numeric and AD reductions raise a catchable condition for an empty selected axis. Reducing the sole axis of a nonempty rank-one tensor produces a one-element tensor.
 
 **Parameters**
 
 - `axis` — Normalized (non-negative) axis as an i64.
 - `rank` — The operand's `num_dimensions` as an i64.
+- `dims` — Array of integer dimension lengths.
 - `op_name` — User-facing op name, used only for the error message.
 
 **Returns**

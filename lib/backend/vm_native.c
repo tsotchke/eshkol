@@ -12485,6 +12485,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_raise_error_msg(vm, "tensor-reduce: axis out of range");
             break;
         }
+        if (!full && t->shape[axis] == 0) {
+            vm_raise_error_msg(vm, "tensor-reduce: cannot reduce a zero-length axis");
+            break;
+        }
         if (vm_tensor_has_tangent(t) && !(full && (fid == 457 || fid == 458))) {
             vm_raise_error_msg(vm, "tensor-reduce: a derivative can pass through a full tensor-sum or tensor-mean only on the VM; use the native backend");
             break;

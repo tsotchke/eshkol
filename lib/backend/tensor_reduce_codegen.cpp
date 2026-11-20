@@ -2039,7 +2039,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     // the numeric path let eshkol_xla_reduce return NULL, which was packed as a
     // heap pointer and displayed as `()`. A rank-1 operand reduced to rank 0
     // and displayed as `#()`. All three read as an empty result, not an error.
-    axis = checkReduceAxis(axis, src_num_dims, "tensor-reduce-axis");
+    axis = checkReduceAxis(axis, src_num_dims, src_dims_ptr, "tensor-reduce-axis");
 
     if (autodiff_ && op_code >= 0 && op_code <= 3) {
         llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());

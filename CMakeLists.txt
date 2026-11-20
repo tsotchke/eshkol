@@ -8337,6 +8337,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         eshkol_add_numeric_test(bce_probability_bounds tests/ml/bce_probability_bounds.esk jit aot)
         eshkol_add_numeric_test(rigid_motion_maps tests/vm/rigid_motion_maps.esk vm)
         eshkol_add_numeric_test(rotation_log_cover tests/vm/rotation_log_cover.esk vm)
+        eshkol_add_numeric_test(reduction_empty_axis tests/tensor/reduction_empty_axis.esk jit aot vm)
         eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot)
         eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
 
