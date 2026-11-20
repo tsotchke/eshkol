@@ -24,16 +24,19 @@
 #include <eshkol/types/type_relation.h>
 #include <eshkol/logger.h>
 #include <eshkol/frontend/syntax_color.h>
+#include <eshkol/frontend/syntax_datum.h>
+#include "../frontend/token_type.h"
 
 #include <algorithm>
 #include <map>
 #include <set>
-#include <sstream>
 #include <unordered_set>
 
 namespace eshkol::hott {
 
 namespace {
+
+struct Component;
 
 struct Term {
     std::string text;
@@ -42,6 +45,8 @@ struct Term {
     std::set<std::string> locals;  // distinct local bindings used
     size_t constants;              // literal leaves used
     size_t order;                  // creation order (deterministic tie-break)
+    const Component* callee = nullptr;
+    std::vector<const Term*> arguments{};  // earlier, complete term-size banks
 };
 
 struct Component {
@@ -52,6 +57,37 @@ struct Component {
 };
 
 bool sameType(TypeId a, TypeId b) { return a.id == b.id; }
+
+SyntaxDatum symbolDatum(const std::string& name) {
+    SyntaxDatum datum;
+    datum.kind = SyntaxDatum::Kind::Symbol;
+    datum.token_type = TOKEN_SYMBOL;
+    datum.text = name;
+    datum.verbatim = name == ".";
+    return datum;
+}
+
+// The search owns the component and argument trees. Preserve each binding as
+// one symbol, including its internal identity or a verbatim source spelling.
+SyntaxDatum termDatum(const Term& term) {
+    SyntaxDatum datum;
+    if (term.callee) {
+        datum.kind = SyntaxDatum::Kind::List;
+        datum.token_type = TOKEN_LPAREN;
+        datum.text = "(";
+        datum.items.push_back(symbolDatum(term.callee->name));
+        for (const Term* argument : term.arguments)
+            datum.items.push_back(termDatum(*argument));
+    } else if (!term.constants) {
+        return symbolDatum(term.text);
+    } else if (sameType(term.type, BuiltinTypes::String)) {
+        datum.token_type = TOKEN_STRING;  // the empty-string leaf
+    } else {
+        datum.token_type = sameType(term.type, BuiltinTypes::Boolean) ? TOKEN_BOOLEAN : TOKEN_NUMBER;
+        datum.text = term.text;
+    }
+    return datum;
+}
 
 // Value is the gradual (dynamic) type: it fits everything consistently,
 // so it says nothing about which term belongs in a hole.
@@ -212,6 +248,8 @@ void HoleSynthesizer::onHole(TypeChecker& checker, eshkol_ast_t* hole, TypeId ex
                             text += ")";
                             t.text = std::move(text);
                             if (seen.insert(t.text).second) {
+                                t.callee = &comp;
+                                t.arguments = args;
                                 bank[size].push_back(std::move(t));
                                 ++built;
                             }
@@ -263,10 +301,14 @@ void HoleSynthesizer::onHole(TypeChecker& checker, eshkol_ast_t* hole, TypeId ex
     for (const Term* t : ranked) {
         if (report.candidates.size() > options_.max_reported || validated >= options_.max_validations) break;
         ++validated;
-        std::istringstream in(t->text);
-        eshkol_ast_t candidate = eshkol_parse_next_ast_from_stream(in);
+        auto syntax = termDatum(*t);
+        eshkol_ast_t candidate = parse_syntax_datum(syntax, {});
         if (candidate.type == ESHKOL_INVALID) continue;
-        if (checker.checkSpeculative(&candidate, expected).success) report.candidates.push_back(t->text);
+        if (checker.checkSpeculative(&candidate, expected).success) {
+            // Keep an expression without the speculative checker's annotations.
+            if (report.candidates.empty()) report.completion = parse_syntax_datum(syntax, {});
+            report.candidates.push_back(t->text);
+        }
     }
 
     // A hole reached again (named-let fixpoint passes) keeps its last report.
@@ -304,8 +346,7 @@ size_t HoleSynthesizer::fill(const char* source_file, const char* source_text) {
             ++unfilled;
             continue;
         }
-        std::istringstream in(r.candidates.front());
-        eshkol_ast_t filled = eshkol_parse_next_ast_from_stream(in);
+        eshkol_ast_t filled = r.completion;
         filled.line = node->line;
         filled.column = node->column;
         filled.source_file_id = node->source_file_id;

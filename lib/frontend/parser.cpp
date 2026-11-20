@@ -26,6 +26,7 @@
 #include <eshkol/frontend/syntax_datum.h>
 #include <eshkol/frontend/effect_syntax_core.h>
 #include "parser_task.h"
+#include "token_type.h"
 
 #include <string.h>
 #include <new>
@@ -264,25 +265,6 @@ static bool check_stack_space() {
     return eshkol_stack_headroom_ok() != 0;
 }
 
-enum TokenType {
-    TOKEN_LPAREN,
-    TOKEN_RPAREN,
-    TOKEN_QUOTE,
-    TOKEN_BACKQUOTE,     // ` for quasiquote
-    TOKEN_COMMA,         // , for unquote
-    TOKEN_COMMA_AT,      // ,@ for unquote-splicing
-    TOKEN_SYMBOL,
-    TOKEN_STRING,
-    TOKEN_NUMBER,
-    TOKEN_BOOLEAN,
-    TOKEN_CHAR,
-    TOKEN_VECTOR_START,  // #( for vector literals
-    TOKEN_COLON,         // : for type annotations
-    TOKEN_ARROW,         // -> for function types
-    TOKEN_KEYWORD,       // #:name Racket-style self-quoting keyword
-    TOKEN_EOF
-};
-
 struct Token {
     TokenType type;
     std::string value;
@@ -441,6 +423,11 @@ public:
             return t;
         }
         Token t = lexToken();
+        if ((t.type == TOKEN_SYMBOL || t.type == TOKEN_KEYWORD) &&
+            eshkol_syntax_source_name_reserved(t.value.c_str(), t.value.size())) {
+            PARSE_ERROR_AT(t, "reserved syntax identifier");
+            t.type = TOKEN_EOF;
+        }
         t.index = static_cast<uint32_t>(tape_->size());
         tape_->push_back(t);
         return t;

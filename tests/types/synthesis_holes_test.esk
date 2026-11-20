@@ -18,6 +18,9 @@
 (define (same (s : string)) : string ??)
 (check "string body" (string=? (same "abc") "abc"))
 
+(define (keep-name (|two words| : string)) : string ??)
+(check "verbatim binder remains one symbol" (string=? (keep-name "answer") "answer"))
+
 ;; argument position: the hole takes the callee's parameter type
 (define (square (n : integer)) : integer (* n n))
 (define (square-of (k : integer)) : integer (square ??))
