@@ -18,6 +18,11 @@
 #include <eshkol/logger.h>
 #include "arena_memory.h"
 #include "datum_cycles.h"
+#include "eval_syntax.h"
+#include "../frontend/token_type.h"
+#include <eshkol/frontend/syntax_color.h>
+#include <eshkol/frontend/syntax_datum.h>
+#include <eshkol/core/string_escape.h>
 
 #include <cstring>
 #include <cstdlib>
@@ -142,6 +147,86 @@ std::vector<eshkol_tagged_value_t> list_to_vector(eshkol_tagged_value_t list) {
 inline bool symbol_eq(eshkol_tagged_value_t value, const char* name) {
     const char* sym_name = get_symbol_name(value);
     return sym_name && strcmp(sym_name, name) == 0;
+}
+
+// Keep identifiers, literal bytes and list structure distinct while handing a
+// runtime form to the native pattern parser and syntax-rules expander.
+bool runtime_syntax(eshkol_tagged_value_t value, eshkol::SyntaxDatum& out, unsigned depth) {
+    using Kind = eshkol::SyntaxDatum::Kind;
+    if (depth >= 500) return false;
+    if (is_pair(value) || is_null(value)) {
+        auto rest = pair_cdr(value);
+        if (symbol_eq(pair_car(value), "quote") && is_pair(rest) && is_null(pair_cdr(rest))) {
+            out.kind = Kind::Prefix;
+            out.token_type = TOKEN_QUOTE;
+            out.text = "'";
+            return runtime_syntax(pair_car(rest), out.items.emplace_back(), depth + 1);
+        }
+        out.kind = Kind::List;
+        out.token_type = TOKEN_LPAREN;
+        out.text = "(";
+        while (is_pair(value)) {
+            if (!runtime_syntax(pair_car(value), out.items.emplace_back(), depth + 1))
+                return false;
+            value = pair_cdr(value);
+        }
+        if (is_null(value)) return true;
+        out.dotted = true;
+        return runtime_syntax(value, out.items.emplace_back(), depth + 1);
+    }
+    if (const char* name = get_symbol_name(value)) {
+        if (eshkol_syntax_source_name_reserved(name, strlen(name))) return false;
+        out.kind = Kind::Symbol;
+        out.token_type = TOKEN_SYMBOL;
+        out.text = name;
+        out.verbatim = out.text == ".";
+        return true;
+    }
+    if (const char* bytes = get_string_value(value)) {
+        out.token_type = TOKEN_STRING;
+        out.text.assign(bytes, eshkol_string_byte_length(bytes));
+        return true;
+    }
+    switch (value.type) {
+        case ESHKOL_VALUE_INT64:
+            out.token_type = TOKEN_NUMBER;
+            out.text = std::to_string(value.data.int_val);
+            return true;
+        case ESHKOL_VALUE_DOUBLE: {
+            char buffer[64];
+            eshkol_format_double(buffer, sizeof(buffer), value.data.double_val);
+            out.token_type = TOKEN_NUMBER;
+            out.text = buffer;
+            return true;
+        }
+        case ESHKOL_VALUE_BOOL:
+            out.token_type = TOKEN_BOOLEAN;
+            out.text = value.data.int_val ? "#t" : "#f";
+            return true;
+        case ESHKOL_VALUE_CHAR: {
+            unsigned char bytes[4];
+            size_t length;
+            if (value.data.int_val < 0 || value.data.int_val > 0x10ffff ||
+                !eshkol_string_escape_append_utf8(value.data.int_val, bytes, &length))
+                return false;
+            out.token_type = TOKEN_CHAR;
+            out.text.assign(reinterpret_cast<const char*>(bytes), length);
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+eshkol_ast_t* parse_runtime_form(eshkol_tagged_value_t value,
+                                 const std::set<std::string>& names) {
+    eshkol::SyntaxDatum syntax;
+    if (!runtime_syntax(value, syntax, 0)) return nullptr;
+    auto parsed = eshkol::parse_syntax_datum(syntax, names);
+    if (parsed.type == ESHKOL_INVALID) return nullptr;
+    auto* ast = eshkol_alloc_symbolic_ast();
+    *ast = parsed;
+    return ast;
 }
 
 // Forward declaration for recursive conversion
@@ -1053,6 +1138,8 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
         if (is_symbol(head)) {
             const char* head_name = get_symbol_name(head);
 
+            if (strcmp(head_name, "match") == 0 || strcmp(head_name, "define-syntax") == 0)
+                return parse_runtime_form(sexp, {});
             if (strcmp(head_name, "lambda") == 0) {
                 return convert_lambda(sexp);
             }
@@ -1197,11 +1284,28 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
     return nullptr;
 }
 
+eshkol::EvalMacroNames eval_macro_names = nullptr;
+
 } // anonymous namespace
 
 // ============================================================================
 // Public API Implementation
 // ============================================================================
+
+namespace eshkol {
+
+void register_eval_macro_names(EvalMacroNames provider) {
+    eval_macro_names = provider;
+}
+
+eshkol_ast_t* eval_datum_to_ast(eshkol_tagged_value_t datum, void* jit) {
+    validate_eval_datum(datum);
+    if (!is_pair(datum) || !jit || !eval_macro_names) return convert_sexp(datum);
+    ToplevelFormParseScope toplevel;
+    return parse_runtime_form(datum, eval_macro_names(jit));
+}
+
+} // namespace eshkol
 
 extern "C" {
 

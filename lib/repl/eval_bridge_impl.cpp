@@ -10,6 +10,7 @@
  */
 
 #include "repl_jit.h"
+#include "../core/eval_syntax.h"
 #include <eshkol/core/eval_bridge.h>
 #include <eshkol/logger.h>
 
@@ -115,6 +116,9 @@ struct BridgeRegistrar {
      * translation unit is linked in.
      */
     BridgeRegistrar() {
+        eshkol::register_eval_macro_names([](void* jit) {
+            return static_cast<eshkol::ReplJITContext*>(jit)->persistentMacroNames();
+        });
         eshkol_eval_jit_register(bridge_acquire,
                                  bridge_execute,
                                  bridge_lookup);
