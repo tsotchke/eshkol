@@ -2238,6 +2238,9 @@ jobs:
               "exact_affine_jit",
               "exact_affine_aot",
               "vm_prelude_cache_is_current",
+              # Fixture setup the exact_affine tests require; CTest selects
+              # it with them, so it is part of the exact inventory.
+              "exact_foundations_local_stdlib",
           }
           data = json.load(open(sys.argv[1], encoding="utf-8"))
           actual = {t["name"] for t in data["tests"]}
