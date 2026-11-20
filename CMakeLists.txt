@@ -2685,6 +2685,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/prng.cpp
   lib/core/runtime_arena_cpp.cpp
   lib/core/runtime_frame_trace.cpp
+  lib/core/gensym_sequence.cpp
   lib/core/runtime_gensym.cpp
   lib/core/runtime_type_name.cpp
   lib/core/symbol_intern.cpp
@@ -8361,7 +8362,13 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203, SW-218, SW-219, SW-220,
         # SW-222, SW-224, SW-225.
         find_program(ESHKOL_VM_CARRIER_NODE node)
+        add_test(NAME gensym_sequence_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence' '${CMAKE_CURRENT_SOURCE_DIR}/tests/control_flow/gensym_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence'")
+        set_tests_properties(gensym_sequence_aot PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ALL PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
         set(_esh_vm_carrier_tests
+            "gensym_sequence|tests/control_flow/gensym_test.esk|RESULT: ALL PASS|all"
             "nested_towers_matrix|tests/ad/nested_towers_matrix_test.esk|PASS: nested towers matrix|vm"
             "nested_operator_matrix|tests/ad/nested_operator_matrix_test.esk|PASS: nested operator matrix|vm"
             "vm_nested_holomorphic|tests/ad/vm_nested_holomorphic_test.esk|PASS: VM nested holomorphic derivatives|all"
@@ -11010,6 +11017,19 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+    function(add_vm_runtime_test name)
+        add_executable(${name} tests/vm/${name}.c)
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        eshkol_apply_vm_limit_definitions(${name})
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${name} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${name} PRIVATE eshkol-static
+            ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+    add_vm_runtime_test(gensym_shared_sequence)
     foreach(_dispatch IN ITEMS threaded switch)
         set(_dispatch_target vm_invalid_opcode_${_dispatch}_test)
         add_executable(${_dispatch_target} tests/vm/vm_invalid_opcode_dispatch_test.c)

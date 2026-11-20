@@ -6,6 +6,7 @@
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
+#include "eshkol/core/gensym_sequence.h"
 #include "eshkol/core/prng_state.h"
 #include <stdlib.h>
 #include "vm_integer_arithmetic.h"
@@ -18335,15 +18336,9 @@ tensor_inverse_done:
         vm_push(vm, a);
         break;
     }
-    case 2227: { /* gensym: fresh, uninterned symbol "G<counter>".
-                  * Process-wide monotonic counter, mirroring the native
-                  * codegen's eshkol_gensym_prefix (lib/core/introspection.cpp)
-                  * — a separate counter from vm_macro.c's compile-time
-                  * hygienic-renaming gensym, which is a different feature
-                  * (macro-expansion-time, not runtime-visible). */
-        static uint64_t s_vm_gensym_counter = 1;
-        char buf[32];
-        snprintf(buf, sizeof(buf), "G%llu", (unsigned long long)s_vm_gensym_counter++);
+    case 2227: { /* gensym */
+        char buf[22] = "G";
+        eshkol_gensym_suffix(buf + 1);
         VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
         if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_SYMBOL, s); }
         else vm_push(vm, NIL_VAL);
