@@ -40,6 +40,7 @@
 #include "eshkol/types/refinement.h"
 #include "eshkol/frontend/macro_expander.h"
 #include "eshkol/frontend/ownership.h"
+#include "eshkol/frontend/syntax_datum.h"
 #include "eshkol/logger.h"
 
 #include <sstream>
@@ -141,8 +142,13 @@ extern "C" {
 int eshkol_linear_check_source(const char* source, const char* source_name) {
     return checkSource(source, source_name,
                        [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>& forms) {
+                           // The ownership verdict reads the same top-level forms
+                           // as native code generation: macro-expanded, with
+                           // every top-level begin spliced (R7RS 5.1).
+                           std::vector<eshkol_ast_t> unit = forms;
+                           eshkol::splice_toplevel_forms(unit);
                            const auto errors = eshkol_config_get()->unsafe_mode
-                               ? std::vector<std::string>{} : eshkol::checkOwnership(forms);
+                               ? std::vector<std::string>{} : eshkol::checkOwnership(unit);
                            for (const auto& error : errors) eshkol_error("%s", error.c_str());
                            // Structural violations (ADR-0046: rows, higher
                            // rank, session protocols) travel with the linear
