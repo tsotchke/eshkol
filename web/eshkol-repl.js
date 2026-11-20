@@ -870,6 +870,61 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         }
         fail(`${name}: expected tensor or numeric collection`, 'ESH_NUMERIC_TYPE');
     };
+
+    // The operand boundary with an explicit policy (lib/core/runtime_tensor_alloc.cpp):
+    // `accept` names the tagged numeric dtypes the operator has a rule for
+    // (1 = forward-mode jet tensors, 2 = exact element tensors); any other
+    // tagged numeric tensor is refused by name.
+    const tensorOperandPolicyChecked = (valuePtr, opNamePtr, acceptValue) => {
+        const tensor = tensorOperandCarrierChecked(valuePtr, opNamePtr);
+        if (!tensor) return tensor;
+        const name = readCString(opNamePtr), accept = Number(acceptValue) | 0;
+        const dtype = view().getBigUint64(span(tensor, 40, 8) + 32, true);
+        if (dtype === 64n && !(accept & 1))
+            fail(`${name}: a forward-mode derivative cannot pass through this tensor operation (it has no rule for a tensor of dual numbers); differentiate with gradient or restructure the computation`, 'ESH_AD_UNSUPPORTED');
+        if (dtype === 66n && !(accept & 2))
+            fail(`${name}: this tensor operation has no exact rule, and an exact tensor is never rounded implicitly; convert it explicitly with (tensor-cast t 'f64) first`, 'ESH_NUMERIC_TYPE');
+        return tensor;
+    };
+    // A tensor read out as a Scheme vector of its elements
+    // (lib/core/runtime_list_helpers.cpp): tagged elements are copied
+    // verbatim, f64 elements become tagged doubles. Returns the vector data
+    // pointer, or 0 when the value is not a tensor.
+    const tensorToSvec = (arena, tensorValuePtr) => transaction(() => {
+        if (!arena || !tensorValuePtr) return 0;
+        const valuePtr = span(tensorValuePtr, 16, 8);
+        if ((view().getUint8(valuePtr) & 0x0f) !== 8) return 0;
+        const raw = view().getBigUint64(valuePtr + 8, true);
+        if (!raw || raw > 0xffffffffn) return 0;
+        const object = Number(raw);
+        if (subtype(object) !== 3) return 0;
+        const t = tensorView(object);
+        if (!t.elements) return 0;
+        const vec = vectorAllocateWithHeader(arena, t.total);
+        let v = view(); v.setBigInt64(vec, BigInt(t.total), true);
+        const bytes = new Uint8Array(mem().buffer);
+        for (let i = 0; i < t.total; i++) {
+            const slot = vec + 8 + i * 16;
+            if (t.tagged) {
+                bytes.copyWithin(slot, t.elements + i * 16, t.elements + i * 16 + 16);
+            } else {
+                v = view(); new Uint8Array(mem().buffer, slot, 16).fill(0);
+                v.setUint8(slot, 2);
+                v.setFloat64(slot + 8, v.getFloat64(t.elements + i * 8, true), true);
+            }
+        }
+        return vec;
+    });
+    // Decimal text with an optional sign to a bignum (lib/core/bignum.cpp);
+    // 0 for empty or malformed text.
+    const bignumFromString = (_arena, strPtr, lenValue) => {
+        const len = uint(lenValue);
+        if (!strPtr || !len) return 0;
+        const p = span(strPtr, len);
+        const text = String.fromCharCode(...new Uint8Array(mem().buffer, p, len));
+        if (!/^[+-]?[0-9]+$/.test(text)) return 0;
+        return transaction(() => writeBignum(BigInt(text)));
+    };
     const validateProperList = valuePtr => {
         let cur = span(valuePtr, 16, 8), count = 0;
         const seen = new Set();
@@ -1268,6 +1323,8 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         eshkol_list_to_vector_sret: listToVectorSret,
         eshkol_tensor_from_collection: tensorFromCollection,
         eshkol_tensor_operand_carrier_checked: tensorOperandCarrierChecked,
+        eshkol_tensor_operand_policy_checked: tensorOperandPolicyChecked,
+        eshkol_tensor_to_svec: tensorToSvec,
         arena_allocate_tape: tapeAllocate,
         arena_allocate_cons_with_header: consAllocateWithHeader,
         arena_tagged_cons_get_int64: consGetInt64,
@@ -1324,6 +1381,7 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
         eshkol_double_to_exact_tagged: (_arena, d, out) => { if (out) output(out, () => fromDouble(d)); },
         eshkol_double_to_rational: (_arena, d) => transaction(() => writeRational(fromDouble(d))),
         eshkol_bignum_from_int64: (_arena, n) => writeBignum(BigInt(n)),
+        eshkol_bignum_from_string: bignumFromString,
         eshkol_bignum_from_overflow: (_arena, a, b, op) => {
             a = BigInt(a); b = BigInt(b);
             if (op < 0 || op > 2) fail('invalid overflow operation', 'ESH_NUMERIC_ABI');
@@ -2424,6 +2482,7 @@ class EshkolRepl {
                 eshkol_bignum_binary_tagged: exact.imports.eshkol_bignum_binary_tagged,
                 eshkol_bignum_compare_tagged: exact.imports.eshkol_bignum_compare_tagged,
                 eshkol_bignum_from_int64: exact.imports.eshkol_bignum_from_int64,
+                eshkol_bignum_from_string: exact.imports.eshkol_bignum_from_string,
                 eshkol_bignum_from_overflow: exact.imports.eshkol_bignum_from_overflow,
                 eshkol_bignum_is_even: exact.imports.eshkol_bignum_is_even,
                 eshkol_bignum_is_odd: exact.imports.eshkol_bignum_is_odd,
@@ -2471,6 +2530,8 @@ class EshkolRepl {
                 eshkol_rational_truncate_tagged: exact.imports.eshkol_rational_truncate_tagged,
                 eshkol_tensor_from_collection: exact.imports.eshkol_tensor_from_collection,
                 eshkol_tensor_operand_carrier_checked: exact.imports.eshkol_tensor_operand_carrier_checked,
+                eshkol_tensor_operand_policy_checked: exact.imports.eshkol_tensor_operand_policy_checked,
+                eshkol_tensor_to_svec: exact.imports.eshkol_tensor_to_svec,
                 eshkol_unwrap_list_index: exact.imports.eshkol_unwrap_list_index,
                 eshkol_wasm_numeric_abi_check: exact.imports.eshkol_wasm_numeric_abi_check,
                 eshkol_vref_unwrap_index: exact.imports.eshkol_vref_unwrap_index,

@@ -394,5 +394,19 @@
   "eshkol_stop_gradient_tagged": [
     "tagged_ptr",
     "tagged_out_ptr"
+  ],
+  "eshkol_bignum_from_string": [
+    "arena_ptr",
+    "char_buffer_ptr",
+    "size_t"
+  ],
+  "eshkol_tensor_operand_policy_checked": [
+    "tagged_ptr",
+    "cstring_ptr",
+    "i32"
+  ],
+  "eshkol_tensor_to_svec": [
+    "arena_ptr",
+    "tagged_ptr"
   ]
 }

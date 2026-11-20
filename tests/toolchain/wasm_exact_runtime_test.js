@@ -587,6 +587,31 @@ async function run(file, className) {
     assert.throws(()=>env.eshkol_complex_sqrt(slot,result),e=>e.code==='ESH_NUMERIC_UNSUPPORTED');
     assert.deepEqual([...new Uint8Array(memory.buffer,result,16)],Array(16).fill(0xa5));
     assert.throws(()=>rt.prepareWasm(wasm),/live arena/);
+    // Decimal text to bignum (null on empty or malformed text), tensor to
+    // Scheme vector, and the operand boundary's explicit dtype policy.
+    const putBytes=text=>{const b=new TextEncoder().encode(text),q=allocRaw(b.length+1);
+        new Uint8Array(memory.buffer,q,b.length+1).set([...b,0]);return [q,b.length];};
+    for(const text of ['-340282366920938463463374607431768211457','+18446744073709551616','0','42']) {
+        const [q,len]=putBytes(text);const big=env.eshkol_bignum_from_string(1,q,len);
+        assert.ok(big,`${file}: ${text} parses`);assert.equal(rt._exact.readBignum(big),BigInt(text));
+    }
+    for(const text of ['','-','+','12a','1 2']) {const [q,len]=putBytes(text);assert.equal(env.eshkol_bignum_from_string(1,q,len),0);}
+    const dbl=d=>taggedBytes(2,bits(d));
+    const tc3=allocateCons(dbl(-3),taggedBytes(0)),tc2=allocateCons(dbl(2.5),taggedBytes(8,tc3)),tc1=allocateCons(dbl(1.5),taggedBytes(8,tc2));
+    const listHead=headPointer(tc1),tensor=env.eshkol_tensor_from_collection(1,listHead),tensorSlot=headPointer(tensor);
+    const svec=env.eshkol_tensor_to_svec(1,tensorSlot);
+    assert.equal(dv().getBigInt64(svec,true),3n);assert.equal(dv().getUint8(svec-8),2,`${file}: tensor->svec is a vector`);
+    [1.5,2.5,-3].forEach((d,i)=>{assert.equal(dv().getUint8(svec+8+16*i),2);assert.equal(dv().getFloat64(svec+16+16*i,true),d);});
+    assert.equal(env.eshkol_tensor_to_svec(1,listHead),0,`${file}: a non-tensor leaves the caller's refusal in charge`);
+    const [opName]=putBytes('policy-op');
+    assert.equal(env.eshkol_tensor_operand_policy_checked(tensorSlot,opName,0),tensor);
+    dv().setBigUint64(tensor+32,64n,true);
+    assert.throws(()=>env.eshkol_tensor_operand_policy_checked(tensorSlot,opName,0),/policy-op: a forward-mode derivative/);
+    assert.equal(env.eshkol_tensor_operand_policy_checked(tensorSlot,opName,1),tensor);
+    dv().setBigUint64(tensor+32,66n,true);
+    assert.throws(()=>env.eshkol_tensor_operand_policy_checked(tensorSlot,opName,1),/policy-op: this tensor operation has no exact rule/);
+    assert.equal(env.eshkol_tensor_operand_policy_checked(tensorSlot,opName,2),tensor);
+    dv().setBigUint64(tensor+32,0n,true);
     const fresh=load(file,className);const isolated=new WebAssembly.Memory({initial:32,maximum:32});
     fresh.memory=isolated;fresh.prepareWasm(wasm);const limited=fresh.createImports().env;
     fresh._bump(isolated.buffer.byteLength-fresh._bumpPtr-24);
