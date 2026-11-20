@@ -1076,6 +1076,28 @@ extern "C" void eshkol_raise_continuable_end(void* frame) {
 // ───────────────────────────────────────────────────────────────────────────
 static thread_local eshkol_exception_handler_t* g_exception_handler_free_list = nullptr;
 
+// Release every cached frame of the calling thread (and its replay buffer).
+static void release_handler_frame_cache() {
+    while (g_exception_handler_free_list) {
+        auto* frame = g_exception_handler_free_list;
+        g_exception_handler_free_list = frame->prev;
+        free(frame->replay_values);
+        free(frame);
+    }
+}
+
+// The cache belongs to its thread: when the thread ends, nothing can reach its
+// frames any more, so they are released with it. A pool worker that ran guarded
+// tasks returns its frames here instead of stranding them at thread exit.
+// Constructed on a thread's first frame allocation (see the push below).
+namespace {
+struct HandlerFrameCacheOwner {
+    bool armed = false;
+    ~HandlerFrameCacheOwner() { release_handler_frame_cache(); }
+};
+thread_local HandlerFrameCacheOwner g_handler_frame_cache_owner;
+}  // namespace
+
 // Depth of g_exception_handler_stack, maintained by push/pop so a guard loop
 // can record a mark in O(1) and unwind to it without walking the chain
 // (SW-58). Thread-local for the same reason the free list is.
@@ -1120,12 +1142,7 @@ extern "C" size_t eshkol_test_handler_pool_size() {
     return count;
 }
 extern "C" void eshkol_test_handler_pool_release() {
-    while (g_exception_handler_free_list) {
-        auto* frame = g_exception_handler_free_list;
-        g_exception_handler_free_list = frame->prev;
-        free(frame->replay_values);
-        free(frame);
-    }
+    release_handler_frame_cache();
 }
 #endif
 
@@ -1136,6 +1153,7 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     if (handler) {
         g_exception_handler_free_list = handler->prev;
     } else {
+        g_handler_frame_cache_owner.armed = true;  // arm this thread's release at exit
         handler = (eshkol_exception_handler_t*)malloc(sizeof(eshkol_exception_handler_t));
         if (handler) {
             handler->replay_values = nullptr;
