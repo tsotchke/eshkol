@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline negative controls for the ESH-0011 ICC producer."""
 from __future__ import annotations
-import json, os, subprocess, sys, tempfile
+import ast, json, os, subprocess, sys, tempfile
 from pathlib import Path
 import run_event_loop_gate as gate
 
@@ -21,6 +21,33 @@ def main()->int:
         raise AssertionError('invalid input was accepted')
     record('wrong source rejected',lambda: rejected(lambda: gate.require_source_owner('/tmp/other-source',str(ROOT))))
     record('stale binary rejected',lambda: rejected(lambda: gate.require_freshness_status(1,'eshkol-run predates source')))
+    def state_keys():
+        tree = ast.parse(Path(gate.__file__).read_text())
+        written, read = set(), set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+                if any(isinstance(t, ast.Name) and t.id == "state" for t in node.targets):
+                    written.update(k.value for k in node.value.keys if isinstance(k, ast.Constant))
+            if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "state":
+                if isinstance(node.slice, ast.Constant):
+                    (written if isinstance(node.ctx, ast.Store) else read).add(node.slice.value)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
+                if isinstance(node.func.value, ast.Name) and node.func.value.id == "state":
+                    read.add(node.args[0].value)
+        assert not read - written, f"receipt keys without producers: {sorted(read - written)}"
+    record("receipt key producers", state_keys)
+    def freshness_report():
+        data = {"status": "PASS", "passed": True, "binaries_checked": ["eshkol-run"], "source_freshness_epoch": 27}
+        assert gate.require_freshness_status(0, json.dumps(data)) == 27
+        data["binaries_checked"] = []
+        rejected(lambda: gate.require_freshness_status(0, json.dumps(data)))
+    record("compiler freshness evidence", freshness_report)
+    def source_content():
+        values = {'source_hashes_before': {'backend': 'a'}, 'source_hashes_after': {'backend': 'a'}}
+        gate.require_source_hashes(values)
+        values['source_hashes_after']['backend'] = 'b'
+        rejected(lambda: gate.require_source_hashes(values))
+    record("source content comparison", source_content)
     def compile_error():
         from verify_event_loop_gate import verify_compile_log, GateError
         with tempfile.TemporaryDirectory() as d:
@@ -50,7 +77,11 @@ def main()->int:
             proc=subprocess.run([sys.executable,str(ROOT/'scripts/run_event_loop_gate.py'),'--build-dir',str(Path(d)/'missing-build'),'--evidence-dir',d],env=env,capture_output=True,text=True)
             rows=[json.loads(x) for x in trace.read_text().splitlines()]
             assert proc.returncode!=0 and len(rows)==1 and rows[0]['value']=='FAIL'
-            assert Path(rows[0]['receipt_path']).is_file() and rows[0]['receipt_sha256']
+            receipt_path = Path(rows[0]['receipt_path'])
+            receipt = json.loads(receipt_path.read_text())
+            assert rows[0]['receipt_sha256'] == gate.sha(receipt_path)
+            assert rows[0]['finished_utc'] == receipt['finished_utc']
+            gate.time.strptime(receipt['finished_utc'], '%Y-%m-%dT%H:%M:%SZ')
     record('stale PASS cleared before failure verdict',stale_pass_cleared)
     total=len(checks); passed=sum(ok for _,ok in checks)
     print(f'event-loop gate failure controls: {passed}/{total} passed')

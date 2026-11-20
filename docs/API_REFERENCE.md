@@ -9,11 +9,10 @@ The generated language-surface inventory and the AD support matrix distinguish
 implemented operations, engine-specific restrictions, and measured parity.
 
 > **Reading the `; =>` annotations.** They give an expression's **value**, and
-> an inexact value is written with its `.0` (`6.0`) where that is what makes the
-> example clear. What the compiler **prints** for an integral double omits the
-> decimal point — `(derivative (lambda (x) (* x x)) 3.0)` displays `6`, not
-> `6.0`, and it is still inexact. The one exception is `-0.0`, which prints in
-> full because reading `-0` back would lose both the inexactness and the sign.
+> an inexact value is written with its `.0` (`6.0`). That is also what the
+> compiler **prints** for an integral double —
+> `(derivative (lambda (x) (* x x)) 3.0)` displays `6.0` — so printed text reads
+> back inexact; `-0.0` likewise prints in full, keeping its sign.
 > Output shown inside a fenced result block is always the exact printed text.
 > See
 > [reference/language/numeric-tower.md](reference/language/numeric-tower.md#exactness).
@@ -660,7 +659,7 @@ primal stays exact. The straight-through identity
 `(+ s (stop-gradient (- h s)))` has the value `h` and the derivative of `s`.
 
 ```scheme
-(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; => 3
+(derivative (lambda (x) (* x (stop-gradient x))) 3.0)   ; => 3.0
 (derivative (lambda (x) (* x (stop-gradient x))) 1/3)   ; => 1/3
 ```
 
@@ -841,9 +840,9 @@ N-dimensional tensor indexing with slicing support.
 **Examples**:
 ```scheme
 (define M #(#(1 2 3) #(4 5 6)))
-(tensor-get M 0 1)   ; => 2 (scalar element)
-(tensor-get M 1)     ; => #(4 5 6) (row slice)
-(vref #(10 20 30) 1) ; => 20 (1D shorthand)
+(tensor-get M 0 1)   ; => 2.0 (scalar element)
+(tensor-get M 1)     ; => #(4.0 5.0 6.0) (row slice)
+(vref #(10 20 30) 1) ; => 20.0 (1D shorthand)
 ```
 
 **Type**: Tensor indexing  
@@ -876,7 +875,7 @@ Transposes 2D matrix (swaps rows and columns).
 
 **Examples**:
 ```scheme
-(transpose #(#(1 2 3) #(4 5 6)))  ; => #((1 4) (2 5) (3 6))
+(transpose #(#(1 2 3) #(4 5 6)))  ; => #((1.0 4.0) (2.0 5.0) (3.0 6.0))
 ```
 
 **Type**: Matrix transformation  
@@ -892,8 +891,8 @@ Changes tensor shape (zero-copy view).
 
 **Examples**:
 ```scheme
-(reshape #(1 2 3 4 5 6) 2 3)  ; => #((1 2 3) (4 5 6))
-(reshape #(1 2 3 4 5 6) '(3 2))  ; => #((1 2) (3 4) (5 6))
+(reshape #(1 2 3 4 5 6) 2 3)  ; => #((1.0 2.0 3.0) (4.0 5.0 6.0))
+(reshape #(1 2 3 4 5 6) '(3 2))  ; => #((1.0 2.0) (3.0 4.0) (5.0 6.0))
 ```
 
 **Type**: Shape transformation  
@@ -909,7 +908,7 @@ Flattens N-dimensional tensor to 1D (zero-copy view).
 
 **Examples**:
 ```scheme
-(flatten #(#(1 2) #(3 4)))  ; => #(1 2 3 4)
+(flatten #(#(1 2) #(3 4)))  ; => #(1.0 2.0 3.0 4.0)
 ```
 
 **Type**: Dimensionality reduction  
@@ -955,7 +954,7 @@ Loads a tensor checkpoint from disk.
 
 **Examples**:
 ```scheme
-(tensor-load "/tmp/tensor.em")  ; => #(1 2 3)
+(tensor-load "/tmp/tensor.em")  ; => #(1.0 2.0 3.0)
 ```
 
 **Type**: Serialization  
@@ -1008,8 +1007,8 @@ Element-wise arithmetic operations. Supports both tensors and Scheme vectors.
 
 **Examples**:
 ```scheme
-(tensor-add #(1 2 3) #(4 5 6))  ; => #(5 7 9)
-(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; => #((2 4) (6 8))
+(tensor-add #(1 2 3) #(4 5 6))  ; => #(5.0 7.0 9.0)
+(tensor-mul #(#(1 2) #(3 4)) #(#(2 2) #(2 2)))  ; => #((2.0 4.0) (6.0 8.0))
 ```
 
 **Type**: Element-wise binary operations  
@@ -1026,10 +1025,10 @@ Matrix multiplication for 2D, dot product for 1D.
 **Examples**:
 ```scheme
 ; 1D vectors: dot product
-(tensor-dot #(1 2 3) #(4 5 6))  ; => 32
+(tensor-dot #(1 2 3) #(4 5 6))  ; => 32.0
 
 ; 2D matrices: matmul
-(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; => #((19 22) (43 50))
+(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))  ; => #((19.0 22.0) (43.0 50.0))
 ```
 
 **Type**: Linear algebra operation  
@@ -1045,7 +1044,7 @@ Sum of diagonal elements.
 
 **Examples**:
 ```scheme
-(trace #(#(1 2) #(3 4)))  ; => 5
+(trace #(#(1 2) #(3 4)))  ; => 5.0
 ```
 
 **Type**: Matrix invariant  
@@ -1075,7 +1074,7 @@ Outer product of vectors: `(u ⊗ v)[i,j] = uᵢ vⱼ`
 
 **Examples**:
 ```scheme
-(outer #(1 2) #(3 4 5))  ; => #((3 4 5) (6 8 10))
+(outer #(1 2) #(3 4 5))  ; => #((3.0 4.0 5.0) (6.0 8.0 10.0))
 ```
 
 **Type**: Tensor product  
@@ -1124,7 +1123,7 @@ Maps function over tensor elements.
 
 **Examples**:
 ```scheme
-(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; => #(1 4 9)
+(tensor-apply #(1 2 3) (lambda (x) (* x x)))  ; => #(1.0 4.0 9.0)
 ```
 
 **Type**: Element-wise map
@@ -1413,7 +1412,7 @@ Extracts first element or rest of list. Also works with vectors/tensors.
 ```scheme
 (car '(1 2 3))   ; => 1
 (cdr '(1 2 3))   ; => (2 3)
-(car #(10 20 30)) ; => 10 (vector support)
+(car #(10 20 30)) ; => 10.0 (vector support)
 ```
 
 **Type**: Pair accessors  
@@ -1614,7 +1613,7 @@ Eshkol's standard library provides 25 modules with 180+ functions. Access via:
 (- 10 3)        ; => 7
 (- 5)           ; => -5 (unary negation)
 (* 2 3 4)       ; => 24
-(/ 10 2)        ; => 5.0 (always returns double)
+(/ 10 2)        ; => 5 (always returns double)
 ```
 
 **Type Promotion**:
@@ -1895,7 +1894,7 @@ bytecode VM share one conversion routine, so their output is byte-identical.
 (number->string 42)         ; => "42"
 (string->number "3.14")     ; => 3.14
 (number->string (sqrt 2.0)) ; => "1.4142135623730951"
-(number->string 3.0)        ; => "3"      (integral double, still inexact)
+(number->string 3.0)        ; => "3.0"    (integral double, reads back inexact)
 (number->string -0.0)       ; => "-0.0"   (sign and inexactness both survive)
 ```
 
@@ -2315,10 +2314,10 @@ All standard operators (`+`, `-`, `*`, `/`) work with complex numbers. Division 
 
 ```scheme
 (define z1 (make-rectangular 3.0 4.0))
-(magnitude z1)      ; => 5
+(magnitude z1)      ; => 5.0
 (angle z1)          ; => 0.9272952180016122 (atan(4/3))
-(+ z1 z1)           ; => 6+8i
-(* z1 (make-rectangular 0.0 1.0))  ; => -4+3i
+(+ z1 z1)           ; => 6.0+8.0i
+(* z1 (make-rectangular 0.0 1.0))  ; => -4.0+3.0i
 ```
 
 ---
@@ -3498,21 +3497,21 @@ co-adaptation of feature detectors.
 
 ```scheme
 (define x #(-2.0 -1.0 0.0 1.0 2.0))
-(relu x)               ; => #(0 0 0 1 2)
+(relu x)               ; => #(0.0 0.0 0.0 1.0 2.0)
 (sigmoid x)            ; => #(0.11920292202211755 0.2689414213699951 0.5 0.7310585786300049 0.8807970779778823)
 (softmax x)            ; => #(0.011656230956039605 0.03168492079612427 0.0861285444362687 0.23412165725273662 0.6364086465588308)
-(gelu x)               ; => #(-0.04540230591222494 -0.15880800939172324 0 0.8411919906082768 1.954597694087775)
-(leaky-relu x)         ; => #(-0.02 -0.01 0 1 2)
-(silu x)               ; => #(-0.2384058440442351 -0.2689414213699951 0 0.7310585786300049 1.7615941559557646)
-(elu x)                ; => #(-0.8646647167633873 -0.6321205588285577 0 1 2)
-(mish x)               ; => #(-0.2525014826957091 -0.30340146137410895 0 0.8650983882673103 1.9439589595339946)
+(gelu x)               ; => #(-0.04540230591222494 -0.15880800939172324 0.0 0.8411919906082768 1.954597694087775)
+(leaky-relu x)         ; => #(-0.02 -0.01 0.0 1.0 2.0)
+(silu x)               ; => #(-0.2384058440442351 -0.2689414213699951 0.0 0.7310585786300049 1.7615941559557646)
+(elu x)                ; => #(-0.8646647167633873 -0.6321205588285577 0.0 1.0 2.0)
+(mish x)               ; => #(-0.2525014826957091 -0.30340146137410895 0.0 0.8650983882673103 1.9439589595339946)
 (dropout x 0.5 #t)     ; => #(0.0 -2.0 0.0 2.0 0.0) (varies, scaled by 2)
 (dropout x 0.5 #f)     ; => #(-2.0 -1.0 0.0 1.0 2.0) (unchanged in inference)
 ```
 
-(An integral double prints without a decimal point — see
-[the numeric tower](reference/language/numeric-tower.md#exactness). `#(0 0 0 1 2)`
-above is five inexact values, not five exact integers.)
+(An integral double prints with its decimal point — see
+[the numeric tower](reference/language/numeric-tower.md#exactness). `#(0.0 0.0 0.0 1.0 2.0)`
+above is five inexact values.)
 
 > **Known limitation — `leaky-relu`'s α argument is ignored (build item).**
 > `(leaky-relu x 0.1)` and `(leaky-relu x 0.5)` both answer
@@ -3753,7 +3752,7 @@ Default margin = 0.0.
 (define anchor #(1.0 0.0 0.0))
 (define positive #(0.9 0.1 0.0))
 (define negative #(0.0 1.0 0.0))
-(triplet-loss anchor positive negative 1.0) ; => 0
+(triplet-loss anchor positive negative 1.0) ; => 0.0
 ;; = max(d(a,p) - d(a,n) + 1, 0) = max(0.1414 - 1.4142 + 1, 0) = 0 — an easy
 ;; triplet, already satisfying the margin, so no gradient signal.
 ```
@@ -4070,12 +4069,12 @@ Continuous exponential decay — more aggressive than step decay as it reduces e
     (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000)))
 
 ;; called directly, each scheduler follows its documented curve:
-(linear-warmup-lr    0.001 0    1000)  ; => 0
+(linear-warmup-lr    0.001 0    1000)  ; => 0.0
 (linear-warmup-lr    0.001 500  1000)  ; => 5e-04
 (linear-warmup-lr    0.001 1000 1000)  ; => 0.001
 (cosine-annealing-lr 0.001 0.0 0    9000)  ; => 0.001
 (cosine-annealing-lr 0.001 0.0 4500 9000)  ; => 5e-04
-(cosine-annealing-lr 0.001 0.0 9000 9000)  ; => 0
+(cosine-annealing-lr 0.001 0.0 9000 9000)  ; => 0.0
 ```
 
 > **Known limitation — a scheduler called through a user function's parameter
@@ -7228,7 +7227,7 @@ predicate.
   (sqrt (+ (expt (- (point-x p1) (point-x p2)) 2)
            (expt (- (point-y p1) (point-y p2)) 2))))
 
-(distance (make-point 0 0) (make-point 3 4))   ; => 5.0
+(distance (make-point 0 0) (make-point 3 4))   ; => 5
 ```
 
 ---

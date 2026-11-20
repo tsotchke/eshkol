@@ -31,6 +31,7 @@ invalidation and the stdlib object cache.
 | `ESHKOL_PATH` | Module/include search path for `require`. Searched after the requiring file's own directory and the project root, and **before** the installed `lib/` tree, so a path you name overrides a module that ships with the compiler. `-I` directories are merged into it. |
 | `ESHKOL_LIB_DIR` | Directory holding the precompiled stdlib (`stdlib.o`, `stdlib.bc`) and the runtime archives (`libeshkol-runtime.a`, or the legacy `libeshkol-static.a`). Highest precedence of all: it is searched — together with its `eshkol/` subdirectory — before `-L` paths, before the compiler's own install, and before any system location. |
 | `ESHKOL_SYSTEM_PREFIXES` | Replaces the built-in list of system install prefixes searched as a last resort (`/usr/local`, `/usr`, `/opt/homebrew`). Path-list syntax; each entry contributes `<prefix>/lib`, `<prefix>/lib/eshkol` and `<prefix>/share/eshkol/lib`. For unusual installs and for packaging tests that must not read the host's real system directories. |
+| `ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS` | How long a compile waits for another live compile that is producing the same native output path before it reports that the output is owned. Default `30`; `0` does not wait. |
 | `ESHKOL_PROJECT_ROOT` | Project root used for relative paths in exception/backtrace reporting. |
 
 ### Resolution precedence
@@ -290,6 +291,9 @@ Resource caps applied to children spawned by [`agent.subprocess`](../agent/subpr
 | Variable | Effect | Default |
 |----------|--------|---------|
 | `ESHKOL_SERVER_TOKEN` | Auth token for `agent.http_server` / `eshkol-server`. | unset |
+| `ESHKOL_SERVER_MAX_HEADER_BYTES` | Header section `eshkol-server` will hold for one request; passing it answers 431. See [the compilation server](compilation-server.md). | `65536` |
+| `ESHKOL_SERVER_MAX_BODY_BYTES` | Request body `eshkol-server` will accept; passing it answers 413. | `10485760` |
+| `ESHKOL_SERVER_REQUEST_DEADLINE_SECONDS` | Seconds one request has, from accept, to arrive complete; passing it answers 408 and the connection is closed. | `15` |
 | `ESHKOL_VERBOSE` | Metal GPU per-call logging. Requires a leading `1`. Despite the name it affects nothing outside the Metal backend; the CUDA equivalent is `ESHKOL_GPU_VERBOSE`. | off |
 | `ESHKOL_ARENA_POISON` | Poison freed arena memory (debug). See the VM region table above for the accepted-value caveat; set it to exactly `1`. | off |
 | `ESHKOL_ARENA_REPORT` | Set to exactly `1` to print the process-global arena's own byte total once at exit, on stderr, as `[eshkol-arena] global_total_allocated_bytes=N`. Diagnostic only — it changes no allocation behaviour. This is the retention signal `tests/memory/resident_longrun_flat_gate.sh` gates on, because it is deterministic to the byte, whereas peak RSS is a high-water mark of *instantaneous* residency and reads low on a loaded host. | off |

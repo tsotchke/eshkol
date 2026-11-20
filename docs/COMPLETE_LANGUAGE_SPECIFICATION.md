@@ -1462,8 +1462,8 @@ naming both shapes.
 
 <!-- doc-example: skip pseudo-code: demonstrates both successful broadcasts and the intentional errors in the trailing comments; the error lines terminate the program before later lines run -->
 ```scheme
-(* #(1 2) #(3 4))         ; => #(3 8)
-(* #(2.0) #(1.0 2.0 3.0)) ; => #(2 4 6)      (a dimension of 1 broadcasts)
+(* #(1 2) #(3 4))         ; => #(3.0 8.0)
+(* #(2.0) #(1.0 2.0 3.0)) ; => #(2.0 4.0 6.0)  (a dimension of 1 broadcasts)
 (* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
 (* 2 #(1 2))              ; ERROR: the same error, same wording
 (* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
@@ -1473,8 +1473,8 @@ naming both shapes.
 **Examples:**
 ```scheme
 (+ 1 2)        ; => 3
-(+ 1.5 2.5)    ; => 4    (inexact; a double with no fractional part prints
-               ;          without a decimal point — see 3.1 Numeric Tower)
+(+ 1.5 2.5)    ; => 4.0  (inexact; a double with no fractional part prints
+               ;          with its decimal point — see 3.1 Numeric Tower)
 (+ 1 2 3 4 5)  ; => 15
 ```
 
@@ -2763,7 +2763,7 @@ struct ad_tape {
           (* (vref v 0) (sin (vref v 1)))))
 
 (display (jacobian polar-to-cartesian (vector 1.0 0.0)))
-; => #((1 0) (0 1))   (the Jacobian at r=1, θ=0)
+; => #((1.0 0.0) (0.0 1.0))   (the Jacobian at r=1, θ=0)
 ```
 
 #### 8.3.2 `hessian` - Hessian Matrix
@@ -2780,7 +2780,7 @@ struct ad_tape {
      (* (vref v 1) (vref v 1))))
 
 (hessian f (vector 1.0 1.0))
-; => #((2 0) (0 2))  [constant Hessian for quadratic]
+; => #((2.0 0.0) (0.0 2.0))  [constant Hessian for quadratic]
 ```
 
 #### 8.3.3 `divergence` - Vector Field Divergence
@@ -2797,7 +2797,7 @@ struct ad_tape {
 (define (radial v)
   (vector (vref v 0) (vref v 1)))  ; F(x,y) = (x, y)
 
-(divergence radial (vector 1.0 1.0))  ; => 2
+(divergence radial (vector 1.0 1.0))  ; => 2.0
 ```
 
 #### 8.3.4 `curl` - Vector Field Curl
@@ -2816,7 +2816,7 @@ struct ad_tape {
           (vref v 0)             ; x
           0.0))                  ; 0
 
-(curl rotating (vector 1.0 1.0 0.0))  ; => #(0 0 2)
+(curl rotating (vector 1.0 1.0 0.0))  ; => #(0.0 0.0 2.0)
 ```
 
 #### 8.3.5 `laplacian` - Scalar Field Laplacian
@@ -2834,7 +2834,7 @@ struct ad_tape {
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1))))  ; x² + y²
 
-(laplacian harmonic (vector 1.0 1.0))  ; => 4
+(laplacian harmonic (vector 1.0 1.0))  ; => 4.0
 ```
 
 #### 8.3.6 `directional-derivative` - Directional Derivative
@@ -2905,7 +2905,7 @@ monomorphization).
 ; => (1.6487212707001282 1.6487212707001282 0.8243606353500641 0.27478687845002137 0.06869671961250534)
 ;    (approximately 1.64872, 1.64872, 0.824361, 0.274787, 0.0686967)
 
-(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; => 27  (f'(x) = 3x^2 at x=3)
+(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; => 27.0  (f'(x) = 3x^2 at x=3)
 ```
 
 #### 8.5.2 `core.ad.guw` — Arbitrary-Order Multivariate Mixed Partials
@@ -3387,7 +3387,7 @@ expressions (matching Racket/MIT/Guile/Chez), under these rules:
   (define t (reshape v 1 2))         ; evaluated HERE, so it sees the filled v
   (tensor-data t))
 
-(display (outer))                    ; => #(1 2)
+(display (outer))                    ; => #(1.0 2.0)
 ```
 
 Reading a value define's variable **before** its source position yields the

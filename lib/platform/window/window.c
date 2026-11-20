@@ -56,7 +56,7 @@ int eshkol_plat_window_resize_surface(eshkol_window_t* w, int width, int height)
     return ESHKOL_PLATFORM_OK;
 }
 
-void eshkol_plat_window_emit(eshkol_window_t* w, eshkol_event_t* ev) {
+void eshkol_plat_window_emit(eshkol_window_t* w, eshkol_platform_event_t* ev) {
     if (!ev->window_id) ev->window_id = w->id;
     if (!ev->timestamp) ev->timestamp = eshkol_platform_time_us();
     if (ev->type == ESHKOL_EVENT_WINDOW_CLOSE) atomic_store(&w->should_close, 1);
@@ -142,7 +142,7 @@ bool eshkol_window_should_close(eshkol_window_t* w) {
 
 void eshkol_window_request_close(eshkol_window_t* w) {
     if (!w) return;
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = ESHKOL_EVENT_WINDOW_CLOSE;
     eshkol_plat_window_emit(w, &ev);
@@ -173,13 +173,13 @@ int eshkol_window_read_presented(eshkol_window_t* w, int x, int y, uint32_t* out
     return w->ops->read_presented(w, x, y, out);
 }
 
-bool eshkol_window_poll_event(eshkol_window_t* w, eshkol_event_t* ev) {
+bool eshkol_window_poll_event(eshkol_window_t* w, eshkol_platform_event_t* ev) {
     if (!w || !ev) return false;
     w->ops->pump(w);
     return eshkol_plat_queue_pop(&w->queue, ev);
 }
 
-int eshkol_window_wait_event_timeout(eshkol_window_t* w, eshkol_event_t* ev, int timeout_ms) {
+int eshkol_window_wait_event_timeout(eshkol_window_t* w, eshkol_platform_event_t* ev, int timeout_ms) {
     if (!w || !ev) return ESHKOL_PLATFORM_EINVAL;
     uint64_t deadline = timeout_ms < 0 ? UINT64_MAX
                                        : eshkol_plat_now_ns() + (uint64_t)timeout_ms * 1000000ull;
@@ -199,13 +199,13 @@ int eshkol_window_wait_event_timeout(eshkol_window_t* w, eshkol_event_t* ev, int
     }
 }
 
-void eshkol_window_wait_event(eshkol_window_t* w, eshkol_event_t* ev) {
+void eshkol_window_wait_event(eshkol_window_t* w, eshkol_platform_event_t* ev) {
     (void)eshkol_window_wait_event_timeout(w, ev, -1);
 }
 
-int eshkol_window_push_event(eshkol_window_t* w, const eshkol_event_t* ev) {
+int eshkol_window_push_event(eshkol_window_t* w, const eshkol_platform_event_t* ev) {
     if (!w || !ev) return ESHKOL_PLATFORM_EINVAL;
-    eshkol_event_t copy = *ev;
+    eshkol_platform_event_t copy = *ev;
     if (!copy.window_id) copy.window_id = w->id;
     if (!copy.timestamp) copy.timestamp = eshkol_platform_time_us();
     if (copy.type == ESHKOL_EVENT_WINDOW_CLOSE) atomic_store(&w->should_close, 1);
@@ -330,7 +330,7 @@ int64_t eshkol_plat_window_read_presented(int64_t handle, int32_t x, int32_t y) 
 
 int32_t eshkol_plat_window_next_event(int64_t handle, int32_t timeout_ms) {
     WITH_WINDOW(handle, -1)
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     int got = timeout_ms == 0 ? (eshkol_window_poll_event(w, &ev) ? 1 : 0)
                               : eshkol_window_wait_event_timeout(w, &ev, timeout_ms);
     int32_t r;
@@ -345,7 +345,7 @@ int32_t eshkol_plat_window_next_event(int64_t handle, int32_t timeout_ms) {
     return r;
 }
 
-static int64_t event_field(const eshkol_event_t* e, int32_t field) {
+static int64_t event_field(const eshkol_platform_event_t* e, int32_t field) {
     switch (field) {
         case ESHKOL_EVENT_FIELD_TYPE:      return e->type;
         case ESHKOL_EVENT_FIELD_TIMESTAMP: return (int64_t)e->timestamp;
@@ -417,7 +417,7 @@ double eshkol_plat_window_event_real(int64_t handle, int32_t field) {
         handle, ESHKOL_PLAT_KIND_WINDOW, &lease_, &st_);
     if (!w) return NAN;
     double r = 0.0;
-    const eshkol_event_t* e = &w->current;
+    const eshkol_platform_event_t* e = &w->current;
     if (e->type >= ESHKOL_EVENT_TOUCH_BEGIN && e->type <= ESHKOL_EVENT_TOUCH_CANCEL) {
         r = field == 0 ? e->u.touch.x : field == 1 ? e->u.touch.y
           : field == 2 ? e->u.touch.pressure : 0.0;
@@ -429,7 +429,7 @@ double eshkol_plat_window_event_real(int64_t handle, int32_t field) {
 int32_t eshkol_plat_window_push_event(int64_t handle, int32_t type,
                                       int64_t a, int64_t b, int64_t c) {
     WITH_WINDOW(handle, 0)
-    eshkol_event_t ev;
+    eshkol_platform_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = type;
     int r = ESHKOL_PLATFORM_OK;

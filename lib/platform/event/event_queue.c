@@ -35,7 +35,7 @@ void eshkol_plat_queue_destroy(eshkol_plat_event_queue_t* q) {
     pthread_mutex_destroy(&q->lock);
 }
 
-int eshkol_plat_queue_push(eshkol_plat_event_queue_t* q, const eshkol_event_t* ev) {
+int eshkol_plat_queue_push(eshkol_plat_event_queue_t* q, const eshkol_platform_event_t* ev) {
     pthread_mutex_lock(&q->lock);
     if (q->count == ESHKOL_PLAT_EVENT_QUEUE_CAP) {
         q->dropped++;
@@ -49,7 +49,7 @@ int eshkol_plat_queue_push(eshkol_plat_event_queue_t* q, const eshkol_event_t* e
     return ESHKOL_PLATFORM_OK;
 }
 
-bool eshkol_plat_queue_pop(eshkol_plat_event_queue_t* q, eshkol_event_t* ev) {
+bool eshkol_plat_queue_pop(eshkol_plat_event_queue_t* q, eshkol_platform_event_t* ev) {
     pthread_mutex_lock(&q->lock);
     if (q->count == 0) {
         pthread_mutex_unlock(&q->lock);

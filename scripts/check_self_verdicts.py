@@ -387,6 +387,11 @@ def _write(tmp_dir: str, name: str, content: str) -> str:
     return path
 
 
+def clean_summary_matches(path: str, expected_checks: int) -> bool:
+    with open(path, encoding="utf-8") as stream:
+        return stream.read().splitlines() == ["Failed: 0", f"All {expected_checks} checks green."]
+
+
 def self_test() -> bool:
     all_ok = True
     print("check_self_verdicts.py self-test:")
@@ -412,6 +417,8 @@ def self_test() -> bool:
         # --- manifest: PASS row pointing at a log containing DIVERGENCE -> FAIL.
         div_log = _write(tmp_dir, "divergence.log", "native: 42\nvm: 41\nDIVERGENCE: values differ\n")
         clean_log = _write(tmp_dir, "clean.log", "Failed: 0\nAll 60 checks green.\n")
+        all_ok = clean_summary_matches(clean_log, 60) and all_ok
+        all_ok = not clean_summary_matches(div_log, 60) and all_ok
         real_fail_log = _write(tmp_dir, "real_fail.log", "MISMATCH: expected 3.14 got 2.71\n")
         manifest_bad = _write(tmp_dir, "manifest_bad.tsv",
                                f"PASS\t{div_log}\tvm-lane\nPASS\t{clean_log}\tclean-lane\n")

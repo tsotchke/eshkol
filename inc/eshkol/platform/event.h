@@ -108,7 +108,7 @@ typedef struct eshkol_event {
         struct { uint32_t timer_id; uint64_t interval; } timer;
         struct { uint32_t code; uint64_t data1, data2; } user;
     } u;
-} eshkol_event_t;
+} eshkol_platform_event_t;
 
 #ifdef __cplusplus
 }

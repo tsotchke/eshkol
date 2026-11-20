@@ -137,11 +137,11 @@ static void resident_error(const char* message) {
     // A refusal can itself occur while exporting an exception. Build its
     // replacement condition in the caller's domain so it cannot dangle after
     // owner compaction/closure. Public wrappers leave the borrow on every exit.
-    arena_t* saved = t_memctx.allocation_domain;
+    arena_t* saved = eshkol_memctx_current()->allocation_domain;
     for (const auto& owner : resident_owners)
-        if (owner.active) { t_memctx.allocation_domain = owner.outside; break; }
+        if (owner.active) { eshkol_memctx_current()->allocation_domain = owner.outside; break; }
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "DBSP resident: %s", message);
-    t_memctx.allocation_domain = saved;
+    eshkol_memctx_current()->allocation_domain = saved;
 }
 }
 extern "C" int64_t eshkol_resident_open(int64_t threshold) {
@@ -175,14 +175,14 @@ extern "C" void eshkol_resident_enter(int64_t token) {
         resident_error("invalid owner, reentrant borrow, parallel context or active tape"); return;
     }
     owner->outside = eshkol_current_arena();
-    owner->saved_domain = t_memctx.allocation_domain; owner->mark = __region_stack_depth;
-    owner->active = true; t_memctx.allocation_domain = owner->arena;
+    owner->saved_domain = eshkol_memctx_current()->allocation_domain; owner->mark = __region_stack_depth;
+    owner->active = true; eshkol_memctx_current()->allocation_domain = owner->arena;
 }
 extern "C" void eshkol_resident_leave(int64_t token) {
     auto* owner = resident_find(token);
     if (!owner || !owner->active) { resident_error("leave without active owner"); return; }
     eshkol_region_unwind_to(owner->mark, nullptr, 0);
-    t_memctx.allocation_domain = owner->saved_domain; owner->active = false;
+    eshkol_memctx_current()->allocation_domain = owner->saved_domain; owner->active = false;
 }
 extern "C" int64_t eshkol_resident_hold(int64_t token, const arena_tagged_cons_cell_t* holder) {
     auto* owner = resident_find(token);

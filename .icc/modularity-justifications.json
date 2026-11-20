@@ -120,6 +120,73 @@
     "task_id": "vendored-third-party-header",
     "reason": "pjrt_c_api.h is an unmodified, vendored third-party header (\"Copyright 2022 The OpenXLA Authors\", Apache License 2.0) defining the PJRT plugin C ABI this repo's XLA/TPU backend links against for compatibility with upstream's own versioning. It is not Eshkol source code and this repo does not own its structure: PJRT_STRUCT_SIZE-style ABI definitions, struct layouts and the full C API surface are upstream's design, kept as one file to match how OpenXLA ships and versions it.",
     "mitigation": "Do not hand-edit; refresh by re-vendoring the upstream file on a version bump (see deps/pjrt/) rather than splitting it, so future re-vendoring stays a clean file replacement instead of a merge across split fragments."
+   },
+   {
+    "path_patterns": [
+     "repro/sparse-solves/results.json",
+     "repro/nonlinear-observability/results.json",
+     "repro/nonlinear-observability/certificates.json"
+    ],
+    "status": "accepted",
+    "task_id": "proof-corpus-replay",
+    "reason": "Each file is a cohesive serialized qualification run. Claims, witnesses and source models retain their fixture order for independent replay.",
+    "mitigation": "Keep validation at the document boundary. Change the producer and replay reader together before introducing a multi-file format."
+   },
+   {
+    "path_patterns": [
+     "web/eshkol-repl.js",
+     "site/static/eshkol-runtime.js"
+    ],
+    "status": "accepted",
+    "task_id": "wasm-browser-runtime",
+    "reason": "Both browser entry points embed the generated exact runtime to preserve compatibility with standalone script loading and synchronous WebAssembly imports.",
+    "mitigation": "Extract new exact arithmetic in the generator. Preserve the single-script loading boundary for the REPL and static runtime."
+   },
+   {
+    "path_patterns": [
+     "lib/backend/xla/builtin_classification.yaml"
+    ],
+    "status": "accepted",
+    "task_id": "xla-builtin-classification",
+    "reason": "The generator emits a cohesive registry keyed by the compiler builtin inventory for XLA lowering coverage.",
+    "mitigation": "Keep policy changes in the generator and regenerate the entire registry so every module uses the same classification."
+   },
+   {
+    "path_patterns": [
+     "lib/types/structural_checker.cpp"
+    ],
+    "status": "temporary_legacy_boundary",
+    "task_id": "structural-checker",
+    "reason": "The checker keeps lexical bindings, signatures and inference in one private implementation. Their co-location keeps recursive expression checking under the same scope and diagnostics.",
+    "mitigation": "Extract inference rules behind an internal checker interface after its context and diagnostic ownership are explicit."
+   },
+   {
+    "path_patterns": [
+     "lib/core/image_webp.cpp"
+    ],
+    "status": "temporary_legacy_boundary",
+    "task_id": "webp-codec",
+    "reason": "The codec uses private transform and entropy tables across its VP8 and VP8L paths. Their co-location keeps bitstream contracts local to the WebP implementation.",
+    "mitigation": "Extract the lossless codec behind an internal bitstream boundary with encode/decode fixtures before splitting compilation units."
+   },
+   {
+    "path_patterns": [
+     "lib/backend/vm_parser.c",
+     "lib/backend/vm_core.c"
+    ],
+    "status": "temporary_legacy_boundary",
+    "task_id": "vm-source-compiler",
+    "reason": "Both files are implementation fragments included by the hosted VM. Their temporary textual boundary shares private node, instruction and value representations during compiler changes.",
+    "mitigation": "Extract a private parser interface and an opcode representation header before compiling either module separately."
+   },
+   {
+    "path_patterns": [
+     "site/static/content/breakdown_type_system.html"
+    ],
+    "status": "accepted",
+    "task_id": "site-type-system-reference",
+    "reason": "This cohesive reference page uses one routed content URL for the table of contents and section links throughout the type system breakdown.",
+    "mitigation": "Keep the published page boundary stable. Split the source guide only alongside redirects for the existing section anchors."
    }
   ]
 }
