@@ -34,14 +34,26 @@ def main():
         checked = run([repl], work, env, source)
         if diagnostic not in checked.stdout:
             raise AssertionError(f"interactive {case}: {checked.stdout}")
-        # A new binding in an inner scope remains independent of a moved outer name.
-        fixture.write_text("(define x (owned 17))\n(move x)\n"
+        # Both arms transfer the same owner exactly once. Reading a fresh binding
+        # that shadows the transferred name is valid afterwards.
+        fixture.write_text("(define x (owned 17))\n(if (> x 0) (move x) (move x))\n"
                            '(let ((x 8)) (display x)) (newline)\n')
         for command in ([compiler, "-n", "-r", fixture], [vm, fixture],
                         [compiler, "-n", fixture, "-o", out], [out]):
             result = run(command, work, env)
             executing = "-o" not in command
             if result.returncode or (executing and "8" not in result.stdout.splitlines()):
+                raise AssertionError(f"{command}: {result.returncode}\n{result.stdout}")
+
+        fixture.write_text('(define x (owned 17))\n(borrow x (move x))\n'
+                           '(display "legacy-ok") (newline)\n')
+        legacy = work / "legacy"
+        for command in ([compiler, "--unsafe", "-n", "-r", fixture],
+                        [vm, "--unsafe", fixture],
+                        [compiler, "--unsafe", "-n", fixture, "-o", legacy], [legacy]):
+            result = run(command, work, env)
+            if result.returncode or ("-o" not in command and
+                                     "legacy-ok" not in result.stdout.splitlines()):
                 raise AssertionError(f"{command}: {result.returncode}\n{result.stdout}")
 
 

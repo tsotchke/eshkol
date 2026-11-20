@@ -1,4 +1,5 @@
 #include <eshkol/frontend/ownership.h>
+#include <eshkol/frontend/syntax_color.h>
 
 #include <algorithm>
 #include <cctype>
@@ -72,7 +73,10 @@ public:
         uint64_t id = 0;
     };
 
-    explicit OwnershipAnalyzer(const ResourceContracts* contracts) : contracts_(contracts), has_errors_(false) {}
+    OwnershipAnalyzer(const ResourceContracts* contracts, bool follow_branches)
+        : contracts_(contracts), follow_branches_(follow_branches), has_errors_(false) {}
+
+    bool needsBranchAnalysis() const { return needs_branch_analysis_; }
 
     // Run analysis on all ASTs
     bool analyze(const std::vector<eshkol_ast_t>& asts, OwnershipBindings* globals) {
@@ -135,6 +139,7 @@ public:
         // function bodies, which are declarations rather than initializers.
         for (size_t i = 0; i < asts.size(); ++i) {
             analyzeAST(&asts[i], true);
+            if (needs_branch_analysis_) return false;
         }
 
         if (strict_resources_) {
@@ -156,6 +161,8 @@ public:
     const std::vector<std::string>& getErrors() const { return errors_; }
 private:
     const ResourceContracts* contracts_;
+    bool follow_branches_;
+    bool needs_branch_analysis_ = false;
     const sr::Contract* trustedResourceContract(const eshkol_ast_t* ast) {
         if (!contracts_ || !ast || ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP ||
             !ast->operation.define_op.name) return nullptr;
@@ -600,8 +607,7 @@ private:
 
     State joinOwnershipState(State left, State right) const {
         if (left == right) return left;
-        if ((left == State::OWNED && right == State::MOVED) ||
-            (right == State::OWNED && left == State::MOVED) ||
+        if (left == State::MOVED || right == State::MOVED ||
             left == State::MAYBE_MOVED || right == State::MAYBE_MOVED)
             return State::MAYBE_MOVED;
         return State::UNOWNED;
@@ -3012,8 +3018,9 @@ private:
     }
 
     void reportError(const std::string& msg) {
-        if (!reported_.insert(msg).second) return;
-        errors_.push_back(msg);
+        auto display = eshkol_syntax_source_text(msg);
+        if (!reported_.insert(display).second) return;
+        errors_.push_back(std::move(display));
         has_errors_ = true;
     }
 
@@ -3056,7 +3063,7 @@ private:
         branch_frames_[branch_id] = std::move(frame);
         uint64_t binding_id = 0;
         bool true_is_error = false;
-        if (condition && condition->type == ESHKOL_VAR &&
+        if (effects && condition && condition->type == ESHKOL_VAR &&
             conditionRefinement(condition, &binding_id, &true_is_error))
             allowed_resource_use_nodes_.insert(condition);
         work.push_back(WorkItem::branchContinuation(WorkItem::Kind::IF_AFTER_CONDITION, nullptr,
@@ -3117,7 +3124,7 @@ private:
                     if (frame_it == branch_frames_.end()) continue;
                     auto& frame = frame_it->second;
                     frame.base = snapshot();
-                    refineBranchCondition(frame.condition, true);
+                    if (item.resource_effects_enabled) refineBranchCondition(frame.condition, true);
                     work.push_back(WorkItem::branchContinuation(
                         WorkItem::Kind::IF_AFTER_TRUE, nullptr, item.branch_id,
                         item.resource_effects_enabled));
@@ -3130,7 +3137,7 @@ private:
                     auto& frame = frame_it->second;
                     frame.true_state = snapshot();
                     restore(frame.base);
-                    refineBranchCondition(frame.condition, false);
+                    if (item.resource_effects_enabled) refineBranchCondition(frame.condition, false);
                     work.push_back(WorkItem::branchContinuation(
                         WorkItem::Kind::IF_AFTER_FALSE, nullptr, item.branch_id,
                         item.resource_effects_enabled));
@@ -3527,7 +3534,13 @@ private:
                 node->type != ESHKOL_VAR &&
                 !(node->type == ESHKOL_OP && node->operation.op == ESHKOL_CALL_OP))
                 fn_->returned_value = true;
-            if (checked && isIfForm(node)) {
+            if (!follow_branches_ && node->type == ESHKOL_OP &&
+                (node->operation.op == ESHKOL_OWNED_OP || node->operation.op == ESHKOL_MOVE_OP ||
+                 node->operation.op == ESHKOL_BORROW_OP)) {
+                needs_branch_analysis_ = true;
+                return;
+            }
+            if (follow_branches_ && isIfForm(node)) {
                 const auto& call = node->operation.call_op;
                 std::vector<WorkItem> false_items;
                 if (call.num_vars == 3) false_items.push_back(astChild(&call.variables[2]));
@@ -3832,9 +3845,9 @@ private:
                     }
                 }
                 if (borrowed_binding_id) work.push_back(WorkItem::unborrow(borrowed_binding_id));
-                for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i) {
+                for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i)
                     work.push_back(astChild(&op->borrow_op.body[i - 1]));
-                }
+                if (var_name.empty()) work.push_back(astChild(op->borrow_op.value));
                 break;
             }
 
@@ -3931,12 +3944,14 @@ private:
 
             case ESHKOL_WHEN_OP:
             case ESHKOL_UNLESS_OP:
-                if (checked && op->call_op.num_vars >= 1) {
-                    std::vector<WorkItem> body = astItems(op->call_op.variables, op->call_op.num_vars, true, 1);
+                if (!follow_branches_) {
+                    pushItems(work, astItems(op->call_op.variables, op->call_op.num_vars, false));
+                } else if (op->call_op.num_vars >= 1) {
+                    auto body = astItems(op->call_op.variables, op->call_op.num_vars, checked, 1);
                     if (op->op == ESHKOL_WHEN_OP)
-                        startBranch(&op->call_op.variables[0], std::move(body), {}, true, work);
+                        startBranch(&op->call_op.variables[0], std::move(body), {}, checked, work);
                     else
-                        startBranch(&op->call_op.variables[0], {}, std::move(body), true, work);
+                        startBranch(&op->call_op.variables[0], {}, std::move(body), checked, work);
                     break;
                 }
                 break;
@@ -3958,6 +3973,10 @@ private:
                 break;
             }
 
+            case ESHKOL_ADD_OP:
+            case ESHKOL_SUB_OP:
+            case ESHKOL_MUL_OP:
+            case ESHKOL_DIV_OP:
             case ESHKOL_IF_OP:
                 for (uint64_t i = op->call_op.num_vars; i > 0; --i)
                     work.push_back(astChild(&op->call_op.variables[i - 1]));
@@ -4236,9 +4255,17 @@ OwnershipBindings* OwnershipTransaction::current() { return interactive_bindings
 std::vector<std::string> checkOwnership(const std::vector<eshkol_ast_t>& forms,
                                         const ResourceContracts* strict,
                                         OwnershipBindings* globals) {
-    OwnershipAnalyzer analyzer(strict);
+    // Most compilation units contain only ordinary bindings. Walk them once
+    // without allocating control-flow snapshots. Encountering an ownership
+    // form restarts the walk before any provisional globals are published.
+    const bool live_ownership = globals && std::any_of(globals->begin(), globals->end(),
+        [](const auto& binding) { return binding.second != OwnershipState::UNOWNED; });
+    OwnershipAnalyzer analyzer(strict, strict || live_ownership);
     analyzer.analyze(forms, globals);
-    return analyzer.getErrors();
+    if (!analyzer.needsBranchAnalysis()) return analyzer.getErrors();
+    OwnershipAnalyzer flow(strict, true);
+    flow.analyze(forms, globals);
+    return flow.getErrors();
 }
 
 }

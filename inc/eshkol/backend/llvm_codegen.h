@@ -2807,7 +2807,7 @@ private:
     Value* codegenOwned(const eshkol_operations_t* op);
 
     // Codegen for (move value) - transfers ownership
-    // Sets CONSUMED flag on source object and nulls out the source binding
+    // Clears the mutable tagged slot belonging to the source binding
     Value* codegenMove(const eshkol_operations_t* op);
 
     // Codegen for (borrow value body ...) - temporary read-only access with scope guard
