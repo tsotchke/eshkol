@@ -56,6 +56,14 @@ def standard_claim(record, checker):
     return c
 
 
+def validate_certificates(path, checker, expected_claims):
+    document = checker.load(path)
+    if not checker.check_document(document, path.name, strict=True):
+        raise ValueError('certificate document failed replay')
+    if document.get('program') != 'nonlinear-observability' or document['claims'] != expected_claims:
+        raise ValueError('certificate corpus differs from the verified fixtures')
+
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('--eshkol-bin',required=True)
@@ -121,6 +129,7 @@ def main():
         a.results.write_text(json.dumps(result,indent=2)+'\n')
         (a.results.parent/'certificates.json').write_text(json.dumps(
             {'schema':'eshkol.certificate.v1','program':'nonlinear-observability','claims':claims},indent=2)+'\n')
+        validate_certificates(a.results.parent/'certificates.json', cc, claims)
     print('PASS nonlinear bridge: source replay, certificate checker, 128-state consumer, producer-free JIT/AOT')
 
 

@@ -11,6 +11,21 @@ from unittest.mock import patch
 from gate_support import exact_output,read,disable
 
 
+def test_gate_certificates():
+    import gate
+    here = Path(__file__).resolve().parent
+    path = here / "certificates.json"
+    sys.path.insert(0, str(here.parents[1] / "tools/certcheck"))
+    import eshkol_certcheck as checker
+    claims = [gate.standard_claim(row, checker) for row in gate.fixtures()]
+    gate.validate_certificates(path, checker, claims)
+    try:
+        gate.validate_certificates(path, checker, claims[:-1])
+    except ValueError:
+        return
+    raise AssertionError("certificate corpus must match the fixture set")
+
+
 def main():
     here=Path(__file__).resolve().parent
     spec=importlib.util.spec_from_file_location('submitted_gate',here/'gate.py')
@@ -59,4 +74,8 @@ def main():
     print('PASS bridge_readiness 9')
 
 
-if __name__=='__main__':main()
+if __name__ == '__main__':
+    if sys.argv[1:] == ['--certificates']:
+        test_gate_certificates()
+    else:
+        main()
