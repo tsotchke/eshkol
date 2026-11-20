@@ -4,6 +4,7 @@
 #include "vm_embedded_modules.h"
 #endif
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
+static void compile_form_match(FuncChunk* c, Node* form, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
 
@@ -2027,6 +2028,8 @@ static void vm_emit_binding_read(FuncChunk* c, uint32_t id) {
         chunk_emit(c, OP_LANGUAGE_COVERAGE_READ, (int)id);
 }
 
+static int vm_reject_linear_violations(const char* source, const char* source_name);
+
 static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
@@ -2115,6 +2118,15 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     }
     src[len] = '\0';
 #endif
+
+    /* The bootstrap establishes the compiler's standard environment. A source
+     * dependency selected by the program receives the same linearity judgment
+     * as its entry unit before its forms can contribute bytecode. */
+    if (tracked > 0 && !g_vm_bootstrapping_standard_library &&
+        vm_reject_linear_violations(src, path)) {
+        free(src);
+        return -1;
+    }
 
     /* Parse the complete module before compiling it. This gives loaded source
      * the same forward-procedure and same-location redefinition semantics as
@@ -6106,6 +6118,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (cond (test1 expr1) (test2 expr2) ... (else exprN)) */
     if (is_sym(head, "cond") && node->n_children >= 2) { compile_form_cond(c, node, tail); return; }
+
+    if (is_sym(head, "match") && node->n_children >= 2) {
+        compile_form_match(c, node, tail);
+        return;
+    }
 
     /* (case expr ((val ...) body ...) ... (else body ...))
      * Compiles as: evaluate key, then for each clause: DUP key, test each val,

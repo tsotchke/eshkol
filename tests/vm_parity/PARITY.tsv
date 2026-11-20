@@ -583,7 +583,7 @@ op:MAKE_KB	vm-supported	BUILTINS fid 509
 op:MAKE_PARAMETER	gap	make-parameter undefined in VM
 op:MAKE_SUBST	vm-supported	BUILTINS fid 505
 op:MAKE_WORKSPACE	vm-supported	BUILTINS fid 540
-op:MATCH	gap	match unsupported in VM (clean undefined-variable error)
+op:MATCH	vm-supported	Ordered pattern clauses with lexical bindings (corpus/match_patterns.esk)
 op:MOVE	native-only-justified	OALR ownership — native-arena construct
 op:MUL	vm-supported	OP_MUL bytecode
 op:OR	vm-supported	vm_compiler special-form dispatch

@@ -42,6 +42,7 @@ typedef struct Node {
                        * `'(vector 1 2)` still quotes as the list it reads as — the
                        * same discipline `is_verbatim` uses to keep `|.|` apart from
                        * the dotted-pair delimiter. */
+    int is_numeric_literal; /* A numeric token lowered to a constructor call. */
     int is_quote_sugar; /* N_LIST node produced by the reader's `'datum` prefix.
                          * Its shape is also used by explicit `(quote datum)`,
                          * but with-region treats only this spelling as a specifier. */
@@ -553,14 +554,15 @@ static double vm_numsyn_inexact_value(const eshkol_numsyn_part_t* p) {
     return strtod(p->text, NULL);
 }
 
-/* A two-element call node (head a b). */
-static Node* make_call2_node(const char* head, Node* a, Node* b) {
+/* Preserve numeric-token origin when lowering a literal to its constructor. */
+static Node* make_numeric_literal_call(const char* head, Node* a, Node* b) {
     Node* call = make_node(N_LIST);
     Node* op = make_node(N_SYMBOL);
     if (!call || !op || !a || !b) {
         free_node(call); free_node(op); free_node(a); free_node(b);
         return NULL;
     }
+    call->is_numeric_literal = 1;
     strncpy(op->symbol, head, 127);
     op->symbol[127] = 0;
     add_child(call, op); add_child(call, a); add_child(call, b);
@@ -578,7 +580,7 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
             return make_int_or_bignum_node(p->text, (int)strlen(p->text));
         if (p->kind == ESHKOL_NUMSYN_RATIONAL) {
             const char* slash = strchr(p->text, '/');
-            return make_call2_node("exact-rational",
+            return make_numeric_literal_call("exact-rational",
                 make_int_or_bignum_node(p->text, (int)(slash - p->text)),
                 make_int_or_bignum_node(slash + 1, (int)strlen(slash + 1)));
         }
@@ -592,7 +594,7 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
             x = m * cos(a);
             y = m * sin(a);
         }
-        return make_call2_node("make-rectangular",
+        return make_numeric_literal_call("make-rectangular",
                                make_inexact_number_node(x), make_inexact_number_node(y));
     }
 }
@@ -873,6 +875,7 @@ static Node* parse_sexp_impl(void) {
             Node* div_node = make_node(N_LIST); if (!div_node) { free(num_text); free(den_buf); return NULL; }
             Node* op = make_node(N_SYMBOL);
             if (!op) { free_node(div_node); free(num_text); free(den_buf); return NULL; }
+            div_node->is_numeric_literal = 1;
             strncpy(op->symbol, "exact-rational", 127);
             Node* n_node = make_int_or_bignum_node(num_text, num_len);
             Node* d_node = make_int_or_bignum_node(den_buf, den_len);
@@ -1160,21 +1163,29 @@ static int is_sym(Node* n, const char* s) {
 }
 
 /** @brief Grow chunk @p c's code array (doubling) until it can hold
- *         @p needed more instructions. */
-static void chunk_ensure_code_cap(FuncChunk* c, int needed) {
+ *         @p needed more instructions.
+ * @return 1 when the capacity is available. On allocation failure the
+ *         compilation is marked failed, the array is left unchanged and 0
+ *         is returned, so no caller writes past the current capacity. */
+static int chunk_ensure_code_cap(FuncChunk* c, int needed) {
     while (c->code_len + needed > c->code_cap) {
         int new_cap = c->code_cap * 2;
         Instr* new_code = (Instr*)realloc(c->code, new_cap * sizeof(Instr));
-        if (!new_code) { fprintf(stderr, "ERROR: bytecode realloc failed\n"); return; }
+        if (!new_code) {
+            vm_compile_error("bytecode allocation failed", NULL);
+            return 0;
+        }
         c->code = new_code;
         c->code_cap = new_cap;
     }
+    return 1;
 }
 
 /** @brief Append one bytecode instruction (@p op, @p operand) to chunk
- *         @p c, growing the code array as needed. */
+ *         @p c, growing the code array as needed. When the array cannot
+ *         grow, nothing is appended and code_len is unchanged. */
 static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
-    chunk_ensure_code_cap(c, 1);
+    if (!chunk_ensure_code_cap(c, 1)) return;
     c->code[c->code_len++] = (Instr){op, operand};
 }
 
@@ -1217,7 +1228,7 @@ static int* vm_alloc_const_map(int n_constants) {
  *         chunk @p c (used when inlining another function's compiled
  *         code). */
 static void chunk_emit_instr(FuncChunk* c, Instr fi) {
-    chunk_ensure_code_cap(c, 1);
+    if (!chunk_ensure_code_cap(c, 1)) return;
     c->code[c->code_len++] = fi;
 }
 
@@ -1251,8 +1262,11 @@ static int placeholder(FuncChunk* c) {
     return slot;
 }
 
-/** @brief Overwrite the instruction at @p slot with (@p op, @p target). */
+/** @brief Overwrite the instruction at @p slot with (@p op, @p target).
+ *         A slot that was never emitted (its emission failed to allocate)
+ *         is left alone. */
 static void patch(FuncChunk* c, int slot, uint8_t op, int32_t target) {
+    if (slot < 0 || slot >= c->code_len) return;
     c->code[slot] = (Instr){op, target};
 }
 

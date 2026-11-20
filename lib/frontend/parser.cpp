@@ -24,6 +24,7 @@
 #include <eshkol/frontend/syntax_datum.h>
 #include <eshkol/frontend/effect_syntax_core.h>
 #include "parser_task.h"
+#include "vm_source_syntax.h"
 
 #include <string.h>
 #include <algorithm>
@@ -43,6 +44,16 @@
 #if defined(__APPLE__) || defined(__linux__)
 #include <pthread.h>
 #endif
+
+static thread_local unsigned vm_source_syntax_depth = 0;
+
+eshkol::frontend::VmSourceSyntaxScope::VmSourceSyntaxScope() noexcept {
+    ++vm_source_syntax_depth;
+}
+
+eshkol::frontend::VmSourceSyntaxScope::~VmSourceSyntaxScope() noexcept {
+    --vm_source_syntax_depth;
+}
 
 /* ── Parse context for diagnostic messages ── */
 // Only the compiler-owned generated-source parser can mint runtime gateways.
@@ -2269,7 +2280,9 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "tensor") return ESHKOL_TENSOR_OP;
     // Note: "vector" is now a function call for Scheme vectors (heterogeneous)
     // Use "tensor" for homogeneous numerical arrays
-    if (op == "matrix") return ESHKOL_TENSOR_OP;  // matrix is just 2D tensor
+    // Native source has a dimension-prefixed matrix literal. In bytecode
+    // source, matrix is an ordinary procedure name with expression arguments.
+    if (op == "matrix" && vm_source_syntax_depth == 0) return ESHKOL_TENSOR_OP;
     if (op == "diff") return ESHKOL_DIFF_OP;
     if (op == "differentiate") return ESHKOL_DIFF_OP;
     // Automatic differentiation operators

@@ -2349,6 +2349,7 @@ set(ESHKOL_VM_TOOLCHAIN_COMPONENT_SRC
   lib/backend/vm_parser.c
   lib/backend/vm_macro.c
   lib/backend/vm_compiler.c
+  lib/backend/vm_match.c
   lib/backend/vm_peephole.c
 )
 
@@ -9102,6 +9103,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
         TIMEOUT 300
         PASS_REGULAR_EXPRESSION "PASS: closure upvalue capacity enforced"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    function(add_vm_transcript_test name source)
+        add_test(NAME ${name}
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/check_program.py"
+                "$<TARGET_FILE:eshkol-run>" "$<TARGET_FILE:eshkol-vm-standalone-test>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/${source}" "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(${name} PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 600)
+    endfunction()
+    add_vm_transcript_test(vm_tensor_dot_shapes tests/vm_parity/corpus/tensor_dot_shapes.esk)
+    add_vm_transcript_test(vm_match_bytecode_parity tests/vm_parity/corpus/match_patterns.esk)
+    add_vm_transcript_test(vm_linear_type_spelling tests/typesystem/linear_type_spelling_test.esk)
+    add_vm_transcript_test(vm_linear_type_spelling_valid tests/typesystem/linear_type_spelling_valid_test.esk)
 endif()
 
 # BI-5 gate: the linear (no-cloning) rule is enforced on BOTH engines. The

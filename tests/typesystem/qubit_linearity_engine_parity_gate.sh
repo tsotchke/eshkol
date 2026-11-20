@@ -119,6 +119,36 @@ if [ ! -s "$LEGAL_ESKB" ]; then
     fail "--emit-eskb accepted the correct program but wrote no bytecode"
 fi
 
+# A source dependency contributes definitions to the same bytecode unit.
+LOAD="$WORKDIR/load-clone.esk"
+printf '(load "clone.esk")\n' > "$LOAD" || exit 1
+check_linear_refusal() {
+    local source="$1" artifact="$2" entry out rc
+    local -a command
+    for entry in source emit; do
+        if [ "$entry" = source ]; then
+            command=("$VM_STANDALONE" "$source")
+        else
+            command=("$ESHKOL_RUN" --profile hosted-vm --emit-eskb "$artifact" "$source")
+        fi
+        out=$("${command[@]}" 2>&1); rc=$?
+        if [ "$rc" -ne 1 ] || [[ "$out" != *"consumed more than once"* ]]; then
+            fail "$entry must report the duplicate linear use in $source"
+        fi
+    done
+    if [ -e "$artifact" ]; then fail "$source produced unchecked bytecode"; fi
+}
+check_linear_refusal "$LOAD" "$WORKDIR/loaded.eskb"
+
+# A VM procedure application must leave the rest of the unit visible to the checker.
+CALL="$WORKDIR/call-and-clone.esk"
+cat > "$CALL" <<'EOF'
+(define (matrix values) values)
+(define sample (matrix (vector 1)))
+(define (duplicate (token : qubit)) (cons token token))
+EOF
+check_linear_refusal "$CALL" "$WORKDIR/call-and-clone.eskb"
+
 if [ "$FAILED" -ne 0 ]; then
     exit 1
 fi

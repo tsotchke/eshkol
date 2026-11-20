@@ -39,6 +39,7 @@
 #include "eshkol/types/type_checker.h"
 #include "eshkol/types/refinement.h"
 #include "eshkol/frontend/macro_expander.h"
+#include "../frontend/vm_source_syntax.h"
 
 #include <sstream>
 #include <string>
@@ -52,6 +53,7 @@ namespace {
 template <typename Verdict>
 int checkSource(const char* source, const char* source_name, Verdict verdict) {
     if (!source) return -1;
+    eshkol::frontend::VmSourceSyntaxScope source_syntax;
 
     eshkol_reset_parse_errors();
     eshkol_reset_parse_line_counter();

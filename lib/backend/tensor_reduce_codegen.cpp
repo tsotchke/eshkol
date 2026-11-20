@@ -1214,18 +1214,20 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // C[i,j] = sum_k(A[i,k] * B[k,j])
     ctx_.builder().SetInsertPoint(dot_2d_block);
 
-    // Guard: tensor-dot matmul only supports 2D tensors. Emit runtime error for ndim > 2.
-    {
-        llvm::Value* too_many_dims = ctx_.builder().CreateICmpUGT(a_num_dims,
-            llvm::ConstantInt::get(ctx_.int64Type(), 2));
+    // Guard: matmul takes 1-D and 2-D operands only. The left operand is
+    // checked first, then the right, and the message names the rank found.
+    for (llvm::Value* num_dims : {a_num_dims, b_num_dims_early}) {
+        llvm::Value* unsupported = ctx_.builder().CreateOr(
+            ctx_.builder().CreateICmpEQ(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+            ctx_.builder().CreateICmpUGT(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 2)));
         llvm::BasicBlock* matmul_dims_ok = llvm::BasicBlock::Create(ctx_.context(), "matmul_dims_ok", current_func);
         llvm::BasicBlock* matmul_dims_err = llvm::BasicBlock::Create(ctx_.context(), "matmul_dims_err", current_func);
-        ctx_.builder().CreateCondBr(too_many_dims, matmul_dims_err, matmul_dims_ok);
+        ctx_.builder().CreateCondBr(unsupported, matmul_dims_err, matmul_dims_ok);
 
         ctx_.builder().SetInsertPoint(matmul_dims_err);
         ctx_.emitRaiseFmt(
             "tensor-dot: only supports 1D and 2D tensors (got %lldD)",
-            {a_num_dims});
+            {num_dims});
 
         ctx_.builder().SetInsertPoint(matmul_dims_ok);
     }
