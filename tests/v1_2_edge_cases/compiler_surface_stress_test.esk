@@ -168,7 +168,7 @@
       (check-equal? (force p) 1240)
       (check-equal? (force p) 1240))))
 
-(define ok (run-tests))
+(define ok (call-with-values (lambda () (run-tests)) (lambda (passed failed) (= failed 0))))
 
 (if (file-exists? json-path) (delete-file json-path) #t)
 (if (file-exists? bin-path) (delete-file bin-path) #t)
