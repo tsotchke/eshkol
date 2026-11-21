@@ -18,6 +18,7 @@
 #include "eshkol/backend/gpu/gpu_memory.h"
 #include <eshkol/logger.h>
 #include "cublas_loader.h"
+#include "cuda_matmul_budget.h"
 #include "gpu_backend_request.h"
 #if defined(ESHKOL_GPU_VULKAN_ENABLED)
 #include "gpu_vulkan.h"
@@ -558,16 +559,13 @@ static inline void cuda_gemm_calibrate(int idx, double work, double measured_ns)
  *         or <0 when unset (selector disabled → legacy behaviour). "fast" =>
  *         loosest tier; "exact"/"full" (and any unparseable value) => 1e-15. */
 static double cuda_matmul_budget(void) {
-    static bool checked = false;
-    static double budget = -1.0;
-    if (checked) return budget;
-    checked = true;
-    const char* e = std::getenv("ESHKOL_MATMUL_ACCURACY");
-    if (!e || !*e) { budget = -1.0; return budget; }        // disabled: no behaviour change
-    if (!strcmp(e, "fast"))                                  budget = 1e-2;
-    else if (!strcmp(e, "exact") || !strcmp(e, "full"))     budget = 1e-15;
-    else { budget = atof(e); if (!(budget > 0.0)) budget = 1e-15; }
-    eshkol_info("CUDA: accuracy-budget matmul selector engaged (budget=%.0e)", budget);
+    static const double budget = [] {
+        const double value = eshkol_cuda_parse_matmul_budget(std::getenv("ESHKOL_MATMUL_ACCURACY"));
+        if (value >= 0.0) {
+            eshkol_info("CUDA: accuracy-budget matmul selector engaged (budget=%.0e)", value);
+        }
+        return value;
+    }();
     return budget;
 }
 
