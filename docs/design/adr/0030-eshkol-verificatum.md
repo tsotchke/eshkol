@@ -59,6 +59,12 @@ On failure, record the first violated rule, required and observed values, and wi
 
 The first implementation is a sequential host-side gate shared by three consumers. Its Lean model establishes authorization soundness conditional on checker soundness and consumer-policy sufficiency. The replay translates the Python decision loop and byte-release predicate used by the gate into Lean and verifies them against the model. This boundary assumes a faithful translation of the admitted Python subset, correctly bound observations, and a trusted issuer that constructs the scope and looks up single-use tickets. Persistent graph storage, cross-build reuse and compiler integration each require further evidence. [Contract and authorization R0](../../../verification/authorization/README.md)
 
+### Exercising authority
+
+Execution validity is a separate claim. A consuming entry point identifies its expected artifact and sink, checks live applicability, and binds the actual operation to the released snapshot. Each implementation names the interval over which its policy and execution context remain stable. A restorable policy record requires independent live authority before a consumer can rely on its generation.
+
+R1 exercises the shipped ABI fingerprint operation on R2's reviewed folded CLI. A replaced pathname gives identical output on the reference executable. The replay distinguishes them using the kernel's executable identity, the argument and environment block, and loaded file identities. The demonstrated scope is one Linux release, a process-local issuer and a trusted loader environment. [R1 reproduction and limits](../../../verification/consumption/README.md)
+
 ## Trusted computing base and evidence
 
 | Claim | What warrants it | What remains trusted or open |
