@@ -2978,6 +2978,15 @@ set(ESHKOL_STDLIB_TARGET_CPU "" CACHE STRING
     "CPU used only for precompiled stdlib artifacts; empty keeps host-specialized development builds")
 set(ESHKOL_STDLIB_TARGET_FEATURES "" CACHE STRING
     "LLVM target features used only for precompiled stdlib artifacts")
+set(ESHKOL_STDLIB_TARGET_TRIPLE "" CACHE STRING
+    "LLVM target triple used only for precompiled stdlib artifacts")
+set(STDLIB_CODEGEN_ARGS)
+if(NOT "${ESHKOL_STDLIB_TARGET_TRIPLE}" STREQUAL "")
+  list(APPEND STDLIB_CODEGEN_ARGS --target "${ESHKOL_STDLIB_TARGET_TRIPLE}")
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    list(APPEND STDLIB_CODEGEN_ARGS -O3)
+  endif()
+endif()
 set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
 set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
 set(STDLIB_BITCODE "${CMAKE_CURRENT_BINARY_DIR}/stdlib.bc")
@@ -3032,7 +3041,8 @@ add_custom_command(
   # thread stack at link time).
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
           ${STDLIB_CODEGEN_LAUNCHER}
-          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+          $<TARGET_FILE:eshkol-run> --shared-lib ${STDLIB_CODEGEN_ARGS} -c
+          -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
           # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
           # linked into every user binary and loaded by the REPL JIT, so this
           # edge wants a relocatable object, not the loadable shared library

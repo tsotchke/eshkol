@@ -11,6 +11,10 @@ on:
         required: true
         default: v1.3.6-evolve
         type: string
+      darwin_arm64_sdk_only:
+        description: Qualify the Darwin arm64 SDK on a hosted runner without publishing
+        type: boolean
+        default: false
       strict_readiness:
         description: Fail the dry run unless ICC certifies this exact commit ready/100
         required: false
@@ -49,7 +53,7 @@ env:
 
 jobs:
   unix-release-matrix:
-    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true && inputs.darwin_arm64_sdk_only != true
     name: release-${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -92,8 +96,9 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
             test_command: ./scripts/run_gpu_tests.sh
-          - name: macos-arm64-lite
-            runner: macos-14
+          - &macos_arm64_lite
+            name: macos-arm64-lite
+            runner: macos-15
             build_dir: build
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
@@ -105,7 +110,7 @@ jobs:
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_all_tests.sh
           - name: macos-arm64-xla
-            runner: macos-14
+            runner: macos-15
             build_dir: build-xla
             xla_enabled: 'ON'
             gpu_enabled: 'OFF'
@@ -117,7 +122,7 @@ jobs:
             gpu_enabled: 'OFF'
             test_command: ./scripts/run_xla_tests.sh
 
-    steps:
+    steps: &unix_release_steps
       - uses: actions/checkout@v6
 
       - name: Validate release tag label
@@ -221,6 +226,8 @@ jobs:
 
       - name: Configure
         shell: bash
+        env:
+          RELEASE_ASSET_NAME: ${{ matrix.name }}
         run: |
           set -euxo pipefail
           BUILD_DIR="${{ matrix.build_dir }}"
@@ -232,6 +239,13 @@ jobs:
             LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
           fi
 
+          darwin_target_args=()
+          if [[ "$RELEASE_ASSET_NAME" == macos-arm64-* ]]; then
+            darwin_target_args+=(
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+              -DESHKOL_STDLIB_TARGET_TRIPLE=arm64-apple-macosx14.0
+            )
+          fi
           cmake -S . -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
@@ -242,7 +256,7 @@ jobs:
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_IMAGE_IO=ON \
-            -DCUDAToolkit_ROOT=/usr/local/cuda-12.4
+            -DCUDAToolkit_ROOT=/usr/local/cuda-12.4 "${darwin_target_args[@]}"
 
       - name: Verify real CUDA build graph
         if: matrix.gpu_enabled == 'ON'
@@ -330,6 +344,8 @@ jobs:
 
       - name: Package Release Asset
         shell: bash
+        env:
+          RELEASE_ASSET_NAME: ${{ matrix.name }}
         run: |
           set -euxo pipefail
           archive_root="eshkol-${RELEASE_TAG}-${{ matrix.name }}"
@@ -379,6 +395,23 @@ jobs:
             test -s "$agent_curl_archive"
             cp "$agent_curl_archive" "$pkg_dir/lib/"
             cp "$agent_curl_archive" "$pkg_dir/lib/eshkol/"
+          fi
+
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            static_sdk_archive="${{ matrix.build_dir }}/libeshkol-static.a"
+            test -s "$static_sdk_archive"
+            cp "$static_sdk_archive" "$pkg_dir/lib/"
+            cp "$static_sdk_archive" "$pkg_dir/lib/eshkol/"
+            mkdir -p "$pkg_dir/include"
+            cp -R inc/eshkol "$pkg_dir/include/"
+            diff -qr inc/eshkol "$pkg_dir/include/eshkol"
+          fi
+          if [[ "$RELEASE_ASSET_NAME" == macos-arm64-* ]]; then
+            minos="$(otool -l "$pkg_dir/lib/stdlib.o" | awk '$1 == "minos" {print $2}')"
+            llvm_dis="$(brew --prefix "llvm@${LLVM_MAJOR}")/bin/llvm-dis"
+            triple="$("$llvm_dis" -o - "$pkg_dir/lib/stdlib.bc" | awk '/^target triple = / { print $4 }')"
+            test "$minos" = 14.0
+            test "$triple" = '"arm64-apple-macosx14.0"'
           fi
 
           cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
@@ -447,6 +480,18 @@ jobs:
           path: ${{ runner.temp }}/eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}.tar.gz
           if-no-files-found: error
 
+  darwin-arm64-sdk-candidate:
+    if: github.event_name == 'workflow_dispatch' && inputs.darwin_arm64_sdk_only == true
+    name: qualify-darwin-arm64-sdk
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - *macos_arm64_lite
+    steps: *unix_release_steps
+
   # Same rationale as ci.yml's prefetch-windows-llvm-archives: the Windows
   # lanes' own curl-from-llvm-project path (below, "Install LLVM SDK") is
   # where a stalled/slow download can hang a job, while Linux egress to
@@ -459,7 +504,7 @@ jobs:
   # infrequent and high-stakes, so this stays self-contained here rather
   # than assuming ci.yml's cache population already ran for this ref.
   prefetch-windows-llvm-archives:
-    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true && inputs.darwin_arm64_sdk_only != true
     name: prefetch-windows-llvm-archives (${{ matrix.arch }})
     runs-on: ubuntu-22.04
     continue-on-error: true
@@ -502,7 +547,7 @@ jobs:
           enableCrossOsArchive: true
 
   windows-release-matrix:
-    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true && inputs.darwin_arm64_sdk_only != true
     name: release-${{ matrix.name }}
     needs: prefetch-windows-llvm-archives
     runs-on: ${{ matrix.runner }}
@@ -1147,6 +1192,7 @@ jobs:
   # — it never fail-opens to a green publish. See CONTRIBUTING.md
   # "Release-blocking readiness".
   release-readiness-gate:
+    if: inputs.darwin_arm64_sdk_only != true
     name: release-readiness-gate
     timeout-minutes: 1080
     # ICC only exists on the maintainer's self-hosted node (see ICC_BIN
@@ -1735,7 +1781,7 @@ jobs:
             .scratch/icc-stdlib-rebuild || true
 
   publish-release:
-    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true
+    if: inputs.memory_diagnostics != true && inputs.measurement_preparation != true && inputs.darwin_arm64_sdk_only != true
     name: publish-release
     runs-on: ubuntu-22.04
     needs:

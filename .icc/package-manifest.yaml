@@ -63,6 +63,12 @@ package_surface:
       dirs: [lib, lib/eshkol]
       required: true
       description: Core hosted runtime (arena, tagged values, printer, AD tower).
+    - stem: eshkol-static
+      posix_prefix: true
+      dirs: [lib, lib/eshkol]
+      required: true
+      platforms: [macos]
+      description: Compiler embedding archive for the Darwin SDK.
     - stem: eshkol-agent-ffi
       posix_prefix: true
       dirs: [lib, lib/eshkol]
@@ -141,6 +147,14 @@ package_surface:
   # is what actually exercises find_package(Eshkol) against the staged
   # package rather than just checking the files landed.
   cmake_integration:
+    - path: include/eshkol/eshkol.h
+      required: true
+      platforms: [macos]
+      description: Public compiler embedding header for the Darwin SDK.
+    - path: include/eshkol/eshkol_ffi.h
+      required: true
+      platforms: [macos]
+      description: Public FFI declarations for the Darwin SDK.
     - path: share/eshkol/cmake/FindEshkol.cmake
       required: true
       description: Canonical find_package(Eshkol) discovery module.
