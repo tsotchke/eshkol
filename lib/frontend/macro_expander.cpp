@@ -1170,7 +1170,7 @@ std::string MacroExpander::keywordAlias(const MacroBinding* binding, const std::
         if (found == scope->end()) continue;
         auto& alias = macro_alias_names_[found->second];
         if (alias.empty()) {
-            alias = "__eshkol_macro_binding_" + std::to_string(rename_counter_++);
+            alias = ESHKOL_SYNTAX_MACRO_ALIAS_PREFIX + std::to_string(rename_counter_++);
             macro_aliases_[alias] = found->second;
         }
         return alias;

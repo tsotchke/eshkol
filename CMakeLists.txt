@@ -4228,6 +4228,12 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
+    add_executable(eval_datum_graph tests/core/eval_datum_graph.cpp)
+    target_compile_features(eval_datum_graph PRIVATE cxx_std_17)
+    target_include_directories(eval_datum_graph PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eval_datum_graph PRIVATE eshkol-runtime)
+    add_test(NAME eval_datum_graph COMMAND eval_datum_graph)
+
     add_executable(tensor_validation_test tests/core/tensor_validation_test.cpp)
     target_compile_features(tensor_validation_test PRIVATE cxx_std_17)
     target_include_directories(tensor_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
@@ -15254,6 +15260,29 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND ESHKOL_PYTHON3_EXECUTABLE
    AND TARGET eshkol-run AND TARGET eshkol-vm-standalone-test)
+    foreach(_case IN ITEMS interpolation_ranges character_scalars)
+        foreach(_engine IN ITEMS jit aot vm)
+            add_test(NAME ${_case}_${_engine}
+                COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+                    $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                    ${_case} ${_engine})
+        endforeach()
+    endforeach()
+    foreach(_case IN ITEMS reserved_identifiers character_encoding)
+        foreach(_engine IN ITEMS jit aot vm)
+            add_test(NAME ${_case}_${_engine}
+                COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_rejections.py
+                    $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                    ${_case} ${_engine})
+        endforeach()
+    endforeach()
+    add_test(NAME eval_pattern_syntax_jit
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/reader_values.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+            eval_pattern_syntax jit)
     add_test(NAME macro_definition_scope
         COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/macros/macro_definition_scope_test.py

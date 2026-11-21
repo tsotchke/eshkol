@@ -3757,7 +3757,7 @@ void ReplJITContext::rememberPersistentMacros(const std::vector<eshkol_ast_t>& a
     }
 }
 
-void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
+std::set<std::string> ReplJITContext::persistentMacroNames() const {
     std::set<std::string> names;
     for (const auto& ast_item : persistent_macro_asts_) {
         if (ast_item.type == ESHKOL_OP &&
@@ -3767,7 +3767,11 @@ void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
             names.insert(ast_item.operation.define_syntax_op.macro->name);
         }
     }
-    eshkol_parser_seed_macro_names(stream, names);
+    return names;
+}
+
+void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
+    eshkol_parser_seed_macro_names(stream, persistentMacroNames());
 }
 
 /**
