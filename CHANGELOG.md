@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
   (`migrate-legacy-ball-point`); distances are unchanged by the migration. (#854)
 
-- Add rank-two shape and descriptor provenance checks for the emitted matrix multiplication guard.
+- Add rank-two shape and descriptor provenance checks for the emitted matrix multiplication guard. (#944)
 - Windows in-process JIT regression probes with exact-output checks, native
   AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases
   cover immediate and repeated continuations, guard-handler restoration,
