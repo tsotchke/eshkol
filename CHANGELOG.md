@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete nullspace bases, including explicit ambient dimensions for empty
   systems. Add JIT/AOT acceptance and determinant-oracle tests, plus negative
   controls for the AOT test harness. (#785)
+- Add a rational heat-stencil example with a discrete refinement proof and a native grid-access replay.
 - **One chart for every sign of the curvature (ADR-0018).** Every
   constant-curvature op evaluates the kappa-stereographic chart in the
   canonical-flat gauge `alpha = 1`: the ball of radius `2/sqrt(-K)`, Euclidean
