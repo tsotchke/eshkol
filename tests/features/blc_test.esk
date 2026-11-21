@@ -118,10 +118,9 @@
 (check-equal "false K I = I"
              blc-I (blc-eval (blc-app (blc-app blc-false blc-K) blc-I)))
 
-;; Omega alone has no normal form: blc-eval must signal the step-cap error,
-;; not hang. (raised? drives it and confirms an error was signalled.)
-(check "Omega has no normal form -> step-cap error signalled"
-       (raised? (lambda () (blc-eval blc-omega))))
+(define bound-error "blc-eval: no normal form within step bound")
+(check-equal "Omega reaches the default step bound" bound-error
+             (guard (e (#t (error-object-message e))) (blc-eval blc-omega)))
 
 ;; ============================================================================
 ;; 4. Robustness: truncated / invalid input signals errors (no crash/hang)
@@ -232,6 +231,78 @@
                             " |----   |----" "\n"
                             " |--------")
              (blc-diagram blc-S))
+
+(define original-bound (+ blc-max-steps 0))
+(define (at-bound term bound)
+  (set! blc-max-steps bound)
+  (guard (condition (#t (error-object-message condition))) (blc-eval term)))
+
+(define twice-y (blc-app (blc-lam (blc-app (blc-var 1) (blc-var 1)))
+                         (blc-app blc-I (blc-var 1))))
+(define yy (blc-app (blc-var 1) (blc-var 1)))
+(check-equal "duplicated argument needs three contractions" bound-error (at-bound twice-y 2))
+(check-equal "three contractions succeed at bound three" yy (at-bound twice-y 3))
+(check-equal "strong reduction beneath lambda spends budget" bound-error
+             (at-bound (blc-lam twice-y) 2))
+(check-equal "strong reduction beneath lambda at exact bound" (blc-lam yy)
+             (at-bound (blc-lam twice-y) 3))
+(check-equal "discarded omega costs no contractions" blc-I
+             (at-bound (blc-app (blc-app blc-K blc-I) blc-omega) 2))
+(check-equal "demanded omega reaches the limit" bound-error (at-bound blc-omega 5))
+(check "normal input keeps its pairs at zero budget" (eq? yy (at-bound yy 0)))
+(define untouched (blc-lam (blc-var 1)))
+(define with-sibling (blc-app (blc-app blc-I (blc-var 1)) untouched))
+(define sibling-result (at-bound with-sibling 1))
+(check "untouched sibling keeps its identity"
+       (and (blc-app? sibling-result) (eq? untouched (blc-app-arg sibling-result))))
+(define copied (at-bound (blc-app blc-I untouched) 1))
+(check "contractum owns a fresh copy" (and (equal? untouched copied) (not (eq? untouched copied))))
+(check-equal "invalid term during search" "blc-step: invalid term" (at-bound 'bad 0))
+(check-equal "invalid discarded argument during substitution" "blc-shift: invalid term"
+             (at-bound (blc-app (blc-lam blc-I) 'bad) 0))
+;; Different wrappers hide a shared child from a sibling-identity shortcut.
+;; Inspecting the untouched right branch as a tree would visit 2^40 leaves.
+(define (shared-right depth child)
+  (if (= depth 0) child
+      (shared-right (- depth 1) (blc-app (blc-lam child) (blc-lam child)))))
+(define shared-arg (shared-right 40 (blc-var 1)))
+(check-equal "zero budget stops before the shared right branch" bound-error
+             (at-bound (blc-app (blc-app blc-I blc-I) shared-arg) 0))
+(check-equal "positive budget stops before the shared right branch" bound-error
+             (at-bound (blc-app twice-y shared-arg) 2))
+(check-equal "malformed operand reached after the first contraction"
+             "blc-shift: invalid term"
+             (at-bound (blc-app (blc-app blc-I blc-I) 'bad) 1))
+(check-equal "malformed sibling after exhausted budget stays untouched" bound-error
+             (at-bound (blc-app (blc-app blc-I blc-I) 'bad) 0))
+(define extra-field '(var 1 extra))
+(check "legacy tagged values retain their identity" (eq? extra-field (at-bound extra-field 0)))
+
+;; Each frozen row starts with a body, argument and independent contractum.
+;; Compare the whole normal form and the budget immediately on either side
+;; of success. A miss must report the public bound error.
+(define (step-count term count)
+  (let ((r (blc-step term)))
+    (if (car r) (step-count (cdr r) (+ count 1)) (cons count term))))
+(define (check-binder-rows port count)
+  (let ((body (read port)))
+    (if (eof-object? body)
+        (begin (display "Binder rows passed: ") (display count) (newline)
+               (check "complete binder corpus" (= count 1560)))
+        (let* ((arg (read port)) (contractum (read port))
+               (kb (read port)) (ka (read port)) (kr (read port))
+               (term (blc-app (blc-lam body) arg)) (reference (step-count term 0)))
+          (if (or (eof-object? kr)
+                  (not (equal? (blc-step term) (cons #t contractum)))
+                  (not (equal? (at-bound term (car reference)) (cdr reference)))
+                  (not (equal? (at-bound term (- (car reference) 1)) bound-error)))
+              (begin (display "FAIL: binder row ") (display count) (newline) (exit 1)))
+          (check-binder-rows port (+ count 1))))))
+
+(define binder-path (get-environment-variable "ESHKOL_BINDER_ROWS"))
+(if (and (string? binder-path) (> (string-length binder-path) 0))
+    (call-with-input-file binder-path (lambda (port) (check-binder-rows port 0))))
+(set! blc-max-steps original-bound)
 
 ;; ============================================================================
 ;; Summary
