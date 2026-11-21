@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the same initializer contract instead of reusing objects whose local
   initializer cannot be found by the JIT. (#869)
 
+### Changed
+
+- Speed up normal-order `blc-eval` with lexical environments while preserving
+  the public contraction limit and the `core.blc` interface.
+
 ### Added
 
 - Add exact-rational affine solution families with particular solutions and
