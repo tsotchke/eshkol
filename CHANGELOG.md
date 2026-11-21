@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Speed up normal-order `blc-eval` with lexical environments while preserving
-  the public contraction limit and the `core.blc` interface.
+  the public contraction limit and the `core.blc` interface. (#942)
 
 ### Added
 
