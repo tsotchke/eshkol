@@ -1,0 +1,18 @@
+;; One executable accepts arbitrary grid data on the closed unit interval.
+(define (heat-step old)
+  (let* ((n (- (vector-length old) 1)) (fresh (make-vector (+ n 1) 0.0)))
+    (do ((i 1 (+ i 1))) ((>= i n) fresh)
+      (let ((edges (+ (vector-ref old (- i 1)) (vector-ref old (+ i 1)))))
+        (vector-set! fresh i (/ (+ edges (* 2 (vector-ref old i))) 4))))))
+(define n (read))
+(define steps (read))
+(define initial (make-vector (+ n 1) 0.0))
+(do ((i 0 (+ i 1))) ((> i n))
+  (vector-set! initial i (exact->inexact (read))))
+(define field
+  (let advance ((grid initial) (k steps))
+    (if (= k 0) grid (advance (heat-step grid) (- k 1)))))
+(do ((i 0 (+ i 1))) ((> i n))
+  (let ((x (vector-ref field i)))
+    (if (inexact? x) (display (inexact->exact x)) (error "expected binary64")))
+  (newline))

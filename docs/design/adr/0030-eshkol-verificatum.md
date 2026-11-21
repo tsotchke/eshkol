@@ -4,6 +4,9 @@ status: current
 owner-area: language
 since: v1.3.6-evolve
 sources:
+  - verification/authorization/Refinement.lean
+  - verification/authorization/Authority.lean
+  - verification/authorization/authority.py
   - verification/lean-kernel/R0.toml
   - verification/lean-kernel/Typing.lean
   - verification/lean-kernel/replay.py
@@ -24,7 +27,7 @@ Verificatum starts at the proof boundary. In R0, Lean produces a proof term and 
 
 ## Decision
 
-**Only a fresh acceptance by the named proof checker, against the independently supplied target and the fragment's declared premises, may discharge a Verificatum obligation.** The gradual checker may discover obligations and supply candidate terms. Its success, coercions, inferred types, and cached results confer no proof authority. The consumer may erase evidence or use a refinement only within the scope attested by that acceptance. A dynamic check may still be appropriate under the language rules. Its outcome remains a dynamic observation. [Gradual type relation](0013-gradual-type-relation.md)
+**Only a fresh acceptance by the named proof checker, against the independently supplied target and the fragment's declared premises, may discharge a Verificatum proof obligation.** The gradual checker may discover obligations and supply candidate terms. Its success, coercions, inferred types, and cached results confer no proof authority. Erasing evidence or using a refinement requires authorization for the specific action under the source judgment. A dynamic check may still be appropriate under the language rules. Its outcome remains a dynamic observation. [Gradual type relation](0013-gradual-type-relation.md)
 
 Each fragment defines its input format, term and declaration grammar, conversion rules, axiom policy, resource bounds and observable verdicts. The checker admits the supplied declarations under that policy, resolves names structurally, and checks the selected body against the independently bound target. A receipt identifies the checked declarations and any assumptions introduced by the input. Changing a transparent definition used in the statement must trigger target comparison again, even when the theorem's name survives.
 
@@ -36,6 +39,25 @@ Each fragment defines its input format, term and declaration grammar, conversion
 | `ERROR` | Malformed input, resource exhaustion, or execution failure prevented a verdict about the proof. |
 
 Only `ACCEPT` discharges the obligation. In particular, a timeout leaves it open.
+
+## Contracts and computational authority
+
+A consumer independently fixes the subject, observation, action, permitted variation and required evidence for each obligation. Exact equality, refinement, bounded error, trace agreement, risk and resource bounds describe different observations. For example, a grid-point error budget can permit a different arithmetic schedule. A risk bound identifies the distribution, event alignment, recovery policy and measured outcome. Conjoining obligations requires evidence for each one.
+
+A proof checker decides whether the proposition follows. A consumer gate decides whether the checked claims and their applicability premises suffice for the proposed action in the current state. Only the gate issues a capability. Every receipt carries an explicit permission class. IR review, lowering, native release, execution and publication are distinct. The consuming entry point requires its own class. A change of class or policy requires fresh authorization. The ticket binds the class, policy generation, contract, artifact, checked evidence IDs and live premises. Consumption compares the independently expected bytes with the privately retained artifact. A producer may submit bytes and certificates. The consumer owns the requirements, checker registry and revocation state. Under ADR 0004 the compiler still determines which obligations its source judgment generates.
+
+| Evidence level | Scope of the claim |
+|---|---|
+| Model-proved | A theorem establishes a property of the stated model and assumptions. |
+| Executable-observed | A named execution produced the specified observations. |
+| Artifact-validated | A checker established the requested relation on specific artifact bytes. |
+| Refinement-established | A proved relation connects the named representations or execution models. |
+
+The gate requires the level specified for each obligation. A refinement claim needs its own evidence. An authorization decision identifies its contract, artifact, context and evidence nodes by content digest. Each observation identifies its checker inputs. A consumer may reuse a checked observation only after validating its entire dependency closure under the applicable trust policy. Executable-specific premises can include linked helper bytes, ABI, allocator generation, model and caller effects. A descriptor generation must advance across intervening writes even when bytes later regain their original values.
+
+On failure, record the first violated rule, required and observed values, and witness location when available. Missing premises, unsupported semantics and exhausted resources yield an inconclusive decision. Either outcome withholds permission. A consumer choosing a fallback obtains a separate decision for that artifact. A receipt explains the decision. Only a live capability can release the scoped artifact.
+
+The first implementation is a sequential host-side gate shared by three consumers. Its Lean model establishes authorization soundness conditional on checker soundness and consumer-policy sufficiency. The replay translates the Python decision loop and byte-release predicate used by the gate into Lean and verifies them against the model. This boundary assumes a faithful translation of the admitted Python subset, correctly bound observations, and a trusted issuer that constructs the scope and looks up single-use tickets. Persistent graph storage, cross-build reuse and compiler integration each require further evidence. [Contract and authorization R0](../../../verification/authorization/README.md)
 
 ## Trusted computing base and evidence
 

@@ -11,6 +11,8 @@ Eshkol Verificatum records which semantic guarantees hold for which programs. A 
 | Evidence | Acceptance binds a checked derivation to the independently specified proposition and its declarations, under an explicit axiom policy. A different well-typed theorem must fail the target comparison. |
 | Resources | For each supported completion, error, or cancellation path, resource transitions satisfy the ownership protocol. Eventual cleanup also needs explicit scheduling or termination assumptions. |
 
+**Computational authority is derived.** The consumer fixes the contract and proposed action. Proof acceptance establishes the target under its assumptions. The action gate checks coverage, applicability to the actual artifact and current premises, and releases authority for that action alone. A changed live premise can expire permission while the theorem continues to hold. ADR 0004 defines the source-language judgment. [Authorization decision and replay](authorization/README.md)
+
 ## R0 — Independent proof replay
 
 Eshkol checks the Lean 4.35.0 export of modus tollens using the bundled WASM VM. It accepts the genuine derivation, rejects the well-scoped wrong body at its application-domain check, and rejects a valid theorem named `mt` after changing the definition of negation. In the last case con-ron accepts the altered declaration in its own environment. Eshkol refuses it at comparison with the independently specified proposition.

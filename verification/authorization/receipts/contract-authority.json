@@ -1,0 +1,1824 @@
+{
+  "schema": 2,
+  "kernel_refinement": {
+    "python_sha256": "034b347e758c694d60dc11553fe090b2d1002b32048307b4e1aa48292910c139",
+    "extracted_sha256": "a491a461e0534d696527b37aec45cd5eada73a8e12e93a9bf1d53f82e53519e2",
+    "extractor_sha256": "23842a359bf791955888dfe16b056fa1a7331d87cfa4aa099439835f0a6e6db4",
+    "proof_sha256": "511bde89f8409b55c4518c4f7d645574f3f814485baef4690e37738af0dee221",
+    "rejected_mutants": [
+      "decision_refines",
+      "release_refines"
+    ],
+    "cpython_against_lean_model": {
+      "decision_cases": 121,
+      "release_cases": 81
+    }
+  },
+  "authority_transfers_refused": {
+    "Gram IR review to native release": {
+      "issued": "1100feff08d4650cde000bae7385428dc48caca5322bb7eed1b7dc4feeb67323",
+      "requested": "e991c924414d0a3abe75ae0f34500b07e7f7adf4e0adafe23be83ea8d7cd7776",
+      "requested_artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+      "reason": "unknown or already consumed permission"
+    },
+    "substitute artifact with original receipt": {
+      "issued": "1100feff08d4650cde000bae7385428dc48caca5322bb7eed1b7dc4feeb67323",
+      "requested": "c6d98c34af55f5d5c9efbc3bd9779dc570ff4729dc7e42d1980d40d02310b4b0",
+      "requested_artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+      "reason": "artifact or authorization scope changed"
+    },
+    "Steane ideal to pointwise": {
+      "issued": "b8714b45d7f4c34f7392be427b7c58b31dcafbccf2ce6a126bfcf46f6e10b97c",
+      "requested": "910b3b570094db7a7d7e466960b4a799cd396830d811bcafc8828e9423ebf818",
+      "requested_artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+      "reason": "unknown or already consumed permission"
+    },
+    "tighten Steane risk budget": {
+      "issued": "b6131354aca96f1274df01409fb95a821970ff03bf9b144f1cf2e81d65299e95",
+      "requested": "fe3b2d87493de42152e6af4237e0e702c4bb3690a3aa9a46c4f1103ad913a75c",
+      "requested_artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+      "reason": "artifact or authorization scope changed"
+    },
+    "heat grid error to exact arithmetic": {
+      "issued": "d91bee205b44239efb01cb8f8335e4f904f80ba5e9f4c73712cff814d3e16a49",
+      "requested": "27f5fb1b21f91699986920c3b8047041419961a6dc88753065d4182f0ce2650c",
+      "requested_artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+      "reason": "unknown or already consumed permission"
+    }
+  },
+  "manifests": {
+    "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5": {
+      "gram.py": "991e7c79e5f39971064a8feeff40f0278719954f6a1686fbcce49c4faaa341b6"
+    },
+    "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33": {
+      "fixtures/faults.py": "c293f981961fbefced17e1a6ab6707938761a260de0757d7172ea2898c930185",
+      "fixtures/pauli.py": "34202f4aa52da055ab5fd926259edae652e7a980b4a8e0bbce7aae096ae16ad2",
+      "fixtures/schedule.py": "d1fb5eaa10433a1f23f7290d2d18f3c2a3d88bbe879e5bd37c8eddc258bbe23a",
+      "steane.py": "1092f66022501aff60b414feb4e0b2ef6635ef1ac0b7bedd64c471130d2ee680"
+    },
+    "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7": {
+      "fixtures/rod.py": "8f2953e555d6c7f2de71c7e948163c488acc0e35a4513cf2f209961c89c614dd",
+      "heat.py": "7f4a6c454e2bbaa55e9d49079fc0be9c16ac3a274b2c5ea235a3a57d4ba57749"
+    },
+    "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba": {
+      "compiler": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+      "machine": "x86_64",
+      "source": "c2cdc9f3b8c82e901fc6a889afad8e2797029350771fe76058dcb0dd789e0a8c",
+      "version": "Eshkol Compiler v1.3.6-evolve"
+    }
+  },
+  "fallbacks": {
+    "gram.strict": {
+      "cause": "9212e1f7a48688b6592ae458bc9fa5297ed1c2bd3b4eec1b542aa6eedbba10bb",
+      "selection": "4419aaba61df04061bc6146b4362f3b0b5ba5d7ac0b7f096ede6720e0072b0e9",
+      "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82"
+    },
+    "steane.biased": {
+      "cause": "fe3b2d87493de42152e6af4237e0e702c4bb3690a3aa9a46c4f1103ad913a75c",
+      "selection": "d108b969bdc6e4c1ab0e39f810134c242ddb247856d6406cb053e97d1cc91279",
+      "artifact": "c45391057bf4083f141a31b5870b8962dc65177bb848876aefd096c2685e6f72"
+    }
+  },
+  "platform": "Linux x86_64",
+  "python": "3.10.12",
+  "lean": "Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release)",
+  "compiler": "Eshkol Compiler v1.3.6-evolve",
+  "axioms": [
+    "'Verificatum.Authority.release_sound' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.authorize_sound' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.consume_bound' does not depend on any axioms",
+    "'Verificatum.Authority.decision_refines' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.decision_authorizes' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.Authority.release_refines' depends on axioms: [propext]"
+  ],
+  "proof_sha256": "22416c3e265c44c8381a1be92ba4dd6ba20c48401161b0c252fafad493735a08",
+  "decisions": {
+    "gram.review": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "export function for conditional IR review",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ]
+          ]
+        ],
+        "permission": "ir-review",
+        "policy_generation": 0,
+        "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+        "dependencies": {
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82"
+        }
+      },
+      "scope_id": "5b7cdff749371851fa5af46875378c90712096e55f51ab947f5fb6c515da2951",
+      "evidence": [
+        {
+          "id": "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "transpose-origin conditional omission",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "5b7cdff749371851fa5af46875378c90712096e55f51ab947f5fb6c515da2951",
+        "evidence": [
+          "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a"
+        ]
+      },
+      "decision_id": "1100feff08d4650cde000bae7385428dc48caca5322bb7eed1b7dc4feeb67323"
+    },
+    "gram.native": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "release linked Gram",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ],
+            [
+              "effects",
+              "trace",
+              "artifact-validated",
+              "Equal",
+              "retained or discharged"
+            ],
+            [
+              "linked entry",
+              "refinement",
+              "refinement-established",
+              "Equal",
+              "bound"
+            ]
+          ]
+        ],
+        "permission": "native-release",
+        "policy_generation": 0,
+        "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+        "dependencies": {
+          "epoch": "16b70824eb57d31a73cd6612a18019ad066a51fa3d6fa0a5302be9644c153a45",
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64"
+        }
+      },
+      "scope_id": "a367bdf1713b3d5d12506c9033868443c8d24d57162401bb671b08325dc681a8",
+      "evidence": [
+        {
+          "id": "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "transpose-origin conditional omission",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        }
+      ],
+      "status": "inconclusive",
+      "edges": {
+        "scope": "a367bdf1713b3d5d12506c9033868443c8d24d57162401bb671b08325dc681a8",
+        "evidence": [
+          "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a"
+        ]
+      },
+      "rule": "effects",
+      "reason": "missing checked helper effects on the ordinary Gram path",
+      "decision_id": "e991c924414d0a3abe75ae0f34500b07e7f7adf4e0adafe23be83ea8d7cd7776"
+    },
+    "gram.stage-only": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "export function for conditional IR review",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ]
+          ]
+        ],
+        "permission": "ir-review",
+        "policy_generation": 0,
+        "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+        "dependencies": {
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82"
+        }
+      },
+      "scope_id": "5b7cdff749371851fa5af46875378c90712096e55f51ab947f5fb6c515da2951",
+      "evidence": [
+        {
+          "id": "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "transpose-origin conditional omission",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "5b7cdff749371851fa5af46875378c90712096e55f51ab947f5fb6c515da2951",
+        "evidence": [
+          "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a"
+        ]
+      },
+      "decision_id": "1100feff08d4650cde000bae7385428dc48caca5322bb7eed1b7dc4feeb67323"
+    },
+    "gram.swap-source": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "export function for conditional IR review",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ]
+          ]
+        ],
+        "permission": "ir-review",
+        "policy_generation": 0,
+        "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+        "dependencies": {
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82"
+        }
+      },
+      "scope_id": "5b7cdff749371851fa5af46875378c90712096e55f51ab947f5fb6c515da2951",
+      "evidence": [
+        {
+          "id": "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "transpose-origin conditional omission",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "5b7cdff749371851fa5af46875378c90712096e55f51ab947f5fb6c515da2951",
+        "evidence": [
+          "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a"
+        ]
+      },
+      "decision_id": "1100feff08d4650cde000bae7385428dc48caca5322bb7eed1b7dc4feeb67323"
+    },
+    "gram.replacement-review": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "export function for conditional IR review",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ]
+          ]
+        ],
+        "permission": "ir-review",
+        "policy_generation": 0,
+        "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+        "dependencies": {
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82"
+        }
+      },
+      "scope_id": "18f93d372a5b9e25effed0f2bc90d0a12ae6631c1c78bcf18eb081acf0efee9c",
+      "evidence": [
+        {
+          "id": "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "reference retains the comparison",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "18f93d372a5b9e25effed0f2bc90d0a12ae6631c1c78bcf18eb081acf0efee9c",
+        "evidence": [
+          "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859"
+        ]
+      },
+      "decision_id": "c6d98c34af55f5d5c9efbc3bd9779dc570ff4729dc7e42d1980d40d02310b4b0"
+    },
+    "gram.strict": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "select @gram comparison for lowering",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ],
+            [
+              "effects",
+              "trace",
+              "artifact-validated",
+              "Equal",
+              "retained or discharged"
+            ]
+          ]
+        ],
+        "permission": "lowering",
+        "policy_generation": 0,
+        "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+        "dependencies": {
+          "epoch": "16b70824eb57d31a73cd6612a18019ad066a51fa3d6fa0a5302be9644c153a45",
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64"
+        }
+      },
+      "scope_id": "3846c9cf26cc93b2fbd45628fd56c7ac679e1eef5cdf1530553190cafb9876d5",
+      "evidence": [
+        {
+          "id": "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "transpose-origin conditional omission",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        }
+      ],
+      "status": "inconclusive",
+      "edges": {
+        "scope": "3846c9cf26cc93b2fbd45628fd56c7ac679e1eef5cdf1530553190cafb9876d5",
+        "evidence": [
+          "4e8069c4b21590d649a817c8a082e35e3e98dd114f331f503c251c8d576f620a"
+        ]
+      },
+      "rule": "effects",
+      "reason": "missing checked helper effects on the ordinary Gram path",
+      "decision_id": "9212e1f7a48688b6592ae458bc9fa5297ed1c2bd3b4eec1b542aa6eedbba10bb"
+    },
+    "gram.fallback": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "select @gram comparison for lowering",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ],
+            [
+              "effects",
+              "trace",
+              "artifact-validated",
+              "Equal",
+              "retained or discharged"
+            ]
+          ]
+        ],
+        "permission": "lowering",
+        "policy_generation": 0,
+        "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+        "dependencies": {
+          "epoch": "16b70824eb57d31a73cd6612a18019ad066a51fa3d6fa0a5302be9644c153a45",
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64"
+        }
+      },
+      "scope_id": "bd4a39668a05bf1dfd8ba4bf4850a2760ae20417c299c4f22b34215afa33e8b0",
+      "evidence": [
+        {
+          "id": "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "reference retains the comparison",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        },
+        {
+          "id": "8cef58eac49c184015fb187f84fe534cee30942f8d6920fb4dce02c1e467acf4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "effects",
+          "kind": "trace",
+          "level": "artifact-validated",
+          "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "subject": "transpose(x) times x",
+          "value": "retained or discharged",
+          "location": "guard retained",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+            "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64",
+            "epoch": "16b70824eb57d31a73cd6612a18019ad066a51fa3d6fa0a5302be9644c153a45"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "bd4a39668a05bf1dfd8ba4bf4850a2760ae20417c299c4f22b34215afa33e8b0",
+        "evidence": [
+          "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859",
+          "8cef58eac49c184015fb187f84fe534cee30942f8d6920fb4dce02c1e467acf4"
+        ]
+      },
+      "decision_id": "4419aaba61df04061bc6146b4362f3b0b5ba5d7ac0b7f096ede6720e0072b0e9"
+    },
+    "gram.wrong-operand": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "export function for conditional IR review",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ]
+          ]
+        ],
+        "permission": "ir-review",
+        "policy_generation": 0,
+        "artifact": "a9cc5279c3106968b3e531e65c4d18627a0c6a9feaf6a8c5e2acad64f3694ddc",
+        "dependencies": {
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82"
+        }
+      },
+      "scope_id": "bcaab05ceb1d9dda29dda44f884413eac56a22b2b3a3e0cae20dc6348492f71e",
+      "evidence": [
+        {
+          "id": "0a96cf00eec3c22170cf5916c25a189b92a19566933486d157bcaa407404616a",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "a9cc5279c3106968b3e531e65c4d18627a0c6a9feaf6a8c5e2acad64f3694ddc",
+          "subject": "transpose(x) times x",
+          "value": "wrong operand binding",
+          "location": "@gram/mm_b_merge",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        }
+      ],
+      "status": "denied",
+      "edges": {
+        "scope": "bcaab05ceb1d9dda29dda44f884413eac56a22b2b3a3e0cae20dc6348492f71e",
+        "evidence": [
+          "0a96cf00eec3c22170cf5916c25a189b92a19566933486d157bcaa407404616a"
+        ]
+      },
+      "rule": "site",
+      "reason": "contract violated",
+      "required": "validated",
+      "observed": "wrong operand binding",
+      "location": "@gram/mm_b_merge",
+      "decision_id": "7b07c16ccdfd18d3b316b8ed4f9275aa58bf99ecdbc42fd2da86c366c106cc7a"
+    },
+    "gram.before-epoch": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "select @gram comparison for lowering",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ],
+            [
+              "effects",
+              "trace",
+              "artifact-validated",
+              "Equal",
+              "retained or discharged"
+            ]
+          ]
+        ],
+        "permission": "lowering",
+        "policy_generation": 0,
+        "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+        "dependencies": {
+          "epoch": "16b70824eb57d31a73cd6612a18019ad066a51fa3d6fa0a5302be9644c153a45",
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64"
+        }
+      },
+      "scope_id": "bd4a39668a05bf1dfd8ba4bf4850a2760ae20417c299c4f22b34215afa33e8b0",
+      "evidence": [
+        {
+          "id": "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "reference retains the comparison",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        },
+        {
+          "id": "8cef58eac49c184015fb187f84fe534cee30942f8d6920fb4dce02c1e467acf4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "effects",
+          "kind": "trace",
+          "level": "artifact-validated",
+          "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "subject": "transpose(x) times x",
+          "value": "retained or discharged",
+          "location": "guard retained",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+            "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64",
+            "epoch": "16b70824eb57d31a73cd6612a18019ad066a51fa3d6fa0a5302be9644c153a45"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "bd4a39668a05bf1dfd8ba4bf4850a2760ae20417c299c4f22b34215afa33e8b0",
+        "evidence": [
+          "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859",
+          "8cef58eac49c184015fb187f84fe534cee30942f8d6920fb4dce02c1e467acf4"
+        ]
+      },
+      "decision_id": "4419aaba61df04061bc6146b4362f3b0b5ba5d7ac0b7f096ede6720e0072b0e9"
+    },
+    "gram.before-runtime": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "select @gram comparison for lowering",
+          [
+            [
+              "site",
+              "refinement",
+              "artifact-validated",
+              "Equal",
+              "validated"
+            ],
+            [
+              "effects",
+              "trace",
+              "artifact-validated",
+              "Equal",
+              "retained or discharged"
+            ]
+          ]
+        ],
+        "permission": "lowering",
+        "policy_generation": 0,
+        "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+        "dependencies": {
+          "epoch": "66a46a170dd645c5528988b48194aa63b08fb4afe08aef0586a51fd6403e5c88",
+          "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+          "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64"
+        }
+      },
+      "scope_id": "f7ccd1bfec0eb88cd644ce4e60712ff8773feddc724f3cb1cd9ee0b900d2e4b4",
+      "evidence": [
+        {
+          "id": "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "site",
+          "kind": "refinement",
+          "level": "artifact-validated",
+          "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "subject": "transpose(x) times x",
+          "value": "validated",
+          "location": "reference retains the comparison",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5"
+          }
+        },
+        {
+          "id": "4bdedcaa70f7329acf18877338104aecd3b2c980729e824cd7ec3fed9c6944d6",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "effects",
+          "kind": "trace",
+          "level": "artifact-validated",
+          "artifact": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+          "subject": "transpose(x) times x",
+          "value": "retained or discharged",
+          "location": "guard retained",
+          "inputs": {
+            "guarded": "d31dae52210cc7cdb2db17144b5f2ed51b76797a97c77aacda6876ab6cfa5c82",
+            "gram-checker": "1516e8ebf8e33de584b82139b0420ed600284af6f49752fdc35cc0c072078cd5",
+            "runtime": "57f78e7cd88fbb66f91bdf59dfcdf91b1a030ce8f6fae6b32c7aa2f73b1bfc64",
+            "epoch": "66a46a170dd645c5528988b48194aa63b08fb4afe08aef0586a51fd6403e5c88"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "f7ccd1bfec0eb88cd644ce4e60712ff8773feddc724f3cb1cd9ee0b900d2e4b4",
+        "evidence": [
+          "e0ddcb1cd0ef99daf46bc36bfc23ef55d3a8212f9b74c820177c3dcedfc06859",
+          "4bdedcaa70f7329acf18877338104aecd3b2c980729e824cd7ec3fed9c6944d6"
+        ]
+      },
+      "decision_id": "31bcd67d436f135c1a6535b67f06575effdee2e19820fe698970dd1dd0a309c3"
+    },
+    "steane.ideal": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+        "dependencies": {
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "785c337024a29fa76f8c7b36da1206ecc9edec1a1451a46588ff335a78f98871",
+      "evidence": [
+        {
+          "id": "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "785c337024a29fa76f8c7b36da1206ecc9edec1a1451a46588ff335a78f98871",
+        "evidence": [
+          "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4"
+        ]
+      },
+      "decision_id": "b8714b45d7f4c34f7392be427b7c58b31dcafbccf2ce6a126bfcf46f6e10b97c"
+    },
+    "steane.pointwise": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault paths",
+              "trace",
+              "artifact-validated",
+              "Equal",
+              "preserved"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+        "dependencies": {
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "03e1635a0b54ccf42d8eb1ce681545f09cf88039982bac7ffbc5bea689e0a0cb",
+      "evidence": [
+        {
+          "id": "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "ca90c9d74ad658d7e4ae9beab8764cda06992bd54227c97e0e0147a37604eae5",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault paths",
+          "kind": "trace",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "changed",
+          "location": "gate 12 IY: 001111/I -> 111111/I",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        }
+      ],
+      "status": "denied",
+      "edges": {
+        "scope": "03e1635a0b54ccf42d8eb1ce681545f09cf88039982bac7ffbc5bea689e0a0cb",
+        "evidence": [
+          "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "ca90c9d74ad658d7e4ae9beab8764cda06992bd54227c97e0e0147a37604eae5"
+        ]
+      },
+      "rule": "fault paths",
+      "reason": "contract violated",
+      "required": "preserved",
+      "observed": "changed",
+      "location": "gate 12 IY: 001111/I -> 111111/I",
+      "decision_id": "910b3b570094db7a7d7e466960b4a799cd396830d811bcafc8828e9423ebf818"
+    },
+    "steane.pointwise-reference": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault paths",
+              "trace",
+              "artifact-validated",
+              "Equal",
+              "preserved"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "c45391057bf4083f141a31b5870b8962dc65177bb848876aefd096c2685e6f72",
+        "dependencies": {
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "6a6a662e3de58fa3279d644888349dad1c2fff6e1f8d8890083cc63f453570ef",
+      "evidence": [
+        {
+          "id": "bdee6cf6d6ef77bd722b97a080d78a442d20aa0b808e2dfd7f41dbeac0b16e40",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "c45391057bf4083f141a31b5870b8962dc65177bb848876aefd096c2685e6f72",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "34557c73bab77364327141188beb419a68e37c1946345e8ccdf3b1c662afe882",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault paths",
+          "kind": "trace",
+          "level": "artifact-validated",
+          "artifact": "c45391057bf4083f141a31b5870b8962dc65177bb848876aefd096c2685e6f72",
+          "subject": "Steane logical plus",
+          "value": "preserved",
+          "location": "225 paired syndromes and logical Paulis",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "6a6a662e3de58fa3279d644888349dad1c2fff6e1f8d8890083cc63f453570ef",
+        "evidence": [
+          "bdee6cf6d6ef77bd722b97a080d78a442d20aa0b808e2dfd7f41dbeac0b16e40",
+          "34557c73bab77364327141188beb419a68e37c1946345e8ccdf3b1c662afe882"
+        ]
+      },
+      "decision_id": "6b074646454f35c84cb2a533648c68857a289761ff145f133e1223468a5e523d"
+    },
+    "steane.boundary": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault increase",
+              "risk",
+              "artifact-validated",
+              "AtMost",
+              "1/1000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+        "dependencies": {
+          "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089",
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "c5d44625b4c81d081196ee50ca9d1d4eaf8607d0a9c8d010c002d613273f7baf",
+      "evidence": [
+        {
+          "id": "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault increase",
+          "kind": "risk",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "1/1000",
+          "location": "225 paired events; gate 12 YY logical X flip False -> True",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33",
+            "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "c5d44625b4c81d081196ee50ca9d1d4eaf8607d0a9c8d010c002d613273f7baf",
+        "evidence": [
+          "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764"
+        ]
+      },
+      "decision_id": "b6131354aca96f1274df01409fb95a821970ff03bf9b144f1cf2e81d65299e95"
+    },
+    "steane.before-tightening": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault increase",
+              "risk",
+              "artifact-validated",
+              "AtMost",
+              "1/1000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+        "dependencies": {
+          "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089",
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "c5d44625b4c81d081196ee50ca9d1d4eaf8607d0a9c8d010c002d613273f7baf",
+      "evidence": [
+        {
+          "id": "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault increase",
+          "kind": "risk",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "1/1000",
+          "location": "225 paired events; gate 12 YY logical X flip False -> True",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33",
+            "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "c5d44625b4c81d081196ee50ca9d1d4eaf8607d0a9c8d010c002d613273f7baf",
+        "evidence": [
+          "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764"
+        ]
+      },
+      "decision_id": "b6131354aca96f1274df01409fb95a821970ff03bf9b144f1cf2e81d65299e95"
+    },
+    "steane.biased": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault increase",
+              "risk",
+              "artifact-validated",
+              "AtMost",
+              "999/1000000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 1,
+        "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+        "dependencies": {
+          "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089",
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "5f395f3e72140824a73b343313128d900688a20dff8ba2119312788c6b360506",
+      "evidence": [
+        {
+          "id": "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault increase",
+          "kind": "risk",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "1/1000",
+          "location": "225 paired events; gate 12 YY logical X flip False -> True",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33",
+            "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089"
+          }
+        }
+      ],
+      "status": "denied",
+      "edges": {
+        "scope": "5f395f3e72140824a73b343313128d900688a20dff8ba2119312788c6b360506",
+        "evidence": [
+          "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764"
+        ]
+      },
+      "rule": "fault increase",
+      "reason": "contract violated",
+      "required": "999/1000000",
+      "observed": "1/1000",
+      "location": "225 paired events; gate 12 YY logical X flip False -> True",
+      "decision_id": "fe3b2d87493de42152e6af4237e0e702c4bb3690a3aa9a46c4f1103ad913a75c"
+    },
+    "steane.fallback": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault increase",
+              "risk",
+              "artifact-validated",
+              "AtMost",
+              "999/1000000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 1,
+        "artifact": "c45391057bf4083f141a31b5870b8962dc65177bb848876aefd096c2685e6f72",
+        "dependencies": {
+          "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089",
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "e6a3f511fad605803b364d85f0c5360193752d2363ddbaf6c99ec8c7c58d689f",
+      "evidence": [
+        {
+          "id": "bdee6cf6d6ef77bd722b97a080d78a442d20aa0b808e2dfd7f41dbeac0b16e40",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "c45391057bf4083f141a31b5870b8962dc65177bb848876aefd096c2685e6f72",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "a0d18707f19521688fc2623115e62d37e68ba7e76d75f4572a0d26bf3d2f9c6c",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault increase",
+          "kind": "risk",
+          "level": "artifact-validated",
+          "artifact": "c45391057bf4083f141a31b5870b8962dc65177bb848876aefd096c2685e6f72",
+          "subject": "Steane logical plus",
+          "value": "0",
+          "location": "225 paired events; gate 12 YY logical X flip False -> False",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33",
+            "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "e6a3f511fad605803b364d85f0c5360193752d2363ddbaf6c99ec8c7c58d689f",
+        "evidence": [
+          "bdee6cf6d6ef77bd722b97a080d78a442d20aa0b808e2dfd7f41dbeac0b16e40",
+          "a0d18707f19521688fc2623115e62d37e68ba7e76d75f4572a0d26bf3d2f9c6c"
+        ]
+      },
+      "decision_id": "d108b969bdc6e4c1ab0e39f810134c242ddb247856d6406cb053e97d1cc91279"
+    },
+    "steane.revalidated-boundary": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault increase",
+              "risk",
+              "artifact-validated",
+              "AtMost",
+              "1/1000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 2,
+        "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+        "dependencies": {
+          "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089",
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "3c70dd2a418470bc5071567a39555514d8cd843e89f0c7a37317201e03277d36",
+      "evidence": [
+        {
+          "id": "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault increase",
+          "kind": "risk",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "1/1000",
+          "location": "225 paired events; gate 12 YY logical X flip False -> True",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33",
+            "noise": "e1665167abc75c303813dba78435f2401e5785043571b1b0f38c8f3264b45089"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "3c70dd2a418470bc5071567a39555514d8cd843e89f0c7a37317201e03277d36",
+        "evidence": [
+          "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "22eb5815fd82821709c76739a848506232c3aafd490a8e580d36f7cb422c2764"
+        ]
+      },
+      "decision_id": "5f571aceb4e43aae992c67460463890315ef461ccd9ae77dc8e51929b48a4011"
+    },
+    "steane.uniform": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ],
+            [
+              "fault increase",
+              "risk",
+              "artifact-validated",
+              "AtMost",
+              "0"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+        "dependencies": {
+          "noise": "3b46241e5a180f95e2e03bf4b33640960c84c63f610a805ad176514866c427d2",
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "68d01661597aa3ae25cd8f596c7578906da4455909674d51a5a4ae39db894565",
+      "evidence": [
+        {
+          "id": "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "equal",
+          "location": "all 128 signed columns",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        },
+        {
+          "id": "67b55f7ce9b5f7b691b5621c171cb8965124a283afa1bdd8bf188d6bae78d19c",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "fault increase",
+          "kind": "risk",
+          "level": "artifact-validated",
+          "artifact": "f03b23fe7df355a29479db371ab32c7fdd3ead3d6eab72cf39b0e0b1ef112fbe",
+          "subject": "Steane logical plus",
+          "value": "0",
+          "location": "225 paired events; gate 12 YY logical X flip False -> True",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33",
+            "noise": "3b46241e5a180f95e2e03bf4b33640960c84c63f610a805ad176514866c427d2"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "68d01661597aa3ae25cd8f596c7578906da4455909674d51a5a4ae39db894565",
+        "evidence": [
+          "0f4d92322e8ff102d383ea1d62983ce907e537f06a657a995899756577725ad4",
+          "67b55f7ce9b5f7b691b5621c171cb8965124a283afa1bdd8bf188d6bae78d19c"
+        ]
+      },
+      "decision_id": "a4454328b363125aa6b0f084d9def5472a2288e65e3fa9d4ac8c24080ddb5d88"
+    },
+    "steane.malformed": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "Steane logical plus",
+          "dispatch indexed tape",
+          [
+            [
+              "operator",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "equal"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "dependencies": {
+          "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+          "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+        }
+      },
+      "scope_id": "52f66910502a544547323d1971144c6ccbefd8d821779fb17c38125cab4ea0fb",
+      "evidence": [
+        {
+          "id": "cc31c7ff0b8883c95174404fe3956bff855aae7ef716b917d752f6c0f90d4c5e",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "operator",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "subject": "Steane logical plus",
+          "value": "invalid schedule",
+          "location": "gate IDs or wire roles differ",
+          "inputs": {
+            "steane": "dbc3cbcb6e0b6a3c44f7ee4960bfde5f0db09b0b80ca0c65722d992308100119",
+            "steane-checker": "ce4c9f346ae37f41873c0e3eff0f7e8ff80944459750f4fae3be9adb1815af33"
+          }
+        }
+      ],
+      "status": "denied",
+      "edges": {
+        "scope": "52f66910502a544547323d1971144c6ccbefd8d821779fb17c38125cab4ea0fb",
+        "evidence": [
+          "cc31c7ff0b8883c95174404fe3956bff855aae7ef716b917d752f6c0f90d4c5e"
+        ]
+      },
+      "rule": "operator",
+      "reason": "contract violated",
+      "required": "equal",
+      "observed": "invalid schedule",
+      "location": "gate IDs or wire roles differ",
+      "decision_id": "cae1f5817b15eb48dddfbf618c230fd855975e8b9143fd86846a075eba533d41"
+    },
+    "heat.unbound-binary": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "P5 sine rod",
+          "run the declared sine grid",
+          [
+            [
+              "artifact",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "matched"
+            ],
+            [
+              "grid error",
+              "bounded-error",
+              "executable-observed",
+              "AtMost",
+              "1/100000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "aea9a868dd4bc37f2db7e828e723cbabea47c24eb50da4e125710705a2ed16d8",
+        "dependencies": {
+          "grid": "7393882dd19ea5d577c8b282953f4179e3d35b623ebbc8b0a5b41620a58b311e",
+          "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+          "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba",
+          "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f"
+        }
+      },
+      "scope_id": "9c54a86b85747b08c7a324883df8769aa1d983681c577bc3fe4492543e645665",
+      "evidence": [
+        {
+          "id": "0449b796bf9255e295222bf9096f648aaa91311729ce13067349ad9f34876459",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "artifact",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "aea9a868dd4bc37f2db7e828e723cbabea47c24eb50da4e125710705a2ed16d8",
+          "subject": "P5 sine rod",
+          "value": "different",
+          "location": "consumer-built P5 executable",
+          "inputs": {
+            "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+            "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+            "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba"
+          }
+        }
+      ],
+      "status": "denied",
+      "edges": {
+        "scope": "9c54a86b85747b08c7a324883df8769aa1d983681c577bc3fe4492543e645665",
+        "evidence": [
+          "0449b796bf9255e295222bf9096f648aaa91311729ce13067349ad9f34876459"
+        ]
+      },
+      "rule": "artifact",
+      "reason": "contract violated",
+      "required": "matched",
+      "observed": "different",
+      "location": "consumer-built P5 executable",
+      "decision_id": "c6c6503599b7b91badfd0680f44c6ed77e5888c15a1032b468c921c78ab6f970"
+    },
+    "heat.arithmetic": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "P5 sine rod",
+          "select prescribed arithmetic",
+          [
+            [
+              "artifact",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "matched"
+            ],
+            [
+              "prescribed arithmetic",
+              "exact",
+              "executable-observed",
+              "Equal",
+              "1/2"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+        "dependencies": {
+          "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+          "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba",
+          "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f"
+        }
+      },
+      "scope_id": "98f4fc3e9eb56e8dde7526e01c6cd2eacaa8d24c487199f49bb2fdd511979c97",
+      "evidence": [
+        {
+          "id": "a325073132fdf9154e4bb611b69087637a66c4ca76df597ebf2e9b56acbc1981",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "artifact",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+          "subject": "P5 sine rod",
+          "value": "matched",
+          "location": "consumer-built P5 executable",
+          "inputs": {
+            "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+            "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+            "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba"
+          }
+        },
+        {
+          "id": "10563e90eef7fe1745d8cd8e4855a7e20175583a7afc2abf06a85550fc52c435",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "prescribed arithmetic",
+          "kind": "exact",
+          "level": "executable-observed",
+          "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+          "subject": "P5 sine rod",
+          "value": "4503599627370497/9007199254740992",
+          "location": "one step, cell 2 on [0, 2^-52, 1, 2^-52, 0]",
+          "inputs": {
+            "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+            "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+            "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba"
+          }
+        }
+      ],
+      "status": "denied",
+      "edges": {
+        "scope": "98f4fc3e9eb56e8dde7526e01c6cd2eacaa8d24c487199f49bb2fdd511979c97",
+        "evidence": [
+          "a325073132fdf9154e4bb611b69087637a66c4ca76df597ebf2e9b56acbc1981",
+          "10563e90eef7fe1745d8cd8e4855a7e20175583a7afc2abf06a85550fc52c435"
+        ]
+      },
+      "rule": "prescribed arithmetic",
+      "reason": "contract violated",
+      "required": "1/2",
+      "observed": "4503599627370497/9007199254740992",
+      "location": "one step, cell 2 on [0, 2^-52, 1, 2^-52, 0]",
+      "decision_id": "27f5fb1b21f91699986920c3b8047041419961a6dc88753065d4182f0ce2650c"
+    },
+    "heat.bounded": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "P5 sine rod",
+          "run the declared sine grid",
+          [
+            [
+              "artifact",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "matched"
+            ],
+            [
+              "grid error",
+              "bounded-error",
+              "executable-observed",
+              "AtMost",
+              "1/100000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+        "dependencies": {
+          "grid": "7393882dd19ea5d577c8b282953f4179e3d35b623ebbc8b0a5b41620a58b311e",
+          "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+          "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba",
+          "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f"
+        }
+      },
+      "scope_id": "18a12925098c35454731fcb05516a7abc8e8a8a354d731395dd291911092c322",
+      "evidence": [
+        {
+          "id": "a325073132fdf9154e4bb611b69087637a66c4ca76df597ebf2e9b56acbc1981",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "artifact",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+          "subject": "P5 sine rod",
+          "value": "matched",
+          "location": "consumer-built P5 executable",
+          "inputs": {
+            "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+            "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+            "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba"
+          }
+        },
+        {
+          "id": "c6960908f5dbcde95c2b630376ca40aa971c71a83f2085859c5d4a586e40c20c",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "grid error",
+          "kind": "bounded-error",
+          "level": "executable-observed",
+          "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+          "subject": "P5 sine rod",
+          "value": "79277/50000000000",
+          "location": "largest grid-point error enclosure at cell 103",
+          "inputs": {
+            "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+            "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+            "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba",
+            "grid": "7393882dd19ea5d577c8b282953f4179e3d35b623ebbc8b0a5b41620a58b311e"
+          }
+        }
+      ],
+      "status": "authorized",
+      "edges": {
+        "scope": "18a12925098c35454731fcb05516a7abc8e8a8a354d731395dd291911092c322",
+        "evidence": [
+          "a325073132fdf9154e4bb611b69087637a66c4ca76df597ebf2e9b56acbc1981",
+          "c6960908f5dbcde95c2b630376ca40aa971c71a83f2085859c5d4a586e40c20c"
+        ]
+      },
+      "decision_id": "d91bee205b44239efb01cb8f8335e4f904f80ba5e9f4c73712cff814d3e16a49"
+    },
+    "heat.missing-grid": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "P5 sine rod",
+          "run the declared sine grid",
+          [
+            [
+              "artifact",
+              "exact",
+              "artifact-validated",
+              "Equal",
+              "matched"
+            ],
+            [
+              "grid error",
+              "bounded-error",
+              "executable-observed",
+              "AtMost",
+              "1/100000"
+            ]
+          ]
+        ],
+        "permission": "execution",
+        "policy_generation": 0,
+        "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+        "dependencies": {
+          "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+          "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba",
+          "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f"
+        }
+      },
+      "scope_id": "27bafd1810a5cdf9baf4e0976227078db5f92a24d2b09e33459216ccfe2cbbde",
+      "evidence": [
+        {
+          "id": "a325073132fdf9154e4bb611b69087637a66c4ca76df597ebf2e9b56acbc1981",
+          "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+          "claim": "artifact",
+          "kind": "exact",
+          "level": "artifact-validated",
+          "artifact": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+          "subject": "P5 sine rod",
+          "value": "matched",
+          "location": "consumer-built P5 executable",
+          "inputs": {
+            "solver": "afb570bdc499d6dca2486dd082aaae8b5ba0160d1bf88c4ea3c74a9af476c98f",
+            "heat-checker": "ad33ada90c8db811deffb7e8aa56424da5d333c030c69b722cc0214eef3d4ec7",
+            "native-build": "f01b0eaae18887622f45690ce3dadc5753287c9917cb83f95a7e585dbb2777ba"
+          }
+        }
+      ],
+      "status": "inconclusive",
+      "edges": {
+        "scope": "27bafd1810a5cdf9baf4e0976227078db5f92a24d2b09e33459216ccfe2cbbde",
+        "evidence": [
+          "a325073132fdf9154e4bb611b69087637a66c4ca76df597ebf2e9b56acbc1981"
+        ]
+      },
+      "rule": "grid error",
+      "reason": "missing dependencies",
+      "missing": [
+        "grid"
+      ],
+      "decision_id": "df28d0bdc6f6f22bd0000026d4a0cc27017aeded370d8192887e7037131476b4"
+    },
+    "wrong-level": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "select @gram comparison for lowering",
+          [
+            [
+              "site",
+              "refinement",
+              "refinement-established",
+              "Equal",
+              "validated"
+            ]
+          ]
+        ],
+        "permission": "lowering",
+        "policy_generation": 0,
+        "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+        "dependencies": {}
+      },
+      "scope_id": "88a82c29615b9e92d1430f45b2541c543995e94e86cd6d83d1006adb8f25f8bc",
+      "evidence": [],
+      "status": "inconclusive",
+      "edges": {
+        "scope": "88a82c29615b9e92d1430f45b2541c543995e94e86cd6d83d1006adb8f25f8bc",
+        "evidence": []
+      },
+      "rule": "site",
+      "reason": "required evidence level unavailable",
+      "decision_id": "fb15141d0e2eb7c09500de5e65d9dffa689d0f5193609fdbf75768adbcf72928"
+    },
+    "timeout": {
+      "scope": {
+        "gate": "2808600d1e158269495cabc1afcdb280fa1c31dcecd234c456c4395f1237b2ab",
+        "contract": [
+          "transpose(x) times x",
+          "select @gram comparison for lowering",
+          [
+            [
+              "site",
+              "refinement",
+              "refinement-established",
+              "Equal",
+              "validated"
+            ]
+          ]
+        ],
+        "permission": "lowering",
+        "policy_generation": 0,
+        "artifact": "106caae33cc03854540d6965224e994efe24ecbd07c03f5635fc3e1461300688",
+        "dependencies": {}
+      },
+      "scope_id": "88a82c29615b9e92d1430f45b2541c543995e94e86cd6d83d1006adb8f25f8bc",
+      "evidence": [],
+      "status": "inconclusive",
+      "edges": {
+        "scope": "88a82c29615b9e92d1430f45b2541c543995e94e86cd6d83d1006adb8f25f8bc",
+        "evidence": []
+      },
+      "rule": "site",
+      "reason": "TimeoutError",
+      "decision_id": "2ff4d60c26a5a1217b0cdd628575a86f3605b895bed60ebc67fe5221c1be46ac"
+    }
+  },
+  "refused_tickets": {
+    "cross-gate use": "unknown or already consumed permission",
+    "receipt as permission": "unknown or already consumed permission",
+    "Gram IR review to native release": "unknown or already consumed permission",
+    "permission alone changed": "artifact or authorization scope changed",
+    "substitute artifact with original receipt": "artifact or authorization scope changed",
+    "changed epoch": "artifact or authorization scope changed",
+    "changed runtime": "artifact or authorization scope changed",
+    "double consumption": "unknown or already consumed permission",
+    "Steane ideal to pointwise": "unknown or already consumed permission",
+    "tighten Steane risk budget": "artifact or authorization scope changed",
+    "budget restored after an intervening change": "artifact or authorization scope changed",
+    "changed fault law": "artifact or authorization scope changed",
+    "heat grid error to exact arithmetic": "unknown or already consumed permission"
+  },
+  "heat_field_sha256": "3f49a9c8ab388b260581e8a96ced4f8d726bc545bff3c590787e6ad74f29d1ff",
+  "dispatched_steane_depth": {
+    "ideal": 8,
+    "biased_fallback": 9
+  },
+  "adapter_nonblank_noncomment_lines": {
+    "gram": 106,
+    "steane": 129,
+    "heat": 104
+  }
+}
