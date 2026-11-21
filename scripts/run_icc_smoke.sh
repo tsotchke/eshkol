@@ -898,23 +898,18 @@ probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solve
      fi;
      exit 0'
 
-probe printer_roundtrip_oracle 'flonum printer (#310): number->string / display emit the SHORTEST decimal that reads back to the exact same double (round-trip), no 6-sig-fig truncation, integral doubles keep the no-".0" form — byte-identical across JIT, AOT and the VM' \
-    'cd "$REPO_ROOT"; t=tests/features/printer_roundtrip_test.esk;
-     out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
-     printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
-     printf "%s" "$out" | grep -q "error:" && exit 1;
-     bin=$(mktemp) || exit 1;
-     ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
-     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
-     printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
-     printf "%s" "$out" | grep -q "error:" && exit 1;
-     vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
-     if [ -x "$vm" ]; then
-       out=$(ESHKOL_VM_NO_DISASM=1 ESHKOL_PATH="$REPO_ROOT/lib" "$vm" "$t" 2>/dev/null) || exit 1;
-       printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
-       printf "%s" "$out" | grep -q "error:" && exit 1;
-     fi;
-     exit 0'
+printer_roundtrip_probe() (
+    local source="$REPO_ROOT/tests/features/printer_roundtrip_test.esk"
+    local vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test"
+    local work
+    work=$(mktemp -d) || exit 125
+    if ! eshkol_durable_enabled; then
+        trap 'rm -f -- "$work/jit.out" "$work/aot.out" "$work/vm.out" "$work/aot.bin"; rmdir -- "$work"' EXIT
+    fi
+    ESHKOL_PATH="$REPO_ROOT/lib" bash "$REPO_ROOT/scripts/lib/check_printer_roundtrip.sh" \
+        "$source" "$ESHKOL_RUN" "$vm" "$work"
+)
+probe printer_roundtrip_oracle 'flonum printer (#310): shortest round-trip decimal preserving inexactness and signed zero, with identical JIT, AOT and VM output' 'printer_roundtrip_probe'
 
 probe pipe_symbol_oracle 'R7RS 7.1.1 vertical-line symbols: |weird sym| reads as ONE symbol (not two tokens), the full <symbol element> alphabet incl. \x<hex>; decodes, |.| is a symbol distinct from the bare dotted-pair delimiter, write emits bars iff the R7RS 7.1.1 <identifier> grammar cannot spell the name bare, display never bars, and write -> read recovers an eq? symbol — byte-identical across JIT, AOT and the VM' \
     'cd "$REPO_ROOT"; t=tests/features/pipe_symbol_test.esk;

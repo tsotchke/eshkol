@@ -16,15 +16,17 @@
 
 (define fail-count 0)
 
-;; Exact printed-form check: (number->string x) must equal `expected`.
+;; Both public printing operations must produce the expected external form.
 (define (check-str name x expected)
-  (let ((got (number->string x)))
-    (if (string=? got expected)
+  (let ((got (number->string x)) (port (open-output-string)))
+    (display x port)
+    (if (and (string=? got expected) (string=? (get-output-string port) expected))
         (begin (display "ok   ") (display name) (display " => ") (display got) (newline))
         (begin (set! fail-count (+ fail-count 1))
                (display "error: ") (display name)
                (display " expected \"") (display expected)
-               (display "\" got \"") (display got) (display "\"") (newline)))))
+               (display "\" number->string \"") (display got)
+               (display "\" display \"") (display (get-output-string port)) (display "\"") (newline)))))
 
 ;; Round-trip check: reading back the printed form recovers the value.
 ;; Preserve both the numerical value and inexactness, including integral
@@ -44,6 +46,11 @@
 (check-str "sqrt2"       (sqrt 2.0)          "1.4142135623730951")
 (check-str "0.1"         0.1                 "0.1")
 (check-str "ozaki-esque" 4.75072e-11         "4.75072e-11")
+;; The closest 16-digit decimal to 2^-44 misses its asymmetric rounding
+;; interval. The adjacent 16-digit decimal does round back to this double.
+(define binade-boundary (/ 1.0 17592186044416.0))
+(check-str "shortest at positive binade" binade-boundary "5.684341886080802e-14")
+(check-str "shortest at negative binade" (- binade-boundary) "-5.684341886080802e-14")
 (check-str "neg 2.5"     -2.5                "-2.5")
 (check-str "1234567.0"   1234567.0           "1234567.0")
 
@@ -69,6 +76,10 @@
 ;; rendered "-0.0", which the reader recovers as an inexact negative zero.
 (check-str "pos zero"    0.0                 "0.0")
 (check-str "neg zero"    -0.0                "-0.0")
+(check-str "positive infinity" +inf.0 "+inf.0")
+(check-str "negative infinity" -inf.0 "-inf.0")
+(check-str "NaN" +nan.0 "+nan.0")
+(check-str "exact integer" 3 "3")
 
 ;; ── Round-trip guarantee across the battery ──
 (check-rt "pi"         3.141592653589793)

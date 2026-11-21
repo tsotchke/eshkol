@@ -35,6 +35,7 @@
 #ifndef ESHKOL_CORE_DTOA_SHORTEST_H
 #define ESHKOL_CORE_DTOA_SHORTEST_H
 
+#include <float.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,25 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Move a finite %e rendering one decimal step away from zero at the
+ * same precision. Carrying through 9.99 yields 1.00 in the next decade. */
+static void eshkol_dtoa_next_magnitude(char *text, size_t cap) {
+    char *exponent = strchr(text, 'e');
+    char *first = text + (text[0] == '-');
+    for (char *p = exponent; p != first;) {
+        --p;
+        if (*p == '.') continue;
+        if (*p != '9') {
+            ++*p;
+            return;
+        }
+        *p = '0';
+    }
+    *first = '1';
+    int next_exp = atoi(exponent + 1) + 1;
+    snprintf(exponent, cap - (size_t)(exponent - text), "e%+d", next_exp);
+}
 
 /**
  * @brief Render @p v into @p buf as its shortest round-trip R7RS external form.
@@ -86,10 +106,20 @@ static int eshkol_dtoa_shortest(char* buf, size_t cap, double v) {
      *    emits p+1 significant digits, so p runs 0..16. 17 digits always
      *    round-trips any IEEE double, so this loop always terminates. */
     char sciraw[64];
+    int binary_exp;
+    int asymmetric = frexp(fabs(v), &binary_exp) == 0.5 && fabs(v) > DBL_MIN;
     int prec;
     for (prec = 0; prec < 17; prec++) {
         snprintf(sciraw, sizeof(sciraw), "%.*e", prec, v);
-        if (strtod(sciraw, NULL) == v) break;
+        double nearest = strtod(sciraw, NULL);
+        if (nearest == v) break;
+        /* At a normal power of two the round-to-nearest interval extends
+         * twice as far away from zero. The nearest decimal can miss on the
+         * narrow side while its neighbour lands inside the wider side. */
+        if (asymmetric && fabs(nearest) < fabs(v)) {
+            eshkol_dtoa_next_magnitude(sciraw, sizeof(sciraw));
+            if (strtod(sciraw, NULL) == v) break;
+        }
     }
 
     /* 2) Decompose "[-]d[.ddd]e[+-]XX" into sign, digit string, decimal exp. */
