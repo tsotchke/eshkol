@@ -25942,8 +25942,11 @@ private:
         return builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
     }
 
-    // Symbol payloads have NUL-terminated names. Their allocation size is
-    // not necessarily the name length: arena gensyms reserve extra space.
+    // symbol->string: Convert a symbol to its string representation
+    // Symbols and strings share the same data layout, just differ in header subtype
+    // Layout: header at offset -8, string data starts at offset 0 (null-terminated)
+    // Header has: subtype(i8), flags(i8), ref_count(i16), size(i32)
+    // Size field at offset -4 contains string length + 1 (for null terminator)
     Value* codegenSymbolToString(const eshkol_operations_t* op) {
         if (op->call_op.num_vars != 1) {
             eshkol_arity_error_current("symbol->string requires exactly 1 argument");
@@ -25953,13 +25956,32 @@ private:
         TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
         if (!tv.llvm_value) return nullptr;
         Value* arg = typedValueToTaggedValue(tv);
-        Value* name = builder->CreateIntToPtr(unpackInt64FromTaggedValue(arg), builder->getPtrTy());
 
-        FunctionCallee copy_string = module->getOrInsertFunction(
-            "eshkol_runtime_copy_string",
-            FunctionType::get(builder->getPtrTy(), {builder->getPtrTy(), builder->getPtrTy()}, false));
-        Value* result = builder->CreateCall(copy_string, {getArenaPtr(), name}, "symbol_name");
-        return tagged_->packHeapPtr(result);
+        // Get pointer to symbol data (points directly to string chars)
+        Value* ptr_int = unpackInt64FromTaggedValue(arg);
+        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+
+        // Get string length from header->size at offset -4 (i32)
+        // Header layout: subtype(1) + flags(1) + ref_count(2) + size(4) = 8 bytes total
+        // size field starts at offset 4 in header, so from data pointer it's at -4
+        Value* size_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -4));
+        Value* size_val = builder->CreateLoad(int32_type, size_ptr);
+        // Size includes null terminator, so subtract 1 to get actual string length
+        Value* length = builder->CreateZExt(
+            builder->CreateSub(size_val, ConstantInt::get(int32_type, 1)),
+            int64_type);
+
+        // Allocate new string with header
+        Value* arena_ptr = getArenaPtr();
+        Value* new_str = builder->CreateCall(mem->getArenaAllocateStringWithHeader(),
+            {arena_ptr, length});
+
+        // Copy string data (source and dest both point to string chars at offset 0)
+        // Copy length+1 bytes to include null terminator
+        Value* copy_len = builder->CreateAdd(length, ConstantInt::get(int64_type, 1));
+        builder->CreateMemCpy(new_str, MaybeAlign(1), ptr, MaybeAlign(1), copy_len);
+
+        return tagged_->packHeapPtr(new_str);
     }
 
     // string->symbol: Convert a string to a symbol.

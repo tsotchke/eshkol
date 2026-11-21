@@ -281,50 +281,20 @@ void* arena_allocate_vector_with_header(arena_t* arena, size_t capacity) {
 }
 
 /**
- * @brief Allocate an interned-symbol buffer with a heap object header.
+ * @brief Allocate a symbol's NUL-terminated name buffer.
  *
- * Layout is an 8-byte metadata slot (e.g. cached hash/length) followed by
- * `length + 1` bytes of NUL-terminated symbol-name storage, allocated
- * 8-byte aligned via a single header+data block tagged with
- * HEAP_SUBTYPE_SYMBOL. Unlike arena_allocate_string_with_header, this does
- * not guard the size computation against overflow before allocating.
- * Contents beyond the header are left uninitialized for the caller to fill
- * in. The buffer is arena-owned and lives until the arena is freed/reset.
+ * The payload size is the number of name bytes plus the terminator, matching
+ * the layout of interned symbols. The caller fills the arena-owned buffer.
  *
- * @param arena   Arena to allocate from (must not be null).
- * @param length  Number of characters in the symbol name, excluding the NUL terminator.
- * @return        Pointer to the symbol's data region (metadata slot + name bytes),
- *                or nullptr on allocation failure.
+ * @param arena   Arena to allocate from.
+ * @param length  Number of bytes in the name, excluding the NUL terminator.
+ * @return        Pointer to the name buffer, or nullptr on failure.
  */
 void* arena_allocate_symbol_with_header(arena_t* arena, size_t length) {
-    if (!arena) {
-        eshkol_error("Cannot allocate symbol with header: null arena");
-        return nullptr;
-    }
-
-    if (length > ESHKOL_OBJECT_MAX_PAYLOAD_BYTES - 9) {
+    if (length >= ESHKOL_OBJECT_MAX_PAYLOAD_BYTES) {
         eshkol_error("Symbol payload length=%zu exceeds uint32_t header limit", length);
         return nullptr;
     }
-    size_t data_size = 8 + length + 1;
-    if (data_size > SIZE_MAX - sizeof(eshkol_object_header_t) - 7) {
-        eshkol_error("Symbol allocation size overflow (length=%zu)", length);
-        return nullptr;
-    }
-    size_t total = sizeof(eshkol_object_header_t) + data_size;
-    total = (total + 7) & ~((size_t)7);
 
-    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 8);
-    if (!mem) {
-        eshkol_error("Failed to allocate symbol with header (length=%zu)", length);
-        return nullptr;
-    }
-
-    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
-    hdr->subtype = HEAP_SUBTYPE_SYMBOL;
-    hdr->flags = 0;
-    hdr->ref_count = 0;
-    hdr->size = (uint32_t)data_size;
-
-    return mem + sizeof(eshkol_object_header_t);
+    return arena_allocate_with_header(arena, length + 1, HEAP_SUBTYPE_SYMBOL, 0);
 }

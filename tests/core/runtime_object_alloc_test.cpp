@@ -79,7 +79,7 @@ int main() {
     *reinterpret_cast<int64_t*>(vector_data) = 2;
 
     void* symbol = arena_allocate_symbol_with_header(arena, 5);
-    if (int rc = require_header(symbol, HEAP_SUBTYPE_SYMBOL, 0, 14)) return rc;
+    if (int rc = require_header(symbol, HEAP_SUBTYPE_SYMBOL, 0, 6)) return rc;
 
     if (arena_allocate_with_header(arena, UINT64_MAX, HEAP_SUBTYPE_VECTOR, 0) != nullptr) {
         return fail("overflowing header allocation did not fail");
