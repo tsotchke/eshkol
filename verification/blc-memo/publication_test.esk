@@ -1,0 +1,21 @@
+;; Both suspensions have the same weak head. The source, environment and
+;; logical identity still determine where the evaluator is allowed to write.
+(require core.blc)
+(require core.blc-fast)
+(define apply-two (blc-lam (blc-lam (blc-app (blc-var 2) (blc-var 1)))))
+(define workload (blc-app (blc-app apply-two blc-I) (blc-app blc-I blc-I)))
+(define (check-result)
+  (let ((out (blc-fast-run workload 200)))
+    (if (not (and (eq? (car out) 'normal) (equal? (cadr out) blc-I)))
+        (error "wrong litmus result"))
+    (display "IDENTITY") (newline)))
+(if (equal? (get-environment-variable "BLC_FAULT") "interrupt")
+    (begin
+      (if (not (guard (exn (#t #t)) (blc-fast-run workload 200) #f))
+          (error "aborted invocation returned normally"))
+      (if (not (audit-abandoned-pending?)) (error "interruption left an unexpected cell"))
+      (display "CAUGHT") (newline)
+      (check-result)
+      (if (not (audit-abandoned-pending?)) (error "retry touched the abandoned cell"))
+      (display "ABANDONED-STILL-PENDING") (newline))
+    (check-result))
