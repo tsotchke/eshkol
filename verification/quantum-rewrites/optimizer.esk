@@ -1,0 +1,56 @@
+;;; The proposal producer receives exact coefficients in the 1,w,w²,w³ basis.
+;;; w = exp(iπ/4). The emitted operations act on the consumer's control wire.
+(define (control-correction phase)
+  (let loop ((roots '((1 0 0 0) (0 1 0 0) (0 0 1 0) (0 0 0 1)
+                      (-1 0 0 0) (0 -1 0 0) (0 0 -1 0) (0 0 0 -1)))
+             (gates '(() (t) (s) (s t) (z) (z t) (z s) (z s t))))
+    (cond ((null? roots) (error "phase outside the Q0 synthesis set"))
+          ((equal? phase (car roots)) (car gates))
+          (else (loop (cdr roots) (cdr gates))))))
+
+;;; Each instruction is (source-index opcode wire ...). Enumerate rightward
+;;; moves across commuting neighbors and retain the first strict depth minimum.
+(define (q0-commute? a b)
+  (let ((qs (cddr a)) (rs (cddr b)))
+    (or (and (not (member (car qs) rs))
+             (or (null? (cdr qs)) (not (member (cadr qs) rs))))
+        (and (eq? (cadr a) 'cnot) (eq? (cadr b) 'cnot)
+             (not (= (car qs) (cadr rs))) (not (= (cadr qs) (car rs)))))))
+
+(define (q0-depth n tape)
+  (let ((ready (make-vector n 0)) (depth 0))
+    (for-each
+      (lambda (g)
+        (let* ((qs (cddr g))
+               (layer (+ 1 (if (null? (cdr qs)) (vector-ref ready (car qs))
+                               (max (vector-ref ready (car qs)) (vector-ref ready (cadr qs)))))))
+          (for-each (lambda (q) (vector-set! ready q layer)) qs)
+          (set! depth (max depth layer))))
+      tape)
+    depth))
+
+(define (q0-schedule n tape)
+  (let ((best tape) (cost (q0-depth n tape)))
+    (let origin ((prefix '()) (tail tape))
+      (if (pair? tail)
+          (begin
+            (let slide ((before prefix) (rest (cdr tail)))
+              (if (and (pair? rest) (q0-commute? (car tail) (car rest)))
+                  (let* ((moved (cons (car rest) before))
+                         (candidate (append (reverse moved) (cons (car tail) (cdr rest))))
+                         (depth (q0-depth n candidate)))
+                    (if (< depth cost) (begin (set! best candidate) (set! cost depth)))
+                    (slide moved (cdr rest)))))
+            (origin (cons (car tail) prefix) (cdr tail)))))
+    best))
+
+;;; Emit a concrete instruction sequence. Proof search and the consumer do
+;;; not share this emitter. The final list contains explicit wire operands.
+(define (q0-emit replacement phase control target)
+  (append
+    (map (lambda (gate)
+           (list (case gate ((x) 'cx) ((y) 'cy) ((z) 'cz)
+                       (else (error "unsupported controlled instruction")))
+                 control target))
+         replacement)
+    (map (lambda (gate) (list gate control)) (control-correction phase))))

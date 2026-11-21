@@ -1,0 +1,54 @@
+;;; Exact two-wire coherent consumer for the monomial X/Y/Z fragment.
+;;; A basis column is (basis-index phase-exponent) with amplitude i^exponent.
+(define (q0-wire-bit index wire)
+  (if (= wire 0) (quotient index 2) (modulo index 2)))
+
+(define (q0-pauli-column g wire col)
+  (let* ((index (car col)) (e (cadr col)) (b (q0-wire-bit index wire))
+         (flipped (+ index (* (- 1 (* 2 b)) (if (= wire 0) 2 1)))))
+    (case g
+      ((x) (list flipped e))
+      ((y) (list flipped (modulo (+ e (if (= b 0) 1 3)) 4)))
+      ((z) (list index (modulo (+ e (* 2 b)) 4)))
+      (else (error "invalid source Pauli")))))
+
+(define (q0-source-column source control target index)
+  (let next ((word source) (col (list index 0)))
+    (if (or (= (q0-wire-bit index control) 0) (null? word)) col
+        (next (cdr word) (q0-pauli-column (car word) target col)))))
+
+(define (q0-emitted-column ops index)
+  (let next ((tape ops) (col (list index 0)))
+    (if (null? tape) col
+        (let* ((op (car tape)) (gate (car op)) (q (cadr op))
+               (b (q0-wire-bit (car col) q)))
+          (next (cdr tape)
+            (case gate
+              ((s sdg z)
+               (list (car col) (modulo (+ (cadr col) (* b (case gate ((s) 1) ((sdg) 3) (else 2)))) 4)))
+              ((cx cy cz)
+               (if (= b 0) col
+                   (q0-pauli-column (case gate ((cx) 'x) ((cy) 'y) (else 'z)) (caddr op) col)))
+              (else (error "invalid emitted opcode"))))))))
+
+;;; Bind the promised replacement and wire roles without prescribing a
+;;; correction. S and S† are both well-formed instructions at this boundary.
+(define (q0-bound-emission? new c t ops)
+  (cond ((pair? new)
+         (and (pair? ops)
+              (equal? (car ops) (list (case (car new) ((x) 'cx) ((y) 'cy) ((z) 'cz)) c t))
+              (q0-bound-emission? (cdr new) c t (cdr ops))))
+        ((null? ops) #t)
+        (else (and (pair? (car ops)) (memq (caar ops) '(s sdg z))
+                   (equal? (cdar ops) (list c))
+                   (q0-bound-emission? '() c t (cdr ops))))))
+
+(define (q0-admit-emission original replacement control target tape)
+  (if (not (and (member (list control target) '((0 1) (1 0)))
+                (q0-bound-emission? replacement control target tape)))
+      'reject-binding
+      (let check ((index 0))
+        (cond ((= index 4) 'accept)
+              ((equal? (q0-source-column original control target index)
+                       (q0-emitted-column tape index)) (check (+ index 1)))
+              (else 'reject-operator)))))
