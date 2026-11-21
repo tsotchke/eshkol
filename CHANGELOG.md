@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve the caller's tensor dimensions in the C embedding constructors, including empty axes. Invalid shapes return the null value. (#940)
+
 - Preserve signed-curvature geometry across VM and AD engines, including
   flat-curvature continuity and manifold primitive output contracts. (#912)
 
@@ -52,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
   (`migrate-legacy-ball-point`); distances are unchanged by the migration. (#854)
 
+- Add rank-two shape and descriptor provenance checks for the emitted matrix multiplication guard. (#944)
 - Windows in-process JIT regression probes with exact-output checks, native
   AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases
   cover immediate and repeated continuations, guard-handler restoration,
@@ -61,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separate platform-specific completion oracle. (#869)
 
 ### Documentation
+
+- Propose ADR-0030 and add the standalone Verificatum R0 checker and replay for the Lean export of modus tollens. (#941)
 
 - Correct the Linux download instructions, native REPL command, RK4 accuracy
   description, and exact-rational power reference. Qualify AD overhead and

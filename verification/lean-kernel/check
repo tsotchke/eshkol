@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+// Byte I/O and the shipped VM. Only integer literals enter generated VM input.
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const createVM = require('../../site/static/eshkol-vm.js');
+const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
+
+function error(reason) { return { status: 'ERROR', reason, closure: [], assumptions: [] }; }
+function finish(verdict) {
+  console.log(JSON.stringify(verdict));
+  process.exitCode = { ACCEPT: 0, REJECT: 1, UNSUPPORTED: 2, ERROR: 3 }[verdict.status];
+}
+function points(s) { return Array.from(s, c => c.codePointAt(0)).join(' '); }
+function input(file, name) {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  const buffer = Buffer.alloc(32769);
+  let used = 0;
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw Error('expected-regular-file');
+    while (used < buffer.length) {
+      const n = fs.readSync(fd, buffer, used, buffer.length - used);
+      if (!n) break;
+      used += n;
+    }
+  } finally { fs.closeSync(fd); }
+  if (used === buffer.length) throw Error('byte-budget');
+  const s = new TextDecoder('utf-8', {fatal:true, ignoreBOM:true}).decode(buffer.subarray(0, used));
+  const lines = s.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  if (lines.length > 192 || lines.some(line => line.length > 2048)) throw Error('record-budget');
+  // CLI selectors cover string components separated by dots. The importer keeps
+  // numeric components and literal dots in imported names distinct.
+  if (name.length > 256 || !/^[A-Za-z_][A-Za-z_0-9]*(\.[A-Za-z_][A-Za-z_0-9]*)*$/.test(name))
+    throw Error('name-selector');
+  const records = lines.map(line => "(list->vector '(" + points(line) + '))').join(' ');
+  const parts = name.split('.').map(p => "(list->string (map integer->char '(" + points(p) + ')))');
+  return '(list (list ' + records + ') (list ' + parts.join(' ') + '))';
+}
+async function check(args) {
+  if (args.length !== 4) throw Error('usage: check EXPORT NAME TARGET_EXPORT TARGET_NAME');
+  const proof = input(args[0], args[1]), target = input(args[2], args[3]);
+  let output = [];
+  const vm = await createVM({print:t => output.push(t), printErr:t => output.push(t)});
+  vm.ccall('repl_init', null, [], []);
+  const evaluate = vm.cwrap('repl_eval', 'string', ['string']);
+  for (const source of ['import.esk', 'kernel.esk']) {
+    output = [];
+    evaluate(fs.readFileSync(path.join(__dirname, source), 'utf8'));
+    if (output.length) throw Error('module-load: ' + output.join(' ').slice(0, 240));
+  }
+  output = [];
+  evaluate("(k-report (check-export " + proof + " " + target + " '()))");
+  const lines = output.filter(s => s !== '');
+  const verdict = /^V\|(ACCEPT|REJECT|UNSUPPORTED|ERROR)\|([a-z-]+)$/.exec(lines.pop() || '');
+  if (!verdict) throw Error('vm-result: ' + output.join(' ').slice(0, 180));
+  const closure = lines.map(line => {
+    const [prefix, kind, ...parts] = line.split('|');
+    if (prefix !== 'D' || !['ind','rec','def','thm'].includes(kind)) throw Error('vm-output');
+    return {kind, name:parts.map(part => part.startsWith('s')
+      ? part.slice(1).replace(/~([0-9]+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      : Number(part.slice(1)))};
+  });
+  return {status:verdict[1], reason:verdict[2], closure, assumptions:[]};
+}
+if (isMainThread) {
+  const worker = new Worker(__filename, {workerData:process.argv.slice(2)});
+  let done = false;
+  const end = v => { if (!done) { done = true; clearTimeout(timer); finish(v); } };
+  const timer = setTimeout(() => { end(error('time-budget')); worker.terminate(); }, 10000);
+  worker.on('message', end);
+  worker.on('error', e => end(error(e.message)));
+  worker.on('exit', () => { if (!done) end(error('vm-exit')); });
+} else {
+  check(workerData).then(v => parentPort.postMessage(v), e => parentPort.postMessage(error(e.message)));
+}
