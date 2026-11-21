@@ -9,6 +9,7 @@
  */
 
 #include <eshkol/eshkol_ffi.h>
+#include <eshkol/tensor_validation.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/core/eval_bridge.h>
 #include <eshkol/core/runtime.h>
@@ -537,11 +538,13 @@ extern "C" eshkol_ffi_value_t eshkol_ffi_tensor_zeros(eshkol_ffi_context_t* ctx,
     arena_t* arena = get_global_arena();
     if (!arena) return eshkol_ffi_null();
 
-    int64_t total = 1;
-    for (int i = 0; i < ndims; i++) total *= shape[i];
+    const int64_t total = eshkol_tensor_shape_total(shape, ndims);
+    if (total < 0) return eshkol_ffi_null();
 
     eshkol_tensor_t* t = arena_allocate_tensor_full(arena, (uint64_t)ndims, (uint64_t)total);
     if (!t) return eshkol_ffi_null();
+    for (int i = 0; i < ndims; ++i)
+        t->dimensions[i] = static_cast<uint64_t>(shape[i]);
 
     eshkol_ffi_value_t v;
     memset(&v, 0, sizeof(v));

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve the caller's tensor dimensions in the C embedding constructors, including empty axes. Invalid shapes return the null value. (#940)
+
 - Preserve signed-curvature geometry across VM and AD engines, including
   flat-curvature continuity and manifold primitive output contracts. (#912)
 
