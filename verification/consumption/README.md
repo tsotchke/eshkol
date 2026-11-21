@@ -30,6 +30,39 @@ The caller submits bytes for assessment. The consuming method takes only the tic
 
 The replay fills the child's stdout pipe before launch so it can inspect this short-lived process while the CLI is writing its response. It invokes the normal process-creation path, reads the kernel's executable identity and the actual argument and environment block, then drains the padding and captures the CLI output. It checks the observed command, working directory, environment and executable against the issuance record. It also compares file-backed executable mappings with the bound library closure. The receipt carries digests in place of installation paths. [Replay](replay.py)
 
+## Execution context
+
+The ABI consumer binds a reviewed dependency contract into every ticket. The reusable binding holds the invocation, immutable executable snapshot, file identities and launch phases. The ABI consumer still owns the approved operation, expected output and publication decision. [Dependency contract](abi-context.json) · [Binding](binding.py)
+
+| Class | ABI fingerprint scope |
+|---|---|
+| Fixed | The ELF, arguments, environment, working directory, descriptor roles, owner policy and six output fields. The startup closure binds each selected SONAME to file content. At publication the sink rereads the policy checkpoint and selected file paths. |
+| Permitted to vary | PIDs, descriptor and inode numbers, addresses, scheduling and pipe delivery within the timeout. Identity comparisons within a launch still use the actual sealed inode and pipe endpoints. |
+| Outside this contract | Lifetime admission of later dynamic loads, additional file reads, shared memory, external services, additional descriptors opened by the child and kernel behavior. |
+
+The inherited descriptor contract gives the child null stdin, separate stdout and stderr pipes, and the sealed executable descriptor. The replay marks a separate parent file inheritable and verifies that the child lacks that file. An attempted policy change requiring lifetime admission of dynamically loaded code fails the reviewed contract check. A consumer requiring that property needs an enforcement point throughout execution. A startup loader listing and a sample of executable mappings establish the narrower observations recorded here.
+
+For the post-start control, the replay gives one process a private copy of the release libraries. While the child is blocked writing its result, the replay confirms it has mapped the approved PNG library and replaces the selected pathname with an inert data file. The child exits successfully with all six expected fields. The publication check detects the changed digest and withholds its output. Fresh admission also declines the changed closure. The result is a checkpoint guarantee. Transient changes restored between observations can escape detection, and effects already performed by the child persist.
+
+## One-use failure semantics
+
+The issuer spends a recognized ticket when it removes the ticket from its private table, before live-scope revalidation or any attempt to start the authorized operation. A foreign ticket fails lookup at that sink. For a successfully released ticket the consumer records its last confirmed phase.
+
+```text
+bytes released → launch requested → child handle received → child exit observed → result published
+```
+
+An exception ends the attempt. Once the issuer has spent the ticket, every phase is terminal for retry with that ticket. “Launch requested” records entry to process creation. A caller receiving an error there may have lost confirmation of a successful run. Acknowledgment in this local sink is a returned child handle. A distributed acknowledgment protocol would need its own evidence.
+
+| Control | Authorized workload starts observed | Same-ticket outcome |
+|---|---:|---|
+| Fail snapshot preparation after byte release | 0 | Refused |
+| Fail the launch call before child creation | 0 | Refused |
+| Suppress launch confirmation after the real CLI completed | 1 | Refused |
+| Race two callers with the same ticket | 1 | One publication and one refusal |
+
+The loader's dependency probes are separate from the workload-start count. Reassessment can issue a new ticket. Where repeated effects matter, the caller must reconcile an ambiguous earlier outcome before requesting another execution. These guarantees concern one live issuer; they do not establish exactly-once execution across restarts.
+
 ## Translator and trust boundary
 
 The R0 kernel and ticket interface retain their original definitions. The subset translator now matches the entire parsed module against four explicit AST shapes. Two comparison operators and two Boolean connectives account for those four combinations. Comments, whitespace and the module docstring carry no decision semantics. Defaults, decorators, extra operands, changed return expressions, ignored type directives and other unrecognized syntax fail translation. Fourteen valid-Python controls exercise the rejection path. The two existing semantic mutations still reach Lean and fail the corresponding theorems. [Translator](../authorization/extract_kernel.py) · [Kernel refinement](../authorization/Refinement.lean)

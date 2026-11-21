@@ -1,8 +1,7 @@
 """One consuming entry point for the R2-reviewed Linux x64 ABI fingerprint."""
 
 import argparse
-from contextlib import contextmanager
-import fcntl
+from binding import Attempt, ExecutionBinding, FileClosure, Phase, sealed_image
 import json
 import os
 from pathlib import Path
@@ -32,7 +31,6 @@ from authority import (  # noqa: E402 - the frozen sibling package uses local im
 R2_ID = "b3ae3c9894788c12bdc721c3d95d2fa7b9bd6dfaaee796a6130dda5c297676d6"
 ARGV = ("eshkol-run", "--abi-fingerprint")
 LOADER = "/lib64/ld-linux-x86-64.so.2"
-SEALS = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SEAL
 
 
 def reviewed_images(reference):
@@ -51,20 +49,7 @@ def reviewed_images(reference):
     return folded, selected
 
 
-@contextmanager
-def sealed_image(data):
-    fd = os.memfd_create("eshkol-abi-fingerprint", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
-    with os.fdopen(fd, "w+b") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fchmod(fd, 0o500)
-        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, SEALS)
-        if fcntl.fcntl(fd, fcntl.F_GET_SEALS) & SEALS != SEALS:
-            raise RuntimeError("incomplete snapshot seals")
-        yield fd
-
-
-def loader_manifest(fd, env):
+def loader_files(fd, env):
     # The descriptor here always contains the verifier's pinned ELF. The loader
     # lists its startup dependencies with the same environment as the sink.
     lines = subprocess.check_output(
@@ -86,10 +71,19 @@ def loader_manifest(fd, env):
         key = label or Path(path).name
         if key in paths:
             raise ValueError("duplicate dynamic dependency")
-        paths[key] = Path(path).resolve(strict=True)
+        paths[key] = Path(path)
     if Path(LOADER).name not in paths or "libLLVM.so.21.1" not in paths:
         raise ValueError("incomplete release loader closure")
-    return {name: fingerprint(path.read_bytes()) for name, path in paths.items()}
+    return FileClosure(tuple(sorted(paths.items())))
+
+
+ABI_CONTEXT_ID = "1d4972430e274f2d8e478ca7bfb264c3d2de49e5398b98e97538bc2dfd8d6ce7"
+
+
+def reviewed_context(raw):
+    if fingerprint(raw) != ABI_CONTEXT_ID:
+        raise ValueError("unsupported ABI execution contract")
+    return raw
 
 
 class FingerprintSink:
@@ -102,16 +96,24 @@ class FingerprintSink:
         directories = [str(Path(p).resolve(strict=True)) for p in library_dirs]
         if any(":" in p or not Path(p).is_dir() for p in directories):
             raise ValueError("invalid operator library directories")
-        self._env = {"LC_ALL": "C", "LD_LIBRARY_PATH": ":".join(directories)}
+        self._binding = ExecutionBinding(
+            ARGV,
+            "/",
+            (("LC_ALL", "C"), ("LD_LIBRARY_PATH", ":".join(directories))),
+            reviewed_context((HERE / "abi-context.json").read_bytes()),
+        )
         with sealed_image(reference) as fd:
-            self._approved_loader = encode(loader_manifest(fd, self._env))
+            self._startup_files = loader_files(fd, dict(self.binding.environment))
+        self._approved_loader = encode(self._startup_files.manifest())
         self._epoch = 0
         self._record = Path(policy_dir) / "abi-policy.json"
         # An owner starts in a new policy directory. Old serialized records
         # cannot initialize a new issuing session.
         with self._record.open("xb") as handle:
             handle.write(self._policy())
-        self._sink_code = fingerprint(Path(__file__).read_bytes())
+        self._sink_code = encode(
+            {name: fingerprint((HERE / name).read_bytes()) for name in ("sink.py", "binding.py")}
+        )
         need = Need("R2 image and live policy", Kind.EXACT, Level.ARTIFACT, Equal("bound"))
         contract = Contract(
             "R2 CLI ABI header fold", "emit ABI fingerprint", Permission.EXECUTION, (need,)
@@ -119,10 +121,22 @@ class FingerprintSink:
         checker = Checker(
             need.kind,
             need.level,
-            ("r2", "operation", "live policy", "published policy", "loader", "sink"),
+            (
+                "r2",
+                "operation",
+                "dependency contract",
+                "live policy",
+                "published policy",
+                "loader",
+                "sink",
+            ),
             self._check,
         )
         self._gate = Gate(contract, {need.claim: checker}, self._context)
+
+    @property
+    def binding(self):
+        return self._binding
 
     def _policy(self):
         return encode({"generation": self._epoch, "action": list(ARGV)})
@@ -136,20 +150,33 @@ class FingerprintSink:
             os.replace(handle.name, self._record)
 
     def _context(self):
-        with sealed_image(self._folded) as fd:
-            libraries = loader_manifest(fd, self._env)
+        # Re-read selected files as data before asking the operator's trusted
+        # loader to resolve the closure again. A changed baseline cannot qualify.
+        try:
+            libraries = self._startup_files.manifest()
+            if encode(libraries) == self._approved_loader:
+                with sealed_image(self._folded) as fd:
+                    files = loader_files(fd, dict(self.binding.environment))
+                if files.paths != self._startup_files.paths:
+                    libraries = {}
+        except (OSError, subprocess.SubprocessError, ValueError):
+            libraries = None
         try:
             published = self._record.read_bytes()
         except FileNotFoundError:
             published = b""
-        return {
+        context = {
             "r2": R2_ID.encode(),
-            "sink": self._sink_code.encode(),
-            "operation": encode([ARGV, "/", self._env]),
-            "loader": encode(libraries),
+            "sink": self._sink_code,
+            "operation": encode(self.binding.operation()),
+            "dependency contract": self.binding.dependency_contract,
             "live policy": self._policy(),
             "published policy": published,
         }
+
+        if libraries is not None:
+            context["loader"] = encode(libraries)
+        return context
 
     def _check(self, candidate, ctx):
         if ctx["published policy"] != ctx["live policy"]:
@@ -167,31 +194,41 @@ class FingerprintSink:
     def fingerprint(self, ticket):
         with self._lock:
             image = self._gate.consume(ticket, self._folded)
-            with sealed_image(image) as fd:
-                # This entry point accepts only the ticket. The program, arguments,
-                # working directory and environment are selected by the consumer.
-                proc = Popen(
-                    ARGV,
-                    executable=f"/proc/self/fd/{fd}",
-                    pass_fds=(fd,),
-                    cwd="/",
-                    env=self._env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                with proc:
-                    try:
-                        output, error = proc.communicate(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.communicate()
-                        raise
-                    if proc.returncode or error:
-                        raise RuntimeError("ABI fingerprint execution failed")
-            if output != self._expected_output:
-                raise ValueError("unexpected CLI observation")
-            return output
+            with Attempt() as attempt:
+                with sealed_image(image) as fd:
+                    attempt.advance(Phase.REQUESTED)
+                    proc = Popen(
+                        self.binding.argv,
+                        executable=f"/proc/self/fd/{fd}",
+                        pass_fds=(fd,),
+                        close_fds=True,
+                        cwd=self.binding.cwd,
+                        env=dict(self.binding.environment),
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    with proc:
+                        attempt.advance(Phase.STARTED)
+                        try:
+                            output, error = proc.communicate(timeout=30)
+                        except BaseException:
+                            # Retire the child even if pipe collection or the caller is interrupted.
+                            proc.kill()
+                            proc.wait()
+                            attempt.advance(Phase.EXITED)
+                            raise
+                        attempt.advance(Phase.EXITED)
+                        if proc.returncode or error:
+                            raise RuntimeError("ABI fingerprint execution failed")
+                if output != self._expected_output:
+                    raise ValueError("unexpected CLI observation")
+                if self._record.read_bytes() != self._policy():
+                    raise ValueError("policy changed before publication")
+                if encode(self._startup_files.manifest()) != self._approved_loader:
+                    raise ValueError("startup dependency changed before publication")
+                attempt.advance(Phase.PUBLISHED)
+                return output
 
 
 if __name__ == "__main__":
