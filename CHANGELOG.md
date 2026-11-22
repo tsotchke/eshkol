@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Check parent-region restoration against observed native BLC bindings and a Lean stack model.
+
 - Add exact-rational affine solution families with particular solutions and
   complete nullspace bases, including explicit ambient dimensions for empty
   systems. Add JIT/AOT acceptance and determinant-oracle tests, plus negative
