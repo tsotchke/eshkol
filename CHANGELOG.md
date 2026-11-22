@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add a standalone Verificatum authorization replay for the Gram comparison,
   Steane scheduling and the heat solver. It checks consumer-selected contracts,
   records the first failed obligation and binds permission to the artifact and
-  its live dependencies.
+  its live dependencies. (#947)
+- Check that the ABI fingerprint runs from the authorized executable snapshot. (#948)
+- Check the ABI execution context before publishing a fingerprint and exercise one-use launch failures. (#949)
 
 - Add exact-rational affine solution families with particular solutions and
   complete nullspace bases, including explicit ambient dimensions for empty
