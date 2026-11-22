@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add an opt-in runtime check of the restored lexical region stack before nested child destruction.
+
 - Check parent-region restoration against observed native BLC bindings and a Lean stack model.
 
 - Add exact-rational affine solution families with particular solutions and
