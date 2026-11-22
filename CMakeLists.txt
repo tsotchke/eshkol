@@ -3507,6 +3507,18 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND
             FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 
+if(ESHKOL_BUILD_TESTS)
+    add_executable(ffi_tensor_shape_roundtrip_test tests/ffi/tensor_shape_roundtrip.cpp)
+    target_compile_features(ffi_tensor_shape_roundtrip_test PRIVATE cxx_std_20)
+    target_include_directories(ffi_tensor_shape_roundtrip_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ffi_tensor_shape_roundtrip_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ffi_tensor_shape_roundtrip_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ffi_tensor_shape_roundtrip_test COMMAND ffi_tensor_shape_roundtrip_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
     add_executable(tensor_validation_test tests/core/tensor_validation_test.cpp)
     target_compile_features(tensor_validation_test PRIVATE cxx_std_17)

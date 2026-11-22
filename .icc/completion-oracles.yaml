@@ -721,6 +721,13 @@ oracles:
         action: ./scripts/run_ctest_gate.sh
       - runtime_event:
           event_kinds: [ctest]
+          event_names: ["ctest_ffi_tensor_shape_roundtrip_test"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'The C FFI tensor constructors preserve caller dimensions and reject invalid shapes in the native round-trip test.'
+        action: ./scripts/run_ctest_gate.sh
+      - runtime_event:
+          event_kinds: [ctest]
           event_names: ["fixed_point_exact_accumulation_gate"]
           event_values: ["PASS"]
         severity: high
