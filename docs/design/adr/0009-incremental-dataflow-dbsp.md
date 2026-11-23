@@ -24,10 +24,9 @@ necessary lifetime problems, but not the recomputation problem:
   `lib/backend/llvm_codegen.cpp:26803-26904`).
 - ESH-0214c deep-promotes an escaping reachable subgraph from a dying region,
   preserving cycles and sharing with a forwarding map
-  (`lib/core/runtime_regions.cpp:623-643`,
-  `lib/core/runtime_regions.cpp:821-858`). Mutation paths invoke a region write
-  barrier before storing into longer-lived state
-  (`lib/core/runtime_regions.cpp:1064-1124`).
+  (`lib/core/runtime_regions_evacuation.cpp:306-815`). Mutation paths invoke a
+  region write barrier before storing into longer-lived state
+  (`lib/core/runtime_regions_evacuation.cpp:1603-1660`).
 
 Those mechanisms can make a tick's transient allocation bounded, but a tick can
 still scan or reconstruct all accumulated state. Memory reclamation changes the
@@ -770,9 +769,9 @@ gate; no later compiler primitive is required to use the earlier library.
   append/query and one persistent workspace step.
 - `lib/core/runtime_arena_core.cpp:273-432` — arena scopes and automatic
   per-iteration pop-or-commit.
-- `lib/core/runtime_regions.cpp:623-1124` — ESH-0214c deep evacuation and region
-  write barrier; commit `0843fe43`, `lib/core/runtime_regions.cpp:686-1195` —
-  ESH-0214d consciousness-subtype coverage.
+- `lib/core/runtime_regions_evacuation.cpp:306-1660` — ESH-0214c deep evacuation,
+  region write barrier, and ESH-0214d consciousness-subtype coverage (split from
+  `lib/core/runtime_regions.cpp` after commit `0843fe43`).
 - `lib/backend/llvm_codegen.cpp:23752-24383`,
   `lib/backend/llvm_codegen.cpp:26803-26904` — static iteration-scope safety,
   runtime scope release, and loop lowering.
