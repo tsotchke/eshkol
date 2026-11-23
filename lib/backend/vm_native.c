@@ -5369,6 +5369,35 @@ static void vm_exec_string_to_list(VM* vm) {
  * WITHOUT pushing: the raise restored the handler's stack pointer and a
  * fabricated push would corrupt it.
  */
+/* The word a type error uses for an operand's type: the vocabulary of the
+ * native runtime's eshkol_format_value_type_tag, so a refusal reads the same on
+ * every engine. */
+static const char* vm_error_operand_type_word(Value v) {
+    switch ((int)v.type) {
+        case VAL_NIL:        return "null";
+        case VAL_VOID:       return "unspecified";
+        case VAL_INT:        return "integer";
+        case VAL_FLOAT:      return "double";
+        case VAL_BOOL:       return "boolean";
+        case VAL_CHAR:       return "character";
+        case VAL_SYMBOL:     return "symbol";
+        case VAL_COMPLEX:    return "complex";
+        case VAL_BIGNUM:     return "bignum";
+        case VAL_RATIONAL:   return "rational";
+        case VAL_I128:       return "i128";
+        case VAL_PAIR:       return "pair";
+        case VAL_STRING:     return "string";
+        case VAL_VECTOR:     return "vector";
+        case VAL_TENSOR:     return "tensor";
+        case VAL_BYTEVECTOR: return "bytevector";
+        case VAL_HASH:       return "hash-table";
+        case VAL_PORT:       return "port";
+        case VAL_CLOSURE:    return "procedure";
+        case VAL_CONTINUATION: return "continuation";
+        default:             return "heap-object";
+    }
+}
+
 static VmTensor* vm_tensor_operand_carrier(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
@@ -12501,22 +12530,48 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VM_PUSH_TENSOR(vm, out);
         break;
     }
-    case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis) */
-        Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
+    case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis list) */
+        Value axis_arg = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand_carrier(vm, t_val, "tensor-reduce");
         if (!t) break;   /* raised: push nothing */
-        /* SW-202: no axis (the prelude passes #f) is a FULL reduction to a
-         * number, as on native; an explicit axis, negative ones counted from
-         * the last, reduces that axis. -1 used to mean both, so a full
-         * reduction answered a 1-element tensor on a vector and a row of
-         * partial results on a matrix. */
-        int full = axis_val.type != VAL_INT && axis_val.type != VAL_FLOAT;
-        int axis = full ? -1 : (int)as_number(axis_val);
-        if (!full && axis < 0) axis += t->n_dims;
-        if (!full && (axis < 0 || axis >= t->n_dims)) {
-            vm_raise_error_msg(vm, "tensor-reduce: axis out of range");
+        /* The second operand is the wrappers' optional-argument list (the
+         * prelude's tensor-sum/-mean/-max/-min and gpu-reduce): '() means no
+         * axis, a FULL reduction to a number, as on native; (axis ...) carries
+         * the axis the program wrote, negative ones counted from the last.
+         * Because "no axis" is the shape of the list and never a value, every
+         * value a program can write -- #f and the unspecified value included
+         * -- is an axis operand and is checked as one. A bare value (a direct
+         * call of the private name) is taken as the axis itself. */
+        int full = axis_arg.type == VAL_NIL;
+        Value axis_val = axis_arg;
+        if (axis_arg.type == VAL_PAIR && is_valid_heap_ptr(vm, axis_arg.as.ptr)) {
+            HeapObject* cell = vm->heap.objects[axis_arg.as.ptr];
+            if (cell && cell->type == HEAP_CONS) axis_val = cell->cons.car;
+        }
+        /* The axis is structural: an exact integer selects it. Any other
+         * value is a type error, as on the native engines, never a truncated
+         * or ignored axis. */
+        if (!full && axis_val.type != VAL_INT) {
+            /* The native engines' message: operation, expectation, and the
+             * operand's type in the runtime's error vocabulary. */
+            char msg[160];
+            snprintf(msg, sizeof msg,
+                     "Type error in tensor-reduce-axis: expected integer axis, got %s",
+                     vm_error_operand_type_word(axis_val));
+            vm_raise_error_msg(vm, msg);
             break;
         }
+        int64_t axis64 = full ? -1 : axis_val.as.i;
+        if (!full && axis64 < 0) axis64 += t->n_dims;
+        if (!full && (axis64 < 0 || axis64 >= t->n_dims)) {
+            char msg[160];
+            snprintf(msg, sizeof msg,
+                     "tensor-reduce-axis: axis %lld out of range for rank-%lld tensor",
+                     (long long)axis64, (long long)t->n_dims);
+            vm_raise_error_msg(vm, msg);
+            break;
+        }
+        int axis = (int)axis64;
         if (vm_tensor_has_tangent(t) && !(full && (fid == 457 || fid == 458))) {
             vm_raise_error_msg(vm, "tensor-reduce: a derivative can pass through a full tensor-sum or tensor-mean only on the VM; use the native backend");
             break;

@@ -4320,6 +4320,24 @@ if(ESHKOL_BUILD_TESTS)
     add_test(NAME ir_builder_continuation COMMAND ir_builder_continuation_test)
 endif()
 
+# The block boundary after a no-return emission: continueAfterNoReturn() seats
+# the builder on a fresh predecessor-less block, and blocksPastUnreachable()
+# names every block an emitter left with instructions behind `unreachable`.
+if(ESHKOL_BUILD_TESTS)
+    add_executable(noreturn_blocks_test tests/backend/noreturn_blocks_test.cpp)
+    target_compile_features(noreturn_blocks_test PRIVATE cxx_std_20)
+    target_include_directories(noreturn_blocks_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    eshkol_target_llvm_includes(noreturn_blocks_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(noreturn_blocks_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(noreturn_blocks_test PRIVATE ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME noreturn_blocks COMMAND noreturn_blocks_test)
+    set_tests_properties(noreturn_blocks PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: no-return block continuation"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND ESHKOL_TENSORCORE_ENABLED AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_compatibility_test.cpp")
     add_executable(tensorcore_compatibility_test
@@ -8628,6 +8646,66 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 TIMEOUT 300
                 PASS_REGULAR_EXPRESSION "PASS: noreturn_terminator_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|Terminator found|fatal signal")
+    endif()
+    # `and` / `or` answer the same value for every operand kind (empty list,
+    # empty vector, #f, calls, zero operands) and every position in a body, on
+    # the native JIT, the native AOT build and the bytecode VM. The program
+    # states each expected value, so the three engines are held to one answer.
+    set(ESHKOL_AND_OR_OPERAND_KINDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm_parity/corpus/103_and_or_operand_kinds.esk")
+    if(EXISTS "${ESHKOL_AND_OR_OPERAND_KINDS}")
+        add_test(
+            NAME and_or_operand_kinds_jit
+            COMMAND $<TARGET_FILE:eshkol-run> -r "${ESHKOL_AND_OR_OPERAND_KINDS}"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set(_and_or_tests and_or_operand_kinds_jit)
+        if(NOT WIN32)
+            add_test(
+                NAME and_or_operand_kinds_aot
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds_aot' '${ESHKOL_AND_OR_OPERAND_KINDS}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds_aot'"
+            )
+            list(APPEND _and_or_tests and_or_operand_kinds_aot)
+            # The standalone VM binary is defined further down, under the
+            # same NOT WIN32 condition; the generator expression resolves it.
+            add_test(
+                NAME and_or_operand_kinds_vm
+                COMMAND sh -c
+                    "'$<TARGET_FILE:eshkol-run>' --profile hosted-vm --emit-eskb '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds.eskb' '${ESHKOL_AND_OR_OPERAND_KINDS}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' '${CMAKE_CURRENT_BINARY_DIR}/and_or_operand_kinds.eskb'"
+            )
+            list(APPEND _and_or_tests and_or_operand_kinds_vm)
+        endif()
+        set_tests_properties(${_and_or_tests}
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: and_or_operand_kinds"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal|ERROR:")
+    endif()
+    # A form that never returns (raise, error, exit, an operand whose static
+    # type can never satisfy its operation) builds and behaves the same in
+    # every position: each row of cases.tsv is run on the JIT, the AOT build,
+    # the bytecode VM and the REPL against one expected transcript and status.
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/noreturn_position/noreturn_position_engine_test.sh")
+        set(_noreturn_vm "$<TARGET_FILE:eshkol-vm-standalone-test>")
+        set(_noreturn_repl "")
+        if(TARGET eshkol-repl)
+            set(_noreturn_repl "$<TARGET_FILE:eshkol-repl>")
+        endif()
+        add_test(
+            NAME noreturn_position_engine_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/codegen/noreturn_position/noreturn_position_engine_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${_noreturn_vm}"
+                    "${_noreturn_repl}"
+                    "${CMAKE_CURRENT_BINARY_DIR}/noreturn_position_engine_test"
+        )
+        set_tests_properties(noreturn_position_engine_test
+            PROPERTIES
+                TIMEOUT 1800
+                PASS_REGULAR_EXPRESSION "PASS: noreturn_position_engine_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     # SW-80: the RUNTIME reader (lib/core/runtime_reader_hosted.cpp,
     # `eshkol_read_sexpr` — backs `(read)` for native JIT, AOT, and the REPL)

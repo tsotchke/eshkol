@@ -319,6 +319,21 @@ public:
     void emitRaise(const char* message);
 
     /**
+     * Continue after an unconditional no-return emission.
+     *
+     * emitRaise() closes the failure block of a guard, and its caller seats
+     * the builder on the guard's success block. A no-return emission with no
+     * success block (raise, error, exit, an operand that can never satisfy
+     * its operation) is the other shape: the caller that asked for the form
+     * still lowers the rest of the enclosing expression. This seats the
+     * builder on a fresh block of the current function with no predecessors
+     * and returns it, so that IR is unreachable and well formed. It is the
+     * only sanctioned way to return to a caller after such an emission; see
+     * eshkol/backend/noreturn_blocks.h.
+     */
+    llvm::BasicBlock* continueAfterNoReturn(const char* name = "post_noreturn_dead");
+
+    /**
      * printf-style variant of emitRaise() for diagnostics that need to report a
      * runtime value (an actual tensor rank, a mismatched dimension, ...).
      *

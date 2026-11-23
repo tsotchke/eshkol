@@ -9,6 +9,7 @@
 #include <eshkol/core/execution_profile.h>
 #include <eshkol/util/continuation_task.h>
 #include <eshkol/backend/ir_builder.h>
+#include <eshkol/backend/noreturn_blocks.h>
 #include <eshkol/backend/debug_artifact.h>
 #include "eshkol/eshkol.h"
 #include <eshkol/llvm_backend.h>
@@ -3742,6 +3743,27 @@ public:
             std::string ir_str;
             raw_string_ostream error_stream(error_str);
             raw_string_ostream ir_stream(ir_str);
+            // An unconditional no-return emission continues in a fresh block
+            // (eshkol::continueAfterNoReturn). An emitter that returned to its
+            // caller without doing so shows up here as a block with
+            // instructions behind its first `unreachable`; name each one.
+            const auto past_unreachable = eshkol::blocksPastUnreachable(*module);
+            for (const auto& past : past_unreachable) {
+                eshkol_error("function '%s', block '%s': %u instruction(s) emitted after `unreachable`; "
+                             "a no-return emission must continue in a fresh block (continueAfterNoReturn)",
+                             past.function->getName().str().c_str(),
+                             past.block->getName().str().c_str(),
+                             past.trailing_instructions);
+            }
+            if (!past_unreachable.empty()) {
+                if (std::getenv("ESHKOL_DUMP_IR_ON_VERIFY_FAIL")) {
+                    module->print(llvm::errs(), nullptr);
+                }
+                eshkol_error("LLVM module verification failed: %zu block(s) continue after `unreachable`",
+                             past_unreachable.size());
+                return std::make_pair(nullptr, nullptr);
+            }
+
             if (verifyModule(*module, &error_stream)) {
                 // Diagnostic: with ESHKOL_DUMP_IR_ON_VERIFY_FAIL set, print the whole module
                 // before failing. The verifier names the function and the block; it does
@@ -16417,9 +16439,7 @@ private:
                 FunctionType::get(void_type, {int32_type}, false));
             builder->CreateCall(exit_func, {exit_code});
             builder->CreateUnreachable();
-            // Create a continuation block for LLVM IR well-formedness
-            BasicBlock* cont = BasicBlock::Create(*context, "post_exit", builder->GetInsertBlock()->getParent());
-            builder->SetInsertPoint(cont);
+            eshkol::continueAfterNoReturn(*builder, "post_exit");
             co_return packNullToTaggedValue();
         }
 
@@ -19592,10 +19612,7 @@ private:
                         builder->CreateCall(printf_func, {error_str});
                         builder->CreateCall(exit_func, {ConstantInt::get(Type::getInt32Ty(*context), 1)});
                         builder->CreateUnreachable();
-                        // Create a new block for any code that might follow (won't be reached)
-                        Function* current_func = builder->GetInsertBlock()->getParent();
-                        BasicBlock* dead_block = BasicBlock::Create(*context, "unreachable_continue", current_func);
-                        builder->SetInsertPoint(dead_block);
+                        eshkol::continueAfterNoReturn(*builder, "unreachable_continue");
                     }
                     co_return packNullToTaggedValue();
                 }
@@ -24593,28 +24610,11 @@ private:
         builder->CreateCall(raise_func, {exc});
         builder->CreateUnreachable();
 
-        // #244 fix (2026-05-07): Switch to a fresh "post_raise_dead" block
-        // before returning. Naive callers (codegenDisplay processing
-        // (display (raise ...)) ; codegenCall arg evaluation; etc.) will
-        // continue emitting IR using our undef return value — that IR
-        // would land *after* the CreateUnreachable in the same block
-        // and trip the LLVM verifier ("Terminator found in the middle
-        // of a basic block!"). By moving the insertion point to a
-        // brand-new block (unreachable from entry, so DCE drops it),
-        // the dead-code remains verifier-valid even if no caller
-        // bothers to check `getTerminator()`. This is the "raise's
-        // contract is no-return; downstream IR is dead code; let it
-        // live in its own block" pattern — same shape as the
-        // post-unreachable continuation block already used by
-        // codegenError and codegenAbort. The earlier loop-level
-        // `if (terminator) goto after_noreturn` fix in the top-level
-        // expression loop covered the simple `(raise) (display)` case
-        // at top level; this fix covers the general `(<consumer>
-        // (raise) ...)` case in any expression position.
-        BasicBlock* post_raise = BasicBlock::Create(
-            *context, "post_raise_dead",
-            builder->GetInsertBlock()->getParent());
-        builder->SetInsertPoint(post_raise);
+        // `raise` does not return, and the caller that asked for this form
+        // (a `display` lowering its argument, a call evaluating its operands,
+        // a `let` initialiser) goes on emitting with the value returned
+        // below. That IR is unreachable; it continues in its own block.
+        eshkol::continueAfterNoReturn(*builder, "post_raise_dead");
 
         // Return undef - this code path is unreachable, so the value doesn't matter
         // IMPORTANT: Don't call packNullToTaggedValue() here as it creates instructions
@@ -28239,12 +28239,9 @@ private:
         builder->CreateCall(raise_func, {exception});
         builder->CreateUnreachable();
 
-        // Create a new block for any subsequent code (which would be dead code)
-        // Don't terminate it yet - subsequent code might add instructions
-        // It will be terminated later when we detect it's unreachable
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* dead_block = BasicBlock::Create(*context, "error_dead", current_func);
-        builder->SetInsertPoint(dead_block);
+        // The caller keeps emitting the rest of the enclosing form; that
+        // unreachable IR continues in its own block.
+        eshkol::continueAfterNoReturn(*builder, "error_dead");
 
         return packNullToTaggedValue();
     }
@@ -38224,16 +38221,10 @@ private:
             Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
             builder->CreateCall(raise_func, {exception});
             builder->CreateUnreachable();
-            // codegenAST callers expect to keep emitting into the block this
-            // function leaves the builder positioned in (e.g. `guard`'s
-            // try-block epilogue branches to its merge block right after
-            // this call returns) — CreateUnreachable() above terminates the
-            // current block, so a fresh, unreachable-but-unterminated block
-            // is required here, exactly like the borrow-violation raise
-            // above (codegenSet's "mutation of borrowed value" path).
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* after_raise_bb = BasicBlock::Create(*context, "diff_quote_unreachable", current_func);
-            builder->SetInsertPoint(after_raise_bb);
+            // codegenAST callers keep emitting into the block this function
+            // leaves the builder on (e.g. `guard`'s try-block epilogue
+            // branches to its merge block right after this call returns).
+            eshkol::continueAfterNoReturn(*builder, "diff_quote_unreachable");
             return packNullToTaggedValue();
         }
 
