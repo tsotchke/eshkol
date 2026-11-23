@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Render timeout ceilings directly in the runtime diagnostic buffer so a GNU printf handler for unsigned integers cannot alter their text.
+
 - Preserve signed-curvature geometry across VM and AD engines, including
   flat-curvature continuity and manifold primitive output contracts. (#912)
 
