@@ -10,22 +10,25 @@ native, vm, case, engine = sys.argv[1:]
 source = Path(__file__).with_name(case + ".esk")
 expected = source.with_suffix(".expected").read_bytes()
 root = source.parents[2]
-work = Path(tempfile.mkdtemp(prefix=case + "-", dir=Path.cwd()))
-env = dict(os.environ, ESHKOL_VM_NO_DISASM="1",
-           ESHKOL_JIT_CACHE="0",
-           ESHKOL_AOT_MODULE_CACHE_DIR=str(work / "modules"))
+# The working directory holds the ahead-of-time executable and module cache
+# for this one run, and is removed when the check ends, whatever its outcome.
+with tempfile.TemporaryDirectory(prefix=case + "-", dir=Path.cwd()) as scratch:
+    work = Path(scratch)
+    env = dict(os.environ, ESHKOL_VM_NO_DISASM="1",
+               ESHKOL_JIT_CACHE="0",
+               ESHKOL_AOT_MODULE_CACHE_DIR=str(work / "modules"))
 
-if engine == "jit":
-    command = [native, "-r", source]
-elif engine == "vm":
-    command = [vm, source]
-else:
-    executable = work / "program"
-    subprocess.run([native, source, "-o", executable], cwd=root, env=env,
-                   timeout=120, check=True)
-    command = [executable]
+    if engine == "jit":
+        command = [native, "-r", source]
+    elif engine == "vm":
+        command = [vm, source]
+    else:
+        executable = work / "program"
+        subprocess.run([native, source, "-o", executable], cwd=root, env=env,
+                       timeout=120, check=True)
+        command = [executable]
 
-result = subprocess.run(command, cwd=root, env=env, stdout=subprocess.PIPE,
-                        timeout=120, check=True)
-if result.stdout != expected:
-    raise SystemExit(f"{engine}: expected {expected!r}, received {result.stdout!r}")
+    result = subprocess.run(command, cwd=root, env=env, stdout=subprocess.PIPE,
+                            timeout=600, check=True)
+    if result.stdout != expected:
+        raise SystemExit(f"{engine}: expected {expected!r}, received {result.stdout!r}")

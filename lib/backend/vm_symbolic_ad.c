@@ -17,6 +17,7 @@
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
+#include <eshkol/core/stack_guard.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -89,6 +90,11 @@ static SymNode* sym_unop(VmArena* arena, SymNodeType type, SymNode* child) {
  *        general power rule).
  */
 static SymNode* sym_differentiate(VmArena* arena, SymNode* expr, int var_id) {
+    /* Bounded and reported: this walk is recursive, so it checks the native
+     * stack headroom at each level and answers rather than descending past
+     * what the platform carries.  Reading has no depth limit of its own
+     * (inc/eshkol/core/reader_limits.h). */
+    if (!eshkol_stack_headroom_ok()) return sym_const(arena, 0);
     if (!expr) return NULL;
 
     switch (expr->type) {
@@ -169,6 +175,11 @@ static SymNode* sym_differentiate(VmArena* arena, SymNode* expr, int var_id) {
  *        (x^0, x^1). Children are simplified first (bottom-up).
  */
 static SymNode* sym_simplify(VmArena* arena, SymNode* expr) {
+    /* Bounded and reported: this walk is recursive, so it checks the native
+     * stack headroom at each level and answers rather than descending past
+     * what the platform carries.  Reading has no depth limit of its own
+     * (inc/eshkol/core/reader_limits.h). */
+    if (!eshkol_stack_headroom_ok()) return expr;
     if (!expr) return NULL;
 
     /* Recursively simplify children first */
@@ -225,6 +236,11 @@ static SymNode* sym_simplify(VmArena* arena, SymNode* expr) {
  *        sin/cos/exp/log/sqrt/pow.
  */
 static void sym_compile(SymNode* expr, FuncChunk* output) {
+    /* Bounded and reported: this walk is recursive, so it checks the native
+     * stack headroom at each level and answers rather than descending past
+     * what the platform carries.  Reading has no depth limit of its own
+     * (inc/eshkol/core/reader_limits.h). */
+    if (!eshkol_stack_headroom_ok()) return ;
     if (!expr || !output) return;
 
     switch (expr->type) {

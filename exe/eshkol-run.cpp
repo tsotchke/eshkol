@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstdio>
+#include <new>
 /*
  * Copyright (C) tsotchke
  *
@@ -17,6 +18,8 @@
 #include <eshkol/logger.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/core/reader_limits.h>
+#include <eshkol/core/stack_guard.h>
 #include <eshkol/core/execution_profile.h>
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
@@ -37,6 +40,7 @@
 
 #include <llvm/Config/llvm-config.h>
 #include <llvm/Support/Errc.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/SHA256.h>
 #include <llvm-c/Core.h>
 
@@ -1352,6 +1356,11 @@ static struct option long_options[] = {
     {"embed-stdlib-identity", required_argument, nullptr, 267},
     {"strict-resources", no_argument, nullptr, 268},
     {"types", required_argument, nullptr, 269},
+    /* The one documented input-size cap and the code-nesting budget, shared
+     * with the bytecode VM and both readers (inc/eshkol/core/reader_limits.h).
+     * Data nesting has no limit and none is configurable. */
+    {"max-source-bytes", required_argument, nullptr, 270},
+    {"max-pass-depth", required_argument, nullptr, 271},
     {0, 0, 0, 0}
 };
 
@@ -2245,6 +2254,13 @@ static void print_help(int x = 0)
         "\t                 strict makes every type error fatal. Dependent-type obligations\n"
         "\t                 and linearity violations are fatal in both modes.\n"
         "\t--strict-types = Same as --types=strict.\n"
+        "\t--max-source-bytes=N = Largest source text accepted, in bytes (N, NK,\n"
+        "\t                 NM, NG; default 64M, 0 removes the cap). Also\n"
+        "\t                 ESHKOL_MAX_SOURCE_BYTES. Nesting DEPTH has no limit:\n"
+        "\t                 both readers carry nesting on their own heap stack.\n"
+        "\t--max-pass-depth=N = Levels of CODE nesting the compiler will descend\n"
+        "\t                 (default 1000, 0 removes the count). Also\n"
+        "\t                 ESHKOL_MAX_PASS_DEPTH. Quoted DATA is unaffected.\n"
         "\t--strict-resources = Check core.net resource ownership in the supported native fragment.\n"
         "\t--unsafe = Skip static type and ownership checks for legacy programs.\n\n"
         "Eshkol Compiler v%s\n",
@@ -3169,10 +3185,47 @@ static void resolve_unit_libraries_in_form(eshkol_ast_t& form)
 static void update_ast_references(eshkol_ast_t* ast,
                                   const std::map<std::string, std::string>& rename_map);
 
-// Update references in an AST node recursively
-static void update_ast_references(eshkol_ast_t* ast,
-                                  const std::map<std::string, std::string>& rename_map) {
-    if (!ast) return;
+// Renaming carries a SCOPED rename map at each level (a binder shadows the
+// names below it), so this walk stays recursive while the readers do not.  It
+// therefore states its own budget: it consults the shared pass-depth budget
+// and the native stack headroom at every level and reports an ordinary
+// diagnostic instead of descending further.  Reading, and quoted data, have no
+// depth limit at all (inc/eshkol/core/reader_limits.h).
+static size_t g_update_ast_references_depth = 0;
+static bool   g_update_ast_references_reported = false;
+
+static bool update_ast_references_within_budget() {
+    const size_t budget = eshkol_reader_max_pass_depth();
+    const bool over_budget = (budget != 0 && g_update_ast_references_depth >= budget);
+    if (!over_budget && eshkol_stack_headroom_ok()) return true;
+    if (!g_update_ast_references_reported) {
+        g_update_ast_references_reported = true;
+        char message[320];
+        eshkol_reader_depth_message("renaming references in a form",
+                                    budget != 0 ? budget : g_update_ast_references_depth,
+                                    message, sizeof(message));
+        eshkol_error("%s", message);
+    }
+    return false;
+}
+
+namespace {
+struct UpdateAstReferencesDepth {
+    UpdateAstReferencesDepth() { ++g_update_ast_references_depth; }
+    ~UpdateAstReferencesDepth() { --g_update_ast_references_depth; }
+};
+}  // namespace
+
+// One node's worth of reference updating.  Children that inherit the SAME
+// rename map are handed to the caller's worklist rather than descended into,
+// so a chain of calls, a sequence or a quoted datum -- which is where nesting
+// actually gets deep -- costs one worklist entry per level and no native stack
+// at all.  Only a child that needs a SCOPED map (a definition's body, a
+// lambda's body, a let's bindings and body: a binder shadows the names below
+// it) is descended into, and that nesting is lexical.
+static void update_ast_references_node(eshkol_ast_t* ast,
+                                       const std::map<std::string, std::string>& rename_map,
+                                       std::vector<eshkol_ast_t*>& pending) {
 
     switch (ast->type) {
         case ESHKOL_VAR: {
@@ -3191,10 +3244,10 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_COND_OP:  // cond uses call_op structure
                 case ESHKOL_IF_OP:    // if uses call_op structure
                     if (ast->operation.call_op.func) {
-                        update_ast_references(ast->operation.call_op.func, rename_map);
+                        pending.push_back(ast->operation.call_op.func);
                     }
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                        pending.push_back(&ast->operation.call_op.variables[i]);
                     }
                     break;
 
@@ -3202,7 +3255,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_OR_OP:
                     // NOTE: AND_OP/OR_OP use sequence_op structure, NOT call_op!
                     for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
-                        update_ast_references(&ast->operation.sequence_op.expressions[i], rename_map);
+                        pending.push_back(&ast->operation.sequence_op.expressions[i]);
                     }
                     break;
 
@@ -3289,9 +3342,9 @@ static void update_ast_references(eshkol_ast_t* ast,
                         for (uint64_t i = 0; i < let.num_bindings; ++i) {
                             eshkol_ast_t* binding = &let.bindings[i];
                             if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
-                                update_ast_references(binding->cons_cell.cdr, rename_map);
+                                pending.push_back(binding->cons_cell.cdr);
                             } else {
-                                update_ast_references(binding, rename_map);
+                                pending.push_back(binding);
                             }
                             erase_binding_name(body_renames, *binding);
                         }
@@ -3303,7 +3356,7 @@ static void update_ast_references(eshkol_ast_t* ast,
 
                 case ESHKOL_SEQUENCE_OP:
                     for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
-                        update_ast_references(&ast->operation.sequence_op.expressions[i], rename_map);
+                        pending.push_back(&ast->operation.sequence_op.expressions[i]);
                     }
                     break;
 
@@ -3315,88 +3368,88 @@ static void update_ast_references(eshkol_ast_t* ast,
                             ast->operation.set_op.name = eshkol_ast_string_copy(it->second);
                         }
                     }
-                    update_ast_references(ast->operation.set_op.value, rename_map);
+                    pending.push_back(ast->operation.set_op.value);
                     break;
 
                 // Calculus operations - function + point (or expression)
                 case ESHKOL_GRADIENT_OP:
                     if (ast->operation.gradient_op.function) {
-                        update_ast_references(ast->operation.gradient_op.function, rename_map);
+                        pending.push_back(ast->operation.gradient_op.function);
                     }
                     if (ast->operation.gradient_op.point) {
-                        update_ast_references(ast->operation.gradient_op.point, rename_map);
+                        pending.push_back(ast->operation.gradient_op.point);
                     }
                     break;
 
                 case ESHKOL_DERIVATIVE_OP:
                     if (ast->operation.derivative_op.function) {
-                        update_ast_references(ast->operation.derivative_op.function, rename_map);
+                        pending.push_back(ast->operation.derivative_op.function);
                     }
                     if (ast->operation.derivative_op.point) {
-                        update_ast_references(ast->operation.derivative_op.point, rename_map);
+                        pending.push_back(ast->operation.derivative_op.point);
                     }
                     break;
 
                 case ESHKOL_DIRECTIONAL_DERIV_OP:
                     if (ast->operation.directional_deriv_op.function) {
-                        update_ast_references(ast->operation.directional_deriv_op.function, rename_map);
+                        pending.push_back(ast->operation.directional_deriv_op.function);
                     }
                     if (ast->operation.directional_deriv_op.point) {
-                        update_ast_references(ast->operation.directional_deriv_op.point, rename_map);
+                        pending.push_back(ast->operation.directional_deriv_op.point);
                     }
                     if (ast->operation.directional_deriv_op.direction) {
-                        update_ast_references(ast->operation.directional_deriv_op.direction, rename_map);
+                        pending.push_back(ast->operation.directional_deriv_op.direction);
                     }
                     break;
 
                 case ESHKOL_JACOBIAN_OP:
                     if (ast->operation.jacobian_op.function) {
-                        update_ast_references(ast->operation.jacobian_op.function, rename_map);
+                        pending.push_back(ast->operation.jacobian_op.function);
                     }
                     if (ast->operation.jacobian_op.point) {
-                        update_ast_references(ast->operation.jacobian_op.point, rename_map);
+                        pending.push_back(ast->operation.jacobian_op.point);
                     }
                     break;
 
                 case ESHKOL_HESSIAN_OP:
                     if (ast->operation.hessian_op.function) {
-                        update_ast_references(ast->operation.hessian_op.function, rename_map);
+                        pending.push_back(ast->operation.hessian_op.function);
                     }
                     if (ast->operation.hessian_op.point) {
-                        update_ast_references(ast->operation.hessian_op.point, rename_map);
+                        pending.push_back(ast->operation.hessian_op.point);
                     }
                     break;
 
                 case ESHKOL_DIVERGENCE_OP:
                     if (ast->operation.divergence_op.function) {
-                        update_ast_references(ast->operation.divergence_op.function, rename_map);
+                        pending.push_back(ast->operation.divergence_op.function);
                     }
                     if (ast->operation.divergence_op.point) {
-                        update_ast_references(ast->operation.divergence_op.point, rename_map);
+                        pending.push_back(ast->operation.divergence_op.point);
                     }
                     break;
 
                 case ESHKOL_CURL_OP:
                     if (ast->operation.curl_op.function) {
-                        update_ast_references(ast->operation.curl_op.function, rename_map);
+                        pending.push_back(ast->operation.curl_op.function);
                     }
                     if (ast->operation.curl_op.point) {
-                        update_ast_references(ast->operation.curl_op.point, rename_map);
+                        pending.push_back(ast->operation.curl_op.point);
                     }
                     break;
 
                 case ESHKOL_LAPLACIAN_OP:
                     if (ast->operation.laplacian_op.function) {
-                        update_ast_references(ast->operation.laplacian_op.function, rename_map);
+                        pending.push_back(ast->operation.laplacian_op.function);
                     }
                     if (ast->operation.laplacian_op.point) {
-                        update_ast_references(ast->operation.laplacian_op.point, rename_map);
+                        pending.push_back(ast->operation.laplacian_op.point);
                     }
                     break;
 
                 case ESHKOL_DIFF_OP:
                     if (ast->operation.diff_op.expression) {
-                        update_ast_references(ast->operation.diff_op.expression, rename_map);
+                        pending.push_back(ast->operation.diff_op.expression);
                     }
                     break;
 
@@ -3409,10 +3462,10 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_UNQUOTE_OP:
                 case ESHKOL_UNQUOTE_SPLICING_OP:
                     if (ast->operation.call_op.func) {
-                        update_ast_references(ast->operation.call_op.func, rename_map);
+                        pending.push_back(ast->operation.call_op.func);
                     }
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                        pending.push_back(&ast->operation.call_op.variables[i]);
                     }
                     break;
 
@@ -3423,63 +3476,63 @@ static void update_ast_references(eshkol_ast_t* ast,
                 // Control flow operations
                 case ESHKOL_DYNAMIC_WIND_OP:
                     if (ast->operation.dynamic_wind_op.before) {
-                        update_ast_references(ast->operation.dynamic_wind_op.before, rename_map);
+                        pending.push_back(ast->operation.dynamic_wind_op.before);
                     }
                     if (ast->operation.dynamic_wind_op.thunk) {
-                        update_ast_references(ast->operation.dynamic_wind_op.thunk, rename_map);
+                        pending.push_back(ast->operation.dynamic_wind_op.thunk);
                     }
                     if (ast->operation.dynamic_wind_op.after) {
-                        update_ast_references(ast->operation.dynamic_wind_op.after, rename_map);
+                        pending.push_back(ast->operation.dynamic_wind_op.after);
                     }
                     break;
 
                 case ESHKOL_CALL_CC_OP:
                     if (ast->operation.call_cc_op.proc) {
-                        update_ast_references(ast->operation.call_cc_op.proc, rename_map);
+                        pending.push_back(ast->operation.call_cc_op.proc);
                     }
                     break;
 
                 case ESHKOL_GUARD_OP: {
                     for (uint64_t i = 0; i < ast->operation.guard_op.num_body_exprs; i++) {
-                        update_ast_references(&ast->operation.guard_op.body[i], rename_map);
+                        pending.push_back(&ast->operation.guard_op.body[i]);
                     }
                     for (uint64_t i = 0; i < ast->operation.guard_op.num_clauses; i++) {
-                        update_ast_references(&ast->operation.guard_op.clauses[i], rename_map);
+                        pending.push_back(&ast->operation.guard_op.clauses[i]);
                     }
                     break;
                 }
 
                 case ESHKOL_RAISE_OP:
                     if (ast->operation.raise_op.exception) {
-                        update_ast_references(ast->operation.raise_op.exception, rename_map);
+                        pending.push_back(ast->operation.raise_op.exception);
                     }
                     break;
 
                 case ESHKOL_VALUES_OP:
                     for (uint64_t i = 0; i < ast->operation.values_op.num_values; i++) {
-                        update_ast_references(&ast->operation.values_op.expressions[i], rename_map);
+                        pending.push_back(&ast->operation.values_op.expressions[i]);
                     }
                     break;
 
                 case ESHKOL_CALL_WITH_VALUES_OP:
                     if (ast->operation.call_with_values_op.producer) {
-                        update_ast_references(ast->operation.call_with_values_op.producer, rename_map);
+                        pending.push_back(ast->operation.call_with_values_op.producer);
                     }
                     if (ast->operation.call_with_values_op.consumer) {
-                        update_ast_references(ast->operation.call_with_values_op.consumer, rename_map);
+                        pending.push_back(ast->operation.call_with_values_op.consumer);
                     }
                     break;
 
                 case ESHKOL_MATCH_OP: {
                     if (ast->operation.match_op.expr) {
-                        update_ast_references(ast->operation.match_op.expr, rename_map);
+                        pending.push_back(ast->operation.match_op.expr);
                     }
                     for (uint64_t i = 0; i < ast->operation.match_op.num_clauses; i++) {
                         if (ast->operation.match_op.clauses[i].guard) {
-                            update_ast_references(ast->operation.match_op.clauses[i].guard, rename_map);
+                            pending.push_back(ast->operation.match_op.clauses[i].guard);
                         }
                         if (ast->operation.match_op.clauses[i].body) {
-                            update_ast_references(ast->operation.match_op.clauses[i].body, rename_map);
+                            pending.push_back(ast->operation.match_op.clauses[i].body);
                         }
                     }
                     break;
@@ -3488,34 +3541,34 @@ static void update_ast_references(eshkol_ast_t* ast,
                 // Memory management operations - FIXED: with_region_op.body is an array
                 case ESHKOL_WITH_REGION_OP:
                     for (uint64_t i = 0; i < ast->operation.with_region_op.num_body_exprs; i++) {
-                        update_ast_references(&ast->operation.with_region_op.body[i], rename_map);
+                        pending.push_back(&ast->operation.with_region_op.body[i]);
                     }
                     break;
 
                 case ESHKOL_OWNED_OP:
-                    update_ast_references(ast->operation.owned_op.value, rename_map);
+                    pending.push_back(ast->operation.owned_op.value);
                     break;
 
                 case ESHKOL_MOVE_OP:
-                    update_ast_references(ast->operation.move_op.value, rename_map);
+                    pending.push_back(ast->operation.move_op.value);
                     break;
 
                 // FIXED: borrow_op.body is an array
                 case ESHKOL_BORROW_OP:
                     if (ast->operation.borrow_op.value) {
-                        update_ast_references(ast->operation.borrow_op.value, rename_map);
+                        pending.push_back(ast->operation.borrow_op.value);
                     }
                     for (uint64_t i = 0; i < ast->operation.borrow_op.num_body_exprs; i++) {
-                        update_ast_references(&ast->operation.borrow_op.body[i], rename_map);
+                        pending.push_back(&ast->operation.borrow_op.body[i]);
                     }
                     break;
 
                 case ESHKOL_SHARED_OP:
-                    update_ast_references(ast->operation.shared_op.value, rename_map);
+                    pending.push_back(ast->operation.shared_op.value);
                     break;
 
                 case ESHKOL_WEAK_REF_OP:
-                    update_ast_references(ast->operation.weak_ref_op.value, rename_map);
+                    pending.push_back(ast->operation.weak_ref_op.value);
                     break;
 
                 // Logic/consciousness operations use call_op structure
@@ -3560,7 +3613,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                     // codegen as direct function calls with the same arg
                     // shape as ESHKOL_CALL_OP.
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                        pending.push_back(&ast->operation.call_op.variables[i]);
                     }
                     break;
 
@@ -3573,7 +3626,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                     // private-extern-bearing module under process_requires +
                     // rename_private_symbols.
                     for (uint64_t i = 0; i < ast->operation.extern_op.num_params; i++) {
-                        update_ast_references(&ast->operation.extern_op.parameters[i], rename_map);
+                        pending.push_back(&ast->operation.extern_op.parameters[i]);
                     }
                     break;
 
@@ -3587,16 +3640,35 @@ static void update_ast_references(eshkol_ast_t* ast,
         case ESHKOL_CONS:
             // Traverse cons cells
             if (ast->cons_cell.car) {
-                update_ast_references(ast->cons_cell.car, rename_map);
+                pending.push_back(ast->cons_cell.car);
             }
             if (ast->cons_cell.cdr) {
-                update_ast_references(ast->cons_cell.cdr, rename_map);
+                pending.push_back(ast->cons_cell.cdr);
             }
             break;
 
         default:
+
+
             // Literals, etc. - no update needed
             break;
+    }
+}
+
+// Update references throughout an AST.  Same-scope children are drained from
+// an explicit worklist; scoped children re-enter here with their own map, and
+// that lexical nesting is what the budget above governs.
+static void update_ast_references(eshkol_ast_t* ast,
+                                  const std::map<std::string, std::string>& rename_map) {
+    if (!ast) return;
+    if (!update_ast_references_within_budget()) return;
+    UpdateAstReferencesDepth depth_level;
+    std::vector<eshkol_ast_t*> pending;
+    pending.push_back(ast);
+    while (!pending.empty()) {
+        eshkol_ast_t* node = pending.back();
+        pending.pop_back();
+        if (node) update_ast_references_node(node, rename_map, pending);
     }
 }
 
@@ -4184,7 +4256,55 @@ struct OwnedLinkTemporaryObjects {
 
 
 
+/* The compiler's own body; main() below gives it an allocation boundary. */
+static int eshkol_run_main(int argc, char **argv);
+
+/**
+ * @brief Entry point.
+ *
+ * Reading has no depth limit, so a datum nests until memory runs out; when it
+ * does, that is reported as an ordinary error with a nonzero exit status
+ * rather than ending the process abruptly. The reader has its own boundary
+ * (eshkol_parse_next_ast_from_stream); this one covers every later pass, so
+ * the compiler always leaves a diagnostic behind.
+ */
 int main(int argc, char **argv)
+{
+    // LLVM reports an allocation it cannot satisfy through its own fatal-error
+    // path, which ends the process rather than raising. Routing it here makes
+    // running out of memory inside code generation the same ordinary,
+    // positioned diagnostic it is inside the reader.
+    llvm::install_bad_alloc_error_handler(
+        [](void*, const char* reason, bool) {
+            eshkol_error("out of memory generating code (%s): this program "
+                         "needs more memory than this process has. Nesting "
+                         "depth is bounded by memory, not by a limit; the "
+                         "input-size cap is configurable with "
+                         "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N",
+                         reason ? reason : "allocation failed");
+            std::exit(1);
+        },
+        nullptr);
+    llvm::install_fatal_error_handler(
+        [](void*, const char* reason, bool) {
+            eshkol_error("code generation could not continue: %s",
+                         reason ? reason : "no reason given");
+            std::exit(1);
+        },
+        nullptr);
+
+    try {
+        return eshkol_run_main(argc, argv);
+    } catch (const std::bad_alloc&) {
+        eshkol_error("out of memory: this program needs more memory than this "
+                     "process has. Nesting depth is bounded by memory, not by "
+                     "a limit; the input-size cap is configurable with "
+                     "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N");
+        return 1;
+    }
+}
+
+static int eshkol_run_main(int argc, char **argv)
 {
     g_verified_resource_modules.clear();
     g_resource_contracts.untrusted_modules.clear();
@@ -4386,6 +4506,26 @@ int main(int argc, char **argv)
                 return 1;
             }
             break;
+        case 270: {
+            size_t bytes = 0;
+            if (!optarg || !eshkol_reader_parse_size(optarg, &bytes)) {
+                eshkol_error("--max-source-bytes takes a byte count "
+                             "(N, NK, NM, NG); 0 removes the cap");
+                return 1;
+            }
+            eshkol_reader_set_max_source_bytes(bytes);
+            break;
+        }
+        case 271: {
+            size_t depth = 0;
+            if (!optarg || !eshkol_reader_parse_size(optarg, &depth)) {
+                eshkol_error("--max-pass-depth takes a level count; "
+                             "0 removes the count");
+                return 1;
+            }
+            eshkol_reader_set_max_pass_depth(depth);
+            break;
+        }
         case 257:
             unsafe_mode = 1;
             break;

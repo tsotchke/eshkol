@@ -111,6 +111,9 @@ private:
 };
 }
 
+extern "C" void eshkol_build_quoted_datum_sret(
+    eshkol_tagged_value_t* out, arena_t* arena, const uint8_t* data, uint64_t len);
+
 extern "C" void eshkol_repl_set_native_eval_boundary(
     eshkol::ReplNativeEvalBoundary boundary) {
     g_native_eval_boundary = boundary;
@@ -1387,6 +1390,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_allocate_tagged_cons_cell);
     ADD_SYMBOL(arena_allocate_tagged_cons_batch);
     ADD_SYMBOL(arena_allocate_cons_with_header);
+    ADD_SYMBOL(eshkol_build_quoted_datum_sret);
 
     // String allocation
     ADD_SYMBOL(arena_allocate_string_with_header);

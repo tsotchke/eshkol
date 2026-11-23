@@ -18,6 +18,7 @@
  *      exactly-once enforcement of every linear binder through the
  *      TypeChecker's own linear judgment in strict mode.
  */
+#include <eshkol/core/stack_guard.h>
 #include "eshkol/types/structural_checker.h"
 
 #include "eshkol/types/hott_types.h"
@@ -74,6 +75,11 @@ struct TypeSyntax {
 };
 
 TypeSyntax syntaxOf(const hott_type_expr_t* t) {
+    // Bounded and reported: this walk is recursive, so it checks the native
+    // stack headroom at each level and answers conservatively rather than
+    // descending past what the platform carries.  Reading itself has no
+    // depth limit (inc/eshkol/core/reader_limits.h).
+    if (!eshkol_stack_headroom_ok()) return TypeSyntax::mkAtom("any");
     if (!t) return TypeSyntax::mkAtom("any");
     switch (t->kind) {
         case HOTT_TYPE_INTEGER:
@@ -367,6 +373,11 @@ void forEachChild(const eshkol_ast_t* e, const std::function<void(const eshkol_a
 }
 
 void collectMentions(const eshkol_ast_t* e, std::set<std::string>& out) {
+    // Bounded and reported: this walk is recursive, so it checks the native
+    // stack headroom at each level and answers conservatively rather than
+    // descending past what the platform carries.  Reading itself has no
+    // depth limit (inc/eshkol/core/reader_limits.h).
+    if (!eshkol_stack_headroom_ok()) return ;
     if (!e) return;
     if (const char* n = varName(e)) {
         out.insert(n);
@@ -376,6 +387,11 @@ void collectMentions(const eshkol_ast_t* e, std::set<std::string>& out) {
 }
 
 bool assignsVar(const eshkol_ast_t* e, const std::string& name) {
+    // Bounded and reported: this walk is recursive, so it checks the native
+    // stack headroom at each level and answers conservatively rather than
+    // descending past what the platform carries.  Reading itself has no
+    // depth limit (inc/eshkol/core/reader_limits.h).
+    if (!eshkol_stack_headroom_ok()) return false;
     if (!e) return false;
     if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_SET_OP && e->operation.set_op.name &&
         name == e->operation.set_op.name) {
@@ -931,27 +947,34 @@ struct StructuralChecker::Impl {
     }
 
     /** A lambda, let or `the` inside @p e carries a structural annotation. */
-    bool formHasStructuralAnnotation(const eshkol_ast_t* e) {
-        if (!e) return false;
-        if (e->type == ESHKOL_OP) {
-            const auto& op = e->operation;
-            if (op.op == ESHKOL_THE_OP && annotationIsStructural(op.the_op.type_expr)) return true;
-            if (op.op == ESHKOL_LAMBDA_OP) {
-                if (annotationIsStructural(op.lambda_op.return_type)) return true;
-                for (uint64_t i = 0; op.lambda_op.param_types && i < op.lambda_op.num_params; ++i) {
-                    if (annotationIsStructural(op.lambda_op.param_types[i])) return true;
+    bool formHasStructuralAnnotation(const eshkol_ast_t* root) {
+        if (!root) return false;
+        std::vector<const eshkol_ast_t*> work{root};
+        while (!work.empty()) {
+            const eshkol_ast_t* e = work.back();
+            work.pop_back();
+            if (!e) continue;
+            if (e->type == ESHKOL_OP) {
+                const auto& op = e->operation;
+                if (op.op == ESHKOL_THE_OP && annotationIsStructural(op.the_op.type_expr)) return true;
+                if (op.op == ESHKOL_LAMBDA_OP) {
+                    if (annotationIsStructural(op.lambda_op.return_type)) return true;
+                    for (uint64_t i = 0; op.lambda_op.param_types && i < op.lambda_op.num_params; ++i) {
+                        if (annotationIsStructural(op.lambda_op.param_types[i])) return true;
+                    }
+                }
+                if ((op.op == ESHKOL_LET_OP || op.op == ESHKOL_LET_STAR_OP || op.op == ESHKOL_LETREC_OP ||
+                     op.op == ESHKOL_LETREC_STAR_OP) && op.let_op.binding_types) {
+                    for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
+                        if (annotationIsStructural(op.let_op.binding_types[i])) return true;
+                    }
                 }
             }
-            if ((op.op == ESHKOL_LET_OP || op.op == ESHKOL_LET_STAR_OP || op.op == ESHKOL_LETREC_OP ||
-                 op.op == ESHKOL_LETREC_STAR_OP) && op.let_op.binding_types) {
-                for (uint64_t i = 0; i < op.let_op.num_bindings; ++i) {
-                    if (annotationIsStructural(op.let_op.binding_types[i])) return true;
-                }
-            }
+            forEachChild(e, [&](const eshkol_ast_t* c) {
+                if (c) work.push_back(c);
+            });
         }
-        bool found = false;
-        forEachChild(e, [&](const eshkol_ast_t* c) { found = found || formHasStructuralAnnotation(c); });
-        return found;
+        return false;
     }
 
     bool mentionsStructural(const eshkol_ast_t* e) {

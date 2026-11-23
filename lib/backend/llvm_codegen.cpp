@@ -278,6 +278,7 @@ void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
 #include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/Bitcode/BitcodeWriter.h>
@@ -604,14 +605,37 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
     coerceCallArgIntegerTypes(module);
     coerceIntegerBinaryOperandTypes(module);
 
-    auto opt_level = getPassBuilderOptLevel();
+    // Huge generated functions (such as deeply nested quoted-datum builders)
+    // trigger super-linear IR and codegen optimization passes. Mark only
+    // functions above this instruction budget optnone+noinline so backend
+    // compilation stays linear while normal functions keep full optimization.
+    constexpr unsigned kMaxOptimizedFunctionInstructions = 50000;
+    for (llvm::Function& fn : module) {
+        if (fn.isDeclaration() || fn.hasOptNone()) continue;
+        if (fn.getInstructionCount() > kMaxOptimizedFunctionInstructions) {
+            fn.removeFnAttr(llvm::Attribute::AlwaysInline);
+            fn.removeFnAttr(llvm::Attribute::OptimizeForSize);
+            fn.removeFnAttr(llvm::Attribute::MinSize);
+            fn.addFnAttr(llvm::Attribute::NoInline);
+            fn.addFnAttr(llvm::Attribute::OptimizeNone);
+        }
+    }
 
-    llvm::PassBuilder PB(TM);
+    auto opt_level = getPassBuilderOptLevel();
 
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
     llvm::CGSCCAnalysisManager CGAM;
     llvm::ModuleAnalysisManager MAM;
+
+    // Register LLVM's standard pass instrumentations so Attribute::OptimizeNone
+    // is actually honored by function passes (such as MemCpyOptPass/MemorySSA)
+    // in the new pass manager.
+    llvm::PassInstrumentationCallbacks PIC;
+    llvm::StandardInstrumentations SI(module.getContext(), /*DebugLogging=*/false);
+    SI.registerCallbacks(PIC, &MAM);
+
+    llvm::PassBuilder PB(TM, llvm::PipelineTuningOptions(), std::nullopt, &PIC);
 
     PB.registerModuleAnalyses(MAM);
     PB.registerCGSCCAnalyses(CGAM);
@@ -704,6 +728,8 @@ static void deadStripWasmModule(llvm::Module& module) {
 #include <memory>
 #include <map>
 #include <unordered_map>
+#include <eshkol/core/stack_guard.h>
+#include <eshkol/core/reader_limits.h>
 #include <unordered_set>
 #include <set>
 #include <string>
@@ -5375,7 +5401,35 @@ TypedValue EshkolLLVMCodeGen::codegenTypedAST(const eshkol_ast_t* ast) {
     }
 
 ContinuationTask<TypedValue> EshkolLLVMCodeGen::codegenTypedASTTask(const eshkol_ast_t* ast) {
-        if (!ast) co_return TypedValue();
+        if (!ast || codegen_depth_exceeded_) co_return TypedValue();
+
+        const bool new_depth_level = (ast != codegen_depth_ast_);
+        const size_t pass_depth_budget = eshkol_reader_max_pass_depth();
+        if (new_depth_level && pass_depth_budget != 0 &&
+            codegen_ast_depth_ >= pass_depth_budget) {
+            codegen_depth_exceeded_ = true;
+            char message[320];
+            eshkol_reader_depth_message("generating code for a nested expression",
+                                        pass_depth_budget, message, sizeof(message));
+            eshkol_error("expression nesting too deep: %s", message);
+            markFatalCodegenError();
+            co_return TypedValue();
+        }
+        struct ScopedTypedDepth {
+            size_t& depth;
+            const eshkol_ast_t*& current;
+            const eshkol_ast_t* prev;
+            bool counted;
+            ScopedTypedDepth(size_t& d, const eshkol_ast_t*& c, const eshkol_ast_t* n, bool b)
+                : depth(d), current(c), prev(c), counted(b) {
+                if (counted) ++depth;
+                current = n;
+            }
+            ~ScopedTypedDepth() {
+                current = prev;
+                if (counted) --depth;
+            }
+        } typed_depth_guard(codegen_ast_depth_, codegen_depth_ast_, ast, new_depth_level);
         
         switch (ast->type) {
             case ESHKOL_INT64:
@@ -8869,11 +8923,54 @@ void EshkolLLVMCodeGen::emitLanguageCoverage(const eshkol_ast_t* ast) {
     }
 
 Value* EshkolLLVMCodeGen::codegenAST(const eshkol_ast_t* ast) {
+        // Code generation rides on heap continuation frames, so nesting costs
+        // no native stack — except where a caller re-enters it synchronously,
+        // as the call-result and quoted-data paths do. A CODE form nests as
+        // deeply as the reader could read it, and reading has no depth limit,
+        // so this driver asks for stack headroom and refuses in words rather
+        // than descending past its bound. Quoted DATA does not reach here
+        // deeply: its spine is flattened before anything is emitted.
+        if (!eshkol_stack_headroom_ok()) {
+            char message[320];
+            eshkol_reader_depth_message("generating code for a nested expression",
+                                        eshkol_reader_max_pass_depth(),
+                                        message, sizeof(message));
+            codegen_error_at(ast, "expression nesting too deep: %s", message);
+            return nullptr;
+        }
         return codegenASTTask(ast).run();
     }
 
 ContinuationTask<Value*> EshkolLLVMCodeGen::codegenASTTask(const eshkol_ast_t* ast) {
-        if (!ast) co_return nullptr;
+        if (!ast || codegen_depth_exceeded_) co_return nullptr;
+
+        const bool new_depth_level = (ast != codegen_depth_ast_);
+        const size_t pass_depth_budget = eshkol_reader_max_pass_depth();
+        if (new_depth_level && pass_depth_budget != 0 &&
+            codegen_ast_depth_ >= pass_depth_budget) {
+            codegen_depth_exceeded_ = true;
+            char message[320];
+            eshkol_reader_depth_message("generating code for a nested expression",
+                                        pass_depth_budget, message, sizeof(message));
+            eshkol_error("expression nesting too deep: %s", message);
+            markFatalCodegenError();
+            co_return nullptr;
+        }
+        struct ScopedAstDepth {
+            size_t& depth;
+            const eshkol_ast_t*& current;
+            const eshkol_ast_t* prev;
+            bool counted;
+            ScopedAstDepth(size_t& d, const eshkol_ast_t*& c, const eshkol_ast_t* n, bool b)
+                : depth(d), current(c), prev(c), counted(b) {
+                if (counted) ++depth;
+                current = n;
+            }
+            ~ScopedAstDepth() {
+                current = prev;
+                if (counted) --depth;
+            }
+        } ast_depth_guard(codegen_ast_depth_, codegen_depth_ast_, ast, new_depth_level);
 
         // ADR-0000 Stage 1: resolve this node's location through the
         // NodeId -> SourceSpan substrate rather than by reading location
@@ -12408,7 +12505,9 @@ Value* EshkolLLVMCodeGen::codegenCallResultAsFunc(const eshkol_operations_t* op)
         // Evaluate the inner call to get the function value
         Value* func_result = codegenAST(op->call_op.func);
         if (!func_result) {
-            eshkol_error("Failed to evaluate function expression");
+            if (!codegen_depth_exceeded_) {
+                eshkol_error("Failed to evaluate function expression");
+            }
             return nullptr;
         }
 
@@ -24464,32 +24563,40 @@ Value* EshkolLLVMCodeGen::matchGetCdr(Value* val) {
         std::unordered_set<std::string> names;
         std::vector<const eshkol_ast_t*> expressions;
 
-        void collect(const eshkol_pattern_t* p) {
-            if (!p) return;
-            switch (p->type) {
-                case PATTERN_LITERAL:
-                    expressions.push_back(p->literal.value);
-                    break;
-                case PATTERN_VARIABLE:
-                    names.insert(p->variable.name);
-                    break;
-                case PATTERN_PREDICATE:
-                    expressions.push_back(p->predicate.predicate);
-                    if (p->predicate.binding_name) names.insert(p->predicate.binding_name);
-                    break;
-                case PATTERN_CONS:
-                    collect(p->cons.car_pattern);
-                    collect(p->cons.cdr_pattern);
-                    break;
-                case PATTERN_LIST:
-                case PATTERN_VECTOR:
-                    for (uint64_t i = 0; i < p->list.num_patterns; ++i) collect(p->list.patterns[i]);
-                    break;
-                case PATTERN_OR:
-                    for (uint64_t i = 0; i < p->or_pat.num_patterns; ++i) collect(p->or_pat.patterns[i]);
-                    break;
-                default:
-                    break;
+        void collect(const eshkol_pattern_t* root) {
+            if (!root) return;
+            std::vector<const eshkol_pattern_t*> work{root};
+            while (!work.empty()) {
+                const eshkol_pattern_t* p = work.back();
+                work.pop_back();
+                if (!p) continue;
+                switch (p->type) {
+                    case PATTERN_LITERAL:
+                        expressions.push_back(p->literal.value);
+                        break;
+                    case PATTERN_VARIABLE:
+                        names.insert(p->variable.name);
+                        break;
+                    case PATTERN_PREDICATE:
+                        expressions.push_back(p->predicate.predicate);
+                        if (p->predicate.binding_name) names.insert(p->predicate.binding_name);
+                        break;
+                    case PATTERN_CONS:
+                        if (p->cons.cdr_pattern) work.push_back(p->cons.cdr_pattern);
+                        if (p->cons.car_pattern) work.push_back(p->cons.car_pattern);
+                        break;
+                    case PATTERN_LIST:
+                    case PATTERN_VECTOR:
+                        for (uint64_t i = p->list.num_patterns; i-- > 0;)
+                            if (p->list.patterns[i]) work.push_back(p->list.patterns[i]);
+                        break;
+                    case PATTERN_OR:
+                        for (uint64_t i = p->or_pat.num_patterns; i-- > 0;)
+                            if (p->or_pat.patterns[i]) work.push_back(p->or_pat.patterns[i]);
+                        break;
+                    default:
+                        break;
+                }
             }
         }
     };
@@ -24518,6 +24625,26 @@ Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, V
         if (!pattern) {
             return ConstantInt::getTrue(*context);
         }
+        if (codegen_depth_exceeded_) {
+            return ConstantInt::getFalse(*context);
+        }
+        const size_t pattern_budget = eshkol_reader_max_pass_depth();
+        if ((pattern_budget != 0 && codegen_ast_depth_ >= pattern_budget) ||
+            !eshkol_stack_headroom_ok()) {
+            codegen_depth_exceeded_ = true;
+            char message[320];
+            eshkol_reader_depth_message("compiling a match pattern",
+                                        pattern_budget != 0 ? pattern_budget : codegen_ast_depth_,
+                                        message, sizeof(message));
+            eshkol_error("match pattern nesting too deep: %s", message);
+            markFatalCodegenError();
+            return ConstantInt::getFalse(*context);
+        }
+        struct ScopedPatternDepth {
+            size_t& depth;
+            explicit ScopedPatternDepth(size_t& d) : depth(d) { ++depth; }
+            ~ScopedPatternDepth() { --depth; }
+        } pattern_depth_guard(codegen_ast_depth_);
 
         Function* current_func = builder->GetInsertBlock()->getParent();
 
@@ -36893,7 +37020,273 @@ eshkol_ast_t* EshkolLLVMCodeGen::differentiateOperationSymbolic(const eshkol_ope
         return eshkol_make_int_ast(0);
     }
 
+bool EshkolLLVMCodeGen::tryEncodeQuotedDatum(const eshkol_ast_t* root,
+                                             std::vector<uint8_t>& out) const {
+        if (!root) return false;
+        out.clear();
+
+        auto push_u32 = [&](uint32_t v) {
+            out.push_back(static_cast<uint8_t>(v & 0xFFu));
+            out.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
+            out.push_back(static_cast<uint8_t>((v >> 16) & 0xFFu));
+            out.push_back(static_cast<uint8_t>((v >> 24) & 0xFFu));
+        };
+        auto push_u64 = [&](uint64_t v) {
+            push_u32(static_cast<uint32_t>(v & 0xFFFFFFFFu));
+            push_u32(static_cast<uint32_t>((v >> 32) & 0xFFFFFFFFu));
+        };
+        auto emit_symbol = [&](const std::string& name) -> bool {
+            const size_t len = name.size();
+            if (len > UINT32_MAX - 1) return false;
+            out.push_back(0x07);  // QD_SYMBOL
+            push_u32(static_cast<uint32_t>(len));
+            out.insert(out.end(),
+                       reinterpret_cast<const uint8_t*>(name.c_str()),
+                       reinterpret_cast<const uint8_t*>(name.c_str()) + len + 1);
+            return true;
+        };
+
+        enum class WorkKind : uint8_t { Node, Op, Symbol };
+        struct WorkItem {
+            WorkKind kind;
+            uint8_t op;
+            const eshkol_ast_t* node;
+            const char* sym;
+        };
+        std::vector<WorkItem> work;
+        work.push_back({WorkKind::Node, 0, root, nullptr});
+
+        while (!work.empty()) {
+            const WorkItem item = work.back();
+            work.pop_back();
+
+            if (item.kind == WorkKind::Op) {
+                out.push_back(item.op);
+                continue;
+            }
+            if (item.kind == WorkKind::Symbol) {
+                if (!item.sym || !emit_symbol(eshkol_syntax_source_name(item.sym))) return false;
+                continue;
+            }
+
+            const eshkol_ast_t* ast = item.node;
+            if (!ast) {
+                out.push_back(0x00);  // QD_NULL
+                continue;
+            }
+            switch (ast->type) {
+                case ESHKOL_NULL:
+                    out.push_back(0x00);  // QD_NULL
+                    break;
+                case ESHKOL_BOOL:
+                    out.push_back(ast->int64_val ? 0x02 : 0x01);  // QD_BOOL_T / QD_BOOL_F
+                    break;
+                case ESHKOL_INT64:
+                    out.push_back(0x03);  // QD_INT64
+                    push_u64(static_cast<uint64_t>(ast->int64_val));
+                    break;
+                case ESHKOL_UINT64:
+                    if (ast->int64_val == 0) {
+                        out.push_back(0x00);  // QD_NULL
+                    } else {
+                        out.push_back(0x03);  // QD_INT64
+                        push_u64(static_cast<uint64_t>(ast->int64_val));
+                    }
+                    break;
+                case ESHKOL_DOUBLE: {
+                    uint64_t bits = 0;
+                    static_assert(sizeof(bits) == sizeof(ast->double_val));
+                    std::memcpy(&bits, &ast->double_val, sizeof(bits));
+                    out.push_back(0x04);  // QD_DOUBLE
+                    push_u64(bits);
+                    break;
+                }
+                case ESHKOL_CHAR:
+                    out.push_back(0x05);  // QD_CHAR
+                    push_u64(static_cast<uint64_t>(ast->int64_val));
+                    break;
+                case ESHKOL_STRING: {
+                    const size_t slen = ast->str_val.size > 0 ? ast->str_val.size - 1 : 0;
+                    if (slen > UINT32_MAX || (slen > 0 && !ast->str_val.ptr)) return false;
+                    out.push_back(0x06);  // QD_STRING
+                    push_u32(static_cast<uint32_t>(slen));
+                    if (slen > 0) {
+                        out.insert(out.end(),
+                                   reinterpret_cast<const uint8_t*>(ast->str_val.ptr),
+                                   reinterpret_cast<const uint8_t*>(ast->str_val.ptr) + slen);
+                    }
+                    break;
+                }
+                case ESHKOL_VAR:
+                    if (!ast->variable.id) return false;
+                    if (!emit_symbol(eshkol_syntax_source_name(ast->variable.id))) return false;
+                    break;
+                case ESHKOL_SYMBOL:
+                    if (!ast->str_val.ptr) return false;
+                    if (!emit_symbol(ast->str_val.ptr)) return false;
+                    break;
+                case ESHKOL_BIGNUM_LITERAL: {
+                    if (!ast->str_val.ptr) return false;
+                    const size_t slen = std::strlen(ast->str_val.ptr);
+                    if (slen > UINT32_MAX) return false;
+                    out.push_back(0x08);  // QD_BIGNUM
+                    push_u32(static_cast<uint32_t>(slen));
+                    out.insert(out.end(),
+                               reinterpret_cast<const uint8_t*>(ast->str_val.ptr),
+                               reinterpret_cast<const uint8_t*>(ast->str_val.ptr) + slen);
+                    break;
+                }
+                case ESHKOL_OP: {
+                    const eshkol_operations_t* op = &ast->operation;
+                    if (op->op != ESHKOL_CALL_OP) return false;
+                    if (isQuotedRationalLiteralDesugar(op) || isQuotedComplexLiteralDesugar(op))
+                        return false;
+                    if (op->call_op.func && op->call_op.func->type != ESHKOL_VAR)
+                        return false;
+
+                    const char* func_name =
+                        (op->call_op.func && op->call_op.func->variable.id)
+                            ? op->call_op.func->variable.id
+                            : nullptr;
+                    // Dotted pair: (cons car cdr)
+                    if (func_name && std::strcmp(func_name, "cons") == 0 &&
+                        op->call_op.num_vars == 2) {
+                        work.push_back({WorkKind::Op, 0x0A, nullptr, nullptr});  // QD_PREPEND
+                        work.push_back({WorkKind::Node, 0, &op->call_op.variables[0], nullptr});
+                        work.push_back({WorkKind::Node, 0, &op->call_op.variables[1], nullptr});
+                        break;
+                    }
+
+                    const bool has_head_sym =
+                        func_name != nullptr && std::strcmp(func_name, "list") != 0;
+                    const uint64_t total = op->call_op.num_vars + (has_head_sym ? 1u : 0u);
+                    if (total == 0) {
+                        out.push_back(0x00);  // QD_NULL
+                        break;
+                    }
+                    if (total == 1) {
+                        work.push_back({WorkKind::Op, 0x09, nullptr, nullptr});  // QD_CONS_NIL
+                        if (has_head_sym) {
+                            work.push_back({WorkKind::Symbol, 0, nullptr, func_name});
+                        } else {
+                            work.push_back({WorkKind::Node, 0, &op->call_op.variables[0], nullptr});
+                        }
+                        break;
+                    }
+
+                    // Multi-element list: emit QD_NULL, then elements right-to-left
+                    // paired with QD_PREPEND so runtime stack depth stays O(1).
+                    if (has_head_sym) {
+                        work.push_back({WorkKind::Op, 0x0A, nullptr, nullptr});  // QD_PREPEND
+                        work.push_back({WorkKind::Symbol, 0, nullptr, func_name});
+                    }
+                    for (uint64_t i = 0; i < op->call_op.num_vars; ++i) {
+                        work.push_back({WorkKind::Op, 0x0A, nullptr, nullptr});  // QD_PREPEND
+                        work.push_back({WorkKind::Node, 0, &op->call_op.variables[i], nullptr});
+                    }
+                    work.push_back({WorkKind::Op, 0x00, nullptr, nullptr});  // QD_NULL
+                    break;
+                }
+                default:
+                    return false;
+            }
+        }
+        return !out.empty();
+    }
+
+Value* EshkolLLVMCodeGen::codegenQuotedDatumFromBytes(const std::vector<uint8_t>& bytes) {
+        Value* arena_ptr = getArenaPtr();
+        if (!arena_ptr) {
+            eshkol_error("Arena not initialized for quoted datum construction");
+            return packNullToTaggedValue();
+        }
+        Constant* byte_array = ConstantDataArray::get(
+            *context, ArrayRef<uint8_t>(bytes.data(), bytes.size()));
+        auto* data_global = new GlobalVariable(
+            *module,
+            byte_array->getType(),
+            /*isConstant=*/true,
+            GlobalValue::PrivateLinkage,
+            byte_array,
+            ".eshkol.quoted_datum");
+        data_global->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
+        data_global->setAlignment(Align(1));
+
+        Type* ptr_ty = PointerType::getUnqual(*context);
+        FunctionCallee build_fn = module->getOrInsertFunction(
+            "eshkol_build_quoted_datum_sret",
+            FunctionType::get(Type::getVoidTy(*context),
+                              {ptr_ty, ptr_ty, ptr_ty, int64_type},
+                              false));
+
+        // Hoist the single SRET slot to the function entry block.
+        Value* out_alloca = nullptr;
+        {
+            IRBuilderBase::InsertPoint saved = builder->saveIP();
+            Function* fn = builder->GetInsertBlock()->getParent();
+            if (fn && !fn->empty()) {
+                BasicBlock& entry = fn->getEntryBlock();
+                builder->SetInsertPoint(&entry, entry.begin());
+            }
+            out_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "quoted_datum_out");
+            builder->restoreIP(saved);
+        }
+        Value* data_ptr = builder->CreateBitCast(data_global, ptr_ty);
+        builder->CreateCall(
+            build_fn,
+            {out_alloca, arena_ptr, data_ptr,
+             ConstantInt::get(int64_type, static_cast<uint64_t>(bytes.size()))});
+        return builder->CreateLoad(tagged_value_type, out_alloca, "quoted_datum_val");
+    }
+
 Value* EshkolLLVMCodeGen::codegenQuotedAST(const eshkol_ast_t* ast) {
+        if (!ast) return packNullToTaggedValue();
+
+        auto built = quoted_built_.find(ast);
+        if (built != quoted_built_.end()) return built->second;
+
+        if (quoted_flattening_ || !isQuotedListNode(ast))
+            return codegenQuotedASTNode(ast);
+
+        // Pre-order walk of the nested-list spine; reversing it puts every
+        // node after all of its descendants.
+        std::vector<const eshkol_ast_t*> order;
+        std::vector<const eshkol_ast_t*> pending{ast};
+        uint64_t total_elems = 0;
+        while (!pending.empty()) {
+            const eshkol_ast_t* node = pending.back();
+            pending.pop_back();
+            order.push_back(node);
+            const eshkol_operations_t* op = &node->operation;
+            total_elems += op->call_op.num_vars;
+            for (int64_t i = (int64_t)op->call_op.num_vars - 1; i >= 0; --i) {
+                const eshkol_ast_t* child = &op->call_op.variables[i];
+                if (isQuotedListNode(child)) pending.push_back(child);
+            }
+        }
+
+        // Large quoted data trees are materialized from a compact read-only
+        // bytecode descriptor instead of emitting inline per-cons-cell IR.
+        constexpr size_t kCompactQuotedDatumThreshold = 64;
+        if (order.size() >= kCompactQuotedDatumThreshold ||
+            total_elems >= kCompactQuotedDatumThreshold) {
+            std::vector<uint8_t> encoded;
+            if (tryEncodeQuotedDatum(ast, encoded)) {
+                return codegenQuotedDatumFromBytes(encoded);
+            }
+        }
+
+        quoted_flattening_ = true;
+        for (size_t i = order.size(); i-- > 0;)
+            quoted_built_[order[i]] = codegenQuotedASTNode(order[i]);
+        quoted_flattening_ = false;
+
+        Value* result = quoted_built_[ast];
+        quoted_built_.clear();
+        return result;
+    }
+
+Value* EshkolLLVMCodeGen::codegenQuotedASTNode(const eshkol_ast_t* ast) {
         if (!ast) return packNullToTaggedValue();
 
         switch (ast->type) {
@@ -45331,6 +45724,21 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
             target_options.DataSections = true;
         }
         auto codegen_opt = getCodeGenOptLevel();
+        // Keep backend instruction selection and register allocation linear when
+        // a module contains a huge generated function (e.g., deeply nested
+        // quoted-datum builders), while preserving full -O codegen elsewhere.
+        constexpr unsigned kMaxBackendOptInstructions = 50000;
+        for (const llvm::Function& fn : *module) {
+            if (!fn.isDeclaration() &&
+                fn.getInstructionCount() > kMaxBackendOptInstructions) {
+#if LLVM_VERSION_MAJOR >= 18
+                codegen_opt = llvm::CodeGenOptLevel::None;
+#else
+                codegen_opt = llvm::CodeGenOpt::None;
+#endif
+                break;
+            }
+        }
         const bool use_host_cpu_features =
             !embedded_target && (object_triple_str == g_cached_target_triple);
         const std::string cpu_name = embedded_target ? std::string(embedded_target->cpu)
@@ -45994,6 +46402,21 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         std::string features = "";
 
         auto codegen_opt = getCodeGenOptLevel();
+        // Keep backend instruction selection and register allocation linear when
+        // a module contains a huge generated function (e.g., deeply nested
+        // quoted-datum builders), while preserving full -O codegen elsewhere.
+        constexpr unsigned kMaxBackendOptInstructions = 50000;
+        for (const llvm::Function& fn : *module) {
+            if (!fn.isDeclaration() &&
+                fn.getInstructionCount() > kMaxBackendOptInstructions) {
+#if LLVM_VERSION_MAJOR >= 18
+                codegen_opt = llvm::CodeGenOptLevel::None;
+#else
+                codegen_opt = llvm::CodeGenOpt::None;
+#endif
+                break;
+            }
+        }
         // Use Reloc::Static for standalone WASM modules loaded via WebAssembly.instantiate().
         // Reloc::PIC_ generates GOT (Global Offset Table) entries that require a dynamic
         // linker — browsers reject these with "Import GOT.func: module is not an object".

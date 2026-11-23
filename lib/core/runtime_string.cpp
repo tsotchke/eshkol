@@ -39,6 +39,18 @@ static char* eshkol_string_buffer(void* arena, uint64_t byte_len) {
     return arena_allocate_string_with_header(static_cast<arena_t*>(arena), byte_len);
 }
 
+/**
+ * @brief Allocate a header-tagged string in @p arena holding @p len raw bytes
+ *        copied from @p data (preserving embedded NUL bytes) plus a trailing NUL.
+ */
+char* eshkol_alloc_string_bytes(void* arena, const char* data, size_t len) {
+    char* buf = eshkol_string_buffer(arena, (uint64_t)len);
+    if (!buf) return nullptr;
+    if (len > 0 && data) memcpy(buf, data, len);
+    buf[len] = '\0';
+    return buf;
+}
+
 /* Raising entry points, declared here to keep this translation unit's include
  * surface small (as runtime_tensor_alloc.cpp does). ABI-stable symbols. */
 void eshkol_type_error_with_operand(const char* proc_name,

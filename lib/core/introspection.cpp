@@ -72,6 +72,27 @@ static inline eshkol_tagged_value_t jit_exec(void* jit, eshkol_ast_t* ast) {
     return exec(jit, ast);
 }
 
+extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
+
+/* Convert @p sexp in @p jit's macro scope, or raise the condition that says
+ * why it is not an expression. The raise happens here, after the conversion
+ * has released everything it allocated, so a handler that catches it loses
+ * nothing. */
+static eshkol_ast_t* eval_datum_or_raise(const char* who, eshkol_tagged_value_t sexp,
+                                         void* jit) {
+    eshkol::EvalConversionError error;
+    eshkol_ast_t* ast = eshkol::eval_datum_to_ast(sexp, jit, error);
+    if (!ast) eshkol_runtime_fatal(error.type, "%s: %s", who, error.message);
+    return ast;
+}
+
+/* The evaluator lives in the REPL runtime; a program linked without it says
+ * so as a condition rather than answering an empty list. */
+static void raise_no_evaluator(const char* who) {
+    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                         "%s: this program is linked without the evaluator", who);
+}
+
 /** Look up a compiled symbol's address in the JIT context, or 0 if no eval JIT is linked. */
 static inline uint64_t jit_lookup(void* jit, const char* name) {
     eshkol_eval_jit_lookup_fn_t lookup = eshkol_eval_jit_get_lookup();
@@ -822,23 +843,18 @@ static std::atomic<uint64_t> g_eval_result_counter{0};
  *
  * @param sexp S-expression to evaluate.
  * @param arena Unused (reserved for future allocation needs).
- * @return Result of evaluation, or a null value on conversion/JIT failure.
+ * @return Result of evaluation. A datum that is not an expression, one over the
+ *         input-size cap, or one that does not compile raises a condition.
  */
 eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     (void)arena;
 
     // Parse with the macro bindings of the context that will execute the form.
     void* jit = get_eval_jit();
-    eshkol_ast_t* inner = eshkol::eval_datum_to_ast(sexp, jit);
-    if (!inner) {
-        eshkol_error("eshkol_eval: Failed to convert S-expression to AST");
-        return make_null();
-    }
-
+    eshkol_ast_t* inner = eval_datum_or_raise("eval", sexp, jit);
     if (!jit) {
         eshkol_free_sexp_ast(inner);
-        eshkol_error("eshkol_eval: Failed to initialize JIT context");
-        return make_null();
+        raise_no_evaluator("eval");
     }
 
     // If the user expression itself is a top-level DEFINE (e.g., eval'ing
@@ -891,15 +907,17 @@ eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     memset(&result, 0, sizeof(result));
     if (addr != 0) {
         result = *reinterpret_cast<eshkol_tagged_value_t*>(addr);
-    } else {
-        result.type = ESHKOL_VALUE_NULL;
     }
-
 
     // wrapper owns `inner` via define_op.value. define_op.name belongs to the
     // AST string owner (ast_strings.h) and is never freed here.
     eshkol_free_sexp_ast(wrapper);
 
+    // No value slot means the expression was not compiled: the compiler has
+    // reported why, and eval raises rather than answering an empty list.
+    if (addr == 0)
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+                             "eval: the expression could not be compiled");
     return result;
 }
 
@@ -934,7 +952,7 @@ extern "C" void eshkol_eval_env_sret(eshkol_tagged_value_t* result,
  * @param sexp S-expression to evaluate.
  * @param env Environment (alist of (symbol . value) pairs), or a null value for no bindings.
  * @param arena Unused (reserved for future allocation needs).
- * @return Result of evaluation, or a null value on conversion/JIT failure.
+ * @return Result of evaluation; conversion failures raise a condition, as for eval.
  */
 eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
                                        eshkol_tagged_value_t env,
@@ -943,11 +961,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
 
     // The expression and its macro scope belong to this evaluation context.
     void* jit = get_eval_jit();
-    eshkol_ast_t* body_ast = eshkol::eval_datum_to_ast(sexp, jit);
-    if (!body_ast) {
-        eshkol_error("eshkol_eval_env: Failed to convert S-expression to AST");
-        return make_null();
-    }
+    eshkol_ast_t* body_ast = eval_datum_or_raise("eval", sexp, jit);
 
     eshkol_ast_t* final_ast = body_ast;
 
@@ -963,7 +977,11 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
 
         if (num_bindings > 0) {
             // Create let bindings array - each binding is a (var, value) pair
-            eshkol_ast_t* bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (num_bindings * 2) * sizeof(eshkol_ast_t)), (num_bindings * 2));
+            // Create let bindings array: each entry is an ESHKOL_CONS cell
+            // pairing variable name (car) with converted value AST (cdr).
+            eshkol_ast_t* bindings = eshkol_ast_construct_array(
+                arena_allocate(get_global_arena(), num_bindings * sizeof(eshkol_ast_t)),
+                num_bindings);
 
             current = env;
             size_t i = 0;
@@ -976,20 +994,18 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
                     if (is_symbol(sym)) {
                         const char* sym_name = static_cast<const char*>(get_ptr(sym));
 
-                        // Variable name
-                        bindings[i * 2].type = ESHKOL_VAR;
-                        bindings[i * 2].variable.id = eshkol_ast_strdup(sym_name);
-                        bindings[i * 2].variable.data = nullptr;
+                        eshkol_ast_t* var_ast = eshkol_alloc_symbolic_ast();
+                        var_ast->type = ESHKOL_VAR;
+                        var_ast->variable.id = eshkol_ast_strdup(sym_name);
+                        var_ast->variable.data = nullptr;
 
-                        // Value - convert the S-expression value to AST
-                        eshkol_ast_t* val_ast = eshkol_sexp_to_ast(val);
-                        if (val_ast) {
-                            bindings[i * 2 + 1] = *val_ast;
-                            free(val_ast);
-                        } else {
-                            // Fallback: create a null value
-                            eshkol_ast_make_null(&bindings[i * 2 + 1]);
-                        }
+                        // Value - converted the way the body is, in the same
+                        // macro scope.
+                        eshkol_ast_t* val_ast = eval_datum_or_raise("eval", val, jit);
+
+                        bindings[i].type = ESHKOL_CONS;
+                        bindings[i].cons_cell.car = var_ast;
+                        bindings[i].cons_cell.cdr = val_ast;
                         i++;
                     }
                 }
@@ -1013,8 +1029,7 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
     // Get or create the eval JIT context
     if (!jit) {
         eshkol_free_sexp_ast(final_ast);
-        eshkol_error("eshkol_eval_env: Failed to initialize JIT context");
-        return make_null();
+        raise_no_evaluator("eval");
     }
 
     // Execute the AST through the JIT
@@ -1035,23 +1050,15 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
  *
  * @param sexp Lambda S-expression to compile.
  * @param arena Unused (reserved for future allocation needs).
- * @return Compiled procedure (closure) value, or a null value on error.
+ * @return Compiled procedure (closure) value; conversion failures raise a condition.
  */
 eshkol_tagged_value_t eshkol_compile(eshkol_tagged_value_t sexp, void* arena) {
-    // Direct S-expression to AST conversion (O(n) single-pass)
-    // Avoids serialize→parse overhead
-    eshkol_ast_t* ast = eshkol_sexp_to_ast(sexp);
-    if (!ast) {
-        eshkol_error("eshkol_compile: Failed to convert S-expression to AST");
-        return make_null();
-    }
-
-    // Get or create the eval JIT context
+    // The one datum-to-expression conversion, in the eval context's macro scope.
     void* jit = get_eval_jit();
+    eshkol_ast_t* ast = eval_datum_or_raise("compile", sexp, jit);
     if (!jit) {
         eshkol_free_sexp_ast(ast);
-        eshkol_error("eshkol_compile: Failed to initialize JIT context");
-        return make_null();
+        raise_no_evaluator("compile");
     }
 
     // The AST might be ESHKOL_FUNC for bare lambda, or ESHKOL_OP for operations.
@@ -1118,7 +1125,8 @@ eshkol_tagged_value_t eshkol_sexp_to_procedure(eshkol_tagged_value_t sexp, void*
  * @param sexp The S-expression to compile.
  * @param env Environment bindings (may be NULL for no bindings).
  * @param arena Unused (reserved for future allocation needs).
- * @return Compiled procedure, or a null value on error (including an unembeddable complex-typed binding).
+ * @return Compiled procedure; a body that is not an expression raises a condition,
+ *         and an unembeddable complex-typed binding answers a null value.
  */
 eshkol_tagged_value_t eshkol_compile_with_env(
     eshkol_tagged_value_t sexp,
@@ -1128,62 +1136,63 @@ eshkol_tagged_value_t eshkol_compile_with_env(
     (void)arena;  // Arena passed for potential allocation needs
 
     // Convert the S-expression to AST
-    eshkol_ast_t* body_ast = eshkol_sexp_to_ast(sexp);
-    if (!body_ast) {
-        eshkol_error("eshkol_compile_with_env: Failed to convert S-expression to AST");
-        return make_null();
-    }
+    void* jit = get_eval_jit();
+    eshkol_ast_t* body_ast = eval_datum_or_raise("compile", sexp, jit);
 
     eshkol_ast_t* final_ast = body_ast;
 
     // If there are environment bindings, wrap in a let-expression
     if (env && env->count > 0) {
-        // Create let bindings array - each binding is a (var, value) pair
-        eshkol_ast_t* bindings = eshkol_ast_construct_array(arena_allocate(get_global_arena(), (env->count * 2) * sizeof(eshkol_ast_t)), (env->count * 2));
+        // Create let bindings array: each entry is an ESHKOL_CONS cell
+        // pairing variable name (car) with value AST (cdr).
+        eshkol_ast_t* bindings = eshkol_ast_construct_array(
+            arena_allocate(get_global_arena(), env->count * sizeof(eshkol_ast_t)),
+            env->count);
 
         for (size_t i = 0; i < env->count; i++) {
-            // Variable name
-            bindings[i * 2].type = ESHKOL_VAR;
-            bindings[i * 2].variable.id = eshkol_ast_strdup(env->names[i]);
-            bindings[i * 2].variable.data = nullptr;
+            eshkol_ast_t* var_ast = eshkol_alloc_symbolic_ast();
+            var_ast->type = ESHKOL_VAR;
+            var_ast->variable.id = eshkol_ast_strdup(env->names[i]);
+            var_ast->variable.data = nullptr;
 
             // Value - convert the tagged value to an AST representation
             eshkol_tagged_value_t val = env->values[i];
-            eshkol_ast_t val_ast{};
+            eshkol_ast_t* val_ast = eshkol_alloc_symbolic_ast();
 
             // Handle strings first since they use multiple type representations
             if (is_string(val)) {
                 const char* str = static_cast<const char*>(get_ptr(val));
-                eshkol_ast_make_string(&val_ast, eshkol_ast_strdup(str ? str : ""), str ? strlen(str) : 0);
+                eshkol_ast_make_string(val_ast, eshkol_ast_strdup(str ? str : ""), str ? strlen(str) : 0);
             } else {
                 switch (val.type) {
                     case ESHKOL_VALUE_INT64:
-                        eshkol_ast_make_int64(&val_ast, val.data.int_val);
+                        eshkol_ast_make_int64(val_ast, val.data.int_val);
                         break;
                     case ESHKOL_VALUE_DOUBLE:
-                        eshkol_ast_make_double(&val_ast, val.data.double_val);
+                        eshkol_ast_make_double(val_ast, val.data.double_val);
                         break;
                     case ESHKOL_VALUE_BOOL:
-                        eshkol_ast_make_bool(&val_ast, val.data.int_val != 0);
+                        eshkol_ast_make_bool(val_ast, val.data.int_val != 0);
                         break;
                     case ESHKOL_VALUE_CHAR:
-                        eshkol_ast_make_char(&val_ast, val.data.int_val);
+                        eshkol_ast_make_char(val_ast, val.data.int_val);
                         break;
                     case ESHKOL_VALUE_NULL:
-                        eshkol_ast_make_null(&val_ast);
+                        eshkol_ast_make_null(val_ast);
                         break;
                     default:
                         // For complex types (closures, cons cells, etc.),
                         // we need to quote them to preserve them as values
                         // This is a limitation - complex runtime values can't be directly embedded
                         eshkol_error("eshkol_compile_with_env: Cannot embed complex type %d in environment", val.type);
-                        free(bindings);
                         eshkol_free_sexp_ast(body_ast);
                         return make_null();
                 }
             }
 
-            bindings[i * 2 + 1] = val_ast;
+            bindings[i].type = ESHKOL_CONS;
+            bindings[i].cons_cell.car = var_ast;
+            bindings[i].cons_cell.cdr = val_ast;
         }
 
         // Create the let AST node
@@ -1199,12 +1208,9 @@ eshkol_tagged_value_t eshkol_compile_with_env(
         final_ast = let_ast;
     }
 
-    // Get or create the eval JIT context
-    void* jit = get_eval_jit();
     if (!jit) {
         eshkol_free_sexp_ast(final_ast);
-        eshkol_error("eshkol_compile_with_env: Failed to initialize JIT context");
-        return make_null();
+        raise_no_evaluator("compile");
     }
 
     // Execute the expression through the JIT to compile it

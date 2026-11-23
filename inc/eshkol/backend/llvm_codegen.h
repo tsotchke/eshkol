@@ -3417,7 +3417,23 @@ private:
     // Convert AST to runtime S-expression (quoted list). Identifiers carry
     // their source spelling: this is also the source form of a procedure,
     // whose binders the expander renamed (syntax_color.h).
+    // Quoted data is emitted deepest-first using quoted_built_ so native
+    // stack use does not grow with nested quoted list depth. Large quoted
+    // lists are encoded into a compact read-only little-endian bytecode
+    // descriptor decoded iteratively at runtime by eshkol_build_quoted_datum_sret.
+    std::unordered_map<const eshkol_ast_t*, Value*> quoted_built_;
+    bool quoted_flattening_ = false;
+    size_t codegen_ast_depth_ = 0;
+    bool codegen_depth_exceeded_ = false;
+    const eshkol_ast_t* codegen_depth_ast_ = nullptr;
+    static bool isQuotedListNode(const eshkol_ast_t* ast) {
+        return ast && ast->type == ESHKOL_OP &&
+               ast->operation.op == ESHKOL_CALL_OP;
+    }
+    bool tryEncodeQuotedDatum(const eshkol_ast_t* root, std::vector<uint8_t>& out) const;
+    Value* codegenQuotedDatumFromBytes(const std::vector<uint8_t>& bytes);
     Value* codegenQuotedAST(const eshkol_ast_t* ast);
+    Value* codegenQuotedASTNode(const eshkol_ast_t* ast);
 
     // Handle operation AST nodes for S-expression generation
     Value* codegenQuotedOperation(const eshkol_operations_t* op);

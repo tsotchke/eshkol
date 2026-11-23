@@ -1,0 +1,19 @@
+;; The temporaries the parser binds when it lowers a form are spelled in a
+;; reserved namespace, so a program's own bindings of the old spellings are
+;; neither captured nor shadowed by them.
+(define __pz_param_0 42)
+(define __cl_args 'outer)
+(define p (make-parameter 1))
+(display (parameterize ((p 2)) (list (p) __pz_param_0)))
+(newline)
+(define f
+  (case-lambda
+    ((x) (list x __cl_args))
+    ((x y) (list x y __cl_args))))
+(display (f 1))
+(newline)
+(display (f 1 2))
+(newline)
+(define-values (a b) (values 3 4))
+(display (list a b))
+(newline)

@@ -18,6 +18,8 @@
 #include <eshkol/core/symbol_syntax.h>
 #include <eshkol/core/number_syntax.h>
 #include <eshkol/core/string_escape.h>
+#include <eshkol/core/stack_guard.h>
+#include <eshkol/core/reader_limits.h>
 #include <eshkol/logger.h>
 #include <eshkol/types/hott_types.h>
 #include <eshkol/types/quantum_types.h>
@@ -30,6 +32,7 @@
 #include "vm_source_syntax.h"
 
 #include <string.h>
+#include <new>
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -266,58 +269,13 @@ static thread_local bool g_type_parse_trial_failed = false;
  *         thread is at risk of stack overflow and parsing should bail out.
  */
 static bool check_stack_space() {
-    static const size_t STACK_SAFETY_MARGIN = 65536; // 64 KB reserved
-#ifdef _WIN32
-    (void)STACK_SAFETY_MARGIN;
-    return true;
-#elif defined(__APPLE__)
-    pthread_t self = pthread_self();
-    void* stack_addr = pthread_get_stackaddr_np(self);
-    size_t stack_size = pthread_get_stacksize_np(self);
-    // The probe must be the real frame address, never the address of a local:
-    // under AddressSanitizer with detect_stack_use_after_return (the default
-    // in current clang) locals live on a heap-allocated fake stack, so a
-    // local's address is outside the thread's stack bounds and the guard
-    // would report exhaustion on the first expression. The frame address is
-    // always on the real stack.
-    const char* here_ptr = static_cast<const char*>(__builtin_frame_address(0));
-    // On macOS, stack_addr is the TOP (highest address) of the stack
-    size_t used = (size_t)((char*)stack_addr - here_ptr);
-    return (stack_size > used) && ((stack_size - used) > STACK_SAFETY_MARGIN);
-#elif defined(__linux__)
-    // The thread's stack extent is measured once per thread and kept. For the
-    // main thread glibc's pthread_getattr_np() derives the extent by reading
-    // and parsing /proc/self/maps, so querying it on every parser frame made
-    // the check cost grow with the program's size and its address space; that
-    // was most of the time spent reading source. The extent is queried again
-    // only when the frame lies outside the kept one (a different stack).
-    static thread_local uintptr_t t_stack_bottom = 0;
-    static thread_local size_t t_stack_extent = 0;
-    static thread_local bool t_stack_measured = false;
-    // Real frame address, not a local's address: see the macOS branch for why
-    // (the AddressSanitizer fake stack makes a local's address lie outside the
-    // thread's stack bounds, which reads as exhaustion).
-    const uintptr_t here = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
-    if (!t_stack_measured || here < t_stack_bottom || (here - t_stack_bottom) > t_stack_extent) {
-        pthread_attr_t attr;
-        if (pthread_getattr_np(pthread_self(), &attr) != 0) return true;
-        void* stack_addr;
-        size_t stack_size;
-        pthread_attr_getstack(&attr, &stack_addr, &stack_size);
-        pthread_attr_destroy(&attr);
-        t_stack_bottom = reinterpret_cast<uintptr_t>(stack_addr);
-        t_stack_extent = stack_size;
-        t_stack_measured = true;
-    }
-    // On Linux the stack grows toward its BOTTOM (lowest address).
-    // The distance to that bound is remaining space, not consumed space.
-    const uintptr_t bottom = t_stack_bottom;
-    return here >= bottom && (here - bottom) <= t_stack_extent &&
-           (here - bottom) > STACK_SAFETY_MARGIN;
-#else
-    // Unknown platform: assume stack is fine
-    return true;
-#endif
+    // The measurement itself lives in inc/eshkol/core/stack_guard.h so the
+    // front end, the bytecode VM's toolchain and every pass that stays
+    // natively recursive ask the same question with the same 64 KB margin and
+    // the same per-thread caching of the stack extent. The guard here is
+    // unchanged in strength: same margin, same real-frame-address probe, same
+    // conservative "yes" where a platform offers no way to ask.
+    return eshkol_stack_headroom_ok() != 0;
 }
 
 struct Token {
@@ -1101,6 +1059,27 @@ private:
             pos++; // skip backslash
             column_++;
             if (pos < length) {
+                // R7RS #\x<hex scalar value>, decided by the rule both
+                // readers share.
+                uint32_t hex_scalar = 0;
+                int hex_invalid = 0;
+                const size_t hex_bytes = eshkol_char_hex_literal(
+                    input.data() + pos, length - pos, &hex_scalar, &hex_invalid);
+                if (hex_invalid) {
+                    Token at{TOKEN_EOF, "", start, tok_line, tok_col};
+                    PARSE_ERROR_AT(at, "character literal #\\%.*s names no Unicode scalar value",
+                                   (int)hex_bytes, input.data() + pos);
+                    return at;
+                }
+                if (hex_bytes) {
+                    unsigned char bytes[4];
+                    size_t width = 0;
+                    (void)eshkol_string_escape_append_utf8(hex_scalar, bytes, &width);
+                    pos += hex_bytes;
+                    column_ += hex_bytes;
+                    return {TOKEN_CHAR, std::string(reinterpret_cast<const char*>(bytes), width),
+                            start, tok_line, tok_col};
+                }
                 // Check for named characters like #\space, #\newline, #\tab
                 if (pos + 4 < length && input.substr(pos, 5) == "space") {
                     pos += 5;
@@ -1493,9 +1472,19 @@ static bool read_syntax_datum(SchemeTokenizer& tokenizer, const Token& first,
     return read_syntax_datum_from(next, first, out);
 }
 
-/** @brief Append the tokens that spell @p datum to @p out, in reading order. */
+/** @brief Append the tokens that spell @p datum to @p out, in reading order.
+ *
+ * This walk is natively recursive. The datum reader applies the same 64 KB
+ * headroom margin at read time, so a datum READ from source cannot be deeper
+ * than this walk can take; the guard here does not depend on that staying
+ * true, so a datum from any other producer is reported rather than taking the
+ * stack out. */
 static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Token>& out) {
     using Kind = eshkol::SyntaxDatum::Kind;
+    if (!check_stack_space()) {
+        eshkol_error("macro syntax nested too deeply to spell out");
+        return;
+    }
     Token token{static_cast<TokenType>(datum.token_type), datum.text, 0,
                 datum.line, datum.column};
     token.verbatim = datum.verbatim;
@@ -1539,6 +1528,11 @@ static void emit_syntax_tokens(const eshkol::SyntaxDatum& datum, std::vector<Tok
  * datum they were read from (the lowering never makes new atoms); symbols and
  * lists the lowering introduces take the form's own position. */
 static eshkol_syn* effect_datum_to_syn(const eshkol::SyntaxDatum& datum) {
+    /* Natively recursive; same reasoning as emit_syntax_tokens above. */
+    if (!check_stack_space()) {
+        eshkol_error("effect form nested too deeply");
+        return nullptr;
+    }
     using Kind = eshkol::SyntaxDatum::Kind;
     eshkol_syn_kind kind = ESHKOL_SYN_ATOM;
     switch (datum.kind) {
@@ -1675,7 +1669,7 @@ struct KeywordFormal {
  * location.
  */
 static std::string make_keyword_rest_name(uint32_t line, uint32_t column) {
-    return "__eshkol_kw_rest_" + std::to_string(line) + "_" +
+    return ESHKOL_SYNTAX_DESUGAR_PREFIX "kw_rest_" + std::to_string(line) + "_" +
            std::to_string(column);
 }
 
@@ -4475,6 +4469,17 @@ static eshkol_pattern_t* sequence_pattern(pattern_type_t type,
 static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer,
                                                    unsigned quasi_depth = 0) {
     Token token = tokenizer.nextToken();
+    // A pattern's nesting rides on continuation frames, which are heap
+    // allocated, so this does not fire on nesting alone. It is the same guard
+    // parse_expression() and read_syntax_datum_from() keep, for the same
+    // reason: a caller that entered the parser with an exhausted stack must be
+    // told so rather than discovering it in a later frame.
+    if (!check_stack_space()) {
+        PARSE_ERROR_AT(token, "match pattern nested too deeply");
+        auto* refused = new eshkol_pattern_t;
+        refused->type = PATTERN_INVALID;
+        co_return refused;
+    }
     bool list = token.type == TOKEN_LPAREN;
     Token head = list ? tokenizer.peekToken() : token;
     const bool long_form = list && head.type == TOKEN_SYMBOL;
@@ -6056,7 +6061,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             std::vector<eshkol_ast_t> assignments;
             temp_names.reserve(names.size());
             for (size_t i = 0; i < names.size(); i++) {
-                std::string temp = "__eshkol_define_values_" +
+                std::string temp = ESHKOL_SYNTAX_DESUGAR_PREFIX "define_values_" +
                     std::to_string(form_line) + "_" +
                     std::to_string(form_column) + "_" + std::to_string(i);
                 temp_names.push_back(temp);
@@ -6067,7 +6072,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             std::string temp_rest;
             const std::string* temp_rest_ptr = nullptr;
             if (has_rest) {
-                temp_rest = "__eshkol_define_values_rest_" +
+                temp_rest = ESHKOL_SYNTAX_DESUGAR_PREFIX "define_values_rest_" +
                     std::to_string(form_line) + "_" + std::to_string(form_column);
                 temp_rest_ptr = &temp_rest;
                 assignments.push_back(make_parser_set_ast(
@@ -8391,7 +8396,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             };
             // Extract Nth arg from list: car(cdr^N(list))
             auto clMakeNthArg = [&clMakeCall1, &clMakeVar](int n) -> eshkol_ast_t {
-                eshkol_ast_t cur = clMakeVar("__cl_args");
+                eshkol_ast_t cur = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                 for (int i = 0; i < n; i++) {
                     cur = clMakeCall1("cdr", cur);
                 }
@@ -8485,7 +8490,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     let_ast.operation.let_op.bindings[0].cons_cell.car = new eshkol_ast_t;
                     *let_ast.operation.let_op.bindings[0].cons_cell.car = clMakeVar(cl.rest_param.c_str());
                     let_ast.operation.let_op.bindings[0].cons_cell.cdr = new eshkol_ast_t;
-                    *let_ast.operation.let_op.bindings[0].cons_cell.cdr = clMakeVar("__cl_args");
+                    *let_ast.operation.let_op.bindings[0].cons_cell.cdr = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                     let_ast.operation.let_op.body = new eshkol_ast_t;
                     *let_ast.operation.let_op.body = cl.body;
                     dispatch_body = let_ast;
@@ -8501,10 +8506,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 // N=2: (if (null? __cl_args) #f (if (null? (cdr __cl_args)) #f (null? (cdr (cdr __cl_args)))))
                 eshkol_ast_t cond;
                 if (nparams == 0) {
-                    cond = clMakeCall1("null?", clMakeVar("__cl_args"));
+                    cond = clMakeCall1("null?", clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args"));
                 } else {
                     // Build: (null? (cdr^N __cl_args))
-                    eshkol_ast_t nth_cdr = clMakeVar("__cl_args");
+                    eshkol_ast_t nth_cdr = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                     for (uint64_t k = 0; k < nparams; k++) {
                         nth_cdr = clMakeCall1("cdr", nth_cdr);
                     }
@@ -8523,7 +8528,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
 
                     cond = tail_null;
                     for (int64_t k = (int64_t)nparams - 1; k >= 0; k--) {
-                        eshkol_ast_t kth_cdr = clMakeVar("__cl_args");
+                        eshkol_ast_t kth_cdr = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                         for (int64_t m = 0; m < k; m++) {
                             kth_cdr = clMakeCall1("cdr", kth_cdr);
                         }
@@ -8556,7 +8561,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                         *let_ast.operation.let_op.bindings[j].cons_cell.cdr = clMakeNthArg((int)j);
                     }
                     if (cl.is_variadic) {
-                        eshkol_ast_t rest_tail = clMakeVar("__cl_args");
+                        eshkol_ast_t rest_tail = clMakeVar(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
                         for (uint64_t j = 0; j < nparams; j++) {
                             rest_tail = clMakeCall1("cdr", rest_tail);
                         }
@@ -8580,7 +8585,7 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             ast.type = ESHKOL_OP;
             ast.operation.op = ESHKOL_LAMBDA_OP;
             ast.operation.lambda_op.is_variadic = 1;
-            ast.operation.lambda_op.rest_param = eshkol_ast_strdup("__cl_args");
+            ast.operation.lambda_op.rest_param = eshkol_ast_strdup(ESHKOL_SYNTAX_DESUGAR_PREFIX "cl_args");
             ast.operation.lambda_op.num_params = 0;
             ast.operation.lambda_op.parameters = nullptr;
             ast.operation.lambda_op.param_types = nullptr;
@@ -9230,10 +9235,10 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             };
 
             for (size_t i = 0; i < n; ++i) {
-                std::string param_name = "__pz_param_" + std::to_string(i);
-                std::string raw_name = "__pz_raw_" + std::to_string(i);
-                std::string value_name = "__pz_value_" + std::to_string(i);
-                std::string saved_name = "__pz_saved_" + std::to_string(i);
+                std::string param_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_param_" + std::to_string(i);
+                std::string raw_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_raw_" + std::to_string(i);
+                std::string value_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_value_" + std::to_string(i);
+                std::string saved_name = ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_saved_" + std::to_string(i);
 
                 port_parameter_names[i] = pmRuntimePortParameterName(params[i]);
                 if (port_parameter_names[i]) {
@@ -9261,11 +9266,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 if (port_parameter_names[i]) {
                     pop_expressions.push_back(
                         pmMakeCall(port_parameter_names[i],
-                                   {pmMakeVar(("__pz_saved_" + std::to_string(i)).c_str())}));
+                                   {pmMakeVar((ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_saved_" + std::to_string(i)).c_str())}));
                     continue;
                 }
                 pop_expressions.push_back(
-                    pmMakeCall("__eshkol_parameter_pop", {pmMakeVar(("__pz_param_" + std::to_string(i)).c_str())}));
+                    pmMakeCall("__eshkol_parameter_pop", {pmMakeVar((ESHKOL_SYNTAX_DESUGAR_PREFIX "pz_param_" + std::to_string(i)).c_str())}));
             }
 
             eshkol_ast_t wind = {};
@@ -11940,10 +11945,8 @@ SyntaxDatum syntax_read_tape(const void* opaque, uint32_t start) {
     return datum;
 }
 
-eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
-                                const std::set<std::string>& macro_names) {
-    std::vector<Token> tokens;
-    emit_syntax_tokens(datum, tokens);
+static eshkol_ast_t parse_token_tape(std::vector<Token> tokens,
+                                     const std::set<std::string>& macro_names) {
     std::set<std::string> names = macro_names;
     auto* const previous_names = g_parser_macro_names;
     const char* const previous_source = g_parse_source;
@@ -11959,9 +11962,32 @@ eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
     return result;
 }
 
+eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
+                                const std::set<std::string>& macro_names) {
+    std::vector<Token> tokens;
+    emit_syntax_tokens(datum, tokens);
+    return parse_token_tape(std::move(tokens), macro_names);
+}
+
+eshkol_ast_t parse_syntax_tokens(std::vector<SyntaxToken> tokens,
+                                 const std::set<std::string>& macro_names) {
+    std::vector<Token> tape;
+    tape.reserve(tokens.size());
+    for (auto& source : tokens) {
+        Token token{static_cast<TokenType>(source.token_type), std::move(source.text), 0, 0, 0};
+        token.verbatim = source.verbatim;
+        tape.push_back(std::move(token));
+    }
+    tokens.clear();
+    tokens.shrink_to_fit();
+    return parse_token_tape(std::move(tape), macro_names);
+}
+
 } // namespace eshkol
 
-eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
+/* The body of eshkol_parse_next_ast_from_stream(); see the wrapper below for
+ * the input cap and the allocation boundary that stand in front of it. */
+static eshkol_ast_t parse_next_ast_from_stream_body(std::istream &in_stream)
 {
     StreamPositionBinding stream_position(in_stream);
     ParserMacroStreamBinding macro_stream(in_stream);
@@ -11970,6 +11996,7 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
     bool in_bar_symbol = false;  // inside an R7RS 7.1.1 |...| vertical-line symbol
     int bracket_depth = 0;
     bool found_expression = false;
+    const size_t source_cap = eshkol_reader_max_source_bytes();
 
     // Read characters until we have a complete S-expression.
     // Comments are stripped *but their newlines are preserved* so the
@@ -11977,6 +12004,21 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
     while (!in_stream.eof()) {
         int c = in_stream.get();
         if (in_stream.eof()) break;
+
+        // The one documented input-size cap, shared by both readers and every
+        // entry point: a single form longer than it is refused here, before
+        // the tokenizer and the continuation frames it would need. Nesting
+        // depth itself has no limit (inc/eshkol/core/reader_limits.h). The cap
+        // is read once per form, not per byte, so this costs one comparison
+        // against a local on the hot path.
+        if (source_cap && input.size() >= source_cap) {
+            char cap_message[320];
+            (void)eshkol_reader_source_over_cap(input.size() + 1,
+                                                cap_message, sizeof(cap_message));
+            Token where{TOKEN_EOF, "", 0, g_stream_line, g_stream_column};
+            PARSE_ERROR_AT(where, "%s", cap_message);
+            return {.type = ESHKOL_INVALID};
+        }
 
         // If the current byte is the payload of a character literal such
         // as #\(, #\), #\", or #\;, it is data, not reader syntax. Not
@@ -12205,6 +12247,34 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
     }
 
     return {.type = ESHKOL_INVALID};
+}
+
+/**
+ * @brief Reads the next top-level form from @p in_stream and returns its AST.
+ *
+ * This is the one choke point every top-level form passes through on the
+ * native front end — the file compiler, the REPL, the server and the
+ * WebAssembly build all arrive here — so it is where running out of memory
+ * while reading becomes an ordinary diagnostic. Nesting is carried on
+ * continuation frames, which are heap allocated, so a deeply nested form
+ * exhausts memory rather than the stack; that exhaustion is reported with the
+ * form's position and the caller sees a refused form, exactly as it would for
+ * a syntax error. The process is never ended by it.
+ */
+eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
+{
+    try {
+        return parse_next_ast_from_stream_body(in_stream);
+    } catch (const std::bad_alloc&) {
+        g_parse_source = NULL;
+        Token where{TOKEN_EOF, "", 0, g_stream_line, g_stream_column};
+        PARSE_ERROR_AT(where,
+                       "out of memory reading this form; its nesting or size "
+                       "needs more memory than this process has (reading has "
+                       "no depth limit, and the input cap is configurable with "
+                       "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N)");
+        return {.type = ESHKOL_INVALID};
+    }
 }
 
 /**

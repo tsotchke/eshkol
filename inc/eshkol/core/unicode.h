@@ -36,6 +36,46 @@ static inline size_t eshkol_utf8_read_scalar(const char* data, size_t available,
     return width;
 }
 
+/**
+ * R7RS 7.1.1 `#\x<hex scalar value>`, shared by both readers. @p data points
+ * just past `#\`; a NUL byte or @p available ends the input. When the
+ * spelling is `x`, one or more hexadecimal digits and then a delimiter
+ * (whitespace, `(`, `)`, `"`, `;`, `|`) or the end, returns the bytes it
+ * occupies and stores the scalar in *@p result, or sets *@p invalid when the
+ * digits name a surrogate or a value above U+10FFFF. Any other spelling --
+ * `#\x` alone, `#\xylophone` -- returns 0 and is not a hex character.
+ */
+static inline size_t eshkol_char_hex_literal(const char* data, size_t available,
+                                             uint32_t* result, int* invalid) {
+    *invalid = 0;
+    if (!available || data[0] != 'x') return 0;
+    size_t i = 1;
+    uint32_t value = 0;
+    int too_large = 0;
+    for (; i < available && data[i]; ++i) {
+        const char c = data[i];
+        int digit;
+        if (c >= '0' && c <= '9') digit = c - '0';
+        else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+        else break;
+        if (value > 0x10FFFFu) too_large = 1;
+        else value = value * 16u + (uint32_t)digit;
+    }
+    if (i == 1) return 0;
+    if (i < available && data[i]) {
+        const char c = data[i];
+        if (!(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' ||
+              c == '\v' || c == '(' || c == ')' || c == '"' || c == ';' || c == '|'))
+            return 0;
+    }
+    if (too_large || value > 0x10FFFFu || (value >= 0xD800u && value <= 0xDFFFu)) {
+        *invalid = 1;
+        return i;
+    }
+    *result = value;
+    return i;
+}
 int eshkol_unicode_is_alphabetic(int64_t codepoint);
 int eshkol_unicode_is_numeric(int64_t codepoint);
 int eshkol_unicode_is_whitespace(int64_t codepoint);

@@ -8,6 +8,8 @@
 #include "eshkol/core/unicode.h"
 #include "../../inc/eshkol/core/string_escape.h"
 #include "../../inc/eshkol/core/number_syntax.h"
+#include "../../inc/eshkol/core/reader_limits.h"
+#include "../../inc/eshkol/core/stack_guard.h"
 #include "eshkol/backend/mutation_observation.h"
 
 /*******************************************************************************
@@ -168,6 +170,26 @@ static Node* parse_sexp(void);
 static void vm_compile_error(const char* message, const char* detail);
 static int vm_compile_failed(void);
 
+/**
+ * @brief Tests a whole source text against the shared input-size cap.
+ *
+ * The cap is the only size limit the reader imposes, it is the same number on
+ * every entry point and in both readers, and it is documented in the runtime
+ * configuration reference (ESHKOL_MAX_SOURCE_BYTES / --max-source-bytes).
+ * Nesting depth has no limit: see parse_datum_iterative().
+ *
+ * @return 1 when the text is within the cap, 0 when it is over it (having
+ *         raised the ordinary refusal diagnostic).
+ */
+static int vm_reader_source_within_cap(const char* source) {
+    if (!source) return 1;
+    char message[320];
+    if (!eshkol_reader_source_over_cap(strlen(source), message, sizeof(message)))
+        return 1;
+    vm_compile_error("source text is over the input cap", message);
+    return 0;
+}
+
 /** @brief Append one character to a growable char buffer (*@p buf,
  *         *@p len, *@p cap), doubling capacity via realloc when nearly
  *         full. */
@@ -231,8 +253,24 @@ static Node* make_call_node(const char* name) {
  *        restoring the caller's src_ptr afterward. Errors (and returns
  *        NULL) if @p source is empty or contains more than one expression.
  */
+/* A `~{…}` expression may itself contain a string literal with a `~{…}` in
+ * it, and that is the one place the reader re-enters itself: each level is a
+ * new source text, read on its own native frames.  Ordinary code nests a
+ * handful of levels; this is the documented ceiling, reported as an ordinary
+ * diagnostic.  Depth of DATA nesting is unaffected — that has no limit. */
+#define VM_MAX_INTERPOLATION_NESTING 64
+static int g_vm_interpolation_depth = 0;
+
 static Node* parse_sexp_from_string(const char* source) {
     const char* saved_src = src_ptr;
+    if (g_vm_interpolation_depth >= VM_MAX_INTERPOLATION_NESTING) {
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "at most %d levels of `~{...}` inside `~{...}` are read",
+                 VM_MAX_INTERPOLATION_NESTING);
+        vm_compile_error("string interpolation nests too deeply", detail);
+        return NULL;
+    }
     src_ptr = source ? source : "";
     skip_ws();
     if (!*src_ptr) {
@@ -240,7 +278,9 @@ static Node* parse_sexp_from_string(const char* source) {
         src_ptr = saved_src;
         return NULL;
     }
+    g_vm_interpolation_depth++;
     Node* expr = parse_sexp();
+    g_vm_interpolation_depth--;
     skip_ws();
     if (*src_ptr) {
         fprintf(stderr, "ERROR: string interpolation accepts exactly one expression\n");
@@ -474,30 +514,73 @@ static Node* parse_string_literal(void) {
     return result;
 }
 
-/** @brief Parse a parenthesized list body (after the opening `(` has been
- *         consumed) into an N_LIST node, reading sub-expressions until `)`
- *         and refusing an incomplete body at end of input. */
-static Node* parse_list_body(Node* list) {
-    if (!list) return NULL;
-    for (;;) {
-        skip_ws();
-        if (!*src_ptr) {
-            vm_compile_error("unterminated list or vector", "expected closing parenthesis");
-            free_node(list); return NULL;
-        }
-        if (*src_ptr == ')') { src_ptr++; return list; }
-        Node* child = parse_sexp();
-        if (!child) { free_node(list); return NULL; }
-        int before = list->n_children;
-        add_child(list, child);
-        if (list->n_children != before + 1) {
-            vm_compile_error("unable to append parsed datum", "allocation failed");
-            free_node(child); free_node(list); return NULL;
-        }
+/* ───────────────────────────────────────────────────────────────────────────
+ * The reader's own stack
+ *
+ * Nesting is carried here, on the heap, rather than on the native stack: a
+ * datum nests as deeply as the machine has memory for, and there is no depth
+ * limit to configure.  A frame is one container still being filled:
+ *
+ *   VM_READ_LIST    a `(`-opened list or a `#(`-opened vector; it takes as
+ *                   many datums as arrive before the matching `)`.
+ *   VM_READ_PREFIX  a reader-prefix wrapper — `'`, `` ` ``, `,`, `,@` — whose
+ *                   tag symbol is already in place and which completes as
+ *                   soon as exactly one datum arrives.
+ *
+ * Appending to a container is the only place a datum is attached, so the
+ * reader is one loop: open containers until a complete datum is in hand, then
+ * deliver it inwards-out, closing every prefix frame it completes.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef enum { VM_READ_LIST, VM_READ_PREFIX } VmReadFrameKind;
+
+typedef struct {
+    Node* node;
+    VmReadFrameKind kind;
+} VmReadFrame;
+
+typedef struct {
+    VmReadFrame* frames;
+    size_t n;
+    size_t cap;
+} VmReadStack;
+
+/* 0 on failure to grow, with the frame NOT pushed (the caller owns @p node). */
+static int vm_read_push(VmReadStack* st, Node* node, VmReadFrameKind kind) {
+    if (!node) return 0;
+    if (st->n == st->cap) {
+        size_t next = st->cap ? st->cap * 2 : 64;
+        VmReadFrame* grown = (VmReadFrame*)realloc(st->frames, next * sizeof(VmReadFrame));
+        if (!grown) return 0;
+        st->frames = grown;
+        st->cap = next;
     }
+    st->frames[st->n].node = node;
+    st->frames[st->n].kind = kind;
+    st->n++;
+    return 1;
 }
 
-static Node* parse_list(void) { return parse_list_body(make_node(N_LIST)); }
+static void vm_read_stack_release(VmReadStack* st) {
+    for (size_t i = 0; i < st->n; i++) free_node(st->frames[i].node);
+    free(st->frames);
+    st->frames = NULL;
+    st->n = st->cap = 0;
+}
+
+/* Build the `(tag . <one datum>)` wrapper a reader prefix expands to. */
+static Node* vm_read_prefix_wrapper(const char* tag_name, int quote_sugar) {
+    Node* wrapper = make_node(N_LIST);
+    if (!wrapper) return NULL;
+    wrapper->is_quote_sugar = quote_sugar;
+    Node* tag = make_node(N_SYMBOL);
+    if (!tag) { free_node(wrapper); return NULL; }
+    strncpy(tag->symbol, tag_name, 127);
+    tag->symbol[127] = 0;
+    add_child(wrapper, tag);
+    if (wrapper->n_children != 1) { free_node(tag); free_node(wrapper); return NULL; }
+    return wrapper;
+}
 
 /** @brief Build an N_NUMBER leaf from a (optionally signed) run of @p len
  *         decimal digit characters at @p digits: an exact int64 node when
@@ -602,16 +685,20 @@ static Node* vm_number_node(const eshkol_numsyn_t* syn) {
 }
 
 /**
- * @brief Recursive-descent S-expression reader: parses one datum from the
- *        compiler context's src_ptr cursor — lists, quote/quasiquote/
- *        unquote(-splicing) sugar, string literals (via
- *        parse_string_literal(), including ~{...} interpolation), #t/#f,
- *        character literals, vector literals #(...), R7RS special floats
+ * @brief Reads one LEAF datum from the compiler context's src_ptr cursor:
+ *        string literals (via parse_string_literal(), including ~{...}
+ *        interpolation), #t/#f, character literals, R7RS special floats
  *        (+nan.0/+inf.0/-inf.0), numbers (including rational literals like
- *        1/3 and scientific notation), and symbols.
- * @return The parsed Node, or NULL at end of input / on a bare `)`.
+ *        1/3 and scientific notation), `|…|` identifiers, and symbols.
+ *
+ * Nesting — a list, a vector literal, a quote/quasiquote/unquote(-splicing)
+ * prefix — belongs to parse_datum_iterative(), which carries it on the
+ * reader's own heap stack; this function never recurses into a sub-datum, so
+ * its native frame count is independent of how deep the source nests.
+ *
+ * @return The parsed Node, or NULL at end of input / on a malformed leaf.
  */
-static Node* parse_sexp_impl(void);
+static Node* parse_leaf_datum(void);
 
 /* Algebraic-effect forms (ADR-0045). `define-effect`, `handle`,
  * `handle-shallow` and `declare-effects` are rewritten by the one lowering the
@@ -622,32 +709,215 @@ static Node* parse_sexp_impl(void);
 
 static int g_vm_parse_depth = 0;
 
-static Node* vm_effect_lower_tree(Node* n) {
-    if (!n || n->type != N_LIST || n->n_children == 0) return n;
-    Node* head = n->children[0];
-    if (head->type == N_SYMBOL &&
-        (eshkol_syntax_base_is(head->symbol, "quote") ||
-         eshkol_syntax_base_is(head->symbol, "quasiquote")))
-        return n;
-    if (head->type == N_SYMBOL && eshkol_effect_keyword(head->symbol)) {
+/* Lower the effect forms in one node, in place.  Returns the node that now
+ * occupies that position: the same node, or the lowering's replacement. */
+static Node* vm_effect_lower_here(Node* n) {
+    for (;;) {
+        if (!n || n->type != N_LIST || n->n_children == 0) return n;
+        Node* head = n->children[0];
+        if (head->type != N_SYMBOL) return n;
+        if (eshkol_syntax_base_is(head->symbol, "quote") ||
+            eshkol_syntax_base_is(head->symbol, "quasiquote"))
+            return n;
+        if (!eshkol_effect_keyword(head->symbol)) return n;
         eshkol_syn* syn = vm_macro_to_syn(n);
         if (!syn) { vm_compile_error("out of memory reading an effect form", head->symbol); return n; }
-        if (eshkol_effect_form_of(syn) != ESHKOL_EFFECT_FORM_NONE) {
-            char message[256];
-            eshkol_syn* lowered = eshkol_effect_lower(syn, message, sizeof(message));
+        if (eshkol_effect_form_of(syn) == ESHKOL_EFFECT_FORM_NONE) {
             eshkol_syn_free(syn);
-            if (!lowered) { vm_compile_error(message, head->symbol); return n; }
-            Node* result = vm_macro_from_syn(lowered);
-            eshkol_syn_free(lowered);
-            if (!result) { vm_compile_error("out of memory lowering an effect form", NULL); return n; }
-            free_node(n);
-            return vm_effect_lower_tree(result);
+            return n;
         }
+        char message[256];
+        eshkol_syn* lowered = eshkol_effect_lower(syn, message, sizeof(message));
         eshkol_syn_free(syn);
+        if (!lowered) { vm_compile_error(message, head->symbol); return n; }
+        Node* result = vm_macro_from_syn(lowered);
+        eshkol_syn_free(lowered);
+        if (!result) { vm_compile_error("out of memory lowering an effect form", NULL); return n; }
+        free_node(n);
+        n = result;   /* the replacement may itself begin with an effect form */
     }
-    for (int i = 0; i < n->n_children; ++i)
-        n->children[i] = vm_effect_lower_tree(n->children[i]);
-    return n;
+}
+
+/**
+ * @brief Lowers every effect form in a complete top-level datum.
+ *
+ * The descent carries the positions still to visit on the heap, so a datum
+ * nests as deeply as memory allows.  A position is a slot inside a parent's
+ * children array; lowering writes only that slot and never moves the array,
+ * so a queued slot stays the right place to write.  Quoted data is left as
+ * written, which is also why the walk stops at a `quote`/`quasiquote` head.
+ */
+static Node* vm_effect_lower_tree(Node* n) {
+    Node* root = vm_effect_lower_here(n);
+    if (!root || root->type != N_LIST) return root;
+
+    Node*** pending = NULL;
+    size_t n_pending = 0, cap_pending = 0;
+    Node** slot = NULL;
+    Node* here = root;
+    for (;;) {
+        /* Quoted data is left exactly as written, so the walk does not enter
+         * a `quote`/`quasiquote` form at all. */
+        int quoted = here && here->type == N_LIST && here->n_children > 0 &&
+                     here->children[0] && here->children[0]->type == N_SYMBOL &&
+                     (eshkol_syntax_base_is(here->children[0]->symbol, "quote") ||
+                      eshkol_syntax_base_is(here->children[0]->symbol, "quasiquote"));
+        if (here && here->type == N_LIST && !quoted) {
+            for (int i = 0; i < here->n_children; ++i) {
+                if (n_pending == cap_pending) {
+                    size_t next = cap_pending ? cap_pending * 2 : 32;
+                    Node*** grown = (Node***)realloc(pending, next * sizeof(Node**));
+                    if (!grown) {
+                        vm_compile_error("out of memory reading a nested form",
+                                         "the reader could not record how deep it is");
+                        free(pending);
+                        return root;
+                    }
+                    pending = grown;
+                    cap_pending = next;
+                }
+                pending[n_pending++] = &here->children[i];
+            }
+        }
+        if (n_pending == 0) break;
+        slot = pending[--n_pending];
+        *slot = vm_effect_lower_here(*slot);
+        here = *slot;
+    }
+    free(pending);
+    return root;
+}
+
+/**
+ * @brief Reads one complete datum, carrying its nesting on the reader's own
+ *        heap stack.
+ *
+ * The loop has two halves.  The first reads forward until a complete datum is
+ * in hand: an opening `(` or `#(` pushes a container frame and the loop goes
+ * round again; a reader prefix pushes a wrapper frame the same way; anything
+ * else is a leaf, read by parse_leaf_datum() without recursion.  The second
+ * half delivers that datum to the innermost frame — appending to a container
+ * and resuming, or closing a prefix wrapper and delivering the wrapper in
+ * turn, until a frame takes the value or the stack is empty and the value is
+ * the answer.
+ *
+ * Native stack use is therefore constant in the nesting depth.  A datum nests
+ * as deeply as memory allows; when memory runs out the reader says so, with
+ * the ordinary diagnostic, and frees everything it had built.
+ */
+static Node* parse_datum_iterative(void) {
+    VmReadStack st = { NULL, 0, 0 };
+    Node* value = NULL;
+
+    for (;;) {
+        skip_ws();
+        const char c = *src_ptr;
+
+        if (!c) {
+            if (st.n == 0) {   /* EOF between datums is normal */
+                vm_read_stack_release(&st);
+                return NULL;
+            }
+            if (st.frames[st.n - 1].kind == VM_READ_PREFIX)
+                vm_compile_error("missing datum after reader prefix", NULL);
+            else
+                vm_compile_error("unterminated list or vector",
+                                 "expected closing parenthesis");
+            vm_read_stack_release(&st);
+            return NULL;
+        }
+
+        if (c == '(') {
+            src_ptr++;
+            Node* list = make_node(N_LIST);
+            if (!vm_read_push(&st, list, VM_READ_LIST)) {
+                vm_compile_error("out of memory reading a list",
+                                 "the reader could not record how deep it is");
+                free_node(list);
+                vm_read_stack_release(&st);
+                return NULL;
+            }
+            continue;
+        }
+
+        if (c == '#' && src_ptr[1] == '(') {
+            src_ptr += 2;
+            Node* vec = vm_read_prefix_wrapper("vector", 0);
+            if (vec) vec->is_vector = 1;   /* reader-origin marker; see the Node field note */
+            if (!vm_read_push(&st, vec, VM_READ_LIST)) {
+                vm_compile_error("out of memory reading a vector literal",
+                                 "the reader could not record how deep it is");
+                free_node(vec);
+                vm_read_stack_release(&st);
+                return NULL;
+            }
+            continue;
+        }
+
+        if (c == ')') {
+            src_ptr++;
+            if (st.n == 0) {
+                /* A closing parenthesis with nothing open is not a datum; the
+                 * caller reports it as an invalid or incomplete one. */
+                vm_read_stack_release(&st);
+                return NULL;
+            }
+            if (st.frames[st.n - 1].kind == VM_READ_PREFIX) {
+                vm_compile_error("missing datum after reader prefix", NULL);
+                vm_read_stack_release(&st);
+                return NULL;
+            }
+            value = st.frames[--st.n].node;
+        } else {
+            const char* tag_name = NULL;
+            int quote_sugar = 0;
+            int consume = 1;
+            if (c == '\'')                                  { tag_name = "quote"; quote_sugar = 1; }
+            else if (c == '`')                              { tag_name = "quasiquote"; }
+            else if (c == ',' && src_ptr[1] == '@')         { tag_name = "unquote-splicing"; consume = 2; }
+            else if (c == ',')                              { tag_name = "unquote"; }
+
+            if (tag_name) {
+                src_ptr += consume;
+                Node* wrapper = vm_read_prefix_wrapper(tag_name, quote_sugar);
+                if (!vm_read_push(&st, wrapper, VM_READ_PREFIX)) {
+                    vm_compile_error("out of memory reading a reader prefix",
+                                     "the reader could not record how deep it is");
+                    free_node(wrapper);
+                    vm_read_stack_release(&st);
+                    return NULL;
+                }
+                continue;
+            }
+
+            value = parse_leaf_datum();
+            if (!value) {
+                vm_read_stack_release(&st);
+                return NULL;
+            }
+        }
+
+        /* Deliver the completed datum inwards-out. */
+        while (st.n > 0) {
+            VmReadFrame* top = &st.frames[st.n - 1];
+            const int before = top->node->n_children;
+            add_child(top->node, value);
+            if (top->node->n_children != before + 1) {
+                vm_compile_error("unable to append parsed datum", "allocation failed");
+                free_node(value);
+                vm_read_stack_release(&st);
+                return NULL;
+            }
+            if (top->kind == VM_READ_LIST) { value = NULL; break; }
+            value = top->node;   /* the prefix wrapper is itself the datum now */
+            st.n--;
+        }
+
+        if (st.n == 0 && value) {
+            free(st.frames);
+            return value;
+        }
+    }
 }
 
 /* EOF between complete datums is normal. Failure after a datum starts must
@@ -656,7 +926,7 @@ static Node* parse_sexp(void) {
     skip_ws();
     if (!*src_ptr) return NULL;
     g_vm_parse_depth++;
-    Node* datum = parse_sexp_impl();
+    Node* datum = parse_datum_iterative();
     g_vm_parse_depth--;
     if (!datum && !vm_compile_failed())
         vm_compile_error("invalid or incomplete Scheme datum", NULL);
@@ -664,71 +934,9 @@ static Node* parse_sexp(void) {
     return datum;
 }
 
-static Node* parse_sexp_impl(void) {
+static Node* parse_leaf_datum(void) {
     skip_ws();
     if (!*src_ptr) return NULL;
-    if (*src_ptr == '(') { src_ptr++; return parse_list(); }
-    if (*src_ptr == ')') return NULL;
-    if (*src_ptr == '\'') {
-        src_ptr++;
-        Node* q = make_node(N_LIST); if (!q) return NULL;
-        q->is_quote_sugar = 1;
-        Node* qs = make_node(N_SYMBOL); if (!qs) { free_node(q); return NULL; }
-        strncpy(qs->symbol, "quote", 127); qs->symbol[127] = 0;
-        add_child(q, qs);
-        Node* datum = parse_sexp();
-        if (!datum) {
-            vm_compile_error("missing datum after reader prefix", NULL);
-            free_node(q); return NULL;
-        }
-        add_child(q, datum);
-        return q;
-    }
-    /* Quasiquote */
-    if (*src_ptr == '`') {
-        src_ptr++;
-        Node* q = make_node(N_LIST); if (!q) return NULL;
-        Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(q); return NULL; }
-        strncpy(tag->symbol, "quasiquote", 127); tag->symbol[127] = 0;
-        add_child(q, tag);
-        Node* datum = parse_sexp();
-        if (!datum) {
-            vm_compile_error("missing datum after reader prefix", NULL);
-            free_node(q); return NULL;
-        }
-        add_child(q, datum);
-        return q;
-    }
-    /* Unquote-splicing (must check before unquote) */
-    if (*src_ptr == ',' && src_ptr[1] == '@') {
-        src_ptr += 2;
-        Node* q = make_node(N_LIST); if (!q) return NULL;
-        Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(q); return NULL; }
-        strncpy(tag->symbol, "unquote-splicing", 127); tag->symbol[127] = 0;
-        add_child(q, tag);
-        Node* datum = parse_sexp();
-        if (!datum) {
-            vm_compile_error("missing datum after reader prefix", NULL);
-            free_node(q); return NULL;
-        }
-        add_child(q, datum);
-        return q;
-    }
-    /* Unquote */
-    if (*src_ptr == ',') {
-        src_ptr++;
-        Node* q = make_node(N_LIST); if (!q) return NULL;
-        Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(q); return NULL; }
-        strncpy(tag->symbol, "unquote", 127); tag->symbol[127] = 0;
-        add_child(q, tag);
-        Node* datum = parse_sexp();
-        if (!datum) {
-            vm_compile_error("missing datum after reader prefix", NULL);
-            free_node(q); return NULL;
-        }
-        add_child(q, datum);
-        return q;
-    }
     /* String literal */
     if (*src_ptr == '"') {
         return parse_string_literal();
@@ -746,7 +954,18 @@ static Node* parse_sexp_impl(void) {
         if (src_ptr[1] == '\\') {
             src_ptr += 2;
             int ch;
-            if (strncmp(src_ptr, "space", 5) == 0 && (!src_ptr[5] || isspace(src_ptr[5]) || src_ptr[5] == ')')) {
+            uint32_t hex_scalar = 0;
+            int hex_invalid = 0;
+            /* R7RS #\x<hex scalar value>, by the rule both readers share. */
+            size_t hex_bytes = eshkol_char_hex_literal(src_ptr, (size_t)-1,
+                                                       &hex_scalar, &hex_invalid);
+            if (hex_invalid) {
+                vm_compile_error("character literal names no Unicode scalar value", NULL);
+                return NULL;
+            }
+            if (hex_bytes) {
+                ch = (int)hex_scalar; src_ptr += hex_bytes;
+            } else if (strncmp(src_ptr, "space", 5) == 0 && (!src_ptr[5] || isspace(src_ptr[5]) || src_ptr[5] == ')')) {
                 ch = ' '; src_ptr += 5;
             } else if (strncmp(src_ptr, "newline", 7) == 0 && (!src_ptr[7] || isspace(src_ptr[7]) || src_ptr[7] == ')')) {
                 ch = '\n'; src_ptr += 7;
@@ -771,16 +990,8 @@ static Node* parse_sexp_impl(void) {
             n->is_char = 1;   /* preserve char-ness through to codegen */
             return n;
         }
-        /* Vector literal: #(elements...) */
-        if (src_ptr[1] == '(') {
-            src_ptr += 2; /* skip #( */
-            Node* vec = make_node(N_LIST); if (!vec) return NULL;
-            Node* tag = make_node(N_SYMBOL); if (!tag) { free_node(vec); return NULL; }
-            strncpy(tag->symbol, "vector", 127); tag->symbol[127] = 0;
-            vec->is_vector = 1;   /* reader-origin marker; see the Node field note */
-            add_child(vec, tag);
-            return parse_list_body(vec);
-        }
+        /* `#(` opens a vector literal; the reader's own stack takes it
+         * (see parse_datum_iterative), so no case for it is needed here. */
     }
     /* R7RS 7.1.1 numbers -- every real and complex spelling, with radix and
      * exactness prefixes -- decided by the recognizer every Eshkol reader
@@ -1026,13 +1237,49 @@ static Node* parse_sexp_impl(void) {
     Node* n = make_node(N_SYMBOL); if (!n) return NULL; strncpy(n->symbol, buf, 127); n->symbol[127] = 0; return n;
 }
 
-/** @brief Recursively free an AST Node and all its children. */
+/**
+ * @brief Frees an AST Node and every node below it.
+ *
+ * The walk carries its own pending set on the heap, so releasing a tree
+ * nests as deeply as memory allows: a million-level datum is freed on a
+ * constant number of native frames.  The pending set grows by doubling; if
+ * it cannot grow, the remaining children of the node in hand are released
+ * one level at a time by re-entering this function on each of them, which
+ * costs one frame per level only in that already-out-of-memory case.
+ */
 static void free_node(Node* n) {
     if (!n) return;
-    for (int i = 0; i < n->n_children; i++) free_node(n->children[i]);
-    free(n->children);
-    free(n->string_data);
-    free(n);
+    Node** pending = NULL;
+    size_t n_pending = 0, cap_pending = 0;
+    Node* current = n;
+    for (;;) {
+        if (current) {
+            for (int i = 0; i < current->n_children; i++) {
+                Node* child = current->children[i];
+                if (!child) continue;
+                if (n_pending == cap_pending) {
+                    size_t next = cap_pending ? cap_pending * 2 : 16;
+                    Node** grown = (Node**)realloc(pending, next * sizeof(Node*));
+                    if (!grown) {
+                        /* Out of memory while releasing memory: finish this
+                         * subtree the only way left, one frame per level. */
+                        for (int j = i; j < current->n_children; j++)
+                            free_node(current->children[j]);
+                        break;
+                    }
+                    pending = grown;
+                    cap_pending = next;
+                }
+                pending[n_pending++] = child;
+            }
+            free(current->children);
+            free(current->string_data);
+            free(current);
+        }
+        if (n_pending == 0) break;
+        current = pending[--n_pending];
+    }
+    free(pending);
 }
 
 /*******************************************************************************
@@ -1404,7 +1651,27 @@ static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
 /** @brief Scan an AST subtree for a `(set! name ...)` reference to
  *         @p name. */
+/* The binding scanners below walk a form with native recursion.  A form can
+ * be nested as deeply as the reader could read it, so each one asks for stack
+ * headroom on entry and poisons the compilation rather than descending past
+ * its bound.  The answer it then returns is the conservative one; no program
+ * is produced from a poisoned compilation, so it is never acted on. */
+#define VM_SCAN_GUARD(conservative_answer)                                   \
+    do {                                                                     \
+        if (!eshkol_stack_headroom_ok()) {                                   \
+            char vm_scan_message[320];                                       \
+            eshkol_reader_depth_message("scanning a nested form's bindings", \
+                                        eshkol_reader_max_pass_depth(),      \
+                                        vm_scan_message,                     \
+                                        sizeof(vm_scan_message));            \
+            vm_compile_error("form nesting too deep to scan",                \
+                             vm_scan_message);                              \
+            return (conservative_answer);                                    \
+        }                                                                    \
+    } while (0)
+
 static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
         Node* head = node->children[0];
@@ -1524,13 +1791,49 @@ static int scan_for_set_scoped(Node* node, const char* name, int shadowed) {
     return 0;
 }
 
+/**
+ * @brief Whether a form contains a `set!` anywhere below it.
+ *
+ * A pure structural question with no scope state, so it is asked with an
+ * explicit pending set rather than native recursion: this runs over whole
+ * top-level forms, quoted data included, and a datum nests as deeply as the
+ * reader could read it. If the pending set cannot grow, the answer is the
+ * conservative yes — the caller boxes a binding it might not have needed to,
+ * which is always safe.
+ */
 static int node_contains_set(Node* node) {
     if (!node || node->type != N_LIST) return 0;
-    if (node->n_children >= 1 && node->children[0]->type == N_SYMBOL &&
-        eshkol_syntax_base_is(node->children[0]->symbol, "set!")) return 1;
-    for (int i = 0; i < node->n_children; ++i)
-        if (node_contains_set(node->children[i])) return 1;
-    return 0;
+    Node** pending = NULL;
+    size_t n_pending = 0, cap_pending = 0;
+    int answer = 0;
+    Node* here = node;
+    for (;;) {
+        if (here && here->type == N_LIST) {
+            if (here->n_children >= 1 && here->children[0] &&
+                here->children[0]->type == N_SYMBOL &&
+                eshkol_syntax_base_is(here->children[0]->symbol, "set!")) {
+                answer = 1;
+                break;
+            }
+            for (int i = 0; i < here->n_children; ++i) {
+                Node* child = here->children[i];
+                if (!child || child->type != N_LIST) continue;
+                if (n_pending == cap_pending) {
+                    size_t next = cap_pending ? cap_pending * 2 : 32;
+                    Node** grown = (Node**)realloc(pending, next * sizeof(Node*));
+                    if (!grown) { answer = 1; goto done; }
+                    pending = grown;
+                    cap_pending = next;
+                }
+                pending[n_pending++] = child;
+            }
+        }
+        if (n_pending == 0) break;
+        here = pending[--n_pending];
+    }
+done:
+    free(pending);
+    return answer;
 }
 
 static int scan_for_set(Node* node, const char* name) {
@@ -1542,6 +1845,7 @@ static int scan_for_set(Node* node, const char* name) {
  * mutation remains a direct stack-slot store; this is the VM counterpart of
  * native assignment conversion's alloca fast path and keeps hot loops flat. */
 static int scan_for_callcc(Node* node) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type != N_LIST) return 0;
     if (node->n_children > 0 && node->children[0]->type == N_SYMBOL &&
@@ -1562,6 +1866,7 @@ static int scan_for_callcc(Node* node) {
  * than one lowered scope. Seeing any closure constructor keeps the local in a
  * shared cell; the no-closure case is the performance case we can prove. */
 static int scan_for_reference_scoped(Node* node, const char* name, int shadowed) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type == N_SYMBOL)
         return !shadowed && strcmp(node->symbol, name) == 0;
@@ -1659,6 +1964,7 @@ static int scan_for_reference_scoped(Node* node, const char* name, int shadowed)
 }
 
 static int scan_for_observing_context_scoped(Node* node, const char* name, int shadowed) {
+    VM_SCAN_GUARD(1);
     if (!node || node->type != N_LIST) return 0;
     Node* head = node->n_children ? node->children[0] : NULL;
     if (head && head->type == N_SYMBOL) {
@@ -1790,6 +2096,7 @@ static int scan_for_observing_context(Node* node, const char* name) {
  *        whether the current recursion is inside a lambda body.
  */
 static int scan_for_capture(Node* node, const char* name, int in_lambda) {
+    VM_SCAN_GUARD(1);
     if (!node) return 0;
     if (node->type == N_SYMBOL && in_lambda && strcmp(node->symbol, name) == 0)
         return 1;
@@ -1947,7 +2254,138 @@ static void compile_packed_string_literal(FuncChunk* c, const char* data, size_t
     chunk_emit(c, OP_NATIVE_CALL, ESHKOL_VM_PACKED_STRING_FID_BASE + n_packs);
 }
 
+/* ───────────────────────────────────────────────────────────────────────────
+ * Quoted data is built with the compiler's own stack
+ *
+ * A quoted datum nests as deeply as the reader could read it, so emitting one
+ * walks the tree with an explicit work stack instead of native recursion.  A
+ * work item is one step of the emission the recursive shape used to perform
+ * in order; items are pushed in reverse, so popping replays that order
+ * exactly — which matters, because the order of chunk_add_const() calls is
+ * the constant-pool layout and therefore part of the emitted bytecode.  That
+ * is also why QW_CONST_INT carries the VALUE and interns it when it runs,
+ * rather than an index computed when it was pushed.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef enum {
+    QW_DATUM,            /* emit this datum (may push further work)         */
+    QW_OP,               /* chunk_emit(op, operand)                        */
+    QW_CONST_INT,        /* OP_CONST of an interned exact integer          */
+    QW_LOCALS_MARK,      /* remember n_locals, then add a temporary local   */
+    QW_LOCALS_RESTORE    /* restore the n_locals remembered by the mark     */
+} QuoteWorkKind;
+
+typedef struct {
+    QuoteWorkKind kind;
+    Node*       datum;
+    uint8_t     op;
+    int32_t     operand;
+    int64_t     value;
+    const char* label;
+} QuoteWork;
+
+typedef struct {
+    QuoteWork* items;  size_t n;  size_t cap;
+    int*       marks;  size_t n_marks;  size_t cap_marks;
+    int        failed;
+} QuoteWorkStack;
+
+static void qw_push(QuoteWorkStack* st, QuoteWork w) {
+    if (st->failed) return;
+    if (st->n == st->cap) {
+        size_t next = st->cap ? st->cap * 2 : 64;
+        QuoteWork* grown = (QuoteWork*)realloc(st->items, next * sizeof(QuoteWork));
+        if (!grown) {
+            vm_compile_error("out of memory emitting quoted data",
+                             "the compiler could not record how deep the datum is");
+            st->failed = 1;
+            return;
+        }
+        st->items = grown;
+        st->cap = next;
+    }
+    st->items[st->n++] = w;
+}
+
+static void qw_push_datum(QuoteWorkStack* st, Node* datum) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = QW_DATUM; w.datum = datum;
+    qw_push(st, w);
+}
+
+static void qw_push_op(QuoteWorkStack* st, uint8_t op, int32_t operand) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = QW_OP; w.op = op; w.operand = operand;
+    qw_push(st, w);
+}
+
+static void qw_push_const_int(QuoteWorkStack* st, int64_t value) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = QW_CONST_INT; w.value = value;
+    qw_push(st, w);
+}
+
+static void qw_push_locals(QuoteWorkStack* st, QuoteWorkKind kind, const char* label) {
+    QuoteWork w; memset(&w, 0, sizeof(w));
+    w.kind = kind; w.label = label;
+    qw_push(st, w);
+}
+
+static void qw_mark_locals(QuoteWorkStack* st, int n_locals) {
+    if (st->n_marks == st->cap_marks) {
+        size_t next = st->cap_marks ? st->cap_marks * 2 : 32;
+        int* grown = (int*)realloc(st->marks, next * sizeof(int));
+        if (!grown) {
+            vm_compile_error("out of memory emitting a quoted vector literal",
+                             "the compiler could not record its temporaries");
+            st->failed = 1;
+            return;
+        }
+        st->marks = grown;
+        st->cap_marks = next;
+    }
+    st->marks[st->n_marks++] = n_locals;
+}
+
+static void compile_quote_datum(FuncChunk* c, Node* datum, QuoteWorkStack* st);
+
+/**
+ * @brief Emits the code that builds a quoted datum.
+ *
+ * Native stack use is constant in the datum's nesting depth: the structure is
+ * carried on the work stack above.  When that stack cannot grow, the datum is
+ * refused with the ordinary diagnostic rather than the process ending.
+ */
 static void compile_quote(FuncChunk* c, Node* datum) {
+    QuoteWorkStack st;
+    memset(&st, 0, sizeof(st));
+    qw_push_datum(&st, datum);
+    while (st.n > 0 && !st.failed) {
+        QuoteWork w = st.items[--st.n];
+        switch (w.kind) {
+            case QW_DATUM:
+                compile_quote_datum(c, w.datum, &st);
+                break;
+            case QW_OP:
+                chunk_emit(c, w.op, w.operand);
+                break;
+            case QW_CONST_INT:
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(w.value)));
+                break;
+            case QW_LOCALS_MARK:
+                qw_mark_locals(&st, c->n_locals);
+                add_temporary_local(c, w.label);
+                break;
+            case QW_LOCALS_RESTORE:
+                if (st.n_marks > 0) c->n_locals = st.marks[--st.n_marks];
+                break;
+        }
+    }
+    free(st.items);
+    free(st.marks);
+}
+
+static void compile_quote_datum(FuncChunk* c, Node* datum, QuoteWorkStack* st) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {
         /* Same three-way discrimination compile_expr() applies to an evaluated
@@ -2030,9 +2468,9 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          * its `make-rational` desugar, for the same reason): a hand-written
          * `'(exact-rational x 3)` with a non-literal operand must stay
          * ordinary quoted list data, since quote never evaluates `x`. */
-        compile_quote(c, datum->children[1]);
-        compile_quote(c, datum->children[2]);
-        chunk_emit(c, OP_NATIVE_CALL, 330);
+        qw_push_op(st, OP_NATIVE_CALL, 330);
+        qw_push_datum(st, datum->children[2]);
+        qw_push_datum(st, datum->children[1]);
         return;
     }
     if (datum->type == N_LIST && !datum->is_vector && datum->n_children == 3 &&
@@ -2044,9 +2482,9 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          * vm_number_node above): quoted, it is the complex number, built by
          * make-rectangular (native 300) exactly as the evaluated literal is.
          * Only the reader's own shape -- two inexact literal parts -- counts. */
-        compile_quote(c, datum->children[1]);
-        compile_quote(c, datum->children[2]);
-        chunk_emit(c, OP_NATIVE_CALL, 300);
+        qw_push_op(st, OP_NATIVE_CALL, 300);
+        qw_push_datum(st, datum->children[2]);
+        qw_push_datum(st, datum->children[1]);
         return;
     }
     if (datum->type == N_LIST && datum->is_vector) {
@@ -2066,23 +2504,22 @@ static void compile_quote(FuncChunk* c, Node* datum) {
          * VM_VEC_LITERAL_STACK_CHUNK elements; a quoted literal is compiled
          * once, so it simply always takes the safe shape instead of carrying a
          * second threshold that could drift. */
-        int n_elems = datum->n_children - 1;   /* children[0] is the "vector" tag */
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
-        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
-        chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
-        int saved_locals = c->n_locals;
-        add_temporary_local(c, "__quoted_vec_literal__");
-        for (int i = 1; i < datum->n_children; i++) {
-            chunk_emit(c, OP_DUP, 0);                                    /* vec */
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1))); /* idx */
-            int elem_locals = c->n_locals;
-            add_temporary_local(c, "__quoted_vec_idx__");
-            compile_quote(c, datum->children[i]);                        /* val */
-            c->n_locals = elem_locals;
-            chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
-            chunk_emit(c, OP_POP, 0);       /* drop the nil */
+        /* Pushed in reverse so the pop order is the emission order above. */
+        const int n_elems = datum->n_children - 1;   /* children[0] is the "vector" tag */
+        qw_push_locals(st, QW_LOCALS_RESTORE, NULL);
+        for (int i = datum->n_children - 1; i >= 1; i--) {
+            qw_push_op(st, OP_POP, 0);         /* drop the nil */
+            qw_push_op(st, OP_VEC_SET, 0);     /* pops val, idx, vec; pushes nil */
+            qw_push_locals(st, QW_LOCALS_RESTORE, NULL);
+            qw_push_datum(st, datum->children[i]);                   /* val */
+            qw_push_locals(st, QW_LOCALS_MARK, "__quoted_vec_idx__");
+            qw_push_const_int(st, (int64_t)(i - 1));                 /* idx */
+            qw_push_op(st, OP_DUP, 0);                               /* vec */
         }
-        c->n_locals = saved_locals;
+        qw_push_locals(st, QW_LOCALS_MARK, "__quoted_vec_literal__");
+        qw_push_op(st, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
+        qw_push_const_int(st, 0);
+        qw_push_const_int(st, (int64_t)n_elems);
         return;
     }
     if (datum->type == N_LIST) {
@@ -2108,16 +2545,29 @@ static void compile_quote(FuncChunk* c, Node* datum) {
                       datum->children[n - 2]->type == N_SYMBOL &&
                       !datum->children[n - 2]->is_verbatim &&
                       eshkol_syntax_base_is(datum->children[n - 2]->symbol, "."));
+        Node* seed = NULL;
         if (dotted) {
-            compile_quote(c, datum->children[n - 1]);
+            seed = datum->children[n - 1];
             n -= 2;                       /* drop the tail AND the dot */
-        } else {
-            chunk_emit(c, OP_NIL, 0);
         }
-        for (int i = n - 1; i >= 0; i--) {
-            compile_quote(c, datum->children[i]);
-            chunk_emit(c, OP_CONS, 0);
+        /* The LAST element is built first, while nothing of this list is on
+         * the operand stack yet; the seed (the final cdr, or '()) follows it
+         * and the cons native (202, car pushed first) joins them. Each earlier
+         * element is then built on top of the growing list and joined by
+         * OP_CONS (car on top). So a datum nested through last elements --
+         * '((((...)))) at any depth -- holds one operand slot in all, not one
+         * per level, and only nesting through an earlier element costs the
+         * one slot of the list under construction.
+         *
+         * Pushed in reverse, so the pop order is that emission order. */
+        for (int i = 0; i < n - 1; i++) {
+            qw_push_op(st, OP_CONS, 0);
+            qw_push_datum(st, datum->children[i]);
         }
+        qw_push_op(st, OP_NATIVE_CALL, 202);
+        if (seed) qw_push_datum(st, seed);
+        else      qw_push_op(st, OP_NIL, 0);
+        qw_push_datum(st, datum->children[n - 1]);
         return;
     }
     chunk_emit(c, OP_NIL, 0); /* fallback */

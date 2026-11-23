@@ -4213,32 +4213,38 @@ std::vector<PredicateNarrowing> narrowingsForBody(const eshkol_ast_t* test,
 
 /** Call @p fn with every name @p p binds. */
 template <class Fn>
-void forEachPatternName(const eshkol_pattern_t* p, Fn&& fn) {
-    if (!p) return;
-    switch (p->type) {
-        case PATTERN_VARIABLE:
-            if (p->variable.name) fn(p->variable.name);
-            break;
-        case PATTERN_CONS:
-            forEachPatternName(p->cons.car_pattern, fn);
-            forEachPatternName(p->cons.cdr_pattern, fn);
-            break;
-        case PATTERN_VECTOR:
-        case PATTERN_LIST:
-            for (uint64_t i = 0; i < p->list.num_patterns; ++i) {
-                forEachPatternName(p->list.patterns[i], fn);
-            }
-            break;
-        case PATTERN_PREDICATE:
-            if (p->predicate.binding_name) fn(p->predicate.binding_name);
-            break;
-        case PATTERN_OR:
-            for (uint64_t i = 0; i < p->or_pat.num_patterns; ++i) {
-                forEachPatternName(p->or_pat.patterns[i], fn);
-            }
-            break;
-        default:
-            break;
+void forEachPatternName(const eshkol_pattern_t* root, Fn&& fn) {
+    if (!root) return;
+    std::vector<const eshkol_pattern_t*> work{root};
+    while (!work.empty()) {
+        const eshkol_pattern_t* p = work.back();
+        work.pop_back();
+        if (!p) continue;
+        switch (p->type) {
+            case PATTERN_VARIABLE:
+                if (p->variable.name) fn(p->variable.name);
+                break;
+            case PATTERN_CONS:
+                if (p->cons.cdr_pattern) work.push_back(p->cons.cdr_pattern);
+                if (p->cons.car_pattern) work.push_back(p->cons.car_pattern);
+                break;
+            case PATTERN_VECTOR:
+            case PATTERN_LIST:
+                for (uint64_t i = p->list.num_patterns; i-- > 0;) {
+                    if (p->list.patterns[i]) work.push_back(p->list.patterns[i]);
+                }
+                break;
+            case PATTERN_PREDICATE:
+                if (p->predicate.binding_name) fn(p->predicate.binding_name);
+                break;
+            case PATTERN_OR:
+                for (uint64_t i = p->or_pat.num_patterns; i-- > 0;) {
+                    if (p->or_pat.patterns[i]) work.push_back(p->or_pat.patterns[i]);
+                }
+                break;
+            default:
+                break;
+        }
     }
 }
 
@@ -4768,40 +4774,46 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizePatternExpressionsTask(
  * Value. An `or` pattern binds Value throughout, because each alternative may
  * bind a different value, or none, under the same name.
  */
-void TypeChecker::bindPatternVariables(const eshkol_pattern_t* pattern, TypeId matched) {
-    if (!pattern) return;
-    switch (pattern->type) {
-        case PATTERN_VARIABLE:
-            if (pattern->variable.name) ctx_.bind(pattern->variable.name, matched);
-            break;
-        case PATTERN_CONS:
-            bindPatternVariables(pattern->cons.car_pattern, BuiltinTypes::Value);
-            bindPatternVariables(pattern->cons.cdr_pattern, BuiltinTypes::Value);
-            break;
-        case PATTERN_VECTOR:
-        case PATTERN_LIST:
-            for (uint64_t i = 0; i < pattern->list.num_patterns; ++i) {
-                bindPatternVariables(pattern->list.patterns[i], BuiltinTypes::Value);
-            }
-            break;
-        case PATTERN_PREDICATE:
-            if (pattern->predicate.binding_name) {
-                TypeId bound = matched;
-                const eshkol_ast_t* pred = pattern->predicate.predicate;
-                if (pred && pred->type == ESHKOL_VAR && pred->variable.id) {
-                    TypeId proven = narrowTypeForPredicate(pred->variable.id);
-                    if (proven.isValid()) bound = TypeRelation(env_).narrow(matched, proven);
+void TypeChecker::bindPatternVariables(const eshkol_pattern_t* root, TypeId root_matched) {
+    if (!root) return;
+    std::vector<std::pair<const eshkol_pattern_t*, TypeId>> work{{root, root_matched}};
+    while (!work.empty()) {
+        auto [pattern, matched] = work.back();
+        work.pop_back();
+        if (!pattern) continue;
+        switch (pattern->type) {
+            case PATTERN_VARIABLE:
+                if (pattern->variable.name) ctx_.bind(pattern->variable.name, matched);
+                break;
+            case PATTERN_CONS:
+                if (pattern->cons.cdr_pattern) work.push_back({pattern->cons.cdr_pattern, BuiltinTypes::Value});
+                if (pattern->cons.car_pattern) work.push_back({pattern->cons.car_pattern, BuiltinTypes::Value});
+                break;
+            case PATTERN_VECTOR:
+            case PATTERN_LIST:
+                for (uint64_t i = pattern->list.num_patterns; i-- > 0;) {
+                    if (pattern->list.patterns[i]) work.push_back({pattern->list.patterns[i], BuiltinTypes::Value});
                 }
-                ctx_.bind(pattern->predicate.binding_name, bound);
-            }
-            break;
-        case PATTERN_OR:
-            forEachPatternName(pattern, [this](const char* name) {
-                ctx_.bind(name, BuiltinTypes::Value);
-            });
-            break;
-        default:
-            break;
+                break;
+            case PATTERN_PREDICATE:
+                if (pattern->predicate.binding_name) {
+                    TypeId bound = matched;
+                    const eshkol_ast_t* pred = pattern->predicate.predicate;
+                    if (pred && pred->type == ESHKOL_VAR && pred->variable.id) {
+                        TypeId proven = narrowTypeForPredicate(pred->variable.id);
+                        if (proven.isValid()) bound = TypeRelation(env_).narrow(matched, proven);
+                    }
+                    ctx_.bind(pattern->predicate.binding_name, bound);
+                }
+                break;
+            case PATTERN_OR:
+                forEachPatternName(pattern, [this](const char* name) {
+                    ctx_.bind(name, BuiltinTypes::Value);
+                });
+                break;
+            default:
+                break;
+        }
     }
 }
 
@@ -5668,67 +5680,80 @@ static bool isUntypedContainerForm(const char* name) {
 }
 
 /** Collect every name a `match` pattern binds, so the clause body shadows it. */
-static void collectPatternBindings(const eshkol_pattern_t* p,
+static void collectPatternBindings(const eshkol_pattern_t* root,
                                    std::set<std::string>& out) {
-    if (!p) return;
-    switch (p->type) {
-        case PATTERN_VARIABLE:
-            if (p->variable.name) out.insert(p->variable.name);
-            break;
-        case PATTERN_CONS:
-            collectPatternBindings(p->cons.car_pattern, out);
-            collectPatternBindings(p->cons.cdr_pattern, out);
-            break;
-        case PATTERN_VECTOR:
-        case PATTERN_LIST:
-            for (uint64_t i = 0; i < p->list.num_patterns; ++i) {
-                collectPatternBindings(p->list.patterns[i], out);
-            }
-            break;
-        case PATTERN_PREDICATE:
-            if (p->predicate.binding_name) out.insert(p->predicate.binding_name);
-            break;
-        case PATTERN_OR:
-            for (uint64_t i = 0; i < p->or_pat.num_patterns; ++i) {
-                collectPatternBindings(p->or_pat.patterns[i], out);
-            }
-            break;
-        default:
-            break;
+    if (!root) return;
+    std::vector<const eshkol_pattern_t*> work{root};
+    while (!work.empty()) {
+        const eshkol_pattern_t* p = work.back();
+        work.pop_back();
+        if (!p) continue;
+        switch (p->type) {
+            case PATTERN_VARIABLE:
+                if (p->variable.name) out.insert(p->variable.name);
+                break;
+            case PATTERN_CONS:
+                if (p->cons.cdr_pattern) work.push_back(p->cons.cdr_pattern);
+                if (p->cons.car_pattern) work.push_back(p->cons.car_pattern);
+                break;
+            case PATTERN_VECTOR:
+            case PATTERN_LIST:
+                for (uint64_t i = p->list.num_patterns; i-- > 0;) {
+                    if (p->list.patterns[i]) work.push_back(p->list.patterns[i]);
+                }
+                break;
+            case PATTERN_PREDICATE:
+                if (p->predicate.binding_name) out.insert(p->predicate.binding_name);
+                break;
+            case PATTERN_OR:
+                for (uint64_t i = p->or_pat.num_patterns; i-- > 0;) {
+                    if (p->or_pat.patterns[i]) work.push_back(p->or_pat.patterns[i]);
+                }
+                break;
+            default:
+                break;
+        }
     }
 }
 
 /** Uses inside a pattern's own EXPRESSIONS (predicate guards, literals). */
-static UseRange countPatternUses(const eshkol_pattern_t* p,
+static UseRange countPatternUses(const eshkol_pattern_t* root,
                             const LinearAliasSet& names,
                             LinearWalkState& st) {
-    if (!p || !st.decidable) return {};
-    switch (p->type) {
-        case PATTERN_LITERAL:
-            return countLinearUses(p->literal.value, names, st);
-        case PATTERN_CONS:
-            return countPatternUses(p->cons.car_pattern, names, st) +
-                   countPatternUses(p->cons.cdr_pattern, names, st);
-        case PATTERN_VECTOR:
-        case PATTERN_LIST: {
-            UseRange total;
-            for (uint64_t i = 0; i < p->list.num_patterns && st.decidable; ++i) {
-                total += countPatternUses(p->list.patterns[i], names, st);
-            }
-            return total;
+    if (!root || !st.decidable) return {};
+    UseRange total;
+    std::vector<const eshkol_pattern_t*> work{root};
+    while (!work.empty() && st.decidable) {
+        const eshkol_pattern_t* p = work.back();
+        work.pop_back();
+        if (!p) continue;
+        switch (p->type) {
+            case PATTERN_LITERAL:
+                total += countLinearUses(p->literal.value, names, st);
+                break;
+            case PATTERN_CONS:
+                if (p->cons.cdr_pattern) work.push_back(p->cons.cdr_pattern);
+                if (p->cons.car_pattern) work.push_back(p->cons.car_pattern);
+                break;
+            case PATTERN_VECTOR:
+            case PATTERN_LIST:
+                for (uint64_t i = p->list.num_patterns; i-- > 0;) {
+                    if (p->list.patterns[i]) work.push_back(p->list.patterns[i]);
+                }
+                break;
+            case PATTERN_PREDICATE:
+                total += countLinearUses(p->predicate.predicate, names, st);
+                break;
+            case PATTERN_OR:
+                for (uint64_t i = p->or_pat.num_patterns; i-- > 0;) {
+                    if (p->or_pat.patterns[i]) work.push_back(p->or_pat.patterns[i]);
+                }
+                break;
+            default:
+                break;
         }
-        case PATTERN_PREDICATE:
-            return countLinearUses(p->predicate.predicate, names, st);
-        case PATTERN_OR: {
-            UseRange total;
-            for (uint64_t i = 0; i < p->or_pat.num_patterns && st.decidable; ++i) {
-                total += countPatternUses(p->or_pat.patterns[i], names, st);
-            }
-            return total;
-        }
-        default:
-            return {};
     }
+    return total;
 }
 
 /** Sum uses over a contiguous array of @p n sub-expressions. */

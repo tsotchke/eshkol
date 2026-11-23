@@ -119,6 +119,27 @@
       "from": 8,
       "to": 7,
       "reason": "Ownership move lowering removes an inline negative-offset GEP into the object header flags byte in lib/backend/llvm_codegen.cpp."
+    },
+    {
+      "class": "A_macro_api",
+      "path": "lib/core/sexp_to_ast.cpp",
+      "from": 3,
+      "to": 1,
+      "reason": "Hosted eval datum conversion routes through a single iterative token-spelling path in lib/core/sexp_to_ast.cpp, leaving one ESHKOL_GET_HEADER check."
+    },
+    {
+      "class": "G_header_field_write",
+      "path": "lib/core/sexp_to_ast.cpp",
+      "from": 3,
+      "to": 1,
+      "reason": "Hosted eval datum conversion routes through a single iterative token-spelling path in lib/core/sexp_to_ast.cpp, leaving one header subtype check."
+    },
+    {
+      "class": "E_alloc_with_header",
+      "path": "lib/core/runtime_list_helpers.cpp",
+      "from": 8,
+      "to": 6,
+      "reason": "List and quoted-datum cons allocations in lib/core/runtime_list_helpers.cpp route through one local alloc_cons_cell helper."
     }
   ]
 }
