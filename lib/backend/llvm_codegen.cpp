@@ -24510,9 +24510,7 @@ Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, V
                     return ConstantInt::getFalse(*context);
                 }
                 Value* lit_val = typedValueToTaggedValue(lit_tv);
-                Value* equal = pattern->literal.compare_string_contents
-                    ? emitEqualTagged(val, lit_val) : emitEqvTagged(val, lit_val);
-                return flow_->isTruthy(equal);
+                return matchCompareValues(val, lit_val);
             }
 
             case PATTERN_CONS: {

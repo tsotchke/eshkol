@@ -21,14 +21,54 @@ namespace {
 // Set in the header once the payload destructor has run.
 constexpr uint8_t ESHKOL_SHARED_DEALLOCATED = 0x01;
 
+// Portable atomic operations on uint32_t fields (AppleClang 16 libc++ omits std::atomic_ref).
+#if defined(__cpp_lib_atomic_ref) && __cpp_lib_atomic_ref >= 201806L
+inline uint32_t atomic_load_u32(uint32_t& field, std::memory_order order) {
+    return std::atomic_ref<uint32_t>(field).load(order);
+}
+inline uint32_t atomic_fetch_add_u32(uint32_t& field, uint32_t delta, std::memory_order order) {
+    return std::atomic_ref<uint32_t>(field).fetch_add(delta, order);
+}
+inline uint32_t atomic_fetch_sub_u32(uint32_t& field, uint32_t delta, std::memory_order order) {
+    return std::atomic_ref<uint32_t>(field).fetch_sub(delta, order);
+}
+inline bool atomic_cas_weak_u32(uint32_t& field, uint32_t& expected, uint32_t desired,
+                                std::memory_order succ, std::memory_order fail) {
+    return std::atomic_ref<uint32_t>(field).compare_exchange_weak(expected, desired, succ, fail);
+}
+#else
+inline int to_builtin_order(std::memory_order order) {
+    switch (order) {
+        case std::memory_order_relaxed: return __ATOMIC_RELAXED;
+        case std::memory_order_acquire: return __ATOMIC_ACQUIRE;
+        case std::memory_order_release: return __ATOMIC_RELEASE;
+        case std::memory_order_acq_rel: return __ATOMIC_ACQ_REL;
+        default: return __ATOMIC_SEQ_CST;
+    }
+}
+inline uint32_t atomic_load_u32(uint32_t& field, std::memory_order order) {
+    return __atomic_load_n(&field, to_builtin_order(order));
+}
+inline uint32_t atomic_fetch_add_u32(uint32_t& field, uint32_t delta, std::memory_order order) {
+    return __atomic_fetch_add(&field, delta, to_builtin_order(order));
+}
+inline uint32_t atomic_fetch_sub_u32(uint32_t& field, uint32_t delta, std::memory_order order) {
+    return __atomic_fetch_sub(&field, delta, to_builtin_order(order));
+}
+inline bool atomic_cas_weak_u32(uint32_t& field, uint32_t& expected, uint32_t desired,
+                                std::memory_order succ, std::memory_order fail) {
+    return __atomic_compare_exchange_n(&field, &expected, desired, true,
+                                       to_builtin_order(succ), to_builtin_order(fail));
+}
+#endif
+
 // Increment a count that is currently positive. Returns false, without
 // changing it, when the count has already reached zero.
 bool retain_count(uint32_t& field, std::memory_order order) {
-    std::atomic_ref<uint32_t> counter(field);
-    uint32_t count = counter.load(std::memory_order_relaxed);
+    uint32_t count = atomic_load_u32(field, std::memory_order_relaxed);
     while (count) {
         if (count == UINT32_MAX) std::abort();
-        if (counter.compare_exchange_weak(count, count + 1, order, std::memory_order_relaxed))
+        if (atomic_cas_weak_u32(field, count, count + 1, order, std::memory_order_relaxed))
             return true;
     }
     return false;
@@ -37,7 +77,7 @@ bool retain_count(uint32_t& field, std::memory_order order) {
 // Each weak handle owns the header. Strong references collectively hold one
 // additional owner through completion of the payload destructor.
 void release_header(eshkol_shared_header_t* header) {
-    if (std::atomic_ref(header->header_owners).fetch_sub(1, std::memory_order_acq_rel) == 1)
+    if (atomic_fetch_sub_u32(header->header_owners, 1, std::memory_order_acq_rel) == 1)
         std::free(header);
 }
 
@@ -137,18 +177,15 @@ void shared_retain(void* ptr) {
 void shared_release(void* ptr) {
     if (!ptr) return;
     auto* header = shared_get_header(ptr);
-    uint32_t count;
-    {
-        std::atomic_ref counter(header->ref_count);
-        count = counter.load(std::memory_order_relaxed);
-        do {
-            if (!count) {
-                eshkol_warn("Releasing shared with zero ref count at %p", ptr);
-                return;
-            }
-        } while (!counter.compare_exchange_weak(count, count - 1, std::memory_order_acq_rel,
-                                                std::memory_order_relaxed));
-    }
+    uint32_t& ref_count = header->ref_count;
+    uint32_t count = atomic_load_u32(ref_count, std::memory_order_relaxed);
+    do {
+        if (!count) {
+            eshkol_warn("Releasing shared with zero ref count at %p", ptr);
+            return;
+        }
+    } while (!atomic_cas_weak_u32(ref_count, count, count - 1, std::memory_order_acq_rel,
+                                  std::memory_order_relaxed));
     if (count == 1) {
         if (header->destructor) header->destructor(ptr);
         header->flags |= ESHKOL_SHARED_DEALLOCATED;
@@ -164,7 +201,7 @@ void shared_release(void* ptr) {
  *             immediately after the read.
  */
 uint32_t shared_ref_count(void* ptr) {
-    return ptr ? std::atomic_ref(shared_get_header(ptr)->ref_count).load(std::memory_order_relaxed) : 0;
+    return ptr ? atomic_load_u32(shared_get_header(ptr)->ref_count, std::memory_order_relaxed) : 0;
 }
 
 /**
@@ -195,7 +232,7 @@ eshkol_weak_ref_t* weak_ref_create(void* shared_ptr) {
     weak->header = header;
     weak->data = shared_ptr;
     retain_count(header->header_owners, std::memory_order_relaxed);
-    std::atomic_ref(header->weak_count).fetch_add(1, std::memory_order_relaxed);
+    atomic_fetch_add_u32(header->weak_count, 1, std::memory_order_relaxed);
     return weak;
 }
 
@@ -229,7 +266,7 @@ void* weak_ref_upgrade(eshkol_weak_ref_t* weak) {
 void weak_ref_release(eshkol_weak_ref_t* weak) {
     if (!weak) return;
     if (weak->header) {
-        std::atomic_ref(weak->header->weak_count).fetch_sub(1, std::memory_order_relaxed);
+        atomic_fetch_sub_u32(weak->header->weak_count, 1, std::memory_order_relaxed);
         release_header(weak->header);
     }
     std::free(weak);
@@ -246,7 +283,7 @@ void weak_ref_release(eshkol_weak_ref_t* weak) {
  */
 bool weak_ref_is_alive(eshkol_weak_ref_t* weak) {
     return weak && weak->header &&
-           std::atomic_ref(weak->header->ref_count).load(std::memory_order_acquire) != 0;
+           atomic_load_u32(weak->header->ref_count, std::memory_order_acquire) != 0;
 }
 
 }  // extern "C"
