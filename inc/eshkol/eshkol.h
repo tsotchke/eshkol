@@ -2702,7 +2702,8 @@ typedef enum {
     PATTERN_CONS,         // Cons pattern: (cons car cdr)
     PATTERN_LIST,         // List pattern: (list x y z ...)
     PATTERN_PREDICATE,    // Predicate: (? pred)
-    PATTERN_OR            // Or pattern: (or p1 p2)
+    PATTERN_OR,           // Or pattern: (or p1 p2)
+    PATTERN_VECTOR        // Vector pattern: #(p1 p2 ...) or (vector p1 p2 ...)
 } pattern_type_t;
 
 // Forward declarations
@@ -2722,6 +2723,7 @@ typedef struct eshkol_pattern {
         // PATTERN_LITERAL: stores the literal value
         struct {
             struct eshkol_ast *value;
+            bool compare_string_contents;
         } literal;
 
         // PATTERN_VARIABLE: variable name to bind
@@ -2735,7 +2737,7 @@ typedef struct eshkol_pattern {
             struct eshkol_pattern *cdr_pattern;
         } cons;
 
-        // PATTERN_LIST: (list pat1 pat2 ...)
+        // Ordered children of PATTERN_LIST and PATTERN_VECTOR
         struct {
             struct eshkol_pattern **patterns;
             uint64_t num_patterns;

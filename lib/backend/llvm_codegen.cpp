@@ -24425,6 +24425,60 @@ Value* EshkolLLVMCodeGen::matchGetCdr(Value* val) {
         return builder->CreateLoad(tagged_value_type, typed_cdr_ptr, "cdr_val");
     }
 
+    // Pattern expressions see the enclosing environment. Bindings introduced
+    // by the pattern enter scope together for the guard and clause body.
+    struct PatternScope {
+        std::unordered_set<std::string> names;
+        std::vector<const eshkol_ast_t*> expressions;
+
+        void collect(const eshkol_pattern_t* p) {
+            if (!p) return;
+            switch (p->type) {
+                case PATTERN_LITERAL:
+                    expressions.push_back(p->literal.value);
+                    break;
+                case PATTERN_VARIABLE:
+                    names.insert(p->variable.name);
+                    break;
+                case PATTERN_PREDICATE:
+                    expressions.push_back(p->predicate.predicate);
+                    if (p->predicate.binding_name) names.insert(p->predicate.binding_name);
+                    break;
+                case PATTERN_CONS:
+                    collect(p->cons.car_pattern);
+                    collect(p->cons.cdr_pattern);
+                    break;
+                case PATTERN_LIST:
+                case PATTERN_VECTOR:
+                    for (uint64_t i = 0; i < p->list.num_patterns; ++i) collect(p->list.patterns[i]);
+                    break;
+                case PATTERN_OR:
+                    for (uint64_t i = 0; i < p->or_pat.num_patterns; ++i) collect(p->or_pat.patterns[i]);
+                    break;
+                default:
+                    break;
+            }
+        }
+    };
+
+    template<class Scan>
+    static bool matchUsesOuterName(const eshkol_operations_t* op, const std::string& name, Scan scan) {
+        if (scan(op->match_op.expr)) return true;
+        for (uint64_t i = 0; i < op->match_op.num_clauses; ++i) {
+            const auto& clause = op->match_op.clauses[i];
+            PatternScope scope;
+            scope.collect(clause.pattern);
+            for (auto* expr : scope.expressions)
+                if (scan(expr)) return true;
+            if (!scope.names.count(name) && (scan(clause.guard) || scan(clause.body))) return true;
+        }
+        return false;
+    }
+
+    // Recursive pattern matching - returns i1 indicating if pattern matches
+    // If match succeeds, binds pattern variables in symbol_table
+    // fail_block: where to branch on match failure
+    // continue_block: where to branch on match success (after bindings)
 Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, Value* val,
                                BasicBlock* fail_block,
                                std::vector<std::pair<std::string, Value*>>& bindings) {
@@ -24448,7 +24502,6 @@ Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, V
             }
 
             case PATTERN_LITERAL: {
-                // Literal matches a value equal to it (matchCompareValues)
                 if (!pattern->literal.value) {
                     return ConstantInt::getFalse(*context);
                 }
@@ -24457,7 +24510,9 @@ Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, V
                     return ConstantInt::getFalse(*context);
                 }
                 Value* lit_val = typedValueToTaggedValue(lit_tv);
-                return matchCompareValues(val, lit_val);
+                Value* equal = pattern->literal.compare_string_contents
+                    ? emitEqualTagged(val, lit_val) : emitEqvTagged(val, lit_val);
+                return flow_->isTruthy(equal);
             }
 
             case PATTERN_CONS: {
@@ -24542,6 +24597,26 @@ Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, V
                 // Success
                 builder->SetInsertPoint(match_success);
                 return ConstantInt::getTrue(*context);
+            }
+
+            case PATTERN_VECTOR: {
+                val = tagged_->resolveDenseTensorNode(val);
+                Value* vector = isHeapSubtype(val, HEAP_SUBTYPE_VECTOR);
+                Value* tensor = isHeapSubtype(val, HEAP_SUBTYPE_TENSOR);
+                BasicBlock* shape = BasicBlock::Create(*context, "vector_shape", current_func);
+                builder->CreateCondBr(builder->CreateOr(vector, tensor), shape, fail_block);
+                builder->SetInsertPoint(shape);
+                Value* length = unpackInt64FromTaggedValue(coll_->vectorLengthValue(val, true));
+                const uint64_t count = pattern->list.num_patterns;
+                Value* matched = builder->CreateICmpEQ(length, builder->getInt64(count));
+                for (uint64_t i = 0; i < count; ++i) {
+                    BasicBlock* element = BasicBlock::Create(*context, "vector_element", current_func);
+                    builder->CreateCondBr(matched, element, fail_block);
+                    builder->SetInsertPoint(element);
+                    Value* item = coll_->vectorRefValue(val, builder->getInt64(i));
+                    matched = compilePatternMatch(pattern->list.patterns[i], item, fail_block, bindings);
+                }
+                return matched;
             }
 
             case PATTERN_PREDICATE: {
@@ -24634,41 +24709,32 @@ Value* EshkolLLVMCodeGen::compilePatternMatch(const eshkol_pattern_t* pattern, V
                 }
 
                 BasicBlock* match_success = BasicBlock::Create(*context, "or_success", current_func);
-                BasicBlock* try_next = builder->GetInsertBlock();
-
-                for (uint64_t i = 0; i < pattern->or_pat.num_patterns; i++) {
-                    BasicBlock* try_pattern = BasicBlock::Create(*context, "or_try", current_func);
-                    BasicBlock* next_pattern = BasicBlock::Create(*context, "or_next", current_func);
-
-                    builder->SetInsertPoint(try_pattern);
-
-                    // Try this pattern (with temporary bindings that we may discard)
-                    std::vector<std::pair<std::string, Value*>> temp_bindings;
-                    Value* match_result = compilePatternMatch(pattern->or_pat.patterns[i],
-                                                               val, next_pattern, temp_bindings);
-
-                    // If matched, copy bindings and go to success
-                    BasicBlock* copy_bindings = BasicBlock::Create(*context, "or_bind", current_func);
-                    builder->CreateCondBr(match_result, copy_bindings, next_pattern);
-
-                    builder->SetInsertPoint(copy_bindings);
-                    for (auto& bind : temp_bindings) {
-                        bindings.push_back(bind);
-                    }
-                    builder->CreateBr(match_success);
-
-                    // Link previous block to this try
-                    builder->SetInsertPoint(try_next);
-                    builder->CreateBr(try_pattern);
-
-                    try_next = next_pattern;
+                std::map<std::string, std::map<BasicBlock*, Value*>> alternatives;
+                std::vector<BasicBlock*> exits;
+                for (uint64_t i = 0; i < pattern->or_pat.num_patterns; ++i) {
+                    BasicBlock* next = BasicBlock::Create(*context, "or_next", current_func);
+                    auto local = bindings;
+                    Value* matched = compilePatternMatch(pattern->or_pat.patterns[i], val, next, local);
+                    BasicBlock* exit = builder->GetInsertBlock();
+                    for (size_t j = bindings.size(); j < local.size(); ++j)
+                        alternatives[local[j].first][exit] = local[j].second;
+                    exits.push_back(exit);
+                    builder->CreateCondBr(matched, match_success, next);
+                    builder->SetInsertPoint(next);
                 }
-
-                // Last next_pattern goes to fail
-                builder->SetInsertPoint(try_next);
                 builder->CreateBr(fail_block);
-
                 builder->SetInsertPoint(match_success);
+                for (const auto& [name, incoming] : alternatives) {
+                    Value* fallback = Constant::getNullValue(tagged_value_type);
+                    for (const auto& prior : bindings)
+                        if (prior.first == name) fallback = prior.second;
+                    auto* phi = builder->CreatePHI(tagged_value_type, exits.size(), name);
+                    for (BasicBlock* exit : exits) {
+                        auto it = incoming.find(exit);
+                        phi->addIncoming(it == incoming.end() ? fallback : it->second, exit);
+                    }
+                    bindings.emplace_back(name, phi);
+                }
                 return ConstantInt::getTrue(*context);
             }
 
@@ -24708,7 +24774,6 @@ Value* EshkolLLVMCodeGen::codegenMatch(const eshkol_operations_t* op) {
 
             BasicBlock* try_clause = BasicBlock::Create(*context, "match_clause", current_func);
             BasicBlock* next_clause = BasicBlock::Create(*context, "match_next", current_func);
-            BasicBlock* clause_body = BasicBlock::Create(*context, "match_body", current_func);
 
             builder->CreateBr(try_clause);
             builder->SetInsertPoint(try_clause);
@@ -24723,19 +24788,23 @@ Value* EshkolLLVMCodeGen::codegenMatch(const eshkol_operations_t* op) {
             Value* pattern_match = compilePatternMatch(clause->pattern, match_value,
                                                         next_clause, bindings);
 
-            // After pattern matching, check result
-
-            // Add bindings to symbol table
-            for (auto& bind : bindings) {
-                symbol_table[bind.first] = bind.second;
+            BasicBlock* matched = BasicBlock::Create(*context, "match_bound", current_func);
+            builder->CreateCondBr(pattern_match, matched, next_clause);
+            builder->SetInsertPoint(matched);
+            for (const auto& [name, value] : bindings) {
+                Value* cell;
+                if (astVarCapturedByNestedClosure(clause->body, name) ||
+                    astVarCapturedByNestedClosure(clause->guard, name)) {
+                    cell = builder->CreateCall(getArenaAllocateFunc(), {getArenaPtr(), sizeConst(16)}, name);
+                } else {
+                    IRBuilder<> entry(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+                    cell = entry.CreateAlloca(tagged_value_type, nullptr, name);
+                }
+                builder->CreateStore(value, cell);
+                symbol_table[name] = cell;
             }
 
-            // Check if we need to evaluate a guard
             if (clause->guard) {
-                BasicBlock* check_guard = BasicBlock::Create(*context, "match_guard", current_func);
-                builder->CreateCondBr(pattern_match, check_guard, next_clause);
-
-                builder->SetInsertPoint(check_guard);
                 TypedValue guard_tv = codegenTypedAST(clause->guard);
                 // NORETURN SAFETY: If the guard expression raised
                 if (eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
@@ -24743,29 +24812,18 @@ Value* EshkolLLVMCodeGen::codegenMatch(const eshkol_operations_t* op) {
                     builder->SetInsertPoint(next_clause);
                     continue;
                 }
-                if (!guard_tv.llvm_value) {
-                    builder->CreateBr(next_clause);
-                } else {
-                    Value* guard_val = typedValueToTaggedValue(guard_tv);
-                    Value* guard_true = flow_->isTruthy(guard_val);
-                    builder->CreateCondBr(guard_true, clause_body, next_clause);
-                }
-            } else {
-                // No guard, just check pattern result
-                builder->CreateCondBr(pattern_match, clause_body, next_clause);
+                BasicBlock* body = BasicBlock::Create(*context, "match_body", current_func);
+                Value* passed = guard_tv.llvm_value
+                    ? flow_->isTruthy(typedValueToTaggedValue(guard_tv)) : builder->getFalse();
+                builder->CreateCondBr(passed, body, next_clause);
+                builder->SetInsertPoint(body);
             }
 
-            // Clause body - pattern matched (and guard passed if any)
-            builder->SetInsertPoint(clause_body);
-
             TypedValue body_tv = codegenTypedAST(clause->body);
-            Value* body_result = body_tv.llvm_value ? typedValueToTaggedValue(body_tv)
-                                                     : packNullToTaggedValue();
-
-            BasicBlock* after_body = builder->GetInsertBlock();
-            bool body_terminated = eshkol::llvm_compat::terminatorOrNull(after_body) != nullptr;
-
-            if (!body_terminated) {
+            if (!eshkol::llvm_compat::terminatorOrNull(builder->GetInsertBlock())) {
+                Value* body_result = body_tv.llvm_value ? typedValueToTaggedValue(body_tv)
+                                                        : packNullToTaggedValue();
+                BasicBlock* after_body = builder->GetInsertBlock();
                 builder->CreateBr(done_block);
                 phi_inputs.push_back({body_result, after_body});
             }
@@ -31036,14 +31094,10 @@ bool EshkolLLVMCodeGen::astScanVar(const eshkol_ast_t* ast, const std::string& v
                 return astScanVar(op->let_values_op.body, var, mode,
                                   scope_depth + (values_shadow ? 1u : 0u));
             }
-            case AstRoute::Match: {
-                if (astScanVar(op->match_op.expr, var, mode)) return true;
-                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                    if (astScanVar(op->match_op.clauses[i].guard, var, mode)) return true;
-                    if (astScanVar(op->match_op.clauses[i].body, var, mode)) return true;
-                }
-                return false;
-            }
+            case AstRoute::Match:
+                return matchUsesOuterName(op, var, [&](const eshkol_ast_t* expr) {
+                    return astScanVar(expr, var, mode, scope_depth);
+                });
             case AstRoute::CallCc:
                 return astScanVar(op->call_cc_op.proc, var, mode, scope_depth);
             case AstRoute::DynamicWind:
@@ -31357,7 +31411,7 @@ bool EshkolLLVMCodeGen::astReferencesVarScoped(const eshkol_ast_t* ast, const st
         {
             enum class AstRoute {
                 Set, Call, Sequence, Let, Lambda, Define,
-                Guard, LetValues, CallCc, DynamicWind, WithRegion, Unify,
+                Guard, Match, LetValues, CallCc, DynamicWind, WithRegion, Unify,
                 OtherOperations
             };
             switch (eshkol::routeAstOperation(op->op,
@@ -31375,6 +31429,7 @@ bool EshkolLLVMCodeGen::astReferencesVarScoped(const eshkol_ast_t* ast, const st
                 eshkol::AstRouteGroup<AstRoute::Lambda, ESHKOL_LAMBDA_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Define, ESHKOL_DEFINE_OP>{},
                 eshkol::AstRouteGroup<AstRoute::Guard, ESHKOL_GUARD_OP>{},
+                eshkol::AstRouteGroup<AstRoute::Match, ESHKOL_MATCH_OP>{},
                 eshkol::AstRouteGroup<AstRoute::LetValues,
                     ESHKOL_LET_VALUES_OP, ESHKOL_LET_STAR_VALUES_OP
                 >{},
@@ -31396,7 +31451,7 @@ bool EshkolLLVMCodeGen::astReferencesVarScoped(const eshkol_ast_t* ast, const st
                 >{},
                 eshkol::AstRouteGroup<AstRoute::OtherOperations,
                     ESHKOL_INVALID_OP, ESHKOL_COMPOSE_OP, ESHKOL_ADD_OP, ESHKOL_SUB_OP,
-                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP, ESHKOL_MATCH_OP,
+                    ESHKOL_MUL_OP, ESHKOL_DIV_OP, ESHKOL_EXTERN_VAR_OP,
                     ESHKOL_QUOTE_OP, ESHKOL_QUASIQUOTE_OP, ESHKOL_UNQUOTE_OP, ESHKOL_UNQUOTE_SPLICING_OP,
                     ESHKOL_DEFINE_TYPE_OP, ESHKOL_HOTT_OP, ESHKOL_IMPORT_OP, ESHKOL_REQUIRE_OP, ESHKOL_PROVIDE_OP,
                     ESHKOL_OWNED_OP, ESHKOL_MOVE_OP, ESHKOL_BORROW_OP, ESHKOL_SHARED_OP,
@@ -31500,6 +31555,10 @@ bool EshkolLLVMCodeGen::astReferencesVarScoped(const eshkol_ast_t* ast, const st
                                            }())) return true;
                 return false;
             }
+            case AstRoute::Match:
+                return matchUsesOuterName(op, var, [&](const eshkol_ast_t* expr) {
+                    return astReferencesVarScoped(expr, var, shadowed);
+                });
             case AstRoute::CallCc:
                 return astReferencesVarScoped(op->call_cc_op.proc, var, shadowed);
             case AstRoute::DynamicWind:
@@ -32141,13 +32200,15 @@ void EshkolLLVMCodeGen::findFreeVariablesImpl(const eshkol_ast_t* ast,
                         if (op->match_op.expr) {
                             findFreeVariablesImpl(op->match_op.expr, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
-                        for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                            if (op->match_op.clauses[i].guard) {
-                                findFreeVariablesImpl(op->match_op.clauses[i].guard, current_scope, parameters, num_params, free_vars, bound_vars);
-                            }
-                            if (op->match_op.clauses[i].body) {
-                                findFreeVariablesImpl(op->match_op.clauses[i].body, current_scope, parameters, num_params, free_vars, bound_vars);
-                            }
+                        for (uint64_t i = 0; i < op->match_op.num_clauses; ++i) {
+                            const auto& clause = op->match_op.clauses[i];
+                            PatternScope scope;
+                            scope.collect(clause.pattern);
+                            for (auto* expr : scope.expressions)
+                                findFreeVariablesImpl(expr, current_scope, parameters, num_params, free_vars, bound_vars);
+                            scope.names.insert(bound_vars.begin(), bound_vars.end());
+                            findFreeVariablesImpl(clause.guard, current_scope, parameters, num_params, free_vars, scope.names);
+                            findFreeVariablesImpl(clause.body, current_scope, parameters, num_params, free_vars, scope.names);
                         }
                         break;
                     }

@@ -108,6 +108,8 @@ public:
      * @return Tagged integer
      */
     llvm::Value* vectorLength(const eshkol_operations_t* op);
+    // For structural matching, count the outer elements addressable by vector-ref.
+    llvm::Value* vectorLengthValue(llvm::Value* vec, bool outer_extent = false);
 
     /**
      * Get element at index: (vector-ref vec idx)
@@ -115,6 +117,7 @@ public:
      * @return Tagged value
      */
     llvm::Value* vectorRef(const eshkol_operations_t* op);
+    llvm::Value* vectorRefValue(llvm::Value* vec, llvm::Value* index);
 
     /**
      * Set element at index: (vector-set! vec idx val)

@@ -4248,6 +4248,7 @@ void forEachPatternName(const eshkol_pattern_t* p, Fn&& fn) {
             forEachPatternName(p->cons.car_pattern, fn);
             forEachPatternName(p->cons.cdr_pattern, fn);
             break;
+        case PATTERN_VECTOR:
         case PATTERN_LIST:
             for (uint64_t i = 0; i < p->list.num_patterns; ++i) {
                 forEachPatternName(p->list.patterns[i], fn);
@@ -4762,6 +4763,7 @@ ContinuationTask<TypeCheckResult> TypeChecker::synthesizePatternExpressionsTask(
             (co_await synthesizePatternExpressionsTask(pattern->cons.car_pattern));
             (co_await synthesizePatternExpressionsTask(pattern->cons.cdr_pattern));
             break;
+        case PATTERN_VECTOR:
         case PATTERN_LIST:
             for (uint64_t i = 0; i < pattern->list.num_patterns; ++i) {
                 (co_await synthesizePatternExpressionsTask(pattern->list.patterns[i]));
@@ -4801,6 +4803,7 @@ void TypeChecker::bindPatternVariables(const eshkol_pattern_t* pattern, TypeId m
             bindPatternVariables(pattern->cons.car_pattern, BuiltinTypes::Value);
             bindPatternVariables(pattern->cons.cdr_pattern, BuiltinTypes::Value);
             break;
+        case PATTERN_VECTOR:
         case PATTERN_LIST:
             for (uint64_t i = 0; i < pattern->list.num_patterns; ++i) {
                 bindPatternVariables(pattern->list.patterns[i], BuiltinTypes::Value);
@@ -5701,6 +5704,7 @@ static void collectPatternBindings(const eshkol_pattern_t* p,
             collectPatternBindings(p->cons.car_pattern, out);
             collectPatternBindings(p->cons.cdr_pattern, out);
             break;
+        case PATTERN_VECTOR:
         case PATTERN_LIST:
             for (uint64_t i = 0; i < p->list.num_patterns; ++i) {
                 collectPatternBindings(p->list.patterns[i], out);
@@ -5730,6 +5734,7 @@ static UseRange countPatternUses(const eshkol_pattern_t* p,
         case PATTERN_CONS:
             return countPatternUses(p->cons.car_pattern, names, st) +
                    countPatternUses(p->cons.cdr_pattern, names, st);
+        case PATTERN_VECTOR:
         case PATTERN_LIST: {
             UseRange total;
             for (uint64_t i = 0; i < p->list.num_patterns && st.decidable; ++i) {

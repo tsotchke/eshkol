@@ -4249,7 +4249,6 @@ static ParserTask<eshkol_ast_t> parse_expression(SchemeTokenizer& tokenizer);
 static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer);
 static ParserTask<eshkol_ast_t> parse_vector_body(SchemeTokenizer& tokenizer,
                                                   std::vector<eshkol_ast_t> leading = {});
-static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer);
 
 /**
  * @brief Parses a `define`-style function signature `(name param...)` into an ESHKOL_FUNC AST node.
@@ -4449,181 +4448,168 @@ static ParserTask<eshkol_ast_t> parse_function_signature(
 
 // ===== PATTERN MATCHING HELPER =====
 
-// Recursive pattern parser - handles nested patterns
-/**
- * @brief Recursively parses a single `match`/`let-match` pattern datum into an eshkol_pattern_t tree.
- *
- * Handles wildcard (`_`) and variable-binding symbols, literal atoms
- * (numbers/strings/booleans/chars), quoted literals (wrapped in an
- * ESHKOL_QUOTE_OP AST so codegen compares against the datum rather than
- * evaluating it as a variable reference), and parenthesized forms:
- * `(cons car-pat cdr-pat)`, `(list p1 p2 ...)`, `(? pred [name])` predicate
- * patterns with an optional binding name, `(or p1 p2 ...)`, the empty-list
- * pattern `()`, and unrecognized/other forms which are skipped and treated
- * as an invalid or literal placeholder pattern.
- *
- * @return A newly-allocated eshkol_pattern_t; callers own the result. Its
- *   `type` is PATTERN_INVALID if the input did not form a recognized pattern.
- */
-static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer) {
-    Token token = tokenizer.nextToken();
+static eshkol_pattern_t* literal_pattern(const eshkol_ast_t& value, bool string_literal = false) {
+    auto* pattern = new eshkol_pattern_t{};
+    pattern->type = value.type == ESHKOL_INVALID ? PATTERN_INVALID : PATTERN_LITERAL;
+    pattern->literal.value = new eshkol_ast_t(value);
+    pattern->literal.compare_string_contents = string_literal;
+    return pattern;
+}
 
-    eshkol_pattern_t* pattern = new eshkol_pattern_t;
-    pattern->type = PATTERN_INVALID;
+static eshkol_pattern_t* sequence_pattern(pattern_type_t type,
+                                          const std::vector<eshkol_pattern_t*>& children) {
+    auto* pattern = new eshkol_pattern_t{};
+    pattern->type = type;
+    auto** items = new eshkol_pattern_t*[children.size()];
+    std::copy(children.begin(), children.end(), items);
+    if (type == PATTERN_OR) {
+        pattern->or_pat = {items, children.size()};
+    } else {
+        pattern->list = {items, children.size()};
+    }
+    return pattern;
+}
+
+// At positive depth identifiers are data. The matching unquote re-enters
+// ordinary pattern syntax, including nested constructors and predicates.
+static ParserTask<eshkol_pattern_t*> parse_pattern(SchemeTokenizer& tokenizer,
+                                                   unsigned quasi_depth = 0) {
+    Token token = tokenizer.nextToken();
+    bool list = token.type == TOKEN_LPAREN;
+    Token head = list ? tokenizer.peekToken() : token;
+    const bool long_form = list && head.type == TOKEN_SYMBOL;
+    const bool quasi = token.type == TOKEN_BACKQUOTE ||
+                       (long_form && token_is_keyword(head, "quasiquote"));
+    const bool unquote = token.type == TOKEN_COMMA ||
+                         (long_form && token_is_keyword(head, "unquote"));
+    const bool quote = token.type == TOKEN_QUOTE || (long_form && token_is_keyword(head, "quote"));
+    const bool splice = token.type == TOKEN_COMMA_AT ||
+                        (long_form && token_is_keyword(head, "unquote-splicing"));
+
+    if (quasi || unquote || quote || splice) {
+        if (list) tokenizer.nextToken();
+        eshkol_pattern_t* result = nullptr;
+        if (quote && !quasi_depth) {
+            auto datum = (co_await parse_quoted_data(tokenizer));
+            if (datum.type == ESHKOL_INVALID) co_return nullptr;
+            eshkol_ast_t quoted{};
+            quoted.type = ESHKOL_OP;
+            quoted.operation.op = ESHKOL_QUOTE_OP;
+            quoted.operation.call_op.variables = new eshkol_ast_t[1]{datum};
+            quoted.operation.call_op.num_vars = 1;
+            result = literal_pattern(quoted, datum.type == ESHKOL_STRING);
+        } else {
+            if (((unquote || splice) && !quasi_depth) || (splice && quasi_depth == 1)) {
+                PARSE_ERROR_AT(token, "unexpected unquote or splice in match pattern");
+                co_return nullptr;
+            }
+            unsigned depth = quasi ? quasi_depth + 1 : quote ? quasi_depth : quasi_depth - 1;
+            result = (co_await parse_pattern(tokenizer, depth));
+            if (!result) co_return nullptr;
+            if (quasi_depth && !(unquote && quasi_depth == 1)) {
+                const char* name = quasi ? "quasiquote" : quote ? "quote" :
+                                   splice ? "unquote-splicing" : "unquote";
+                auto* marker = literal_pattern(make_parser_quoted_symbol_ast(name, token.line, token.column));
+                result = sequence_pattern(PATTERN_LIST, {marker, result});
+            }
+        }
+        if (list && tokenizer.nextToken().type != TOKEN_RPAREN) {
+            PARSE_ERROR_AT(head, "match pattern prefix requires one datum");
+            co_return nullptr;
+        }
+        co_return result;
+    }
 
     if (token.type == TOKEN_SYMBOL) {
-        // Symbol: wildcard (_) or variable binding
+        if (quasi_depth)
+            co_return literal_pattern(make_parser_quoted_symbol_ast(token.value, token.line, token.column));
+        auto* pattern = new eshkol_pattern_t{};
         if (token_is_keyword(token, "_")) {
             pattern->type = PATTERN_WILDCARD;
         } else {
             pattern->type = PATTERN_VARIABLE;
             pattern->variable.name = eshkol_ast_string_copy(token.value);
         }
-    } else if (token.type == TOKEN_NUMBER || token.type == TOKEN_STRING ||
-               token.type == TOKEN_BOOLEAN || token.type == TOKEN_CHAR) {
-        // Literal pattern
-        pattern->type = PATTERN_LITERAL;
-        pattern->literal.value = new eshkol_ast_t;
-        *pattern->literal.value = (co_await parse_atom(token));
-    } else if (token.type == TOKEN_QUOTE) {
-        // Quoted literal pattern 'x → PATTERN_LITERAL comparing against the
-        // quoted datum. parse_quoted_data returns a bare atom (e.g. ESHKOL_VAR
-        // for a symbol), so we must wrap it in ESHKOL_QUOTE_OP — otherwise
-        // the codegen's PATTERN_LITERAL path calls codegenTypedAST on a
-        // VAR(a) node and tries to *look up* `a` as a variable, producing
-        // "Undefined variable: a" instead of comparing against the symbol.
-        pattern->type = PATTERN_LITERAL;
-        eshkol_ast_t inner_datum = (co_await parse_quoted_data(tokenizer));
-        eshkol_ast_t* wrapped = new eshkol_ast_t;
-        wrapped->type = ESHKOL_OP;
-        wrapped->operation.op = ESHKOL_QUOTE_OP;
-        wrapped->operation.call_op.func = nullptr;
-        wrapped->operation.call_op.num_vars = 1;
-        wrapped->operation.call_op.variables = new eshkol_ast_t[1];
-        wrapped->operation.call_op.variables[0] = inner_datum;
-        pattern->literal.value = wrapped;
-    } else if (token.type == TOKEN_LPAREN) {
-        // Complex pattern: (cons ...), (list ...), (? ...), (or ...), or literal list
-        Token peek = tokenizer.nextToken();
-
-        if (peek.type == TOKEN_SYMBOL) {
-            if (token_is_keyword(peek, "cons")) {
-                // Cons pattern: (cons car-pat cdr-pat)
-                pattern->type = PATTERN_CONS;
-                // Recursively parse car and cdr patterns
-                pattern->cons.car_pattern = (co_await parse_pattern(tokenizer));
-                pattern->cons.cdr_pattern = (co_await parse_pattern(tokenizer));
-                // Consume closing paren
-                token = tokenizer.nextToken();
-                if (token.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected closing paren after cons pattern");
-                    pattern->type = PATTERN_INVALID;
-                }
-            } else if (token_is_keyword(peek, "list")) {
-                // List pattern: (list p1 p2 ...)
-                pattern->type = PATTERN_LIST;
-                std::vector<eshkol_pattern_t*> list_pats;
-                while (true) {
-                    // Peek to see if we're at the end
-                    Token peek_end = tokenizer.nextToken();
-                    if (peek_end.type == TOKEN_RPAREN) break;
-                    // Put the token back by parsing it as part of pattern
-                    tokenizer.pushBack(peek_end);
-                    eshkol_pattern_t* elem_pat = (co_await parse_pattern(tokenizer));
-                    if (elem_pat) {
-                        list_pats.push_back(elem_pat);
-                    }
-                }
-                pattern->list.num_patterns = list_pats.size();
-                pattern->list.patterns = new eshkol_pattern_t*[list_pats.size()];
-                for (size_t i = 0; i < list_pats.size(); i++) {
-                    pattern->list.patterns[i] = list_pats[i];
-                }
-            } else if (token_is_keyword(peek, "?")) {
-                // Predicate pattern: (? pred) or (? pred name)
-                // Bare form: (? number?) ─ matches when (number? val) is truthy.
-                // Bound form: (? number? n) ─ same, plus binds val to `n` in
-                //   the clause body. Convenient when the predicate is a type
-                //   guard and the body wants the value typed.
-                pattern->type = PATTERN_PREDICATE;
-                pattern->predicate.binding_name = nullptr;
-                Token pred_tok = tokenizer.nextToken();
-                pattern->predicate.predicate = new eshkol_ast_t;
-                if (pred_tok.type == TOKEN_LPAREN) {
-                    *pattern->predicate.predicate = (co_await parse_list(tokenizer));
-                } else {
-                    *pattern->predicate.predicate = (co_await parse_atom(pred_tok));
-                }
-                // Look at the next token: SYMBOL ⇒ binding name, RPAREN ⇒ done.
-                token = tokenizer.nextToken();
-                if (token.type == TOKEN_SYMBOL) {
-                    pattern->predicate.binding_name = eshkol_ast_strdup(token.value.c_str());
-                    token = tokenizer.nextToken();
-                }
-                if (token.type != TOKEN_RPAREN) {
-                    PARSE_ERROR_AT(token, "expected closing paren after predicate pattern");
-                    pattern->type = PATTERN_INVALID;
-                }
-            } else if (token_is_keyword(peek, "or")) {
-                // Or pattern: (or p1 p2 ...)
-                pattern->type = PATTERN_OR;
-                std::vector<eshkol_pattern_t*> or_pats;
-                while (true) {
-                    Token peek_end = tokenizer.nextToken();
-                    if (peek_end.type == TOKEN_RPAREN) break;
-                    if (peek_end.type == TOKEN_EOF) break;  // P1: unterminated (or …) → don't spin on EOF
-                    tokenizer.pushBack(peek_end);
-                    eshkol_pattern_t* sub_pat = (co_await parse_pattern(tokenizer));
-                    if (sub_pat) {
-                        or_pats.push_back(sub_pat);
-                    }
-                }
-                pattern->or_pat.num_patterns = or_pats.size();
-                pattern->or_pat.patterns = new eshkol_pattern_t*[or_pats.size()];
-                for (size_t i = 0; i < or_pats.size(); i++) {
-                    pattern->or_pat.patterns[i] = or_pats[i];
-                }
-            } else {
-                // Unknown pattern keyword - treat as literal (quoted list-like)
-                pattern->type = PATTERN_LITERAL;
-                pattern->literal.value = new eshkol_ast_t;
-                eshkol_ast_t list_ast = {.type = ESHKOL_VAR};
-                list_ast.variable.id = eshkol_ast_string_copy(peek.value);
-                *pattern->literal.value = list_ast;
-                // Skip to end of this list
-                int depth = 1;
-                while (depth > 0) {
-                    token = tokenizer.nextToken();
-                    if (token.type == TOKEN_EOF) break;  // P1: unbalanced list → don't spin on EOF
-                    if (token.type == TOKEN_LPAREN) depth++;
-                    else if (token.type == TOKEN_RPAREN) depth--;
-                }
-            }
-        } else if (peek.type == TOKEN_RPAREN) {
-            // Empty list pattern () - matches null
-            pattern->type = PATTERN_LITERAL;
-            pattern->literal.value = new eshkol_ast_t;
-            eshkol_ast_make_null(pattern->literal.value);
-        } else {
-            // Other starting token - probably a quoted list, treat as literal
-            pattern->type = PATTERN_LITERAL;
-            pattern->literal.value = new eshkol_ast_t;
-            pattern->literal.value->type = ESHKOL_INVALID;
-            // Skip the rest
-            int depth = 1;
-            while (depth > 0) {
-                token = tokenizer.nextToken();
-                if (token.type == TOKEN_EOF) break;  // P1: unbalanced list → don't spin on EOF
-                if (token.type == TOKEN_LPAREN) depth++;
-                else if (token.type == TOKEN_RPAREN) depth--;
-            }
-        }
-    } else {
-        // Unknown token type - invalid pattern
-        pattern->type = PATTERN_INVALID;
+        co_return pattern;
+    }
+    if (!list && token.type != TOKEN_VECTOR_START) {
+        auto value = (co_await parse_atom(token));
+        if (value.type == ESHKOL_INVALID) co_return nullptr;
+        co_return literal_pattern(value, token.type == TOKEN_STRING);
     }
 
-    co_return pattern;
+    pattern_type_t type = list ? PATTERN_LIST : PATTERN_VECTOR;
+    if (list && !quasi_depth && head.type != TOKEN_RPAREN) {
+        tokenizer.nextToken();
+        if (token_is_keyword(head, "?")) {
+            auto pred = (co_await parse_expression(tokenizer));
+            if (pred.type == ESHKOL_INVALID) co_return nullptr;
+            auto* pattern = new eshkol_pattern_t{};
+            pattern->type = PATTERN_PREDICATE;
+            pattern->predicate.predicate = new eshkol_ast_t(pred);
+            Token binding = tokenizer.nextToken();
+            if (binding.type == TOKEN_SYMBOL) {
+                if (!token_is_keyword(binding, "_"))
+                    pattern->predicate.binding_name = eshkol_ast_string_copy(binding.value);
+                binding = tokenizer.nextToken();
+            }
+            if (binding.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(binding, "expected (? predicate [identifier])");
+                co_return nullptr;
+            }
+            co_return pattern;
+        }
+        if (token_is_keyword(head, "cons")) type = PATTERN_CONS;
+        else if (token_is_keyword(head, "vector")) type = PATTERN_VECTOR;
+        else if (token_is_keyword(head, "or")) type = PATTERN_OR;
+        else if (!token_is_keyword(head, "list")) {
+            PARSE_ERROR_AT(head, "unknown match pattern constructor");
+            co_return nullptr;
+        }
+    }
+
+    std::vector<eshkol_pattern_t*> children;
+    while (tokenizer.peekToken().type != TOKEN_RPAREN) {
+        Token next = tokenizer.peekToken();
+        if (next.type == TOKEN_EOF) {
+            PARSE_ERROR_AT(next, "unexpected end of input in match pattern");
+            co_return nullptr;
+        }
+        if (token_is_dot_delimiter(next)) {
+            tokenizer.nextToken();
+            if (!quasi_depth || !list || children.empty()) {
+                PARSE_ERROR_AT(next, "expected a list prefix before a quasi-pattern tail");
+                co_return nullptr;
+            }
+            auto* tail = (co_await parse_pattern(tokenizer, quasi_depth));
+            if (!tail || tokenizer.nextToken().type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(next, "expected one quasi-pattern after dot");
+                co_return nullptr;
+            }
+            for (auto it = children.rbegin(); it != children.rend(); ++it) {
+                auto* pair = new eshkol_pattern_t{};
+                pair->type = PATTERN_CONS;
+                pair->cons = {*it, tail};
+                tail = pair;
+            }
+            co_return tail;
+        }
+        auto* child = (co_await parse_pattern(tokenizer, quasi_depth));
+        if (!child) co_return nullptr;
+        children.push_back(child);
+    }
+    tokenizer.nextToken();
+    if (type == PATTERN_CONS) {
+        if (children.size() != 2) {
+            PARSE_ERROR_AT(head, "cons pattern requires two patterns");
+            co_return nullptr;
+        }
+        auto* pair = new eshkol_pattern_t{};
+        pair->type = PATTERN_CONS;
+        pair->cons = {children[0], children[1]};
+        co_return pair;
+    }
+    co_return sequence_pattern(type, children);
 }
 
 // ===== END PATTERN MATCHING HELPER =====
@@ -7715,6 +7701,18 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     co_return ast;
                 }
 
+                Token guard_marker = tokenizer.peekToken();
+                if (guard_marker.type == TOKEN_KEYWORD && guard_marker.value == "#:when") {
+                    tokenizer.nextToken();
+                    auto guard = (co_await parse_expression(tokenizer));
+                    if (guard.type == ESHKOL_INVALID) {
+                        PARSE_ERROR_AT(guard_marker, "expected a guard expression after #:when");
+                        ast.type = ESHKOL_INVALID;
+                        co_return ast;
+                    }
+                    clause.guard = new eshkol_ast_t(guard);
+                }
+
                 // Parse body expressions
                 std::vector<eshkol_ast_t> body_exprs;
 
@@ -7738,6 +7736,12 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                     if (body_expr.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
                         co_return ast;
+                    }
+                    if (!clause.guard && body_exprs.empty() && body_expr.type == ESHKOL_OP &&
+                        body_expr.operation.op == ESHKOL_WHEN_OP &&
+                        body_expr.operation.call_op.num_vars == 1) {
+                        clause.guard = &body_expr.operation.call_op.variables[0];
+                        continue;
                     }
                     body_exprs.push_back(body_expr);
                 }
