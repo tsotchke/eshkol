@@ -165,6 +165,7 @@ public:
     // Seed a fresh interactive parser stream with macros retained from prior
     // REPL evaluations; file/module streams remain isolated.
     void seedParserMacroNames(std::istream& stream) const;
+    std::set<std::string> persistentMacroNames() const;
 
     /**
      * Load a module by name (e.g., "core.functional.compose" or "stdlib")

@@ -42,6 +42,12 @@
 
 namespace eshkol {
 
+/** Byte offsets of a source interpolation in a decoded string token. */
+struct InterpolationSpan {
+    size_t start;  ///< opening tilde
+    size_t end;    ///< one past the closing brace
+};
+
 /** One node of reader syntax. */
 struct SyntaxDatum {
     enum class Kind : uint8_t {
@@ -60,6 +66,7 @@ struct SyntaxDatum {
     uint32_t line = 0;
     uint32_t column = 0;
     std::vector<SyntaxDatum> items;
+    std::vector<InterpolationSpan> interpolations;
 
     bool isSymbol() const { return kind == Kind::Symbol; }
     bool isList() const { return kind == Kind::List; }

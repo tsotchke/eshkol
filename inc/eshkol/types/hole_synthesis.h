@@ -43,6 +43,7 @@ public:
         TypeId expected = BuiltinTypes::Value;
         std::string expected_name;
         std::vector<std::string> candidates;  ///< best first, each accepted by the checker
+        eshkol_ast_t completion{};       ///< syntax for the first accepted term
         size_t enumerated = 0;           ///< terms built for this hole
     };
 
