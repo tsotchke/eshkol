@@ -20,11 +20,11 @@ Scope exit retires without advancing any buffered write on return, exception, or
 
 ## Repeat the loopback
 
-Configure the source with agent FFI and tests enabled, then build the compiler and the native SSE suites. The following uses LLVM 22.
+Configure the source with agent FFI and tests enabled, then build the compiler and the native SSE suites. The following uses LLVM 21.
 
 ```sh
 cmake -S . -B build-sse -DCMAKE_BUILD_TYPE=Release \
-    -DESHKOL_REQUIRED_LLVM_MAJOR=22 -DESHKOL_GPU_ENABLED=OFF -DESHKOL_BUILD_AGENT_FFI=ON
+    -DESHKOL_REQUIRED_LLVM_MAJOR=21 -DESHKOL_GPU_ENABLED=OFF -DESHKOL_BUILD_AGENT_FFI=ON
 cmake --build build-sse --target eshkol-run http_sse_adapter_scaffold_test http_sse_stream_test
 ctest --test-dir build-sse -R '^http_sse_(adapter_scaffold_test|stream_test|scope_.*)$' --output-on-failure
 # Optional one-minute check of the idle deadline
