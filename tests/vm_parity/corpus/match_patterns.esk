@@ -1,0 +1,103 @@
+;; OUTPUT: 1
+;; OUTPUT: 2
+;; OUTPUT: 3
+;; OUTPUT: 4
+;; OUTPUT: 5
+;; OUTPUT: 6
+;; OUTPUT: 7
+;; OUTPUT: 6
+;; OUTPUT: 101
+;; OUTPUT: 10
+;; OUTPUT: 11
+;; OUTPUT: 7
+;; OUTPUT: 3
+;; OUTPUT: 13
+;; OUTPUT: 1
+;; OUTPUT: match: no clause matched — non-exhaustive pattern match
+;; OUTPUT: 5
+;; OUTPUT: 1
+;; OUTPUT: 2
+;; OUTPUT: 0
+;; OUTPUT: 4
+;; OUTPUT: 2000
+;; OUTPUT: #t
+;; OUTPUT: 0
+;; OUTPUT: 1
+;; OUTPUT: 1
+;; OUTPUT: 2
+;; OUTPUT: 2
+;; OUTPUT: 1
+;; OUTPUT: 2
+;; OUTPUT: 2
+;; OUTPUT: 2
+;; OUTPUT: 1
+;; OUTPUT: 1
+;; OUTPUT: 1
+;; OUTPUT: 1
+;; OUTPUT: 1
+;; OUTPUT: 2
+;; OUTPUT: 1
+;; OUTPUT: 1
+;; OUTPUT: 2
+
+(define (show x) (display x) (newline))
+(define (classify x)
+  (match x
+    ('red 1)
+    (#t 2)
+    (#\a 3)
+    (4.5 4)
+    ("text" 5)
+    (() 6)
+    ((or 8 9) 7)
+    ((list (cons h t) (? number? n)) (+ h t n))
+    ((? (lambda (v) (and (number? v) (> v 100))) big) big)
+    ((? vector?) 10)
+    (else 11)))
+(show (classify 'red))
+(show (classify #t))
+(show (classify #\a))
+(show (classify 4.5))
+(show (classify "text"))
+(show (classify '()))
+(show (classify 9))
+(show (classify (list (cons 1 2) 3)))
+(show (classify 101))
+(show (classify (vector 1 2)))
+(show (classify (list 1 2 3)))
+(show (match (cons 3 7) ((cons _ n) n)))
+(show (match `(tag ,(+ 1 2)) ((list 'tag n) n)))
+(define count 0)
+(show (match (begin (set! count (+ count 1)) 12) (0 0) (x (+ x count))))
+(show count)
+(show (guard (e ((error-object? e) (error-object-message e)))
+        (match 3 (1 2))))
+(show (classify (string-copy "text")))
+(show (classify (string->symbol "red")))
+(show (match 1/2 (1/2 2) (_ 0)))
+(show (match 120000000000000000000 (120000000000000000000 0) (_ 3)))
+(show (match 4 (else else)))
+(define (count-down n acc)
+  (match n (0 acc) (k (count-down (- k 1) (+ acc 1)))))
+(show (count-down 2000 0))
+(let ((seen 0))
+  (show (null? (match (begin (set! seen 1) seen))))
+  (show seen))
+(show (match 1+2i (1+2i 1) (_ 2)))
+(define (zero-sign x) (match x (0.0 1) (-0.0 2) (_ 3)))
+(show (zero-sign 0.0))
+(show (zero-sign -0.0))
+(show (zero-sign (* -1.0 0.0)))
+(show (match +nan.0 (+nan.0 1) (_ 2)))
+(show (match +nan.0 (1.0 1) (_ 2)))
+(show (match 1.0 (1 1) (_ 2)))
+(show (match 2 (2.0 1) (_ 2)))
+(show (match (string-append "te" "xt") ("text" 1) (_ 2)))
+(show (match (/ 2 4) (1/2 1) (_ 2)))
+(show (match (* 12000000000 10000000000) (120000000000000000000 1) (_ 2)))
+(show (match (+ 1+2i 0) (1+2i 1) (_ 2)))
+(show (match (list 1 "two" 'three) ('(1 "two" three) 1) (_ 2)))
+(show (match (list 1 2) ('(1 2 3) 1) (_ 2)))
+(show (match (string->symbol "abc") ('abc 1) (_ 2)))
+(show (match #\b (#\b 1) (_ 2)))
+(show (match 3/4 (1/2 1) (_ 2)))

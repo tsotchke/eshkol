@@ -173,7 +173,6 @@ op:KB_QUERY_PREFIX	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	kb
 op:LAPLACIAN	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	AD surface diverges in VM
 op:LET_STAR_VALUES	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	same family as op:LET_VALUES silent-wrong divergence
 op:MAKE_PARAMETER	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	make-parameter undefined in VM
-op:MATCH	vm-unsupported-clean-error	generated:scripts/canonicalize_vm_gaps.py	match unsupported in VM (clean undefined-variable error)
 op:PARAMETERIZE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	depends on make-parameter; fids 702/703 exist but surface incomplete
 op:SDNC_IMPROVE	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
 op:SDNC_PARAMS	vm-unimplemented	generated:scripts/canonicalize_vm_gaps.py	core.sdnc has no VM fids
