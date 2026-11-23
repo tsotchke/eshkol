@@ -25,7 +25,15 @@ def main():
     driver = source / "tests/agent/run_unix_socket_stream_pending.py"
     rows = []
     fixture = work / "libobservation.dylib"
-    fixture.write_text("not loaded by synthetic executable\n")
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["cc", "-dynamiclib", "-x", "c", "-", "-o", str(fixture)],
+            input="void eshkol_runner_contract_dummy(void) {}\n",
+            text=True,
+            check=True,
+        )
+    else:
+        fixture.write_text("not loaded by synthetic executable\n")
     fake = work / "synthetic-runner"
     fake.write_text("#!" + sys.executable + r'''
 import os,sys,pathlib

@@ -33,6 +33,7 @@ if(ESHKOL_PLATFORM_STAGE STREQUAL "sources")
             # Objective-C, manual reference counting; AppKit is resolved at run time.
             set_source_files_properties(lib/platform/window/window_cocoa.m PROPERTIES
                 LANGUAGE C COMPILE_FLAGS "-x objective-c -fno-objc-arc")
+            list(APPEND ESHKOL_EXTRA_LINK_LIBS "-framework CoreGraphics" objc)
         endif()
         list(APPEND ESHKOL_RUNTIME_SUPPORT_SRC ${ESHKOL_PLATFORM_SOURCES})
         # Lets the JIT symbol table (lib/repl/repl_jit.cpp) export the bridge.

@@ -84,6 +84,20 @@
       "from": 2,
       "to": 0,
       "reason": "This native FFI binding translation unit is compiled only when ESHKOL_BUILD_AGENT_FFI=ON (CMake agent FFI source list). The admitted semantic site count is measured in the complete FFI-ON scan; FFI-OFF compile databases omit this translation unit. This exact disappearance is conditional compilation, not header migration; lexical accessor sites remain enforced."
+    },
+    {
+      "class": "K_raw_byte_offset",
+      "path": "lib/core/rational.cpp",
+      "from": 5,
+      "to": 4,
+      "reason": "PR #939 (57cae2e79) simplified exact-rational rationalize on bignums/duals and eliminated one raw ptr-8 byte offset site in lib/core/rational.cpp."
+    },
+    {
+      "class": "L_layout_in_prose",
+      "path": "lib/backend/llvm_codegen.cpp",
+      "from": 11,
+      "to": 10,
+      "reason": "PR #939 (9cde83c9b) unified LLVMCodeGen's declaration in inc/eshkol/backend/llvm_codegen.h, removing the duplicated getObjectSubtype prose layout comment from lib/backend/llvm_codegen.cpp."
     }
   ]
 }

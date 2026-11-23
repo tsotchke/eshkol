@@ -45571,6 +45571,8 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         link_args.emplace_back("Foundation");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreFoundation");
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("CoreGraphics");
         // Resolve libobjc portably via the macOS SDK lib dir (see
         // eshkol-run.cpp): a bare -lobjc misses the default search path on a
         // freshly-built binary on a non-builder host.
