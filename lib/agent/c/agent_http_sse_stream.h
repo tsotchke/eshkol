@@ -24,6 +24,12 @@ int eshkol_http_sse_stream_begin(int64_t server, int64_t loop, uint64_t watch_co
  */
 int eshkol_http_sse_stream_send(eshkol_http_sse_stream_t* stream, const char* data,
                                 const char* event_type, const char* id);
+/* Explicit byte counts preserve embedded NULs for validation. NULL
+ * metadata must have zero length. Stream state is checked first. */
+int eshkol_http_sse_stream_send_bytes(eshkol_http_sse_stream_t* stream,
+                                      const char* data, int64_t data_len,
+                                      const char* event_type, int64_t event_type_len,
+                                      const char* id, int64_t id_len);
 int eshkol_http_sse_stream_finish(eshkol_http_sse_stream_t* stream);
 
 /*

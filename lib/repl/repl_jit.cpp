@@ -725,6 +725,9 @@ extern "C" {
     int64_t eshkol_http_sse_scope_cleanup_ticket(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
     int eshkol_http_sse_stream_send(HttpSseStream*, const char*, const char*, const char*)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_http_sse_stream_send_bytes(HttpSseStream*, const char*, int64_t,
+                                         const char*, int64_t, const char*, int64_t)
+        ESHKOL_OPTIONAL_AGENT_FFI;
     int eshkol_http_sse_stream_finish(HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
     int eshkol_http_sse_stream_progress(HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
     int64_t eshkol_http_sse_stream_deadline(const HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
@@ -1676,6 +1679,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_scope_close);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_scope_cleanup_ticket);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_send);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_send_bytes);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_finish);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_progress);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_deadline);

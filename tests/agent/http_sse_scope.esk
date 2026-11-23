@@ -28,7 +28,13 @@
              (check "CRLF in metadata is refused" (= (sse-send! stream "discard" "bad\r\n") -4))
              (check "admit multiline event" (= (sse-send! stream "café\nsecond line" "") 0))
              (check "busy retains prior frame" (= (sse-send! stream "discard") -5))
+             (check "busy takes precedence over oversize"
+                    (= (sse-send! stream (make-string 16385 #\x)) -5))
+             (check "busy takes precedence over embedded NUL"
+                    (= (sse-send! stream "discard" (string #\x #\nul #\x)) -5))
              (check "event sent" (= (advance stream loop) 0))
+             (check "idle stream returns encoded-size error"
+                    (= (sse-send! stream (make-string 16385 #\x)) -8))
              (check "admit final chunk" (= (sse-finish! stream) 0))
              (check "finish sent" (= (advance stream loop) 2))
              'clean))

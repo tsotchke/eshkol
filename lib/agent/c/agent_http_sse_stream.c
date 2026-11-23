@@ -3,9 +3,12 @@
 #include "eshkol/core/event_loop.h"
 #include "eshkol/core/websocket_handshake.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+extern int eshkol_capability_runtime_allows(const char* capability);
 
 enum { CHUNK_PREFIX_MAX = 6 };
 
@@ -64,6 +67,10 @@ int eshkol_http_sse_stream_begin(int64_t server, int64_t loop, uint64_t watch_co
                                   "Connection: close\r\n\r\n";
     if (!out) return ESHKOL_IO_INVALID;
     *out = NULL;
+    if (!eshkol_capability_runtime_allows("network")) {
+        errno = EACCES;
+        return ESHKOL_IO_SYSTEM;
+    }
     int64_t deadline = eshkol_resource_deadline(ESHKOL_SSE_WRITE_BUDGET_MS);
     if (deadline < 0) return ESHKOL_IO_SYSTEM;
     eshkol_http_sse_stream_t* stream = calloc(1, sizeof(*stream));
@@ -101,12 +108,23 @@ static int append(uint8_t* buffer, size_t* used, const char* bytes, size_t lengt
     return 0;
 }
 
-static int check_utf8(const char* text, size_t* length) {
-    *length = 0;
-    if (!text) return ESHKOL_IO_INVALID;
-    while (*length < ESHKOL_SSE_MAX_CHUNK_BYTES && text[*length]) ++*length;
-    if (*length == ESHKOL_SSE_MAX_CHUNK_BYTES) return ESHKOL_IO_TRUNCATED;
-    return eshkol_ws_valid_utf8(text, *length) ? 0 : ESHKOL_IO_INVALID;
+static int64_t bounded_string_length(const char* text) {
+    size_t length = 0;
+    if (text) {
+        while (length < ESHKOL_SSE_MAX_CHUNK_BYTES && text[length]) ++length;
+    }
+    return (int64_t)length;
+}
+
+static int check_text(const char* text, int64_t length) {
+    if (length < 0 || (!text && length != 0)) return ESHKOL_IO_INVALID;
+    /* A valid chunk always needs framing bytes in addition to its fields. */
+    if (length >= (int64_t)ESHKOL_SSE_MAX_CHUNK_BYTES) return ESHKOL_IO_TRUNCATED;
+    size_t size = (size_t)length;
+    if (size && (memchr(text, 0, size) || !eshkol_ws_valid_utf8(text, size))) {
+        return ESHKOL_IO_INVALID;
+    }
+    return 0;
 }
 
 static int append_field(uint8_t* buffer, size_t* used, const char* name, size_t name_len,
@@ -118,24 +136,17 @@ static int append_field(uint8_t* buffer, size_t* used, const char* name, size_t 
 }
 
 static int append_metadata(uint8_t* buffer, size_t* used, const char* name, size_t name_len,
-                           const char* value) {
-    size_t size;
-    int status = check_utf8(value, &size);
-    if (status < 0) return status;
+                           const char* value, size_t size) {
     if (memchr(value, '\r', size) || memchr(value, '\n', size)) return ESHKOL_IO_INVALID;
     return append_field(buffer, used, name, name_len, value, size);
 }
 
-static int append_data(uint8_t* buffer, size_t* used, const char* data) {
-    size_t size;
-    int status = check_utf8(data, &size);
-    if (status < 0) return status;
-
+static int append_data(uint8_t* buffer, size_t* used, const char* data, size_t size) {
     const char* const end = data + size;
     const char* line = data;
     for (const char* p = data; p < end; ++p) {
         if (*p != '\r' && *p != '\n') continue;
-        status = append_field(buffer, used, "data: ", 6, line, (size_t)(p - line));
+        int status = append_field(buffer, used, "data: ", 6, line, (size_t)(p - line));
         if (status < 0) return status;
         if (*p == '\r' && p + 1 < end && p[1] == '\n') ++p;
         line = p + 1;
@@ -143,17 +154,24 @@ static int append_data(uint8_t* buffer, size_t* used, const char* data) {
     return append_field(buffer, used, "data: ", 6, line, (size_t)(end - line));
 }
 
-int eshkol_http_sse_stream_send(eshkol_http_sse_stream_t* stream, const char* data,
-                                const char* event_type, const char* id) {
-    int status = check_available(stream);
+static int admit_event(eshkol_http_sse_stream_t* stream, const char* data, int64_t data_len,
+                       const char* event_type, int64_t event_type_len,
+                       const char* id, int64_t id_len) {
+    if (!data) return ESHKOL_IO_INVALID;
+    int status = check_text(data, data_len);
+    if (status == 0) status = check_text(event_type, event_type_len);
+    if (status == 0) status = check_text(id, id_len);
     if (status < 0) return status;
 
     size_t used = CHUNK_PREFIX_MAX;
-    if (event_type && *event_type) {
-        status = append_metadata(stream->pending, &used, "event: ", 7, event_type);
+    if (event_type_len != 0) {
+        status = append_metadata(stream->pending, &used, "event: ", 7,
+                                 event_type, (size_t)event_type_len);
     }
-    if (status == 0 && id) status = append_metadata(stream->pending, &used, "id: ", 4, id);
-    if (status == 0) status = append_data(stream->pending, &used, data);
+    if (status == 0 && id) {
+        status = append_metadata(stream->pending, &used, "id: ", 4, id, (size_t)id_len);
+    }
+    if (status == 0) status = append_data(stream->pending, &used, data, (size_t)data_len);
     if (status == 0) status = append(stream->pending, &used, "\n", 1);
     if (status < 0) return status;
 
@@ -173,6 +191,24 @@ int eshkol_http_sse_stream_send(eshkol_http_sse_stream_t* stream, const char* da
     return 0;
 }
 
+int eshkol_http_sse_stream_send(eshkol_http_sse_stream_t* stream, const char* data,
+                                const char* event_type, const char* id) {
+    int status = check_available(stream);
+    if (status < 0) return status;
+    return admit_event(stream, data, bounded_string_length(data),
+                       event_type, bounded_string_length(event_type),
+                       id, bounded_string_length(id));
+}
+
+int eshkol_http_sse_stream_send_bytes(eshkol_http_sse_stream_t* stream,
+                                      const char* data, int64_t data_len,
+                                      const char* event_type, int64_t event_type_len,
+                                      const char* id, int64_t id_len) {
+    int status = check_available(stream);
+    if (status < 0) return status;
+    return admit_event(stream, data, data_len, event_type, event_type_len, id, id_len);
+}
+
 int eshkol_http_sse_stream_finish(eshkol_http_sse_stream_t* stream) {
     int status = check_available(stream);
     if (status < 0) return status;
@@ -186,6 +222,11 @@ int eshkol_http_sse_stream_finish(eshkol_http_sse_stream_t* stream) {
 
 int eshkol_http_sse_stream_progress(eshkol_http_sse_stream_t* stream) {
     if (!on_owner_loop(stream) || stream->retired) return ESHKOL_IO_INVALID;
+    if (!eshkol_capability_runtime_allows("network")) {
+        int status = stop(stream, ESHKOL_IO_SYSTEM);
+        errno = EACCES;
+        return status;
+    }
     if (!stream->length) return check_idle(stream);
 
     int status = eshkol_http_sse_adapter_write_step(
