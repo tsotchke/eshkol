@@ -1,0 +1,107 @@
+;; Scoped server-sent events over an accepted HTTP/1.1 GET.
+(require core.capabilities)
+
+(provide call-with-http-sse-stream
+         sse-send! sse-progress! sse-finish! sse-cancel! sse-deadline-ms
+         sse-cleanup-ticket)
+
+(extern ptr sse-scope-begin-raw i64 i64 i64 :real eshkol_http_sse_scope_begin)
+(extern i64 sse-scope-id-raw ptr :real eshkol_http_sse_scope_id)
+(extern i32 sse-scope-close-raw ptr :real eshkol_http_sse_scope_close)
+(extern i32 sse-send-raw ptr ptr ptr ptr :real eshkol_http_sse_stream_send)
+(extern i32 sse-progress-raw ptr :real eshkol_http_sse_stream_progress)
+(extern i32 sse-finish-raw ptr :real eshkol_http_sse_stream_finish)
+(extern i64 sse-deadline-raw ptr :real eshkol_http_sse_stream_deadline)
+(extern i64 sse-cleanup-ticket-raw i64 :real eshkol_http_sse_scope_cleanup_ticket)
+
+(define (call-with-http-sse-stream server loop watch-cookie proc)
+  "Adopt the accepted client after the caller routes an HTTP/1.1 GET.
+   Use the stream on the loop owner thread, before closing that loop.
+   Leaving PROC retires the connection without sending pending bytes.
+   The callback result, exception, or continuation escape is preserved."
+  (unless (procedure? proc)
+    (error "call-with-http-sse-stream requires a procedure" proc))
+  (let ((entered? #f) (active? #f) (native '()) (resource-id 0))
+    (define (retire!)
+      (set! active? #f)
+      (if (null? native)
+          0
+          (let ((status (sse-scope-close-raw native)))
+            (when (= status 0) (set! native '()))
+            status)))
+    (define (stream operation data event-type id)
+      (cond
+        ((eq? operation 'cancel) (retire!))
+        ((eq? operation 'cleanup-ticket) (sse-cleanup-ticket-raw resource-id))
+        ((not active?) -4)
+        ((eq? operation 'send) (sse-send-raw native data event-type id))
+        ((eq? operation 'progress) (sse-progress-raw native))
+        ((eq? operation 'finish) (sse-finish-raw native))
+        ((eq? operation 'deadline) (sse-deadline-raw native))
+        (else -4)))
+    (dynamic-wind
+      (lambda ()
+        (when entered?
+          (error "an HTTP SSE scope cannot be re-entered"))
+        (set! entered? #t))
+      (lambda ()
+        (capability-require! 'network server)
+        (set! native (sse-scope-begin-raw server loop watch-cookie))
+        (when (null? native)
+          (error "could not adopt the accepted HTTP SSE connection"))
+        (set! resource-id (sse-scope-id-raw native))
+        (set! active? #t)
+        (proc stream))
+      retire!)))
+
+(define (sse-nul? text)
+  (let* ((bytes (string->utf8 text))
+         (length (bytevector-length bytes)))
+    (let loop ((index 0))
+      (and (< index length)
+           (or (= (bytevector-u8-ref bytes index) 0)
+               (loop (+ index 1)))))))
+
+(define (sse-send! stream data . metadata)
+  "Admit DATA with optional event type and id, in that order.
+   Pass #f to omit a metadata field. Returns 0 when admitted, -5 when busy,
+   -8 for an oversized event, or another negative status."
+  (let* ((event-type (if (null? metadata) #f (car metadata)))
+         (id-args (if (null? metadata) '() (cdr metadata)))
+         (id (if (null? id-args) #f (car id-args))))
+    (cond
+      ((or (and (pair? id-args) (pair? (cdr id-args)))
+           (not (string? data))
+           (and event-type (not (string? event-type)))
+           (and id (not (string? id))))
+       -4)
+      ((or (> (string-byte-length data) 16384)
+           (and event-type (> (string-byte-length event-type) 16384))
+           (and id (> (string-byte-length id) 16384)))
+       -8)
+      ((or (sse-nul? data) (and event-type (sse-nul? event-type))
+           (and id (sse-nul? id)))
+       -4)
+      (else (stream 'send data event-type id)))))
+
+(define (sse-progress! stream)
+  "Advance the pending write once. Returns 0 when ready for admission,
+   1 when a write remains pending, 2 after clean finish, or a negative
+   status. Drive it again after readiness or when its deadline is due."
+  (stream 'progress #f #f #f))
+
+(define (sse-finish! stream)
+  "Admit the terminal HTTP chunk. Drive sse-progress! through finish."
+  (stream 'finish #f #f #f))
+
+(define (sse-cancel! stream)
+  "Retire without sending. Repeated cancellation is harmless."
+  (stream 'cancel #f #f #f))
+
+(define (sse-deadline-ms stream)
+  "Return the current absolute monotonic deadline in milliseconds."
+  (stream 'deadline #f #f #f))
+
+(define (sse-cleanup-ticket stream)
+  "Take ownership of a detached failed cleanup ticket, if one exists."
+  (stream 'cleanup-ticket #f #f #f))
