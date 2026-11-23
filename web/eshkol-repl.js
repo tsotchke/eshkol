@@ -1416,6 +1416,12 @@ function createEshkolExactRuntime(memoryRef, owner, stackBytes) {
 class EshkolRepl {
     constructor(serverUrl = 'http://localhost:8080', compileToken = null) {
         this.serverUrl = serverUrl;
+        // Capability policy: inactive until a program installs one, which is
+        // why a program that installs none is unaffected.
+        this._capabilityPolicyActive = false;
+        this._capabilityAllowed = new Set();
+        this._capabilityCeiling = null;
+        this._capabilityInstallOpen = false;
         this.compileToken = compileToken;
         this.sessionId = null;
         this.modules = [];      // Compiled WASM modules
@@ -1494,6 +1500,15 @@ class EshkolRepl {
      * @param {number} ptr - Pointer to string in WASM memory
      * @returns {string} - JavaScript string
      */
+    /** Whether the capability policy permits `name`. With no policy installed
+     *  every capability is permitted, which is how a program that installs no
+     *  policy keeps behaving exactly as it did. */
+    _capabilityAllows(name) {
+        if (!name) return false;
+        if (!this._capabilityPolicyActive) return true;
+        return this._capabilityAllowed.has(name);
+    }
+
     readString(ptr) {
         if (!this.memory || ptr === 0) return '';
         const view = new Uint8Array(this.memory.buffer);
@@ -2576,9 +2591,94 @@ class EshkolRepl {
                 eshkol_builtin_coroutine_p: (out) => this.writeFalse(out),
                 eshkol_builtin_coroutine_stats: (out) => this.writeFalse(out),
 
-                eshkol_capability_runtime_begin_install: () => {},
-                eshkol_capability_runtime_allow:   () => {},
-                eshkol_capability_runtime_clear:   () => {},
+                // The capability policy, kept here so a policy a program installs
+                // means something in the browser too. The page has no command
+                // interpreter, no process creation and no sockets of its own, so
+                // the sinks those capabilities gate are unavailable here
+                // regardless; what the policy still governs is the answer the
+                // program gets, and that answer is now the same one the native
+                // runtime gives.
+                // Installing is one call carrying the whole set, so a policy is
+                // never active with its set half-assembled and no stray grant
+                // can widen a settled one. An active policy is narrowed: only
+                // the names it already held survive.
+                eshkol_capability_runtime_install: (namesPtr) => {
+                    const requested = new Set(
+                        this.readString(namesPtr).split(' ').filter((n) => n.length > 0));
+                    if (this._capabilityPolicyActive) {
+                        const narrowed = new Set();
+                        for (const name of requested) {
+                            if (this._capabilityAllowed.has(name)) narrowed.add(name);
+                        }
+                        this._capabilityAllowed = narrowed;
+                    } else {
+                        this._capabilityAllowed = requested;
+                    }
+                    this._capabilityPolicyActive = true;
+                    return 1;
+                },
+                // The staged form, for a host embedding this runtime. A grant
+                // outside an open staged install is refused.
+                eshkol_capability_runtime_begin_install: () => {
+                    this._capabilityCeiling = this._capabilityPolicyActive
+                        ? this._capabilityAllowed : null;
+                    this._capabilityInstallOpen = true;
+                    this._capabilityPolicyActive = true;
+                    this._capabilityAllowed = new Set();
+                },
+                eshkol_capability_runtime_end_install: () => {
+                    this._capabilityInstallOpen = false;
+                    this._capabilityCeiling = null;
+                },
+                eshkol_capability_runtime_allow: (namePtr) => {
+                    if (!this._capabilityInstallOpen) return 0;
+                    const name = this.readString(namePtr);
+                    if (this._capabilityCeiling && !this._capabilityCeiling.has(name)) return 0;
+                    this._capabilityAllowed.add(name);
+                    return 1;
+                },
+                eshkol_capability_runtime_clear: () => {
+                    // Refused while a policy is active: a policy the governed
+                    // code can remove is not a policy.
+                    if (this._capabilityPolicyActive) return 0;
+                    this._capabilityAllowed = new Set();
+                    this._capabilityCeiling = null;
+                    this._capabilityInstallOpen = false;
+                    return 1;
+                },
+                eshkol_capability_runtime_host_reset: () => {
+                    this._capabilityPolicyActive = false;
+                    this._capabilityAllowed = new Set();
+                    this._capabilityCeiling = null;
+                    this._capabilityInstallOpen = false;
+                },
+                eshkol_capability_runtime_is_active: () =>
+                    this._capabilityPolicyActive ? 1 : 0,
+                eshkol_capability_runtime_allows: (namePtr) =>
+                    this._capabilityAllows(this.readString(namePtr)) ? 1 : 0,
+                eshkol_capability_runtime_allows_file_mode: () => 1,
+                eshkol_capability_runtime_file_mode_missing: () => 0,
+                eshkol_capability_runtime_deny: (namePtr) => {
+                    console.warn('capability denied: ' + this.readString(namePtr));
+                },
+                eshkol_capability_require: (namePtr) => {
+                    const name = this.readString(namePtr);
+                    if (this._capabilityAllows(name)) return 1;
+                    console.warn('capability denied: ' + name);
+                    return 0;
+                },
+                eshkol_capability_enforce: (namePtr, operationPtr) => {
+                    const name = this.readString(namePtr);
+                    if (this._capabilityAllows(name)) return;
+                    const operation = operationPtr ? this.readString(operationPtr) : '';
+                    throw new Error('capability denied: ' + name +
+                                    (operation ? ' (' + operation + ')' : ''));
+                },
+
+                // (system cmd) lowers to this. A page has no command
+                // interpreter, so it reports the same failure status libc
+                // system() reports when no interpreter can be started.
+                eshkol_shell_command: () => -1,
 
                 // Lazy futures — no async worker runtime in browser WASM yet.
                 eshkol_lazy_future_is_ready: () => 1,

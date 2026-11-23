@@ -183,7 +183,6 @@
 (check (guard (e (#t #t)) (tcp-listen "127.0.0.1" 0) #f) "network capability denied for listen")
 (check (guard (e (#t #t)) (call-with-tcp-connection "127.0.0.1" 1 100 (lambda (c) c)) #f)
        "network capability denied for scoped connect")
-(capability-clear-policy!)
 
 (if (= failures 0)
     (begin (display "RESULT: PASS") (newline))

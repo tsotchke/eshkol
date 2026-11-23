@@ -1486,7 +1486,10 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_remove);
     ADD_SYMBOL(eshkol_rename);
     ADD_SYMBOL(eshkol_capability_runtime_clear);
+    ADD_SYMBOL(eshkol_capability_runtime_host_reset);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
+    ADD_SYMBOL(eshkol_capability_runtime_end_install);
+    ADD_SYMBOL(eshkol_capability_runtime_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
     // core.curvature: the ADR-0018 signed-curvature chart (lib/core/curvature_runtime.c)
     ADD_SYMBOL(eshkol_curvature_last_error);
@@ -1520,6 +1523,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_capability_runtime_is_active);
     ADD_SYMBOL(eshkol_capability_runtime_allows);
     ADD_SYMBOL(eshkol_capability_runtime_allows_file_mode);
+    ADD_SYMBOL(eshkol_capability_runtime_file_mode_missing);
+    ADD_SYMBOL(eshkol_capability_runtime_deny);
+    ADD_SYMBOL(eshkol_capability_require);
+    ADD_SYMBOL(eshkol_capability_enforce);
+    ADD_SYMBOL(eshkol_shell_command);
     ADD_SYMBOL(eshkol_mkdir);
     ADD_SYMBOL(eshkol_rmdir);
     ADD_SYMBOL(eshkol_chdir);

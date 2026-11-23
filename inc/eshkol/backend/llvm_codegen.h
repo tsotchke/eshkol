@@ -2532,6 +2532,7 @@ private:
 
     Value* codegenExternVar(const eshkol_operations_t* op);
 
+    Function* externFfiGateWrapper(Function* target, const char* real_name);
     Value* codegenExtern(const eshkol_operations_t* op);
 
     // =========================================================================

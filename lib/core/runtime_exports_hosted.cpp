@@ -22,7 +22,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_set>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -43,11 +42,6 @@ constexpr std::uint64_t kDrand48Mask = (1ULL << 48) - 1;
 
 std::mutex g_drand48_mutex;
 std::uint64_t g_drand48_state = 0x1234ABCD330EULL;
-
-std::mutex g_capability_mutex;
-bool g_capability_policy_active = false;
-std::unordered_set<std::string> g_capability_allow_list;
-std::unordered_set<std::string> g_capability_denials_reported;
 
 #ifdef _WIN32
 struct windows_dirent_shim {
@@ -122,103 +116,28 @@ std::filesystem::path normalize_runtime_path(std::string_view raw_path) {
     return std::filesystem::path(std::string(raw_path));
 }
 
-/**
- * @brief Check whether the named capability is permitted under the current
- * capability policy.
- *
- * If no capability policy has been installed (via
- * eshkol_capability_runtime_begin_install()), every capability is allowed.
- * Once a policy is active, only capability names previously added with
- * eshkol_capability_runtime_allow() are permitted. Thread-safe (guarded by
- * g_capability_mutex).
- *
- * @param capability  Capability name, e.g. "file-read", "file-write",
- *                     "env-read", "env-write". NULL or empty is always denied.
- * @return             true if the capability is allowed, false otherwise.
- */
-bool runtime_capability_allows(const char* capability) {
-    if (capability == nullptr || capability[0] == '\0') {
-        return false;
-    }
+/* The capability policy itself lives in lib/core/capability_policy.cpp, which
+ * every engine links. The helpers below are the names this translation unit's
+ * file and environment wrappers already used; they now read that one store. */
 
-    std::lock_guard<std::mutex> lock(g_capability_mutex);
-    if (!g_capability_policy_active) {
-        return true;
-    }
-    return g_capability_allow_list.find(capability) != g_capability_allow_list.end();
+/** @brief Whether the named capability is permitted under the current capability policy (see capability_policy.cpp). */
+bool runtime_capability_allows(const char* capability) {
+    return eshkol_capability_runtime_allows(capability) != 0;
 }
 
-/**
- * @brief Determine which capability (if any) an fopen()-style mode string
- * requires but is not currently granted.
- *
- * Inspects the first mode character ('r' implies read; 'w'/'a' imply write)
- * and any '+' flag (implies both read and write), then checks each implied
- * requirement against the active capability policy.
- *
- * @param mode  fopen()-style mode string (e.g. "r", "w+", "a"). NULL/empty
- *              is treated as requiring "file-read".
- * @return      "file-read" or "file-write" naming the first missing
- *              capability, or nullptr if the mode is fully permitted.
- */
+/** @brief Name the first capability an fopen()-style mode string needs and does not have, or nullptr when the mode is permitted. */
 const char* runtime_file_mode_missing_capability(const char* mode) {
-    if (mode == nullptr || mode[0] == '\0') {
-        return "file-read";
-    }
-
-    bool needs_read = mode[0] == 'r';
-    bool needs_write = mode[0] == 'w' || mode[0] == 'a';
-    for (const char* p = mode; *p; ++p) {
-        if (*p == '+') {
-            needs_read = true;
-            needs_write = true;
-        }
-    }
-
-    if (needs_read && !runtime_capability_allows("file-read")) {
-        return "file-read";
-    }
-    if (needs_write && !runtime_capability_allows("file-write")) {
-        return "file-write";
-    }
-    return nullptr;
+    return eshkol_capability_runtime_file_mode_missing(mode);
 }
 
 /** @brief Whether an fopen()-style mode string is fully permitted by the current capability policy. */
 bool runtime_file_mode_allows(const char* mode) {
-    return runtime_file_mode_missing_capability(mode) == nullptr;
+    return eshkol_capability_runtime_allows_file_mode(mode) != 0;
 }
 
-/**
- * @brief Set errno to EACCES and log a one-time "capability denied" message
- * to stderr for the given capability.
- *
- * Deduplicates via g_capability_denials_reported so repeated denials of the
- * same capability (e.g. many file-read attempts in a loop) only produce a
- * single stderr line. Thread-safe.
- *
- * @param capability  Capability name that was denied; "unknown" is used if
- *                     NULL or empty.
- */
-void report_capability_denied(const char* capability) {
-    errno = EACCES;
-    const char* name = (capability != nullptr && capability[0] != '\0')
-        ? capability
-        : "unknown";
-
-    bool should_report = false;
-    {
-        std::lock_guard<std::mutex> lock(g_capability_mutex);
-        should_report = g_capability_denials_reported.insert(name).second;
-    }
-    if (should_report) {
-        std::fprintf(stderr, "capability denied: %s\n", name);
-    }
-}
-
-/** @brief Thin alias for report_capability_denied(), used at call sites that deny a capability. */
+/** @brief Record a capability denial: errno=EACCES plus a one-time stderr line naming the capability. */
 void deny_capability(const char* capability) {
-    report_capability_denied(capability);
+    eshkol_capability_runtime_deny(capability);
 }
 
 } // namespace
@@ -501,73 +420,32 @@ extern "C" int eshkol_usleep(std::uint32_t usec) {
     return 0;
 }
 
-/** @brief Deactivate the capability policy and clear the allow-list, reverting to "everything permitted". Thread-safe. */
-extern "C" void eshkol_capability_runtime_clear() {
-    std::lock_guard<std::mutex> lock(g_capability_mutex);
-    g_capability_policy_active = false;
-    g_capability_allow_list.clear();
-}
-
 /**
- * @brief Activate the capability policy with an empty allow-list.
+ * @brief Run a command line through the host command interpreter, gated on the
+ *        "shell" capability.
  *
- * After this call, every capability is denied until explicitly permitted via
- * eshkol_capability_runtime_allow(). Thread-safe.
+ * `(system cmd)` lowers to this on every backend, so the gate is here — one
+ * runtime entry point — rather than repeated in each code generator. Without a
+ * policy this is libc system() and nothing changes; under a policy that does
+ * not grant "shell", eshkol_capability_enforce raises a catchable
+ * capability-denied error and the command is never handed to the interpreter.
+ *
+ * @param command Command line for the host interpreter; NULL returns -1.
+ * @return The exit status libc system() reports.
  */
-extern "C" void eshkol_capability_runtime_begin_install() {
-    std::lock_guard<std::mutex> lock(g_capability_mutex);
-    g_capability_policy_active = true;
-    g_capability_allow_list.clear();
+extern "C" int eshkol_shell_command(const char* command) {
+    if (command == nullptr) return -1;
+    eshkol_capability_enforce("shell", "system");
+    return std::system(command);
 }
 
-/**
- * @brief Add a capability name to the active policy's allow-list.
- *
- * No-op if no policy is currently active (i.e. between
- * eshkol_capability_runtime_clear() and the next begin_install()) or if
- * `capability` is NULL/empty. Thread-safe.
- *
- * @param capability  Capability name to permit, e.g. "file-read".
- */
-extern "C" void eshkol_capability_runtime_allow(const char* capability) {
-    if (capability == nullptr || capability[0] == '\0') {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(g_capability_mutex);
-    if (g_capability_policy_active) {
-        g_capability_allow_list.insert(capability);
-    }
-}
-
-/** @brief Whether a capability policy is currently installed (1) or all capabilities are unrestricted (0). Thread-safe. */
-extern "C" int eshkol_capability_runtime_is_active() {
-    std::lock_guard<std::mutex> lock(g_capability_mutex);
-    return g_capability_policy_active ? 1 : 0;
-}
-
-/** @brief C-ABI (int-returning) wrapper around runtime_capability_allows() for generated code to query a capability. */
-extern "C" int eshkol_capability_runtime_allows(const char* capability) {
-    return runtime_capability_allows(capability) ? 1 : 0;
-}
-
-/** @brief C-ABI (int-returning) wrapper around runtime_file_mode_allows() for generated code to check an fopen() mode string against the capability policy. */
-extern "C" int eshkol_capability_runtime_allows_file_mode(const char* mode) {
-    return runtime_file_mode_allows(mode) ? 1 : 0;
-}
-
-/** @brief Report `capability` as denied (sets errno=EACCES, logs once to stderr). Exposed so generated code can surface a capability failure through the same reporting path as the internal file/env helpers. */
-extern "C" void eshkol_capability_runtime_deny(const char* capability) {
-    deny_capability(capability);
-}
-
-/** @brief Allow-or-record-denial guard shared by every capability-gated builtin (see runtime_exports.h). */
-extern "C" int eshkol_capability_require(const char* capability) {
-    if (!capability) return 1;
-    if (runtime_capability_allows(capability)) return 1;
-    deny_capability(capability);
-    return 0;
-}
+/* eshkol_capability_runtime_clear / begin_install / allow / is_active /
+ * allows / allows_file_mode / deny and eshkol_capability_require are defined
+ * in lib/core/capability_policy.cpp — the single policy store shared by the
+ * native runtime, the bytecode VM and the VM's WebAssembly bundle.
+ * eshkol_capability_enforce, which turns a denial into a catchable Eshkol
+ * error, is defined in lib/core/runtime_errors_hosted.cpp alongside the rest
+ * of the native raise path. */
 
 /**
  * @brief Capability-checked, path-normalizing wrapper around std::fopen().

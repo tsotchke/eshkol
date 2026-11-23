@@ -39,6 +39,12 @@
 #include <string.h>
 #include <time.h>
 
+/* Every request path of this client passes through the gate below before a
+ * connection is attempted: an HTTP request is a network operation, and under a
+ * policy that does not grant `network` it raises a catchable capability-denied
+ * error instead of reaching the host. */
+extern void eshkol_capability_enforce(const char* capability, const char* operation);
+
 #define ESHKOL_HTTP_MAX_RESPONSE_BYTES ((size_t)256 * 1024 * 1024)
 
 typedef struct qllm_http_response {
@@ -350,6 +356,7 @@ qllm_http_response_t* qllm_http_get(const char* url, int32_t timeout_ms) {
     if (!eshkol_http_valid_absolute_url(url)) return NULL;
     /* Lazy-init: the agent may forget to call http-init before its first
      * request. One-shot init+leak is cheaper than a hard error here. */
+    eshkol_capability_enforce("network", "http-request");
     if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
@@ -393,6 +400,7 @@ qllm_http_response_t* qllm_http_post(const char* url,
                                      int32_t timeout_ms) {
     if (!eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (!body && body_len != 0)) return NULL;
+    eshkol_capability_enforce("network", "http-request");
     if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
@@ -451,6 +459,7 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
                                           const char* auth_header,
                                           int32_t timeout_ms) {
     if (!eshkol_http_valid_absolute_url(url)) return NULL;
+    eshkol_capability_enforce("network", "http-request");
     if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
@@ -517,6 +526,7 @@ qllm_http_response_t* eshkol_http_request_bytes(const char* method,
     if (!eshkol_http_valid_method(method) ||
         !eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (!body && body_len != 0)) return NULL;
+    eshkol_capability_enforce("network", "http-request");
     if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
@@ -695,6 +705,7 @@ void* eshkol_http_stream_open_bytes(const char* method,
     if (!eshkol_http_valid_method(method) ||
         !eshkol_http_valid_absolute_url(url) || body_len < 0 ||
         (!body && body_len != 0)) return NULL;
+    eshkol_capability_enforce("network", "http-request");
     if (!acquire_curl_global()) return NULL;
     eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)calloc(1, sizeof(*stream));
     if (!stream) {

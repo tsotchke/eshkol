@@ -43,6 +43,7 @@ extern "C" {
 #define ESHKOL_IO_REFUSED      (-9)  /**< Connection refused by the peer.               */
 #define ESHKOL_IO_UNTRUSTED    (-10) /**< TLS peer certificate failed verification.     */
 #define ESHKOL_IO_IDENTITY     (-11) /**< TLS peer certificate names another host.      */
+#define ESHKOL_IO_DENIED       (-12) /**< The capability policy does not permit it.     */
 /** @} */
 
 /** @name Readiness interest, identical to ESHKOL_EVENT_READ / ESHKOL_EVENT_WRITE. @{ */

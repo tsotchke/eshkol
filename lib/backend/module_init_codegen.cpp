@@ -228,7 +228,9 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         // v1.2 batch 3
         function_return_types["process-setpgid"] = BuiltinTypes::Boolean;
         function_return_types["process-kill-tree"] = BuiltinTypes::Boolean;
-        function_return_types["process-spawn-pty"] = BuiltinTypes::Integer;
+        // (pid . master-fd) on success, -1 otherwise — the same shape on both
+        // engines, so the program owns the pseudo-terminal descriptor.
+        function_return_types["process-spawn-pty"] = BuiltinTypes::Value;
         function_return_types["process-read-nonblocking"] = BuiltinTypes::String;
         // v1.2 batch 4
         function_return_types["process-pid"] = BuiltinTypes::Integer;

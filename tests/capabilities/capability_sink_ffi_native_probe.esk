@@ -1,0 +1,24 @@
+;;; FFI capability on the native engines: a program's own (extern …) reaches
+;;; outside the language, so it needs `ffi`.
+;;;
+;;; The symbol named here is libc's own `system`, not the runtime entry point
+;;; `(system cmd)` lowers to — the point of the case is that declaring the raw
+;;; symbol is not a way around the policy.
+(require stdlib)
+(require core.capabilities)
+
+(extern i32 raw-shell-command ptr :real system)
+
+(define mode (getenv "ESHKOL_CAP_MODE"))
+(define marker (getenv "ESHKOL_CAP_FFI_MARKER"))
+
+(if (string=? mode "deny") (capability-install-policy! (list 'file-read)) #t)
+(if (string=? mode "grant")
+    (capability-install-policy! (list 'file-read 'ffi 'shell))
+    #t)
+
+(display
+  (guard (e (#t (if (error-object? e) (error-object-message e) "non-error-object")))
+    (let ((rc (raw-shell-command (string-append "printf reached > '" marker "'"))))
+      (string-append "ran:" (number->string rc)))))
+(newline)

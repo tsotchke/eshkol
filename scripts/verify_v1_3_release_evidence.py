@@ -44,7 +44,7 @@ TEST_ACTIONS = {
 }
 
 EXPECTED_CRITERION_COUNTS = {
-    "v1.4-connection": 71,
+    "v1.4-connection": 72,
     "v1.3.5-evolve": 37,
     "v1.3.6-evolve": 12,
 }

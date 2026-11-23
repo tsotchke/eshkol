@@ -49,7 +49,16 @@ void eshkol_plat_sleep_ms(int ms) {
 
 /* ── Run-time library binding ──────────────────────────────────────── */
 
+/* Loading a shared library brings foreign code into the process, so this is a
+ * capability sink like any other: under a policy that does not grant `ffi` no
+ * library is opened and the caller sees the same "nothing loadable" answer it
+ * gets when none of the names is present. The platform layer reports rather
+ * than raises, because its callers are optional-feature probes (audio, MIDI,
+ * windowing) that already handle an unavailable library. */
+extern int eshkol_capability_require(const char* capability);
+
 void* eshkol_plat_dlopen_any(const char* const* names) {
+    if (!eshkol_capability_require("ffi")) return NULL;
     for (const char* const* n = names; n && *n; ++n) {
         void* h = dlopen(*n, RTLD_NOW | RTLD_LOCAL);
         if (h) return h;

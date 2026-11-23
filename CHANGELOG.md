@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Capabilities and processes
+
+- The capability policy covers the shell, process creation, sockets and foreign
+  code, on the LLVM JIT, ahead-of-time executables and the bytecode VM, from one
+  policy store. A program that installs no policy is unaffected; under an active
+  policy every capability it does not name is refused, and a refusal names the
+  capability.
+- A policy only ever narrows: installing one while another is active keeps the
+  names both hold, and clearing is refused while a policy is active.
+- `(process-spawn-pty cmd)` returns `(pid . master-fd)` on every engine, so the
+  program owns the pseudo-terminal descriptor, and `#f` when it cannot start the
+  child. It previously returned the pid alone on the native engines.
+
+
 ### Added
 
 - **Mathematics now runs on finite structures that decide their own claims.** Add `core.sheaf`
