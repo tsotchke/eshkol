@@ -16,6 +16,11 @@
 #include <stdint.h>
 #include <signal.h>
 
+#include "eshkol/core/event_loop.h"
+#include "eshkol/core/handle.h"
+#include "eshkol/core/resource_lease.h"
+#include "eshkol/core/subprocess_stream.h"
+
 #ifndef _WIN32
 #include <unistd.h>
 #include <sys/types.h>
@@ -2638,3 +2643,520 @@ void qllm_process_destroy(eshkol_subprocess_t* proc) {
     proc->pid = 0;
     proc->closed = 1;
 }
+
+/* Scoped streaming shares the launcher above, but never starts its capture
+ * readers. A managed owner and one exclusive lease cover both output pipes. */
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+#include <limits.h>
+
+#ifdef __APPLE__
+extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak_import));
+#else
+extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak));
+#endif
+
+typedef struct process_stream_record {
+    eshkol_handle_id_t id;
+    uint64_t lease;
+    int64_t loop;
+    eshkol_subprocess_t* proc;
+    int out_registered, err_registered, loop_retained;
+    int closed, terminal, close_error, exit_reported;
+    int cancel_requested, term_sent, kill_sent;
+    int cancel_clock_started, cancel_grace_ms;
+    int64_t kill_deadline;
+    int exit_code;
+    struct process_stream_record* next;
+} process_stream_record;
+
+/* PROCESS and socket owners share one public identity domain. This pointer
+ * borrows the process-wide registry; stream shutdown never destroys it. */
+static eshkol_handle_registry_t* stream_registry;
+#define PROCESS_STREAM_TAG UINT32_C(1)
+static process_stream_record* stream_records;
+static size_t stream_record_count;
+static pthread_mutex_t stream_owner_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t stream_owner;
+static int stream_owner_set, stream_shutdown;
+
+static int stream_thread(void) {
+    int result = 0;
+    pthread_mutex_lock(&stream_owner_mutex);
+    if (!stream_owner_set) {
+        stream_owner = pthread_self();
+        stream_owner_set = 1;
+    }
+    if (stream_owner_set && !pthread_equal(stream_owner, pthread_self()))
+        result = ESHKOL_PROCESS_STREAM_ETHREAD;
+    pthread_mutex_unlock(&stream_owner_mutex);
+    return result;
+}
+
+static int stream_authorized(void) {
+    return eshkol_capability_runtime_allows &&
+           eshkol_capability_runtime_allows("subprocess");
+}
+
+static int64_t stream_now(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static process_stream_record* stream_find(int64_t id) {
+    if (id <= 0) return NULL;
+    for (process_stream_record* r = stream_records; r; r = r->next) {
+        if (r->id != (uint64_t)id) continue;
+        /* Terminal cleanup records outlive the retired registry identity. */
+        if (r->terminal) return r;
+        eshkol_handle_kind_t kind;
+        uint32_t tag;
+        if (!stream_registry || eshkol_handle_get_kind(stream_registry, r->id,
+                &kind, &tag) != ESHKOL_HANDLE_OK ||
+            kind != ESHKOL_HANDLE_KIND_PROCESS || tag != PROCESS_STREAM_TAG)
+            return NULL;
+        return r;
+    }
+    return NULL;
+}
+
+static int stream_reap(process_stream_record* r) {
+    if (!r->proc || r->proc->exited) return 0;
+    errno = 0;
+    check_exit_status(r->proc);
+    return !r->proc->exited && errno && errno != EINTR
+        ? ESHKOL_PROCESS_STREAM_ESYSTEM : 0;
+}
+
+static int stream_signal(process_stream_record* r, int sig) {
+    if (kill((pid_t)r->proc->pid, sig) == 0 || errno == ESRCH) return 0;
+    return ESHKOL_PROCESS_STREAM_ESYSTEM;
+}
+
+static int stream_advance(process_stream_record* r) {
+    int result = stream_reap(r);
+    if (result || !r->proc || r->proc->exited || !r->cancel_requested)
+        return result;
+    if (!r->term_sent) {
+        result = stream_signal(r, SIGTERM);
+        if (result) return result;
+        r->term_sent = 1;
+    }
+    int64_t now = stream_now();
+    if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    if (!r->cancel_clock_started) {
+        r->kill_deadline = now + r->cancel_grace_ms;
+        r->cancel_clock_started = 1;
+    }
+    if (!r->kill_sent && now >= r->kill_deadline) {
+        result = stream_signal(r, SIGKILL);
+        if (result) return result;
+        r->kill_sent = 1;
+    }
+    return stream_reap(r);
+}
+
+static int stream_request_cancel(process_stream_record* r, int32_t grace_ms) {
+    if (!r->cancel_requested) {
+        /* Retain intent even if obtaining the deadline fails. Cleanup retries
+         * initialize it once a monotonic reading is available. */
+        r->cancel_requested = 1;
+        r->cancel_grace_ms = grace_ms;
+    }
+    return stream_advance(r);
+}
+
+static void stream_close_fd(int* fd, process_stream_record* r) {
+    if (*fd < 0) return;
+    int value = *fd;
+    *fd = -1;
+    /* close(EINTR) has an uncertain close state; do not close a reused fd. */
+    if (close(value) != 0) r->close_error = 1;
+}
+
+static int stream_remove_watch(eshkol_event_loop_t* loop, int fd, int* registered) {
+    if (!*registered) return 0;
+    if (!loop) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    int rc = eshkol_event_loop_remove(loop, fd);
+    if (rc != ESHKOL_EVENT_LOOP_OK && rc != ESHKOL_EVENT_LOOP_ENOENT)
+        return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    *registered = 0;
+    return 0;
+}
+
+static int stream_detach(process_stream_record* r) {
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
+    int out = stream_remove_watch(loop, r->proc ? r->proc->stdout_fd : -1,
+                                  &r->out_registered);
+    int err = stream_remove_watch(loop, r->proc ? r->proc->stderr_fd : -1,
+                                  &r->err_registered);
+    /* A failed removal leaves the kernel registration and its descriptor owned.
+     * Keep the loop pin and lifetime lease until a later cleanup attempt succeeds. */
+    if (out || err) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    if (r->proc) {
+        stream_close_fd(&r->proc->stdin_fd, r);
+        stream_close_fd(&r->proc->stdout_fd, r);
+        stream_close_fd(&r->proc->stderr_fd, r);
+    }
+    if (r->loop_retained) {
+        if (eshkol_event_loop_release_handle(r->loop) != 0)
+            return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        r->loop_retained = 0;
+    }
+    if (r->lease) {
+        if (eshkol_handle_release(stream_registry, r->id, r->lease) != 0)
+            return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        r->lease = 0;
+    }
+    return 0;
+}
+
+static int stream_owner_close(eshkol_handle_kind_t kind, uintptr_t native,
+                              void* unused) {
+    (void)unused;
+    process_stream_record* r = (process_stream_record*)native;
+    if (kind != ESHKOL_HANDLE_KIND_PROCESS ||
+        (r->proc && !r->proc->exited)) return -1;
+    if (r->proc) {
+        r->exit_code = r->proc->exit_code;
+        qllm_process_destroy(r->proc);
+        free(r->proc); /* Safe mode exposes only the registry identity. */
+        r->proc = NULL;
+    }
+    return 0;
+}
+
+static int stream_finish(process_stream_record* r) {
+    if (r->terminal)
+        return r->close_error ? ESHKOL_PROCESS_STREAM_ESYSTEM : 0;
+    /* Progress cancellation/reaping even when detaching a watch must retry. */
+    int rc = stream_advance(r);
+    int detached = r->closed ? stream_detach(r) : 0;
+    if (rc) return rc;
+    if (detached) return detached;
+    if (r->proc && !r->proc->exited) return ESHKOL_PROCESS_STREAM_PENDING;
+    if (r->lease) return ESHKOL_PROCESS_STREAM_EBUSY;
+    /* Only a confirmed reap permits the registry's terminal close callback. */
+    int closed = eshkol_handle_close(stream_registry, r->id);
+    if (closed != ESHKOL_HANDLE_OK && closed != ESHKOL_HANDLE_ECLOSE)
+        return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    if (closed == ESHKOL_HANDLE_ECLOSE) r->close_error = 1;
+    r->terminal = 1;
+    return r->close_error ? ESHKOL_PROCESS_STREAM_ESYSTEM : 0;
+}
+
+static void stream_forget(process_stream_record* r) {
+    process_stream_record** entry = &stream_records;
+    while (*entry && *entry != r) entry = &(*entry)->next;
+    if (*entry) {
+        *entry = r->next;
+        --stream_record_count;
+        free(r);
+    }
+}
+
+static int stream_managed_loop(int64_t handle, eshkol_event_loop_t* loop) {
+    int managed = 0;
+    for (process_stream_record* r = stream_records; r; r = r->next) {
+        if (r->loop == handle) {
+            if (r->out_registered && !eshkol_event_loop_registration_matches(
+                    loop, r->proc->stdout_fd, ESHKOL_EVENT_READ, r->id)) return 0;
+            if (r->err_registered && !eshkol_event_loop_registration_matches(
+                    loop, r->proc->stderr_fd, ESHKOL_EVENT_READ, r->id)) return 0;
+            managed += r->out_registered + r->err_registered;
+        }
+    }
+    /* Common socket waits also own registrations on a caller's loop. Validate
+     * those independently, while preserving rejection of unmanaged watches. */
+    int shared = eshkol_resource_managed_registration_count(handle);
+    return shared >= 0 && eshkol_event_loop_count(loop) == managed + shared;
+}
+
+static int stream_wait_step(eshkol_event_loop_t* loop, int64_t deadline) {
+    int64_t now = stream_now();
+    if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    int64_t remaining = deadline - now;
+    int delay = remaining > 10 ? 10 : remaining > 0 ? (int)remaining : 0;
+    const eshkol_event_t* events;
+    int count;
+    return eshkol_event_loop_poll(loop, delay, &events, &count) == 0
+        ? 0 : ESHKOL_PROCESS_STREAM_ESYSTEM;
+}
+
+int64_t eshkol_process_stream_open(int64_t handle, const char* argv,
+                                   const char* cwd, const char* env) {
+    if (!argv || !*argv || handle <= 0) return ESHKOL_PROCESS_STREAM_EINVAL;
+    if (!stream_authorized()) return ESHKOL_PROCESS_STREAM_EDENIED;
+    int rc = stream_thread();
+    if (rc) return rc;
+    if (stream_shutdown) return ESHKOL_PROCESS_STREAM_EBUSY;
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(handle);
+    if (!loop) return ESHKOL_PROCESS_STREAM_EINVAL;
+    if (!stream_managed_loop(handle, loop)) return ESHKOL_PROCESS_STREAM_EBUSY;
+    if (stream_record_count >= eshkol_spawn_limit()) return ESHKOL_PROCESS_STREAM_ELIMIT;
+    if (!stream_registry) stream_registry = eshkol_resource_registry();
+    if (!stream_registry) return ESHKOL_PROCESS_STREAM_ELIMIT;
+    process_stream_record* r = (process_stream_record*)calloc(1, sizeof(*r));
+    if (!r) return ESHKOL_PROCESS_STREAM_ELIMIT;
+    r->loop = handle;
+    r->exit_code = ESHKOL_PROCESS_STREAM_WOULD_BLOCK;
+    if (eshkol_event_loop_retain_handle(handle) != 0) { free(r); return ESHKOL_PROCESS_STREAM_EINVAL; }
+    r->loop_retained = 1;
+    int64_t adopted = eshkol_resource_adopt(ESHKOL_HANDLE_KIND_PROCESS,
+        PROCESS_STREAM_TAG, (uintptr_t)r, stream_owner_close, NULL);
+    if (adopted <= 0) {
+        eshkol_event_loop_release_handle(handle); free(r);
+        return ESHKOL_PROCESS_STREAM_ELIMIT;
+    }
+    r->id = (eshkol_handle_id_t)adopted;
+    r->next = stream_records;
+    stream_records = r;
+    ++stream_record_count;
+    uintptr_t native;
+    /* Some existing FFI i64 results pass through binary64 numeric boxing. */
+    if (r->id > UINT64_C(9007199254740991) || eshkol_handle_borrow(stream_registry, r->id,
+                                                &native, &r->lease) != 0) {
+        r->closed = 1; stream_detach(r); stream_finish(r);
+        if (r->terminal) stream_forget(r);
+        return ESHKOL_PROCESS_STREAM_ELIMIT;
+    }
+    r->proc = qllm_process_spawn_argv_flags_impl(argv, cwd,
+                                                ESHKOL_SPAWN_STDIN_NULL, env);
+    if (!r->proc) {
+        r->closed = 1; stream_detach(r); stream_finish(r);
+        if (r->terminal) stream_forget(r);
+        return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    }
+    int descriptors[2] = {r->proc->stdout_fd, r->proc->stderr_fd};
+    rc = 0;
+    for (int i = 0; i < 2; ++i) {
+        int flags = fcntl(descriptors[i], F_GETFL);
+        int fdflags = fcntl(descriptors[i], F_GETFD);
+        if (flags < 0 || fdflags < 0 ||
+            fcntl(descriptors[i], F_SETFL, flags | O_NONBLOCK) < 0 ||
+            fcntl(descriptors[i], F_SETFD, fdflags | FD_CLOEXEC) < 0) {
+            rc = ESHKOL_PROCESS_STREAM_ESYSTEM; break;
+        }
+        int added = eshkol_event_loop_add(loop, descriptors[i], ESHKOL_EVENT_READ, r->id);
+        if (added != 0) {
+            rc = added == ESHKOL_EVENT_LOOP_EFULL ? ESHKOL_PROCESS_STREAM_ELIMIT
+                                                : ESHKOL_PROCESS_STREAM_ESYSTEM;
+            break;
+        }
+        if (i == 0) r->out_registered = 1; else r->err_registered = 1;
+    }
+    if (rc) {
+        /* Record already roots ownership; failed registration cannot orphan it. */
+        eshkol_process_stream_close((int64_t)r->id, 0, 0);
+        if (r->terminal) stream_forget(r);
+        return rc;
+    }
+    return (int64_t)r->id;
+}
+
+int64_t eshkol_process_stream_read(int64_t id, int32_t which,
+                                   void* buffer, int64_t capacity) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    if (!stream_authorized()) return ESHKOL_PROCESS_STREAM_EDENIED;
+    process_stream_record* r = stream_find(id);
+    if (!r || r->closed || !buffer || capacity <= 0 || capacity > INT32_MAX ||
+        (which != ESHKOL_PROCESS_STREAM_STDOUT && which != ESHKOL_PROCESS_STREAM_STDERR))
+        return ESHKOL_PROCESS_STREAM_EINVAL;
+    int* fd = which == ESHKOL_PROCESS_STREAM_STDOUT ? &r->proc->stdout_fd : &r->proc->stderr_fd;
+    int* eof = which == ESHKOL_PROCESS_STREAM_STDOUT ? &r->proc->stdout_eof : &r->proc->stderr_eof;
+    int* registered = which == ESHKOL_PROCESS_STREAM_STDOUT ? &r->out_registered : &r->err_registered;
+    if (*eof) {
+        eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
+        if (stream_remove_watch(loop, *fd, registered)) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        stream_close_fd(fd, r);
+        return 0;
+    }
+    ssize_t count = read(*fd, buffer, (size_t)capacity);
+    if (count > 0) return count;
+    if (count < 0)
+        return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR
+            ? ESHKOL_PROCESS_STREAM_WOULD_BLOCK : ESHKOL_PROCESS_STREAM_ESYSTEM;
+    *eof = 1;
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
+    if (stream_remove_watch(loop, *fd, registered)) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    stream_close_fd(fd, r);
+    return 0;
+}
+
+int32_t eshkol_process_stream_poll(int64_t id, int32_t timeout_ms) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    if (!stream_authorized()) return ESHKOL_PROCESS_STREAM_EDENIED;
+    process_stream_record* r = stream_find(id);
+    if (!r || r->closed || timeout_ms < 0) return ESHKOL_PROCESS_STREAM_EINVAL;
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
+    if (!loop || !stream_managed_loop(r->loop, loop)) return ESHKOL_PROCESS_STREAM_EBUSY;
+    int64_t start = stream_now();
+    if (start < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    int64_t deadline = start + timeout_ms;
+    for (;;) {
+        rc = stream_advance(r);
+        if (rc) return rc;
+        int mask = r->proc->exited && !r->exit_reported ? ESHKOL_PROCESS_STREAM_EXITED : 0;
+        int64_t now = stream_now();
+        if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        int64_t remaining = deadline - now;
+        int wait_ms = mask || remaining <= 0 ? 0 : remaining > 10 ? 10 : (int)remaining;
+        const eshkol_event_t* events;
+        int count;
+        if (eshkol_event_loop_poll(loop, wait_ms, &events, &count) != 0)
+            return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        for (int i = 0; i < count; ++i) {
+            if (events[i].user_data != r->id) continue;
+            if (events[i].fd == r->proc->stdout_fd) mask |= ESHKOL_PROCESS_STREAM_STDOUT;
+            if (events[i].fd == r->proc->stderr_fd) mask |= ESHKOL_PROCESS_STREAM_STDERR;
+        }
+        rc = stream_advance(r);
+        if (rc) return rc;
+        if (r->proc->exited && !r->exit_reported) mask |= ESHKOL_PROCESS_STREAM_EXITED;
+        if (mask) {
+            if (mask & ESHKOL_PROCESS_STREAM_EXITED) r->exit_reported = 1;
+            return mask;
+        }
+        now = stream_now();
+        if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        if (!timeout_ms || now >= deadline) return 0;
+    }
+}
+
+int32_t eshkol_process_stream_exit_code(int64_t id) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    if (!stream_authorized()) return ESHKOL_PROCESS_STREAM_EDENIED;
+    process_stream_record* r = stream_find(id);
+    if (!r || r->closed) return ESHKOL_PROCESS_STREAM_EINVAL;
+    rc = stream_advance(r);
+    if (rc) return rc;
+    return r->proc->exited ? r->proc->exit_code : ESHKOL_PROCESS_STREAM_WOULD_BLOCK;
+}
+
+int32_t eshkol_process_stream_cancel(int64_t id, int32_t grace_ms) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    if (!stream_authorized()) return ESHKOL_PROCESS_STREAM_EDENIED;
+    process_stream_record* r = stream_find(id);
+    if (!r || r->closed || grace_ms < 0) return ESHKOL_PROCESS_STREAM_EINVAL;
+    return stream_request_cancel(r, grace_ms);
+}
+
+int32_t eshkol_process_stream_close(int64_t id, int32_t timeout_ms, int32_t grace_ms) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    process_stream_record* r = stream_find(id);
+    if (!r || timeout_ms < 0 || grace_ms < 0) return ESHKOL_PROCESS_STREAM_EINVAL;
+    if (r->closed) return stream_finish(r);
+    r->closed = 1;
+    int detached = stream_detach(r);
+    rc = stream_request_cancel(r, grace_ms);
+    if (rc) return rc;
+    if (detached) return detached;
+    int64_t now = stream_now();
+    if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    int64_t deadline = now + timeout_ms;
+    for (;;) {
+        rc = stream_finish(r);
+        if (rc != ESHKOL_PROCESS_STREAM_PENDING) return rc;
+        now = stream_now();
+        if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        if (!timeout_ms || now >= deadline) return ESHKOL_PROCESS_STREAM_PENDING;
+        eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(r->loop);
+        /* The loop cannot disappear concurrently on the owner thread. */
+        if (!loop) return ESHKOL_PROCESS_STREAM_PENDING;
+        rc = stream_wait_step(loop, deadline);
+        if (rc) return rc;
+    }
+}
+
+int64_t eshkol_process_cleanup_next(int64_t after) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    if (after < 0) return ESHKOL_PROCESS_STREAM_EINVAL;
+    uint64_t best = INT64_MAX;
+    for (process_stream_record* r = stream_records; r; r = r->next)
+        if (r->closed && r->id > (uint64_t)after && r->id < best) best = r->id;
+    return best == INT64_MAX ? 0 : (int64_t)best;
+}
+
+int32_t eshkol_process_cleanup_status(int64_t id) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    process_stream_record* r = stream_find(id);
+    if (!r || !r->closed) return ESHKOL_PROCESS_STREAM_EINVAL;
+    return stream_finish(r);
+}
+
+int32_t eshkol_process_cleanup_drain(int64_t handle, int32_t timeout_ms) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(handle);
+    if (!loop || timeout_ms < 0) return ESHKOL_PROCESS_STREAM_EINVAL;
+    int64_t now = stream_now();
+    if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+    int64_t deadline = now + timeout_ms;
+    for (;;) {
+        int pending = 0;
+        for (process_stream_record* r = stream_records; r; r = r->next) {
+            if (!r->closed) continue;
+            rc = stream_finish(r);
+            if (rc < 0) return rc;
+            pending += rc == ESHKOL_PROCESS_STREAM_PENDING;
+        }
+        now = stream_now();
+        if (now < 0) return ESHKOL_PROCESS_STREAM_ESYSTEM;
+        if (!pending || !timeout_ms || now >= deadline) return pending;
+        rc = stream_wait_step(loop, deadline);
+        if (rc) return rc;
+    }
+}
+
+int32_t eshkol_process_cleanup_consume(int64_t id) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    process_stream_record* r = stream_find(id);
+    if (!r || !r->closed) return ESHKOL_PROCESS_STREAM_EINVAL;
+    if (!r->terminal) return ESHKOL_PROCESS_STREAM_EBUSY;
+    stream_forget(r);
+    return 0;
+}
+
+int32_t eshkol_process_stream_runtime_shutdown(void) {
+    int rc = stream_thread();
+    if (rc) return rc;
+    if (stream_records) return ESHKOL_PROCESS_STREAM_EBUSY;
+    /* The PROCESS list is empty, so only our module's borrowed registry pointer
+     * is released. SOCKET and other shared owners remain valid. */
+    stream_registry = NULL;
+    stream_shutdown = 1;
+    return 0;
+}
+#else
+int64_t eshkol_process_stream_open(int64_t loop, const char* argv, const char* cwd, const char* env) {
+    (void)loop; (void)argv; (void)cwd; (void)env; return ESHKOL_PROCESS_STREAM_ENOTSUP;
+}
+int64_t eshkol_process_stream_read(int64_t id, int32_t which, void* buffer, int64_t capacity) {
+    (void)id; (void)which; (void)buffer; (void)capacity; return ESHKOL_PROCESS_STREAM_ENOTSUP;
+}
+int32_t eshkol_process_stream_poll(int64_t id, int32_t timeout_ms) {
+    (void)id; (void)timeout_ms; return ESHKOL_PROCESS_STREAM_ENOTSUP;
+}
+int32_t eshkol_process_stream_exit_code(int64_t id) { (void)id; return ESHKOL_PROCESS_STREAM_ENOTSUP; }
+int32_t eshkol_process_stream_cancel(int64_t id, int32_t grace_ms) {
+    (void)id; (void)grace_ms; return ESHKOL_PROCESS_STREAM_ENOTSUP;
+}
+int32_t eshkol_process_stream_close(int64_t id, int32_t timeout_ms, int32_t grace_ms) {
+    (void)id; (void)timeout_ms; (void)grace_ms; return ESHKOL_PROCESS_STREAM_ENOTSUP;
+}
+int64_t eshkol_process_cleanup_next(int64_t after) { (void)after; return ESHKOL_PROCESS_STREAM_ENOTSUP; }
+int32_t eshkol_process_cleanup_status(int64_t id) { (void)id; return ESHKOL_PROCESS_STREAM_ENOTSUP; }
+int32_t eshkol_process_cleanup_drain(int64_t loop, int32_t timeout_ms) {
+    (void)loop; (void)timeout_ms; return ESHKOL_PROCESS_STREAM_ENOTSUP;
+}
+int32_t eshkol_process_cleanup_consume(int64_t id) { (void)id; return ESHKOL_PROCESS_STREAM_ENOTSUP; }
+int32_t eshkol_process_stream_runtime_shutdown(void) { return ESHKOL_PROCESS_STREAM_ENOTSUP; }
+#endif

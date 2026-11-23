@@ -9158,6 +9158,38 @@ endif()
 
 # The managed-resource registry has no LLVM or arena dependency. Exercise its
 # lifecycle and concurrency contract without linking the compiler aggregate.
+if(ESHKOL_BUILD_TESTS AND UNIX)
+    find_package(Threads REQUIRED)
+    add_executable(eshkol-subprocess-stream-test
+        tests/agent/subprocess_stream_test.c
+        lib/agent/c/agent_subprocess.c
+        lib/core/resource_lease.c
+        lib/core/event_loop.c
+        ${ESHKOL_EVENT_LOOP_SRC}
+        lib/core/runtime_handle.cpp)
+    target_compile_features(eshkol-subprocess-stream-test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(eshkol-subprocess-stream-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-subprocess-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-subprocess-stream-test PRIVATE Threads::Threads)
+    add_test(NAME agent-subprocess-stream COMMAND eshkol-subprocess-stream-test)
+    set_tests_properties(agent-subprocess-stream PROPERTIES
+        TIMEOUT 60 LABELS "resource;subprocess;stream")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(eshkol-subprocess-stream-watch-failure-test
+            tests/agent/subprocess_stream_watch_failure_test.c
+            lib/agent/c/agent_subprocess.c lib/core/resource_lease.c
+            lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC} lib/core/runtime_handle.cpp)
+        target_compile_features(eshkol-subprocess-stream-watch-failure-test PRIVATE c_std_11 cxx_std_17)
+        target_compile_definitions(eshkol-subprocess-stream-watch-failure-test PRIVATE _GNU_SOURCE)
+        target_include_directories(eshkol-subprocess-stream-watch-failure-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-subprocess-stream-watch-failure-test PRIVATE Threads::Threads)
+        target_link_options(eshkol-subprocess-stream-watch-failure-test PRIVATE "-Wl,--wrap=eshkol_event_loop_remove")
+        add_test(NAME agent-subprocess-stream-watch-failure COMMAND eshkol-subprocess-stream-watch-failure-test)
+        set_tests_properties(agent-subprocess-stream-watch-failure PROPERTIES
+            TIMEOUT 15 LABELS "resource;subprocess;stream;cleanup")
+    endif()
+endif()
+
 if(ESHKOL_BUILD_TESTS)
     find_package(Threads REQUIRED)
     add_executable(handle_lifecycle_test
@@ -14125,6 +14157,7 @@ if(ESHKOL_BUILD_AGENT_FFI)
         set(AGENT_FFI_SOURCES
             ${AGENT_FFI_DIR}/agent_terminal.c
             ${AGENT_FFI_DIR}/agent_subprocess.c
+            ${AGENT_FFI_DIR}/agent_subprocess_stream_binding.c
             ${AGENT_FFI_DIR}/agent_sse.c
         )
 
@@ -14866,6 +14899,19 @@ if(ESHKOL_BUILD_AGENT_FFI)
         if(BUILD_TESTING)
             add_test(NAME agent-http-contract COMMAND eshkol-agent-http-test)
             set_tests_properties(agent-http-contract PROPERTIES TIMEOUT 90)
+        endif()
+
+        if(UNIX AND TARGET eshkol-subprocess-stream-test)
+            find_package(Python3 COMPONENTS Interpreter REQUIRED)
+            add_test(NAME agent-subprocess-stream-public
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/scripts/test_subprocess_stream_public.py
+                    --runner $<TARGET_FILE:eshkol-run>
+                    --child $<TARGET_FILE:eshkol-subprocess-stream-test>
+                    --source ${CMAKE_SOURCE_DIR}
+                    --build-dir ${CMAKE_BINARY_DIR})
+            set_tests_properties(agent-subprocess-stream-public PROPERTIES
+                TIMEOUT 300 LABELS "resource;subprocess;jit;aot")
         endif()
 
         if(UNIX)

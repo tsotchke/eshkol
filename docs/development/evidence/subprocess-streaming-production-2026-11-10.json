@@ -1,0 +1,1075 @@
+{
+  "schema_version": 1,
+  "scope": "Linux x86_64 CPU production agent-FFI-enabled build and staged-package subprocess streaming; host toolchain and shared libraries remain required; not portable-release qualification",
+  "execution_date_local": "2026-11-10 (America/New_York)",
+  "record_created_utc": "2026-11-11T20:16:31.921999+00:00",
+  "provenance": "Historical runs retained under ../checks/pr914-production-public and ../checks/pr914-package-public. This record packages those existing logs and verifies retained artifact hashes on 2026-11-11; it does not claim a fresh runtime run.",
+  "source": {
+    "repository": "https://github.com/Gabriel-Kahen/eshkol",
+    "revision": "a1f00d30596b77df7a526c2e4444d23f5075bde4",
+    "files": {
+      "CMakeLists.txt": {
+        "sha256": "df59d7e3232daefe13446f171c653ec51f86bbb37cfbf59c588ab530bac4dbbf",
+        "bytes": 837461
+      },
+      "scripts/test_subprocess_stream_public.py": {
+        "sha256": "7773ef4deb089faf3cf4ef5b69b34e59c7899f01e101f655c8052718080c4250",
+        "bytes": 4377
+      },
+      "scripts/stage_third_party_licenses.py": {
+        "sha256": "c426cc18cf9cb06352c3118b70f1f93416f07440be3ca2f9bfcb52ba802aabab",
+        "bytes": 10299
+      },
+      ".github/workflows/release.yml": {
+        "sha256": "991b8f5d11c26fafb2350e989b66ec1ccfdccabf573e894c5a09f8fc878816ed",
+        "bytes": 92967
+      },
+      "lib/agent/c/agent_subprocess.c": {
+        "sha256": "4ad670ec8983f184f0a5de9e4e6f9cad0f9fe9bd224fa048e18db08ea0c5d644",
+        "bytes": 127401
+      },
+      "lib/agent/c/agent_subprocess_stream_binding.c": {
+        "sha256": "8ba0b72b77e2dd2e2f01c87b7cce349f7f2a4f2357487d396c37b23324049041",
+        "bytes": 878
+      },
+      "inc/eshkol/core/subprocess_stream.h": {
+        "sha256": "5d122f008cd56ba619f3d6f120a0c16269e731082cdba910bbe7ade11de4611b",
+        "bytes": 3216
+      },
+      "lib/agent/subprocess.esk": {
+        "sha256": "f31051e751d6323fd1d61016f74e776b2fc9f823fe3005d2d0764bebbf1ee5bb",
+        "bytes": 34862
+      },
+      "tests/agent/subprocess_stream_test.c": {
+        "sha256": "499876e74b6cfe735e66a1d20a52ffc877ed551cd8c9e4a05b860fb3fb827e92",
+        "bytes": 22315
+      },
+      "tests/agent/subprocess_stream_public.esk": {
+        "sha256": "2fcded06a7aad873e13dfc870a926e891e7259d0e94687c7eccd1f9ee57ac2cc",
+        "bytes": 6548
+      },
+      "tests/agent/subprocess_stream_large.esk": {
+        "sha256": "ffaf7674dfce4a52588841e27634d78df153bdc947d4195a31650c7939fb6c7f",
+        "bytes": 1803
+      },
+      "tests/agent/subprocess_stream_reentry.esk": {
+        "sha256": "e54d7ae89900b8d421bd18053a5d222a14de48a3897a1da013b161862ba38deb",
+        "bytes": 476
+      },
+      "tests/agent/subprocess_stream_vm_unsupported.esk": {
+        "sha256": "74feacbf6643297c062c801eb9a97be69e3fefeb180e2b0e4c8fea67f7d4624c",
+        "bytes": 196
+      },
+      "tests/agent/subprocess_stream_vm_bridge.esk": {
+        "sha256": "7fd3c929ef610f14ddcc47b73f4d2762fc40d0f06899316298deba39b201c767",
+        "bytes": 166
+      }
+    }
+  },
+  "toolchain": {
+    "compiler": "Clang 22.1.8 (C and C++, recorded by configure and CMake compiler metadata)",
+    "llvm": "21.1.8 (recorded by configure)",
+    "cmake": "4.3.3 (retained CMakeFiles metadata directory)",
+    "platform": "Linux x86_64, epoll",
+    "object_abi": "v1, 8-byte header",
+    "configuration": {
+      "CMAKE_BUILD_TYPE": "Release",
+      "CMAKE_C_COMPILER": "/usr/bin/clang",
+      "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+      "ESHKOL_BUILD_AGENT_FFI": "ON",
+      "ESHKOL_BUILD_TESTS": "ON",
+      "ESHKOL_BUILD_EXAMPLES": "OFF",
+      "ESHKOL_BUILD_INTEGRATION_TESTS": "OFF",
+      "ESHKOL_GPU_ENABLED": "OFF",
+      "ESHKOL_BLAS_ENABLED": "OFF",
+      "ESHKOL_PYTHON_BINDINGS": "OFF",
+      "ESHKOL_REQUIRED_LLVM_MAJOR": "21",
+      "LLVM_CONFIG_EXECUTABLE": "<llvm-root>/bin/llvm-config-21"
+    },
+    "retained_configuration_sha256": "5fe6b55736ac5ea5c17557155d2aedfde57d91dc2b0878e88f14267a3718e041"
+  },
+  "commands": {
+    "working_directory": "source repository root; build/package/checks directories are siblings",
+    "configure": [
+      "cmake",
+      "-S",
+      ".",
+      "-B",
+      "../build-agent-production-20261110",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_C_COMPILER=clang",
+      "-DCMAKE_CXX_COMPILER=clang++",
+      "-DLLVM_CONFIG_EXECUTABLE=<llvm-root>/bin/llvm-config-21",
+      "-DESHKOL_REQUIRED_LLVM_MAJOR=21",
+      "-DESHKOL_BUILD_AGENT_FFI=ON",
+      "-DESHKOL_BUILD_TESTS=ON",
+      "-DESHKOL_BUILD_EXAMPLES=OFF",
+      "-DESHKOL_GPU_ENABLED=OFF",
+      "-DESHKOL_BLAS_ENABLED=OFF",
+      "-DESHKOL_PYTHON_BINDINGS=OFF"
+    ],
+    "build": [
+      "cmake",
+      "--build",
+      "../build-agent-production-20261110",
+      "--target",
+      "eshkol-run",
+      "eshkol-repl",
+      "stdlib",
+      "eshkol-subprocess-stream-test",
+      "eshkol-agent-ffi",
+      "-j3"
+    ],
+    "production_public": [
+      "env",
+      "-u",
+      "LD_PRELOAD",
+      "python3",
+      "scripts/test_subprocess_stream_public.py",
+      "--runner",
+      "../build-agent-production-20261110/eshkol-run",
+      "--build-dir",
+      "../build-agent-production-20261110",
+      "--child",
+      "../build-agent-production-20261110/eshkol-subprocess-stream-test",
+      "--evidence-dir",
+      "../checks/pr914-production-public"
+    ],
+    "staged_package_public": [
+      "env",
+      "-u",
+      "LD_PRELOAD",
+      "-u",
+      "LD_LIBRARY_PATH",
+      "python3",
+      "scripts/test_subprocess_stream_public.py",
+      "--source",
+      "../checks/pr914-package-fixtures",
+      "--runner",
+      "../package-agent-20261110/bin/eshkol-run",
+      "--build-dir",
+      "../package-agent-20261110/lib/eshkol",
+      "--child",
+      "../build-agent-production-20261110/eshkol-subprocess-stream-test",
+      "--evidence-dir",
+      "../checks/pr914-package-public"
+    ],
+    "staging_recipe": "See subprocess-streaming-production-2026-11-10.md. The original temporary staging script is not retained; the documented recipe reconstructs the verified package/fixture layout.",
+    "provenance": "Configure/build arguments reproduce the retained configuration and reported build targets. Public-driver commands are the commands reported with the historical run. Original configure argv and temporary staging script were not separately retained."
+  },
+  "results": {
+    "production": {
+      "driver_result": "PASS: retained final summary marker is reached only after every expected child exit code and marker has been checked by the committed driver",
+      "public_checks_each_engine": 23,
+      "engines": [
+        "JIT with ESHKOL_JIT_CACHE=0",
+        "AOT -O0"
+      ],
+      "large_output_bytes_per_stream": 17825829,
+      "large_child_exit_code": 19,
+      "reentry": "expected exit 1 and closed session re-entry rejection in both engines",
+      "vm": "expected exit 1 before bytecode emission; unsupported bridge explicitly refused",
+      "test_support_dso": false
+    },
+    "staged_package": {
+      "driver_result": "PASS: retained final summary marker is reached only after every expected child exit code and marker has been checked by the committed driver",
+      "public_checks_each_engine": 23,
+      "engines": [
+        "JIT with ESHKOL_JIT_CACHE=0",
+        "AOT -O0"
+      ],
+      "large_output_bytes_per_stream": 17825829,
+      "large_child_exit_code": 19,
+      "reentry": "expected exit 1 and closed session re-entry rejection in both engines",
+      "vm": "expected exit 1 before bytecode emission; unsupported bridge explicitly refused",
+      "test_support_dso": false
+    }
+  },
+  "verified_artifacts": {
+    "archives_and_stdlib": {
+      "libeshkol-runtime.a": {
+        "sha256": "2f7951bd1a5833b82c219b953c5e74f3baa7bc0cee50cf44af7fb7972f99236b",
+        "bytes": 4761404
+      },
+      "libeshkol-agent-ffi.a": {
+        "sha256": "771e02e5cac1bf1eafd4dddd3b2d27b7fb32c32ebe948437f744d0d631f13bc9",
+        "bytes": 313942
+      },
+      "eshkol-agent-pcre2.a": {
+        "sha256": "278658ce2c6d1d4b640870bb9480be17fea6e8244e46f0564d1751e5d4001b51",
+        "bytes": 1163550
+      },
+      "eshkol-agent-sqlite3.a": {
+        "sha256": "c96357671d1cb0d2a223617ca1c867eb8c8a95a11dff356b8b5985ced57ec4c0",
+        "bytes": 1826624
+      },
+      "eshkol-agent-zlib.a": {
+        "sha256": "ab1d084dfd1493b3c0c7de6033085bb6c25a3d761bdd08d27fb3ea67732e4a68",
+        "bytes": 138820
+      },
+      "eshkol-agent-tree-sitter-grammars.a": {
+        "sha256": "854fc42df2bdab28f263ab024014f05e2041478ebae68b011256736455c22127",
+        "bytes": 15979488
+      },
+      "eshkol-agent-tree-sitter.a": {
+        "sha256": "17df742e4a98aae165822862529e0d8b168d921e543c2f43c81fc76e38790fe6",
+        "bytes": 253572
+      },
+      "eshkol-agent-yoga.a": {
+        "sha256": "78cfa6b92d2e9585bbcfe0c4e9434eff933b0d68c42cd54d12a5108a520edca6",
+        "bytes": 359342
+      },
+      "eshkol-agent-curl.a": {
+        "sha256": "fd7ca02f5b041a97a6c822516f1153d19b2313c91f2fbbe5cbc1c1727bb0b7a1",
+        "bytes": 1420138
+      },
+      "stdlib.o": {
+        "sha256": "275a0254aac1606df24597763283ff5a87ff2bccaed6cbeea428615a8bdc77fe",
+        "bytes": 14556192
+      },
+      "stdlib.bc": {
+        "sha256": "761e5c09c809423cb38c65e624117c599d62517722206c9e91f5bf13e148ec67",
+        "bytes": 14536008
+      }
+    },
+    "copies": "Each listed archive/stdlib artifact matches between production build, package lib/, and package lib/eshkol/.",
+    "executables": {
+      "build-agent-production-20261110/eshkol-run": {
+        "sha256": "101d3c9a9ac218c29989877e11321841bb919dfd50ff84ee1f06c8adfab9d775",
+        "bytes": 30243288
+      },
+      "build-agent-production-20261110/eshkol-repl": {
+        "sha256": "5d4ab138057909558534722dddc79f1faf1fc729a7b48820c9c01e615dd4d01c",
+        "bytes": 29943552
+      },
+      "build-agent-production-20261110/eshkol-subprocess-stream-test": {
+        "sha256": "44709c22a668447a59fccfb0bcf87521374453878fc165658cb350f7a36c8816",
+        "bytes": 83320
+      },
+      "package-agent-20261110/bin/eshkol-run": {
+        "sha256": "101d3c9a9ac218c29989877e11321841bb919dfd50ff84ee1f06c8adfab9d775",
+        "bytes": 30243288
+      },
+      "package-agent-20261110/bin/eshkol-repl": {
+        "sha256": "5d4ab138057909558534722dddc79f1faf1fc729a7b48820c9c01e615dd4d01c",
+        "bytes": 29943552
+      }
+    },
+    "staged_package_files": {
+      "THIRD_PARTY_NOTICES.md": {
+        "sha256": "243f20848a5aead379aa2b47496c45fce455ddf64481e6f5cb013f517c9775b5",
+        "bytes": 5528
+      },
+      "licenses/curl-COPYING.txt": {
+        "sha256": "82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681",
+        "bytes": 1088
+      },
+      "licenses/pcre2-LICENCE.md": {
+        "sha256": "197d8a73ffee0d6b09adba2f9c677b5f5aede24edf89258a68e48248d010d811",
+        "bytes": 4011
+      },
+      "licenses/pcre2-sljit-LICENSE.txt": {
+        "sha256": "5f216505c0f6ea3273caec89e766eef93cdeb7bbb0c429f9360116d7c938feeb",
+        "bytes": 1444
+      },
+      "licenses/sqlite-PUBLIC-DOMAIN.txt": {
+        "sha256": "88e5c8e8252c4481e6ea9521131dbcbaa8900d7304b12b5eed9fb1fbc34c1792",
+        "bytes": 460
+      },
+      "licenses/tree-sitter-LICENSE.txt": {
+        "sha256": "c5cfb43042b6b72045f4ba997834d0a7786d2793d91680868b5815b39f14fc78",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-bash-LICENSE.txt": {
+        "sha256": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-c-LICENSE.txt": {
+        "sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-cpp-LICENSE.txt": {
+        "sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-go-LICENSE.txt": {
+        "sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-java-LICENSE.txt": {
+        "sha256": "52ed137b039cd9c46409bc22e89938af911c95b157feae2d040b51e6084369a7",
+        "bytes": 1069
+      },
+      "licenses/tree-sitter-javascript-LICENSE.txt": {
+        "sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-python-LICENSE.txt": {
+        "sha256": "d724405ce238a22c0d35769c5a36b386ad5958192efe8bbb304fb2896254575f",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-ruby-LICENSE.txt": {
+        "sha256": "ee006f02a3d856df282e409be2a86e24a65bb573a98b9c28343771141351bb6b",
+        "bytes": 1075
+      },
+      "licenses/tree-sitter-rust-LICENSE.txt": {
+        "sha256": "31d5b6f4243d5c7c6e1c4ebbbb9f6407bd1457a08bcc4f706521710341acba36",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-typescript-LICENSE.txt": {
+        "sha256": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559",
+        "bytes": 1080
+      },
+      "licenses/tree-sitter-unicode-LICENSE.txt": {
+        "sha256": "6a18c5fac70d7860b57f5b72b4e2c9a1ba6b3d2741eef7ff9767c5379364f10d",
+        "bytes": 21001
+      },
+      "licenses/yoga-LICENSE.txt": {
+        "sha256": "52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85",
+        "bytes": 1086
+      },
+      "licenses/zlib-LICENSE.txt": {
+        "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+        "bytes": 1002
+      },
+      "share/eshkol/lib/agent/crypto.esk": {
+        "sha256": "a575ef955df30c1c6b643d4f4cf15a406258b9470dcf8d640cee1d44f48eb6ff",
+        "bytes": 5696
+      },
+      "share/eshkol/lib/agent/eagle.esk": {
+        "sha256": "039d072080dbf7517eede1eace7750e74991fcf174a3246cb9cde1ce2384605a",
+        "bytes": 3132
+      },
+      "share/eshkol/lib/agent/fs-watch.esk": {
+        "sha256": "f13e0f4478cd27ee128379b09e2dad30b3c813c66d19f1e007954876837413b2",
+        "bytes": 2575
+      },
+      "share/eshkol/lib/agent/git-ffi.esk": {
+        "sha256": "2271185869969f426c77f42fa06f1a3ee91546863f6cdfc3860cae0e70b492bb",
+        "bytes": 1641
+      },
+      "share/eshkol/lib/agent/glob.esk": {
+        "sha256": "284c6df0447058a1b501811466dfdf1b25cd2f7e4f198daeb39e93e2bf1ce0e2",
+        "bytes": 2069
+      },
+      "share/eshkol/lib/agent/http.esk": {
+        "sha256": "88d538ca031ba8e2b237fbb8bb54f9f5707266129945b77e51ea5cedf7928377",
+        "bytes": 11483
+      },
+      "share/eshkol/lib/agent/http_server.esk": {
+        "sha256": "c8953283a263813c27a73c08618aaa47b9183b1fb9bbfca178723fba2c1652a6",
+        "bytes": 7466
+      },
+      "share/eshkol/lib/agent/keychain.esk": {
+        "sha256": "812d8eb2a02e918388ba8b011bdd04fee959b4a9f230dccd33c4b624f469d1c5",
+        "bytes": 2185
+      },
+      "share/eshkol/lib/agent/layout.esk": {
+        "sha256": "e4235800c0c753c6c35acfecfd345e3d22790dc8f076dfadf567873fee281763",
+        "bytes": 2901
+      },
+      "share/eshkol/lib/agent/pqc.esk": {
+        "sha256": "7a4575cba4fe26e99fa9e5e99e914134a994c67788310478595994a5aa7f4abf",
+        "bytes": 6226
+      },
+      "share/eshkol/lib/agent/quantum.esk": {
+        "sha256": "68351c4f1b3393a4af408ee177d325bcdcd2bdd571385f4597d2c22e645bf784",
+        "bytes": 18288
+      },
+      "share/eshkol/lib/agent/regex.esk": {
+        "sha256": "643ae5ac1e87b8c7a2c11a90a6d4143f543b6acef2647ecdae62888920151013",
+        "bytes": 5083
+      },
+      "share/eshkol/lib/agent/sqlite.esk": {
+        "sha256": "3a87d4b0eb4fc8f66028945f5142c6780c8698dc00134ab610ea421e7dafef1b",
+        "bytes": 9410
+      },
+      "share/eshkol/lib/agent/subprocess.esk": {
+        "sha256": "f31051e751d6323fd1d61016f74e776b2fc9f823fe3005d2d0764bebbf1ee5bb",
+        "bytes": 34862
+      },
+      "share/eshkol/lib/agent/terminal.esk": {
+        "sha256": "882fe80056d105eb1e59e5a75e2e7235caf6ddc132e7c4264d68a0696f5fc48b",
+        "bytes": 3875
+      },
+      "share/eshkol/lib/core/ad/algebraic.esk": {
+        "sha256": "e0eee77c0b8f48b222e226b21e1d898e2edfd8208375459844a833a8ccc1f170",
+        "bytes": 11827
+      },
+      "share/eshkol/lib/core/ad/algebraic_farkas.esk": {
+        "sha256": "3f23e2f296af09be2740de47578143ce2b7f99b95ba188fe7e951b6709e8a6bb",
+        "bytes": 8354
+      },
+      "share/eshkol/lib/core/ad/algebraic_implicit.esk": {
+        "sha256": "5c5be2ef7cc5a21137263e88494f824ba849dd3ff9168a08c8583dbd9769e3e0",
+        "bytes": 8145
+      },
+      "share/eshkol/lib/core/ad/algebraic_incremental.esk": {
+        "sha256": "16e190b46a60022f51efc510b1f1a4c0a187ee04ee93e83769f7211fa23d731e",
+        "bytes": 13390
+      },
+      "share/eshkol/lib/core/ad/algebraic_pullback.esk": {
+        "sha256": "3dfcd1ae78083279be78e4ba11ac31f89a08e64e3122ea96c1f9008375b14848",
+        "bytes": 5341
+      },
+      "share/eshkol/lib/core/ad/algebraic_qp.esk": {
+        "sha256": "3d399a8766a1988e2a63f651a1ddbe081daccc8796822d199269db0d74c71556",
+        "bytes": 10148
+      },
+      "share/eshkol/lib/core/ad/algebraic_reverse.esk": {
+        "sha256": "75f09eb1b56c627a1d7823f7dcab42947818d2ab24522c8b84c4b1e29ce3a172",
+        "bytes": 5258
+      },
+      "share/eshkol/lib/core/ad/algebraic_ridge.esk": {
+        "sha256": "9c529464795ce1482ba07722698ecc90ba9f76ee75f2aa6d93ac6a4d383f6c51",
+        "bytes": 6149
+      },
+      "share/eshkol/lib/core/ad/algebraic_sparse.esk": {
+        "sha256": "f7411d72852d14b44a7b2a71dcea3247c01e194d42b298bfc1b67251fa1f2991",
+        "bytes": 5865
+      },
+      "share/eshkol/lib/core/ad/algebraic_spectral.esk": {
+        "sha256": "fd2c639e60ec158208c273d5361ac685609f660e5dea51451e2272f50671164e",
+        "bytes": 6185
+      },
+      "share/eshkol/lib/core/ad/algebraic_subspace.esk": {
+        "sha256": "c2f93a10cfe35d8ed2af7bf11d782370f9d2e06ef84e45c824be1dbab57bac50",
+        "bytes": 9984
+      },
+      "share/eshkol/lib/core/ad/certified_continuation.esk": {
+        "sha256": "71c4aeb7759eb4582dbb811f0c4a15850545679824bd71bf8b25bd1836085abb",
+        "bytes": 7753
+      },
+      "share/eshkol/lib/core/ad/checkpoint.esk": {
+        "sha256": "32a88f185280e4b7bb7e3885c39acb9445f2b2e030c279ad1ef5455af5a99fcd",
+        "bytes": 18605
+      },
+      "share/eshkol/lib/core/ad/derived_operator.esk": {
+        "sha256": "de8597dc86730f6edc1338717cff7eaa62793f8c49322c55dc429593035e76a2",
+        "bytes": 9152
+      },
+      "share/eshkol/lib/core/ad/guw.esk": {
+        "sha256": "9e0e4c0014e460bad872af71e1772b5dd8355b760940ac8d252200651bdb988c",
+        "bytes": 13937
+      },
+      "share/eshkol/lib/core/ad/incremental_reverse.esk": {
+        "sha256": "c36af680523a340f6becfd0fcc28d768e6c92aa6c4a6ce9851c6b5ff4abc915b",
+        "bytes": 14943
+      },
+      "share/eshkol/lib/core/ad/interval.esk": {
+        "sha256": "2df68ccf2c9e28db9a58d2694a25f0271c6f6de4886c041c885c783c9fdf44fb",
+        "bytes": 12579
+      },
+      "share/eshkol/lib/core/ad/rigorous_interval.esk": {
+        "sha256": "90fee43c900309691d08972634c8cb82661ab13b306f73d8203c917234d4bdf3",
+        "bytes": 35818
+      },
+      "share/eshkol/lib/core/ad/rigorous_taylor_models.esk": {
+        "sha256": "a331625e9072c7c75988ee6f83093fd0516891821cad0f502bc8a085710a6d53",
+        "bytes": 23437
+      },
+      "share/eshkol/lib/core/ad/root_branch.esk": {
+        "sha256": "aa8ff9786e4d5ec56b546b3c7dabe4ff642b035603f5a68361686bcaacf50499",
+        "bytes": 8027
+      },
+      "share/eshkol/lib/core/ad/sparse_guw.esk": {
+        "sha256": "71f516da0f5ed590b6d2329f138da2dcb9511af9d97f672c836941f1b305e145",
+        "bytes": 28718
+      },
+      "share/eshkol/lib/core/ad/sparsity.esk": {
+        "sha256": "9c369293a3528241e22233e2fa81a991e8126bae09e61045b2002ca57422f329",
+        "bytes": 2987
+      },
+      "share/eshkol/lib/core/ad/tape.esk": {
+        "sha256": "eece36d71c20968bcb3e23551bc451ec5c0d7ce8bef594473c8200d1604f320a",
+        "bytes": 15527
+      },
+      "share/eshkol/lib/core/ad/taylor_models.esk": {
+        "sha256": "9c9763a56d20f1e7878470632a9c8bfb49803510004ca18b01406b984d21e7bd",
+        "bytes": 14634
+      },
+      "share/eshkol/lib/core/ad/taylor_numerics.esk": {
+        "sha256": "66586764775630001dbf5df2e4211e0371df7b5a03226afd992587c4d9b878e3",
+        "bytes": 13210
+      },
+      "share/eshkol/lib/core/ad/tensor_circuit_reverse.esk": {
+        "sha256": "0545ea88fe08a9aae0e7b126b90d3bc72ac584f8d815bede6e2a153986340cc7",
+        "bytes": 7525
+      },
+      "share/eshkol/lib/core/ad/tensor_tower.esk": {
+        "sha256": "cfd86609c1e0594c239db228e875bdc89f94c191e747f65af4da2c89a8975f81",
+        "bytes": 16239
+      },
+      "share/eshkol/lib/core/algebraic_batch.esk": {
+        "sha256": "484332af573489651c5c3189a1e9423e9e7a7e77c03133fbbeb0113e2150742f",
+        "bytes": 8213
+      },
+      "share/eshkol/lib/core/algebraic_domain.esk": {
+        "sha256": "592075776daf284f6dc612302133accb37bd0dcb2543dfba87b232ae6d3ad79f",
+        "bytes": 4247
+      },
+      "share/eshkol/lib/core/algebraic_field.esk": {
+        "sha256": "3384867bd6d286d53a90e0f58bbb12f76e4a59224604374b9c30718c6307a06d",
+        "bytes": 25638
+      },
+      "share/eshkol/lib/core/algebraic_linalg.esk": {
+        "sha256": "babb284b2672ce40a2abcaad6b751843f00a51846498d7b65f3d8f3ce43f6433",
+        "bytes": 12422
+      },
+      "share/eshkol/lib/core/algebraic_update.esk": {
+        "sha256": "c934756334b621370854e934b212da667c6f6a7cd32d4d0c1e6954999a55d56e",
+        "bytes": 9821
+      },
+      "share/eshkol/lib/core/alist.esk": {
+        "sha256": "bee562177a88bb4cec575b2055d5cb7c5c95c293f0fb6a7b7dc294246ad85774",
+        "bytes": 985
+      },
+      "share/eshkol/lib/core/argparse.esk": {
+        "sha256": "e434bddaa50896fb7c2db273d6ee40b12a8ac8dc4b48622f4fae0bdfe2593d03",
+        "bytes": 6092
+      },
+      "share/eshkol/lib/core/blc.esk": {
+        "sha256": "25048643f33b8b24f5e1602e4ec13d85f745bf88fda49c504dce13138cf38d6c",
+        "bytes": 25708
+      },
+      "share/eshkol/lib/core/cache.esk": {
+        "sha256": "83e53a242add140038890050a3b12144f126c4ae13fbd069ffe88a1e2296146e",
+        "bytes": 6509
+      },
+      "share/eshkol/lib/core/capabilities.esk": {
+        "sha256": "cb5669c1a74c07a080c87898afd4f5aa459285d77860c9c8f701b660b096b779",
+        "bytes": 2726
+      },
+      "share/eshkol/lib/core/certified_native_solve.esk": {
+        "sha256": "964033d3f3f589bccb67298ab46098c38efd279f643021a14487782254056b78",
+        "bytes": 6069
+      },
+      "share/eshkol/lib/core/certified_nonlinear.esk": {
+        "sha256": "115c9fecd748dbce5ca9176b38876dfaf9290ba9e7657b14f9698b2caf15e05e",
+        "bytes": 7270
+      },
+      "share/eshkol/lib/core/certified_solve.esk": {
+        "sha256": "95bb51125686fea8495aec93ea26f8292a268311ef3ef927a4a5e8eda8beff79",
+        "bytes": 5751
+      },
+      "share/eshkol/lib/core/certified_solve_pullback.esk": {
+        "sha256": "05791d44788aed025243781f58c81c7a5d321f6f1c13daa55811fd412b7ff3db",
+        "bytes": 4612
+      },
+      "share/eshkol/lib/core/channels.esk": {
+        "sha256": "dc78dd9658670d7f7762d0f76b279355681d3d283ae062784a5dc89b364dd28b",
+        "bytes": 6659
+      },
+      "share/eshkol/lib/core/collections.esk": {
+        "sha256": "6734e69140974fd2be22cb66ff0d5d0c9fdfebe77072276bebbfca0f06c38ea9",
+        "bytes": 8974
+      },
+      "share/eshkol/lib/core/compiler/incremental_plan.esk": {
+        "sha256": "58bd6007ec13802fb63cd59fb72e949d4e73343a5b652c0b21dd5acf8478fe21",
+        "bytes": 3754
+      },
+      "share/eshkol/lib/core/compiler/incremental_runtime.esk": {
+        "sha256": "b6f5f6f90d0478c20d3ee28e67c88ec36541fdb76386f9efdb8e9c40f3400fe9",
+        "bytes": 6443
+      },
+      "share/eshkol/lib/core/compiler/scalar_lower.esk": {
+        "sha256": "6a6bb81abcf9fa64228aafe5b0fd287d02290f623f925164d0a953f1e73e539f",
+        "bytes": 3345
+      },
+      "share/eshkol/lib/core/control/trampoline.esk": {
+        "sha256": "a52b58e4715568dafa35790d54ab071672568ac56ff145afc37dcee358719f5b",
+        "bytes": 1049
+      },
+      "share/eshkol/lib/core/cyclotomic.esk": {
+        "sha256": "536b7d41eedf2315d7182c97c7c7c59077b822b734868ecdbe52b22c05acf707",
+        "bytes": 7998
+      },
+      "share/eshkol/lib/core/data/base64.esk": {
+        "sha256": "f0a2acf96c1484e2c6fdc1e78655c4b7f33bdd380b5d55c186383d602780d961",
+        "bytes": 5702
+      },
+      "share/eshkol/lib/core/data/csv.esk": {
+        "sha256": "54e94c627fcf966bc4180b4d4be3acce30dd82a805ee16c92a2b52b459302fbf",
+        "bytes": 5038
+      },
+      "share/eshkol/lib/core/data/dataframe.esk": {
+        "sha256": "cf3b15c6715382b327da24ad2d2c206fcd2040a62574727ec00d05c1f7f84ca1",
+        "bytes": 8016
+      },
+      "share/eshkol/lib/core/data/radix.esk": {
+        "sha256": "03735892d7e37bb48e91ad93c89b3e81c6fe3ab82db126f67dcb7d84cf2c2095",
+        "bytes": 2500
+      },
+      "share/eshkol/lib/core/dbsp/ad.esk": {
+        "sha256": "51bc3648fcf4c361e86ffadd410acabb2f8343c780f77870e0757047bb07f342",
+        "bytes": 2852
+      },
+      "share/eshkol/lib/core/dbsp/checkpoint.esk": {
+        "sha256": "80f9249300f1bda96bb7e9762c3cbd9c58c98c5bdb4cdca43ceafa67250764f7",
+        "bytes": 11108
+      },
+      "share/eshkol/lib/core/dbsp/circuit.esk": {
+        "sha256": "afe50f19ab3266534b20b05266d87b8fdc6d187ba06cd9abe2a804a567a4fd32",
+        "bytes": 15662
+      },
+      "share/eshkol/lib/core/dbsp/ordered.esk": {
+        "sha256": "27f97a9583ec6638cff76bc02e72a3dddcb19eb98cbbf715af3dbd141918da80",
+        "bytes": 8907
+      },
+      "share/eshkol/lib/core/dbsp/recursive.esk": {
+        "sha256": "9129947bb199ccb84df3e01581ae52d98844198e8a5decc678bbbca7f9c84288",
+        "bytes": 4740
+      },
+      "share/eshkol/lib/core/dbsp/resident.esk": {
+        "sha256": "eef24c781025fe71127546336da2f54e9a9543dafb1f831fc8a59234ad3e9a3a",
+        "bytes": 4391
+      },
+      "share/eshkol/lib/core/dbsp/sqlite_changefeed.esk": {
+        "sha256": "55a8a116320a8311555ca23eb4c332fde8052b25e153af7cdff941e061fa4b0e",
+        "bytes": 8527
+      },
+      "share/eshkol/lib/core/dbsp/tensor.esk": {
+        "sha256": "fc5d374ac065fb608febf00f1bf67d4f9e461425dcc48deabeeb230f7b8c382b",
+        "bytes": 8708
+      },
+      "share/eshkol/lib/core/dbsp/tensor_circuit.esk": {
+        "sha256": "eef20e3d8b1b6720efaaea14efad68c20fa681a7124ea6a1c87f470ee70e24eb",
+        "bytes": 26074
+      },
+      "share/eshkol/lib/core/dbsp/tensor_snapshot.esk": {
+        "sha256": "ecc0a5ef003ac9f1b729551e0dc8a3ddf91589f728428b2183e4e72fcf56d0cf",
+        "bytes": 4630
+      },
+      "share/eshkol/lib/core/dbsp/window.esk": {
+        "sha256": "36ad08d176fd85df68d8231ad4adcd2dd105586ad27b4c5b077e4f68a180b6cc",
+        "bytes": 3876
+      },
+      "share/eshkol/lib/core/dbsp.esk": {
+        "sha256": "2c5491c192120e659683f74e53ca8becc1ed5c6b7e3960777df1c185d91f8ee7",
+        "bytes": 19307
+      },
+      "share/eshkol/lib/core/distributed.esk": {
+        "sha256": "191435d008b00cdab43d5355bfd3b873e92069fdf33e88d3b93b319ab9cfe8de",
+        "bytes": 20807
+      },
+      "share/eshkol/lib/core/dnc.esk": {
+        "sha256": "f0d285be61407aec50969a6a6b98d008c5cd573ab2335168642c8c9608f83df5",
+        "bytes": 1330
+      },
+      "share/eshkol/lib/core/exact_linalg.esk": {
+        "sha256": "53ed603b4acdea1893a8cb7ff81a8d48f4775d07a35beb697db536bcd5802a96",
+        "bytes": 21236
+      },
+      "share/eshkol/lib/core/exact_psd.esk": {
+        "sha256": "9f915ecdc40e63be8d5da5ac434ba4f535858f0b285be2ff481e1c6a067cda0b",
+        "bytes": 5241
+      },
+      "share/eshkol/lib/core/files.esk": {
+        "sha256": "bf288bd8df82d7c4ba157e3ce82234c91c91aae066a872e69aee09367e722848",
+        "bytes": 1919
+      },
+      "share/eshkol/lib/core/functional/compose.esk": {
+        "sha256": "de44befd40cf6378fa9f8a87cd5757323f366c3c82fe17bdd66464cc5211b739",
+        "bytes": 542
+      },
+      "share/eshkol/lib/core/functional/curry.esk": {
+        "sha256": "7e8b515b9fd3a2a19e37f58ca3aee5e20a995ad79dcbb840dd7025486ddf108e",
+        "bytes": 1144
+      },
+      "share/eshkol/lib/core/functional/flip.esk": {
+        "sha256": "171444d4d559f04499bd8070f4c196928b563a15f570069c87e422a58c8e9fdd",
+        "bytes": 177
+      },
+      "share/eshkol/lib/core/http_server.esk": {
+        "sha256": "5b1ab7c0e81d0e09e9c4cd8ddc31eb9c15298172251e83da2561bf010760c90c",
+        "bytes": 9740
+      },
+      "share/eshkol/lib/core/io.esk": {
+        "sha256": "3781c09c7da345195574b3584a86f860318d879583f8136ae2a7015dc4fc5d1e",
+        "bytes": 328
+      },
+      "share/eshkol/lib/core/json.esk": {
+        "sha256": "9d90da4d12bb836eb53298ad51b04798a3b7e69a56970b48159b30b9f8b5bcb6",
+        "bytes": 25870
+      },
+      "share/eshkol/lib/core/json_schema.esk": {
+        "sha256": "b9b2a81b4f0631042194d3743c2a25ca84d2f9cc0ca9bf2237485b77e5247ad1",
+        "bytes": 15903
+      },
+      "share/eshkol/lib/core/list/compound.esk": {
+        "sha256": "15b8f88cda8777c247d71e4f56abd20da9c076e15097fa75dbb9982487a637cf",
+        "bytes": 2106
+      },
+      "share/eshkol/lib/core/list/convert.esk": {
+        "sha256": "9680044200c1717720a0acb5a208b84eb8ff74aac61366600cc65fbb2d6bbf9f",
+        "bytes": 770
+      },
+      "share/eshkol/lib/core/list/generate.esk": {
+        "sha256": "9f73d417573fdea4b1c07c2fbab18b53b23e651a41a56afc957ee30a9c730be9",
+        "bytes": 2818
+      },
+      "share/eshkol/lib/core/list/higher_order.esk": {
+        "sha256": "a462dd78b310674004625894a6e07323a510c24d12e0db12e4a6b775416c3481",
+        "bytes": 3580
+      },
+      "share/eshkol/lib/core/list/query.esk": {
+        "sha256": "5d40d81f953c2b7154bc4e7f6f7c3e4c8446f8b3b4a33fad83d2e538f0aafb39",
+        "bytes": 1363
+      },
+      "share/eshkol/lib/core/list/search.esk": {
+        "sha256": "63fb1ae471bdcecdd878d469923c1dabb6c0fffcd9af4303038b30c4ca0df2d8",
+        "bytes": 2093
+      },
+      "share/eshkol/lib/core/list/sort.esk": {
+        "sha256": "b715f4abe48ae5813ec68d2be541410ac935e82a83eda6a02141624b95a4cc29",
+        "bytes": 4039
+      },
+      "share/eshkol/lib/core/list/transform.esk": {
+        "sha256": "89b91db4df26ef93506926404c56933f0212dfc158403ae420177cff22572849",
+        "bytes": 3321
+      },
+      "share/eshkol/lib/core/logging.esk": {
+        "sha256": "3172cc0d14486c702dc6dcbc3cfad29ed0f3be5ac85abb34ef83fc472d096c2a",
+        "bytes": 7541
+      },
+      "share/eshkol/lib/core/logic/boolean.esk": {
+        "sha256": "8b7d8924fb995ad83bc48802974c3ee5792cbf3cac1bfb8dc4402d55f15baae0",
+        "bytes": 439
+      },
+      "share/eshkol/lib/core/logic/predicates.esk": {
+        "sha256": "ea97dc49685a1ab728ecd9e930f9cb8c2c5b653955cbd9f1e3c2bc98dd28f228",
+        "bytes": 304
+      },
+      "share/eshkol/lib/core/logic/types.esk": {
+        "sha256": "4d182e53e9ac6b43122d77e13200e3bf15c192379ed550d38e6c4fd355b76fa1",
+        "bytes": 148
+      },
+      "share/eshkol/lib/core/manifold.esk": {
+        "sha256": "e0e758f5d4026a18c3a3d8336255a7882a1def0f11e7a7ca8295b7cf5dce726f",
+        "bytes": 12780
+      },
+      "share/eshkol/lib/core/memory.esk": {
+        "sha256": "c945ffba9f747a5fc62e0ee066b7df5c71b8cebc0ddf3f9976cb4023a3dfe2c3",
+        "bytes": 7582
+      },
+      "share/eshkol/lib/core/memory_store.esk": {
+        "sha256": "7befd2e9b3c3c99c24592bddf174f523f838d82d215af70a45fa8e32fc747d58",
+        "bytes": 43641
+      },
+      "share/eshkol/lib/core/merkle.esk": {
+        "sha256": "1dfc8ac3506f801f5e5229353ac925bf0b75db48f17ac546b5eee2733b4b54d8",
+        "bytes": 10059
+      },
+      "share/eshkol/lib/core/metrics.esk": {
+        "sha256": "9377feaee9a44e6e1d16dafc96fabaa2c3af766bd2e89800d32595b0bd420e3a",
+        "bytes": 15029
+      },
+      "share/eshkol/lib/core/ml/gradient_estimators.esk": {
+        "sha256": "c8e674e40a70affb6fa8db8bfa259c473578697a4a9cdf30388363f9ea03adda",
+        "bytes": 7823
+      },
+      "share/eshkol/lib/core/ml/neurosymbolic.esk": {
+        "sha256": "1e703e55d903e23d5fe5b6b6b9d3f46cd4c8c60fbdb25dad4face401218fb4e9",
+        "bytes": 6941
+      },
+      "share/eshkol/lib/core/msgpack.esk": {
+        "sha256": "1d36a56a45f7a4cd7e859a97bc9be8d4b1f142e0efb4d4eedd3d54610c9605b0",
+        "bytes": 11809
+      },
+      "share/eshkol/lib/core/net.esk": {
+        "sha256": "c160df956437b9cff155dcd030fa90586cd9d3c26e9822c453948c336ad3f680",
+        "bytes": 6259
+      },
+      "share/eshkol/lib/core/numeric_extras.esk": {
+        "sha256": "e426b79383e5dc79ac40cf85745be11a7d3aef0bf26bbb938555c7eaf430d79b",
+        "bytes": 1597
+      },
+      "share/eshkol/lib/core/operators/arithmetic.esk": {
+        "sha256": "d06eeb783f05dbdeec9c63c980f02deb3cbdb0de38229ba48ae7f62ea33ce912",
+        "bytes": 645
+      },
+      "share/eshkol/lib/core/operators/compare.esk": {
+        "sha256": "923e97873f5fe21145a3a5903539b2ae4410be7b899847842987fb3bc9ee96ed",
+        "bytes": 240
+      },
+      "share/eshkol/lib/core/pde/ns-residual.esk": {
+        "sha256": "81bedcad7cb659737302b7e0835857f6db3a285913620dd01346c67f0c6e5e17",
+        "bytes": 22692
+      },
+      "share/eshkol/lib/core/plot.esk": {
+        "sha256": "501a4a273ab9748cd857438e1cd7f333fdfe04ba8b7aae06c688cd2b8108b222",
+        "bytes": 6280
+      },
+      "share/eshkol/lib/core/polynomial_exact.esk": {
+        "sha256": "4999102c995a57821f090f495f583b3c9cd095a145bb968d87d0fa46be4d1dc5",
+        "bytes": 8937
+      },
+      "share/eshkol/lib/core/reflection.esk": {
+        "sha256": "99c82f38e4595a4babc3375477dac36241c37fc04c5eb4974cdb0e53c65e90df",
+        "bytes": 4448
+      },
+      "share/eshkol/lib/core/sdnc.esk": {
+        "sha256": "06a3c931df15f4ecfd6111778ed195ff014b4d7d0a51621dcb735e02ca83063e",
+        "bytes": 1344
+      },
+      "share/eshkol/lib/core/sexp.esk": {
+        "sha256": "6a17b1364b249d74166a773878d0b16c858e6b972e6d64a3856163f71ff0c94f",
+        "bytes": 3960
+      },
+      "share/eshkol/lib/core/streams.esk": {
+        "sha256": "a9b365bba38ff793d35e5059ec1a3f5d2767279128fc5f8ecb904a33bb363fe4",
+        "bytes": 6174
+      },
+      "share/eshkol/lib/core/strings.esk": {
+        "sha256": "6c7c583d83034befe0b8d188f5501a12d4dbe55b028657bd5192bf186df177b0",
+        "bytes": 6753
+      },
+      "share/eshkol/lib/core/symbolic.esk": {
+        "sha256": "b75c7e6533c8568f1c7d42f9dacd6a7ac2c9991a1603c8e77982c6cee30be9b8",
+        "bytes": 47424
+      },
+      "share/eshkol/lib/core/test-module.esk": {
+        "sha256": "bf45040c107f67fc3dc935662c02d1114427e775ba2690c4e500583eb5ca9afb",
+        "bytes": 214
+      },
+      "share/eshkol/lib/core/testing.esk": {
+        "sha256": "e40693cf671314d6ae5208772b3b30de4b63ab80e21dac8cbcb0b8132dd31196",
+        "bytes": 7265
+      },
+      "share/eshkol/lib/core/threads.esk": {
+        "sha256": "c7001ab6a8238c2acbf39412e3b59f7f246460d614b319f0f1956a045a398fb6",
+        "bytes": 6345
+      },
+      "share/eshkol/lib/core/tls.esk": {
+        "sha256": "889c5e60cffdd3ed931cbcfb65a53b498d63237dc59fe498d778a2ca87c30ff5",
+        "bytes": 6730
+      },
+      "share/eshkol/lib/core/url.esk": {
+        "sha256": "1708772f65e9ea44db9252f356b5e1f8926233e1418c4daf2f21b01bd8e1734e",
+        "bytes": 10077
+      },
+      "share/eshkol/lib/math/constants.esk": {
+        "sha256": "6e507bb09d6baaa729f5ef25081cdd092e3768b38d7c9632c4b85f3f5a6103e1",
+        "bytes": 4927
+      },
+      "share/eshkol/lib/math/ode.esk": {
+        "sha256": "ca8b8649cd2a5c49a77d31f3f9724e0ae01190e1dd9acd4e451a834542a50465",
+        "bytes": 14848
+      },
+      "share/eshkol/lib/math/special.esk": {
+        "sha256": "992344c2b416b8af36e212ea5354456236f20964be87edfc88f5fc56f24bb9e7",
+        "bytes": 14140
+      },
+      "share/eshkol/lib/math/statistics.esk": {
+        "sha256": "e1a01cf148fac763176ea39e5a70d9b3ac38336bb8df0c335929b11e0467689f",
+        "bytes": 6715
+      },
+      "share/eshkol/lib/math.esk": {
+        "sha256": "cd931b97a2edcc732bf9f7a193aacd1fc951c03c268db1543313df721a124201",
+        "bytes": 14601
+      },
+      "share/eshkol/lib/ml/activations.esk": {
+        "sha256": "53fd27b09671fd6231242f569bb943386935b57f6a486f60fb2c6b866514053c",
+        "bytes": 3695
+      },
+      "share/eshkol/lib/ml/nested_test_module.esk": {
+        "sha256": "b18fecbb024ba4ade0eee37fd5a6630de87895cf2c3e181a7d12f05ebd5b2453",
+        "bytes": 2177
+      },
+      "share/eshkol/lib/ml/optimization.esk": {
+        "sha256": "40d93ebf508b087283952e79829738c70771d15bf92d5403b4f0226d4b7f0952",
+        "bytes": 15290
+      },
+      "share/eshkol/lib/random/random.esk": {
+        "sha256": "34898d17f0303a6e64c86b041e576867efa74bdc4f135212e65265a16602313b",
+        "bytes": 8594
+      },
+      "share/eshkol/lib/signal/fft.esk": {
+        "sha256": "eaa6ef69432075724f533c46d8105b95adc8bd10157e5f5abad6db886394d03f",
+        "bytes": 4136
+      },
+      "share/eshkol/lib/signal/filters.esk": {
+        "sha256": "1332152eb4494465552ed0475853c4769e28db2d6f5305a57d081c590bf030ef",
+        "bytes": 18270
+      },
+      "share/eshkol/lib/stdlib.esk": {
+        "sha256": "3f2aeed4f986ac7762232aa704a5198b83da692b6949924d0de755bd06c405dc",
+        "bytes": 5758
+      },
+      "share/eshkol/lib/tensor/utils.esk": {
+        "sha256": "2cadfc894eaeca856dfc8afdfb2161a91a2f2f54f9671f08df5fc9e6b5f654cb",
+        "bytes": 4412
+      },
+      "share/eshkol/lib/tensorcore.esk": {
+        "sha256": "67ed770eec441cc59f1720d3173c66e9ae972dac5bde3577823f83a39294bb7e",
+        "bytes": 6558
+      },
+      "share/eshkol/lib/test/modules/dd10_loaded_private.esk": {
+        "sha256": "9b854b8b292c87e335791bd3d91006ef2f64ae9077c6866c8bbcee44d96fd1d4",
+        "bytes": 77
+      },
+      "share/eshkol/lib/test/modules/dd10_loaded_private_ad.esk": {
+        "sha256": "e788e261d118f1950d1ab277de9df7bbcf8a79cc37b977ff9959c72183d9da3a",
+        "bytes": 1014
+      },
+      "share/eshkol/lib/test/modules/dd10_privacy_scope.esk": {
+        "sha256": "d64e6d6972b388255f9049249cfdd9ec9f7034feb0b12b5fe9818c74b025c552",
+        "bytes": 214
+      },
+      "share/eshkol/lib/test/modules/dd10_public_hidden.esk": {
+        "sha256": "7a7d5228e46b2296a3086249adfb370a55293f43c6c8b89cb5a5b2ed4119cb76",
+        "bytes": 36
+      },
+      "share/eshkol/lib/test/modules/internal_forward_helper.esk": {
+        "sha256": "a6fc38bdbd739e3b472fff615c72b7a2be0154c058ef3cbfdcf46e2c1d76f843",
+        "bytes": 224
+      },
+      "share/eshkol/lib/test/modules/math_utils.esk": {
+        "sha256": "9a5ffd2da1372cd765969310fe18cdeb945f08a4fc7e575d1eecf188cf1154cd",
+        "bytes": 466
+      },
+      "share/eshkol/lib/test/modules/mod_a.esk": {
+        "sha256": "c44608fd1727e571f102a12481cab8ed7e1bf87bd6ade6a5c653ebbba7829ac0",
+        "bytes": 117
+      },
+      "share/eshkol/lib/test/modules/mod_b.esk": {
+        "sha256": "95547bad4e630b1474ad491bde1e56b0ed2a84b6faf6810e9476e0b89e4ff007",
+        "bytes": 119
+      },
+      "share/eshkol/lib/web/web.esk": {
+        "sha256": "1eabd5d276f106920b909c2098907b7f3bba5c97e1a06645f90a19395234a1b2",
+        "bytes": 14467
+      },
+      "share/eshkol/math.esk": {
+        "sha256": "cd931b97a2edcc732bf9f7a193aacd1fc951c03c268db1543313df721a124201",
+        "bytes": 14601
+      },
+      "share/eshkol/stdlib.esk": {
+        "sha256": "3f2aeed4f986ac7762232aa704a5198b83da692b6949924d0de755bd06c405dc",
+        "bytes": 5758
+      }
+    },
+    "staged_module_source_match": true,
+    "scratch_fixture_source_match": true,
+    "scratch_lib_symlink_target": "../package-agent-20261110/share/eshkol/lib (absolute symlink in retained local fixture layout)",
+    "licenses": {
+      "notice_files": 1,
+      "license_files": 18
+    }
+  },
+  "evidence_logs": {
+    "subprocess-streaming-production-2026-11-10/configure.log": {
+      "sha256": "02f47fd9c8ad781967a01bdd8e9ef4fe807f3e446398b9e95b39f5c4dbeca9dd",
+      "bytes": 19410
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess-stream-vm-unsupported.log": {
+      "sha256": "cb7f9e889836c56aa61843c6c123da3561bff1ed4198630184ef2751dd5eaf4b",
+      "bytes": 274
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_large-aot-compile.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_large-aot.log": {
+      "sha256": "5605790081c78ab43ddf9e98374947d45e4bd00fdf71dc3e60a2657d159a5ce7",
+      "bytes": 74
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_large-jit.log": {
+      "sha256": "74e50b71dda7c1b6d74ec68a2136f20b18c072c639ca8fd31e731ef4204ca55d",
+      "bytes": 345
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_public-aot-compile.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_public-aot.log": {
+      "sha256": "537d6a7f9896358668bbee1ee5d99393888da97abd109ce0e442ef486f10c60c",
+      "bytes": 900
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_public-jit.log": {
+      "sha256": "c53cb45b281c559823f79b46f09d9ccf8b5bd38e17195f832d42254211e66de0",
+      "bytes": 1171
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_reentry-aot-compile.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_reentry-aot.log": {
+      "sha256": "2809c48262846a3b7c531af2eabd9672248046ddcec32a8c293b83d4dacfc3be",
+      "bytes": 91
+    },
+    "subprocess-streaming-production-2026-11-10/package/subprocess_stream_reentry-jit.log": {
+      "sha256": "dad809bc1ac760759ae2af13cec69a325202bb7403624803dce52f5e518e9299",
+      "bytes": 362
+    },
+    "subprocess-streaming-production-2026-11-10/package-summary.log": {
+      "sha256": "d52ca93cf9f99b994be742038df5869f744811658e20542a1066076ebabb4f9c",
+      "bytes": 414
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess-stream-vm-unsupported.log": {
+      "sha256": "cb7f9e889836c56aa61843c6c123da3561bff1ed4198630184ef2751dd5eaf4b",
+      "bytes": 274
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_large-aot-compile.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_large-aot.log": {
+      "sha256": "5605790081c78ab43ddf9e98374947d45e4bd00fdf71dc3e60a2657d159a5ce7",
+      "bytes": 74
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_large-jit.log": {
+      "sha256": "7f80cdeab3335458bfe1c511cb5a1212f15b600c99455cadf1f269219950dce6",
+      "bytes": 343
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_public-aot-compile.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_public-aot.log": {
+      "sha256": "537d6a7f9896358668bbee1ee5d99393888da97abd109ce0e442ef486f10c60c",
+      "bytes": 900
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_public-jit.log": {
+      "sha256": "1603d40d9d2a65d1cc0f88ace340ea5751e39fd4eba1adbb9e586badbd6290ab",
+      "bytes": 1169
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_reentry-aot-compile.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_reentry-aot.log": {
+      "sha256": "2809c48262846a3b7c531af2eabd9672248046ddcec32a8c293b83d4dacfc3be",
+      "bytes": 91
+    },
+    "subprocess-streaming-production-2026-11-10/production/subprocess_stream_reentry-jit.log": {
+      "sha256": "ed2646fc06c62b8e75951e2f27930d48d285acabab9e847a7518ab9cd7f2f3d0",
+      "bytes": 360
+    },
+    "subprocess-streaming-production-2026-11-10/production-summary.log": {
+      "sha256": "d52ca93cf9f99b994be742038df5869f744811658e20542a1066076ebabb4f9c",
+      "bytes": 414
+    }
+  },
+  "local_retained_build_log": {
+    "path": "../checks/pr914-production-build.log",
+    "sha256": "27cc1bf3dbcebfa446a7809a23c7858a3cb0843e00a286404d6ac58ef46b18a4",
+    "bytes": 384306,
+    "committed": false
+  },
+  "previous_minimal_record": {
+    "path": "subprocess-streaming-2026-11-04.json",
+    "sha256": "bf712f373c4d56e988a965376cf7bdc30be79b5cba837707bfe7f513d8244363",
+    "scope": "Earlier test-only minimal subprocess archive and support DSO; unchanged by this record"
+  },
+  "limits": [
+    "No macOS public JIT/AOT or macOS packaged-runtime validation.",
+    "No portable-release verifier or relocated clean-host image-codec runtime bundle validation.",
+    "Host LLVM/toolchain and platform shared libraries are still dependencies; this is not a self-contained redistributed release package.",
+    "The child fixture and Python driver remain test infrastructure outside the staged package.",
+    "No replacement minimal archive, support DSO, or LD_PRELOAD was used in these production/staged runs.",
+    "VM execution of subprocess streaming is unsupported; only explicit refusal is validated.",
+    "No claim that upstream workflow approval or final maintainer integration review has completed."
+  ],
+  "repository_record_note": "Summary record; original raw-log byte hashes are preserved. Raw machine logs are retained locally. Machine paths in commands use placeholders."
+}
