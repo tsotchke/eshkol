@@ -70,21 +70,19 @@ These runtime guarantees are independent of the static checks in
 
 ## Explicit-loop owners and cleanup results
 
-Adapters opt into `eshkol_resource_adopt_on_loop`, retaining a
+Unix-domain sockets opt into `eshkol_resource_adopt_on_loop`, retaining a
 caller-supplied live EVENT_LOOP identity and enforcing owner-thread I/O.
 `eshkol_resource_wait_on_loop` uses the same event-loop backends, validates
 readiness cookies and preserves unrelated PROCESS/SOCKET registrations.
 A spent explicit-loop wait budget returns timeout before watch registration or
 polling, including when the descriptor is ready; cancellation takes precedence.
-An adopting adapter can select sticky cancellation; existing TCP/UDP/TLS operations
+Cancellation is sticky for these Unix owners; existing TCP/UDP/TLS operations
 keep their documented consumable requests and per-thread waits.
 
-The registry accepts distinct EVENT_LOOP, SOCKET, PROCESS and CLEANUP kinds.
-Every shared-layer operation checks kind and tag. An adapter's shutdown must
-retire only its own records, never destroy the process-lifetime registry or
-another adapter's resources. Published platform kind values remain WINDOW 4,
-AUDIO 5 and MIDI 6; PROCESS is 7 and CLEANUP is 8. PROCESS streaming migration and
-the Unix socket adapter are separate changes built on this facility.
+PROCESS, EVENT_LOOP, SOCKET and CLEANUP public handles share the process-lifetime
+exact registry. Every operation checks kind and tag. PROCESS shutdown retires
+only its own records, never destroys this registry or another adapter's resources. Published platform kind values remain WINDOW 4,
+AUDIO 5 and MIDI 6; PROCESS is 7 and CLEANUP is 8. The PROCESS stream and Unix socket adapters use this facility.
 
 `eshkol_resource_close_request` retires a managed owner's identity and returns a
 separate CLEANUP ticket. Ticket capacity is reserved before publishing the
@@ -119,3 +117,5 @@ the retired resource identity. Scoped adapters use this public handoff when a
 non-local exit cannot complete cleanup or transfer a ticket to its caller.
 Completion states use `ESHKOL_CLEANUP_*`; stage names use the distinct
 `ESHKOL_CLEANUP_STAGE_*` prefix.
+
+See the [Unix socket surface](../agent/unix-sockets.md) for Scheme ticket and scoped operations.

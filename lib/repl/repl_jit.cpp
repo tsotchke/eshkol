@@ -700,6 +700,16 @@ extern "C" {
     int32_t eshkol_process_cleanup_consume(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
     int32_t eshkol_process_stream_runtime_shutdown(void) ESHKOL_OPTIONAL_AGENT_FFI;
 
+    /* Optional Unix-domain stream socket bridge, implemented by the native
+     * agent FFI socket and bytevector bindings. */
+    int64_t eshkol_unix_stream_socket_listen(int64_t, const char*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_accept(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_connect(int64_t, const char*, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_read_bytevector(int64_t, void*, int64_t, int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_write_bytevector(int64_t, void*, int64_t, int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_cancel(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_close(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+
     void* qllm_ffi_linear_create(int64_t in_dim, int64_t out_dim)
         ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_ffi_linear_destroy(void* handle) ESHKOL_OPTIONAL_AGENT_FFI;
@@ -1664,6 +1674,13 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_drain);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_consume);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_runtime_shutdown);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_listen);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_accept);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_connect);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_read_bytevector);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_write_bytevector);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_cancel);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_close);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_create);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_destroy);
