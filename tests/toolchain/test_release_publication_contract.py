@@ -10,7 +10,7 @@ import subprocess
 import shutil
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_publication_fixtures import bundle_fixture, refresh_manifest, dump, SHA, TARGET
+from release_publication_fixtures import bundle_fixture, refresh_manifest, dump, SHA, TAG, TARGET
 
 ROOT = Path(__file__).resolve().parents[2]
 (ROOT / ".scratch").mkdir(exist_ok=True)
@@ -24,7 +24,7 @@ SPEC.loader.exec_module(contract)
 def record(**changes):
     value = {
         "schema": "eshkol.release-record.v1",
-        "tag": "v1.3.6-evolve",
+        "tag": "v1.4.0-connection",
         "previous_tag": "v1.3.4-evolve",
         "release_date": "2026-10-05",
         "status": "PREPARED FOR PUBLICATION",
@@ -37,7 +37,7 @@ def record(**changes):
 
 def notes(status="PREPARED FOR PUBLICATION", extra=""):
     return (
-        "# Eshkol v1.3.6-evolve — Release Notes\n\n"
+        "# Eshkol v1.4.0-connection — Release Notes\n\n"
         f"**Status:** {status}.\n"
         "**Planned release date:** Monday, October 5, 2026.\n\n"
         "CTest 240/240 and VM parity 390/390.\n"
@@ -93,10 +93,10 @@ class PublicationContractTests(unittest.TestCase):
         section = contract.validate_notes(
             notes(status="RELEASE CANDIDATE", extra=contract._PENDING_MARKER),
             value, value["tag"], "preparation")
-        self.assertTrue(section.startswith("# Eshkol v1.3.6-evolve"))
-        for bad_text, bad_tag in ((notes().replace("v1.3.6-evolve", "v1.3.5-evolve", 1), "v1.3.6-evolve"),
-                                  (notes().replace("October 5, 2026", "October 6, 2026"), "v1.3.6-evolve"),
-                                  (notes().replace("Monday, October", "Tuesday, October"), "v1.3.6-evolve")):
+        self.assertTrue(section.startswith("# Eshkol v1.4.0-connection"))
+        for bad_text, bad_tag in ((notes().replace("v1.4.0-connection", "v1.3.5-evolve", 1), "v1.4.0-connection"),
+                                  (notes().replace("October 5, 2026", "October 6, 2026"), "v1.4.0-connection"),
+                                  (notes().replace("Monday, October", "Tuesday, October"), "v1.4.0-connection")):
             with self.subTest(bad_tag=bad_tag), self.assertRaises(contract.ContractError):
                 contract.validate_notes(bad_text, record(), bad_tag)
 
@@ -134,10 +134,10 @@ class PublicationContractTests(unittest.TestCase):
                       "# Eshkol v1.3.7-evolve — Release Notes", "**Planned release date:** bananas.",
                       "CTest 1/1", "VM parity 399/399", "**399/399** VM parity differential checks"):
             with self.subTest(extra=extra), self.assertRaises(contract.ContractError):
-                contract.validate_notes(notes(extra=extra), record(), TARGET, "candidate-proof")
+                contract.validate_notes(notes(extra=extra), record(), TAG, "candidate-proof")
         for changes in ({"schema": "other"}, {"release_date": True}, {"ctest_total": 240.0}, {"ctest_total": "240"}):
             with self.subTest(changes=changes), self.assertRaises(contract.ContractError):
-                contract.validate_notes(notes(), record(**changes), TARGET, "candidate-proof")
+                contract.validate_notes(notes(), record(**changes), TAG, "candidate-proof")
 
     def test_full_bound_measurements_and_internal_optional_subprobe(self):
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
@@ -248,9 +248,9 @@ class PublicationContractTests(unittest.TestCase):
             self.assertEqual((receipt["total"], receipt["passed"], receipt["optional_skipped"]), (2, 1, 1))
             value = record(ctest_total=2, vm_parity_total=8, ctest_required_total=1, ctest_optional_skipped=1)
             text = notes().replace("CTest 240/240 and VM parity 390/390", "CTest configured 2, required 1/1, optional skipped 1; VM parity 8/8")
-            contract.validate_notes(text, value, TARGET, "candidate-proof")
+            contract.validate_notes(text, value, TAG, "candidate-proof")
             with self.assertRaises(contract.ContractError):
-                contract.validate_notes(text.replace("CTest configured 2, required 1/1, optional skipped 1", "CTest 2/2"), value, TARGET, "candidate-proof")
+                contract.validate_notes(text.replace("CTest configured 2, required 1/1, optional skipped 1", "CTest 2/2"), value, TAG, "candidate-proof")
         with tempfile.TemporaryDirectory(dir=ROOT / ".scratch") as directory:
             bundle = bundle_fixture(Path(directory) / "bundle", skipped=True, declared=False)
             with self.assertRaises(contract.ContractError):
@@ -263,7 +263,7 @@ class PublicationContractTests(unittest.TestCase):
             (repo / "tests/coverage").mkdir(parents=True)
             (repo / "build").mkdir()
             (repo / "build/CTestTestfile.cmake").write_text("")
-            for name in ('run_ctest_gate.sh', 'release_publication_contract.py', 'check_self_verdicts.py'):
+            for name in ('run_ctest_gate.sh', 'release_publication_contract.py', 'release_target.py', 'check_self_verdicts.py'):
                 shutil.copy(ROOT / 'scripts' / name, repo / 'scripts' / name)
             for name in ('harness_outcome.sh', 'checked_write.sh', 'evidence_paths.sh', 'durable_work_root.sh', 'build_fingerprint.sh'):
                 shutil.copy(ROOT / 'scripts/lib' / name, repo / 'scripts/lib' / name)
@@ -286,31 +286,38 @@ names += ['tensor_backward_dual_impl_gradcheck', 'qllm_bridge_gradcheck']
 if '--show-only=json-v1' in args:
     print(json.dumps({'kind': 'ctestInfo', 'version': {'major': 1, 'minor': 0}, 'tests': [{'name': name} for name in names]})); sys.exit(0)
 if '-N' in args: sys.exit(0)
-timeout = os.environ.get('FAKE_TIMEOUT') == '1'
+outcome = os.environ['FAKE_OUTCOME']
+unresolved = set(names[18:23]) if outcome in ('timeout', 'skip') else set()
+assert names[17:23] == ['image_codecs_test', 'image_io_language_test', 'test_native_image_io_contract', 'runtime_regions_test', 'doc_truth_ratchet_unit', 'doc_truth_ratchet_phase1']
+marker = '<skipped/>' if outcome == 'skip' else '<failure message="Timeout"/>'
 path = Path(args[args.index('--output-junit') + 1])
-path.write_text('<testsuite>' + ''.join('<testcase name="' + name + '" status="run">' + ('<failure message="Timeout"/>' if timeout and name == 'fixedpoint_one' else '') + '</testcase>' for name in names) + '</testsuite>')
+path.write_text('<testsuite>' + ''.join('<testcase name="' + name + '" status="run">' + (marker if name in unresolved else '') + '</testcase>' for name in names) + '</testsuite>')
 for index, name in enumerate(names, 1):
-    print(str(index) + '/' + str(len(names)) + ' Test #' + str(index) + ': ' + name + ' ........ ' + ('***Timeout' if timeout and name == 'fixedpoint_one' else 'Passed') + ' 0.01 sec')
-print(('94% tests passed, 1 tests failed' if timeout else '100% tests passed, 0 tests failed') + ' out of ' + str(len(names)))
-sys.exit(8 if timeout else 0)
+    print(str(index) + '/' + str(len(names)) + ' Test #' + str(index) + ': ' + name + ' ........ ' + (('***Skipped' if outcome == 'skip' else '***Timeout') if name in unresolved else 'Passed') + ' 0.01 sec')
+print(('84% tests passed, 5 tests failed' if outcome == 'timeout' else '100% tests passed, 0 tests failed') + ' out of ' + str(len(names)))
+sys.exit(8 if outcome == "timeout" else 0)
 ''')
             ctest.chmod(0o755)
-            for timeout in (False, True):
-                trace = repo / ('trace-timeout' if timeout else 'trace-green')
+            for outcome in ("pass", "timeout", "skip"):
+                trace = repo / ('trace-' + outcome)
                 trace.mkdir()
                 dump(trace / 'release-build-cohort.json', {'fixture': 'cohort'})
-                destination = repo / ('measurement-timeout' if timeout else 'measurement-green')
+                destination = repo / ('measurement-' + outcome)
                 result = subprocess.run(['bash', str(repo / 'scripts/run_ctest_gate.sh')], cwd=repo,
                     env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'], 'TRACE_DIR': str(trace),
                          'RELEASE_MEASUREMENT_DIR': str(destination), 'ESHKOL_RELEASE_PHASE_ID': 'fixture',
-                         'RELEASE_TARGET': TARGET, 'FAKE_TIMEOUT': '1' if timeout else '0'}, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 1 if timeout else 0, result.stdout + result.stderr + ((destination / 'receipt-validation.log').read_text() if (destination / 'receipt-validation.log').exists() else ''))
+                         'RELEASE_TARGET': TARGET, 'FAKE_OUTCOME': outcome}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if outcome == "pass" else 1, result.stdout + result.stderr + ((destination / 'receipt-validation.log').read_text() if (destination / 'receipt-validation.log').exists() else ''))
                 for artifact in ('raw.log', 'junit.xml', 'inventory.json', 'ctest-results.tsv', 'exit.json', 'measurement.json'):
                     self.assertTrue((destination / artifact).is_file(), artifact)
                 receipt = contract.read_json(destination / 'measurement.json')
                 self.assertEqual(receipt['source_sha'], contract.source_snapshot(repo)['sha'])
-                if timeout:
-                    self.assertEqual(contract.read_json(destination / 'exit.json')['ctest_exit_code'], 8)
+                events = {event["name"]: event["value"] for event in contract.trace_events(trace / "ctest_gate.jsonl")}
+                verdict = "PASS" if outcome == "pass" else "INFRA"
+                self.assertEqual(events["v140_codebase_gate"], verdict)
+                self.assertEqual(events["ctest_suite_green"], verdict)
+                if outcome != "pass":
+                    self.assertEqual(contract.read_json(destination / 'exit.json')['ctest_exit_code'], 8 if outcome == "timeout" else 0)
                     self.assertIsNone(receipt['passed'])
                     self.assertIn('validation_errors', receipt)
                 else:
@@ -330,7 +337,7 @@ sys.exit(8 if timeout else 0)
             contract.validate_publication(root / "record.json", root / "notes.md", bundle, proof, identity)
             for key, value in (("schema", "eshkol.release-readiness.v1"), ("score", True), ("score", "100"),
                                ("qualification_mode", "diagnostic"), ("waiver_count", 1), ("role", "tag-publication"),
-                               ("run_id", 9), ("run_attempt", 1), ("notes_sha256", "0" * 64), ("metadata_validated", False)):
+                               ("tag", "v1.3.6-evolve"), ("target", TAG), ("run_id", 9), ("run_attempt", 1), ("notes_sha256", "0" * 64), ("metadata_validated", False)):
                 with self.subTest(key=key), self.assertRaises(contract.ContractError):
                     contract.validate_publication(root / "record.json", root / "notes.md", bundle, {**proof, key: value}, identity)
             original_state = contract.read_json(bundle / "phase-state.json")

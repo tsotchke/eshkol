@@ -19,7 +19,7 @@ SHA = 'a' * 40
 
 class ReleaseGuardTests(unittest.TestCase):
     def test_exact_target_and_score_required(self):
-        target = 'v1.3.6-evolve'
+        target = 'v1.4-connection'
         good = {'status': 'ready', 'score': 100, 'target': target}
         for payload in ({'status': 'ready'}, {'status': 'ready', 'score': None},
                         {'status': 'ready', 'score': '100'}, {'status': 'ready', 'score': 99},

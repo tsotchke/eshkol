@@ -8,10 +8,13 @@ import json
 from pathlib import Path
 
 import yaml
+from release_target import project_identity
 from release_publication_contract import ContractError, load_measurements, read_json, source_snapshot, sha256
 
 
 TEST_ACTIONS = {
+    "ctest --test-dir build --output-on-failure -R '^exact_tensor_jit$'": "ctest-full::exact_tensor_jit",
+    "ctest --test-dir build --output-on-failure -R '^exact_tensor_aot$'": "ctest-full::exact_tensor_aot",
     "BUILD_DIR=build ./tests/memory/vm_region_flat_rss_test.sh": "vm_region_flat_rss",
     "BUILD_DIR=build ./tests/memory/vm_region_evac_subtype_coverage_test.sh": "vm_region_evac_subtype_coverage",
     "cd build && cmake --build . && ctest -R qubit_linearity_engine_parity_gate": "ctest::qubit_linearity_engine_parity_gate",
@@ -32,6 +35,7 @@ TEST_ACTIONS = {
 }
 
 EXPECTED_CRITERION_COUNTS = {
+    "v1.4-connection": 66,
     "v1.3.5-evolve": 37,
     "v1.3.6-evolve": 12,
 }
@@ -61,14 +65,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--trace-dir", type=Path, required=True)
-    parser.add_argument("--target", default="v1.3.5-evolve",
-                        help="completion-oracle target to verify (default: v1.3.5-evolve)")
+    parser.add_argument("--target", default=project_identity()[1],
+                        help="completion-oracle target to verify")
     args = parser.parse_args()
     oracle_file = args.repo_root / ".icc" / "completion-oracles.yaml"
     data = yaml.safe_load(oracle_file.read_text(encoding="utf-8"))
     oracle = next((item for item in data.get("oracles", []) if item.get("name") == args.target), None)
     if oracle is None:
         raise SystemExit(f"{args.target} completion oracle is absent")
+    tag, current_target = project_identity()
+    if args.target == current_target:
+        owners = [item for item in data["oracles"] if item.get("name") == tag or tag in item.get("aliases", [])]
+        if owners != [oracle]:
+            raise SystemExit(f"{tag} must identify exactly the {current_target} oracle")
     criteria = oracle.get("requires", [])
     expected_count = EXPECTED_CRITERION_COUNTS.get(args.target)
     if expected_count is None:

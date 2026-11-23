@@ -18,7 +18,7 @@ a stub added to only one of them still breaks the other, so a missing file is a
 hard failure, never a skip.
 
 Usage:
-    scripts/check_wasm_imports.py [--build-dir build] [--server PATH]
+    scripts/check_wasm_imports.py [--build-dir build]
     scripts/check_wasm_imports.py --selftest     # scanner regression suite only
 
 Exit:
@@ -666,25 +666,6 @@ def selftest_generated_glue() -> list[str]:
 # --------------------------------------------------------------------------- #
 
 
-def find_server_binary(build_dir: Path, override: Path | None) -> Path | None:
-    if override:
-        return override if override.exists() else None
-    candidate = build_dir / "eshkol-server"
-    if candidate.exists():
-        return candidate
-    return None
-
-
-def compile_smoke_wasm(server_bin: Path, source: str) -> bytes | None:
-    """Drive eshkol-server's compile-to-WASM pipeline directly via a tiny
-    HTTP POST.  Falls back to None if the server isn't usable."""
-    # We don't want to spin up the actual HTTP listener; instead we use the
-    # compile-to-wasm CLI shim if present.  As a fallback, write the source
-    # to a tempfile and use eshkol-run --emit-wasm if that flag exists.
-    # For now, just return None and fall through to the CLI path.
-    return None
-
-
 def compile_smoke_wasm_via_cli(
     eshkol_run: Path, source: str, timeout: int
 ) -> bytes | None:
@@ -726,8 +707,6 @@ def compile_smoke_wasm_via_cli(
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--build-dir", type=Path, default=REPO_ROOT / "build")
-    ap.add_argument("--server", type=Path, default=None,
-                    help="Path to a pre-built eshkol-server (overrides --build-dir).")
     ap.add_argument("--prebuilt-wasm-dir", type=Path, default=None,
                     help="Directory of pre-compiled .wasm files (one per smoke surface). "
                          "If passed, skip compilation and just check imports against JS.")

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from release_target import project_identity
 from release_publication_contract import ContractError, load_measurements, source_snapshot, read_json, sha256
 from pathlib import Path
 
@@ -70,7 +71,7 @@ def main() -> int:
         # the captured binaries; no baseline/qualification marker is earned.
         if args.phase != "coverage":
             load_measurements(args.trace_dir / "publication", head,
-                              os.environ.get("RELEASE_TARGET", "v1.3.6-evolve"), state.get("phase_id"),
+                              os.environ.get("RELEASE_TARGET") or project_identity()[1], state.get("phase_id"),
                               sha256(args.trace_dir / "release-build-cohort.json"))
     except (ContractError, OSError, ValueError) as exc:
         errors.append(str(exc))

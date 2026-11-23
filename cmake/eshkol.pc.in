@@ -18,6 +18,6 @@ compiler=${bindir}/eshkol-run
 Name: Eshkol
 Description: Eshkol hosted runtime archive and eshkol-run compiler driver
 URL: https://eshkol.ai
-Version: @PROJECT_VERSION@
+Version: @ESHKOL_RELEASE_VERSION@
 Libs: -L${libdir} -leshkol-runtime ${libdir}/stdlib.o @ESHKOL_PC_EXTRA_LIBS@
 Cflags: -I${includedir}

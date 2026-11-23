@@ -9,7 +9,7 @@ on:
       candidate_tag:
         description: Candidate tag label used only for dry-run asset names
         required: true
-        default: v1.3.6-evolve
+        default: v1.4.0-connection
         type: string
       strict_readiness:
         description: Fail the dry run unless ICC certifies this exact commit ready/100
@@ -42,7 +42,7 @@ env:
   # A manual dispatch is always non-publishing. Its explicit candidate label
   # lets the dry-run archives use the exact names the later tag run will use.
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
-  RELEASE_TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
+  RELEASE_TARGET: v1.4-connection
   STRICT_READINESS: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_readiness || false }}
   MEMORY_DIAGNOSTICS: ${{ github.event_name == 'workflow_dispatch' && inputs.memory_diagnostics || false }}
   MEASUREMENT_PREPARATION: ${{ github.event_name == 'workflow_dispatch' && inputs.measurement_preparation || false }}
@@ -124,10 +124,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
-            echo "Invalid release tag label: $RELEASE_TAG" >&2
-            exit 1
-          fi
+          python3 scripts/release_target.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
 
       - name: Add LLVM Repository (Linux)
         if: runner.os == 'Linux'
@@ -383,6 +380,7 @@ jobs:
             cp "$agent_curl_archive" "$pkg_dir/lib/eshkol/"
           fi
 
+          cp "${{ matrix.build_dir }}/release-tag" "$pkg_dir/share/eshkol/"
           cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
           if [[ -f "lib/math.esk" ]]; then
             cp "lib/math.esk" "$pkg_dir/share/eshkol/"
@@ -593,9 +591,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RELEASE_TAG -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
-            throw "Invalid release tag label: $env:RELEASE_TAG"
-          }
+          python scripts/release_target.py --tag "$env:RELEASE_TAG" --target "$env:RELEASE_TARGET"
 
       - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
         if: matrix.gpu_enabled == 'ON'
@@ -1035,6 +1031,7 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path $binDir, $libDir, $libEshkolDir, $shareDir, $shareLibDir | Out-Null
 
+          Copy-Item -LiteralPath (Join-Path '${{ matrix.build_dir }}' 'release-tag') -Destination $shareDir
           Copy-Item -LiteralPath (Join-Path $binaryDir 'eshkol-run.exe') -Destination $binDir
           Copy-Item -LiteralPath (Join-Path $binaryDir 'eshkol-repl.exe') -Destination $binDir
 
@@ -1198,6 +1195,9 @@ jobs:
         with:
           # Release evidence includes the disclosure scan against origin/master.
           fetch-depth: 0
+
+      - name: Validate release identity
+        run: python3 scripts/release_target.py --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
 
       # Resolve ICC FIRST so a runner without it decides fast, before spending
       # ~20 min on a build it could never certify. On a real tag push, absence

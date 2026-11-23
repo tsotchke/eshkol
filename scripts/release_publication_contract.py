@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import re
 
+from release_target import project_identity
+
 
 class ContractError(ValueError):
     """A release record or notes document violates the publication contract."""
@@ -35,7 +37,7 @@ def _unique_object(pairs):
 def _valid_tag(value: object, *, current: bool) -> bool:
     if not isinstance(value, str):
         return False
-    return bool((_TAG if current else _SEMVER).fullmatch(value))
+    return (current and value == project_identity()[0]) or bool((_TAG if current else _SEMVER).fullmatch(value))
 
 
 def _date(value: object) -> date:
@@ -73,7 +75,7 @@ def validate_record(record, strict=False):
     if record["schema"] != "eshkol.release-record.v1":
         raise ContractError("unsupported release record schema")
     if not _valid_tag(record["tag"], current=True):
-        raise ContractError("tag must match the supported v1.3.<5+>-evolve grammar")
+        raise ContractError("unsupported release record tag")
     if not _valid_tag(record["previous_tag"], current=False):
         raise ContractError("previous_tag must be a valid semantic version tag")
     if record["previous_tag"] == record["tag"]:
@@ -309,6 +311,8 @@ def junit_outcomes(path):
         failures = [node for node in case if node.tag in {"failure", "error"}]
         if case.find("skipped") is not None or status in {"skipped", "notrun", "disabled"}:
             verdict = "skipped"
+        elif status.lower() == "timeout":
+            verdict = "infra"
         elif failures or status in {"fail", "failed", "error"}:
             detail = " ".join(" ".join(node.itertext()) + " " + node.get("message", "") for node in failures)
             verdict = "infra" if re.search(r"\btimeout\b", detail, re.I) else "failed"
@@ -531,7 +535,9 @@ def load_measurements(bundle, sha, target, phase_id=None, cohort=None):
 
 def metadata_facts(record_path, notes_path, bundle, sha, target, role):
     record = load_record(record_path, strict=True)
-    notes = validate_notes(Path(notes_path).read_text(encoding="utf-8"), record, target, role)
+    if (record["tag"], target) != project_identity():
+        raise ContractError("release record and oracle target disagree")
+    notes = validate_notes(Path(notes_path).read_text(encoding="utf-8"), record, record["tag"], role)
     measurements = load_measurements(bundle, sha, target)
     ctest, vm = measurements["run_ctest_gate"], measurements["run_vm_parity"]
     state = read_json(evidence_path(bundle, "phase-state.json"))
@@ -552,7 +558,7 @@ def metadata_facts(record_path, notes_path, bundle, sha, target, role):
             raise ContractError("optional configured skips must have explicit record facts")
     elif ctest["passed"] != ctest["total"] or vm["passed"] != vm["total"]:
         raise ContractError("complete N/N measurements required")
-    return {"record_sha256": sha256(record_path), "notes_sha256": hashlib.sha256(notes.encode()).hexdigest(),
+    return {"tag": record["tag"], "record_sha256": sha256(record_path), "notes_sha256": hashlib.sha256(notes.encode()).hexdigest(),
             "measurement_manifest_sha256": sha256(Path(bundle) / "manifest.json"),
             "phase_id": ctest["phase_id"], "build_cohort_sha256": ctest["build_cohort_sha256"],
             "metadata_validated": True}
@@ -565,7 +571,9 @@ def validate_proof(proof, expected):
         raise ContractError("normal complete no-waiver qualification required")
     if proof.get("status") != "ready" or type(proof.get("score")) is not int or proof["score"] != 100:
         raise ContractError("readiness proof must be typed ready/100")
-    for field in ("sha", "target", "role", "run_id", "run_attempt", "phase_id", "build_cohort_sha256", "record_sha256", "notes_sha256", "measurement_manifest_sha256"):
+    if (proof.get("tag"), proof.get("target")) != project_identity():
+        raise ContractError("proof must bind the project tag and oracle target")
+    for field in ("sha", "tag", "target", "role", "run_id", "run_attempt", "phase_id", "build_cohort_sha256", "record_sha256", "notes_sha256", "measurement_manifest_sha256"):
         if field not in expected or type(proof.get(field)) is not type(expected[field]) or proof[field] != expected[field]:
             raise ContractError(f"readiness proof {field} mismatch")
     if proof["role"] not in {"candidate-proof", "tag-publication"} or not _hash(proof["sha"], 40):
@@ -580,7 +588,7 @@ def validate_publication(record_path, notes_path, bundle, proof, expected_identi
     expected = dict(expected_identity)
     expected.update(metadata_facts(record_path, notes_path, bundle, expected["sha"], expected["target"], expected["role"]))
     validate_proof(proof, expected)
-    return validate_notes(Path(notes_path).read_text(), load_record(record_path, strict=True), expected["target"], expected["role"])
+    return validate_notes(Path(notes_path).read_text(), load_record(record_path, strict=True), expected["tag"], expected["role"])
 
 
 def main():

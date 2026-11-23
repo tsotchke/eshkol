@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_target import validate_target
+from release_target import target_for_tag, validate_target
 from release_publication_contract import load_record, validate_notes, validate_publication, read_json
 
 PENDING = 'RELEASE_EVIDENCE_PENDING'
@@ -118,6 +118,8 @@ def main():
     p.add_argument('--run-attempt', type=int)
     args = parser.parse_args()
     try:
+        if args.action in ("bind", "check"):
+            validate_target(args.target)
         if args.action == 'bind':
             selected = bind(args.icc, args.repo, args.workspace, args.sha)
             with open(args.github_env, 'a', encoding='utf-8') as out:
@@ -138,7 +140,7 @@ def main():
             else:
                 if not all((args.evidence_root, args.receipt, args.workspace, args.sha, args.target, args.run_id, args.run_attempt)):
                     raise ValueError('strict notes requires full evidence, receipt and source/run identity')
-                if args.tag != args.target:
+                if target_for_tag(args.tag) != args.target:
                     raise ValueError('tag and release target disagree')
                 check_workspace(args.workspace, args.sha)
                 notes = validate_publication(args.record, args.notes, args.evidence_root, read_json(args.receipt),
