@@ -10,4 +10,4 @@
 (set! loaded-boxed 2)
 (define loaded-boxed 3)
 (set! loaded-count (+ loaded-count 1))
-(load "../vm_load_semantics_test.esk")
+(load "tests/integration/vm_load_semantics_test.esk")

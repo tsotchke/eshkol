@@ -35,7 +35,9 @@ class EmbeddedModuleGeneratorTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(matches.returncode, 0, matches.stderr)
-            self.assertIn("matches 4 sources", matches.stdout)
+            self.assertIn("matches 5 sources", matches.stdout)
+            self.assertIn('{"core/msgpack.esk", "/__eshkol_embedded__/core/msgpack.esk",',
+                          output.read_text(encoding="ascii"))
 
             output.write_bytes(output.read_bytes() + b"/* intentional test drift */\n")
             drifted = subprocess.run(

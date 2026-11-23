@@ -69,7 +69,7 @@ try {
 }
 
 const dir = path.dirname(modPath);
-const repoRoot = path.resolve(path.dirname(srcPath), '../../..');
+const repoRoot = path.resolve(__dirname, '../..');
 const out = [];   // Emscripten's complete-line fallback
 const stdoutBytes = []; // Exact byte stream, including non-newline display output
 const err = [];   // program stderr + runner diagnostics

@@ -4,36 +4,33 @@ Eshkol supports two complementary module styles: a lightweight `provide`/`requir
 pair, and R7RS `define-library`/`import`. Both resolve module names to source
 files on a search path. `load` includes a file inline.
 
-Search path for module resolution:
-1. the directory of the file doing the `require`/`import`/`load`,
-2. the project root (the current working directory),
-3. directories passed with `-I DIR`, then entries in the `$ESHKOL_PATH`
-   environment variable (`-I` directories are appended to it),
-4. the compiler's bundled `lib/` directory — itself located beside the running
-   compiler, and only then in the system prefixes.
+The compiler reserves every module shipped in its standard library. The build
+records the installed relative paths and their SHA-256 digests in the stdlib
+identity. For example, `core.list.transform` and `./core/list/transform.esk`
+select the same installed module. The resolver checks the installed source
+against its recorded digest. An unavailable installed module is an error.
+Precompiled artifacts must carry the compiler's stdlib identity.
 
-A path you name explicitly therefore overrides a module that ships with the
-compiler, while a project's own sources always come first. See
-[environment variables](../runtime/environment-variables.md#resolution-precedence)
-for the same rule applied to the native artifacts.
+For project modules the resolver searches, in order,
 
-The search runs top to bottom and the first match wins, so the two rules that
-matter most are independent: a program that lives beside its helpers keeps
-finding them wherever you run it from (step 1), and a project-rooted spelling
-like `(load "tests/fixtures/dep.esk")` keeps working from the project root
-(step 2).
+1. the directory containing the referring file,
+2. the current working directory,
+3. the configured project paths in `$ESHKOL_PATH`, including `-I` entries,
+4. `$ESHKOL_LIB_DIR` and its `lib` subdirectory, an explicit workspace
+   module root, and the module trees under explicitly configured
+   `$ESHKOL_SYSTEM_PREFIXES`.
 
-This order is a property of the **language**, not of how you happen to run the
-program. `eshkol-run` chooses among several execution engines — a persistent
-JIT run cache, an in-process JIT (used whenever the cache is bypassed: `-d`,
-`--dump-ast`, `--dump-ir`, several input files, or an active
-`$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR`), an AOT compile, and the VM — and every
-one of them resolves `require`, `import` and `load` through the same resolver,
-`eshkol::platform::resolve_module_source_path`. A program cannot load different
-files because of which engine ran it. The `load_path_engine_parity_test` CTest
-gate holds every engine to identical output on the same source, with a
-same-named decoy planted in the working directory so a lane that regressed to
-cwd-rooted resolution fails on a different answer rather than a missing file.
+Environment directories can supply additional project modules. Reserved
+source modules come from the compiler's installation. The browser VM serves
+its supported modules from its embedded image.
+
+Module references must be relative. An absolute reference or a reference
+with a `..` component raises a condition naming the requested module.
+A drive-qualified spelling is rooted on every host.
+For example, `(guard (e (else (error-object-message e))) (load "../data.esk"))`
+returns the condition's message. A relative path may include `.` components
+and directory names containing dots. The interactive `:load` command uses
+the same resolver. A command-line entry file may be named by its absolute path.
 
 ## `provide` / `require`
 
@@ -138,8 +135,8 @@ Identical under `eshkol-run -r`, under AOT and under the bytecode VM; pinned by
 A library defined in the file being compiled is importable by the forms written
 below it, with no filesystem search (R7RS-small 5.6.1). Resolution order is:
 
-1. libraries this compilation unit already defined with `define-library`,
-2. precompiled stdlib modules,
+1. reserved names from the installed stdlib,
+2. project libraries this compilation unit already defined with `define-library`,
 3. the module search path above.
 
 ```scheme
@@ -180,7 +177,7 @@ Strict library isolation is tracked as module-privacy work.
 Reads and evaluates a file inline in the current top-level environment — no
 export/import boundary. Handy for scripts and REPL-style composition.
 The path literal is resolved by the same resolver on native JIT/AOT, VM source,
-and ESKB execution: the requiring file's directory is preferred, followed by
+and ESKB compilation. A project load searches the referring file's directory, followed by
 the project search path. Nested loads therefore resolve relative to the file
 that contains the nested `load`.
 

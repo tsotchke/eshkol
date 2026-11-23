@@ -71,6 +71,15 @@ async function main() {
   assert.equal(aliases.stdout.toString(), 'module-imports-ok\n');
   assert.deepEqual(aliases.stderr, []);
 
+  const paths = capture(() => batch(`
+    (require "./core/msgpack.esk")
+    (display (msgpack-decode (msgpack-encode 73))) (newline)
+    (display (guard (e (#t (error-object-message e))) (load "../sample.esk"))) (newline)
+    (display (guard (e (#t (error-object-message e))) (import "/sample.esk"))) (newline)
+  `));
+  assert.equal(paths.stdout.toString(), '73\nRefused module reference ../sample.esk\nRefused module reference /sample.esk\n');
+  assert.deepEqual(paths.stderr, []);
+
   const missing = capture(() => batch(`
     (display "visible-prefix")
     (require core.not-embedded)

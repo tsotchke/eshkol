@@ -45,14 +45,15 @@ module differently from another.
   - `signal.fft`     → `lib/signal/fft.esk`
   - `ml.optimization`→ `lib/ml/optimization.esk`
   - `math`           → `lib/math.esk`
-- **Path literals** — a string beginning with `/`, `./`, `../`, containing a
-  `/`, or ending in `.esk` — are treated verbatim (no dot→slash rewrite). This
-  is what makes `(load "some/dir.v2/file.esk")` work even when a directory name
-  contains a dot (e.g. macOS `$TMPDIR` like `/var/folders/<hash>.<r>/T`).
+- **Relative path literals** preserve dots within a directory name, as in
+  `(load "some/dir.v2/file.esk")`. Absolute paths and parent-directory
+  components raise a catchable condition naming the requested module.
 
 ### Search order
 
-For each resolved `path_part`, the loader tries, in order:
+The build identity reserves the installed source paths, including directory
+entry points. The resolver checks a reserved module's source digest in the
+compiler's installation. For project names it searches the following roots.
 
 1. the requiring file's directory (`base_dir`) — the directory of the file that
    wrote the `require`/`import`/`load`, so a program keeps finding its own
@@ -62,16 +63,8 @@ For each resolved `path_part`, the loader tries, in order:
 3. each colon-separated (`;` on Windows) entry of `$ESHKOL_PATH`, which the
    `-I` flags are merged into. Empty segments, missing directories, and
    non-directory entries are skipped (flagged only in debug mode).
-   `$ESHKOL_PATH` precedes the
-   install for the same reason `$ESHKOL_LIB_DIR` precedes every archive
-   location: a location you asked for must not be outranked by a copy that
-   ships with the compiler;
-4. the library directory `lib/` (auto-discovered relative to the `eshkol-run`
-   binary and the cwd), including **directory-as-module**: if `lib/web.esk` is
-   absent, `lib/web/web.esk` then `lib/web/index.esk` are tried, so
-   `(require web)` can find a package entry point;
-5. `lib/…` and `../lib/…` relative to the working directory — the build-tree
-   fallback for a layout whose module root resolved elsewhere.
+4. library roots configured through `$ESHKOL_LIB_DIR`, a workspace client,
+   or `$ESHKOL_SYSTEM_PREFIXES`.
 
 The first match wins and its canonical path is used. A path literal written
 without the `.esk` extension is probed both as written and with the extension
@@ -123,20 +116,16 @@ The whole auto-loaded set is compiled ahead of time into `build/stdlib.o`
 build path. These artifacts let both the JIT (`-r`) and AOT compiler skip
 re-codegen of ~440 stdlib functions on every run.
 
-- When `stdlib.o` (or `libstdlib.o`) is linked (auto-linked if not supplied
-  explicitly), the loader calls `collect_all_submodules("stdlib", ...)`, which
-  parses `lib/stdlib.esk` and recursively every module it requires, marking the
-  **entire transitive set** as *precompiled*.
+- The build records the transitive requires of `lib/stdlib.esk` in the same
+  manifest as the installed source digests. A matching `stdlib.o` or
+  `stdlib.bc` provides those modules.
 - In `process_requires`, a module found in the precompiled set is **not**
   code-generated from source again. Instead its `.esk` is parsed only to
   recover the function/type **declarations** (signatures, export list, return
   types); the actual machine code comes from `stdlib.o`. This is the "strip the
   bodies, keep the decls" path.
-- If `stdlib.o` is linked but its `.esk` sources cannot be found (e.g. the
-  object was installed without the accompanying `lib/` tree),
-  `collect_all_submodules` adds nothing, and the loader **fails loudly** rather
-  than silently re-loading `core.*` from source and producing duplicate symbols
-  at link time.
+- An object-only installation can supply the compiled bodies. Code that
+  needs source declarations also needs the matching installed module tree.
 
 ### `core.*` fallthrough
 

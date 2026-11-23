@@ -350,7 +350,7 @@ private:
 
     // Load a module, optionally preferring the precompiled stdlib object path.
     bool loadModule(const std::string& module_name, bool allow_precompiled_stdlib,
-                    bool enforce_visibility = true);
+                    bool enforce_visibility = true, bool need_exports = false);
 
     // Inject external declarations for previously-defined symbols
     void injectPreviousSymbols(llvm::Module* module);

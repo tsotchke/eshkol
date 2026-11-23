@@ -9,12 +9,12 @@ from pathlib import Path
 import sys
 
 
-MODULES = (
-    ("core.msgpack", "lib/core/msgpack.esk"),
-    ("core.utf8", "lib/core/utf8.esk"),
-    ("core.testing", "lib/core/testing.esk"),
-    ("core.list.query", "lib/core/list/query.esk"),
-    ("core.list.transform", "lib/core/list/transform.esk"),
+MODULE_PATHS = (
+    "core/msgpack.esk",
+    "core/utf8.esk",
+    "core/testing.esk",
+    "core/list/query.esk",
+    "core/list/transform.esk",
 )
 
 
@@ -34,18 +34,18 @@ def render(root: Path) -> bytes:
         "typedef struct { const char* name; const char* path; const char* source; } VmEmbeddedModule;",
     ]
     entries = []
-    for index, (name, relpath) in enumerate(MODULES):
-        data = (root / relpath).read_bytes()
+    for index, relpath in enumerate(MODULE_PATHS):
+        data = (root / "lib" / relpath).read_bytes()
         data.decode("utf-8")
         if b"\0" in data:
             raise ValueError(f"NUL byte in embedded source: {relpath}")
         digest = hashlib.sha256(data).hexdigest()
-        lines.append(f"/* sha256 {name} {digest} */")
+        lines.append(f"/* sha256 {relpath} {digest} */")
         lines.append(f"static const char vm_embedded_source_{index}[] =")
         lines.extend("    " + c_string(data[i : i + 72]) for i in range(0, len(data), 72))
         lines[-1] += ";"
         entries.append(
-            f'    {{"{name}", "/__eshkol_embedded__/{name}.esk", vm_embedded_source_{index}}}'
+            f'    {{"{relpath}", "/__eshkol_embedded__/{relpath}", vm_embedded_source_{index}}}'
         )
     lines.extend(
         [
@@ -87,11 +87,11 @@ def main() -> int:
         if actual != expected:
             print(f"generated header drift: {args.output}", file=sys.stderr)
             return 1
-        print(f"embedded module header matches {len(MODULES)} sources")
+        print(f"embedded module header matches {len(MODULE_PATHS)} sources")
         return 0
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(expected)
-    print(f"generated {args.output} from {len(MODULES)} module sources")
+    print(f"generated {args.output} from {len(MODULE_PATHS)} module sources")
     return 0
 
 

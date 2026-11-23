@@ -268,13 +268,9 @@ void set_module_search_diagnostic(ModuleSearchDiagnostic sink);
  * @brief Locate the Eshkol module source tree (the directory that carries
  *        `stdlib.esk` beside the `core/`, `agent/`, … subtrees).
  *
- * Prefers the first install_module_roots() entry that actually carries
- * `stdlib.esk` — that check is what keeps a downstream project's unrelated
- * `lib/`, or a release package's archive-only `lib/`, from being mistaken for
- * the module tree.  Falling back, returns the first root that is merely a
- * directory, never `$ESHKOL_LIB_DIR` (it names a directory of native
- * archives; accepting it would point `(require …)` at a tree with no `.esk`
- * files in it).
+ * This directory discovery API uses the presence of `stdlib.esk` as a
+ * layout hint. Module consumers should use resolve_module_source_path(),
+ * which applies the build's source identity and search policy per request.
  *
  * @return The resolved root; `origin == InstallOrigin::NotFound` and an empty
  *         path when no candidate exists.
@@ -287,39 +283,33 @@ InstallSearchRoot module_source_root();
  *
  * @p module_name is either a dotted module name (`core.list.transform`, whose
  * dots become directory separators before `.esk` is appended) or a path
- * literal — a string that starts with `/`, `./` or `../`, contains a `/`, or
- * ends in `.esk`.  Path literals are taken verbatim, with no dot-to-slash
- * rewrite, which is what makes `(load "some/dir.v2/file.esk")` work on a
- * directory whose name contains a dot (macOS `$TMPDIR` is
- * `/var/folders/<hash>.<rand>/T`).  A path literal without the extension is
- * probed both as given and with `.esk` appended, in each tier, so the
- * extension is optional wherever the file actually lives rather than only in
- * the working directory.
+ * literal. Relative path literals preserve dots within directory names.
+ * A path literal without the extension is probed both as written and with
+ * `.esk` appended. Rooted names and parent-directory components are refused.
  *
- * Search order (docs/reference/language/modules.md):
+ * Reserved names select an installed source file with the SHA-256 digest
+ * recorded in the build manifest. This includes directory entry points.
+ *
+ * Project search order (docs/reference/language/modules.md):
  *   1. @p base_dir — the directory of the file doing the require/import/load;
  *   2. the process working directory (the project root), so a project-rooted
  *      dotted name like `src.core.x` resolves against `./src/…`;
- *   3. `$ESHKOL_PATH` (the `-I` flags are merged into it), highest-priority
- *      user override, deliberately ahead of the install for the same reason
- *      `$ESHKOL_LIB_DIR` precedes every archive location;
- *   4. @p lib_dir, including directory-as-module entry points
- *      (`<lib>/web/web.esk`, then `<lib>/web/index.esk`);
- *   5. `lib/…` and `../lib/…` relative to the working directory — the
- *      build-tree fallback for a layout whose `lib_dir` resolved elsewhere.
+ *   3. `$ESHKOL_PATH` (including the `-I` entries) and library roots
+ *      configured through `$ESHKOL_LIB_DIR`;
+ *   4. an explicit module root supplied by the caller, including directory
+ *      entry points.
  *
  * Empty, missing and non-directory `$ESHKOL_PATH` segments are skipped.
  *
  * @param module_name Dotted module name or path literal, exactly as written.
  * @param base_dir    Requiring file's directory; `"."` when there is none.
- * @param lib_dir     Module tree root, as returned by module_source_root();
- *                    may be empty.
+ * @param lib_dir     Additional project root supplied by the caller.
  * @return Canonical path of the first match, or an empty string when the
  *         module is not on any tier.
  */
 std::string resolve_module_source_path(const std::string& module_name,
                                        const std::string& base_dir,
-                                       const std::string& lib_dir);
+                                       const std::string& lib_dir = {});
 
 /**
  * @brief Declare, for the duration of the scope, which source file's forms
