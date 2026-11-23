@@ -17071,6 +17071,27 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     target_link_libraries(http_sse_stream_test PRIVATE Threads::Threads)
     add_test(NAME http_sse_stream_test COMMAND http_sse_stream_test)
     set_tests_properties(http_sse_stream_test PROPERTIES TIMEOUT 30 LABELS "resource;ipc;sse")
+
+    if(ESHKOL_PYTHON3_EXECUTABLE AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE))
+        add_test(NAME http_sse_mixed_loop_test
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/run_http_sse_mixed_loop_test.sh"
+                "${CMAKE_CURRENT_SOURCE_DIR}")
+        set_tests_properties(http_sse_mixed_loop_test PROPERTIES
+            TIMEOUT 120 SKIP_RETURN_CODE 77 LABELS "resource;ipc;sse")
+
+        if(TARGET eshkol-run AND TARGET eshkol-agent-ffi)
+            foreach(mode jit aot)
+                add_test(NAME http_sse_scope_${mode}
+                    COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/http_sse_scope.py"
+                        --runner $<TARGET_FILE:eshkol-run>
+                        --link-dir "${CMAKE_CURRENT_BINARY_DIR}" --mode ${mode})
+                set_tests_properties(http_sse_scope_${mode} PROPERTIES
+                    TIMEOUT 300 LABELS "resource;ipc;sse"
+                    ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+            endforeach()
+        endif()
+    endif()
 endif()
 
 # Every harness that resolves the compiler, the VM or the compile database by
