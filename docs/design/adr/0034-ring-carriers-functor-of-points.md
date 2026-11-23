@@ -19,7 +19,7 @@ sources:
 ---
 # ADR-0034: Ring carriers: the functor-of-points evaluation model
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-08)
 - **Date:** 2026-10-24
 - **Decision owners:** numeric tower, AD, VM, `core.symbolic`, `core.dbsp` and exact linear algebra maintainers
 - **Depends on:** ADR-0027 (recursive Taylor level carrier), ADR-0025 (complex values carry derivatives), ADR-0009 (DBSP), ADR-0004 (type system), ADR-0012 (object ABI)

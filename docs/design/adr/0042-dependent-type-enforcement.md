@@ -1,6 +1,7 @@
 # ADR 0042: Dependent type enforcement — bidirectional checking over one core term language
 
-- Status: Proposed — implemented for the v1.9.0-types rung (this record's stages 1-4); stages 5-7 planned
+- Status: Accepted with conditions (2026-11-08) — implemented for the v1.9.0-types rung (this record's stages 1-4); stages 5-7 planned
+Conditions: to be recorded by the owner.
 - Date: 2026-10-30
 - Decision owners: language, types, frontend, bytecode VM
 - Scope: the v1.9.0-types rung of [ADR 0004](0004-type-system-trajectory.md): the checking

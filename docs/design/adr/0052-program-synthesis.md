@@ -1,6 +1,6 @@
 # ADR-0052: Program synthesis, synthesis holes and graph neural networks (v1.7.0-synthesis)
 
-**Status:** Proposed
+**Status:** On hold (2026-11-08)
 **Rung:** v1.7.0-synthesis
 **Scope:** `core.synthesis` (example-based synthesis), `ml.autograd` and
 `ml.gnn` (graph neural networks), compiler completion of `??` holes

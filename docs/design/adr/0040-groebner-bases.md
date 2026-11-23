@@ -13,7 +13,7 @@ sources:
 ---
 # ADR-0040: Groebner bases on ring carriers
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-08)
 - **Date:** 2026-10-29
 - **Decision owners:** `core.ring`, `core.symbolic`, `core.multimodular` and exact algebra maintainers
 - **Depends on:** ADR-0034 (ring carriers, the functor-of-points evaluation model)

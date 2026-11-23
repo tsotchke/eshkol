@@ -15,7 +15,7 @@ sources:
 ---
 # ADR-0035: Kripke-Joyal semantics for local truth
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Date:** 2026-10-24
 **Scope:** what it means in Eshkol for a proposition to hold of data that is
 only locally available. That is, the semantics of assertions, contracts and

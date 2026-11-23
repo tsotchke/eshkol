@@ -23,7 +23,7 @@ sources:
 ---
 # ADR-0043: Identity types, univalence and higher inductive types
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Date:** 2026-10-30
 **Scope:** the identity types of Eshkol's HoTT layer, path induction,
 transport, function extensionality, univalence, higher inductive types, and

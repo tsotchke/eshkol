@@ -13,7 +13,7 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0048-quantum-register-types-and-circuit-compilation.md:1",
   "source_path": "docs/design/adr/0048-quantum-register-types-and-circuit-compilation.md",
-  "status": "proposed",
+  "status": "accepted_with_conditions",
   "tags": [
     "imported-markdown"
   ],

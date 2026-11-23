@@ -20,7 +20,7 @@ sources:
 ---
 # ADR-0037: `core.simplicial` and `core.homological` — the algebraic-topology substrate
 
-**Status:** Proposed
+**Status:** Accepted (2026-11-08)
 **Date:** 2026-10-29
 **Scope:** the representation of simplicial sets, nerves, crossed modules,
 horns and simplicial maps; chain and cochain complexes over ring carriers

@@ -15,7 +15,7 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0052-program-synthesis.md:1",
   "source_path": "docs/design/adr/0052-program-synthesis.md",
-  "status": "proposed",
+  "status": "on_hold",
   "tags": [
     "imported-markdown",
     "v1.7.0-synthesis"

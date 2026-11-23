@@ -15,7 +15,7 @@
   "schema_version": "1.0",
   "source_anchor": "docs/design/adr/0045-algebraic-effects-and-handlers.md:1",
   "source_path": "docs/design/adr/0045-algebraic-effects-and-handlers.md",
-  "status": "proposed",
+  "status": "on_hold",
   "tags": [
     "imported-markdown",
     "effects",

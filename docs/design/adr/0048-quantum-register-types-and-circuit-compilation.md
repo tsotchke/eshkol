@@ -22,7 +22,8 @@ sources:
 ---
 # ADR-0048: Quantum register types, quantum regions and circuit compilation
 
-**Status:** Proposed
+**Status:** Accepted with conditions (2026-11-08)
+Conditions: to be recorded by the owner.
 **Date:** 2026-10-30
 **Scope:** the v2.0-starlight quantum items of the roadmap: register types
 `qreg<n>` with compile-time dimensions on the linear judgment that makes

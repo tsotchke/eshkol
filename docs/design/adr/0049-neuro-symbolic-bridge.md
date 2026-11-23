@@ -18,7 +18,8 @@ sources:
 ---
 # ADR-0049: The v1.5.0 neuro-symbolic bridge — Noesis for the cognition, Eshkol for the substrate
 
-**Status:** Proposed — Eshkol substrate and gap items implemented; Noesis
+**Status:** Accepted with conditions (2026-11-08) — Eshkol substrate and gap items implemented; Noesis
+Conditions: see ## Upstreaming proposal.
 upstreaming planned for v1.5.0 under the boundary process below
 **Scope:** The v1.5.0-intelligence items of [`ROADMAP.md`](../../../ROADMAP.md):
 symbol embeddings, soft unification, LSTM and GRU cells, differentiable logic
