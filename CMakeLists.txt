@@ -17045,6 +17045,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
 
     add_executable(http_sse_adapter_scaffold_test
         tests/agent/http_sse_adapter_scaffold_test.c
+        tests/agent/http_sse_fixture_support.c
         lib/agent/c/agent_http_server.c
         lib/core/resource_lease.c
         lib/core/event_loop.c
@@ -17059,6 +17060,7 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
 
     add_executable(http_sse_stream_test
         tests/agent/http_sse_stream_test.c
+        tests/agent/http_sse_fixture_support.c
         lib/agent/c/agent_http_sse_stream.c
         lib/agent/c/agent_http_server.c
         lib/agent/c/agent_sse.c

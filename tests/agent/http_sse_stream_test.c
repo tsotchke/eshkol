@@ -4,25 +4,23 @@
 
 #include "agent_http_sse_stream.h"
 #include "agent_sse_internal.h"
+#include "eshkol/agent_capabilities.h"
 #include "eshkol/core/event_loop.h"
 
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
 
-extern int64_t eshkol_http_server_create(int32_t port);
-extern int32_t eshkol_http_server_port(int64_t handle);
-extern int32_t eshkol_http_server_accept(int64_t handle, char* buf, int32_t buf_size,
-                                        int32_t timeout_ms);
-extern void eshkol_http_server_respond(int64_t handle, int32_t status,
-                                       const char* content_type, const char* body);
-extern void eshkol_http_server_close(int64_t handle);
+extern void eshkol_sse_test_set_network_allowed(int allowed);
+
+static char oversized[ESHKOL_SSE_MAX_CHUNK_BYTES + 1];
 
 struct fixture {
     int64_t server;
@@ -52,12 +50,17 @@ static int accept_request(int64_t server) {
     return fd;
 }
 
-static struct fixture open_fixture(void) {
+static struct fixture open_accepted_fixture(void) {
     struct fixture f = {0};
     f.server = eshkol_http_server_create(0);
     f.loop = eshkol_event_loop_open_handle(8);
     assert(f.server > 0 && f.loop > 0);
     f.peer = accept_request(f.server);
+    return f;
+}
+
+static struct fixture open_fixture(void) {
+    struct fixture f = open_accepted_fixture();
     assert(eshkol_http_sse_stream_begin(f.server, f.loop, 123u, &f.stream) == 0);
     return f;
 }
@@ -147,9 +150,26 @@ static int progress(struct fixture* f) {
     return status;
 }
 
+struct off_thread_send {
+    eshkol_http_sse_stream_t* stream;
+    int status;
+};
+
+static void* send_off_thread(void* context) {
+    struct off_thread_send* send = context;
+    send->status = eshkol_http_sse_stream_send_bytes(send->stream, oversized, sizeof(oversized),
+                                                     NULL, 0, NULL, 0);
+    return NULL;
+}
+
 static void test_http_and_receiver(void) {
     struct fixture f = open_fixture();
     assert(eshkol_http_sse_stream_send(f.stream, "early", NULL, NULL) == ESHKOL_IO_BUSY);
+    struct off_thread_send send = { .stream = f.stream };
+    pthread_t other;
+    assert(pthread_create(&other, NULL, send_off_thread, &send) == 0);
+    assert(pthread_join(other, NULL) == 0);
+    assert(send.status == ESHKOL_IO_INVALID);
     assert(progress(&f) == 0);
 
     /* Taking over the SSE peer must leave the listener available. */
@@ -167,6 +187,12 @@ static void test_http_and_receiver(void) {
     assert(eshkol_http_sse_stream_send(f.stream, "x", NULL, "bad\nid") == ESHKOL_IO_INVALID);
     assert(eshkol_http_sse_stream_send(f.stream, "x", "\xc0\x80", NULL) == ESHKOL_IO_INVALID);
     assert(eshkol_http_sse_stream_send(f.stream, "\xc0\x80", NULL, NULL) == ESHKOL_IO_INVALID);
+    const char embedded_nul[] = { 'a', 0, 'b' };
+    assert(eshkol_http_sse_stream_send_bytes(f.stream, "x", 1, NULL, 1, NULL, 0)
+           == ESHKOL_IO_INVALID);
+    assert(eshkol_http_sse_stream_send_bytes(f.stream, "x", 1, NULL, 0,
+                                            embedded_nul, sizeof(embedded_nul))
+           == ESHKOL_IO_INVALID);
     assert(progress(&f) == 0);
     assert(eshkol_http_sse_stream_deadline(f.stream) == idle);
     assert_peer_quiet(f.peer);
@@ -174,6 +200,8 @@ static void test_http_and_receiver(void) {
     assert(eshkol_http_sse_stream_send(f.stream, "caf\xc3\xa9\r\nsecond line", "", NULL) == 0);
     int64_t admitted = eshkol_http_sse_stream_deadline(f.stream);
     assert(eshkol_http_sse_stream_send(f.stream, "replacement", NULL, NULL) == ESHKOL_IO_BUSY);
+    assert(eshkol_http_sse_stream_send_bytes(f.stream, oversized, sizeof(oversized),
+                                            NULL, 0, NULL, 0) == ESHKOL_IO_BUSY);
     assert(eshkol_http_sse_stream_finish(f.stream) == ESHKOL_IO_BUSY);
     assert(eshkol_http_sse_stream_deadline(f.stream) == admitted);
     assert_peer_quiet(f.peer);
@@ -264,6 +292,38 @@ static void test_abandonment_and_timeout(void) {
     }
 }
 
+static void test_network_capability(void) {
+    struct fixture f = open_accepted_fixture();
+    eshkol_sse_test_set_network_allowed(0);
+    errno = 0;
+    assert(eshkol_http_sse_stream_begin(f.server, f.loop, 123u, &f.stream) == ESHKOL_IO_SYSTEM);
+    assert(errno == EACCES && f.stream == NULL);
+    assert_peer_quiet(f.peer);
+
+    /* An acquisition denied by policy must leave the HTTP client slot owned
+     * by the listener, so the existing complete-response route can use it. */
+    eshkol_sse_test_set_network_allowed(1);
+    eshkol_http_server_respond(f.server, 200, "text/plain", "ordinary-after-denial");
+    char response[512];
+    receive_to_eof(f.peer, response, sizeof(response));
+    assert(strstr(response, "\r\n\r\nordinary-after-denial"));
+    close(f.peer);
+
+    f.peer = accept_request(f.server);
+    assert(eshkol_http_sse_stream_begin(f.server, f.loop, 123u, &f.stream) == 0);
+    assert(progress(&f) == 0);
+    assert(eshkol_http_sse_stream_send(f.stream, "queued before revocation", NULL, NULL) == 0);
+    eshkol_sse_test_set_network_allowed(0);
+    errno = 0;
+    assert(eshkol_http_sse_stream_progress(f.stream) == ESHKOL_IO_SYSTEM);
+    assert(errno == EACCES);
+    receive_to_eof(f.peer, response, sizeof(response));
+    assert(*response_body(response) == 0);
+    release_stream(&f);
+    close_fixture(&f);
+    eshkol_sse_test_set_network_allowed(1);
+}
+
 static void test_idle_timeout(void) {
     struct fixture f = open_fixture();
     assert(progress(&f) == 0);
@@ -273,15 +333,17 @@ static void test_idle_timeout(void) {
     assert(progress(&f) == 0);
     assert(eshkol_http_sse_stream_deadline(f.stream) == idle);
     wait_until_expired(idle);
-    assert(progress(&f) == ESHKOL_IO_TIMEOUT);
-    release_stream(&f);
+    assert(eshkol_http_sse_stream_send_bytes(f.stream, oversized, sizeof(oversized),
+                                            NULL, 0, NULL, 0) == ESHKOL_IO_TIMEOUT);
     char response[512];
     receive_to_eof(f.peer, response, sizeof(response));
     assert(*response_body(response) == 0);
+    release_stream(&f);
     close_fixture(&f);
 }
 
 int main(int argc, char** argv) {
+    memset(oversized, 'x', sizeof(oversized));
     if (argc == 2 && strcmp(argv[1], "--idle") == 0) {
         test_idle_timeout();
         puts("HTTP SSE idle timeout passed");
@@ -291,6 +353,7 @@ int main(int argc, char** argv) {
     test_http_and_receiver();
     test_capacity();
     test_abandonment_and_timeout();
-    puts("HTTP SSE stream: 3/3 suites passed");
+    test_network_capability();
+    puts("HTTP SSE stream: 4/4 suites passed");
     return 0;
 }
