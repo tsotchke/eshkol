@@ -40,12 +40,74 @@
 #include "eshkol/types/refinement.h"
 #include "eshkol/frontend/macro_expander.h"
 #include "../frontend/vm_source_syntax.h"
+#include "eshkol/frontend/ownership.h"
+#include "eshkol/frontend/syntax_datum.h"
+#include "eshkol/logger.h"
+#include "eshkol/platform_runtime.h"
 
+#include <filesystem>
+#include <fstream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+
+// Parse @p text and macro-expand it, as the front end of either engine does.
+bool parseExpanded(const std::string& text, std::vector<eshkol_ast_t>& out) {
+    eshkol_reset_parse_errors();
+    eshkol_reset_parse_line_counter();
+    std::vector<eshkol_ast_t> asts;
+    std::istringstream in(text);
+    while (true) {
+        eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(in);
+        if (ast.type == ESHKOL_INVALID) break;
+        asts.push_back(ast);
+        if (eshkol_parse_had_error()) break;
+    }
+    if (eshkol_parse_had_error()) return false;
+    eshkol::MacroExpander expander;
+    out = expander.expandAll(asts);
+    return true;
+}
+
+// The native driver compiles a file named by (load "file") as part of the
+// unit that loads it. The ownership verdict reads the same unit here: each
+// loaded file's forms replace its load form, resolved beside the loading file.
+void inlineLoads(std::vector<eshkol_ast_t>& forms, std::set<std::string>& active) {
+    std::vector<eshkol_ast_t> unit;
+    for (auto& form : forms) {
+        const bool load = form.type == ESHKOL_OP && form.operation.op == ESHKOL_REQUIRE_OP &&
+                          form.operation.require_op.is_load &&
+                          form.operation.require_op.num_modules == 1 &&
+                          form.operation.require_op.module_names &&
+                          form.operation.require_op.module_names[0];
+        if (load) {
+            const std::string path = eshkol::platform::resolve_module_source_path(
+                form.operation.require_op.module_names[0],
+                eshkol::platform::current_requiring_directory(), "");
+            std::ifstream in(path);
+            if (!path.empty() && in && !active.count(path)) {
+                std::stringstream text;
+                text << in.rdbuf();
+                std::vector<eshkol_ast_t> loaded;
+                eshkol::platform::ScopedRequiringFile scope(path);
+                eshkol_set_parse_source_context(path.c_str());
+                if (parseExpanded(text.str(), loaded)) {
+                    active.insert(path);
+                    inlineLoads(loaded, active);
+                    active.erase(path);
+                    eshkol::splice_toplevel_forms(loaded);
+                    unit.insert(unit.end(), loaded.begin(), loaded.end());
+                    continue;
+                }
+            }
+        }
+        unit.push_back(form);
+    }
+    forms.swap(unit);
+}
 
 // Parse, macro-expand and type check @p source exactly as the native engine
 // does, then hand the checker and the flattened program to @p verdict.
@@ -140,11 +202,25 @@ extern "C" {
  */
 int eshkol_linear_check_source(const char* source, const char* source_name) {
     return checkSource(source, source_name,
-                       [](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>&) {
+                       [source_name](eshkol::hott::TypeChecker& checker, std::vector<eshkol_ast_t>& forms) {
+                           // The ownership verdict reads the same top-level forms
+                           // as native code generation: macro-expanded, with
+                           // every top-level begin spliced (R7RS 5.1).
+                           std::vector<eshkol_ast_t> unit = forms;
+                           eshkol::splice_toplevel_forms(unit);
+                           if (!eshkol_config_get()->unsafe_mode) {
+                               std::set<std::string> active;
+                               eshkol::platform::ScopedRequiringFile scope(source_name ? source_name : "");
+                               inlineLoads(unit, active);
+                               if (source_name) eshkol_set_parse_source_context(source_name);
+                           }
+                           const auto errors = eshkol_config_get()->unsafe_mode
+                               ? std::vector<std::string>{} : eshkol::checkOwnership(unit);
+                           for (const auto& error : errors) eshkol_error("%s", error.c_str());
                            // Structural violations (ADR-0046: rows, higher
                            // rank, session protocols) travel with the linear
                            // verdict, and the VM refuses them the same way.
-                           return static_cast<int>(checker.linearityViolations() +
+                           return static_cast<int>(errors.size() + checker.linearityViolations() +
                                                    checker.structuralViolations());
                        });
 }

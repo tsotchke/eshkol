@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: MIT
  *
  */
+#include <eshkol/frontend/ownership.h>
+#include "../core/ascription_tags.h"
 #include <functional>
 #include <eshkol/core/ast_routing.h>
 #include <eshkol/module_resolver.h>
@@ -1861,6 +1863,16 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
             // top-level statement order. Flatten once, right after macro
             // expansion, so every downstream pass sees a clean flat list.
             eshkol::splice_toplevel_forms(expanded_asts);   // R7RS 5.1: recursive
+
+            if (!eshkol_config_get()->unsafe_mode && !eshkol::strictVerdictApplied()) {
+                const auto errors = eshkol::checkOwnership(expanded_asts, nullptr,
+                    eshkol::OwnershipTransaction::current());
+                if (!errors.empty()) {
+                    eshkol_error("Ownership analysis failed:");
+                    for (const auto& error : errors) eshkol_error("%s", error.c_str());
+                    return std::make_pair(nullptr, nullptr);
+                }
+            }
 
             // Resolve the expanded unit against the shared NodeId-keyed
             // semantic substrate before backend-specific lowering. The result
@@ -8294,6 +8306,27 @@ Align EshkolLLVMCodeGen::lowLevelABIAlignment(Type* type) const {
         return module->getDataLayout().getABITypeAlign(type);
     }
 
+    static EshkolTagSet ascriptionTags(const hott_type_expr_t* type) {
+        if (!type) return 0;
+        switch (type->kind) {
+            case HOTT_TYPE_SUM:
+                return ascriptionTags(type->sum.left) | ascriptionTags(type->sum.right);
+            case HOTT_TYPE_NUMBER: return eshkol_ground_type_tags("number");
+            case HOTT_TYPE_ARROW:
+            case HOTT_TYPE_DEPENDENT: return eshkol_ground_type_tags("procedure");
+            case HOTT_TYPE_PRODUCT:
+            case HOTT_TYPE_SIGMA:
+            case HOTT_TYPE_PAIR: return eshkol_ground_type_tags("pair");
+            case HOTT_TYPE_LIST: return eshkol_ground_type_tags("list");
+            case HOTT_TYPE_VECTOR: return eshkol_ground_type_tags("vector");
+            case HOTT_TYPE_TENSOR: return eshkol_ground_type_tags("tensor");
+            case HOTT_TYPE_FORALL: return ascriptionTags(type->forall.body);
+            case HOTT_TYPE_REFINE: return ascriptionTags(type->refine.base);
+            case HOTT_TYPE_APP: return eshkol_ground_type_tags(type->app.head);
+            default: return eshkol_ground_type_tags(hott_type_to_string(type));
+        }
+    }
+
 eshkol::hott::TypeId EshkolLLVMCodeGen::resolveDeclaredHottTypeId(const hott_type_expr_t* type_expr) const {
         using namespace eshkol::hott;
 
@@ -10974,11 +11007,26 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenOperationTask(const eshkol_op
                 // but generate no runtime code (proof erasure)
                 co_return packNullToTaggedValue();
 
-            // Expression-level checked cast (the <type> <expr>): the type is
-            // erased; the value is exactly that of the wrapped expression. Pure
-            // passthrough — emits identical IR to writing <expr> directly.
-            case AstRoute::The:
-                co_return (co_await codegenASTTask(op->the_op.expr));
+            case AstRoute::The: {
+                auto inner = co_await codegenTypedASTTask(op->the_op.expr);
+                if (!inner.llvm_value) co_return nullptr;
+                Value* value = typedValueToTaggedValue(inner);
+                auto check = module->getOrInsertFunction("eshkol_value_has_type_tag",
+                    FunctionType::get(int32_type, {builder->getPtrTy(), int64_type}, false));
+                Function* current = builder->GetInsertBlock()->getParent();
+                IRBuilder<> entry(&current->getEntryBlock(), current->getEntryBlock().begin());
+                auto* slot = entry.CreateAlloca(tagged_value_type, nullptr, "ascription");
+                builder->CreateStore(value, slot);
+                auto* matches = builder->CreateCall(check, {slot,
+                    ConstantInt::get(int64_type, ascriptionTags(op->the_op.type_expr))});
+                BasicBlock* pass = BasicBlock::Create(*context, "ascription.pass", current);
+                BasicBlock* fail = BasicBlock::Create(*context, "ascription.raise", current);
+                builder->CreateCondBr(builder->CreateIsNotNull(matches), pass, fail);
+                builder->SetInsertPoint(fail);
+                arith_->emitTypeError("the: value does not satisfy the ascribed type");
+                builder->SetInsertPoint(pass);
+                co_return value;
+            }
 
             // Multiple Return Values operations
             case AstRoute::Values:
@@ -12814,21 +12862,6 @@ Value* EshkolLLVMCodeGen::codegenCall(const eshkol_operations_t* op) {
 ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             co_return nullptr;
-        }
-
-        // ((the <type> f) x) — an ascribed head. `the` is a pure no-op at
-        // runtime, so a call through it must behave exactly like a call to the
-        // wrapped expression. Unwrap and re-dispatch rather than teaching each
-        // head form about ascriptions: every case below (variable head, inline
-        // lambda, nested call, operation-result) then works through a cast.
-        // Unwrapping keeps `((the procedure f) 7)` on the same static paths
-        // as `(f 7)` instead of the general computed-operator path below.
-        if (op->call_op.func->type == ESHKOL_OP &&
-            op->call_op.func->operation.op == ESHKOL_THE_OP &&
-            op->call_op.func->operation.the_op.expr) {
-            eshkol_operations_t unwrapped = *op;
-            unwrapped.call_op.func = op->call_op.func->operation.the_op.expr;
-            co_return (co_await codegenCallTask(&unwrapped));
         }
 
         // ((lambda (x) body) arg) — inline lambda head
@@ -38041,6 +38074,7 @@ Value* EshkolLLVMCodeGen::codegenOwnedValue(Value* value) {
         return value;
     }
 
+// Codegen for (move value) - transfers ownership
 Value* EshkolLLVMCodeGen::codegenMove(const eshkol_operations_t* op) {
         if (!op || !op->move_op.value) {
             eshkol_error("Invalid move expression: missing value");
@@ -38057,50 +38091,24 @@ Value* EshkolLLVMCodeGen::codegenMove(const eshkol_operations_t* op) {
 Value* EshkolLLVMCodeGen::codegenMoveValue(const eshkol_operations_t* op, Value* value) {
         if (!op || !op->move_op.value || !value) return packNullToTaggedValue();
 
-        // Check if value is heap-allocated (has object header)
-        Value* type = getTaggedValueType(value);
-        Value* base_type = getBaseType(type);
-        Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        Value* is_callable = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
-        Value* has_header = builder->CreateOr(is_heap, is_callable);
-
-        Function* func = builder->GetInsertBlock()->getParent();
-        BasicBlock* consume_bb = BasicBlock::Create(*context, "move_consume", func);
-        BasicBlock* done_bb = BasicBlock::Create(*context, "move_done", func);
-        builder->CreateCondBr(has_header, consume_bb, done_bb);
-
-        // Set CONSUMED flag on the source object header
-        builder->SetInsertPoint(consume_bb);
-        Value* ptr_int = unpackInt64FromTaggedValue(value);
-        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-        Value* flags_ptr = builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -7));
-        Value* old_flags = builder->CreateLoad(int8_type, flags_ptr, "move_flags");
-        Value* new_flags = builder->CreateOr(old_flags, ConstantInt::get(int8_type, ESHKOL_OBJ_FLAG_CONSUMED));
-        builder->CreateStore(new_flags, flags_ptr);
-
-        // Null out the source binding if it's a variable reference
-        if (op->move_op.value->type == ESHKOL_VAR && op->move_op.value->variable.id) {
-            std::string var_name = op->move_op.value->variable.id;
-            auto it = symbol_table.find(var_name);
-            if (it != symbol_table.end()) {
-                Value* binding = it->second;
-                if (isa<AllocaInst>(binding) || isa<GlobalVariable>(binding)) {
-                    builder->CreateStore(packNullToTaggedValue(), binding);
-                }
-            }
+        const eshkol_ast_t* source = op->move_op.value;
+        if (source->type != ESHKOL_VAR || !source->variable.id) return value;
+        Value* storage = nullptr;
+        auto local = symbol_table.find(source->variable.id);
+        if (local != symbol_table.end()) {
+            storage = local->second;
+        } else {
+            auto global = global_symbol_table.find(source->variable.id);
+            if (global != global_symbol_table.end()) storage = global->second;
         }
-
-        // Clear the CONSUMED flag on the object for the new owner.
-        // The source binding is nulled out above, so the CONSUMED flag
-        // only needs to live on the source (which is now null).
-        // The new owner (receiver of move) gets a clean object.
-        Value* cleared_flags = builder->CreateAnd(old_flags,
-            ConstantInt::get(int8_type, ~ESHKOL_OBJ_FLAG_CONSUMED));
-        builder->CreateStore(cleared_flags, flags_ptr);
-
-        builder->CreateBr(done_bb);
-
-        builder->SetInsertPoint(done_bb);
+        // Ownership belongs to a binding. Clear only mutable tagged slots.
+        if (auto* slot = dyn_cast_or_null<AllocaInst>(storage)) {
+            if (slot->getAllocatedType() == tagged_value_type)
+                builder->CreateStore(packNullToTaggedValue(), slot);
+        } else if (auto* global = dyn_cast_or_null<GlobalVariable>(storage)) {
+            if (!global->isConstant() && global->getValueType() == tagged_value_type)
+                builder->CreateStore(packNullToTaggedValue(), global);
+        }
         return value;
     }
 

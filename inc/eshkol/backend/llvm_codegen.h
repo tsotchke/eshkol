@@ -3651,7 +3651,7 @@ private:
     Value* codegenOwnedValue(Value* value);
 
     // Codegen for (move value) - transfers ownership
-    // Sets CONSUMED flag on source object and nulls out the source binding
+    // Clears the mutable tagged slot belonging to the source binding
     Value* codegenMove(const eshkol_operations_t* op);
 
     // Apply the move effects to an already evaluated tagged value.

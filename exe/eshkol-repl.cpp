@@ -7,6 +7,7 @@
 //
 
 #ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+#include <eshkol/core/config.h>
 #include <eshkol/frontend/incrementalize.h>
 #endif
 #ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
@@ -1521,6 +1522,10 @@ int main(int argc, char** argv) {
         std::string arg = argv[i];
         if (arg == "--stdlib" || arg == "-s") {
             load_stdlib = true;
+        } else if (arg == "--unsafe") {
+            auto config = *eshkol_config_get();
+            config.unsafe_mode = true;
+            eshkol_config_set(&config);
         } else if (arg == "--machine" || arg == "-m") {
             machine_mode = true;
             load_stdlib = true; // Whole point of the mode is to be JIT-warm
@@ -1535,6 +1540,7 @@ int main(int argc, char** argv) {
             std::cout << "                  stderr; see docs/reference/runtime/eshkol-repl.md).\n";
             std::cout << "                  Suppresses banner / prompts; implies --stdlib\n";
             std::cout << "                  (warm-worker for sister projects).\n";
+            std::cout << "  --unsafe        Skip static type and ownership checks for legacy programs\n";
             std::cout << "  --help, -h      Show this help message\n";
             return 0;
         }

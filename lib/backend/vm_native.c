@@ -14,7 +14,7 @@
 #include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
 #include "../core/tensor_observation.h"
-#include "../core/value_type_names.h"
+#include "../core/ascription_tags.h"
 
 /* Seeded pseudorandom numbers use the hosted runtime's one canonical
  * drand48-compatible state on the native VM. The WASM VM has no hosted
@@ -19150,6 +19150,18 @@ tensor_inverse_done:
         (void)name_v;
 #endif
         vm_push(vm, BOOL_VAL(0));
+        break;
+    }
+
+    case VM_NATIVE_CHECK_ASCRIPTION: {
+        Value mask = vm_pop(vm);
+        Value value = vm_pop(vm);
+        if (mask.type != VAL_INT ||
+            !((uint64_t)mask.as.i & eshkol_tag_bit(vm_value_type_name_id(vm, value)))) {
+            vm_raise_error_msg(vm, "the: value does not satisfy the ascribed type");
+        } else {
+            vm_push(vm, value);
+        }
         break;
     }
 

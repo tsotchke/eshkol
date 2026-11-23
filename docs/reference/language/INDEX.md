@@ -45,6 +45,7 @@ it is called out explicitly.
 | 22 | Algebraic effects: `define-effect`, `handle`, `handle-shallow`, effect rows, `declare-effects`, `core.effects` | [effects.md](effects.md) |
 | 23 | Structural types: row-polymorphic records, higher-rank polymorphism, session types | [structural-types.md](structural-types.md) |
 | 24 | Linear handles: `open → borrowed → closed`, the borrow pattern, `--strict-resources` | [linear-handles.md](linear-handles.md) |
+| 25 | Ownership: `owned`, `move`, `borrow`, aliases and closures, what the default checker guarantees | [ownership.md](ownership.md) |
 
 ## Known-issue conventions
 

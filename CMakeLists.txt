@@ -15807,6 +15807,23 @@ if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-run AND
         TIMEOUT 900 LABELS "ownership;memory;regression")
 endif()
 
+if(ESHKOL_BUILD_TESTS AND ESHKOL_PYTHON3_EXECUTABLE AND TARGET eshkol-vm-standalone-test AND TARGET eshkol-repl)
+    add_test(NAME ascription_runtime
+        COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/typesystem/ascription_runtime.py
+            $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>)
+    foreach(case IN ITEMS move borrow joined_borrow borrow_result alias_data alias_closure
+                          closure_let_alias borrow_closure escape_set escape_call escape_hof
+                          escape_unknown captured_move loop_move unfollowed accepted loaded_alias)
+        add_test(NAME ownership_default_${case}
+            COMMAND ${ESHKOL_PYTHON3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/memory/ownership_default_modes.py
+                $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                $<TARGET_FILE:eshkol-repl> ${case})
+        set_tests_properties(ownership_default_${case} PROPERTIES TIMEOUT 900 LABELS "ownership;memory")
+    endforeach()
+endif()
+
 # Opt-in native resource checking has its own compiled falsifier corpus and
 # JIT/AOT loopback test. Runtime tests bind fresh ephemeral ports in Python;
 # no generated endpoint or executable is checked into the source tree.

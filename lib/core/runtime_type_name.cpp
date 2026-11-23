@@ -21,7 +21,7 @@
 #include <eshkol/logger.h>
 #include <eshkol/exhaustive_dispatch.h>
 
-#include "value_type_names.h"
+#include "ascription_tags.h"
 
 #include <cstdint>
 
@@ -291,6 +291,10 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
     // the symbol-intern path which allocates a proper symbol header and
     // ensures (eq? (type-name x) 'string) works.
     return interned_type_name(eshkol_value_type_name_id(value));
+}
+
+extern "C" int eshkol_value_has_type_tag(const eshkol_tagged_value_t* value, uint64_t tags) {
+    return value && (tags & eshkol_tag_bit(eshkol_value_type_name_id(*value))) != 0;
 }
 
 /**

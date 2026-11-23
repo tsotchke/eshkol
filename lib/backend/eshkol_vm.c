@@ -3050,6 +3050,7 @@ int eshkol_vm_top_int64(EshkolVmHandle* h, int64_t* out) {
 }
 
 #if !defined(ESHKOL_VM_LIBRARY_MODE) && !defined(GENERATE_PRELUDE_CACHE)
+#include <eshkol/core/config.h>
 int main(int argc, char** argv) {
     /* Engine parity: this binary links the front end, so it installs the REAL
      * linear (no-cloning) judgment — the same TypeChecker the LLVM engine uses,
@@ -3088,6 +3089,10 @@ int main(int argc, char** argv) {
         for (int i = 1; i < argc; i++) {
             if (!positional_only && strcmp(argv[i], "--") == 0) {
                 positional_only = 1;
+            } else if (!input && !positional_only && strcmp(argv[i], "--unsafe") == 0) {
+                eshkol_config_t config = *eshkol_config_get();
+                config.unsafe_mode = true;
+                eshkol_config_set(&config);
             } else if (!positional_only && strcmp(argv[i], "--trace") == 0) {
                 trace = 1; g_trace_on = 1;
             } else if (!positional_only && strcmp(argv[i], "--emit-eskb") == 0 && i + 1 < argc) {

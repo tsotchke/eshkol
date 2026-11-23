@@ -5,6 +5,7 @@
 //
 
 #include "repl_jit.h"
+#include <eshkol/core/introspection.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/ast_strings.h>
@@ -1442,6 +1443,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_raise_secondary_exception);
     ADD_SYMBOL(eshkol_make_exception);
     ADD_SYMBOL(eshkol_make_exception_with_header);
+    ADD_SYMBOL(eshkol_value_has_type_tag);
     ADD_SYMBOL(eshkol_push_exception_handler);
     ADD_SYMBOL(eshkol_raise_allocation_failure);
     ADD_SYMBOL(eshkol_pop_exception_handler);
@@ -3640,6 +3642,8 @@ bool ReplJITContext::loadModule(const std::string& module_name,
                 // unrelated call sites.
                 try {
                     execute(&ast_item);
+                } catch (const OwnershipRefusal&) {
+                    throw;
                 } catch (const std::exception& e) {
                     std::cerr << "[WARN] dependency load failed during module init: "
                               << e.what()
@@ -3662,6 +3666,9 @@ bool ReplJITContext::loadModule(const std::string& module_name,
             // Caller-owned heap result; this load path has no use for it.
             delete static_cast<int64_t*>(
                 executeBatch(batch_asts, true, module_path, content));
+        } catch (const OwnershipRefusal&) {
+            for (auto& ast_item : module_asts) eshkol_ast_clean(&ast_item);
+            throw;
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
@@ -3977,6 +3984,8 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     // from code that legitimately executed must not be mistaken for a
     // compile-time objection to this batch.
     CompilationUnit compilation_unit(*this);
+    OwnershipTransaction ownership(ownership_bindings_);
+    takeOwnershipRefusal();
 
     LLVMModuleRef c_module = source_path.empty()
         ? eshkol_generate_llvm_ir(
@@ -3998,6 +4007,9 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         if (!silent) {
             std::cerr << "Failed to generate LLVM IR from batch" << std::endl;
         }
+        if (takeOwnershipRefusal())
+            throw OwnershipRefusal("ownership analysis refused " +
+                                   (source_path.empty() ? module_name : source_path));
         throw std::runtime_error("LLVM IR generation failed for REPL batch");
     }
 
@@ -4164,6 +4176,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+    ownership.commit();
 
     for (const auto& [source_name, func_name_export, arity] : exported_function_infos) {
         uint64_t func_addr_export = lookupSymbol(func_name_export);
@@ -4389,6 +4402,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                         ast_item.operation.op == ESHKOL_IMPORT_OP) {
                         try {
                             execute(&ast_item);
+                        } catch (const OwnershipRefusal&) {
+                            throw;
                         } catch (const std::exception& e) {
                             // See companion site at executeFile() — warn so
                             // dependency-load failures don't surface as
@@ -4412,6 +4427,9 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 try {
                     last_result = executeBatch(batch_asts, true,
                                                canonical_path, content);
+                } catch (const OwnershipRefusal&) {
+                    for (auto& ast_item : file_asts) eshkol_ast_clean(&ast_item);
+                    throw;
                 } catch (const std::exception& e) {
                     // Loaded-file batch failed.  Warn so the user knows the
                     // file partially failed to load — silent failure here
@@ -4524,6 +4542,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Compilation span for the addModule() gate; see executeBatch() for why it
     // opens immediately before codegen rather than at function entry.
     CompilationUnit compilation_unit(*this);
+    OwnershipTransaction ownership(ownership_bindings_);
 
     // Generate LLVM IR using the existing Eshkol compiler
     std::string module_name = "__repl_module_" + std::to_string(eval_id);
@@ -4539,6 +4558,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                             persistent_macro_asts_.end());
     }
     codegen_asts.push_back(*ast);
+    takeOwnershipRefusal();
     // Optional host test rendezvous. It is a no-op in production and lets the
     // EREPL self-test deterministically request SIGINT while this C++ compile
     // path is active, before generated code can be entered.
@@ -4549,6 +4569,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         codegen_asts.data(), codegen_asts.size(), module_name.c_str());
 
     if (!c_module) {
+        if (takeOwnershipRefusal()) throw OwnershipRefusal("ownership analysis refused the input");
         throw std::runtime_error("Failed to generate LLVM IR from AST");
     }
 
@@ -4693,6 +4714,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+    ownership.commit();
 
     for (const auto& [func_name_export, arity] : exported_function_infos) {
         uint64_t func_addr_export = lookupSymbol(func_name_export);

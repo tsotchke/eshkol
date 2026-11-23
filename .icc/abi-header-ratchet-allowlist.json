@@ -112,6 +112,13 @@
       "from": 7,
       "to": 6,
       "reason": "Numeric subtype tests share the subtype accessor for rational and i128 payloads."
+    },
+    {
+      "class": "D2_ir_field_offset",
+      "path": "lib/backend/llvm_codegen.cpp",
+      "from": 8,
+      "to": 7,
+      "reason": "Ownership move lowering removes an inline negative-offset GEP into the object header flags byte in lib/backend/llvm_codegen.cpp."
     }
   ]
 }

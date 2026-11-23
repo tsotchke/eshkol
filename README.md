@@ -57,7 +57,7 @@ See the [latest published release](https://github.com/tsotchke/eshkol/releases/l
 Eshkol brings **mathematical computing to Lisp** and delivers what other languages promise:
 
 - **True automatic differentiation** - Not numerical approximation. Exact symbolic, forward-mode, and reverse-mode AD with full vector calculus (∇, ∇·, ∇×, ∇²) on both the LLVM backend and the bytecode VM. `divergence`/`curl` were central-difference approximations (`h=1e-7`) on the VM until 2026-08-26; both now seed one forward dual per input variable and read the tangent of each output component, so a gradient field's curl is exactly `#(0 0 0)` rather than `#(1.1102230246251565e-09 ...)`, and `(ad-finite-difference-evals)` reads 0. Cross-engine agreement is measured, not asserted: `tests/vm_parity/corpus/72_curl_field_shapes.esk`
-- **Ownership and type annotations** - `owned`, `move`, and `borrow` express ownership intent. The native runner performs ownership analysis, while LLVM code generation emits flag operations and selected runtime checks. These mechanisms do not establish complete alias-safe lifetime checking or proof-carrying erasure. `(the <type> expr)` is a trusted ascription; the remaining proof obligations are tracked in ADR-0004.
+- **Ownership and type annotations** - The native compiler, JIT, REPL and hosted bytecode compiler check moves, borrows, and every alias, closure and stored reference to an owned value before execution. Legacy programs can use `--unsafe` to skip static checks. A successful `(the <type> expr)` returns the evaluated operand. A runtime tag mismatch raises a catchable condition.
 - **Explicit reclamation points** - Region teardown runs synchronously, including escape traversal and promotion. Eshkol does not run an independently scheduled heap collector; region-exit cost still depends on the objects and graph being processed.
 - **Native compilation** - LLVM backend generates machine code competitive with hand-written C while preserving high-level expressiveness
 - **Web platform** - Compiles to WebAssembly with a 97-binding `web-*` browser API (`lib/web/web.esk`). The project website is itself written in Eshkol. AD works in the browser via dual number propagation through the 72-opcode core bytecode VM
@@ -526,13 +526,19 @@ Each cons cell stores **complete type information** in both car and cdr position
 `ESHKOL_VALUE_CALLABLE`. `type-name` gives the readable name as a symbol:
 `(map type-name mixed-list)` is `(integer string procedure tensor)`.
 
-### 3. Region Memory Management and Ownership Checks
+### 3. Region Memory Management and Compile-Time Ownership Safety
 
-Native ownership analysis and selected runtime flag checks enforce particular
-constraints. Region arenas, escape promotion, and borrow checks do not provide
-general alias-safe lifetime proofs or guarantee compile-time prevention of every
-use-after-free or double-free. See the [memory model](docs/reference/runtime/memory-model.md)
-for reclamation triggers and backend limits.
+Arena allocation with **compile-time ownership tracking** provides memory safety
+for owned values. Linear ownership and borrow checking prevent use-after-free
+and double-free of owned values at compilation time, on the JIT, AOT, the REPL
+and the bytecode VM alike: before any code is generated, the checker refuses
+every read or move of an owned value after it has been moved, whether through
+its owner, another binding, a data structure, a closure, a loop variable or a
+procedure that keeps its argument. Region exits reclaim arena memory
+deterministically and promote the values that escape. See
+[ownership](docs/reference/language/ownership.md) for the exact rules and the
+[memory model](docs/reference/runtime/memory-model.md) for reclamation
+triggers.
 
 ### 4. Three-Mode Automatic Differentiation
 
