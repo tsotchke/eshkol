@@ -13,6 +13,7 @@ sources:
   - lib/core/quantum/moonlab.esk
   - lib/types/quantum_types.cpp
   - tests/typesystem/qreg_corpus_gate.sh
+  - tests/stdlib/quantum_authority_test.esk
   - tests/stdlib/quantum_register_test.esk
   - tests/stdlib/quantum_optimize_test.esk
   - tests/stdlib/quantum_route_test.esk
@@ -114,6 +115,23 @@ measurement stream), `(optimize . #f)` (run the recorded gates as written),
 region keeps the logical-to-physical layout) and `(backend . b)`
 (`statevector-backend`, the default, or `moonlab-backend`).
 `(qregion-gate-log qr)` is the circuit a region has executed so far.
+
+With two wires, the built-in state-vector backend and no coupling graph, the
+region checks the exact operator of an optimized tape before dispatch. For
+example, controlled Y followed by controlled X emits CZ and S on the control.
+A changed correction that fails the check raises an error before the backend
+runs. An ordinary optimization that only preserves global phase falls back to
+the original tape, as does an inexact source. If preparation of the result
+fails, the pending measurement can be retried on the same register.
+
+```scheme
+(require core.quantum)
+(define source (make-qcircuit 2 '((Sdg 1) (CNOT 0 1) (S 1) (CNOT 0 1))))
+(with-quantum-region (qr)
+  (let ((r (qapply-circuit (qalloc qr 2) source)))
+    (qmeasure r)
+    (qregion-gate-log qr)))   ;; => ((CZ 0 1) (S 0))
+```
 
 ## Circuits
 

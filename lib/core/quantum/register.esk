@@ -21,7 +21,7 @@
 ;;; it is live.
 ;;;
 ;;; Representation (public):
-;;;   region    #(qregion open? width backend state pending live -
+;;;   region    #(qregion open? width backend state pending live prepare
 ;;;                       options executed measured)
 ;;;   register  #(qreg region wires live?)  wires: region wire numbers, in
 ;;;             register order (register qubit i is wire (list-ref wires i))
@@ -103,7 +103,16 @@
 
 (define (make-qregion opts)
   (let ((backend (qr-option opts 'backend statevector-backend)))
-    (vector 'qregion #t 0 backend ((vector-ref backend 2)) '() '() #f opts '() 0 #f)))
+    (vector 'qregion #t 0 backend ((vector-ref backend 2)) '() '()
+            (and (eq? backend statevector-backend)
+                 (let ((scratch (vector #f)))
+                   ;; A store here promotes values into the region's creation arena.
+                   (lambda (value)
+                     (vector-set! scratch 0 value)
+                     (let ((stable (vector-ref scratch 0)))
+                       (vector-set! scratch 0 #f)
+                       stable))))
+            opts '() 0 #f)))
 (define (qregion? r) (and (vector? r) (= 12 (vector-length r)) (eq? (vector-ref r 0) 'qregion)))
 (define (qregion-open? r) (vector-ref r 1))
 (define (qregion-width r) (vector-ref r 2))
@@ -127,28 +136,93 @@
 ;; identity; with one, routing moves logical wires and the layout follows.
 (define (qr-physical r w) (let ((l (vector-ref r 11))) (if l (vector-ref l w) w)))
 
-;; compile the pending gates (optimise, route) and run them on the backend
+;; Snapshot the list spine and each instruction. An admitted exact gate here
+;; has scalar wire/angle operands. The source, optimizer input and authorized
+;; dispatch tape must not share instruction pairs.
+(define (qr-copy-gates gates)
+  (map (lambda (g) (map (lambda (x) x) g)) gates))
+
+;; Q1 proposal for a whole two-wire CY ; CX tape. CY is represented by
+;; Sdg(t), CNOT(c,t), S(t). The scalar witness has U(old) = phase U(new).
+;; The region consumer independently checks the complete emitted operator.
+(define (qr-controlled-pauli-proposal circuit)
+  (let ((gs (qcircuit-gates circuit)))
+    (and (= 2 (qcircuit-width circuit)) (= 4 (length gs))
+         (let ((cx (cadr gs)))
+           (and (eq? (car cx) 'CNOT)
+                (let ((control (cadr cx)) (target (caddr cx)))
+                  (and (equal? gs (list (list 'Sdg target) cx (list 'S target) cx))
+                       (let* ((old (make-qcircuit 1 '((Y 0) (X 0))))
+                              (new (make-qcircuit 1 '((Z 0))))
+                              (K (qcircuit-exact-scalars old new))
+                              (ratio (linear-map-proportional (qcircuit-exact-unitary old K)
+                                                              (qcircuit-exact-unitary new K)))
+                              (correction (cond ((not ratio) #f)
+                                                ((scalars-equal? K ratio (scalars-phase K 1/2)) 'S)
+                                                ((scalars-equal? K ratio (scalars-phase K -1/2)) 'Sdg)
+                                                (else #f))))
+                         (and correction
+                              (make-qcircuit 2 (list (list 'CZ control target)
+                                                    (list correction control))))))))))))
+
+(define (qr-statevector-tape source optimize?)
+  (let ((original (make-qcircuit 2 (qr-copy-gates source))))
+    (if (or (not optimize?) (not (qcircuit-exact? original)))
+        original
+        (let* ((input (make-qcircuit 2 (qr-copy-gates source)))
+               (corrected (qr-controlled-pauli-proposal input))
+               (proposal (or corrected (qopt-optimize input)))
+               (tape (make-qcircuit (qcircuit-width proposal) (qr-copy-gates (qcircuit-gates proposal)))))
+          (cond ((and (= 2 (qcircuit-width tape)) (qcircuit-exact? tape)
+                      (or (equal? (qcircuit-gates original) (qcircuit-gates tape))
+                          (qcircuit-equal-exact? original tape))) tape)
+                (corrected (error "core.quantum: rejected emitted two-wire operator"))
+                ;; The general optimizer may legally discard a global phase.
+                (else original))))))
+
+(define (qr-checked-statevector? r)
+  (and (= 2 (qregion-width r))
+       (eq? (qr-backend r) statevector-backend)
+       (not (qr-option (vector-ref r 8) 'coupling #f))))
+
+(define (qr-flush-checked! r pending)
+  (let* ((tape (qr-statevector-tape pending (qr-option (vector-ref r 8) 'optimize #t)))
+         (gates (qcircuit-gates tape))
+         (log (append (reverse (qr-copy-gates gates)) (vector-ref r 9)))
+         (state (quantum-region-state r))
+         (working (vector (vector-copy (vector-ref state 0))))
+         (result ((vector-ref (qr-backend r) 4) working 2 gates))
+         ;; Prepare both ownership transfers before clearing the public queue.
+         (prepare (vector-ref r 7))
+         (stable-log (prepare log))
+         (stable-amps (prepare (vector-ref result 0))))
+    (vector-set! r 5 '())
+    (vector-set! r 9 stable-log)
+    (vector-set! state 0 stable-amps)))
+
 (define (qr-flush! r)
   (let ((pending (reverse (vector-ref r 5))))
     (if (pair? pending)
-        (let* ((w (qregion-width r))
-               (c (make-qcircuit w pending))
-               (opts (vector-ref r 8))
-               (c1 (if (qr-option opts 'optimize #t) (qopt-optimize c) c))
-               (cg (qr-option opts 'coupling #f))
-               (c2 (if cg
-                       (begin
-                         (if (not (= (coupling-size cg) w))
-                             (error "core.quantum: a region compiled for a coupling graph allocates exactly its qubits before the first measurement"
-                                    (coupling-size cg) w))
-                         (if (not (vector-ref r 11)) (vector-set! r 11 (list->vector (iota w))))
-                         (let ((routed (qroute c1 cg (list (cons 'layout (vector-copy (vector-ref r 11)))))))
-                           (vector-set! r 11 (qrouting-final-layout routed))
-                           (qrouting-circuit routed)))
-                       c1)))
-          (vector-set! r 5 '())
-          (vector-set! r 9 (append (reverse (qcircuit-gates c2)) (vector-ref r 9)))
-          (vector-set! r 4 ((vector-ref (qr-backend r) 4) (quantum-region-state r) w (qcircuit-gates c2)))))
+        (if (qr-checked-statevector? r)
+            (qr-flush-checked! r pending)
+            (let* ((w (qregion-width r))
+                   (c (make-qcircuit w pending))
+                   (opts (vector-ref r 8))
+                   (c1 (if (qr-option opts 'optimize #t) (qopt-optimize c) c))
+                   (cg (qr-option opts 'coupling #f))
+                   (c2 (if cg
+                           (begin
+                             (if (not (= (coupling-size cg) w))
+                                 (error "core.quantum: a region compiled for a coupling graph allocates exactly its qubits before the first measurement"
+                                        (coupling-size cg) w))
+                             (if (not (vector-ref r 11)) (vector-set! r 11 (list->vector (iota w))))
+                             (let ((routed (qroute c1 cg (list (cons 'layout (vector-copy (vector-ref r 11)))))))
+                               (vector-set! r 11 (qrouting-final-layout routed))
+                               (qrouting-circuit routed)))
+                           c1)))
+              (vector-set! r 5 '())
+              (vector-set! r 9 (append (reverse (qcircuit-gates c2)) (vector-ref r 9)))
+              (vector-set! r 4 ((vector-ref (qr-backend r) 4) (quantum-region-state r) w (qcircuit-gates c2))))))
     r))
 
 (define (qr-close! r)
@@ -188,11 +262,14 @@
 (define (qreg-live? q) (vector-ref q 3))
 
 ;; take a register for an operation: it must be live, and it is consumed
-(define (qreg-take! q who)
+(define (qreg-check-live q who)
   (if (not (qreg? q)) (error (string-append "core.quantum: " who ": not a quantum register") q))
   (qr-check-open (qreg-region q) who)
   (if (not (qreg-live? q))
       (error (string-append "core.quantum: " who ": the register was already consumed (a register is used once)")))
+  q)
+(define (qreg-take! q who)
+  (qreg-check-live q who)
   (vector-set! q 3 #f)
   q)
 (define (qreg-wire q i who)
@@ -258,9 +335,11 @@
 
 ;; measure every qubit of the register (consumes it); bits in register order
 (define (%qmeasure q)
-  (qreg-take! q "qmeasure")
+  (qreg-check-live q "qmeasure")
   (let ((r (qreg-region q)))
-    (qr-flush! r)
+    (if (qr-checked-statevector? r)
+        (begin (qr-flush! r) (vector-set! q 3 #f))
+        (begin (vector-set! q 3 #f) (qr-flush! r)))
     (let ((bits ((vector-ref (qr-backend r) 5) (quantum-region-state r) (qregion-width r)
                  (map (lambda (w) (qr-physical r w)) (qreg-wires q))
                  (lambda () (qr-uniform r)))))
