@@ -62,6 +62,34 @@ static struct fixture open_fixture(void) {
     return f;
 }
 
+static void receive_exact(int fd, char* result, size_t size) {
+    while (size) {
+        ssize_t count = recv(fd, result, size, 0);
+        if (count < 0 && errno == EINTR) continue;
+        assert(count > 0);
+        result += count;
+        size -= (size_t)count;
+    }
+}
+
+static void receive_headers(int fd, char* result, size_t cap) {
+    for (size_t size = 1; size < cap; ++size) {
+        receive_exact(fd, result + size - 1, 1);
+        if (size >= 4 && memcmp(result + size - 4, "\r\n\r\n", 4) == 0) {
+            result[size] = 0;
+            return;
+        }
+    }
+    assert(!"expected the HTTP header terminator");
+}
+
+static void assert_peer_quiet(int fd) {
+    struct pollfd peer = { .fd = fd, .events = POLLIN };
+    int ready;
+    do ready = poll(&peer, 1, 0); while (ready < 0 && errno == EINTR);
+    assert(ready == 0);
+}
+
 static size_t receive_to_eof(int fd, char* result, size_t cap) {
     size_t size = 0;
     while (size + 1 < cap) {
@@ -132,34 +160,61 @@ static void test_http_and_receiver(void) {
     assert(strstr(response, "\r\n\r\nordinary-ok"));
     close(ordinary);
 
+    receive_headers(f.peer, response, sizeof(response));
+    assert(*response_body(response) == 0);
+    int64_t idle = eshkol_http_sse_stream_deadline(f.stream);
     assert(eshkol_http_sse_stream_send(f.stream, "x", "bad\r\ninjected", NULL) == ESHKOL_IO_INVALID);
+    assert(eshkol_http_sse_stream_send(f.stream, "x", NULL, "bad\nid") == ESHKOL_IO_INVALID);
+    assert(eshkol_http_sse_stream_send(f.stream, "x", "\xc0\x80", NULL) == ESHKOL_IO_INVALID);
     assert(eshkol_http_sse_stream_send(f.stream, "\xc0\x80", NULL, NULL) == ESHKOL_IO_INVALID);
-    assert(eshkol_http_sse_stream_send(f.stream, "caf\xc3\xa9\r\nsecond line", NULL, NULL) == 0);
+    assert(progress(&f) == 0);
+    assert(eshkol_http_sse_stream_deadline(f.stream) == idle);
+    assert_peer_quiet(f.peer);
+
+    assert(eshkol_http_sse_stream_send(f.stream, "caf\xc3\xa9\r\nsecond line", "", NULL) == 0);
     int64_t admitted = eshkol_http_sse_stream_deadline(f.stream);
     assert(eshkol_http_sse_stream_send(f.stream, "replacement", NULL, NULL) == ESHKOL_IO_BUSY);
     assert(eshkol_http_sse_stream_finish(f.stream) == ESHKOL_IO_BUSY);
     assert(eshkol_http_sse_stream_deadline(f.stream) == admitted);
+    assert_peer_quiet(f.peer);
     assert(progress(&f) == 0);
     assert(eshkol_http_sse_stream_deadline(f.stream) > admitted);
 
-    assert(eshkol_http_sse_stream_finish(f.stream) == 0);
-    assert(progress(&f) == ESHKOL_HTTP_SSE_FINISHED);
-    assert(eshkol_http_sse_stream_progress(f.stream) == ESHKOL_IO_INVALID);
-    release_stream(&f);
-    receive_to_eof(f.peer, response, sizeof(response));
-    char* body = response_body(response);
-    assert(strcmp(body, "1f\r\ndata: caf\xc3\xa9\ndata: second line\n\n\r\n0\r\n\r\n") == 0);
-
+    /* Bound the live TCP reads independently of kernel packet coalescing.
+     * Decode the chunk-size line and trailer separately from the SSE payload. */
+    const char canonical[] = "1f\r\ndata: caf\xc3\xa9\ndata: second line\n\n\r\n";
+    char wire[sizeof(canonical) - 1];
+    enum { payload_start = 4, utf8_split = 14, blank_line = 34, payload_end = 35 };
     eshkol_sse_parser_t* parser = eshkol_sse_parser_create();
     assert(parser);
-    assert(eshkol_sse_parser_feed(parser, body + 4, 30) == 1);
+    receive_exact(f.peer, wire, utf8_split);
+    assert(memcmp(wire, "1f\r\n", payload_start) == 0);
+    assert((unsigned char)wire[utf8_split - 1] == 0xc3);
+    assert(eshkol_sse_parser_feed(parser, wire + payload_start, utf8_split - payload_start) == 1);
     assert(eshkol_sse_parser_next(parser) == NULL);
-    assert(eshkol_sse_parser_feed(parser, body + 34, 1) == 1);
+
+    receive_exact(f.peer, wire + utf8_split, blank_line - utf8_split);
+    assert((unsigned char)wire[utf8_split] == 0xa9);
+    assert(eshkol_sse_parser_feed(parser, wire + utf8_split, blank_line - utf8_split) == 1);
+    assert(eshkol_sse_parser_next(parser) == NULL);
+
+    receive_exact(f.peer, wire + blank_line, payload_end - blank_line);
+    assert(eshkol_sse_parser_feed(parser, wire + blank_line, payload_end - blank_line) == 1);
     eshkol_sse_event_t* event = eshkol_sse_parser_next(parser);
     assert(event && strcmp(eshkol_sse_event_data(event), "caf\xc3\xa9\nsecond line") == 0);
     assert(eshkol_sse_parser_next(parser) == NULL);
     eshkol_sse_event_free(event);
     eshkol_sse_parser_destroy(parser);
+
+    receive_exact(f.peer, wire + payload_end, sizeof(wire) - payload_end);
+    assert(sizeof(wire) == 37 && memcmp(wire, canonical, sizeof(wire)) == 0);
+    assert(eshkol_http_sse_stream_finish(f.stream) == 0);
+    assert_peer_quiet(f.peer);
+    assert(progress(&f) == ESHKOL_HTTP_SSE_FINISHED);
+    assert(eshkol_http_sse_stream_progress(f.stream) == ESHKOL_IO_INVALID);
+    release_stream(&f);
+    assert(receive_to_eof(f.peer, response, sizeof(response)) == 5);
+    assert(memcmp(response, "0\r\n\r\n", 5) == 0);
     close_fixture(&f);
 }
 
