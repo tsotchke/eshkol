@@ -2,7 +2,7 @@
 kind: reference
 status: current
 owner-area: stdlib
-since: v2.0-starlight
+since: v2.0.0-starlight
 sources:
   - lib/core/quantum.esk
   - lib/core/quantum/circuit.esk

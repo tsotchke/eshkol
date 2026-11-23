@@ -1,7 +1,7 @@
 ---
 kind: explanation
 status: current
-owner-area: numeric
+owner-area: tensors
 since: v1.4.0
 sources:
   - lib/core/arena_memory.h

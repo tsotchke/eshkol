@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/compiler/mix.esk
+  - scripts/run_mix_verify_gate.sh
+  - scripts/run_mix_gate.sh
+---
 # `core.compiler.mix`
 
 An optional, MIT-licensed compiler workbench for the versioned `mix-v1`

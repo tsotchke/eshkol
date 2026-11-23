@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: platform
+since: v1.8.0-platform
+sources:
+  - lib/platform/window.esk
+  - lib/platform/audio.esk
+  - lib/platform/midi.esk
+  - inc/eshkol/core/handle.h
+---
 # Platform Layer: Windows, Events, Real-Time Audio, MIDI
 
 **Status:** v1.8.0-platform. Design record: [ADR-0053](../design/adr/0053-platform-layer.md).

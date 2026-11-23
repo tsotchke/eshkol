@@ -1,3 +1,11 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/utf8.esk
+---
 # `core.utf8` — strict UTF-8 validation
 
 **Source**: [`lib/core/utf8.esk`](../../../lib/core/utf8.esk)

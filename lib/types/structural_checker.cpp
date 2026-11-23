@@ -1353,6 +1353,24 @@ struct StructuralChecker::Impl {
             subsCheckRho(a->a, b->a, node);
             return;
         }
+        if (a->tag == Tag::Arrow && b->tag == Tag::Arrow && a->b != nullptr &&
+            b->args.size() >= a->args.size()) {
+            // A procedure with a rest parameter serves wherever a function of
+            // at least its fixed arity is expected: each expected argument
+            // beyond its fixed parameters (and an expected rest, if any) is
+            // received by the rest parameter. `+` : (-> (... number) number)
+            // is a valid (-> number number number). The converse does not
+            // hold, so a fixed-arity procedure never matches an expected rest.
+            if (a->mode == Mode::OneShot && b->mode == Mode::Unrestricted) {
+                fail(node, "a one-shot function (-o) is used where a function that may be "
+                           "called many times is expected: " + s.show(a) + " vs " + s.show(b));
+            }
+            for (size_t i = 0; i < a->args.size(); ++i) subsCheck(b->args[i], a->args[i], node);
+            for (size_t i = a->args.size(); i < b->args.size(); ++i) subsCheck(b->args[i], a->b, node);
+            if (b->b) subsCheck(b->b, a->b, node);
+            subsCheckRho(a->a, b->a, node);
+            return;
+        }
         if (a->tag == Tag::Record && b->tag == Tag::Record) {
             // Width subtyping where the expected record is closed: the
             // provided record may carry more fields (ADR-0046). Open rows

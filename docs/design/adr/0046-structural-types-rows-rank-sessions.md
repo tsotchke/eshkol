@@ -1,3 +1,14 @@
+---
+kind: explanation
+status: current
+owner-area: types
+since: v1.9.0
+sources:
+  - inc/eshkol/types/structural_types.h
+  - lib/core/records.esk
+  - lib/core/sessions.esk
+  - tests/types_ext/types_ext_gate.sh
+---
 # ADR-0046: Structural types: row polymorphism, arbitrary rank and session types
 
 - **Status:** Accepted with conditions (2026-11-08) — implemented for v1.9.0, awaiting the root's ruling (`inc/eshkol/types/structural_types.h`, `lib/types/structural_types.cpp`, `lib/types/structural_checker.cpp`, `lib/core/records.esk`, `lib/core/sessions.esk`)

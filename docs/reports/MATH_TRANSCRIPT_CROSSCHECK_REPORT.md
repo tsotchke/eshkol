@@ -1,3 +1,16 @@
+---
+kind: report
+status: historical
+owner-area: testing
+since: v1.4.0-connection
+sources:
+  - lib/core/json.esk
+  - lib/core/transcript.esk
+  - tests/stdlib/multimodular_test.esk
+  - tests/stdlib/transcript_test.esk
+  - scripts/math_crosscheck/replay_check.py
+  - scripts/math_crosscheck/crosscheck_pari_sympy.py
+---
 # core.transcript cross-check report
 
 - Date: 2026-10-30

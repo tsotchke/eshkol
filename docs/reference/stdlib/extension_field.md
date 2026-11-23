@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/extension_field.esk
+  - scripts/run_extension_field_gate.py
+  - scripts/extension_field_gate_self_test.py
+---
 # `core.extension_field`
 
 Finite fields `GF(p^m)` as ordinary `core.ring` carriers. Require this module

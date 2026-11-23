@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: types
+since: v1.9.0
+sources:
+  - inc/eshkol/types/refinement.h
+  - lib/types/refinement.cpp
+---
 # Refinement types
 
 A refinement type is a type together with a proposition its values satisfy:

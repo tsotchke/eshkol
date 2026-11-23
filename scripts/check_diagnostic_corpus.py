@@ -63,9 +63,11 @@ DIAGNOSTIC_LINE_RE = re.compile(
 # file-less format: `[ERROR] Type error: <msg> (line L:C)` /
 # `[WARN] Type warning: <msg> (line L:C)` — no `file:` prefix at all, so a
 # span assertion against this format can only pin line/col, never file (an
-# expected.json entry for one of these simply omits `span.file`).
+# expected.json entry for one of these simply omits `span.file`). When the
+# reader measured the construct's extent the location reads `(line L:C-L2:C2)`
+# (TypeChecker::appendLocation); the span assertion pins the start.
 HOTT_DIAGNOSTIC_LINE_RE = re.compile(
-    r"^\[(?P<severity_tag>ERROR|WARN)\]\s*Type (?:error|warning):\s*(?P<message>.*?)\s*\(line (?P<line>\d+):(?P<col>\d+)\)\s*$"
+    r"^\[(?P<severity_tag>ERROR|WARN)\]\s*Type (?:error|warning):\s*(?P<message>.*?)\s*\(line (?P<line>\d+):(?P<col>\d+)(?:-\d+:\d+)?\)\s*$"
 )
 
 # The compiler's diagnostic printer (lib/core/logger.cpp) emits ANSI SGR

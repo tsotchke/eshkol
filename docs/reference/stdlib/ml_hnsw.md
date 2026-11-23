@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ml/hnsw.esk
+  - tests/ml/hnsw_test.esk
+---
 # `core.ml.hnsw` — hierarchical navigable small-world index
 
 **Source**: [`lib/core/ml/hnsw.esk`](../../../lib/core/ml/hnsw.esk)

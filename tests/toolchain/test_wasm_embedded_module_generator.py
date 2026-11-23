@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -14,6 +15,14 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = ROOT / "scripts/generate_wasm_embedded_modules.py"
 BUILD_SCRIPT = ROOT / "scripts/build-wasm-repl.sh"
+
+
+def embedded_modules() -> tuple:
+    """The generator's own module list, so the check counts what it embeds."""
+    spec = importlib.util.spec_from_file_location("generate_wasm_embedded_modules", GENERATOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.MODULE_PATHS
 
 
 class EmbeddedModuleGeneratorTest(unittest.TestCase):
@@ -35,7 +44,7 @@ class EmbeddedModuleGeneratorTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(matches.returncode, 0, matches.stderr)
-            self.assertIn("matches 5 sources", matches.stdout)
+            self.assertIn(f"matches {len(embedded_modules())} sources", matches.stdout)
             self.assertIn('{"core/msgpack.esk", "/__eshkol_embedded__/core/msgpack.esk",',
                           output.read_text(encoding="ascii"))
 

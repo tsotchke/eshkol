@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: types
+since: v1.9.0
+sources:
+  - inc/eshkol/types/structural_types.h
+  - lib/core/records.esk
+  - lib/core/sessions.esk
+---
 # Structural types: records, higher-rank polymorphism, session types
 
 Eshkol's type checker has a structural layer (ADR-0046) beside the gradual

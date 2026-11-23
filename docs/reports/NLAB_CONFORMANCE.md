@@ -1,3 +1,16 @@
+---
+kind: reference
+status: current
+owner-area: testing
+since: v1.4.0-connection
+sources:
+  - tests/nlab/nlab_topos_test.esk
+  - tests/nlab/nlab_space_test.esk
+  - tests/nlab/nlab_ring_test.esk
+  - tests/nlab/nlab_category_test.esk
+  - tests/nlab/nlab_category_effective_test.esk
+  - tests/nlab/nlab_simplicial_test.esk
+---
 # nLab conformance
 
 How much of the [nLab](https://ncatlab.org/nlab/show/HomePage) Eshkol computes,

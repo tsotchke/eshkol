@@ -2897,26 +2897,6 @@ oracles:
         required_names: [merkle_domain_separation_jit, merkle_domain_separation_aot]
         action: ctest --test-dir build --output-on-failure -R '^merkle_domain_separation_(jit|aot)$'
 
-  # -----------------------------------------------------------------
-  # v1.9.0-types readiness -- the type system becomes a proof system.
-  # -----------------------------------------------------------------
-  - name: v1.9-types
-    aliases: [v1.9, types]
-    requires:
-      # HoTT identity types, univalence and higher inductive types (ADR-0043).
-      # Producer: scripts/run_hott_gate.sh (CTest hott_gate) runs the HoTT
-      # programs through the kernel driver, JIT, AOT and the bytecode VM against
-      # their expected output, the negative corpus through the kernel and both
-      # compiler routes, and every example of the HoTT reference and guide.
-      - id: v19_hott_identity
-        runtime_event:
-          event_kinds: [v1_9_types]
-          event_names: ["v19_hott_identity"]
-          event_values: ["PASS"]
-        severity: medium
-        label: 'HoTT (ADR-0043): a cubical kernel with path types, J, transport, funext, computing univalence, the circle, suspensions and truncations; winding numbers of the circle computed by encode-decode and cross-checked in Cubical Agda; programs, rejections and documentation examples pass on the kernel, JIT, AOT and the VM'
-        action: ./scripts/run_hott_gate.sh build
-
       # core.manifold.atlas (ADR-0018 amendment, charts as gluing data):
       # atlases on core.sheaf. Producer: scripts/run_manifold_atlas_gate.sh
       # runs manifold_atlas_{jit,aot} and signed_curvature_{jit,aot} and every
@@ -2938,7 +2918,7 @@ oracles:
   # item; the type records 0042-0046 extend this list.
   # -----------------------------------------------------------------
   - name: v1.9-types
-    aliases: [v1.9, v1.9.0, types]
+    aliases: [v1.9, v1.9.0, types, types-1.9]
     requires:
       # Dependent type enforcement (ADR-0042). Producer:
       # scripts/run_dependent_types_gate.sh runs type_term_test,
@@ -2963,6 +2943,36 @@ oracles:
         severity: high
         label: 'Structural types (ADR-0046): row-polymorphic records with principal types and width subtyping, predicative arbitrary-rank polymorphism with skolem escape (runST encapsulation), binary session types with duality, recursion and exactly-once endpoints over local channels and TCP; positives run on JIT and AOT (records and rank also on the VM) with their principal types, every negative is refused by JIT, AOT and the bytecode VM'
         action: ./scripts/run_structural_types_gate.sh
+      # HoTT identity types, univalence and higher inductive types (ADR-0043).
+      # Producer: scripts/run_hott_gate.sh (CTest hott_gate) runs the HoTT
+      # programs through the kernel driver, JIT, AOT and the bytecode VM against
+      # their expected output, the negative corpus through the kernel and both
+      # compiler routes, and every example of the HoTT reference and guide.
+      - id: v19_hott_identity
+        runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_hott_identity"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'HoTT (ADR-0043): a cubical kernel with path types, J, transport, funext, computing univalence, the circle, suspensions and truncations; winding numbers of the circle computed by encode-decode and cross-checked in Cubical Agda; programs, rejections and documentation examples pass on the kernel, JIT, AOT and the VM'
+        action: ./scripts/run_hott_gate.sh build
+      # Algebraic effects and effect rows (ADR-0045). Producer:
+      # scripts/run_effects_gate.py.
+      - runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_algebraic_effects"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Algebraic effects and handlers (ADR-0045): handler laws, resumption counts, unwinding order, the core.effects library, regions and AD give identical transcripts on native JIT, native AOT and the bytecode VM'
+        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces
+
+      - runtime_event:
+          event_kinds: [v1_9_types]
+          event_names: ["v19_effect_types"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Effect rows (ADR-0045): inferred latent rows match the typing corpus and every violated declare-effects is rejected under --strict-types'
+        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces
 
   # -----------------------------------------------------------------
   # v1.5-intelligence readiness -- high-order AD gates for the
@@ -4733,25 +4743,6 @@ oracles:
         severity: high
         label: 'v1.7.0-synthesis (ADR-0052): 42/42 example-synthesis benchmark tasks verified on held-out examples, GCN/GraphSAGE/GAT backward rules agree with central differences and the karate-club classifiers learn, ?? holes are completed from their expected type and a hole with no completion stops compilation; synthesis_test, gnn_test and synthesis_holes_test in JIT and AOT plus the hole diagnostic and refusal entries all pass'
         action: ./scripts/run_synthesis_gate.sh
-
-  - name: v1.9-types
-    aliases: [v1.9, types-1.9]
-    requires:
-      - runtime_event:
-          event_kinds: [v1_9_types]
-          event_names: ["v19_algebraic_effects"]
-          event_values: ["PASS"]
-        severity: high
-        label: 'Algebraic effects and handlers (ADR-0045): handler laws, resumption counts, unwinding order, the core.effects library, regions and AD give identical transcripts on native JIT, native AOT and the bytecode VM'
-        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces
-
-      - runtime_event:
-          event_kinds: [v1_9_types]
-          event_names: ["v19_effect_types"]
-          event_values: ["PASS"]
-        severity: high
-        label: 'Effect rows (ADR-0045): inferred latent rows match the typing corpus and every violated declare-effects is rejected under --strict-types'
-        action: python3 scripts/run_effects_gate.py --trace-dir scripts/icc_traces
 
   # -----------------------------------------------------------------
   # Certified computation (ADR-0047, v1.7.0-synthesis W2): certificates

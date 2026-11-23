@@ -1,3 +1,14 @@
+---
+kind: explanation
+status: current
+owner-area: types
+since: v1.9.0
+sources:
+  - lib/types/type_term.cpp
+  - inc/eshkol/types/type_term.h
+  - inc/eshkol/backend/vm.h
+  - tests/typesystem/dependent_engine_parity_gate.sh
+---
 # ADR 0042: Dependent type enforcement — bidirectional checking over one core term language
 
 - Status: Accepted with conditions (2026-11-08) — implemented for the v1.9.0-types rung (this record's stages 1-4); stages 5-7 planned

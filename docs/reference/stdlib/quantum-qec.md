@@ -1,3 +1,11 @@
+---
+kind: reference
+status: current
+owner-area: quantum
+since: v1.4.0-connection
+sources:
+  - lib/core/quantum/qec.esk
+---
 # Compile signed stabilizers to qcircuit and certify finite QEC decoders
 
 Signed symplectic Clifford preparation into the existing qcircuit IR, finite weight-one decoder certificates, independent matrix-derived Pauli replay, and core Lean theorem emission.

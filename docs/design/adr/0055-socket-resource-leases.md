@@ -1,3 +1,16 @@
+---
+kind: explanation
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - inc/eshkol/core/resource_lease.h
+  - lib/core/resource_lease.c
+  - inc/eshkol/core/handle.h
+  - lib/core/net.c
+  - lib/core/tls.c
+  - lib/core/net.esk
+---
 # ADR-0055: Sockets and TLS sessions as resource leases
 
 - **Status:** Proposed

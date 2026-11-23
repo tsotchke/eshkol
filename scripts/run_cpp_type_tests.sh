@@ -83,6 +83,7 @@ compile_and_run_test() {
                          "-framework" "Foundation"
                          "-framework" "Security"
                          "-framework" "CoreFoundation"
+                         "-framework" "CoreGraphics"
                          "-lobjc" "-lncurses" "-lpcre2-8" "-lsqlite3") ;;
     esac
 

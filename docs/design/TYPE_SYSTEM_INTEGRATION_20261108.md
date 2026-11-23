@@ -1,5 +1,5 @@
 ---
-kind: design
+kind: explanation
 status: current
 owner-area: types
 since: v1.4.0-connection

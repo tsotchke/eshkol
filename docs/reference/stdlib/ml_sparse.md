@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/ml/sparse.esk
+  - tests/ml/sparse_test.esk
+---
 # `core.ml.sparse` — compressed sparse row matrices
 
 **Source**: [`lib/core/ml/sparse.esk`](../../../lib/core/ml/sparse.esk)

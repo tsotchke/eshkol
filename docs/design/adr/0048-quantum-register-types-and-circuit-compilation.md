@@ -2,7 +2,7 @@
 kind: explanation
 status: current
 owner-area: types
-since: v2.0-starlight
+since: v2.0.0-starlight
 sources:
   - inc/eshkol/types/quantum_types.h
   - lib/types/quantum_types.cpp

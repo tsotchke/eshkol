@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: types
+since: v1.7.0-synthesis
+sources:
+  - inc/eshkol/types/hole_synthesis.h
+  - lib/types/hole_synthesis.cpp
+---
 # Synthesis holes: `??`
 
 An unbound `??` in an expression position is a *synthesis hole*. The compiler

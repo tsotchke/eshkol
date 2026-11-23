@@ -69,7 +69,7 @@ static thread_local arena_t* __thread_local_arena = nullptr;
 // memctx (region_top/residence/resident txn) and the object-header change are
 // deferred to later phases.
 namespace eshkol::regions_internal {
-thread_local eshkol_memctx_t t_memctx = {
+constinit thread_local eshkol_memctx_t t_memctx = {
     ESHKOL_MEMORY_ABI_PHASE_A, 0u, 0ull, nullptr, nullptr
 };
 } // namespace eshkol::regions_internal

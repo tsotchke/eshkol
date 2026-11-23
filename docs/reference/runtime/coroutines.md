@@ -1,3 +1,13 @@
+---
+kind: reference
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - inc/eshkol/core/coroutine.h
+  - tests/fibers/coroutine_primitives_test.esk
+  - scripts/run_fibers_gate.py
+---
 # Coroutines reference
 
 Status: SHIPPED on native JIT and AOT (v1.4.0-connection). Bytecode VM:

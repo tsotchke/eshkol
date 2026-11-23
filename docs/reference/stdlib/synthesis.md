@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.7.0-synthesis
+sources:
+  - lib/core/synthesis.esk
+  - tests/stdlib/synthesis_test.esk
+---
 # core.synthesis — programs from examples
 
 `(require core.synthesis)` loads the whole facility; each part can also be

@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/nonlinear_observability.esk
+  - tools/certcheck/eshkol_certcheck.py
+---
 # Certify polynomial observation fibers and all-order ambiguity symmetries
 
 Exact polynomial ODE Lie jets, task-relative observation-fiber proofs, and invariant-family symmetry witnesses. Proof replay uses supplied multipliers and re-expansion; Groebner membership is a separate discovery hint.

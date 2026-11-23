@@ -1,3 +1,14 @@
+---
+kind: reference
+status: current
+owner-area: stdlib
+since: v1.4.0-connection
+sources:
+  - lib/core/fibers.esk
+  - tests/fibers/fibers_test.esk
+  - tests/fibers/fibers_stress_test.esk
+  - scripts/run_fibers_gate.py
+---
 # `core.fibers` — cooperative fibers over the event loop
 
 **Source**: [`lib/core/fibers.esk`](../../../lib/core/fibers.esk)
