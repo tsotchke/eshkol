@@ -17041,6 +17041,20 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     target_link_libraries(resource_explicit_loop_test PRIVATE Threads::Threads)
     add_test(NAME resource_explicit_loop_test COMMAND resource_explicit_loop_test)
     set_tests_properties(resource_explicit_loop_test PROPERTIES TIMEOUT 30 LABELS "resource;ipc")
+
+    add_executable(http_sse_adapter_scaffold_test
+        tests/agent/http_sse_adapter_scaffold_test.c
+        lib/agent/c/agent_http_server.c
+        lib/core/resource_lease.c
+        lib/core/event_loop.c
+        ${ESHKOL_EVENT_LOOP_SRC}
+        lib/core/runtime_handle.cpp)
+    target_compile_features(http_sse_adapter_scaffold_test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(http_sse_adapter_scaffold_test PRIVATE _GNU_SOURCE ESHKOL_SSE_ADAPTER_TESTING)
+    target_include_directories(http_sse_adapter_scaffold_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(http_sse_adapter_scaffold_test PRIVATE Threads::Threads)
+    add_test(NAME http_sse_adapter_scaffold_test COMMAND http_sse_adapter_scaffold_test)
+    set_tests_properties(http_sse_adapter_scaffold_test PROPERTIES TIMEOUT 30 LABELS "resource;ipc;sse")
 endif()
 
 # Every harness that resolves the compiler, the VM or the compile database by
