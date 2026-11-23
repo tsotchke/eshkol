@@ -1459,8 +1459,7 @@ int eshkol_http_sse_adapter_write_step(int64_t lease_id,
     if (size_rc != 0) return size_rc;
     if (*offset_inout > len) return ESHKOL_IO_INVALID;
     if (*offset_inout == len) {
-        (void)eshkol_http_sse_adapter_disarm_write_watch(adapter);
-        return 0;
+        return eshkol_http_sse_adapter_disarm_write_watch(adapter);
     }
 
     eshkol_resource_lease_t lease;
@@ -1509,8 +1508,7 @@ int eshkol_http_sse_adapter_write_step(int64_t lease_id,
         *offset_inout += (size_t)n;
         if (out_written) *out_written = (size_t)n;
         if (*offset_inout == len) {
-            (void)eshkol_http_sse_adapter_disarm_write_watch(adapter);
-            rc = 0;
+            rc = eshkol_http_sse_adapter_disarm_write_watch(adapter);
         } else {
             int arm_rc = eshkol_http_sse_adapter_arm_write_watch(adapter, watch_cookie);
             rc = (arm_rc == 0) ? ESHKOL_SSE_WOULD_BLOCK : arm_rc;

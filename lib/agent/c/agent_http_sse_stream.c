@@ -1,0 +1,215 @@
+#include "agent_http_sse_stream.h"
+#include "eshkol/core/event_loop.h"
+#include "eshkol/core/websocket_handshake.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum { CHUNK_PREFIX_MAX = 6 };
+
+struct eshkol_http_sse_stream {
+    eshkol_http_sse_adapter_t* adapter;
+    int64_t loop;
+    int64_t lease;
+    int64_t ticket;
+    int64_t deadline;
+    uint64_t cookie;
+    size_t start;
+    size_t length;
+    size_t offset;
+    int finishing;
+    int retired;
+    uint8_t pending[ESHKOL_SSE_MAX_CHUNK_BYTES];
+};
+
+static int on_owner_loop(const eshkol_http_sse_stream_t* stream) {
+    if (!stream) return 0;
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(stream->loop);
+    return loop && eshkol_event_loop_is_owner(loop);
+}
+
+static int retire(eshkol_http_sse_stream_t* stream) {
+    stream->retired = 1;
+    stream->deadline = -1;
+    if (!stream->lease) return 0;
+    int64_t ticket = eshkol_http_sse_adapter_request_close(stream->lease);
+    if (ticket < 0) return (int)ticket;
+    stream->lease = 0;
+    stream->adapter = NULL;
+    stream->ticket = ticket;
+    return 0;
+}
+
+static int stop(eshkol_http_sse_stream_t* stream, int outcome) {
+    int status = retire(stream);
+    return status < 0 ? status : outcome;
+}
+
+static void admit(eshkol_http_sse_stream_t* stream, size_t start, size_t length,
+                  int64_t deadline) {
+    stream->start = start;
+    stream->length = length;
+    stream->offset = 0;
+    stream->deadline = deadline;
+}
+
+int eshkol_http_sse_stream_begin(int64_t server, int64_t loop, uint64_t watch_cookie,
+                                 eshkol_http_sse_stream_t** out) {
+    static const char headers[] = "HTTP/1.1 200 OK\r\n"
+                                  "Content-Type: text/event-stream\r\n"
+                                  "Transfer-Encoding: chunked\r\n"
+                                  "Cache-Control: no-cache\r\n"
+                                  "Connection: close\r\n\r\n";
+    if (!out) return ESHKOL_IO_INVALID;
+    *out = NULL;
+    int64_t deadline = eshkol_resource_deadline(ESHKOL_SSE_WRITE_BUDGET_MS);
+    if (deadline < 0) return ESHKOL_IO_SYSTEM;
+    eshkol_http_sse_stream_t* stream = calloc(1, sizeof(*stream));
+    if (!stream) return ESHKOL_IO_SYSTEM;
+    int status = eshkol_http_sse_adapter_adopt(server, loop, &stream->lease, &stream->adapter);
+    if (status < 0) {
+        free(stream);
+        return status;
+    }
+    stream->loop = loop;
+    stream->cookie = watch_cookie;
+    memcpy(stream->pending, headers, sizeof(headers) - 1);
+    admit(stream, 0, sizeof(headers) - 1, deadline);
+    *out = stream;
+    return 0;
+}
+
+static int check_idle(eshkol_http_sse_stream_t* stream) {
+    int32_t remaining = eshkol_resource_remaining(stream->deadline);
+    if (remaining == 0) return stop(stream, ESHKOL_IO_TIMEOUT);
+    if (remaining < 0) return stop(stream, ESHKOL_IO_SYSTEM);
+    return 0;
+}
+
+static int check_available(eshkol_http_sse_stream_t* stream) {
+    if (!on_owner_loop(stream) || stream->retired) return ESHKOL_IO_INVALID;
+    if (stream->length) return ESHKOL_IO_BUSY;
+    return check_idle(stream);
+}
+
+static int append(uint8_t* buffer, size_t* used, const char* bytes, size_t length) {
+    if (length > ESHKOL_SSE_MAX_CHUNK_BYTES - *used) return ESHKOL_IO_TRUNCATED;
+    memcpy(buffer + *used, bytes, length);
+    *used += length;
+    return 0;
+}
+
+static int check_utf8(const char* text, size_t* length) {
+    *length = 0;
+    if (!text) return ESHKOL_IO_INVALID;
+    while (*length < ESHKOL_SSE_MAX_CHUNK_BYTES && text[*length]) ++*length;
+    if (*length == ESHKOL_SSE_MAX_CHUNK_BYTES) return ESHKOL_IO_TRUNCATED;
+    return eshkol_ws_valid_utf8(text, *length) ? 0 : ESHKOL_IO_INVALID;
+}
+
+static int append_field(uint8_t* buffer, size_t* used, const char* name, size_t name_len,
+                        const char* value, size_t value_len) {
+    int status = append(buffer, used, name, name_len);
+    if (status == 0) status = append(buffer, used, value, value_len);
+    if (status == 0) status = append(buffer, used, "\n", 1);
+    return status;
+}
+
+static int append_metadata(uint8_t* buffer, size_t* used, const char* name, size_t name_len,
+                           const char* value) {
+    size_t size;
+    int status = check_utf8(value, &size);
+    if (status < 0) return status;
+    if (memchr(value, '\r', size) || memchr(value, '\n', size)) return ESHKOL_IO_INVALID;
+    return append_field(buffer, used, name, name_len, value, size);
+}
+
+static int append_data(uint8_t* buffer, size_t* used, const char* data) {
+    size_t size;
+    int status = check_utf8(data, &size);
+    if (status < 0) return status;
+
+    const char* const end = data + size;
+    const char* line = data;
+    for (const char* p = data; p < end; ++p) {
+        if (*p != '\r' && *p != '\n') continue;
+        status = append_field(buffer, used, "data: ", 6, line, (size_t)(p - line));
+        if (status < 0) return status;
+        if (*p == '\r' && p + 1 < end && p[1] == '\n') ++p;
+        line = p + 1;
+    }
+    return append_field(buffer, used, "data: ", 6, line, (size_t)(end - line));
+}
+
+int eshkol_http_sse_stream_send(eshkol_http_sse_stream_t* stream, const char* data,
+                                const char* event_type, const char* id) {
+    int status = check_available(stream);
+    if (status < 0) return status;
+
+    size_t used = CHUNK_PREFIX_MAX;
+    if (event_type && *event_type) {
+        status = append_metadata(stream->pending, &used, "event: ", 7, event_type);
+    }
+    if (status == 0 && id) status = append_metadata(stream->pending, &used, "id: ", 4, id);
+    if (status == 0) status = append_data(stream->pending, &used, data);
+    if (status == 0) status = append(stream->pending, &used, "\n", 1);
+    if (status < 0) return status;
+
+    char prefix[CHUNK_PREFIX_MAX + 1];
+    int size = snprintf(prefix, sizeof(prefix), "%zx\r\n", used - CHUNK_PREFIX_MAX);
+    if (size <= 0 || size > CHUNK_PREFIX_MAX) return ESHKOL_IO_SYSTEM;
+    status = append(stream->pending, &used, "\r\n", 2);
+    if (status < 0) return status;
+
+    status = check_idle(stream);
+    if (status < 0) return status;
+    int64_t deadline = eshkol_resource_deadline(ESHKOL_SSE_WRITE_BUDGET_MS);
+    if (deadline < 0) return stop(stream, ESHKOL_IO_SYSTEM);
+    size_t start = CHUNK_PREFIX_MAX - (size_t)size;
+    memcpy(stream->pending + start, prefix, (size_t)size);
+    admit(stream, start, used - start, deadline);
+    return 0;
+}
+
+int eshkol_http_sse_stream_finish(eshkol_http_sse_stream_t* stream) {
+    int status = check_available(stream);
+    if (status < 0) return status;
+    int64_t deadline = eshkol_resource_deadline(ESHKOL_SSE_WRITE_BUDGET_MS);
+    if (deadline < 0) return stop(stream, ESHKOL_IO_SYSTEM);
+    memcpy(stream->pending, "0\r\n\r\n", 5);
+    admit(stream, 0, 5, deadline);
+    stream->finishing = 1;
+    return 0;
+}
+
+int eshkol_http_sse_stream_progress(eshkol_http_sse_stream_t* stream) {
+    if (!on_owner_loop(stream) || stream->retired) return ESHKOL_IO_INVALID;
+    if (!stream->length) return check_idle(stream);
+
+    int status = eshkol_http_sse_adapter_write_step(
+        stream->lease, stream->adapter, stream->pending + stream->start,
+        stream->length, &stream->offset, stream->deadline, stream->cookie, NULL);
+    if (status < 0) return stop(stream, status);
+    if (status == ESHKOL_SSE_WOULD_BLOCK) return status;
+    if (stream->finishing) return stop(stream, ESHKOL_HTTP_SSE_FINISHED);
+
+    stream->length = 0;
+    stream->deadline = eshkol_resource_deadline(ESHKOL_SSE_IDLE_TIMEOUT_MS);
+    return stream->deadline < 0 ? stop(stream, ESHKOL_IO_SYSTEM) : 0;
+}
+
+int64_t eshkol_http_sse_stream_deadline(const eshkol_http_sse_stream_t* stream) {
+    return stream ? stream->deadline : -1;
+}
+
+int eshkol_http_sse_stream_end(eshkol_http_sse_stream_t* stream, int64_t* out_ticket) {
+    if (!out_ticket) return ESHKOL_IO_INVALID;
+    *out_ticket = 0;
+    if (!on_owner_loop(stream)) return ESHKOL_IO_INVALID;
+    int status = retire(stream);
+    if (status < 0) return status;
+    *out_ticket = stream->ticket;
+    free(stream);
+    return 0;
+}

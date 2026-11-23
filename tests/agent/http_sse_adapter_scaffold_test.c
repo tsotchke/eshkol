@@ -425,13 +425,54 @@ static void test_cancel_and_peer_disconnect(void) {
     assert(eshkol_event_loop_close_handle(loop) == ESHKOL_EVENT_LOOP_OK);
 }
 
+static void test_completed_send_reports_watch_failure(void) {
+    int64_t server = eshkol_http_server_create(0);
+    int64_t loop = eshkol_event_loop_open_handle(16);
+    assert(server > 0 && loop > 0);
+    int peer = connect_loopback(eshkol_http_server_port(server));
+    char request[512];
+    assert(eshkol_http_server_accept(server, request, sizeof(request), 1000) > 0);
+
+    int64_t lease = 0;
+    eshkol_http_sse_adapter_t* adapter = NULL;
+    assert(eshkol_http_sse_adapter_adopt(server, loop, &lease, &adapter) == 0);
+    WatchFailCtx state = {1, 0};
+    eshkol_http_sse_adapter_hooks_t hooks = {
+        .watch_remove_override = fail_watch_remove_once, .ctx = &state
+    };
+    eshkol_http_sse_adapter_set_hooks(adapter, &hooks);
+    assert(eshkol_http_sse_adapter_arm_write_watch(adapter, 42u) == 0);
+    const uint8_t sent[] = "abc";
+    size_t offset = 0, written = 0;
+    assert(eshkol_http_sse_adapter_write_step(
+        lease, adapter, sent, sizeof(sent) - 1, &offset,
+        eshkol_resource_deadline(5000), 42u, &written) == ESHKOL_IO_SYSTEM);
+    assert(offset == 3 && written == 3 && state.remove_calls == 1);
+    assert(eshkol_http_sse_adapter_watch_armed(adapter) == 1);
+
+    int64_t ticket = eshkol_http_sse_adapter_request_close(lease);
+    eshkol_resource_cleanup_result_t result;
+    assert(ticket > 0 && eshkol_resource_cleanup_result(ticket, &result) == 0);
+    assert(result.state == ESHKOL_CLEANUP_COMPLETE);
+    assert(state.remove_calls == 2 && eshkol_http_sse_adapter_close_count(adapter) == 1);
+    assert(eshkol_resource_cleanup_release(ticket) == 0);
+    free(adapter);
+    uint8_t received[16];
+    assert(read_until_eof(peer, received, sizeof(received)) == 3);
+    assert(memcmp(sent, received, 3) == 0);
+    close(peer);
+    eshkol_http_server_close(server);
+    assert(eshkol_event_loop_close_handle(loop) == ESHKOL_EVENT_LOOP_OK);
+}
+
 int main(void) {
     test_atomic_handoff_and_complete_response();
     test_short_write_resume_and_presend_deadline();
     test_capacity_boundary_and_busy();
     test_mixed_loop_cancel_watch_failure_and_foreign_progress();
     test_cancel_and_peer_disconnect();
-    printf("http_sse_adapter_scaffold_test: 5/5 suites PASSED (backend=%s)\n",
+    test_completed_send_reports_watch_failure();
+    printf("http_sse_adapter_scaffold_test: 6/6 suites PASSED (backend=%s)\n",
            eshkol_event_loop_backend_name());
     return 0;
 }
