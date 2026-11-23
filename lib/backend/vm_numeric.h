@@ -63,6 +63,12 @@
 #define VM_SUBTYPE_SUBST     11
 #define VM_SUBTYPE_FACT      12
 #define VM_SUBTYPE_KB        13
+#define VM_EXACT_DIV_ZERO "rational division by zero"
+/* Integer division of an exact integer by exact zero names its operation,
+ * with the same text the native runtime raises (lib/core/bignum.cpp). */
+#define VM_QUOTIENT_DIV_ZERO "quotient: division by zero"
+#define VM_REMAINDER_DIV_ZERO "remainder: division by zero"
+#define VM_MODULO_DIV_ZERO "modulo: division by zero"
 #define VM_SUBTYPE_FG        14  /* factor graph */
 #define VM_SUBTYPE_WORKSPACE 15
 #define VM_SUBTYPE_PORT      16
@@ -248,7 +254,6 @@ int         vm_dual_is_taylor(const VmDual* d);
  * vm_dual_level_derivative: k! * that coefficient.
  * vm_dual_is_constant: a scalar with zero tangent (a plain number).
  * vm_dual_exact_value: the recursive exact primal, or NULL. */
-extern const char* vm_dual_error;   /* pending diagnostic (SW-219), or NULL */
 VmDual*     vm_dual_constant(VmRegionStack* rs, double value, VmRational* exact);
 VmDual*     vm_dual_level_seed(VmRegionStack* rs, const VmDual* point,
                                uint32_t order, uint64_t epoch);

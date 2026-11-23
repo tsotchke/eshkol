@@ -1,0 +1,5 @@
+(define power-slope (derivative (lambda (x) (+ x (expt 0.0 0.5))) 1.0))
+(define log-slope (derivative (lambda (x) (+ x (log 0.0))) 1.0))
+(display (if (and (= power-slope 1.0) (= log-slope 1.0))
+             "PASS dual_constant_poles" "FAIL dual_constant_poles"))
+(newline)

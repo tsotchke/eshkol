@@ -20,8 +20,6 @@ static uint64_t vm_taylor_epoch_counter;
 /* SW-219: an operation with no value -- exact division by exact zero --
  * records its diagnostic here and the native dispatcher raises it, as the
  * exact numeric tower does un-nested. It is never an infinity. */
-const char* vm_dual_error = NULL;
-static const char* const VM_DUAL_EXACT_DIV_ZERO = "rational division by zero";
 
 uint64_t vm_dual_next_taylor_epoch(void) {
     vm_taylor_epoch_counter++;
@@ -306,7 +304,7 @@ static VmDual* taylor_binary(VmRegionStack* rs, const VmDual* a,
     if (op == '/' && exact) {
         VmRational* denominator = taylor_coeff_as_exact(b, 0);
         if (denominator && vm_rational_is_zero(denominator)) {
-            vm_dual_error = VM_DUAL_EXACT_DIV_ZERO;
+            rs->dual_error = VM_EXACT_DIV_ZERO;
             return NULL;
         }
         if (!denominator) exact = 0;
@@ -1197,7 +1195,7 @@ VmDual* vm_dual_div(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     if (lv_route(a, b)) return lv_binary(rs, a, b, '/');
     if (b->kind == VM_DUAL_KIND_SCALAR && a->kind == VM_DUAL_KIND_SCALAR &&
         a->eprimal && b->eprimal && vm_rational_is_zero(b->eprimal)) {
-        vm_dual_error = VM_DUAL_EXACT_DIV_ZERO;
+        rs->dual_error = VM_EXACT_DIV_ZERO;
         return NULL;
     }
     if (vm_dual_is_taylor(a) || vm_dual_is_taylor(b)) return taylor_binary(rs, a, b, '/');

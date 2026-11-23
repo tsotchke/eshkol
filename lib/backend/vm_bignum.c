@@ -136,64 +136,33 @@ static VmBignum* bignum_create(VmRegionStack* rs, int capacity) {
 /**
  * Create bignum from int64_t.
  */
-static VmBignum* bignum_from_int64(VmRegionStack* rs, int64_t v) {
-    VmBignum* b = bignum_create(rs, 2);
+static VmBignum* bignum_from_magnitude(VmArena* arena, uint64_t magnitude, int sign) {
+    VmBignum* b = (VmBignum*)vm_arena_alloc(arena, sizeof(VmBignum));
     if (!b) return NULL;
-
-    if (v == 0) {
-        b->sign = 0;
-        b->n_limbs = 0;
-        return b;
-    }
-
-    uint64_t mag;
-    if (v < 0) {
-        b->sign = -1;
-        /* Handle INT64_MIN carefully */
-        if (v == INT64_MIN) {
-            mag = (uint64_t)INT64_MAX + 1ULL;
-        } else {
-            mag = (uint64_t)(-v);
-        }
-    } else {
-        b->sign = 1;
-        mag = (uint64_t)v;
-    }
-
-    b->limbs[0] = (uint32_t)(mag & 0xFFFFFFFFULL);
-    uint32_t hi = (uint32_t)(mag >> 32);
-    if (hi) {
-        b->limbs[1] = hi;
-        b->n_limbs = 2;
-    } else {
-        b->n_limbs = 1;
-    }
+    b->limbs = (uint32_t*)vm_arena_alloc(arena, 2 * sizeof(uint32_t));
+    if (!b->limbs) return NULL;
+    b->limbs[0] = (uint32_t)magnitude;
+    b->limbs[1] = (uint32_t)(magnitude >> 32);
+    b->capacity = 2;
+    b->n_limbs = b->limbs[1] ? 2 : (magnitude != 0);
+    b->sign = magnitude ? sign : 0;
     return b;
 }
 
-/**
- * Create bignum from uint64_t.
- */
-static VmBignum* bignum_from_uint64(VmRegionStack* rs, uint64_t v) {
-    VmBignum* b = bignum_create(rs, 3);
-    if (!b) return NULL;
-
-    if (v == 0) {
-        b->sign = 0;
-        b->n_limbs = 0;
-        return b;
-    }
-
-    b->sign = 1;
-    b->limbs[0] = (uint32_t)(v & 0xFFFFFFFFULL);
-    uint32_t hi = (uint32_t)(v >> 32);
-    if (hi) {
-        b->limbs[1] = hi;
-        b->n_limbs = 2;
-    } else {
-        b->n_limbs = 1;
-    }
+static VmBignum* bignum_from_region_magnitude(VmRegionStack* rs, uint64_t magnitude, int sign) {
+    VmArena* arena = vm_active_arena(rs);
+    VmBignum* b = bignum_from_magnitude(arena, magnitude, sign);
+    if (arena->total_allocated > rs->peak_allocated) rs->peak_allocated = arena->total_allocated;
     return b;
+}
+
+static VmBignum* bignum_from_int64(VmRegionStack* rs, int64_t v) {
+    uint64_t magnitude = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
+    return bignum_from_region_magnitude(rs, magnitude, v < 0 ? -1 : 1);
+}
+
+static VmBignum* bignum_from_uint64(VmRegionStack* rs, uint64_t v) {
+    return bignum_from_region_magnitude(rs, v, 1);
 }
 
 /**
@@ -524,10 +493,7 @@ static VmBignum* bignum_mul(VmRegionStack* rs, const VmBignum* a, const VmBignum
  * Returns quotient; *remainder receives the remainder.
  */
 static VmBignum* mag_div_single(VmRegionStack* rs, const VmBignum* a, uint32_t d, uint32_t* remainder) {
-    if (d == 0) {
-        fprintf(stderr, "ERROR: bignum division by zero\n");
-        return NULL;
-    }
+    if (d == 0) return NULL;
 
     VmBignum* q = bignum_create(rs, a->n_limbs);
     if (!q) return NULL;
@@ -697,9 +663,8 @@ static void mag_div_knuth(VmRegionStack* rs, const VmBignum* a, const VmBignum* 
 static void bignum_divmod(VmRegionStack* rs, const VmBignum* a, const VmBignum* b,
                           VmBignum** q_out, VmBignum** r_out) {
     if (bignum_is_zero(b)) {
-        fprintf(stderr, "ERROR: bignum division by zero\n");
-        if (q_out) *q_out = bignum_from_int64(rs, 0);
-        if (r_out) *r_out = bignum_from_int64(rs, 0);
+        if (q_out) *q_out = NULL;
+        if (r_out) *r_out = NULL;
         return;
     }
 

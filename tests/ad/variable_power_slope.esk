@@ -1,0 +1,6 @@
+(define (check x)
+  (< (abs (- (derivative (lambda (v) (expt v v)) x)
+             (* (expt x x) (+ 1.0 (log x))))) 1e-10))
+(display (if (and (check 0.5) (check 2.0) (check 3.0))
+             "PASS variable_power_slope" "FAIL variable_power_slope"))
+(newline)

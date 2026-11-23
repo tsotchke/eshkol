@@ -129,6 +129,10 @@ typedef struct {
     int       depth;
     VmArena   global_arena;  /* fallback when no region is active */
 
+    /* Pending numeric conditions belong to the VM that owns these carriers. */
+    const char* dual_error;
+    const char* complex_error;
+
     /* Metrics */
     size_t    peak_allocated;
     int       peak_depth;

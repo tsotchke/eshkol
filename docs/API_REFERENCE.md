@@ -2859,6 +2859,11 @@ This allows heterogeneous state spaces (e.g., one binary variable and one ternar
 
 **Returns:** A `FactorGraph` (heap subtype 16) with no factors attached.
 
+**Admission:** `n-vars` must be a positive integer, and `dims-tensor` must supply a positive
+integer state count for every variable (a bare number gives every variable that many states).
+Any other argument raises a catchable error. Domains are not capped: the compiled engines and
+the bytecode VM size their message storage from the widest domain in the graph.
+
 **Implementation:** `LogicWorkspaceCodegen::codegenMakeFactorGraph` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_make_factor_graph_tagged`.
 
@@ -2882,6 +2887,9 @@ indexed by the joint state assignment of the scoped variables.
 the CPT has |S_a| × |S_b| entries. Entry at index `i * |S_b| + j` corresponds to
 log P(v_a = i, v_b = j) (or the conditional log P(v_b = j | v_a = i), depending on the
 model structure).
+
+**Admission:** a factor connects at most 32 variables, and each index must be an integer naming
+a variable of `fg`. Any other index list raises a catchable error and adds no factor.
 
 **Implementation:** `LogicWorkspaceCodegen::codegenFGAddFactor` in [lib/backend/logic_workspace_codegen.cpp](../lib/backend/logic_workspace_codegen.cpp),
 runtime `eshkol_fg_add_factor_tagged`.
@@ -3599,8 +3607,7 @@ class targets.
 
 Binary Cross-Entropy: L = -(1/n) Σ_i [y_i · log(ŷ_i) + (1 - y_i) · log(1 - ŷ_i)].
 
-Predictions must be in (0, 1) — typically the output of a sigmoid layer. Internally clamped
-to [ε, 1-ε] for numerical stability.
+Both spellings clamp predicted probabilities to `[1e-7, 1 - 1e-7]` before evaluating the logarithms.
 
 **Use case:** Binary classification, multi-label classification.
 
@@ -4310,7 +4317,8 @@ generation constraint in decoder models (GPT, language models).
 **Syntax:** `(padding-mask lengths max-len)` → Tensor
 
 Creates a padding mask for variable-length sequences. Marks valid positions as 0 and
-padding positions as -∞. Shape: (batch, max-len).
+padding positions as -∞. The shape `(batch, 1, max-len)` applies the same key mask
+to every query within a batch in scaled dot-product and multi-head attention.
 
 `lengths` is a tensor of actual sequence lengths for each batch element.
 

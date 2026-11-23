@@ -8416,6 +8416,38 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES TIMEOUT 120
                 PASS_REGULAR_EXPRESSION "site scalar Hessian PASS"
                 FAIL_REGULAR_EXPRESSION "ERROR:|FAIL:|fatal signal")
+        function(eshkol_add_numeric_test name source)
+            foreach(engine IN LISTS ARGN)
+                if(engine STREQUAL "vm")
+                    add_test(NAME ${name}_vm COMMAND $<TARGET_FILE:eshkol-vm-standalone-test>
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+                elseif(engine STREQUAL "jit")
+                    add_test(NAME ${name}_jit COMMAND $<TARGET_FILE:eshkol-run> -r
+                        "${CMAKE_CURRENT_SOURCE_DIR}/${source}" -L${CMAKE_CURRENT_BINARY_DIR})
+                elseif(engine STREQUAL "aot")
+                    add_test(NAME ${name}_aot COMMAND sh -c
+                        "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/${name}_aot' '${CMAKE_CURRENT_SOURCE_DIR}/${source}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/${name}_aot'")
+                endif()
+                set_tests_properties(${name}_${engine} PROPERTIES
+                    ENVIRONMENT "ESHKOL_JIT_CACHE=0;ESHKOL_VM_NO_DISASM=1"
+                    PASS_REGULAR_EXPRESSION "PASS ${name}"
+                    FAIL_REGULAR_EXPRESSION "FAIL|LLVM module verification failed|fatal signal")
+            endforeach()
+        endfunction()
+        eshkol_add_numeric_test(reverse_tape_operands tests/ad/reverse_tape_operands.esk vm)
+        eshkol_add_numeric_test(bce_probability_bounds tests/ml/bce_probability_bounds.esk jit aot)
+        eshkol_add_numeric_test(rigid_motion_maps tests/vm/rigid_motion_maps.esk vm)
+        eshkol_add_numeric_test(rotation_log_cover tests/vm/rotation_log_cover.esk vm)
+        eshkol_add_numeric_test(reduction_empty_axis tests/tensor/reduction_empty_axis.esk jit aot vm)
+        eshkol_add_numeric_test(padding_mask_attention tests/ml/padding_mask_attention.esk jit aot)
+        eshkol_add_numeric_test(seeded_tensor_reductions tests/xla/seeded_tensor_reductions.esk jit aot)
+        eshkol_add_numeric_test(factor_graph_capacity tests/vm/factor_graph_capacity.esk jit aot vm)
+        eshkol_add_numeric_test(exact_integer_boundaries tests/ad/exact_integer_boundaries.esk jit aot vm)
+        eshkol_add_numeric_test(exact_zero_quotients tests/ad/exact_zero_quotients.esk jit aot vm)
+        eshkol_add_numeric_test(variable_power_slope tests/ad/variable_power_slope.esk jit aot vm)
+        eshkol_add_numeric_test(reverse_rational_coefficient tests/ad/reverse_rational_coefficient.esk jit aot vm)
+        eshkol_add_numeric_test(dual_constant_poles tests/ad/dual_constant_poles.esk jit aot vm)
+
         # ADR-0027 / ADR-0057: nested differentiation to depth 4 in every
         # mode (forward, reverse and mixed), confusion controls, exact Taylor
         # coefficients and more than 2^16 passes in one process, on the native
@@ -11165,6 +11197,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
         ${LLVM_LIBS_LIST}
         ${LLVM_SYSTEM_LIBS_LIST}
     )
+    add_executable(vm_numeric_context_test tests/backend/vm_numeric_context_test.c)
+    target_include_directories(vm_numeric_context_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    eshkol_apply_vm_limit_definitions(vm_numeric_context_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(vm_numeric_context_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(vm_numeric_context_test PRIVATE eshkol-static
+        ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    foreach(case IN ITEMS rational_limits bignum_zero_condition diagnostic_contexts symbolic_variable_power)
+        add_test(NAME vm_${case} COMMAND vm_numeric_context_test ${case})
+    endforeach()
     foreach(_dispatch IN ITEMS threaded switch)
         set(_dispatch_target vm_invalid_opcode_${_dispatch}_test)
         add_executable(${_dispatch_target} tests/vm/vm_invalid_opcode_dispatch_test.c)
@@ -13469,6 +13513,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
     # library above stays float).
     if(ESHKOL_BUILD_TESTS AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/qllm_backward_gradcheck_test.c")
+        add_executable(qllm_attention_weights_test tests/backend/qllm_attention_weights_test.c)
+        target_include_directories(qllm_attention_weights_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/core)
+        target_link_libraries(qllm_attention_weights_test PRIVATE eshkol-qllm-backward eshkol-static m)
+        if(UNIX AND NOT APPLE)
+            target_link_options(qllm_attention_weights_test PRIVATE "-Wl,--allow-multiple-definition")
+        elseif(APPLE)
+            target_link_options(qllm_attention_weights_test PRIVATE "-Wl,-multiply_defined,suppress")
+        endif()
+        add_test(NAME qllm_attention_weights COMMAND qllm_attention_weights_test)
         add_executable(qllm_backward_gradcheck_test
             tests/backend/qllm_backward_gradcheck_test.c
             lib/backend/qllm_backward.c)

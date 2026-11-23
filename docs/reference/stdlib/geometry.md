@@ -770,9 +770,9 @@ the identity quaternion `(1 0 0 0)`. `()` if the input has fewer than 3 elements
 
 ### `(so3-log q)` — id 825
 
-`q` a tensor with at least 4 elements. Normalises it, then returns the axis-angle
-vector of shape `(3)`: `θ = 2·atan2(‖v‖, w)`, direction `v/‖v‖`. Returns zeros for a
-zero-norm input or a vector part below `1e-12`. `()` if the input has fewer than 4
+`q` a tensor with at least 4 elements. Returns the principal rotation vector of shape `(3)` and norm at most π.
+Both quaternion signs yield the same vector. At a half turn, its first nonzero
+component is positive. A zero-norm input returns zeros. `()` if the input has fewer than 4
 elements.
 
 ```scheme
@@ -783,7 +783,7 @@ elements.
 
 `twist` a tensor with at least 6 elements: rotation part in `0..2`, translation part
 in `3..5`. Returns a pose of shape `(7)` — the quaternion from the rotation part
-followed by the translation copied through unchanged. `()` if fewer than 6 elements.
+followed by the SO(3) left Jacobian applied to the linear part of the twist. `()` if fewer than 6 elements.
 
 ```scheme
 (se3-exp (make-tensor '(6) 0.0))
@@ -792,8 +792,11 @@ followed by the translation copied through unchanged. `()` if fewer than 6 eleme
 ### `(se3-log pose)` — id 827
 
 `pose` a tensor with at least 7 elements: quaternion in `0..3`, translation in
-`4..6`. Returns a twist of shape `(6)`, the inverse of `se3-exp`. `()` if fewer than
-7 elements.
+`4..6`. The first three components of the returned twist give the principal
+rotation vector. The remaining three apply the inverse SO(3) left Jacobian to
+the translation. Exponentiating the result recovers the pose up to quaternion
+sign. Logging an exponential recovers the original twist for rotation norm
+less than π. `()` if fewer than 7 elements.
 
 ```scheme
 (se3-log (se3-exp (make-tensor '(6) 0.0)))

@@ -1040,6 +1040,19 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
     eshkol_bignum_t* b = tagged_to_bignum(arena, right);
     if (!a || !b) { *result = eshkol_make_int64(0, true); return; }
 
+    /* The integer-division trio names its operation when the exact divisor
+     * is zero, with the same text the bytecode VM raises. */
+    if (op >= 4 && op <= 6 && eshkol_bignum_is_zero(b)) {
+        eshkol_exception_t* exc = eshkol_make_exception(
+            ESHKOL_EXCEPTION_DIVIDE_BY_ZERO,
+            op == 4 ? "modulo: division by zero"
+                    : op == 5 ? "quotient: division by zero"
+                              : "remainder: division by zero");
+        eshkol_raise(exc);
+        *result = eshkol_make_int64(0, true);
+        return;
+    }
+
     eshkol_bignum_t* r = nullptr;
     switch (op) {
         case 0: r = eshkol_bignum_add(arena, a, b); break;
