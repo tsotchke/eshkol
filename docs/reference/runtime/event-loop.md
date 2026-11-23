@@ -28,6 +28,20 @@ names the choice:
 can state which implementation it exercised instead of inferring one from the
 host.
 
+## Thread and identity ownership
+
+A loop belongs to the thread that created it. Ordinary operations on either a
+loop pointer or a Scheme-visible `event-loop-*` handle run on that owner thread.
+A non-owner lookup is refused rather than granting access to the loop; handle
+close returns `#f`, while the native `close_handle` API distinguishes that live
+wrong-thread refusal as `ESHKOL_EVENT_LOOP_EBUSY`. The owner may still use or close
+the same handle afterward. Only the lifetime-protected wake request crosses
+threads; resource cancellation/close requests use it to notify the owner.
+
+Loop handles now share the exact resource identity registry with SOCKET and
+PROCESS. Treat them as opaque integers: no numeric range or previous sequence
+of loop IDs is part of the API. Generation and kind checks remain mandatory.
+
 ## Surface
 
 ### `(make-event-loop max-events)`
@@ -73,9 +87,12 @@ portable intersection of the three backends is pipes, sockets and terminals.
 Stops watching `fd`. Returns `#t` if it was being watched, `#f` if it was not —
 "not watched" is an answer, not a failure. Raises on a closed or unknown handle.
 
-The registration is dropped even when the kernel reports the descriptor as
-already gone, so a descriptor closed behind the loop's back cannot pin table
-capacity forever.
+An already-gone descriptor/filter is treated as successful removal on both
+epoll and kqueue (`ENOENT`/`EBADF`), freeing its slot. A different backend removal
+error raises and **preserves the registration and its slot**. Keep the descriptor
+and its resource/loop ownership alive, inspect the error, repair the cause and
+retry removal. This replaces the earlier drop-on-every-error rule: bookkeeping
+must not declare a watch gone when kernel removal is still unresolved.
 
 ### `(event-loop-poll loop timeout-ms)`
 
@@ -94,8 +111,10 @@ replacing it, so a reader still drains what is buffered before observing EOF.
 A signal that interrupts the wait is reported as a timeout, not an error. That
 is what keeps an unbounded wait breakable — `Ctrl-C` interrupts the syscall and
 the call returns rather than wedging the REPL. Polling a loop with nothing
-registered returns immediately instead of blocking forever on a queue no one can
-wake.
+registered and no live or unresolved managed owner returns immediately, even if
+a maintenance hook remains installed from an earlier resource. Pending/retryable
+cleanup still counts as an owner and can receive cross-thread wake requests; a
+terminal result ticket does not. Finite empty polls still honor their timeout.
 
 Raises on a closed or unknown handle, or on a kernel error.
 
@@ -105,7 +124,11 @@ Releases the underlying kqueue descriptor, epoll descriptor or completion port
 and retires the handle. Registered descriptors are **not** closed — the loop
 never owned them.
 
-Returns `#t` on success and `#f` when the handle was already closed or unknown.
+Returns `#t` on success and `#f` when the handle was already closed or unknown,
+when a non-owner thread attempts the close, or while a resource still retains
+the loop. A live-loop refusal preserves the handle; its owner must resolve the
+outstanding cleanup before retrying. The native API reports those live-loop
+refusals as `ESHKOL_EVENT_LOOP_EBUSY`.
 This is the one asymmetry in the surface, and it is deliberate: **close is
 idempotent-observable, use fails closed.** A double close is reportable without
 being fatal (the contract ESH-0010 specifies for handle lifecycles), while

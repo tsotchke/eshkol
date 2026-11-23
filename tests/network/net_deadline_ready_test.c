@@ -1,3 +1,6 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 /* Persistent readiness must not extend a network deadline.
  *
  * The event loop can keep reporting a descriptor as ready while the next
