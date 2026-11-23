@@ -643,6 +643,20 @@ ESHKOL_AGENT_API int32_t eshkol_http_server_port(int64_t);
 ESHKOL_AGENT_API int32_t eshkol_http_server_accept(int64_t, char*, int32_t, int32_t);
 ESHKOL_AGENT_API void eshkol_http_server_respond(int64_t, int32_t, const char*, const char*);
 ESHKOL_AGENT_API void eshkol_http_server_close(int64_t);
+
+/* Scoped native HTTP event streams used by lib/agent/http_sse.esk.
+ * The loop owner adopts a routed HTTP/1.1 GET. Read the lease identity
+ * immediately after acquisition so detached cleanup stays observable. */
+struct HttpSseStream;
+ESHKOL_AGENT_API struct HttpSseStream* eshkol_http_sse_scope_begin(int64_t, int64_t, int64_t);
+ESHKOL_AGENT_API int64_t eshkol_http_sse_scope_id(const struct HttpSseStream*);
+ESHKOL_AGENT_API int32_t eshkol_http_sse_scope_close(struct HttpSseStream*);
+ESHKOL_AGENT_API int64_t eshkol_http_sse_scope_cleanup_ticket(int64_t);
+ESHKOL_AGENT_API int eshkol_http_sse_stream_send(struct HttpSseStream*, const char*, const char*, const char*);
+ESHKOL_AGENT_API int eshkol_http_sse_stream_progress(struct HttpSseStream*);
+ESHKOL_AGENT_API int eshkol_http_sse_stream_finish(struct HttpSseStream*);
+ESHKOL_AGENT_API int64_t eshkol_http_sse_stream_deadline(const struct HttpSseStream*);
+
 ESHKOL_AGENT_API int64_t eshkol_unix_socket_connect(const char*);
 ESHKOL_AGENT_API int64_t eshkol_ws_server_upgrade(int64_t, const char*, int32_t);
 ESHKOL_AGENT_API int64_t eshkol_ws_wrap_fd(int64_t);

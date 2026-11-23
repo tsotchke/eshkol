@@ -4,7 +4,7 @@
 #include "eshkol/agent_http_sse_adapter.h"
 #include "eshkol/core/resource_lease.h"
 
-typedef struct eshkol_http_sse_stream eshkol_http_sse_stream_t;
+typedef struct HttpSseStream eshkol_http_sse_stream_t;
 
 #define ESHKOL_HTTP_SSE_FINISHED 2
 

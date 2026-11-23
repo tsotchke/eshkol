@@ -1,4 +1,5 @@
 #include "agent_http_sse_stream.h"
+#include "eshkol/agent_capabilities.h"
 #include "eshkol/core/event_loop.h"
 #include "eshkol/core/websocket_handshake.h"
 
@@ -8,7 +9,7 @@
 
 enum { CHUNK_PREFIX_MAX = 6 };
 
-struct eshkol_http_sse_stream {
+struct HttpSseStream {
     eshkol_http_sse_adapter_t* adapter;
     int64_t loop;
     int64_t lease;
@@ -212,4 +213,32 @@ int eshkol_http_sse_stream_end(eshkol_http_sse_stream_t* stream, int64_t* out_ti
     *out_ticket = stream->ticket;
     free(stream);
     return 0;
+}
+
+eshkol_http_sse_stream_t* eshkol_http_sse_scope_begin(int64_t server, int64_t loop,
+                                                     int64_t cookie) {
+    eshkol_http_sse_stream_t* stream = NULL;
+    if (cookie < 0) return NULL;
+    return eshkol_http_sse_stream_begin(server, loop, (uint64_t)cookie, &stream)
+        == 0 ? stream : NULL;
+}
+
+int64_t eshkol_http_sse_scope_id(const eshkol_http_sse_stream_t* stream) {
+    return stream ? stream->lease : 0;
+}
+
+int32_t eshkol_http_sse_scope_close(eshkol_http_sse_stream_t* stream) {
+    if (!on_owner_loop(stream)) return ESHKOL_IO_INVALID;
+    int status = retire(stream);
+    if (status < 0) return status;
+
+    /* Detached pending work stays rooted across a non-local exit. A terminal
+     * teardown error remains available by its original lease identity. */
+    status = eshkol_resource_cleanup_detach(stream->ticket);
+    if (status == 0) free(stream);
+    return status;
+}
+
+int64_t eshkol_http_sse_scope_cleanup_ticket(int64_t retired_id) {
+    return eshkol_resource_cleanup_ticket(retired_id);
 }
