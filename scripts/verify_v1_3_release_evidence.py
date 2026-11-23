@@ -32,10 +32,19 @@ TEST_ACTIONS = {
     "ctest --test-dir build --output-on-failure -R '^certified_enclosures_runtime_smoke$'": "certified_enclosures_runtime_smoke",
     "ctest --test-dir build --output-on-failure -R '^certified_enclosures_aot_smoke$'": "certified_enclosures_aot_smoke",
     "python3 tests/toolchain/test_v1_3_release_evidence_recipe.py": "release_evidence_recipe_self_test",
+    "ctest --test-dir build --output-on-failure -R '^and_or_operand_kinds_jit$'": "ctest-full::and_or_operand_kinds_jit",
+    "ctest --test-dir build --output-on-failure -R '^and_or_operand_kinds_aot$'": "ctest-full::and_or_operand_kinds_aot",
+    "ctest --test-dir build --output-on-failure -R '^and_or_operand_kinds_vm$'": "ctest-full::and_or_operand_kinds_vm",
+    "ctest --test-dir build --output-on-failure -R '^noreturn_blocks$'": "ctest-full::noreturn_blocks",
+    "ctest --test-dir build --output-on-failure -R '^noreturn_position_engine_test$'": "ctest-full::noreturn_position_engine_test",
+    "ctest --test-dir build --output-on-failure -R '^(http_protocol_syntax_test|http_hostile_input_(jit|aot|vm)|http_wrapper_hostile_input_(jit|aot))$'": "ctest-full::v14_http_request_grammar",
+    "ctest --test-dir build --output-on-failure -R '^(websocket_handshake_test|http_hostile_input_(jit|vm))$'": "ctest-full::v14_websocket_handshake",
+    "ctest --test-dir build --output-on-failure -R '^eshkol_server_(request_handling|handle_client)_test$'": "ctest-full::v14_server_request_limits",
+    "ctest --test-dir build --output-on-failure -R '^merkle_domain_separation_(jit|aot)$'": "ctest-full::v14_merkle_domain_separation",
 }
 
 EXPECTED_CRITERION_COUNTS = {
-    "v1.4-connection": 66,
+    "v1.4-connection": 71,
     "v1.3.5-evolve": 37,
     "v1.3.6-evolve": 12,
 }
