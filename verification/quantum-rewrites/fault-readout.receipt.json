@@ -1,0 +1,55 @@
+{
+  "compiler_version": "Eshkol Compiler v1.3.6-evolve",
+  "compiler_sha256": "e047fc422246244643bac9b0c58a4dbc9ea8cd895e64722de8887a67d0a8ba1f",
+  "probe_sha256": "3fed4d0c0bec5e30d4ef47aab7416158ffb12c3bca546841827740728bc7869c",
+  "native_elf_sha256": "91785e90ece8c93f65fce8dfee49f9534637aa976032c03bf07e87e9743df821",
+  "tape_sha256": "dc9975687f9f42099c37d3f7bdf0c12b7f4fb6e8d512c857912ad614b2a35be3",
+  "recovery_sha256": "2cef52cab0bf45c5440a79700eaf8415039b1d9e491122a81539a196a4891eed",
+  "seeds": [
+    1,
+    73
+  ],
+  "ideal_columns": 128,
+  "cases": [
+    {
+      "schedule": "original",
+      "depth": 9,
+      "source_gate_position": 12,
+      "fault": null,
+      "syndrome": "000000",
+      "recovery": "IIIIIII",
+      "before_X": 1,
+      "recovered_X": 1
+    },
+    {
+      "schedule": "original",
+      "depth": 9,
+      "source_gate_position": 12,
+      "fault": "YY",
+      "syndrome": "000000",
+      "recovery": "IIIIIII",
+      "before_X": 1,
+      "recovered_X": 1
+    },
+    {
+      "schedule": "reordered",
+      "depth": 8,
+      "source_gate_position": 20,
+      "fault": null,
+      "syndrome": "000000",
+      "recovery": "IIIIIII",
+      "before_X": 1,
+      "recovered_X": 1
+    },
+    {
+      "schedule": "reordered",
+      "depth": 8,
+      "source_gate_position": 20,
+      "fault": "YY",
+      "syndrome": "110110",
+      "recovery": "IIIIIYI",
+      "before_X": 1,
+      "recovered_X": -1
+    }
+  ]
+}

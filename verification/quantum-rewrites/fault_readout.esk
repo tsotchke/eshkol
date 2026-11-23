@@ -1,0 +1,12 @@
+;; Each invocation prepares and measures a fresh seven-wire register.
+(require core.quantum.register)
+(let* ((seed (read)) (tape (read)))
+  (set-quantum-region-options! (list (cons 'optimize #f) (cons 'seed seed)))
+  (call-with-quantum-region
+    (lambda (region)
+      (let* ((q (qapply-circuit (qalloc region 7) (make-qcircuit 7 tape)))
+             (bits (qmeasure q)))
+        (if (not (equal? tape (qregion-gate-log region)))
+            (error "measured gate log differs from submitted tape"))
+        (write bits)
+        (newline)))))

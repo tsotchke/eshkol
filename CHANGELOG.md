@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Replay the Steane gate-local YY fault and measure the recovered logical X in a native quantum region.
 - Check optimized two-wire circuits at state-vector dispatch and preserve the pending register if preparation fails. (#950)
 
 - Check phase-corrected coherent rewrites and replay an exact seven-wire Steane schedule. (#946)
