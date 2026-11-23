@@ -57,5 +57,11 @@ if [[ "$adversarial" != "$expected_adversarial" ]]; then
     exit 1
 fi
 
+direct=$(run_case direct "$REPO/tests/rng/first_draw_seed.esk")
+if [[ "$direct" != '#t' ]]; then
+    echo "FAIL: explicit seed before the first draw" >&2
+    exit 1
+fi
+
 run_case issue_553 "$REPO/tests/vm_parity/corpus/58_rng_seed_parity.esk" > "$WORK/issue_553.sequence"
 echo "PASS: SW-113 seeded PRNG sequence agrees across JIT, AOT, and VM"

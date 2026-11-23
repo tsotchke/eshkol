@@ -46,6 +46,21 @@
 (hash-clear! h)
 (check "clear! empties the table"        0 (hash-count h))
 
+(define (check-number-key first second)
+  (hash-set! h first 'numeric)
+  (check "equal number key" 'numeric (hash-ref h second #f))
+  (hash-remove! h second))
+
+(check "distinct large rational numerators" #f
+       (equal? (/ (expt 2 100) 3) (/ (+ (expt 2 100) 1) 3)))
+(check "separately allocated i128 values" #t
+       (equal? (string->i128 "12345678901234567890") (string->i128 "12345678901234567890")))
+(check-number-key (/ 1 3) (/ 2 6))
+(check-number-key (expt 2 100) (* 2 (expt 2 99)))
+(check-number-key (/ (expt 2 100) 3) (/ (expt 2 101) 6))
+(check-number-key (make-rectangular 2.0 3.0) (make-rectangular 2.0 3.0))
+(check-number-key (string->i128 "12345678901234567890") (string->i128 "12345678901234567890"))
+
 (if (= failures 0)
     (begin (display "PASS: hash tables compare keys by equal? -- 0 failures") (newline))
     (begin (display "FAIL: hash tables compare keys by equal? -- ")

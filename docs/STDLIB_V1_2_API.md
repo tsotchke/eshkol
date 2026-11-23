@@ -894,9 +894,9 @@ in `platform_runtime.cpp` (`prng.cpp`).
 
 #### `(set-random-seed! seed)` → unspecified
 
-Seed the global PRNG. The codegen for `set-random-seed!` also flips a
-`__random_seeded__` marker so the runtime's auto-seed-from-time path (which
-fires on first `(random)` of a program) is suppressed (`prng.cpp`).
+Seed the global PRNG with the low 32 bits of the integer argument. Repeating
+the seed replays the same sequence. On the first draw without an explicit
+seed, the runtime initializes the 48-bit state from operating-system entropy.
 
 #### `(random)` → real in `[0.0, 1.0)`
 

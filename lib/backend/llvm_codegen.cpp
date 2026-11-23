@@ -39290,44 +39290,8 @@ Value* EshkolLLVMCodeGen::codegenCompoundCarCdr(const eshkol_operations_t* op, c
         return current;
     }
 
+// Random number generation: (random) returns double in [0.0, 1.0)
 Value* EshkolLLVMCodeGen::codegenRandom(const eshkol_operations_t* op) {
-        // Get or create global flag for random seed initialization
-        // This is a RUNTIME flag, not a compile-time flag
-        GlobalVariable* random_seeded = module->getNamedGlobal("__random_seeded__");
-        if (!random_seeded) {
-            random_seeded = new GlobalVariable(
-                *module, int8_type, false,
-                GlobalValue::InternalLinkage,
-                ConstantInt::get(int8_type, 0),  // Initially not seeded
-                "__random_seeded__"
-            );
-        }
-
-        // Check at runtime if we need to seed
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* seed_block = BasicBlock::Create(*context, "random_seed", current_func);
-        BasicBlock* continue_block = BasicBlock::Create(*context, "random_continue", current_func);
-
-        Value* is_seeded = builder->CreateLoad(int8_type, random_seeded);
-        Value* need_seed = builder->CreateICmpEQ(is_seeded, ConstantInt::get(int8_type, 0));
-        builder->CreateCondBr(need_seed, seed_block, continue_block);
-
-        // Seed block - only executed once per program run
-        builder->SetInsertPoint(seed_block);
-        Function* time_func = function_table["time"];
-        Function* srand48_func = function_table["srand48"];
-        if (time_func && srand48_func) {
-            Value* time_val = builder->CreateCall(time_func,
-                {ConstantPointerNull::get(PointerType::get(*context, 0))});
-            builder->CreateCall(srand48_func, {time_val});
-        }
-        // Mark as seeded
-        builder->CreateStore(ConstantInt::get(int8_type, 1), random_seeded);
-        builder->CreateBr(continue_block);
-
-        // Continue block - generate random number
-        builder->SetInsertPoint(continue_block);
-
         // Call drand48() to get random double
         Function* drand48_func = function_table["drand48"];
         if (!drand48_func) {
@@ -39361,16 +39325,6 @@ Value* EshkolLLVMCodeGen::codegenSetRandomSeed(const eshkol_operations_t* op) {
             function_table["srand48"] = seed_fn;
         }
         builder->CreateCall(seed_fn, {seed});
-
-        // Mark the codegenRandom global flag as seeded so the auto-seed-from-time
-        // path doesn't override the user's explicit seed.
-        GlobalVariable* random_seeded = module->getNamedGlobal("__random_seeded__");
-        if (!random_seeded) {
-            random_seeded = new GlobalVariable(
-                *module, int8_type, false, GlobalValue::InternalLinkage,
-                ConstantInt::get(int8_type, 0), "__random_seeded__");
-        }
-        builder->CreateStore(ConstantInt::get(int8_type, 1), random_seeded);
 
         // R7RS convention: side-effecting forms return an unspecified value.
         return packDoubleToTaggedValue(ConstantFP::get(double_type, 0.0));

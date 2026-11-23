@@ -1041,7 +1041,7 @@ typedef struct eshkol_shared_header {
     uint8_t flags;                  // Flags (e.g., marked for collection)
     uint8_t value_type;             // Type of the shared value
     uint16_t reserved;              // Alignment padding
-    uint32_t reserved2;             // Padding to 24 bytes
+    uint32_t header_owners;         // Weak handles plus one while the payload is owned
 } eshkol_shared_header_t;
 
 // Weak reference structure - points to shared data

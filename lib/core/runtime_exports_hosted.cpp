@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/platform_runtime.h>
+#include <eshkol/core/seed_entropy.h>
 #include <eshkol/runtime_exports.h>
 
 #include <cctype>
@@ -41,7 +42,18 @@ constexpr std::uint64_t kDrand48Addend = 0xBULL;
 constexpr std::uint64_t kDrand48Mask = (1ULL << 48) - 1;
 
 std::mutex g_drand48_mutex;
-std::uint64_t g_drand48_state = 0x1234ABCD330EULL;
+std::uint64_t g_drand48_state;
+bool g_drand48_seeded = false;
+
+// Called with g_drand48_mutex held by every consumer.
+std::uint64_t next_drand48_state() {
+    if (!g_drand48_seeded) {
+        eshkol_seed_entropy(&g_drand48_state, sizeof(g_drand48_state));
+        g_drand48_seeded = true;
+    }
+    g_drand48_state = (g_drand48_state * kDrand48Multiplier + kDrand48Addend) & kDrand48Mask;
+    return g_drand48_state;
+}
 
 #ifdef _WIN32
 struct windows_dirent_shim {
@@ -180,8 +192,7 @@ extern "C" double drand48() {
  */
 extern "C" long lrand48() {
     std::lock_guard<std::mutex> lock(g_drand48_mutex);
-    g_drand48_state = (g_drand48_state * kDrand48Multiplier + kDrand48Addend) & kDrand48Mask;
-    return static_cast<long>((g_drand48_state >> 17) & 0x7fffffffULL);
+    return static_cast<long>((next_drand48_state() >> 17) & 0x7fffffffULL);
 }
 
 /** @brief Windows shim for the POSIX srand48() libc function; forwards to eshkol_srand48(). */
@@ -308,6 +319,7 @@ extern "C" int gettimeofday(void* tv_raw, void* tz_raw) {
  */
 extern "C" void eshkol_srand48(std::int64_t seed) {
     std::lock_guard<std::mutex> lock(g_drand48_mutex);
+    g_drand48_seeded = true;
     g_drand48_state = ((static_cast<std::uint64_t>(seed) << 16) | 0x330EULL) & kDrand48Mask;
 }
 
@@ -324,8 +336,7 @@ extern "C" void eshkol_srand48(std::int64_t seed) {
  */
 extern "C" double eshkol_drand48() {
     std::lock_guard<std::mutex> lock(g_drand48_mutex);
-    g_drand48_state = (g_drand48_state * kDrand48Multiplier + kDrand48Addend) & kDrand48Mask;
-    return static_cast<double>(g_drand48_state) / static_cast<double>(kDrand48Mask + 1ULL);
+    return static_cast<double>(next_drand48_state()) / static_cast<double>(kDrand48Mask + 1ULL);
 }
 
 /**

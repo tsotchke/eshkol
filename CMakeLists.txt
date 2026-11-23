@@ -2566,6 +2566,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_deep_equal.cpp
   lib/core/runtime_math_compat.c
   lib/core/runtime_hash_table.cpp
+  lib/core/table_hash.cpp
   lib/core/runtime_list_helpers.cpp
   lib/core/linear_solve.cpp
   lib/core/linear_solve_portable.c
@@ -2694,6 +2695,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/prng.cpp
   lib/core/runtime_arena_cpp.cpp
   lib/core/runtime_frame_trace.cpp
+  lib/core/gensym_sequence.cpp
   lib/core/runtime_gensym.cpp
   lib/core/runtime_type_name.cpp
   lib/core/symbol_intern.cpp
@@ -8450,6 +8452,9 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: hessian over parameter-capturing lambdas"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     if(NOT WIN32)
+        add_test(NAME vm_hyperdual_dispatch_reference COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/hyperdual_dispatch_reference.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend)
         add_test(NAME site_scalar_hessian_jit
             COMMAND ${CMAKE_COMMAND} -E env ESHKOL_JIT_CACHE=0
                 $<TARGET_FILE:eshkol-run> -r
@@ -8534,7 +8539,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         # SW-193, SW-194, SW-199, SW-200, SW-202, SW-203, SW-218, SW-219, SW-220,
         # SW-222, SW-224, SW-225.
         find_program(ESHKOL_VM_CARRIER_NODE node)
+        if(ESHKOL_VM_CARRIER_NODE)
+            add_test(NAME wasm_repl_source_contract COMMAND ${ESHKOL_VM_CARRIER_NODE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/wasm_repl_source_contract.js"
+                "${CMAKE_CURRENT_SOURCE_DIR}/site/static/eshkol-vm.js")
+        endif()
+        add_test(NAME gensym_sequence_aot
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence' '${CMAKE_CURRENT_SOURCE_DIR}/tests/control_flow/gensym_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/gensym_sequence'")
+        set_tests_properties(gensym_sequence_aot PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ALL PASS" FAIL_REGULAR_EXPRESSION "FAIL:")
         set(_esh_vm_carrier_tests
+            "gensym_sequence|tests/control_flow/gensym_test.esk|RESULT: ALL PASS|all"
             "nested_towers_matrix|tests/ad/nested_towers_matrix_test.esk|PASS: nested towers matrix|vm"
             "nested_operator_matrix|tests/ad/nested_operator_matrix_test.esk|PASS: nested operator matrix|vm"
             "vm_nested_holomorphic|tests/ad/vm_nested_holomorphic_test.esk|PASS: VM nested holomorphic derivatives|all"
@@ -9641,6 +9657,16 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_shutdown_teardown_race_test COMMAND runtime_shutdown_teardown_race_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND NOT WIN32)
+    set(_shared_ffi "${CMAKE_CURRENT_SOURCE_DIR}/tests/ffi/shared_ownership.esk")
+    add_test(NAME shared_ownership_jit
+        COMMAND $<TARGET_FILE:eshkol-run> -r "${_shared_ffi}" -L${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME shared_ownership_aot COMMAND sh -c
+        "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/shared_ownership' '${_shared_ffi}' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/shared_ownership'")
+    set_tests_properties(shared_ownership_jit shared_ownership_aot PROPERTIES
+        TIMEOUT 120 PASS_REGULAR_EXPRESSION "PASS: shared ownership")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shared_memory_test.cpp")
     add_executable(runtime_shared_memory_test tests/core/runtime_shared_memory_test.cpp)
     target_compile_features(runtime_shared_memory_test PRIVATE cxx_std_17)
@@ -9650,6 +9676,10 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
         target_link_directories(runtime_shared_memory_test PRIVATE ${LLVM_LIBRARY_DIRS})
     endif()
     target_link_libraries(runtime_shared_memory_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(runtime_shared_memory_test PRIVATE ESHKOL_TEST_MALLOC_WRAP)
+        target_link_options(runtime_shared_memory_test PRIVATE "-Wl,--wrap=malloc")
+    endif()
     add_test(NAME runtime_shared_memory_test COMMAND runtime_shared_memory_test)
 endif()
 
@@ -11457,6 +11487,26 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-vm-standalone-test AND NOT WIN32)
     foreach(case IN ITEMS rational_limits bignum_zero_condition diagnostic_contexts symbolic_variable_power)
         add_test(NAME vm_${case} COMMAND vm_numeric_context_test ${case})
     endforeach()
+    function(add_vm_runtime_test name)
+        add_executable(${name} tests/vm/${name}.c)
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        eshkol_apply_vm_limit_definitions(${name})
+        if(LLVM_LIBRARY_DIRS)
+            target_link_directories(${name} PRIVATE ${LLVM_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(${name} PRIVATE eshkol-static
+            ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+    add_executable(table_hash_vectors tests/core/table_hash_vectors.cpp lib/core/table_hash.cpp)
+    target_include_directories(table_hash_vectors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    add_test(NAME table_hash_vectors COMMAND table_hash_vectors)
+    add_vm_runtime_test(vm_numeric_key_hash)
+    add_test(NAME vm_process_hash_key COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/vm/process_hash_key.py $<TARGET_FILE:vm_numeric_key_hash>)
+    add_vm_runtime_test(vm_standard_port_roots)
+    add_vm_runtime_test(gensym_shared_sequence)
     foreach(_dispatch IN ITEMS threaded switch)
         set(_dispatch_target vm_invalid_opcode_${_dispatch}_test)
         add_executable(${_dispatch_target} tests/vm/vm_invalid_opcode_dispatch_test.c)
@@ -12066,6 +12116,11 @@ if(ESHKOL_BUILD_TESTS AND NOT WIN32)
     # filed reproducer in tests/vm_parity/corpus/58_rng_seed_parity.esk.
     if(TARGET eshkol-run AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/seed_parity_test.sh")
+        add_test(NAME rng_automatic_seed_cross_engine
+            COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/automatic_stream.py"
+                $<TARGET_FILE:eshkol-run> $<TARGET_FILE:eshkol-vm-standalone-test>
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/rng/automatic_stream.esk")
+        set_tests_properties(rng_automatic_seed_cross_engine PROPERTIES TIMEOUT 300)
         add_test(
             NAME rng_seed_parity_cross_engine
             COMMAND bash
@@ -13699,6 +13754,10 @@ endif()
 # reimplementation of them.
 if(ESHKOL_BUILD_TESTS AND NOT WIN32 AND TARGET eshkol-server AND
    EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/eshkol_server_handle_client_test.cpp")
+    add_test(NAME eshkol_server_compile_worker COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/server_compile_worker.py
+        $<TARGET_FILE:eshkol-server>)
+    set_tests_properties(eshkol_server_compile_worker PROPERTIES TIMEOUT 120)
     add_executable(eshkol_server_handle_client_test
         tests/toolchain/eshkol_server_handle_client_test.cpp)
     target_compile_features(eshkol_server_handle_client_test PRIVATE cxx_std_17)

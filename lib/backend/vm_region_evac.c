@@ -948,6 +948,9 @@ static int vm_evac_mark_roots(VM* vm) {
         if (!vm_evac_mark_value(h, vm->wind_stack[i].before) ||
             !vm_evac_mark_value(h, vm->wind_stack[i].after)) return 0;
 
+    for (size_t i = 0; i < sizeof(vm->std_port_params) / sizeof(vm->std_port_params[0]); i++)
+        if (!vm_evac_mark_value(h, vm->std_port_params[i])) return 0;
+
     /* Dynamic parameter bindings and the promise-evaluation chain. */
     for (int i = 0; i < vm->n_parameter_bindings && i < 64; i++)
         if (!vm_evac_mark_value(h, vm->parameter_bindings[i])) return 0;

@@ -49,6 +49,11 @@
 #include <new>
 #include <stdexcept>
 #include <fstream>
+#include <filesystem>
+#include <optional>
+#include <llvm/ADT/SmallString.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/Program.h>
 
 // Networking headers
 #ifdef _WIN32
@@ -67,6 +72,8 @@
 #include <unistd.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <sys/resource.h>
+#include <dirent.h>
 #endif
 
 #ifdef _WIN32
@@ -333,6 +340,119 @@ std::string compile_to_wasm(const std::string& code, const std::string& session_
 
     return response;
 }
+
+namespace {
+
+namespace fs = std::filesystem;
+std::string server_executable;
+constexpr unsigned worker_seconds = 30;
+constexpr unsigned worker_memory_mb = 1024;
+constexpr size_t worker_response_limit = 32u << 20;
+
+bool read_bounded(const fs::path& path, size_t limit, std::string& result) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    const auto size = in.tellg();
+    if (size < 0 || static_cast<uint64_t>(size) > limit) return false;
+    result.resize(static_cast<size_t>(size));
+    in.seekg(0);
+    return static_cast<bool>(in.read(result.data(), static_cast<std::streamsize>(size)));
+}
+
+bool write_bytes(const fs::path& path, const std::string& data) {
+    std::ofstream out(path, std::ios::binary);
+    out.write(data.data(), data.size());
+    out.close();
+    return static_cast<bool>(out);
+}
+
+#ifndef _WIN32
+bool cap_worker_resource(int resource, rlim_t cap) {
+    struct rlimit limit;
+    if (getrlimit(resource, &limit) != 0) return false;
+    limit.rlim_max = std::min(cap, std::min(limit.rlim_max, limit.rlim_cur));
+    limit.rlim_cur = limit.rlim_max;
+    return setrlimit(resource, &limit) == 0;
+}
+
+bool prepare_worker() {
+    alarm(worker_seconds);
+    if (!cap_worker_resource(RLIMIT_AS, static_cast<rlim_t>(worker_memory_mb) << 20) ||
+        !cap_worker_resource(RLIMIT_CPU, worker_seconds) ||
+        !cap_worker_resource(RLIMIT_FSIZE, worker_response_limit) ||
+        !cap_worker_resource(RLIMIT_CORE, 0)) return false;
+
+    DIR* fds = opendir("/dev/fd");
+    if (!fds) return false;
+    while (dirent* entry = readdir(fds)) {
+        char* end;
+        long fd = std::strtol(entry->d_name, &end, 10);
+        if (*end == 0 && fd > 2 && fd != dirfd(fds)) close(static_cast<int>(fd));
+    }
+    closedir(fds);
+    return true;
+}
+#endif
+
+int compile_worker(const fs::path& dir) {
+#ifndef _WIN32
+    if (!prepare_worker()) return 1;
+#endif
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+    eshkol::frontend::enable_self_hosted_incremental();
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+    eshkol::frontend::enable_self_hosted_scalar_lowering();
+#endif
+    try {
+        std::string source, session;
+        const size_t budget = eshkol_server_max_body_bytes();
+        if (!read_bounded(dir / "source", budget, source) ||
+            !read_bounded(dir / "session", std::max<size_t>(budget, 32), session)) return 1;
+        std::string json = compile_to_wasm(source, session);
+        if (json.size() > worker_response_limit) return 2;
+        return write_bytes(dir / "response", json) ? 0 : 1;
+    } catch (const std::bad_alloc&) {
+        return 2;
+    } catch (const std::exception& error) {
+        return write_bytes(dir / "response", json_error(error.what())) ? 3 : 1;
+    }
+}
+
+struct WorkerFiles {
+    fs::path dir;
+    ~WorkerFiles() {
+        std::error_code ec;
+        for (const char* name : {"source", "session", "response"})
+            fs::remove(dir / name, ec);
+        fs::remove(dir, ec);
+    }
+};
+
+std::string compile_request(const std::string& source, const std::string& session) {
+    llvm::SmallString<128> directory;
+    if (llvm::sys::fs::createUniqueDirectory("eshkol-compile", directory))
+        return build_response(503, "application/json", json_error("Compiler workspace unavailable"));
+    WorkerFiles files{directory.str().str()};
+    if (!write_bytes(files.dir / "source", source) || !write_bytes(files.dir / "session", session))
+        return build_response(503, "application/json", json_error("Compiler input unavailable"));
+
+    const llvm::StringRef args[] = {server_executable, "--compile-worker", directory};
+    const std::optional<llvm::StringRef> quiet[] = {"", "", ""};
+#ifdef _WIN32
+    const int rc = llvm::sys::ExecuteAndWait(server_executable, args, std::nullopt, quiet,
+                                              worker_seconds, worker_memory_mb);
+#else
+    // POSIX limits and the wall timer belong to this worker process.
+    const int rc = llvm::sys::ExecuteAndWait(server_executable, args, std::nullopt, quiet);
+#endif
+    std::string json;
+    if ((rc == 0 || rc == 3) && read_bounded(files.dir / "response", worker_response_limit, json))
+        return build_response(rc == 0 ? 200 : 400, "application/json", json);
+    if (rc == 2) return build_response(413, "application/json", json_error("Compilation exceeds its budget"));
+    return build_response(503, "application/json", json_error("Compiler worker unavailable"));
+}
+
+} // namespace
 
 // Parse HTTP request
 struct HttpRequest {
@@ -644,14 +764,8 @@ void handle_client(socket_handle_t client_socket) {
                     json_error("The cryptographic source for session "
                                "identifiers is unavailable"));
             } else {
-                // One request's compilation is one request's business. A
-                // source that the compiler cannot find memory for, or that
-                // fails anywhere in the pipeline, is answered on this
-                // connection; the process stays up and every other
-                // connection is unaffected.
                 try {
-                    std::string result = compile_to_wasm(code, session_id);
-                    response = build_response(200, "application/json", result);
+                    response = compile_request(code, session_id);
                 } catch (const std::bad_alloc&) {
                     response = build_response(413, "application/json",
                         json_error("The submitted source needs more memory "
@@ -707,12 +821,9 @@ void print_usage() {
 }
 
 int main(int argc, char** argv) {
-#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
-    eshkol::frontend::enable_self_hosted_incremental();
-#endif
-#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
-    eshkol::frontend::enable_self_hosted_scalar_lowering();
-#endif
+    if (argc == 3 && std::strcmp(argv[1], "--compile-worker") == 0)
+        return compile_worker(argv[2]);
+    server_executable = llvm::sys::fs::getMainExecutable(argv[0], reinterpret_cast<void*>(&compile_worker));
     int port = 8080;
     const char* env_token = std::getenv("ESHKOL_SERVER_TOKEN");
     if (env_token && env_token[0] != '\0') {

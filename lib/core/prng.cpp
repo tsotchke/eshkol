@@ -66,9 +66,7 @@ extern "C" int64_t eshkol_prng_random_integer(uint64_t* state, int64_t n) {
     return eshkol_prng_state_integer(state, n);
 }
 
-/* Explicit seed for the global PRNG. Callers also need to mark
- * __random_seeded__ so the codegen's auto-seed-from-time doesn't override —
- * that's done by the codegen for set-random-seed! (see codegenSetRandomSeed). */
+/* Set the process-wide pseudorandom stream. */
 extern "C" void eshkol_random_seed(int64_t seed) {
     eshkol_srand48(seed);
 }

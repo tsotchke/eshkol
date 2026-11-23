@@ -98,6 +98,20 @@
       "from": 11,
       "to": 10,
       "reason": "PR #939 (9cde83c9b) unified LLVMCodeGen's declaration in inc/eshkol/backend/llvm_codegen.h, removing the duplicated getObjectSubtype prose layout comment from lib/backend/llvm_codegen.cpp."
+    },
+    {
+      "class": "J_secondary_prefix_abi",
+      "path": "lib/core/runtime_shared_memory.cpp",
+      "from": 26,
+      "to": 13,
+      "reason": "Shared lifetime operations centralize atomic count access and final header reclamation."
+    },
+    {
+      "class": "G_header_field_write",
+      "path": "lib/core/runtime_deep_equal.cpp",
+      "from": 7,
+      "to": 6,
+      "reason": "Numeric subtype tests share the subtype accessor for rational and i128 payloads."
     }
   ]
 }

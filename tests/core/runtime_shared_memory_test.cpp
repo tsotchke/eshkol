@@ -1,8 +1,21 @@
 #include "../../lib/core/arena_memory.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <thread>
+
+#ifdef ESHKOL_TEST_MALLOC_WRAP
+static thread_local bool observe_allocation;
+static thread_local unsigned allocation_calls;
+extern "C" void* __real_malloc(size_t);
+extern "C" void* __wrap_malloc(size_t size) {
+    if (!observe_allocation) return __real_malloc(size);
+    ++allocation_calls;
+    return nullptr;
+}
+#endif
 
 namespace {
 
@@ -24,6 +37,15 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
+#ifdef ESHKOL_TEST_MALLOC_WRAP
+    observe_allocation = true;
+    void* over = shared_allocate_typed(SIZE_MAX, 77, nullptr);
+    observe_allocation = false;
+    if (over || allocation_calls) return fail("unrepresentable allocation reached the allocator");
+#endif
+    void* empty = shared_allocate(0, nullptr);
+    if (!empty || shared_ref_count(empty) != 1) return fail("empty payload ownership");
+    shared_release(empty);
     void* raw = shared_allocate_typed(8, 77, counting_destructor);
     if (!raw) return fail("shared allocation returned null");
 
@@ -54,6 +76,21 @@ int main() {
     if (shared_ref_count(raw) != 2) return fail("release upgraded ref failed");
     shared_release(raw);
     if (shared_ref_count(raw) != 1) return fail("release retained ref failed");
+
+    auto share = [raw] {
+        shared_retain(raw);
+        auto* observer = weak_ref_create(raw);
+        void* owned = weak_ref_upgrade(observer);
+        if (owned != raw) std::abort();
+        shared_release(owned);
+        weak_ref_release(observer);
+        shared_release(raw);
+    };
+    std::thread first(share);
+    std::thread second(share);
+    first.join();
+    second.join();
+    if (shared_ref_count(raw) != 1) return fail("concurrent owners did not balance");
 
     shared_release(raw);
     if (destructor_calls != 1) return fail("destructor was not called once");

@@ -6,7 +6,10 @@
 #include <math.h>
 #include <limits.h>
 #include <stdint.h>
+#include "eshkol/core/gensym_sequence.h"
 #include "eshkol/core/prng_state.h"
+#include "eshkol/core/seed_entropy.h"
+#include "eshkol/core/table_hash.h"
 #include <stdlib.h>
 #include "vm_integer_arithmetic.h"
 #include "../core/model_io_atomic.h"
@@ -22,13 +25,18 @@ extern void eshkol_srand48(int64_t seed);
 static double vm_prng_next(void) { return eshkol_drand48(); }
 static void vm_prng_seed(int64_t seed) { eshkol_srand48(seed); }
 #else
-static uint64_t vm_prng_state = 0x1234ABCD330EULL;
+static uint64_t vm_prng_state;
+static int vm_prng_initialized;
 static void vm_prng_seed(int64_t seed) {
-    vm_prng_state = ((uint64_t)seed << 16 | 0x330EULL) & ((1ULL << 48) - 1);
+    vm_prng_state = eshkol_prng_state_seed(seed);
+    vm_prng_initialized = 1;
 }
 static double vm_prng_next(void) {
-    vm_prng_state = (vm_prng_state * 0x5DEECE66DULL + 0xBULL) & ((1ULL << 48) - 1);
-    return (double)vm_prng_state / (double)(1ULL << 48);
+    if (!vm_prng_initialized) {
+        eshkol_seed_entropy(&vm_prng_state, sizeof(vm_prng_state));
+        vm_prng_initialized = 1;
+    }
+    return eshkol_prng_state_random(&vm_prng_state);
 }
 #endif
 
@@ -7292,6 +7300,9 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
         case VAL_RATIONAL:
         case VAL_BIGNUM:
             return vm_bignum_compare_vals(vm, a, b) == 0;
+        case VAL_I128:
+            return memcmp(vm->heap.objects[a.as.ptr]->opaque.ptr,
+                          vm->heap.objects[b.as.ptr]->opaque.ptr, sizeof(eshkol_i128_abi)) == 0;
         case VAL_COMPLEX: {
             VmComplex* az = (VmComplex*)vm->heap.objects[a.as.ptr]->opaque.ptr;
             VmComplex* bz = (VmComplex*)vm->heap.objects[b.as.ptr]->opaque.ptr;
@@ -7412,7 +7423,7 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
             HeapObject* bo = vm->heap.objects[b.as.ptr];
             VmRational* ar = (ao && ao->opaque.ptr) ? (VmRational*)ao->opaque.ptr : NULL;
             VmRational* br = (bo && bo->opaque.ptr) ? (VmRational*)bo->opaque.ptr : NULL;
-            return ar && br && ar->num == br->num && ar->denom == br->denom;
+            return ar && br && vm_rational_equal_exact(ar, br);
         }
         case VAL_I128: {
             eshkol_i128_abi* ap = (eshkol_i128_abi*)vm->heap.objects[a.as.ptr]->opaque.ptr;
@@ -7450,72 +7461,97 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
  * with vm_hash_key_hash / vm_hash_key_equal (native 660). The hash is a
  * function of exactly what vm_deep_equal compares, so keys that are equal?
  * always hash alike: a string key is found by its characters, not by the
- * heap slot that holds it. Compound and exact-number keys hash by a coarse
- * class (length for sequences) and are told apart by vm_deep_equal.
+ * heap slot that holds it. Boxed numbers hash the components used in equality.
  * ═══════════════════════════════════════════════════════════════════════════ */
-static uint64_t vm_hash_mix(uint64_t h, uint64_t v) {
-    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-    return h;
+static uint64_t vm_hash_bignum(const VmBignum* b) {
+    if (bignum_is_zero(b)) return eshkol_table_hash_pair(0, 0);
+    return eshkol_table_hash_pair((uint64_t)b->sign,
+        eshkol_table_hash(b->limbs, (size_t)b->n_limbs * sizeof(*b->limbs)));
 }
 
-static uint64_t vm_equal_hash(VM* vm, Value v, int depth) {
-    uint64_t h = vm_hash_mix(1469598103934665603ULL, (uint64_t)v.type);
+static uint64_t vm_equal_hash(VM* vm, Value v, int depth, unsigned* remaining) {
+    uint64_t h = (uint64_t)v.type;
     switch ((int)v.type) {
-        case VAL_NIL:  return h;
-        case VAL_BOOL: return vm_hash_mix(h, (uint64_t)(v.as.b != 0));
+        case VAL_NIL:  return eshkol_table_hash_pair(h, 0);
+        case VAL_BOOL: return eshkol_table_hash_pair(h, (uint64_t)(v.as.b != 0));
         case VAL_INT:
-        case VAL_CHAR: return vm_hash_mix(h, (uint64_t)v.as.i);
+        case VAL_CHAR: return eshkol_table_hash_pair(h, (uint64_t)v.as.i);
         case VAL_FLOAT: {
-            double f = v.as.f == 0.0 ? 0.0 : v.as.f;   /* -0.0 == 0.0 */
+            double f = v.as.f;
             uint64_t bits;
             memcpy(&bits, &f, sizeof(bits));
-            return vm_hash_mix(h, bits);
+            return eshkol_table_hash_pair(h, bits);
         }
         case VAL_STRING:
         case VAL_SYMBOL: {
             VmString* str = vm_value_as_string(vm, v);
             if (!str) return h;
-            for (int64_t i = 0; i < str->byte_len; i++)
-                h = (h ^ (uint8_t)str->data[i]) * 1099511628211ULL;
-            return h;
+            return eshkol_table_hash_pair(h, eshkol_table_hash(str->data, (size_t)str->byte_len));
         }
         case VAL_PAIR: {
-            /* The first few elements of the spine, recursively to a small
-             * depth: a pure function of the content vm_deep_equal walks. */
-            int n = 0;
-            while (v.type == VAL_PAIR && n < 8 && depth < 4) {
+            /* Bound traversal of cyclic or shared structures. */
+            while (v.type == VAL_PAIR && depth < 32 && *remaining) {
+                --*remaining;
                 HeapObject* o = vm->heap.objects[v.as.ptr];
                 if (!o || o->type != HEAP_CONS) break;
-                h = vm_hash_mix(h, vm_equal_hash(vm, o->cons.car, depth + 1));
+                h = eshkol_table_hash_pair(h, vm_equal_hash(vm, o->cons.car, depth + 1, remaining));
                 v = o->cons.cdr;
-                n++;
+                if (v.type != VAL_PAIR)
+                    return eshkol_table_hash_pair(h, vm_equal_hash(vm, v, depth + 1, remaining));
             }
-            return vm_hash_mix(h, (uint64_t)n);
+            return eshkol_table_hash_pair(h, VAL_PAIR);
         }
         case VAL_VECTOR:
         case VAL_TENSOR: {
-            /* equal? also relates a vector to a 1-D tensor, so both hash in
-             * one class, by element count. */
+            // Numeric vector and tensor elements share the equality domain of doubles.
             HeapObject* o = vm->heap.objects[v.as.ptr];
-            int64_t len = -1;
-            if (o && o->opaque.ptr) {
-                if (v.type == VAL_VECTOR) len = ((VmVector*)o->opaque.ptr)->len;
-                else len = ((VmTensor*)o->opaque.ptr)->total;
+            if (!o || !o->opaque.ptr) return eshkol_table_hash_pair(0x5e9, 0);
+            VmVector* vec = v.type == VAL_VECTOR ? (VmVector*)o->opaque.ptr : NULL;
+            VmTensor* tensor = vec ? NULL : (VmTensor*)o->opaque.ptr;
+            int64_t length = vec ? vec->len : tensor->total;
+            h = eshkol_table_hash_pair(0x5e9, (uint64_t)length);
+            if (depth >= 32 || (tensor && !tensor->data)) return h;
+            for (int64_t i = 0; i < length && *remaining; ++i) {
+                --*remaining;
+                double number;
+                if (tensor) number = tensor->data[i];
+                else {
+                    Value item = vec->items[i];
+                    if (item.type == VAL_FLOAT) number = item.as.f;
+                    else if (item.type == VAL_INT) number = (double)item.as.i;
+                    else {
+                        h = eshkol_table_hash_pair(h, vm_equal_hash(vm, item, depth + 1, remaining));
+                        continue;
+                    }
+                }
+                if (number == 0.0) number = 0.0;
+                h = eshkol_table_hash_pair(h, eshkol_table_hash(&number, sizeof(number)));
             }
-            return vm_hash_mix(vm_hash_mix(1469598103934665603ULL, 0x5e9ULL), (uint64_t)len);
+            return h;
         }
         case VAL_BIGNUM:
-        case VAL_RATIONAL:
+            return vm_hash_bignum((VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr);
+        case VAL_RATIONAL: {
+            VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+            return r->is_big
+                ? eshkol_table_hash_pair(vm_hash_bignum(r->big_num), vm_hash_bignum(r->big_den))
+                : eshkol_table_hash_pair((uint64_t)r->num, (uint64_t)r->denom);
+        }
         case VAL_I128:
-        case VAL_COMPLEX:
-            return h;
+            return eshkol_table_hash(vm->heap.objects[v.as.ptr]->opaque.ptr, sizeof(eshkol_i128_abi));
+        case VAL_COMPLEX: {
+            VmComplex* z = (VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+            const double components[] = {z->real, z->imag};
+            return eshkol_table_hash(components, sizeof(components));
+        }
         default:
-            return vm_hash_mix(h, (uint64_t)(uint32_t)v.as.ptr);   /* identity */
+            return eshkol_table_hash_pair(h, (uint64_t)(uint32_t)v.as.ptr);   /* identity */
     }
 }
 
 static uint64_t vm_hash_key_hash(void* ctx, const void* key) {
-    return vm_equal_hash((VM*)ctx, *(const Value*)key, 0);
+    unsigned remaining = 4096;
+    return vm_equal_hash((VM*)ctx, *(const Value*)key, 0, &remaining);
 }
 
 static int vm_hash_key_equal(void* ctx, const void* a, const void* b) {
@@ -17248,10 +17284,9 @@ tensor_inverse_done:
      *   one variable with tangent=1 and the rest with tangent=0. The
      *   tangent of the result gives the partial derivative ∂f/∂xi.
      *
-     *   Hessian uses central difference of exact gradients:
-     *     f''(x) ≈ (f'(x+h) - f'(x-h)) / (2h)
-     *   where f' is computed exactly via dual numbers, giving O(h²)
-     *   accuracy with exact first derivatives.
+     *   The scalar Hessian takes an order-two Taylor coefficient. Vector
+     *   Hessians take mixed coefficients from nested Taylor levels or
+     *   hyper-dual directions according to the carrier and closure arity.
      *
      * Helper: vm_ad_make_dual_val — allocate a dual on the heap, return Value
      * Helper: vm_ad_extract_point — read point from scalar/list/tensor
@@ -17312,10 +17347,7 @@ tensor_inverse_done:
         break;
     }
 
-    case 752: { /* hessian(f, point) → EXACT second derivative via hyper-dual numbers
-                 * Scalar: seed x = (x,1,1,0) → f₁₂ = f''(x)
-                 * Multi-var: H[i][j] = ∂²f/∂xᵢ∂xⱼ via hyper-dual seeding
-                 * NO finite differences — mathematically exact. */
+    case 752: { /* hessian */
 #define VM_HD_MAKE(vm, fv, f1v, f2v, f12v, out) do { \
     VmHyperDual* _h = vm_hd_make(&(vm)->heap.regions, (fv), (f1v), (f2v), (f12v)); \
     if (!_h) { (out) = FLOAT_VAL(0); break; } \
@@ -18515,15 +18547,9 @@ tensor_inverse_done:
         vm_push(vm, a);
         break;
     }
-    case 2227: { /* gensym: fresh, uninterned symbol "G<counter>".
-                  * Process-wide monotonic counter, mirroring the native
-                  * codegen's eshkol_gensym_prefix (lib/core/introspection.cpp)
-                  * — a separate counter from vm_macro.c's compile-time
-                  * hygienic-renaming gensym, which is a different feature
-                  * (macro-expansion-time, not runtime-visible). */
-        static uint64_t s_vm_gensym_counter = 1;
-        char buf[32];
-        snprintf(buf, sizeof(buf), "G%llu", (unsigned long long)s_vm_gensym_counter++);
+    case 2227: { /* gensym */
+        char buf[22] = "G";
+        eshkol_gensym_suffix(buf + 1);
         VmString* s = vm_string_from_cstr(&vm->heap.regions, buf);
         if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_SYMBOL, s); }
         else vm_push(vm, NIL_VAL);

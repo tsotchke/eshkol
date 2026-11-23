@@ -6,6 +6,7 @@
  * Deep structural equality runtime helpers.
  */
 
+#include <eshkol/core/i128.h>
 #include "arena_memory.h"
 #include "../../inc/eshkol/core/bignum.h"
 #include "../../inc/eshkol/core/rational.h"
@@ -229,18 +230,16 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         return true;
     }
 
-    // Exact rationals (ESH-0114): rationals are always stored in reduced form
-    // with a positive denominator, so value equality reduces to comparing the
-    // numerator/denominator fields. (equal? (/ 1 3) (/ 2 6)) must be #t.
-    auto is_rational = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
-        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
-            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
-            return hdr->subtype == HEAP_SUBTYPE_RATIONAL;
-        }
-        return false;
+    auto has_subtype = [](const eshkol_tagged_value_t* val, uint8_t subtype) {
+        return val->type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val &&
+               ESHKOL_GET_SUBTYPE((void*)val->data.ptr_val) == subtype;
     };
-    bool is_rat1 = is_rational(type1, val1);
-    bool is_rat2 = is_rational(type2, val2);
+    if (has_subtype(val1, HEAP_SUBTYPE_I128) && has_subtype(val2, HEAP_SUBTYPE_I128)) {
+        return memcmp((const void*)val1->data.ptr_val, (const void*)val2->data.ptr_val,
+                      sizeof(eshkol_i128_abi)) == 0;
+    }
+    bool is_rat1 = has_subtype(val1, HEAP_SUBTYPE_RATIONAL);
+    bool is_rat2 = has_subtype(val2, HEAP_SUBTYPE_RATIONAL);
     if (is_rat1 && is_rat2) {
         // Canonical value equality across both the int64 and bignum
         // representations (ESH-0105/ESH-0114).
