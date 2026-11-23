@@ -4251,6 +4251,16 @@ if(ESHKOL_BUILD_TESTS)
     target_include_directories(eval_datum_graph PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(eval_datum_graph PRIVATE eshkol-runtime)
     add_test(NAME eval_datum_graph COMMAND eval_datum_graph)
+
+    add_executable(ffi_tensor_shape_roundtrip_test tests/ffi/tensor_shape_roundtrip.cpp)
+    target_compile_features(ffi_tensor_shape_roundtrip_test PRIVATE cxx_std_20)
+    target_include_directories(ffi_tensor_shape_roundtrip_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ffi_tensor_shape_roundtrip_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ffi_tensor_shape_roundtrip_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ffi_tensor_shape_roundtrip_test COMMAND ffi_tensor_shape_roundtrip_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/tensor_validation_test.cpp")
