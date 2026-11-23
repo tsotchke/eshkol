@@ -319,13 +319,32 @@ def class_data_layout(clean, name):
     return layout[0], referenced_nested(layout[1], layout[0])
 
 
+def nested_type_declarations(clean, name):
+    """Return direct nested type declarations, which are ODR-visible.
+
+    Method-local records are deliberately excluded by requiring the class
+    member indentation.  Definitions with bodies are already covered by the
+    existing nested-layout inventory.
+    """
+    body = class_definition(clean, name)
+    declaration_re = re.compile(
+        r'^ {4}(enum(?:\s+class)?|struct|class|union)\s+([A-Za-z_]\w*)', re.M)
+    return tuple(sorted(set(declaration_re.findall(body))))
+
+
 def duplicate_class_layout_findings(header, implementation):
-    """Compare the duplicated codegen class's complete member inventories."""
+    """Compare the split codegen class's layout and ODR-visible declarations."""
     try:
         header_layout = class_data_layout(code(header), 'EshkolLLVMCodeGen')
         implementation_layout = class_data_layout(code(implementation), 'EshkolLLVMCodeGen')
+        header_nested_declarations = nested_type_declarations(code(header), 'EshkolLLVMCodeGen')
+        implementation_nested_declarations = nested_type_declarations(code(implementation), 'EshkolLLVMCodeGen')
     except ValueError as error:
         return [{'rule': 'codegen_class_layout_unparseable', 'detail': str(error)}]
+    if header_nested_declarations != implementation_nested_declarations:
+        return [{'rule': 'codegen_class_odr_declaration_mismatch',
+                 'header_nested_declarations': header_nested_declarations,
+                 'implementation_nested_declarations': implementation_nested_declarations}]
     if header_layout != implementation_layout:
         first_member_difference = next((index for index, pair in enumerate(zip(header_layout[0], implementation_layout[0]))
                                         if pair[0] != pair[1]), min(len(header_layout[0]), len(implementation_layout[0])))
@@ -437,14 +456,30 @@ def callable_consumers(sources):
     return findings, sites
 
 
+def codegen_definition_findings(sources):
+    header = 'inc/eshkol/backend/llvm_codegen.h'
+    definition = re.compile(r'\b(?:class|struct)\s+EshkolLLVMCodeGen\s*(?:final\s*)?(?:\:[^{;]*)?\{')
+    found = [path for path, source in sources.items()
+             for _ in definition.finditer(code(source))]
+    if found != [header]:
+        return [{'rule': 'codegen_class_definition', 'definitions': found}]
+    canonical = code(sources[header])
+    try:
+        body = class_definition(canonical, 'EshkolLLVMCodeGen')
+        class_data_layout(canonical, 'EshkolLLVMCodeGen')
+    except ValueError as error:
+        return [{'rule': 'codegen_class_layout_unparseable', 'detail': str(error)}]
+    if re.search(r'^\s*#', body, re.M):
+        return [{'rule': 'codegen_class_conditional_definition', 'path': header}]
+    return []
+
+
 def scan(root):
     sources = {str(p.relative_to(root)): p.read_text() for folder in ('lib/frontend', 'lib/backend', 'inc/eshkol/core', 'inc/eshkol/backend', 'inc/eshkol/frontend')
                for p in (root/folder).rglob('*') if p.suffix in {'.cpp', '.c', '.h'}}
     ast, switches = ast_routes((root/'inc/eshkol/eshkol.h').read_text(), sources)
     calls, consumers = callable_consumers({p:s for p,s in sources.items() if p.startswith('lib/backend/')})
-    class_layout = duplicate_class_layout_findings(
-        (root/'inc/eshkol/backend/llvm_codegen.h').read_text(),
-        (root/'lib/backend/llvm_codegen.cpp').read_text())
+    class_layout = codegen_definition_findings(sources)
     findings = ast + calls + class_layout
     return {'status': 'FAIL' if findings else 'PASS', 'findings': findings,
             'ast_sites': switches, 'callable_sites': consumers,
@@ -507,9 +542,23 @@ def self_test():
       void method() { int fake_in_method; }
       /* int fake_in_comment; */
     };'''
+    one_definition = {'inc/eshkol/backend/llvm_codegen.h': class_header,
+                      'lib/backend/llvm_codegen.cpp': '#include <eshkol/backend/llvm_codegen.h>'}
+    if codegen_definition_findings(one_definition):
+        raise AssertionError('shared class definition rejected')
+    if not codegen_definition_findings({**one_definition, 'second.cpp': class_header}):
+        raise AssertionError('duplicate class definition accepted')
     class_impl = class_header.replace('class EshkolLLVMCodeGen', 'class EshkolLLVMCodeGen')
     if duplicate_class_layout_findings(class_header, class_impl):
         raise AssertionError('matching duplicated class layout rejected')
+    odr_header = '''class EshkolLLVMCodeGen {
+    enum class VariadicRest : unsigned char;
+    int value;
+};'''
+    odr_impl = odr_header.replace('enum class VariadicRest : unsigned char;',
+                                  'struct OtherNestedType;')
+    if not duplicate_class_layout_findings(odr_header, odr_impl):
+        raise AssertionError('nested ODR declaration drift survived')
     class_mutations = {
         'missing-member': class_impl.replace('      long long second;\n', ''),
         # Same member count and representative ABI size; source order still matters.

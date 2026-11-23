@@ -655,6 +655,7 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     hashUpdate(hash, "no-stdlib", std::to_string(no_stdlib));
     hashUpdate(hash, "strict-types", std::to_string(strict_types));
     hashUpdate(hash, "unsafe", std::to_string(unsafe_mode));
+    hashUpdate(hash, "xla-enabled", std::to_string(eshkol_config_is_xla_enabled()));
     hashUpdate(hash, "opt-level", std::to_string(opt_level));
     hashUpdate(hash, "target-triple", target_triple ? target_triple : "");
     // Environment the compiler reads while it generates code. Each variable
@@ -664,6 +665,7 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     // and set-to-empty are distinct, as ESHKOL_TARGET_FEATURES treats them.
     // A compile-time environment read added to the backend belongs here.
     static constexpr const char* kCodegenEnvironment[] = {
+        "ESHKOL_XLA_VERBOSE",
         "ESHKOL_XLA_THRESHOLD",
         "ESHKOL_DENSE_TENSOR_AD_NODES",
         "ESHKOL_NO_ITER_SCOPE",

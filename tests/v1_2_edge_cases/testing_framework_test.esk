@@ -39,7 +39,7 @@
     (check-equal? (string-append "foo" "bar") "foobar")))
 
 (display "Running tests:") (newline)
-(define ok (run-tests))
+(define ok (call-with-values (lambda () (run-tests)) (lambda (passed failed) (= failed 0))))
 
 (newline)
 (display "Final counts:") (newline)

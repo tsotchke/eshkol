@@ -1291,145 +1291,41 @@ extern "C" void eshkol_rational_compare_tagged_ptr(
     result->data.int_val = cmp_result ? 1 : 0;
 }
 
-/* Helper: extract a double from a tagged value (int, double, or rational) */
-static double tagged_to_double(const eshkol_tagged_value_t* v) {
-    if (v->type == ESHKOL_VALUE_INT64) return (double)v->data.int_val;
-    if (v->type == ESHKOL_VALUE_DOUBLE) {
-        union { int64_t i; double d; } conv;
-        conv.i = v->data.int_val;
-        return conv.d;
-    }
-    if (v->type == ESHKOL_VALUE_HEAP_PTR) {
-        uint8_t* ptr = (uint8_t*)(uintptr_t)v->data.int_val;
-        uint8_t subtype = *(ptr - 8);
-        if (subtype == HEAP_SUBTYPE_RATIONAL) {
-            return eshkol_rational_to_double((void*)(uintptr_t)v->data.int_val);
-        }
-    }
-    return 0.0;
-}
+using RzArena = arena_t;
+using RzInteger = eshkol_bignum_t;
+#define RZ_OP(name) eshkol_bignum_##name
+#include <eshkol/core/rationalize_impl.h>
 
-/* R7RS rationalize: find simplest rational p/q such that |x - p/q| <= epsilon.
- * Uses Stern-Brocot mediant search (simplest = smallest denominator). */
 extern "C" void eshkol_rationalize_tagged(
     void* arena, const eshkol_tagged_value_t* x, const eshkol_tagged_value_t* epsilon,
     eshkol_tagged_value_t* result)
 {
-    memset(result, 0, sizeof(*result));
-    double xd = tagged_to_double(x);
-    double eps = tagged_to_double(epsilon);
-    if (eps < 0) eps = -eps;
-
-    /* A zero tolerance pins the answer to x itself. Taking it here keeps an
-     * exact integer exact past 2^53, where the double round-trip below would
-     * not. This must stay narrowed to eps == 0: the old form fired for EVERY
-     * exact-integer x and any tolerance at all, so `(rationalize 3 1)`
-     * answered 3 while the VM answered 2. R7RS-small 6.2.6 makes 2 right —
-     * with q1 = q2 = 1, r1 is simpler than r2 when |p1| <= |p2|, so the
-     * simplest rational in [2,4] is the one nearest zero. */
-    if ((x->type & 0x0F) == ESHKOL_VALUE_INT64 && eps == 0.0) {
-        result->type = ESHKOL_VALUE_INT64;
-        result->data.int_val = x->data.int_val;
+    const bool inexact = x->type == ESHKOL_VALUE_DOUBLE || epsilon->type == ESHKOL_VALUE_DOUBLE;
+    const double xf = x->type == ESHKOL_VALUE_DOUBLE ? x->data.double_val : 0;
+    const double ef = epsilon->type == ESHKOL_VALUE_DOUBLE ? epsilon->data.double_val : 0;
+    if (!std::isfinite(xf) || !std::isfinite(ef)) {
+        *result = eshkol_make_double(std::isfinite(xf) && std::isinf(ef) ? 0.0 :
+            std::isinf(xf) && std::isfinite(ef) ? xf : NAN);
         return;
     }
-
-    /* Handle special cases */
-    if (xd != xd || eps != eps) { /* NaN */
-        result->type = ESHKOL_VALUE_DOUBLE;
-        union { double d; int64_t i; } pack;
-        pack.d = xd;
-        result->data.int_val = pack.i;
-        return;
-    }
-
-    int negative = (xd < 0);
-    if (negative) xd = -xd;
-
-    double lo = xd - eps;
-    double hi = xd + eps;
-    if (lo < 0) lo = 0;
-
-    /* If range includes 0, simplest rational is 0 */
-    if (lo <= 0 && hi >= 0) {
-        result->type = ESHKOL_VALUE_INT64;
-        result->data.int_val = 0;
-        return;
-    }
-
-    /* Stern-Brocot mediant search */
-    int64_t a_num = 0, a_den = 1;  /* left bound: 0/1 */
-    int64_t b_num = 1, b_den = 0;  /* right bound: 1/0 = infinity */
-
-    /* If an integer is in range it is the simplest rational there, and the
-     * simplest INTEGER in range is the one with the smallest |numerator| —
-     * on this already-non-negative domain that is ceil(lo), not floor(lo)+1.
-     * Testing floor(lo)+1 first answered 3 for [2,4] where 2 is simpler.
-     * Same rule as the VM's vm_rationalize(), which this must agree with. */
-    int64_t lo_int = (int64_t)ceil(lo);
-    if ((double)lo_int <= hi) {
-        int64_t val = negative ? -lo_int : lo_int;
-        result->type = ESHKOL_VALUE_INT64;
-        result->data.int_val = val;
-        return;
-    }
-
-    /* No integer in range: bracket the interval by its two nearest integers
-     * and start the Stern-Brocot mediant search between them. */
-    int64_t int_part = lo_int - 1;
-    a_num = int_part;
-    a_den = 1;
-    b_num = int_part + 1;
-    b_den = 1;
-
-    /* Mediant search between a_num/a_den and b_num/b_den */
-    for (int iter = 0; iter < 1000; iter++) {
-        int64_t m_num = a_num + b_num;
-        int64_t m_den = a_den + b_den;
-
-        /* Overflow check */
-        if (m_den <= 0 || m_den > 1000000000LL) break;
-
-        double m = (double)m_num / (double)m_den;
-
-        if (m < lo) {
-            a_num = m_num;
-            a_den = m_den;
-        } else if (m > hi) {
-            b_num = m_num;
-            b_den = m_den;
-        } else {
-            /* Found: m is in [lo, hi] */
-            if (negative) m_num = -m_num;
-            if (m_den == 1) {
-                result->type = ESHKOL_VALUE_INT64;
-                result->data.int_val = m_num;
-            } else {
-                void* rat = eshkol_rational_create(arena, m_num, m_den);
-                result->type = ESHKOL_VALUE_HEAP_PTR;
-                result->data.int_val = (int64_t)(uintptr_t)rat;
-            }
-            return;
-        }
-    }
-
-    /* Fallback: return closest mediant found */
-    double a_val = (double)a_num / (double)a_den;
-    double b_val = (double)b_num / (double)b_den;
-    int64_t best_num, best_den;
-    if (fabs(a_val - xd) < fabs(b_val - xd)) {
-        best_num = a_num; best_den = a_den;
-    } else {
-        best_num = b_num; best_den = b_den;
-    }
-    if (negative) best_num = -best_num;
-    if (best_den == 1) {
-        result->type = ESHKOL_VALUE_INT64;
-        result->data.int_val = best_num;
-    } else {
-        void* rat = eshkol_rational_create(arena, best_num, best_den);
-        result->type = ESHKOL_VALUE_HEAP_PTR;
-        result->data.int_val = (int64_t)(uintptr_t)rat;
-    }
+    auto* ctx = static_cast<arena_t*>(arena);
+    void* answer = rat_scoped(arena, [&]() -> void* {
+        auto as_ratio = [&](const eshkol_tagged_value_t* v) {
+            return static_cast<eshkol_rational_t*>(v->type == ESHKOL_VALUE_DOUBLE
+                ? eshkol_double_to_rational(ctx, v->data.double_val)
+                : tagged_exact_to_rational(ctx, v));
+        };
+        auto* value = as_ratio(x);
+        auto* tolerance = as_ratio(epsilon);
+        RzInteger *num, *den;
+        if (!value || !tolerance || !simplest_rational(ctx, rat_num_bn(ctx, value),
+                rat_den_bn(ctx, value), rat_num_bn(ctx, tolerance), rat_den_bn(ctx, tolerance),
+                &num, &den)) return nullptr;
+        return rational_create_bn_impl(ctx, num, den);
+    });
+    if (!answer) { *result = eshkol_make_double(NAN); return; }
+    *result = inexact ? eshkol_make_double(eshkol_rational_to_double(answer))
+                      : rational_result_to_tagged(answer);
 }
 
 /* Rounding functions for exact rationals.

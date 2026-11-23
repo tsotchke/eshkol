@@ -11,7 +11,7 @@
             (fill (+ i 1)))
           #t))
     (check-true (logic-var? (make-logic-var "?batch-4095")))))
-(define first-batch-result (run-tests))
+(define first-batch-result (call-with-values (lambda () (run-tests)) (lambda (passed failed) (= failed 0))))
 
 (reset-tests!)
 (register-test "second logic registry batch after reset"
@@ -25,5 +25,5 @@
         ;; new names. They would remain ordinary symbols, and unification
         ;; would fail to bind FIRST to 7.
         (check-true (eq? (walk second bound) second))))))
-(define second-batch-result (run-tests))
+(define second-batch-result (call-with-values (lambda () (run-tests)) (lambda (passed failed) (= failed 0))))
 (display (if (and first-batch-result second-batch-result) "RESULT: PASS" "RESULT: FAIL")) (newline)

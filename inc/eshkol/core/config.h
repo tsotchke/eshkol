@@ -104,6 +104,7 @@ typedef struct eshkol_config {
     // Type system flags
     bool strict_types;               // Strict type checking (errors instead of warnings)
     bool unsafe_mode;                // Skip all type checks
+    bool xla_verbose;                    // Trace XLA lowering and fusion decisions
 } eshkol_config_t;
 
 // ============================================================================
@@ -242,6 +243,7 @@ bool eshkol_config_is_debug_mode(void);
 #define ESHKOL_ENV_OPT_LEVEL        "ESHKOL_OPT_LEVEL"
 #define ESHKOL_ENV_ENABLE_SIMD      "ESHKOL_ENABLE_SIMD"
 #define ESHKOL_ENV_ENABLE_XLA       "ESHKOL_ENABLE_XLA"
+#define ESHKOL_ENV_XLA_VERBOSE      "ESHKOL_XLA_VERBOSE"
 #define ESHKOL_ENV_ENABLE_GPU       "ESHKOL_ENABLE_GPU"
 
 // Debug
