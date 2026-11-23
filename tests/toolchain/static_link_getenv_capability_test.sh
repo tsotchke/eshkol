@@ -185,6 +185,7 @@ add_platform_args() {
                 "-framework" "Metal"
                 "-framework" "MetalPerformanceShaders"
                 "-framework" "Foundation"
+                "-framework" "Security"
                 "-framework" "CoreFoundation"
             )
             sdk_path="$(xcrun --show-sdk-path 2>/dev/null || true)"

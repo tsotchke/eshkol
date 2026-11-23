@@ -44,7 +44,35 @@
 #include <wchar.h>
 #endif
 
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+#ifdef __APPLE__
+extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak_import));
+extern void eshkol_capability_enforce(const char* capability, const char* operation) __attribute__((weak_import));
+#else
+extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak));
+extern void eshkol_capability_enforce(const char* capability, const char* operation) __attribute__((weak));
+#endif
+
+static int subprocess_enforce_capability(const char* capability, const char* operation) {
+    if (eshkol_capability_enforce) {
+        eshkol_capability_enforce(capability, operation);
+        return 1;
+    }
+    /* Standalone native links without runtime_errors_hosted.cpp fail closed
+     * unless the linked capability checker explicitly permits the capability. */
+    if (!eshkol_capability_runtime_allows || !eshkol_capability_runtime_allows(capability)) {
+        errno = EACCES;
+        return 0;
+    }
+    return 1;
+}
+#else
 extern void eshkol_capability_enforce(const char* capability, const char* operation);
+static int subprocess_enforce_capability(const char* capability, const char* operation) {
+    eshkol_capability_enforce(capability, operation);
+    return 1;
+}
+#endif
 
 /* ── Subprocess handle ──
  * stdout_buf / stderr_buf accumulate what qllm_process_wait's poll loop
@@ -454,31 +482,19 @@ static void eshkol_unset_env_injection_vars(void) {
  * the attacker-LD_PRELOAD case is still a privilege-escalation on
  * compromised hosts, not a standalone primitive.
  */
-/* Cached scrubbed env — built on first spawn and reused. The pointers
- * inside it alias the parent's `environ`, so if any code mutates
- * environ after the cache is warmed, we'd use stale pointers. Eshkol
- * doesn't mutate environ during spawn paths, so this is safe; if that
- * changes, guard with an atomic-generation counter. */
-#ifndef _WIN32
-static pthread_mutex_t g_env_cache_mu = PTHREAD_MUTEX_INITIALIZER;
-static char** g_env_cache = NULL;
-static char** g_env_cache_source = NULL;  /* the environ ptr we scrubbed */
-#endif
-
 /**
- * @brief Return a copy of `environ` with dynamic-linker injection variables
- *        (LD_PRELOAD, DYLD_INSERT_LIBRARIES, LD_LIBRARY_PATH, etc.) removed,
- *        for use as the envp passed to posix_spawn.
+ * @brief Return a freshly allocated copy of `environ` with dynamic-linker
+ *        injection variables (LD_PRELOAD, DYLD_INSERT_LIBRARIES,
+ *        LD_LIBRARY_PATH, etc.) removed, for use as the envp passed to
+ *        posix_spawn.
  *
- * The result is cached in g_env_cache and rebuilt only if `environ` itself
- * changes identity; callers must NOT free the returned pointer. Entries in
- * the returned array alias the original `environ` strings. Returns NULL on
- * Windows (a different env API is used there) or if `environ` is NULL; on
- * allocation failure inside the rebuild, falls back to returning the raw
- * `environ` pointer so a scrub failure never blocks a spawn outright.
+ * Built fresh on each call because `setenv()` / `unsetenv()` can mutate or
+ * free individual entries in place without changing the `environ` pointer
+ * itself. Callers must `free()` the returned array (not its element strings,
+ * which alias `environ` synchronously during spawn). Returns NULL on Windows
+ * or if `environ` is NULL or allocation fails.
  *
- * @return Malloc'd, NUL-terminated envp array (do not free), the raw
- *         `environ` pointer as a fallback, or NULL.
+ * @return Newly allocated, NUL-terminated envp array (caller frees), or NULL.
  */
 static char** eshkol_scrub_environ(void) {
 #ifdef _WIN32
@@ -486,17 +502,6 @@ static char** eshkol_scrub_environ(void) {
 #else
     extern char** environ;
     if (!environ) return NULL;
-
-    pthread_mutex_lock(&g_env_cache_mu);
-    if (g_env_cache && g_env_cache_source == environ) {
-        char** cached = g_env_cache;
-        pthread_mutex_unlock(&g_env_cache_mu);
-        return cached;
-    }
-    /* (Re)build. Free any previous cache first. */
-    free(g_env_cache);
-    g_env_cache = NULL;
-    pthread_mutex_unlock(&g_env_cache_mu);
 
     static const char* const kBlockedPrefixes[] = {
         "LD_PRELOAD=", "LD_AUDIT=", "LD_LIBRARY_PATH=",
@@ -531,18 +536,6 @@ static char** eshkol_scrub_environ(void) {
         if (!blocked) filtered[j++] = *p;
     }
     filtered[j] = NULL;
-
-    pthread_mutex_lock(&g_env_cache_mu);
-    /* Race: another thread may have built a cache too. Keep whichever
-     * committed first; free ours if theirs is already valid. */
-    if (g_env_cache && g_env_cache_source == environ) {
-        pthread_mutex_unlock(&g_env_cache_mu);
-        free(filtered);
-        return g_env_cache;
-    }
-    g_env_cache = filtered;
-    g_env_cache_source = environ;
-    pthread_mutex_unlock(&g_env_cache_mu);
     return filtered;
 #endif
 }
@@ -590,7 +583,7 @@ static char** build_env_overlay(const char* packed_env) {
     size_t base_count = 0;
     if (base) while (base[base_count]) base_count++;
     char** result = (char**)calloc(base_count + parsed + 1, sizeof(char*));
-    if (!result) { free(overrides); free(packed); return NULL; }
+    if (!result) { free(base); free(overrides); free(packed); return NULL; }
 
     size_t written = 0;
     for (size_t i = 0; i < base_count; ++i) {
@@ -598,11 +591,12 @@ static char** build_env_overlay(const char* packed_env) {
             result[written] = strdup(base[i]);
             if (!result[written]) {
                 for (size_t j = 0; j < written; ++j) free(result[j]);
-                free(result); free(overrides); free(packed); return NULL;
+                free(result); free(base); free(overrides); free(packed); return NULL;
             }
             written++;
         }
     }
+    free(base);
     for (size_t i = 0; i < parsed; ++i) {
         result[written] = strdup(overrides[i]);
         if (!result[written]) {
@@ -1004,13 +998,13 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
      * question is settled here, before the child exists, rather than in a
      * branch the child is already in. On Windows the command always goes to
      * ComSpec. */
-    eshkol_capability_enforce("subprocess", "process-spawn");
+    if (!subprocess_enforce_capability("subprocess", "process-spawn")) return NULL;
 #if !defined(_WIN32)
     if (force_shell || !command_is_shell_safe(command)) {
-        eshkol_capability_enforce("shell", "process-spawn-shell");
+        if (!subprocess_enforce_capability("shell", "process-spawn-shell")) return NULL;
     }
 #else
-    eshkol_capability_enforce("shell", "process-spawn-shell");
+    if (!subprocess_enforce_capability("shell", "process-spawn-shell")) return NULL;
 #endif
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
@@ -1108,7 +1102,6 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
 #else
         posix_spawnattr_t* attr_ptr = NULL;
 #endif
-        /* Cached-scrubbed env — see eshkol_scrub_environ. Do NOT free. */
         char** child_env = eshkol_scrub_environ();
         char** env_to_pass = child_env ? child_env : environ;
         if (split_argv) {
@@ -1120,6 +1113,7 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
             char* sh_argv[] = {(char*)"sh", (char*)"-c", (char*)command, NULL};
             spawn_errno = posix_spawn(&pid, "/bin/sh", &fa, attr_ptr, sh_argv, env_to_pass);
         }
+        free(child_env);
         posix_spawn_file_actions_destroy(&fa);
 #if defined(__APPLE__)
         posix_spawnattr_destroy(&attr);
@@ -1338,7 +1332,7 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
     const char* packed_env) {
     if (!tab_packed_argv || !tab_packed_argv[0]) return NULL;
     /* No shell is involved on this path: argv is exec'd directly. */
-    eshkol_capability_enforce("subprocess", "process-spawn-argv");
+    if (!subprocess_enforce_capability("subprocess", "process-spawn-argv")) return NULL;
 
     eshkol_subprocess_t* proc = (eshkol_subprocess_t*)calloc(1, sizeof(eshkol_subprocess_t));
     if (!proc) return NULL;
@@ -1414,8 +1408,8 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
     int no_chdir = (!cwd_arg || !cwd_arg[0] ||
                     (cwd_arg[0] == '.' && cwd_arg[1] == '\0'));
     char** owned_env = NULL;
-    char** child_env = eshkol_scrub_environ();
-    char** env_to_pass = child_env ? child_env : environ;
+    char** child_env = NULL;
+    char** env_to_pass = environ;
     if (packed_env && packed_env[0]) {
         owned_env = build_env_overlay(packed_env);
         if (!owned_env) {
@@ -1428,6 +1422,9 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
             return NULL;
         }
         env_to_pass = owned_env;
+    } else if (no_chdir) {
+        child_env = eshkol_scrub_environ();
+        if (child_env) env_to_pass = child_env;
     }
     if (no_chdir) {
         posix_spawn_file_actions_t fa;
@@ -1471,6 +1468,8 @@ static eshkol_subprocess_t* qllm_process_spawn_argv_flags_impl(
 #endif
 
         spawn_errno = posix_spawnp(&pid, argv[0], &fa, attr_ptr, argv, env_to_pass);
+        free(child_env);
+        child_env = NULL;
         free_env_overlay(owned_env);
         owned_env = NULL;
         posix_spawn_file_actions_destroy(&fa);
@@ -2672,12 +2671,6 @@ void qllm_process_destroy(eshkol_subprocess_t* proc) {
  * readers. A managed owner and one exclusive lease cover both output pipes. */
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
 #include <limits.h>
-
-#ifdef __APPLE__
-extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak_import));
-#else
-extern int eshkol_capability_runtime_allows(const char*) __attribute__((weak));
-#endif
 
 typedef struct process_stream_record {
     eshkol_handle_id_t id;

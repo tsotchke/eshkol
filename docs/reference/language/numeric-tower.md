@@ -63,7 +63,11 @@ part is omitted and an imaginary part of `+1` or `-1` is printed as `+i` or
 > `number->string` emit the **shortest decimal string that reads back as the
 > identical `double`**. No digits are lost and none are fabricated: `(sqrt 2.0)`
 > prints `1.4142135623730951`, and reading that string back yields the same bit
-> pattern. An integral double is written with its `.0`, as described above. The native
+> pattern. For example, `(/ 1.0 17592186044416.0)` prints
+> `5.684341886080802e-14`. At this power of two, adjacent binary64 values are
+> spaced twice as far apart above the value as below it. The printed decimal
+> lies on the wider side and reads back to exactly the original value.
+> An integral double is written with its `.0`, as described above. The native
 > compiler and the bytecode VM share one portable-C conversion routine, so their
 > printed output is byte-identical.
 

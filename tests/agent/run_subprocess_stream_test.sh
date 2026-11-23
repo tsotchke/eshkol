@@ -29,7 +29,13 @@ for file in tests/agent/subprocess_stream_test.c lib/agent/c/agent_subprocess.c 
 done
 "$CXX" -std=c++17 -O2 -g -Wall -Wextra -pthread ${sanitize[@]+"${sanitize[@]}"} -I"$ROOT/inc" \
     -c "$ROOT/lib/core/runtime_handle.cpp" -o "$WORK/runtime_handle.o"
-"$CXX" -pthread ${sanitize[@]+"${sanitize[@]}"} "$WORK"/*.o -o "$WORK/subprocess-stream-test"
+stream_test_ldflags=(-pthread)
+if [ "$(uname -s)" = Darwin ]; then
+    # Permit the absent runtime exception raiser in this standalone native link;
+    # agent_subprocess.c still enforces eshkol_capability_runtime_allows.
+    stream_test_ldflags+=(-Wl,-U,_eshkol_capability_enforce)
+fi
+"$CXX" "${stream_test_ldflags[@]}" ${sanitize[@]+"${sanitize[@]}"} "$WORK"/*.o -o "$WORK/subprocess-stream-test"
 python3 - "$WORK/subprocess-stream-test" <<'PY'
 import subprocess
 import sys
@@ -55,8 +61,8 @@ C
 "$CC" "${flags[@]}" ${sanitize[@]+"${sanitize[@]}"} -c "$WORK/missing-checker.c" -o "$WORK/missing-checker.o"
 missing_checker_ldflags=(-pthread)
 if [ "$(uname -s)" = Darwin ]; then
-    # Permit only the deliberately absent weak import in this negative control.
-    missing_checker_ldflags+=(-Wl,-U,_eshkol_capability_runtime_allows)
+    # Permit only the deliberately absent weak imports in this negative control.
+    missing_checker_ldflags+=(-Wl,-U,_eshkol_capability_runtime_allows -Wl,-U,_eshkol_capability_enforce)
 fi
 "$CXX" "${missing_checker_ldflags[@]}" ${sanitize[@]+"${sanitize[@]}"} "$WORK/missing-checker.o" \
     "${runtime_objects[@]}" "$WORK/runtime_handle.o" -o "$WORK/missing-checker"

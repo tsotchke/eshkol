@@ -19,8 +19,10 @@
  * with emcc; a portable C routine that both paths share is the only way to get
  * a true single source of truth and 100% native/VM parity.
  *
- * The algorithm: find the minimal significant-digit count (1..17) whose "%.*e"
- * rendering round-trips, then choose fixed vs. scientific notation by whichever
+ * Try 1..17 significant digits. At each precision, test the nearest decimal
+ * and, at a normal power of two above DBL_MIN, its neighbour when the nearest
+ * fell below the required magnitude. Among the round-tripping forms, choose
+ * fixed vs. scientific notation by whichever
  * is shorter after adding `.0` to integer-looking fixed forms (ties -> fixed),
  * with a printf-style >=2-digit exponent. This
  * preserves the numeric round-trip while requiring an inexact external form.
@@ -46,8 +48,11 @@
 extern "C" {
 #endif
 
-/* Move a finite %e rendering one decimal step away from zero at the
- * same precision. Carrying through 9.99 yields 1.00 in the next decade. */
+/**
+ * @brief Advance a finite scientific decimal by one decimal step in magnitude.
+ * @param text Mutable, NUL-terminated output of the formatter's %e conversion.
+ * @param cap Capacity of the text buffer in bytes.
+ */
 static void eshkol_dtoa_next_magnitude(char *text, size_t cap) {
     char *exponent = strchr(text, 'e');
     char *first = text + (text[0] == '-');

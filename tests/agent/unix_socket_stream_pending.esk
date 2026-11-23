@@ -198,6 +198,6 @@
   (lambda ()
     (for-each (lambda (id) (unix-stream-socket-close! id)) owners)
     (set! owners '())
-    (check "caller releases loop" (= (-loop-close-code loop) 0))))
+    (check "caller releases loop" (event-loop-close loop))))
 (display "PASS: unix-socket ") (display scenario) (newline)
 (display "CHECKS: ") (display checks) (newline)
