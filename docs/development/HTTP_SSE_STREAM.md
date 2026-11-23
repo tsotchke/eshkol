@@ -14,7 +14,9 @@ Require `agent.http_sse`. After accepting and routing a valid HTTP/1.1 GET, call
 | `(sse-cancel! stream)` | Retire immediately without emitting further bytes. |
 | `(sse-deadline-ms stream)` | Absolute monotonic deadline for the current write or idle period. Drive progress after polling the loop and when that deadline becomes due. |
 
-The adapter owns the write registration. The writer retains the admitted chunk, offset, and original five-second write deadline across retries. Between writes, a separate 60-second idle deadline applies. Metadata rejects CR, LF, and NUL before admission.
+The adapter owns the write registration. The writer retains the admitted chunk, offset, and original five-second write deadline across retries. Between writes, a separate 60-second idle deadline applies. The native writer checks loop ownership, pending work, and idle expiry before validating field bytes. Metadata rejects CR, LF, and NUL before admission.
+
+Native acquisition and progression require the network capability. Revoking it retires the stream without advancing a buffered write. Cleanup remains available.
 
 Scope exit retires without advancing any buffered write on return, exception, or continuation escape. A continuation cannot reenter a scope that has already adopted a socket. The after thunk hands the cleanup ticket to the shared lease manager so pending cleanup survives an unwind. The manager releases successful cleanup and retains terminal errors. A caller retaining the Scheme stream can claim a failed ticket with `sse-cleanup-ticket` and use the shared cleanup API on the owner loop. A retryable watch failure keeps the descriptor and original registration owned until retry. An uncertain descriptor close is recorded and never retried.
 
@@ -31,7 +33,7 @@ ctest --test-dir build-sse -R '^http_sse_(adapter_scaffold_test|stream_test|scop
 build-sse/http_sse_stream_test --idle
 ```
 
-The Scheme loopback drives the public API over a live TCP connection in JIT and AOT. The native peer reads the canonical 37-byte chunk across a split UTF-8 character and the final blank line. The receiver dispatches one intact event. The scaffold also forces a short native send, write expiry, disconnect and watch-removal recovery.
+The Scheme loopback drives the public API over a live TCP connection in JIT and AOT. The native peer reads the canonical 37-byte chunk across a split UTF-8 character and the final blank line. The receiver dispatches one intact event. The scaffold also forces a short native send, write expiry, disconnect and watch-removal recovery. The native core suite covers denied acquisition, policy revocation, and status precedence. The idle run verifies that expired state takes precedence over an oversized event.
 
 The mixed-loop suite needs a composed checkout with the PROCESS and Unix socket implementations. Call the test runner from this checkout with that source as its argument.
 
