@@ -1,9 +1,19 @@
 name: Verificatum proof replay
 on:
   pull_request:
+    paths:
+      - "verification/**"
+      - "lib/core/blc.esk"
+      - "site/static/eshkol-vm.*"
+      - ".github/workflows/lean-proof-replay.yml"
   merge_group:
   push:
     branches: [master]
+    paths:
+      - "verification/**"
+      - "lib/core/blc.esk"
+      - "site/static/eshkol-vm.*"
+      - ".github/workflows/lean-proof-replay.yml"
   workflow_dispatch:
 
 permissions:

@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- Propose ADR-0030 and add the standalone Verificatum R0 checker and replay for the Lean export of modus tollens. (#941)
+- Propose ADR-0061 and add the standalone Verificatum R0 checker and replay for the Lean export of modus tollens. (#941)
 
 - Correct the Linux download instructions, native REPL command, RK4 accuracy
   description, and exact-rational power reference. Qualify AD overhead and

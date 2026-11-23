@@ -3,7 +3,7 @@
   "context": "A checker can validate a sound derivation of the wrong proposition. For example, a declaration can still be called `mt` after its producer changes the meaning of negation and supplies a well-typed body. R0 includes exactly this control. The reference kernel accepts the altered export in its own environment. Eshkol rejects it when it compares the theorem with an independently authored statement of modus tollens. That comparison is the basis for this decision. [R0 experiment and replay instructions](../../../verification/README.md)\n\nADR 0004 gives the source language one quantitative typing judgment. The elaborator checks value types, effects and ownership together, emits typed HIR, and discharges proof obligations before erasure. It distinguishes definitional equality, static subtyping, gradual consistency and proposition entailment. Its v2.0 plan already calls for a small auditable dependent kernel and export of normalized Eshkol judgments to Lean. Univalence and higher inductive types can be deferred. [ADR 0004, core static language and v2.0 gates](0004-type-system-trajectory.md) · [ADR 0000, staged trajectory](0000-unified-trajectory.md)\n\nVerificatum starts at the proof boundary. In R0, Lean produces a proof term and Eshkol checks it against a separately authored proposition. In the planned forward direction, Eshkol produces a normalized judgment for Lean to check. To use either result for a source program, the consumer must bind the proposition to the particular source obligation, including every hypothesis it relies on. Source elaboration and authorization to lower typed HIR stay with ADR 0004.",
   "created_at": "2026-11-20T22:25:07Z",
   "decision": "**Only a fresh acceptance by the named proof checker, against the independently supplied target and the fragment's declared premises, may discharge a Verificatum obligation.** The gradual checker may discover obligations and supply candidate terms. Its success, coercions, inferred types, and cached results confer no proof authority. The consumer may erase evidence or use a refinement only within the scope attested by that acceptance. A dynamic check may still be appropriate under the language rules. Its outcome remains a dynamic observation. [Gradual type relation](0013-gradual-type-relation.md)\n\nEach fragment defines its input format, term and declaration grammar, conversion rules, axiom policy, resource bounds and observable verdicts. The checker admits the supplied declarations under that policy, resolves names structurally, and checks the selected body against the independently bound target. A receipt identifies the checked declarations and any assumptions introduced by the input. Changing a transparent definition used in the statement must trigger target comparison again, even when the theorem's name survives.\n\n| Verdict | Meaning for the consumer |\n|---|---|\n| `ACCEPT` | The derivation establishes the requested target under the recorded fragment and premises. |\n| `REJECT` | A supported rule, declaration policy or target comparison failed. |\n| `UNSUPPORTED` | The input needs a format or rule outside this checker profile. |\n| `ERROR` | Malformed input, resource exhaustion, or execution failure prevented a verdict about the proof. |\n\nOnly `ACCEPT` discharges the obligation. In particular, a timeout leaves it open.",
-  "id": "ADR-0030",
+  "id": "ADR-0061",
   "links": {
     "audit_policy_refs": [],
     "graph_nodes": [],
@@ -11,8 +11,8 @@
     "tasks": []
   },
   "schema_version": "1.0",
-  "source_anchor": "docs/design/adr/0030-eshkol-verificatum.md:11",
-  "source_path": "docs/design/adr/0030-eshkol-verificatum.md",
+  "source_anchor": "docs/design/adr/0061-eshkol-verificatum.md:11",
+  "source_path": "docs/design/adr/0061-eshkol-verificatum.md",
   "status": "proposed",
   "tags": [],
   "title": "Eshkol Verificatum — Independent Proof Checking and Verified Refinement",

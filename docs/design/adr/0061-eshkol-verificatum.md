@@ -8,7 +8,7 @@ sources:
   - verification/lean-kernel/Typing.lean
   - verification/lean-kernel/replay.py
 ---
-# ADR-0030: Eshkol Verificatum — Independent Proof Checking and Verified Refinement
+# ADR-0061: Eshkol Verificatum — Independent Proof Checking and Verified Refinement
 
 - Status: proposed
 - **Date:** 2026-11-20
