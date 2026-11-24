@@ -8,7 +8,7 @@
 #      the native and bytecode engines (quantum_types_corpus) and the
 #      library suites in native JIT and AOT (quantum_circuit_test,
 #      quantum_optimize_test, quantum_route_test, qaoa_test,
-#      quantum_register_test);
+#      quantum_register_test, quantum_authority_test);
 #   2. every fenced example on docs/reference/stdlib/quantum.md through the
 #      documentation example harness, on the JIT and as AOT binaries;
 #   3. qaoa_moonlab_crosscheck from a build configured with
@@ -53,8 +53,8 @@ WORK="$BUILD_DIR_PATH/test-work/quantum-types-gate"
 mkdir -p "$WORK"
 export ESHKOL_PATH="$REPO_ROOT/lib${ESHKOL_PATH:+:$ESHKOL_PATH}"
 
-TESTS='^(((quantum_circuit_test|quantum_optimize_test|quantum_route_test|qaoa_test|quantum_register_test)_(jit|aot))|quantum_types_corpus)$'
-EXPECTED=11
+TESTS='^(((quantum_circuit_test|quantum_optimize_test|quantum_route_test|qaoa_test|quantum_register_test|quantum_authority_test)_(jit|aot))|quantum_types_corpus)$'
+EXPECTED=13
 PAGES="docs/reference/stdlib/quantum.md"
 
 emit_event() { # file name PASS|FAIL|SKIP snippet

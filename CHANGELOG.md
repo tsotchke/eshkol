@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Check optimized two-wire circuits at state-vector dispatch and preserve the pending register if preparation fails. (#950)
+
 - Check phase-corrected coherent rewrites and replay an exact seven-wire Steane schedule. (#946)
 - **Exact algebraic calculus spans composed fields and maintained objectives.**
   Add certified field composition and nested derivatives (#793), exact matrix

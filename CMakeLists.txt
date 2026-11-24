@@ -4435,7 +4435,7 @@ endif()
 # bytecode engines; and, in Moonlab builds, QAOA expectations and gradients
 # through Moonlab's exact adjoint against the exact state vector.
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
-    foreach(_quantum_suite quantum_circuit_test quantum_optimize_test quantum_route_test qaoa_test quantum_register_test)
+    foreach(_quantum_suite quantum_circuit_test quantum_optimize_test quantum_route_test qaoa_test quantum_register_test quantum_authority_test)
         add_test(NAME ${_quantum_suite}_jit
             COMMAND $<TARGET_FILE:eshkol-run> -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/stdlib/${_quantum_suite}.esk")
         add_test(NAME ${_quantum_suite}_aot COMMAND ${CMAKE_COMMAND}
