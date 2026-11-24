@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3109/7197 public symbols documented (43.2%), 4088 undocumented.
+**Coverage:** 3123/7241 public symbols documented (43.1%), 4118 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -16,13 +16,14 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### (root headers)
 
-469/1009 symbols documented.
+483/1038 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`abi_fingerprint.h`](abi_fingerprint.md) | 46 | 14 |
-| [`agent_capabilities.h`](agent_capabilities.md) | 49 | 37 |
+| [`agent_capabilities.h`](agent_capabilities.md) | 59 | 46 |
 | [`agent_http.h`](agent_http.md) | 27 | 0 |
+| [`agent_http_sse_adapter.h`](agent_http_sse_adapter.md) | 19 | 5 |
 | [`agent_platform.h`](agent_platform.md) | 2 | 0 |
 | [`builtin_libraries.h`](builtin_libraries.md) | 4 | 1 |
 | [`driver_output_ownership.h`](driver_output_ownership.md) | 37 | 21 |
@@ -132,7 +133,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-447/922 symbols documented.
+447/937 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -149,6 +150,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/execution_profile.h`](core/execution_profile.md) | 47 | 11 |
 | [`core/gensym_sequence.h`](core/gensym_sequence.md) | 1 | 0 |
 | [`core/handle.h`](core/handle.md) | 21 | 14 |
+| [`core/http_event_server.h`](core/http_event_server.md) | 15 | 0 |
 | [`core/http_syntax.h`](core/http_syntax.md) | 25 | 21 |
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |

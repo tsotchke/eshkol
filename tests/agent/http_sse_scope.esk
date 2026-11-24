@@ -1,0 +1,110 @@
+(require agent.http_server)
+(require agent.http_sse)
+
+(define (check name value)
+  (unless value (error name)))
+
+(define (accept-client server)
+  (let ((request (http-server-accept server 4096 5000)))
+    (check "accepted request" (and (string? request) (> (string-length request) 0)))))
+
+(define (advance stream loop)
+  (let retry ()
+    (let ((status (sse-progress! stream)))
+      (if (= status 1)
+          (let ((remaining (- (sse-deadline-ms stream) (monotonic-time-ms))))
+            (when (> remaining 0) (event-loop-poll loop (min remaining 100)))
+            (retry))
+          status))))
+
+(define (serve server loop)
+  (accept-client server)
+  (check "clean scope result"
+    (eq? (call-with-http-sse-stream server loop 41
+           (lambda (stream)
+             (check "headers" (= (advance stream loop) 0))
+             (check "NUL in metadata is refused"
+                    (= (sse-send! stream "discard" (string #\x #\nul #\x)) -4))
+             (check "CRLF in metadata is refused" (= (sse-send! stream "discard" "bad\r\n") -4))
+             (check "admit multiline event" (= (sse-send! stream "café\nsecond line" "") 0))
+             (check "busy retains prior frame" (= (sse-send! stream "discard") -5))
+             (check "busy takes precedence over oversize"
+                    (= (sse-send! stream (make-string 16385 #\x)) -5))
+             (check "busy takes precedence over embedded NUL"
+                    (= (sse-send! stream "discard" (string #\x #\nul #\x)) -5))
+             (check "event sent" (= (advance stream loop) 0))
+             (check "idle stream returns encoded-size error"
+                    (= (sse-send! stream (make-string 16385 #\x)) -8))
+             (check "admit final chunk" (= (sse-finish! stream) 0))
+             (check "finish sent" (= (advance stream loop) 2))
+             'clean))
+         'clean))
+
+  (accept-client server)
+  (let ((escaped-stream #f))
+    (check "ordinary scope result"
+      (eq? (call-with-http-sse-stream server loop 42
+             (lambda (stream)
+               (set! escaped-stream stream)
+               (check "headers before return" (= (advance stream loop) 0))
+               (check "admit abandoned event" (= (sse-send! stream "discard") 0))
+               'returned))
+           'returned))
+    (check "retired scope will not write" (= (sse-progress! escaped-stream) -4))
+    (check "retired scope cancellation is idempotent" (= (sse-cancel! escaped-stream) 0)))
+
+  (accept-client server)
+  (check "original exception after retiring a queued terminal chunk"
+    (eq? (guard (condition (else condition))
+           (call-with-http-sse-stream server loop 43
+             (lambda (stream)
+               (check "headers before exception" (= (advance stream loop) 0))
+               (check "admit abandoned terminal chunk" (= (sse-finish! stream) 0))
+               (raise 'sse-exception))))
+         'sse-exception))
+
+  (accept-client server)
+  (let ((resume #f))
+    (check "continuation re-entry is refused"
+      (guard (condition
+              (else (and (error-object? condition)
+                         (string=? (error-object-message condition)
+                                   "an HTTP SSE scope cannot be re-entered"))))
+        (check "original continuation escape after admitting an event"
+          (eq? (call-with-current-continuation
+                 (lambda (escape)
+                   (call-with-http-sse-stream server loop 44
+                     (lambda (stream)
+                       (check "headers before continuation escape" (= (advance stream loop) 0))
+                       (check "admit event before escape" (= (sse-send! stream "discard") 0))
+                       (call-with-current-continuation
+                         (lambda (continuation)
+                           (set! resume continuation)
+                           (escape 'escaped)))
+                       (error "SSE scope was re-entered")))))
+               'escaped))
+        (resume 'try-again)
+        #f)))
+
+  (accept-client server)
+  (call-with-http-sse-stream server loop 45
+    (lambda (stream)
+      (check "explicit cancellation" (= (sse-cancel! stream) 0))
+      (check "repeat cancellation" (= (sse-cancel! stream) 0))))
+
+  (accept-client server)
+  (http-server-respond server 200 "text/plain" "ordinary"))
+
+(define server (http-server-create 0))
+(check "server" (> server 0))
+(define loop (make-event-loop 8))
+(check "loop" loop)
+(display "SSE-PORT ")
+(display (http-server-port server))
+(newline)
+(flush-output-port (current-output-port))
+(serve server loop)
+(http-server-close server)
+(check "all explicit loop owners retired" (event-loop-close loop))
+(display "RESULT: PASS")
+(newline)
