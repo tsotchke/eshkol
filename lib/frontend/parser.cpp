@@ -5618,6 +5618,11 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
         }
         ast.operation.op = ESHKOL_HOTT_OP;
         ast.operation.hott_op.is_eval = token.value == "hott-eval" ? 1 : 0;
+        trace_parser_dispatch(head_token.line, head_token.column,
+                              static_cast<uint32_t>(ESHKOL_HOTT_OP),
+                              token.value.c_str());
+        trace_parser_accept(head_token.line, head_token.column,
+                            static_cast<uint32_t>(ESHKOL_HOTT_OP));
         eshkol::syntax_record_use(ast.node_id, std::move(form));
         co_return ast;
     }
@@ -5643,6 +5648,15 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
             PARSE_ERROR_AT(token, "%s", error.c_str());
             ast.type = ESHKOL_INVALID;
             co_return ast;
+        }
+        if (status > 0) {
+            trace_parser_dispatch(head_token.line, head_token.column,
+                                  static_cast<uint32_t>(ESHKOL_CALL_OP),
+                                  token.value.c_str());
+            if (token.value == "define-effect" || token.value == "declare-effects") {
+                trace_parser_accept(head_token.line, head_token.column,
+                                    static_cast<uint32_t>(ESHKOL_CALL_OP));
+            }
         }
         g_effect_form_is_call = status == 0;
         std::set<std::string> names = g_parser_macro_names ? *g_parser_macro_names
@@ -7974,6 +7988,8 @@ static ParserTask<eshkol_ast_t> parse_list(SchemeTokenizer& tokenizer) {
                 ast.operation.let_syntax_op.body = null_body;
             }
 
+            trace_parser_accept(ast.line, ast.column,
+                                static_cast<uint32_t>(ast.operation.op));
             co_return ast;
         }
 

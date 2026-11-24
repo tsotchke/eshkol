@@ -66,7 +66,7 @@
 
 ;; ── Named binary64 constants (no operation widens by them) ────────────────
 (define iv-eps      2.220446049250313e-16)   ; 2^-52, machine epsilon
-(define iv-rel-pad  (* 8.0  iv-eps))
+(define iv-rel-pad  1.7763568394002505e-15)  ; 2^-49 = (* 8.0 iv-eps)
 (define iv-abs-pad  1e-300)
 
 ;; ── Construction / accessors ───────────────────────────────────────────────

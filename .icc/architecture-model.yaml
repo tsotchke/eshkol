@@ -13,15 +13,14 @@ description: >
   Verified by `icc architecture-verify --repo eshkol --model
   .icc/architecture-model.yaml`.
 
-  Ground truth: tests/coverage/language_surface.json (1,470 constructs including
-  22 opt-in Agent FFI quantum APIs, 116 special forms, 113 AST ops) and
-  scripts/language_coverage.py (dynamic execution-backed coverage tracker). 1,470
-  is the enforced floor in tests/coverage/coverage_policy.json (baseline_surface_total).
-  The declared target is not a measured execution certificate; the historical
-  execution ledger still covers 1,118 names and must not be inflated. Release qualification
-  requires fresh execution evidence for the complete surface at the candidate
-  commit. scripts/check_surface_counts.py fails CI if this file drifts from the
-  manifest again.
+  Ground truth: tests/coverage/language_surface.json (1,651 constructs including
+  22 opt-in Agent FFI quantum APIs, 122 special forms, 114 AST ops) and
+  scripts/language_coverage.py (dynamic execution-backed coverage tracker). 1,651
+  is the enforced floor in tests/coverage/coverage_policy.json (baseline_surface_total)
+  and tests/coverage/execution_deficit.json (1,651/1,651 execution-backed, 0 deficit).
+  Release qualification requires fresh execution evidence for the complete surface
+  at the candidate commit. scripts/check_surface_counts.py fails CI if this file
+  drifts from the manifest again.
 
   FIDELITY HONESTY: ICC's C symbol index does not AST-resolve C/C++ the way it
   resolves Python, so every invariant whose sites are .c/.cpp/.h/.js files is

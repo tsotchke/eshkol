@@ -5429,6 +5429,7 @@ ContinuationTask<TypedValue> EshkolLLVMCodeGen::codegenTypedASTTask(const eshkol
                     co_return detectValueType(val);
                 }
                 if (ast->operation.op == ESHKOL_SHARED_OP && ast->operation.shared_op.value) {
+                    emitLanguageCoverage(ast);
                     // Evaluate once and apply shared ownership to that value.
                     TypedValue inner = (co_await codegenTypedASTTask(ast->operation.shared_op.value));
                     if (!inner.llvm_value) co_return TypedValue();

@@ -76,6 +76,17 @@ echo ""
 # Run each test
 for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
     test_name=$(basename "$test_file")
+    # Three long-run effective-homology checks require 29-33 GB RAM and are owned
+    # by scripts/run_effective_gate.sh (excluded from default CTest as well).
+    # Opt in via ESHKOL_RUN_HEAVY_EFFECTIVE_TESTS=1 on high-memory hosts.
+    if [ "${ESHKOL_RUN_HEAVY_EFFECTIVE_TESTS:-0}" != "1" ]; then
+        case "$test_name" in
+            effective_hypercover_test.esk|effective_hypercover_3type_test.esk|effective_pi6_s3_test.esk)
+                printf "Skipping %-49s (29-33 GB; owned by run_effective_gate.sh)\n" "$test_name"
+                continue
+                ;;
+        esac
+    fi
     test_bin="$RUN_DIR/${test_name%.esk}"
     test_output="$RUN_DIR/${test_name%.esk}.out"
     compile_output="$RUN_DIR/${test_name%.esk}.compile.out"

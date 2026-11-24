@@ -36,6 +36,10 @@ TESTS=(
     tests/ad/matmul_tape_node_count_test.esk
     tests/ad/sparse_tensors_test.esk
     tests/ad/taylor_tower_test.esk
+    tests/effects/handler_laws.esk
+    tests/effects/unwinding_order.esk
+    tests/effects/resumption_counts.esk
+    tests/coverage/wave9_surface_execution_test.esk
 )
 
 echo "========================================="
@@ -65,6 +69,27 @@ for relative in "${TESTS[@]}"; do
     echo "PASS"
     passed=$((passed + 1))
 done
+
+ESHKOL_VM="$ROOT_DIR/$BUILD_DIR/eshkol-vm-standalone-test"
+VM_TESTS=(
+    tests/coverage/wave9_vm_value_constants_test.esk
+)
+if [ -x "$ESHKOL_VM" ]; then
+    for relative in "${VM_TESTS[@]}"; do
+        source_file="$ROOT_DIR/$relative"
+        stem="$(basename "$relative" .esk)"
+        output="$RUN_DIR/$stem.vm.out"
+        printf "Testing %-48s " "$stem (VM)"
+        ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$source_file" >"$output" 2>&1
+        if grep -Eq '(^|[[:space:]:])FAIL([[:space:]:]|$)|Failed:[[:space:]]+[1-9]|ERROR:' "$output"; then
+            echo "FAIL"
+            tail -80 "$output"
+            exit 1
+        fi
+        echo "PASS"
+        passed=$((passed + 1))
+    done
+fi
 
 echo ""
 echo "Passed: $passed"

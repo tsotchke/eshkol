@@ -46336,7 +46336,7 @@
           },
           "visibility": "closure_export_presence",
           "public_name": "iv-rel-pad",
-          "binding_category": "unknown",
+          "binding_category": "value",
           "binding_identity": "core.ad.interval:lib/core/ad/interval.esk#iv-rel-pad",
           "resolved_binding_origin": {
             "module": "core.ad.interval",
@@ -46349,7 +46349,7 @@
           }
         }
       ],
-      "binding_category": "unknown",
+      "binding_category": "value",
       "binding_identity": "core.ad.interval:lib/core/ad/interval.esk#iv-rel-pad"
     },
     {

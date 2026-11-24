@@ -115,6 +115,11 @@ CI_SURFACE_EXTENSION_TESTS = (
     "tests/ad/sparse_tensors_test.esk",
     "tests/ad/taylor_tower_test.esk",
     "tests/macros/negative/syntax_error_negative.esk",
+    "tests/coverage/wave9_surface_execution_test.esk",
+    "tests/coverage/wave9_vm_value_constants_test.esk",
+    "tests/effects/handler_laws.esk",
+    "tests/effects/unwinding_order.esk",
+    "tests/effects/resumption_counts.esk",
 )
 
 # reader macros -> the special form they expand to
@@ -132,7 +137,8 @@ READER_MACROS = {
 # must have an execution event; merely appearing in generated IR is not enough.
 COMPILE_TIME_FORMS = {
     "define", "define-values", "define-type", "define-syntax",
-    "define-record-type", "define-library", "extern", "extern-var",
+    "define-record-type", "define-library", "define-effect", "declare-effects",
+    "extern", "extern-var", "hott", "hott-eval",
     "import", "require", "load", "provide", "include", "include-ci",
     "cond-expand", "let-syntax", "letrec-syntax", "syntax-error",
 }
