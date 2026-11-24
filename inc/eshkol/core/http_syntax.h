@@ -588,6 +588,328 @@ static inline const char* eshkol_http_request_offending_field(
                                                   0);
 }
 
+/* ─── RFC 9112 response status-line, header & body-framing validation ─────── */
+
+#define ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES ((size_t)16u * 1024u * 1024u)
+
+typedef struct eshkol_http_parsed_response {
+    int    status;
+    size_t header_length;
+    size_t body_offset;
+    size_t body_length;
+    int    is_chunked;
+    int    has_content_length;
+    size_t content_length;
+} eshkol_http_parsed_response_t;
+
+static inline int eshkol_http_ascii_ieq(const char* a, size_t a_len,
+                                        const char* lit_lower) {
+    size_t n = strlen(lit_lower);
+    size_t i;
+    if (a_len != n) return 0;
+    for (i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)a[i];
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+        if ((char)c != lit_lower[i]) return 0;
+    }
+    return 1;
+}
+
+static inline int eshkol_http_parse_u64_decimal(const char* text, size_t len,
+                                                size_t* out) {
+    size_t i;
+    size_t value = 0;
+    if (!text || len == 0 || !out) return 0;
+    for (i = 0; i < len; ++i) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < '0' || c > '9') return 0;
+        size_t digit = (size_t)(c - '0');
+        if (value > ((size_t)-1 - digit) / 10u) return 0;
+        value = value * 10u + digit;
+    }
+    *out = value;
+    return 1;
+}
+
+/**
+ * @brief Parse and validate an HTTP/1.x response according to RFC 9112.
+ *
+ * Rejects malformed status lines, bare CR/LF or NUL bytes inside the header
+ * section, invalid field lines, conflicting or malformed Content-Length values,
+ * unsupported Transfer-Encoding values, simultaneous Content-Length and
+ * Transfer-Encoding (response smuggling), and Content-Length truncation or
+ * excess trailing bytes.
+ *
+ * @return 1 on a valid response, 0 on refusal (with `*offending` naming the cause).
+ */
+static inline int eshkol_http_parse_response(const char* raw, size_t raw_len,
+                                             eshkol_http_parsed_response_t* out,
+                                             const char** offending) {
+    size_t i;
+    size_t header_end = 0;
+    int found_end = 0;
+    size_t status_end = 0;
+    int found_status_end = 0;
+    int status_code = 0;
+    size_t cursor;
+    int has_cl = 0;
+    size_t cl_val = 0;
+    int is_chunked = 0;
+
+    if (offending) *offending = "response";
+    if (!raw || !out || raw_len < 12) {
+        if (offending) *offending = "status line";
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+
+    /* Locate CRLF CRLF header terminator without relying on NUL-terminated strstr. */
+    for (i = 0; i + 3 < raw_len; ++i) {
+        if (raw[i] == '\0') {
+            if (offending) *offending = "NUL byte in response headers";
+            return 0;
+        }
+        if (raw[i] == '\r' && raw[i + 1] == '\n' &&
+            raw[i + 2] == '\r' && raw[i + 3] == '\n') {
+            header_end = i;
+            found_end = 1;
+            break;
+        }
+    }
+    if (!found_end) {
+        if (offending) *offending = "unterminated response headers";
+        return 0;
+    }
+
+    /* Locate end of status line (first CRLF). */
+    for (i = 0; i + 1 < header_end + 2; ++i) {
+        if (raw[i] == '\r' && raw[i + 1] == '\n') {
+            status_end = i;
+            found_status_end = 1;
+            break;
+        }
+        if (raw[i] == '\r' || raw[i] == '\n') {
+            if (offending) *offending = "status line";
+            return 0;
+        }
+    }
+    if (!found_status_end || status_end < 12) {
+        if (offending) *offending = "status line";
+        return 0;
+    }
+    if (!((memcmp(raw, "HTTP/1.1 ", 9) == 0) || (memcmp(raw, "HTTP/1.0 ", 9) == 0))) {
+        if (offending) *offending = "HTTP version";
+        return 0;
+    }
+    if (raw[9] < '1' || raw[9] > '5' ||
+        raw[10] < '0' || raw[10] > '9' ||
+        raw[11] < '0' || raw[11] > '9') {
+        if (offending) *offending = "status code";
+        return 0;
+    }
+    status_code = (raw[9] - '0') * 100 + (raw[10] - '0') * 10 + (raw[11] - '0');
+    if (status_end > 12) {
+        if (raw[12] != ' ') {
+            if (offending) *offending = "status line";
+            return 0;
+        }
+        for (i = 13; i < status_end; ++i) {
+            unsigned char c = (unsigned char)raw[i];
+            if (c != '\t' && (c < 0x20 || c == 0x7f)) {
+                if (offending) *offending = "reason phrase";
+                return 0;
+            }
+        }
+    }
+
+    /* Walk each response field line strictly delimited by CRLF. */
+    cursor = status_end + 2;
+    while (cursor < header_end) {
+        size_t line_end = cursor;
+        int found_crlf = 0;
+        while (line_end + 1 < header_end + 2) {
+            if (raw[line_end] == '\r' && raw[line_end + 1] == '\n') {
+                found_crlf = 1;
+                break;
+            }
+            if (raw[line_end] == '\r' || raw[line_end] == '\n') {
+                if (offending) *offending = "bare line break in response header";
+                return 0;
+            }
+            line_end++;
+        }
+        if (!found_crlf) {
+            if (offending) *offending = "response header";
+            return 0;
+        }
+        size_t line_len = line_end - cursor;
+        if (!eshkol_http_valid_header_line_n(raw + cursor, line_len)) {
+            if (offending) *offending = "response header";
+            return 0;
+        }
+        size_t colon = 0;
+        while (colon < line_len && raw[cursor + colon] != ':') colon++;
+        const char* fname = raw + cursor;
+        size_t fname_len = colon;
+        const char* fval = raw + cursor + colon + 1;
+        size_t fval_len = line_len - colon - 1;
+        while (fval_len > 0 && (*fval == ' ' || *fval == '\t')) { fval++; fval_len--; }
+        while (fval_len > 0 && (fval[fval_len - 1] == ' ' || fval[fval_len - 1] == '\t')) fval_len--;
+
+        if (eshkol_http_ascii_ieq(fname, fname_len, "content-length")) {
+            /* RFC 9110 §8.6: comma-separated identical values allowed only if identical. */
+            size_t pos = 0;
+            if (fval_len == 0) {
+                if (offending) *offending = "Content-Length";
+                return 0;
+            }
+            while (pos < fval_len) {
+                size_t seg_start = pos;
+                while (pos < fval_len && fval[pos] != ',') pos++;
+                size_t seg_end = pos;
+                while (seg_start < seg_end && (fval[seg_start] == ' ' || fval[seg_start] == '\t')) seg_start++;
+                while (seg_end > seg_start && (fval[seg_end - 1] == ' ' || fval[seg_end - 1] == '\t')) seg_end--;
+                size_t parsed = 0;
+                if (!eshkol_http_parse_u64_decimal(fval + seg_start, seg_end - seg_start, &parsed)) {
+                    if (offending) *offending = "Content-Length";
+                    return 0;
+                }
+                if (has_cl && parsed != cl_val) {
+                    if (offending) *offending = "conflicting Content-Length";
+                    return 0;
+                }
+                has_cl = 1;
+                cl_val = parsed;
+                if (pos < fval_len && fval[pos] == ',') pos++;
+            }
+        } else if (eshkol_http_ascii_ieq(fname, fname_len, "transfer-encoding")) {
+            if (is_chunked || !eshkol_http_ascii_ieq(fval, fval_len, "chunked")) {
+                if (offending) *offending = "Transfer-Encoding";
+                return 0;
+            }
+            is_chunked = 1;
+        }
+        cursor = line_end + 2;
+    }
+
+    if (has_cl && is_chunked) {
+        if (offending) *offending = "conflicting Content-Length and Transfer-Encoding";
+        return 0;
+    }
+
+    size_t body_offset = header_end + 4;
+    size_t avail = raw_len - body_offset;
+    if (has_cl) {
+        if (avail < cl_val) {
+            if (offending) *offending = "truncated response body";
+            return 0;
+        }
+        if (avail > cl_val) {
+            if (offending) *offending = "excess bytes after Content-Length";
+            return 0;
+        }
+        out->body_length = cl_val;
+    } else {
+        out->body_length = avail;
+    }
+
+    out->status = status_code;
+    out->header_length = header_end;
+    out->body_offset = body_offset;
+    out->is_chunked = is_chunked;
+    out->has_content_length = has_cl;
+    out->content_length = cl_val;
+    if (offending) *offending = NULL;
+    return 1;
+}
+
+/**
+ * @brief Strictly decode an RFC 9112 section 7.1 chunked response body.
+ *
+ * Writes decoded bytes into `out_buf` (which must hold at least `in_len` bytes)
+ * and stores the decoded length in `*out_len`. Rejects malformed chunk sizes,
+ * missing CRLF terminators, truncated chunks, invalid trailer lines, or
+ * trailing bytes after the terminating chunk.
+ */
+static inline int eshkol_http_decode_chunked(const char* in, size_t in_len,
+                                             char* out_buf, size_t out_cap,
+                                             size_t* out_len) {
+    size_t pos = 0;
+    size_t written = 0;
+    if (!in || !out_buf || !out_len) return 0;
+
+    for (;;) {
+        size_t line_end = pos;
+        int found = 0;
+        while (line_end + 1 < in_len) {
+            if (in[line_end] == '\r' && in[line_end + 1] == '\n') {
+                found = 1;
+                break;
+            }
+            if (in[line_end] == '\r' || in[line_end] == '\n') return 0;
+            line_end++;
+        }
+        if (!found || line_end == pos) return 0;
+
+        /* Parse hex chunk-size up to optional ';' chunk-ext. */
+        size_t p = pos;
+        size_t chunk_size = 0;
+        size_t digits = 0;
+        while (p < line_end && in[p] != ';' && in[p] != ' ' && in[p] != '\t') {
+            unsigned char c = (unsigned char)in[p];
+            size_t hex = 0;
+            if (c >= '0' && c <= '9') hex = (size_t)(c - '0');
+            else if (c >= 'a' && c <= 'f') hex = (size_t)(10 + c - 'a');
+            else if (c >= 'A' && c <= 'F') hex = (size_t)(10 + c - 'A');
+            else return 0;
+            if (chunk_size > ((size_t)-1 - hex) / 16u) return 0;
+            chunk_size = chunk_size * 16u + hex;
+            digits++;
+            p++;
+        }
+        if (digits == 0) return 0;
+        /* Optional BWS before chunk-ext or CRLF. */
+        while (p < line_end && (in[p] == ' ' || in[p] == '\t')) p++;
+        if (p < line_end && in[p] != ';') return 0;
+
+        pos = line_end + 2;
+        if (chunk_size == 0) {
+            /* Consume optional valid trailer header lines until empty CRLF. */
+            for (;;) {
+                if (pos + 1 >= in_len) return 0;
+                if (in[pos] == '\r' && in[pos + 1] == '\n') {
+                    pos += 2;
+                    break;
+                }
+                size_t tr_end = pos;
+                int tr_found = 0;
+                while (tr_end + 1 < in_len) {
+                    if (in[tr_end] == '\r' && in[tr_end + 1] == '\n') {
+                        tr_found = 1;
+                        break;
+                    }
+                    if (in[tr_end] == '\r' || in[tr_end] == '\n') return 0;
+                    tr_end++;
+                }
+                if (!tr_found) return 0;
+                if (!eshkol_http_valid_header_line_n(in + pos, tr_end - pos)) return 0;
+                pos = tr_end + 2;
+            }
+            if (pos != in_len) return 0; /* trailing bytes after terminal chunk */
+            *out_len = written;
+            return 1;
+        }
+
+        if (chunk_size > in_len - pos) return 0;
+        if (pos + chunk_size + 2 > in_len) return 0;
+        if (in[pos + chunk_size] != '\r' || in[pos + chunk_size + 1] != '\n') return 0;
+        if (chunk_size > out_cap - written) return 0;
+        memcpy(out_buf + written, in + pos, chunk_size);
+        written += chunk_size;
+        pos += chunk_size + 2;
+    }
+}
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

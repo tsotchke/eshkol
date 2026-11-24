@@ -427,6 +427,7 @@ extern "C" {
     int64_t eshkol_utf8_ref(const char* s, int64_t k);
     void* eshkol_runtime_string_to_list(void* arena, const char* s);
     char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
+    int32_t eshkol_utf8_is_valid(const uint8_t* bytes, int64_t len);
     int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
     int64_t eshkol_tensor_linear_from_index_arg(const eshkol_tagged_value_t* tv,
                                                 const int64_t* dims, int64_t ndim);
@@ -2050,6 +2051,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_utf8_ref);
     ADD_SYMBOL(eshkol_runtime_string_to_list);
     ADD_SYMBOL(eshkol_utf8_substring);
+    ADD_SYMBOL(eshkol_utf8_is_valid);
     ADD_SYMBOL(eshkol_unwrap_list_index);
     ADD_SYMBOL(eshkol_tensor_linear_from_index_arg);
     ADD_SYMBOL(eshkol_tensor_slice_offset_from_index_arg);

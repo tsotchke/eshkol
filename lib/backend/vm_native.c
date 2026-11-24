@@ -15701,33 +15701,86 @@ tensor_inverse_done:
                     ok = sent == body_len;
                 }
                 if (ok) {
-                    int cap = 65536;
-                    char* response = (char*)malloc((size_t)cap + 1);
+                    size_t cap = 65536;
+                    size_t total = 0;
+                    int oversized = 0;
+                    char* response = (char*)malloc(cap + 1);
                     if (response) {
-                        int total = 0;
-                        while (total < cap) {
-                            ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
+                        for (;;) {
+                            if (total == cap) {
+                                if (cap >= ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES) {
+                                    char probe = 0;
+                                    ssize_t extra = recv(fd, &probe, 1, 0);
+                                    if (extra > 0) oversized = 1;
+                                    break;
+                                }
+                                size_t next_cap = cap * 2;
+                                if (next_cap > ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES)
+                                    next_cap = ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES;
+                                char* grown = (char*)realloc(response, next_cap + 1);
+                                if (!grown) {
+                                    free(response);
+                                    response = NULL;
+                                    break;
+                                }
+                                response = grown;
+                                cap = next_cap;
+                            }
+                            ssize_t n = recv(fd, response + total, cap - total, 0);
                             if (n <= 0) break;
-                            total += (int)n;
+                            total += (size_t)n;
+                        }
+                        close(fd);
+                        if (!response) {
+                            vm_push(vm, BOOL_VAL(0));
+                            break;
+                        }
+                        if (oversized) {
+                            free(response);
+                            vm_raise_error_msg(vm,
+                                "http-request: oversized HTTP response does not fit the protocol grammar");
+                            break;
                         }
                         response[total] = '\0';
-                        close(fd);
-                        int status = 0;
-                        (void)sscanf(response, "HTTP/%*s %d", &status);
-                        char* body_start = strstr(response, "\r\n\r\n");
-                        int header_len = total;
-                        int body_offset = total;
-                        if (body_start) {
-                            body_start += 4;
-                            body_offset = (int)(body_start - response);
-                            header_len = body_offset - 4;
-                        } else {
-                            body_start = response + total;
+                        eshkol_http_parsed_response_t parsed;
+                        const char* resp_offending = NULL;
+                        if (!eshkol_http_parse_response(response, total, &parsed, &resp_offending)) {
+                            char message[160];
+                            snprintf(message, sizeof(message),
+                                     "http-request: %s does not fit the protocol grammar",
+                                     resp_offending ? resp_offending : "response");
+                            free(response);
+                            vm_raise_error_msg(vm, message);
+                            break;
                         }
-                        Value result = vm_http_response_value(vm, status,
-                                                              response, header_len,
-                                                              body_start,
-                                                              total - body_offset);
+                        const char* body_ptr = response + parsed.body_offset;
+                        size_t body_len = parsed.body_length;
+                        char* decoded = NULL;
+                        if (parsed.is_chunked) {
+                            decoded = (char*)malloc(parsed.body_length + 1);
+                            if (!decoded) {
+                                free(response);
+                                vm_push(vm, BOOL_VAL(0));
+                                break;
+                            }
+                            size_t decoded_len = 0;
+                            if (!eshkol_http_decode_chunked(body_ptr, parsed.body_length,
+                                                            decoded, parsed.body_length,
+                                                            &decoded_len)) {
+                                free(decoded);
+                                free(response);
+                                vm_raise_error_msg(vm,
+                                    "http-request: chunked response body does not fit the protocol grammar");
+                                break;
+                            }
+                            decoded[decoded_len] = '\0';
+                            body_ptr = decoded;
+                            body_len = decoded_len;
+                        }
+                        Value result = vm_http_response_value(vm, parsed.status,
+                                                              response, (int)parsed.header_length,
+                                                              body_ptr, (int)body_len);
+                        free(decoded);
                         free(response);
                         vm_push(vm, result);
                         break;
@@ -17290,24 +17343,39 @@ tensor_inverse_done:
         vm_push(vm, NIL_VAL);
         break;
     }
-    case 688: { /* utf8->string(bv) */
+    case 688:   /* utf8->string(bv) */
+    case 2217:  /* utf8->string(bv, start) */
+    case 2218: { /* utf8->string(bv, start, end) */
+        Value end_val = fid == 2218 ? vm_pop(vm) : NIL_VAL;
+        Value start_val = fid != 688 ? vm_pop(vm) : INT_VAL(0);
         Value bv_val = vm_pop(vm);
-        if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
-            VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
-            if (bv) {
-                VmString* s = vm_string_new(&vm->heap.regions, (const char*)bv->data, bv->len);
-                if (s) {
-                    int32_t ptr = heap_alloc(&vm->heap);
-                    if (ptr >= 0) {
-                        vm->heap.objects[ptr]->type = HEAP_STRING;
-                        vm->heap.objects[ptr]->opaque.ptr = s;
-                        vm_push(vm, (Value){.type = VAL_STRING, .as.ptr = ptr});
-                        break;
-                    }
-                }
+        if (!is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
+            vm_raise_error_msg(vm, "utf8->string: expected bytevector"); break;
+        }
+        VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
+        if (!bv) { vm_raise_error_msg(vm, "utf8->string: expected bytevector"); break; }
+        if (start_val.type != VAL_INT || (fid == 2218 && end_val.type != VAL_INT)) {
+            vm_raise_error_msg(vm, "utf8->string: expected exact integer index"); break;
+        }
+        int64_t start = start_val.as.i;
+        int64_t end = fid == 2218 ? end_val.as.i : bv->len;
+        if (start < 0 || end < start || end > bv->len) {
+            vm_raise_error_msg(vm, "utf8->string: index out of bounds"); break;
+        }
+        if (!vm_bv_utf8_is_valid(bv->data + start, (int)(end - start))) {
+            vm_raise_error_msg(vm, "utf8->string: invalid UTF-8 sequence"); break;
+        }
+        VmString* s = vm_bv_utf8_to_string(&vm->heap.regions, bv, (int)start, (int)end);
+        if (s) {
+            int32_t ptr = heap_alloc(&vm->heap);
+            if (ptr >= 0) {
+                vm->heap.objects[ptr]->type = HEAP_STRING;
+                vm->heap.objects[ptr]->opaque.ptr = s;
+                vm_push(vm, (Value){.type = VAL_STRING, .as.ptr = ptr});
+                break;
             }
         }
-        vm_push(vm, NIL_VAL);
+        vm_raise_error_msg(vm, "utf8->string: allocation failed");
         break;
     }
     case 689:   /* string->utf8(str) */

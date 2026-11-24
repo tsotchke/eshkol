@@ -4876,32 +4876,74 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_http_request_v(
         ok = send(fd, body_data, body_len, 0) == (ssize_t)body_len;
 
     if (ok) {
-        int cap = 65536;
-        char* response = (char*)malloc((size_t)cap + 1);
+        size_t cap = 65536;
+        size_t total = 0;
+        int oversized = 0;
+        char* response = (char*)malloc(cap + 1);
         if (response) {
-            int total = 0;
-            while (total < cap) {
-                ssize_t n = recv(fd, response + total, (size_t)(cap - total), 0);
+            for (;;) {
+                if (total == cap) {
+                    if (cap >= ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES) {
+                        char probe = 0;
+                        ssize_t extra = recv(fd, &probe, 1, 0);
+                        if (extra > 0) oversized = 1;
+                        break;
+                    }
+                    size_t next_cap = cap * 2;
+                    if (next_cap > ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES)
+                        next_cap = ESHKOL_HTTP_RAW_MAX_RESPONSE_BYTES;
+                    char* grown = (char*)realloc(response, next_cap + 1);
+                    if (!grown) {
+                        free(response);
+                        response = NULL;
+                        break;
+                    }
+                    response = grown;
+                    cap = next_cap;
+                }
+                ssize_t n = recv(fd, response + total, cap - total, 0);
                 if (n <= 0) break;
-                total += (int)n;
+                total += (size_t)n;
+            }
+            close(fd);
+            if (!response) return sys_make_bool(0);
+            if (oversized) {
+                free(response);
+                sys_protocol_refusal("http-request", "oversized HTTP response");
             }
             response[total] = '\0';
-            close(fd);
-            int status = 0;
-            (void)sscanf(response, "HTTP/%*s %d", &status);
-            char* body_start = strstr(response, "\r\n\r\n");
-            int header_len = total;
-            int body_offset = total;
-            if (body_start) {
-                body_start += 4;
-                body_offset = (int)(body_start - response);
-                header_len = body_offset - 4;
-            } else {
-                body_start = response + total;
+            eshkol_http_parsed_response_t parsed;
+            const char* resp_offending = NULL;
+            if (!eshkol_http_parse_response(response, total, &parsed, &resp_offending)) {
+                free(response);
+                sys_protocol_refusal("http-request",
+                                     resp_offending ? resp_offending : "response");
+            }
+            const char* body_ptr = response + parsed.body_offset;
+            size_t body_len = parsed.body_length;
+            char* decoded = NULL;
+            if (parsed.is_chunked) {
+                decoded = (char*)malloc(parsed.body_length + 1);
+                if (!decoded) {
+                    free(response);
+                    return sys_make_bool(0);
+                }
+                size_t decoded_len = 0;
+                if (!eshkol_http_decode_chunked(body_ptr, parsed.body_length,
+                                                decoded, parsed.body_length,
+                                                &decoded_len)) {
+                    free(decoded);
+                    free(response);
+                    sys_protocol_refusal("http-request", "chunked response body");
+                }
+                decoded[decoded_len] = '\0';
+                body_ptr = decoded;
+                body_len = decoded_len;
             }
             eshkol_sysbuiltin_value_t result =
-                sys_http_response_value(status, response, (size_t)header_len,
-                                        body_start, (size_t)(total - body_offset));
+                sys_http_response_value(parsed.status, response, parsed.header_length,
+                                        body_ptr, body_len);
+            free(decoded);
             free(response);
             return result;
         }

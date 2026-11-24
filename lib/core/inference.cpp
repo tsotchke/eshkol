@@ -746,10 +746,15 @@ double eshkol_expected_free_energy(arena_t* arena,
 
         /* Marginalize CPT over action state */
         uint32_t total_configs = f->cpt_size;
+        uint32_t state_stack[64];
+        uint32_t* state = (f->num_vars <= 64)
+            ? state_stack
+            : (uint32_t*)malloc(f->num_vars * sizeof(uint32_t));
+        if (!state) continue;
+
         for (uint32_t config = 0; config < total_configs; config++) {
             /* Check if this config has the right action state */
             uint32_t remaining = config;
-            uint32_t* state = (uint32_t*)alloca(f->num_vars * sizeof(uint32_t));
             for (int32_t k = (int32_t)f->num_vars - 1; k >= 0; k--) {
                 state[k] = remaining % f->dims[k];
                 remaining /= f->dims[k];
@@ -773,6 +778,7 @@ double eshkol_expected_free_energy(arena_t* arena,
                 efe += q * log_q;
             }
         }
+        if (state != state_stack) free(state);
     }
 
     return efe;

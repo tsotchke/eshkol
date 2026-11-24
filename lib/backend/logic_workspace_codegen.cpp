@@ -644,10 +644,16 @@ Value* LogicWorkspaceCodegen::codegenWSStep(const eshkol_operations_t* op) {
     }
     Value* content_tv = loadResult(content_tv_a, "content_tv");
 
-    // Allocate results array on stack (max 16 modules)
-    const uint32_t MAX_WS_MODULES = 16;
-    Value* results_arr = builder.CreateAlloca(ctx_.taggedValueType(),
-        ConstantInt::get(i32_type, MAX_WS_MODULES), "ws_results");
+    // Allocate results array dynamically in the arena for the exact module count
+    // so arbitrarily many registered cognitive modules stay memory-safe.
+    Value* num_modules_i64 = builder.CreateZExt(num_modules, ctx_.int64Type(), "num_modules_i64");
+    Value* results_bytes = builder.CreateMul(num_modules_i64,
+        ConstantInt::get(ctx_.int64Type(), 16), "ws_results_bytes");
+    FunctionType* alloc_fn_type = FunctionType::get(ptr_type,
+        {ptr_type, ctx_.int64Type()}, false);
+    Function* arena_alloc_fn = getOrDeclareRuntimeFunc("arena_allocate", alloc_fn_type);
+    Value* results_arr = builder.CreateCall(arena_alloc_fn,
+        {loadArenaPtr(), results_bytes}, "ws_results");
 
     // Modules start at ws_ptr + sizeof(eshkol_workspace_t) = ws_ptr + 24
     Value* modules_base = builder.CreateGEP(ctx_.int8Type(), ws_ptr,

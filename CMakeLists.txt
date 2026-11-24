@@ -15628,6 +15628,46 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 600
         PASS_REGULAR_EXPRESSION "MERKLE-DOMAIN-SEPARATION OK"
         FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_executable(http_response_framing_test tests/protocol/http_response_framing_test.c)
+    target_include_directories(http_response_framing_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+    add_test(NAME http_response_framing_test COMMAND http_response_framing_test)
+    set_tests_properties(http_response_framing_test PROPERTIES
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "PASS: http_response_framing_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    add_test(
+        NAME security_hardening_jit
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/features/security_hardening_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(security_hardening_jit PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: security_hardening_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    add_test(
+        NAME security_hardening_aot
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -O0 -o '${CMAKE_CURRENT_BINARY_DIR}/security_hardening_aot' tests/features/security_hardening_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/security_hardening_aot'"
+    )
+    set_tests_properties(security_hardening_aot PROPERTIES
+        TIMEOUT 600
+        PASS_REGULAR_EXPRESSION "PASS: security_hardening_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+
+    if(TARGET eshkol-vm-standalone-test)
+        add_test(
+            NAME security_hardening_vm
+            COMMAND sh -c
+                "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-vm-standalone-test>' tests/features/security_hardening_vm_test.esk"
+        )
+        set_tests_properties(security_hardening_vm PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: security_hardening_vm_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|VM ERROR|fatal signal")
+    endif()
 endif()
 
 # The request grammar as a program sees it: hostile methods, URLs, header

@@ -87,32 +87,16 @@ static void release_curl_global(void) {
 }
 
 /**
- * @brief malloc() wrapper that aborts the process on allocation failure.
- *
- * Used throughout this file so out-of-memory is treated as fatal
- * rather than requiring every call site to check for NULL.
- *
- * @param n Number of bytes to allocate.
- * @return Newly allocated, uninitialized buffer of @p n bytes; never NULL (aborts instead of returning NULL).
- */
-static void* xmalloc(size_t n) {
-    void* p = malloc(n);
-    if (!p) {
-        fprintf(stderr, "agent_http_client: out of memory (%zu bytes)\n", n);
-        abort();
-    }
-    return p;
-}
-
-/**
  * @brief Allocates a NUL-terminated copy of @p n bytes from @p src.
  *
  * @param src Source bytes to copy; may be NULL if @p n is 0.
  * @param n Number of bytes to copy from @p src.
- * @return Newly allocated, NUL-terminated buffer of @p n + 1 bytes.
+ * @return Newly allocated, NUL-terminated buffer of @p n + 1 bytes, or NULL on OOM.
  */
-static char* xstrdup_n(const char* src, size_t n) {
-    char* out = (char*)xmalloc(n + 1);
+static char* checked_strdup_n(const char* src, size_t n) {
+    if (n == SIZE_MAX) return NULL;
+    char* out = (char*)malloc(n + 1);
+    if (!out) return NULL;
     if (n > 0 && src) memcpy(out, src, n);
     out[n] = '\0';
     return out;
@@ -189,7 +173,12 @@ static struct curl_slist* header_lines_to_slist(const char* lines, int* ok) {
             curl_slist_free_all(result);
             return NULL;
         }
-        char* line = xstrdup_n(cursor, length);
+        char* line = checked_strdup_n(cursor, length);
+        if (!line) {
+            *ok = 0;
+            curl_slist_free_all(result);
+            return NULL;
+        }
         struct curl_slist* grown = curl_slist_append(result, line);
         free(line);
         if (!grown) {
@@ -259,20 +248,28 @@ static void apply_common_opts(CURL* curl, body_buf_t* buf, int32_t timeout_ms) {
  * @return Newly allocated response; never NULL.
  */
 static qllm_http_response_t* finalize_response(CURL* curl, body_buf_t* buf, CURLcode rc) {
-    qllm_http_response_t* resp = (qllm_http_response_t*)xmalloc(sizeof(*resp));
-    memset(resp, 0, sizeof(*resp));
+    qllm_http_response_t* resp = (qllm_http_response_t*)calloc(1, sizeof(*resp));
+    if (!resp) {
+        free(buf->data);
+        return NULL;
+    }
     if (rc != CURLE_OK) {
+        const char* msg = curl_easy_strerror(rc);
         resp->status = 0;
-        resp->error = xstrdup_n(curl_easy_strerror(rc), strlen(curl_easy_strerror(rc)));
+        resp->error = checked_strdup_n(msg, msg ? strlen(msg) : 0);
         free(buf->data);
     } else {
         long http_status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
         resp->status = (int32_t)http_status;
         /* Always hand back a non-NULL body buffer so callers can do
-         * string ops without first nullchecking. Empty body → "". */
+         * string ops without first nullchecking. Empty body -> "". */
         if (buf->data == NULL) {
-            resp->body = xstrdup_n("", 0);
+            resp->body = checked_strdup_n("", 0);
+            if (!resp->body) {
+                free(resp);
+                return NULL;
+            }
             resp->body_len = 0;
         } else {
             resp->body = buf->data;     /* transfer ownership */

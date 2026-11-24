@@ -48,22 +48,22 @@
 
 (provide
   ;; Hash
-  fnv1a-64 hash->hex
+  fnv1a-64 merkle-sha256 hash->hex
   ;; Format
   merkle-format-version merkle-leaf-domain merkle-node-domain
   ;; Merkle tree
   merkle-leaf merkle-leaf? merkle-inode? merkle-root merkle-data
-  merkle-tree merkle-tree-with-hash
+  merkle-tree merkle-tree-with-hash merkle-tree-sha256
   merkle-leaves
-  merkle-proof merkle-verify
+  merkle-proof merkle-proof-sha256 merkle-verify merkle-verify-sha256
   ;; Version 1: the pre-domain-separation computation, kept so roots
   ;; recorded under it stay readable
   merkle-leaf-v1 merkle-tree-v1 merkle-tree-with-hash-v1
   merkle-proof-v1 merkle-verify-v1
   ;; Content-addressable store
-  make-cas make-cas-with-hash cas? cas-put! cas-get cas-has? cas-size cas-keys)
+  make-cas make-cas-with-hash make-cas-sha256 cas? cas-put! cas-get cas-has? cas-size cas-keys)
 
-;; ── FNV-1a 64-bit hash ──────────────────────────────────────────────
+;; ── FNV-1a 64-bit hash & SHA-256 cryptographic hash ──────────────────
 ;;
 ;; The hash inner loop lives in lib/core/merkle.c — Eshkol-side
 ;; modulo on bignums >2^53 currently truncates to ~32 bits, which
@@ -71,24 +71,39 @@
 ;; call to fnv1a-64 of the same input).  C-side uint64_t overflow
 ;; semantics are exactly what FNV-1a wants.
 ;;
-;; Returns an int64 (user observes the uint64 bit pattern as a
-;; possibly-negative int — for content addressing this is fine
-;; because we render via hash->hex which extracts the low 64 bits).
+;; Cryptographic SHA-256 is backed by the always-linked core primitive
+;; eshkol_sha256 (lib/core/crypto_primitives.c), returning a 64-char
+;; lowercase hex string so tamper-resistant Merkle trees and CAS stores
+;; work directly without an extra module import.
 
-(extern i64 fnv1a-64-raw    ptr i64        :real eshkol_fnv1a_64)
-(extern i64 u64-to-hex16-raw i64 ptr i64   :real eshkol_u64_to_hex16)
+(extern i64 fnv1a-64-raw     ptr i64        :real eshkol_fnv1a_64)
+(extern i64 u64-to-hex16-raw i64 ptr i64    :real eshkol_u64_to_hex16)
+(extern i32 sha256-raw       ptr i64 ptr i64 :real eshkol_sha256)
 
 (define (fnv1a-64 str)
   "FNV-1a 64-bit hash of the UTF-8 byte view of str.  Returns the
    uint64 bit pattern as an int64 (may be negative — that's fine,
    only equality and hex rendering matter for content addressing)."
-  (fnv1a-64-raw str (string-length str)))
+  (fnv1a-64-raw str (string-byte-length str)))
+
+(define (merkle-sha256 str)
+  "Cryptographic SHA-256 digest of the UTF-8 byte view of str as a
+   64-character lowercase hex string."
+  (let* ((buf (make-string 65 #\space))
+         (rc (sha256-raw str (string-byte-length str) buf 65)))
+    (if (= rc 0)
+        (substring buf 0 64)
+        (error "merkle-sha256: SHA-256 computation failed"))))
 
 (define (hash->hex h)
-  "Render a 64-bit hash as a 16-char lowercase hex string."
-  (let ((buf (make-string 17 #\space)))
-    (u64-to-hex16-raw h buf 17)
-    (substring buf 0 16)))
+  "Render a hash value as a lowercase hex string.  String digests
+   (such as SHA-256 hex strings) pass through unchanged; 64-bit integer
+   hashes render as 16-character lowercase hex."
+  (if (string? h)
+      h
+      (let ((buf (make-string 17 #\space)))
+        (u64-to-hex16-raw h buf 17)
+        (substring buf 0 16))))
 
 ;; ── Merkle tree ──────────────────────────────────────────────────────
 
@@ -211,6 +226,10 @@
    (FNV-1a 64-bit).  Returns the root node."
   (merkle-tree-with-hash data-list fnv1a-64))
 
+(define (merkle-tree-sha256 data-list)
+  "Build a domain-separated Merkle tree using cryptographic SHA-256."
+  (merkle-tree-with-hash data-list merkle-sha256))
+
 (define (merkle-tree-with-hash-v1 data-list hash-fn)
   "Build a format-version-1 tree: the same shape with no domain
    prefixes.  For reading roots recorded under version 1."
@@ -273,7 +292,7 @@
 (define (merkle-verify-with leaf-hash pair-fn root-hash leaf-data proof hash-fn)
   (let loop ((h (leaf-hash leaf-data hash-fn)) (rest proof))
     (cond
-      ((null? rest) (= h root-hash))
+      ((null? rest) (equal? h root-hash))
       (else
        (let* ((p (car rest))
               (sibling-h (car p))
@@ -294,6 +313,14 @@
     (merkle-verify-with
       (lambda (d h) (h (string-append (merkle-leaf-domain) d)))
       merkle-pair-hash root-hash leaf-data proof hash-fn)))
+
+(define (merkle-proof-sha256 tree index)
+  "Inclusion proof over a SHA-256 Merkle tree."
+  (merkle-proof tree index))
+
+(define (merkle-verify-sha256 root-hash leaf-data proof)
+  "Verify a domain-separated SHA-256 Merkle inclusion proof."
+  (merkle-verify root-hash leaf-data proof merkle-sha256))
 
 (define (merkle-verify-v1 root-hash leaf-data proof . hash-fn-opt)
   "Verify a proof produced under format version 1."
@@ -320,6 +347,10 @@
 (define (make-cas)
   "Create a content-addressable store using the default FNV-1a hash."
   (make-cas-with-hash fnv1a-64))
+
+(define (make-cas-sha256)
+  "Create a content-addressable store using cryptographic SHA-256."
+  (make-cas-with-hash merkle-sha256))
 
 (define (cas? c)
   (and (vector? c)

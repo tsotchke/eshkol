@@ -1,0 +1,156 @@
+;;; Cross-engine security and safety verification suite:
+;;; 1. Strict RFC 3629 UTF-8 validation and slice bounds on utf8->string
+;;; 2. Cryptographic SHA-256 Merkle trees, proofs, domain separation, and CAS
+;;; 3. Unified capability-denied? predicate
+;;; 4. Consciousness Engine workspace (>16 modules) & factor-graph EFE
+;;; 5. Non-tail self-calls inside match, do, let-values, call/cc, dynamic-wind, parameterize
+
+(require stdlib)
+(require core.merkle)
+(require core.capabilities)
+
+(define failures 0)
+
+(define (assert-true label cond)
+  (if cond
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ")
+        (display label)
+        (newline)
+        #f)))
+
+(define (raises? thunk)
+  (guard (e (#t #t))
+    (thunk)
+    #f))
+
+;; 1. utf8->string validation and bounds
+(let* ((valid-bv (string->utf8 "hello café 🚀"))
+       (roundtrip (utf8->string valid-bv))
+       (slice (utf8->string valid-bv 0 5))
+       (overlong (bytevector #xc0 #xaf))
+       (lone-cont (bytevector #x80))
+       (surrogate (bytevector #xed #xa0 #x80))
+       (too-large (bytevector #xf4 #x90 #x80 #x80))
+       (truncated (bytevector #xe2 #x82)))
+  (assert-true "utf8->string valid roundtrip" (string=? roundtrip "hello café 🚀"))
+  (assert-true "utf8->string valid slice" (string=? slice "hello"))
+  (assert-true "utf8->string rejects overlong" (raises? (lambda () (utf8->string overlong))))
+  (assert-true "utf8->string rejects lone continuation" (raises? (lambda () (utf8->string lone-cont))))
+  (assert-true "utf8->string rejects surrogate" (raises? (lambda () (utf8->string surrogate))))
+  (assert-true "utf8->string rejects > U+10FFFF" (raises? (lambda () (utf8->string too-large))))
+  (assert-true "utf8->string rejects truncated" (raises? (lambda () (utf8->string truncated))))
+  (assert-true "utf8->string rejects negative start" (raises? (lambda () (utf8->string valid-bv -1 2))))
+  (assert-true "utf8->string rejects start > end" (raises? (lambda () (utf8->string valid-bv 4 2))))
+  (assert-true "utf8->string rejects end > len" (raises? (lambda () (utf8->string valid-bv 0 999))))
+  (assert-true "utf8->string rejects non-bytevector" (raises? (lambda () (utf8->string "not-a-bv")))))
+
+;; 2. core.merkle SHA-256 cryptographic trees & CAS
+(let* ((digest-abc (merkle-sha256 "abc"))
+       (tree (merkle-tree-sha256 '("alpha" "beta" "gamma" "delta")))
+       (root (merkle-root tree))
+       (proof0 (merkle-proof-sha256 tree 0))
+       (proof2 (merkle-proof-sha256 tree 2))
+       (cas (make-cas-sha256))
+       (cas-key (cas-put! cas "payload-1")))
+  (assert-true "merkle-sha256 NIST vector abc"
+    (string=? digest-abc "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"))
+  (assert-true "merkle-root sha256 is 64-char hex string"
+    (and (string? root) (= (string-length root) 64)))
+  (assert-true "merkle-verify-sha256 leaf 0" (merkle-verify-sha256 root "alpha" proof0))
+  (assert-true "merkle-verify-sha256 leaf 2" (merkle-verify-sha256 root "gamma" proof2))
+  (assert-true "merkle-verify-sha256 rejects tampered leaf"
+    (not (merkle-verify-sha256 root "tampered" proof0)))
+  ;; Domain separation: interior hash offered as leaf data cannot match root
+  (let* ((left-node (vector-ref tree 2))
+         (right-node (vector-ref tree 3))
+         (forged-leaf (string-append (merkle-root left-node) (merkle-root right-node))))
+    (assert-true "merkle-verify-sha256 enforces domain separation"
+      (not (merkle-verify-sha256 root forged-leaf '()))))
+  (assert-true "cas-sha256 key length 64" (= (string-length cas-key) 64))
+  (assert-true "cas-sha256 roundtrip" (string=? (cas-get cas cas-key) "payload-1")))
+
+;; 3. capability-denied? predicate
+(let ((denied-outcome (vector 'err 'denied "network denied")))
+  (assert-true "capability-denied? on outcome vector" (capability-denied? denied-outcome))
+  (assert-true "capability-denied? false on unrelated error"
+    (guard (e (#t (not (capability-denied? e))))
+      (error "some other error")
+      #f))
+  (assert-true "capability-denied? true on capability error"
+    (guard (e (#t (capability-denied? e)))
+      (error "capability denied: network" 'network)
+      #f)))
+
+;; 4. Consciousness Engine: >16 workspace modules & non-tensor proposal safety
+(let ((ws (make-workspace 4 24)))
+  (let loop ((i 0))
+    (when (< i 24)
+      (let ((score (+ 0.1 (* i 0.05)))
+            (val (exact->inexact (+ i 1))))
+        (ws-register! ws
+                      (string-append "mod-" (number->string i))
+                      (lambda (content)
+                        (cons score (if (= i 23)
+                                        (vector val val val val)
+                                        (tensor val val val val))))))
+      (loop (+ i 1))))
+  (ws-step! ws)
+  (assert-true "workspace >16 modules step with non-tensor proposal stays safe" (workspace? ws)))
+
+;; 5. Non-tail self-calls inside match, do, let-values, call/cc, dynamic-wind, parameterize
+(define (rec-match n)
+  (match n
+    (0 1)
+    (k (+ 1 (rec-match (- k 1))))))
+
+(define (rec-do n)
+  (if (= n 0)
+      0
+      (do ((i 0 (+ i 1)))
+          ((= i 1) (+ n (rec-do (- n 1)))))))
+
+(define (rec-let-values n)
+  (if (= n 0)
+      0
+      (let-values (((a b) (values n (- n 1))))
+        (+ a (rec-let-values b)))))
+
+(define (rec-callcc n)
+  (if (= n 0)
+      0
+      (call/cc (lambda (k) (+ n (rec-callcc (- n 1)))))))
+
+(define (rec-dwind n)
+  (if (= n 0)
+      0
+      (dynamic-wind
+        (lambda () #f)
+        (lambda () (+ n (rec-dwind (- n 1))))
+        (lambda () #f))))
+
+(define p-depth (make-parameter 0))
+(define (rec-param n)
+  (if (= n 0)
+      0
+      (parameterize ((p-depth n))
+        (+ (p-depth) (rec-param (- n 1))))))
+
+(assert-true "non-tail self-call in match" (= (rec-match 5) 6))
+(assert-true "non-tail self-call in do" (= (rec-do 5) 15))
+(assert-true "non-tail self-call in let-values" (= (rec-let-values 5) 15))
+(assert-true "non-tail self-call in call/cc" (= (rec-callcc 5) 15))
+(assert-true "non-tail self-call in dynamic-wind" (= (rec-dwind 5) 15))
+(assert-true "non-tail self-call in parameterize" (= (rec-param 5) 15))
+
+(if (= failures 0)
+    (begin
+      (display "PASS: security_hardening_test")
+      (newline))
+    (begin
+      (display "FAILURES: ")
+      (display failures)
+      (newline)
+      (exit 1)))

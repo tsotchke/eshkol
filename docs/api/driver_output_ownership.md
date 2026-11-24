@@ -230,7 +230,7 @@ Create this process's staging directory for `output.` The artifact keeps the out
 
 ### `publish_staged_output`
 
-*Function* — line 470
+*Function* — line 480
 
 ```c
 inline bool publish_staged_output(const StagedOutput& staged) { ... }

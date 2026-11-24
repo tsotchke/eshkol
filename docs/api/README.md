@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3107/7191 public symbols documented (43.2%), 4084 undocumented.
+**Coverage:** 3109/7197 public symbols documented (43.2%), 4088 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -132,7 +132,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-445/916 symbols documented.
+447/922 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -149,7 +149,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/execution_profile.h`](core/execution_profile.md) | 47 | 11 |
 | [`core/gensym_sequence.h`](core/gensym_sequence.md) | 1 | 0 |
 | [`core/handle.h`](core/handle.md) | 21 | 14 |
-| [`core/http_syntax.h`](core/http_syntax.md) | 19 | 19 |
+| [`core/http_syntax.h`](core/http_syntax.md) | 25 | 21 |
 | [`core/i128.h`](core/i128.md) | 18 | 0 |
 | [`core/i128_runtime.h`](core/i128_runtime.md) | 12 | 0 |
 | [`core/image_io.h`](core/image_io.md) | 4 | 4 |

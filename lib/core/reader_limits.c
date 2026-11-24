@@ -20,12 +20,29 @@
 
 /* Resolution state.  `resolved` flips once, on first read, so a reader may
  * consult the cap from any point without an initialisation order rule; a
- * setter (the command-line option) writes the value and marks it resolved so
+ * setter (the command-line option) writes the value and marks it explicit so
  * the environment is not consulted afterwards. */
 static size_t g_max_source_bytes = ESHKOL_READER_DEFAULT_MAX_SOURCE_BYTES;
 static int    g_max_source_bytes_resolved = 0;
 static size_t g_max_pass_depth = ESHKOL_READER_DEFAULT_MAX_PASS_DEPTH;
 static int    g_max_pass_depth_resolved = 0;
+
+#ifdef ESHKOL_VM_WASM
+/* WebAssembly bundles run without a host environment. */
+static const char* eshkol_reader_hosted_env_lookup(const char* name) {
+    (void)name;
+    return NULL;
+}
+static void eshkol_reader_hosted_env_warn(const char* name) {
+    (void)name;
+}
+#else
+/* Defined in lib/core/runtime_reader_hosted.cpp (ESHKOL_RUNTIME_HOSTED_SRC).
+ * Forward-declared here rather than reading the environment or writing to
+ * standard error directly so this core translation unit stays freestanding-pure. */
+extern const char* eshkol_reader_hosted_env_lookup(const char* name);
+extern void eshkol_reader_hosted_env_warn(const char* name);
+#endif
 
 int eshkol_reader_parse_size(const char* text, size_t* out) {
     if (!text || !out) return 0;
@@ -52,13 +69,11 @@ int eshkol_reader_parse_size(const char* text, size_t* out) {
 }
 
 static size_t resolve_from_env(const char* name, size_t fallback) {
-    const char* text = getenv(name);
+    const char* text = eshkol_reader_hosted_env_lookup(name);
     if (!text || !*text) return fallback;
     size_t value = 0;
     if (!eshkol_reader_parse_size(text, &value)) {
-        fprintf(stderr,
-                "eshkol: %s is not a byte count (accepts N, NK, NM, NG); "
-                "keeping the default\n", name);
+        eshkol_reader_hosted_env_warn(name);
         return fallback;
     }
     return value;

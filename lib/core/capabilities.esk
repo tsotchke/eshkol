@@ -23,7 +23,8 @@
          capability-policy
          capability-policy-active?
          capability-allowed?
-         capability-require!)
+         capability-require!
+         capability-denied?)
 
 ;; Two entry points, and only two. A policy is installed by one call carrying
 ;; the whole set, so there is no moment at which a policy is active with its set
@@ -109,3 +110,25 @@ code it governs can remove. With no policy installed this is a no-op."
   (if (capability-allowed? capability)
       #t
       (error "capability denied" capability)))
+
+(define (capability-string-has-prefix? text prefix)
+  (let ((tlen (string-length text))
+        (plen (string-length prefix)))
+    (and (>= tlen plen)
+         (string=? (substring text 0 plen) prefix))))
+
+(define (capability-denied? value)
+  "Return #t when VALUE is a capability-denial condition raised by any engine
+or a network outcome vector reporting 'denied."
+  (cond
+    ((error-object? value)
+     (let ((msg (error-object-message value)))
+       (and (string? msg)
+            (or (capability-string-has-prefix? msg "capability denied")
+                (capability-string-has-prefix? msg "capability-denied")))))
+    ((and (vector? value)
+          (>= (vector-length value) 3)
+          (eq? (vector-ref value 0) 'err)
+          (eq? (vector-ref value 1) 'denied))
+     #t)
+    (else #f)))

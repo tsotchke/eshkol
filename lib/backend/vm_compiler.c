@@ -5638,6 +5638,23 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    if (is_sym(head, "utf8->string") &&
+        (node->n_children < 2 || node->n_children > 4)) {
+        vm_compile_error("utf8->string requires 1 to 3 arguments", NULL);
+        return;
+    }
+    if (is_sym(head, "utf8->string") &&
+        (node->n_children == 3 || node->n_children == 4)) {
+        int __opnd_s = c->n_locals;
+        compile_expr(c, node->children[1], 0);
+        add_operand_local(c);
+        compile_expr(c, node->children[2], 0);
+        c->n_locals = __opnd_s;
+        if (node->n_children == 4) compile_expr(c, node->children[3], 0);
+        chunk_emit(c, OP_NATIVE_CALL, node->n_children == 4 ? 2218 : 2217);
+        return;
+    }
+
     if (is_sym(head, "string->utf8") &&
         (node->n_children < 2 || node->n_children > 4)) {
         vm_compile_error("string->utf8 requires 1 to 3 arguments", NULL);

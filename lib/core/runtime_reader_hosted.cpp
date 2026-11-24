@@ -11,11 +11,23 @@
 #include "../../inc/eshkol/core/bignum.h"
 #include "../../inc/eshkol/core/symbol_syntax.h"
 #include "../../inc/eshkol/core/string_escape.h"
+#include "../../inc/eshkol/core/reader_limits.h"
 
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+
+extern "C" const char* eshkol_reader_hosted_env_lookup(const char* name) {
+    return name ? std::getenv(name) : nullptr;
+}
+
+extern "C" void eshkol_reader_hosted_env_warn(const char* name) {
+    std::fprintf(stderr,
+                 "eshkol: %s is not a byte count (accepts N, NK, NM, NG); "
+                 "keeping the default\n",
+                 name ? name : "ESHKOL_MAX_SOURCE_BYTES");
+}
 
 // ===== S-EXPRESSION READER (R7RS `read`) =====
 // Lightweight runtime S-expression reader: tokenizer + recursive descent parser

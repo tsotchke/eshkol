@@ -378,4 +378,78 @@ char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* are
     return buf;
 }
 
+/**
+ * @brief Validate that @p len bytes at @p bytes form a well-formed RFC 3629
+ *        UTF-8 sequence.
+ *
+ * Rejects lone continuation bytes, overlong encodings, UTF-16 surrogates
+ * (U+D800..U+DFFF), codepoints above U+10FFFF, and truncated multi-byte
+ * sequences. Permits U+0000 so length-tracked Scheme strings with embedded
+ * NUL characters stay valid.
+ *
+ * @return 1 if valid UTF-8, 0 otherwise.
+ */
+int32_t eshkol_utf8_is_valid(const uint8_t* bytes, int64_t len) {
+    if (len < 0) return 0;
+    if (len == 0) return 1;
+    if (!bytes) return 0;
+    int64_t i = 0;
+    while (i < len) {
+        uint8_t b0 = bytes[i];
+        if (b0 < 0x80u) {
+            i += 1;
+        } else if (b0 >= 0xC2u && b0 <= 0xDFu) {
+            if (i + 1 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            if ((b1 & 0xC0u) != 0x80u) return 0;
+            i += 2;
+        } else if (b0 == 0xE0u) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            if (b1 < 0xA0u || b1 > 0xBFu || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if ((b0 >= 0xE1u && b0 <= 0xECu) || (b0 >= 0xEEu && b0 <= 0xEFu)) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            if ((b1 & 0xC0u) != 0x80u || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if (b0 == 0xEDu) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            if (b1 < 0x80u || b1 > 0x9Fu || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if (b0 == 0xF0u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            uint8_t b3 = bytes[i + 3];
+            if (b1 < 0x90u || b1 > 0xBFu ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else if (b0 >= 0xF1u && b0 <= 0xF3u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            uint8_t b3 = bytes[i + 3];
+            if ((b1 & 0xC0u) != 0x80u ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else if (b0 == 0xF4u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1];
+            uint8_t b2 = bytes[i + 2];
+            uint8_t b3 = bytes[i + 3];
+            if (b1 < 0x80u || b1 > 0x8Fu ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 }  // extern "C"

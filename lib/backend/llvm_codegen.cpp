@@ -743,6 +743,11 @@ static void deadStripWasmModule(llvm::Module& module) {
 #include <cctype>
 #include <stack>
 #include <atomic>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 #include <chrono>
 #include <condition_variable>
 
@@ -16782,10 +16787,17 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
         }
 
         if (func_name == "utf8->string") {
-            // (utf8->string bv [start [end]]) — bytevector to string
+            // (utf8->string bv [start [end]]) — bytevector slice to validated UTF-8 string
+            if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
+                eshkol_arity_error_current("utf8->string requires 1 to 3 arguments");
+                co_return nullptr;
+            }
             TypedValue bv_tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             if (!bv_tv.llvm_value) co_return nullptr;
             Value* bv = typedValueToTaggedValue(bv_tv);
+            tagged_->requireContainer(
+                bv, eshkol::TaggedValueCodegen::containerBit(HEAP_SUBTYPE_BYTEVECTOR),
+                "utf8->string", "bytevector");
             Value* bv_ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
             Value* bv_len = builder->CreateLoad(int64_type, bv_ptr);
@@ -16795,14 +16807,38 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
             if (op->call_op.num_vars >= 2) {
                 TypedValue s_tv = (co_await codegenTypedASTTask(&op->call_op.variables[1]));
                 if (!s_tv.llvm_value) co_return nullptr;
-                start = unpackInt64FromTaggedValue(typedValueToTaggedValue(s_tv));
+                Value* s_val = typedValueToTaggedValue(s_tv);
+                emitBoundsCheckRaise(builder->CreateNot(tagged_->isInt64(s_val)),
+                                     "utf8->string: expected exact integer index");
+                start = unpackInt64FromTaggedValue(s_val);
             }
             if (op->call_op.num_vars >= 3) {
                 TypedValue e_tv = (co_await codegenTypedASTTask(&op->call_op.variables[2]));
                 if (!e_tv.llvm_value) co_return nullptr;
-                end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
+                Value* e_val = typedValueToTaggedValue(e_tv);
+                emitBoundsCheckRaise(builder->CreateNot(tagged_->isInt64(e_val)),
+                                     "utf8->string: expected exact integer index");
+                end = unpackInt64FromTaggedValue(e_val);
             }
+            emitBoundsCheckRaise(
+                builder->CreateOr(
+                    builder->CreateICmpSLT(start, ConstantInt::get(int64_type, 0)),
+                    builder->CreateOr(
+                        builder->CreateICmpSLT(end, start),
+                        builder->CreateICmpSGT(end, bv_len))),
+                "utf8->string: index out of bounds");
+
             Value* str_len = builder->CreateSub(end, start);
+            Value* bv_data = builder->CreateGEP(int8_type, bv_ptr,
+                builder->CreateAdd(ConstantInt::get(int64_type, 8), start));
+
+            FunctionCallee utf8_valid_fn = module->getOrInsertFunction(
+                "eshkol_utf8_is_valid",
+                FunctionType::get(int32_type, {ptr_type, int64_type}, false));
+            Value* is_valid_utf8 = builder->CreateCall(utf8_valid_fn, {bv_data, str_len});
+            emitBoundsCheckRaise(
+                builder->CreateICmpEQ(is_valid_utf8, ConstantInt::get(int32_type, 0)),
+                "utf8->string: invalid UTF-8 sequence");
 
             // Allocate string with header: str_len + 1 (null terminator)
             Value* str_alloc_size = builder->CreateAdd(str_len, ConstantInt::get(int64_type, 1));
@@ -16812,9 +16848,7 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_STRING),
                  ConstantInt::get(int8_type, 0)});
 
-            // Copy bytes
-            Value* bv_data = builder->CreateGEP(int8_type, bv_ptr,
-                builder->CreateAdd(ConstantInt::get(int64_type, 8), start));
+            // Copy validated bytes
             builder->CreateMemCpy(str_ptr, llvm::MaybeAlign(1),
                 bv_data, llvm::MaybeAlign(1), str_len);
 
@@ -44419,10 +44453,16 @@ Value* EshkolLLVMCodeGen::codegenWorkspacePred(const eshkol_operations_t* op) {
         }
         Value* content_tv = loadResult(content_tv_a, "content_tv");
 
-        // Allocate results array on stack (max 16 modules)
-        const uint32_t MAX_WS_MODULES = 16;
-        Value* results_arr = builder->CreateAlloca(tagged_value_type,
-            ConstantInt::get(i32_type, MAX_WS_MODULES), "ws_results");
+        // Allocate results array dynamically in the arena for the exact module
+        // count so arbitrarily many registered cognitive modules stay safe.
+        Value* num_modules_i64 = builder->CreateZExt(num_modules, int64_type, "num_modules_i64");
+        Value* results_bytes = builder->CreateMul(num_modules_i64,
+            ConstantInt::get(int64_type, 16), "ws_results_bytes");
+        FunctionType* alloc_fn_type = FunctionType::get(ptr_type,
+            {ptr_type, int64_type}, false);
+        Function* arena_alloc_fn = getOrDeclareRuntimeFunc("arena_allocate", alloc_fn_type);
+        Value* results_arr = builder->CreateCall(arena_alloc_fn,
+            {loadArenaPtr(), results_bytes}, "ws_results");
 
         // Modules start at ws_ptr + sizeof(eshkol_workspace_t) = ws_ptr + 24
         Value* modules_base = builder->CreateGEP(int8_type, ws_ptr,
@@ -45724,9 +45764,21 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 
     const auto output_path = eshkol::platform::with_executable_suffix(filename);
 
-    // First compile to temporary object file
-    std::string temp_obj = output_path.generic_string() + ".tmp.o";
+    // First compile to a PID- and sequence-scoped temporary object file so an
+    // interrupted build never leaves a shared `.tmp.o` reservation behind.
+    static std::atomic<uint64_t> temp_obj_counter{0};
+    const uint64_t temp_seq = temp_obj_counter.fetch_add(1, std::memory_order_relaxed);
+#ifdef _WIN32
+    const unsigned long long pid_val = static_cast<unsigned long long>(_getpid());
+#else
+    const unsigned long long pid_val = static_cast<unsigned long long>(getpid());
+#endif
+    std::string temp_obj = output_path.generic_string() + "." +
+                           std::to_string(pid_val) + "." +
+                           std::to_string(temp_seq) + ".tmp.o";
     if (eshkol_compile_llvm_ir_to_object(module_ref, temp_obj.c_str()) != 0) {
+        std::error_code ec;
+        std::filesystem::remove(temp_obj, ec);
         return -1;
     }
 

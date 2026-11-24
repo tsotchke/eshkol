@@ -161,7 +161,6 @@ static NSURLSessionConfiguration* apple_session_configuration(int32_t timeout_ms
 
 static qllm_http_response_t* apple_perform(NSMutableURLRequest* request,
                                            int32_t timeout_ms) {
-    eshkol_capability_enforce("network", "http-request");
     if (!request) return NULL;
     EshkolHTTPDelegate* delegate = [[EshkolHTTPDelegate alloc] init];
     NSOperationQueue* queue = [[NSOperationQueue alloc] init];
@@ -210,6 +209,9 @@ qllm_http_response_t* eshkol_http_request(const char* method,
                                           const char* header_lines,
                                           const char* body,
                                           int32_t timeout_ms) {
+    /* Enforce the capability gate before entering @autoreleasepool so a
+     * capability-denied raise unwinds outside Objective-C pool frames. */
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         return apple_perform(apple_request(method, url, header_lines, body,
                                            body ? (int64_t)strlen(body) : 0,
@@ -224,6 +226,7 @@ qllm_http_response_t* eshkol_http_request_bytes(const char* method,
                                                 const char* body,
                                                 int64_t body_len,
                                                 int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         return apple_perform(apple_request(method, url, header_lines, body,
                                            body_len, timeout_ms), timeout_ms);
@@ -240,6 +243,7 @@ qllm_http_response_t* qllm_http_post(const char* url,
                                      const char* body,
                                      int64_t body_len,
                                      int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         NSMutableString* lines = [[NSMutableString alloc] init];
         for (int64_t i = 0; headers && i < header_count; ++i) {
@@ -249,8 +253,8 @@ qllm_http_response_t* qllm_http_post(const char* url,
                 [lines appendFormat:@"%s\n", headers[i]];
             }
         }
-        return eshkol_http_request_bytes("POST", url, lines.UTF8String, body,
-                                         body_len, timeout_ms);
+        return apple_perform(apple_request("POST", url, lines.UTF8String, body,
+                                           body_len, timeout_ms), timeout_ms);
     }
 }
 
@@ -258,6 +262,7 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
                                           const char* body,
                                           const char* auth_header,
                                           int32_t timeout_ms) {
+    eshkol_capability_enforce("network", "http-request");
     @autoreleasepool {
         NSMutableString* headers =
             [NSMutableString stringWithString:@"Content-Type: application/json\nAccept: application/json\n"];
@@ -265,7 +270,9 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
             if (!eshkol_http_header_line_admissible(auth_header)) return NULL;
             [headers appendFormat:@"%s\n", auth_header];
         }
-        return eshkol_http_request("POST", url, headers.UTF8String, body, timeout_ms);
+        return apple_perform(apple_request("POST", url, headers.UTF8String, body,
+                                           body ? (int64_t)strlen(body) : 0,
+                                           timeout_ms), timeout_ms);
     }
 }
 
