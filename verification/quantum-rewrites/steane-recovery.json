@@ -1,0 +1,34 @@
+{
+  "checks": [
+    "IIIXXXX",
+    "IXXIIXX",
+    "XIXIXIX",
+    "IIIZZZZ",
+    "IZZIIZZ",
+    "ZIZIZIZ"
+  ],
+  "recovery": {
+    "000000": "IIIIIII",
+    "000001": "XIIIIII",
+    "001001": "YIIIIII",
+    "001000": "ZIIIIII",
+    "000010": "IXIIIII",
+    "010010": "IYIIIII",
+    "010000": "IZIIIII",
+    "000011": "IIXIIII",
+    "011011": "IIYIIII",
+    "011000": "IIZIIII",
+    "000100": "IIIXIII",
+    "100100": "IIIYIII",
+    "100000": "IIIZIII",
+    "000101": "IIIIXII",
+    "101101": "IIIIYII",
+    "101000": "IIIIZII",
+    "000110": "IIIIIXI",
+    "110110": "IIIIIYI",
+    "110000": "IIIIIZI",
+    "000111": "IIIIIIX",
+    "111111": "IIIIIIY",
+    "111000": "IIIIIIZ"
+  }
+}
