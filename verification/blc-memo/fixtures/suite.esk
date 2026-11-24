@@ -1,0 +1,105 @@
+;; Differential tests against strong leftmost-outermost reduction in core.blc.
+(require core.blc)
+(require core.blc-fast)
+
+(define (assert-fast label ok)
+  (if (not ok) (begin (display label) (newline) (exit 1))))
+
+(define (check-normal label term expected)
+  (let* ((report (blc-fast-run term 200000))
+         (oracle (blc-eval term)))
+    (assert-fast label (and (eq? (car report) 'normal)
+                            (equal? expected oracle)
+                            (equal? oracle (cadr report))))
+    report))
+
+(check-normal 'discard (blc-app (blc-app blc-K blc-I) blc-omega) blc-I)
+(check-normal 'under-lambda (blc-lam (blc-app blc-I (blc-var 2)))
+              (blc-lam (blc-var 2)))
+(check-normal 'eta-distinction (blc-lam (blc-app (blc-var 2) (blc-var 1)))
+              (blc-lam (blc-app (blc-var 2) (blc-var 1))))
+(check-normal 'capture (blc-app (blc-lam (blc-lam (blc-var 2))) (blc-var 1))
+              (blc-lam (blc-var 2)))
+
+;; The same suspended open argument is demanded at two output depths.
+(define twice
+  (blc-app (blc-lam (blc-app (blc-app (blc-var 2) (blc-var 1))
+                             (blc-lam (blc-var 2))))
+           (blc-app blc-I (blc-var 3))))
+(define shared
+  (check-normal 'shared-depth twice
+                (blc-app (blc-app (blc-var 1) (blc-var 3))
+                         (blc-lam (blc-var 4)))))
+(assert-fast 'memo-hit (> (list-ref shared 5) 0))
+
+(define (nest n term)
+  (if (= n 0) term (nest (- n 1) (blc-lam term))))
+;; The same syntax is suspended twice, with two different lexical bindings.
+(define later (blc-lam (blc-lam (blc-var 2))))
+(define (apply-later x)
+  (blc-app (blc-app later (blc-var x)) blc-omega))
+(check-normal 'two-environments
+  (blc-app (blc-app (blc-var 1) (apply-later 3)) (apply-later 5))
+  (blc-app (blc-app (blc-var 1) (blc-var 3)) (blc-var 5)))
+
+;; Demand an open thunk both outside and underneath a chain of fresh binders.
+(define deep-sharing
+  (blc-app (blc-lam (blc-app (blc-var 1) (nest 64 (blc-var 65))))
+           (blc-app blc-I (blc-var 2))))
+(define deep-report
+  (check-normal 'deep-sharing deep-sharing
+                (blc-app (blc-var 2) (nest 64 (blc-var 66)))))
+(assert-fast 'deep-memo-hit (> (list-ref deep-report 5) 0))
+(check-normal 'deep (nest 256 (blc-app blc-I (blc-var 257))) (nest 256 (blc-var 257)))
+(check-normal 'universal (blc-app (blc-U) (blc-list-of-bits blc-I-bits blc-K)) blc-K)
+(define byte (blc-byte->term 165))
+(check-normal 'byte (blc-app blc-I byte) (blc-eval byte))
+
+(define cost (list-ref shared 2))
+(assert-fast 'exact-budget (equal? shared (blc-fast-run twice cost)))
+(define (check-exhaust term budget)
+  (let ((report (blc-fast-run term budget)))
+    (assert-fast 'budget (and (eq? (car report) 'exhausted) (not (cadr report))
+                              (= (caddr report) budget)))))
+(check-exhaust twice (- cost 1))
+(check-exhaust deep-sharing (- (list-ref deep-report 2) 1))
+(assert-fast 'fresh-after-exhaustion
+             (equal? deep-report (blc-fast-run deep-sharing (list-ref deep-report 2))))
+(check-exhaust blc-I 0)
+(check-exhaust blc-omega 500)
+(check-exhaust (blc-lam blc-omega) 500)
+
+;; Optional Lean corpus: lean --run verification/lean-kernel/Binders.lean > rows
+;; ESHKOL_BINDER_ROWS=rows is intentionally optional for standalone stdlib tests.
+;; Each row contains six datums. The third is a *one-step* contractum, so
+;; normalize it before using it as an independent input to the oracle.
+(define (check-binder-rows port count)
+  (let ((body (read port)))
+    (if (eof-object? body)
+        (begin (assert-fast 'empty-corpus (> count 0))
+               (display "Binder rows passed: ") (display count) (newline))
+        (let* ((arg (read port)) (expected (read port))
+               (kbody (read port)) (karg (read port)) (kresult (read port))
+               (redex (blc-app (blc-lam body) arg)))
+          (assert-fast 'truncated-row (not (eof-object? kresult)))
+          (assert-fast 'lean-beta (equal? (blc-step redex) (cons #t expected)))
+          (check-normal count redex (blc-eval expected))
+          (check-binder-rows port (+ count 1))))))
+
+(define binder-path (get-environment-variable "ESHKOL_BINDER_ROWS"))
+(if (and (string? binder-path) (> (string-length binder-path) 0))
+    (call-with-input-file binder-path (lambda (p) (check-binder-rows p 0))))
+;; Rows emitted by the proved closure model are input/complete-NF pairs.
+(define (check-model-rows port count)
+  (let ((term (read port)))
+    (if (eof-object? term)
+        (begin (assert-fast 'empty-model-corpus (> count 0))
+               (display "Closure model rows passed: ") (display count) (newline))
+        (let ((expected (read port)))
+          (assert-fast 'truncated-model-row (not (eof-object? expected)))
+          (check-normal count term expected)
+          (check-model-rows port (+ count 1))))))
+(define model-path (get-environment-variable "ESHKOL_BLC_MODEL_ROWS"))
+(if (and (string? model-path) (> (string-length model-path) 0))
+    (call-with-input-file model-path (lambda (p) (check-model-rows p 0))))
+(display "BLC fast tests passed") (newline)

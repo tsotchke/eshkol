@@ -1,0 +1,89 @@
+;;; Call-by-need evaluation and strong beta-normal readback for core.blc.
+;;; (blc-fast-run term fuel) accepts a well-formed, possibly open core.blc term.
+;;; Returns (status nf transitions suspensions first-forces memo-hits output-nodes).
+;;; Status is 'normal or 'exhausted (nf = #f). Fuel counts machine dispatches,
+;;; including environment hops and readback. Each invocation owns its thunks.
+(require core.blc)
+(provide blc-fast-run)
+
+(define (blc-fast-run term fuel)
+  (if (not (and (integer? fuel) (>= fuel 0)))
+      (error "blc-fast-run: expected a nonnegative transition budget" fuel))
+  (let ((suspensions 0) (forces 0) (hits 0) (nodes 0))
+    ;; eval consumes syntax in its lexical environment. value returns a WHNF
+    ;; to an argument, update, or quote frame. emit returns *syntax* only.
+    (let loop ((mode 'eval) (item term) (env '())
+               (frames (list (cons 'quote-at 0))) (steps 0))
+      (cond
+        ((and (eq? mode 'emit) (null? frames))
+         (list 'normal item steps suspensions forces hits nodes))
+        ((= steps fuel)
+         (list 'exhausted #f steps suspensions forces hits nodes))
+        ((eq? mode 'eval)
+         (cond
+           ((blc-var? item)
+            (loop 'lookup (blc-var-index item) env frames (+ steps 1)))
+           ((blc-lam? item)
+            (loop 'value (cons 'closure (cons (blc-lam-body item) env))
+                  '() frames (+ steps 1)))
+           ((blc-app? item)
+            (let ((cell (cons 'pending (cons (blc-app-arg item) env))))
+              (set! suspensions (+ suspensions 1))
+              (loop 'eval (blc-app-fun item) env
+                    (cons (cons 'argument cell) frames) (+ steps 1))))
+           (else (error "blc-fast-run: invalid term" item))))
+        ((eq? mode 'lookup)
+         ;; A variable beyond the captured environment is a free head.
+         ;; Its negative level keeps its index stable as scopes disappear.
+         (cond ((null? env) (loop 'value (- 0 item) '() frames (+ steps 1)))
+               ((= item 1) (loop 'force (car env) '() frames (+ steps 1)))
+               (else (loop 'lookup (- item 1) (cdr env) frames (+ steps 1)))))
+        ((eq? mode 'force)
+         (cond
+           ((eq? (car item) 'pending)
+            (set! forces (+ forces 1))
+            (loop 'eval (cadr item) (cddr item)
+                  (cons (cons 'update item) frames) (+ steps 1)))
+           (else
+            (if (eq? (car item) 'memo) (set! hits (+ hits 1)))
+            (loop 'value (cdr item) '() frames (+ steps 1)))))
+        ((eq? mode 'value)
+         (let* ((frame (car frames)) (action (car frame))
+                (data (cdr frame)) (rest (cdr frames)))
+           (cond
+             ((eq? action 'update)
+              ;; Replace the suspension, releasing its saved code/environment.
+              (set-cdr! data item)
+              (set-car! data 'memo)
+              (loop 'value item '() rest (+ steps 1)))
+             ((eq? action 'argument)
+              (if (and (pair? item) (eq? (car item) 'closure))
+                  (loop 'eval (cadr item) (cons data (cddr item)) rest (+ steps 1))
+                  (loop 'value (list 'spine item data) '() rest (+ steps 1))))
+             ;; quote-at carries the output binder depth. Only weak-head
+             ;; values are cached, never syntax quoted at a particular depth.
+             ((integer? item)
+              (set! nodes (+ nodes 1))
+              (loop 'emit (blc-var (- data item)) '() rest (+ steps 1)))
+             ((eq? (car item) 'closure)
+              (loop 'eval (cadr item) (cons (cons 'level data) (cddr item))
+                    (cons (cons 'quote-at (+ data 1)) (cons '(wrap-lam) rest))
+                    (+ steps 1)))
+             (else
+              (loop 'value (cadr item) '()
+                    (cons frame (cons (cons 'quote-arg (cons data (caddr item))) rest))
+                    (+ steps 1))))))
+        (else
+         (let* ((frame (car frames)) (rest (cdr frames)))
+           (cond
+             ((eq? (car frame) 'wrap-lam)
+              (set! nodes (+ nodes 1))
+              (loop 'emit (blc-lam item) '() rest (+ steps 1)))
+             ((eq? (car frame) 'quote-arg)
+              (loop 'force (cddr frame) '()
+                    (cons (cons 'quote-at (cadr frame))
+                          (cons (cons 'wrap-app item) rest))
+                    (+ steps 1)))
+             (else
+              (set! nodes (+ nodes 1))
+              (loop 'emit (blc-app (cdr frame) item) '() rest (+ steps 1))))))))))
