@@ -25,6 +25,10 @@
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -2768,6 +2768,7 @@ if(ESHKOL_XLA_ENABLED AND ESHKOL_BUILD_TESTS AND UNIX)
     add_executable(pjrt_loader_test
         tests/xla/pjrt_loader_test.cpp
         lib/backend/xla/pjrt_client.cpp
+        lib/core/capability_policy.cpp
     )
     target_include_directories(pjrt_loader_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
@@ -9203,6 +9204,9 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     target_compile_definitions(eshkol-subprocess-stream-test PRIVATE _GNU_SOURCE)
     target_include_directories(eshkol-subprocess-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(eshkol-subprocess-stream-test PRIVATE Threads::Threads)
+    if(APPLE)
+        target_link_options(eshkol-subprocess-stream-test PRIVATE "-Wl,-U,_eshkol_capability_enforce")
+    endif()
     add_test(NAME agent-subprocess-stream COMMAND eshkol-subprocess-stream-test)
     set_tests_properties(agent-subprocess-stream PROPERTIES
         TIMEOUT 60 LABELS "resource;subprocess;stream")
@@ -17126,7 +17130,8 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND UNIX AND NOT EMSCRIPTEN)
     add_executable(net_deadline_ready_test tests/network/net_deadline_ready_test.c
-        lib/core/net.c lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
+        lib/core/net.c lib/core/capability_policy.cpp
+        lib/core/runtime_handle.cpp lib/core/event_loop.c ${ESHKOL_EVENT_LOOP_SRC})
     target_include_directories(net_deadline_ready_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(net_deadline_ready_test PRIVATE Threads::Threads)
     add_test(NAME net_deadline_ready_test COMMAND net_deadline_ready_test)

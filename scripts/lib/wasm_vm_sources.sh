@@ -48,6 +48,8 @@ ESHKOL_WASM_VM_SOURCES=(
     # the native runtime, so a policy a program installs holds on every engine
     # rather than only where the store happened to be compiled in.
     "$REPO_ROOT/lib/core/capability_policy.cpp"
+    # Shared reader input-size cap and compiler traversal-depth budget.
+    "$REPO_ROOT/lib/core/reader_limits.c"
 )
 
 # Compile/link flags every WASM VM build uses (both consumers above).

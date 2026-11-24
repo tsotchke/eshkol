@@ -57,6 +57,7 @@ extern size_t arena_get_used_memory(const void* a);
 #endif
 #else
 #include <windows.h>
+#include <wchar.h>
 #include <direct.h>
 #include <process.h>
 #include <sys/stat.h>
@@ -1828,13 +1829,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
     char* child_env = NULL;
     char* env_copy = NULL;
     if (env_str && strlen(env_str) > 0) {
-        const char* parent_env = GetEnvironmentStringsA();
+        LPWCH parent_env_w = GetEnvironmentStringsW();
         size_t parent_len = 0;
-        if (parent_env) {
-            while (parent_env[parent_len] != '\0' || parent_env[parent_len + 1] != '\0') {
-                parent_len++;
+        if (parent_env_w) {
+            for (const wchar_t* w = parent_env_w; *w; w += wcslen(w) + 1) {
+                int need = WideCharToMultiByte(CP_ACP, 0, w, -1, NULL, 0, NULL, NULL);
+                if (need > 0) parent_len += (size_t)need;
             }
-            parent_len += 2; /* the entry's NUL and the block's terminator */
+            parent_len += 2; /* trailing block terminator headroom */
         }
 
         size_t overlay_len = strlen(env_str) + 2;
@@ -1843,7 +1845,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
         env_copy = _strdup(env_str);
         char* overlay_names = _strdup(env_str);
         if (!child_env || !env_copy || !overlay_names) {
-            if (parent_env) FreeEnvironmentStringsA((LPCH)parent_env);
+            if (parent_env_w) FreeEnvironmentStringsW(parent_env_w);
             free(child_env);
             free(env_copy);
             free(overlay_names);
@@ -1851,8 +1853,23 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
         }
 
         size_t offset = 0;
-        if (parent_env) {
-            for (const char* entry = parent_env; *entry; entry += strlen(entry) + 1) {
+        if (parent_env_w) {
+            for (const wchar_t* w = parent_env_w; *w; w += wcslen(w) + 1) {
+                int need = WideCharToMultiByte(CP_ACP, 0, w, -1, NULL, 0, NULL, NULL);
+                if (need <= 1) continue;
+                char stack_entry[512];
+                char* heap_entry = NULL;
+                char* entry = stack_entry;
+                if ((size_t)need > sizeof(stack_entry)) {
+                    heap_entry = (char*)malloc((size_t)need);
+                    if (!heap_entry) continue;
+                    entry = heap_entry;
+                }
+                int written = WideCharToMultiByte(CP_ACP, 0, w, -1, entry, need, NULL, NULL);
+                if (written <= 1) {
+                    free(heap_entry);
+                    continue;
+                }
                 /* Skip a parent entry the overlay also sets. An entry with no
                  * '=' has no name to match and is copied as it stands. */
                 const char* equals = strchr(entry, '=');
@@ -1873,14 +1890,17 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
                         }
                     }
                 }
-                if (overridden) continue;
-                size_t entry_len = strlen(entry);
-                if (offset + entry_len + 2 > block_size) break;
-                memcpy(child_env + offset, entry, entry_len);
-                offset += entry_len;
-                child_env[offset++] = '\0';
+                if (!overridden) {
+                    size_t entry_len = strlen(entry);
+                    if (offset + entry_len + 2 <= block_size) {
+                        memcpy(child_env + offset, entry, entry_len);
+                        offset += entry_len;
+                        child_env[offset++] = '\0';
+                    }
+                }
+                free(heap_entry);
             }
-            FreeEnvironmentStringsA((LPCH)parent_env);
+            FreeEnvironmentStringsW(parent_env_w);
         }
         free(overlay_names);
 
