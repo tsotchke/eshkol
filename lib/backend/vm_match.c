@@ -23,7 +23,24 @@ static int match_binding(FuncChunk* c, int first, const char* name) {
     return -1;
 }
 
-static void match_reserve_bindings(FuncChunk* c, Node* p, int first) {
+static int match_enter_pattern_depth(void) {
+    compile_depth++;
+    const size_t budget = eshkol_reader_max_pass_depth();
+    if ((budget && (size_t)compile_depth > budget) || !eshkol_stack_headroom_ok()) {
+        char message[320];
+        eshkol_reader_depth_message("compiling a nested match pattern",
+                                    budget ? budget : (size_t)compile_depth,
+                                    message, sizeof(message));
+        vm_compile_error("match pattern nesting too deep", message);
+        compile_depth--;
+        return 0;
+    }
+    return 1;
+}
+
+static int match_reserve_bindings(FuncChunk* c, Node* p, int first) {
+    if (!match_enter_pattern_depth()) return 0;
+    int ok = 1;
     if (p->type == N_SYMBOL && !is_sym(p, "_")) {
         if (match_binding(c, first, p->symbol) < 0) {
             chunk_emit(c, OP_NIL, 0);
@@ -32,11 +49,14 @@ static void match_reserve_bindings(FuncChunk* c, Node* p, int first) {
     } else if (p->type == N_LIST && p->n_children) {
         Node* head = p->children[0];
         if (is_sym(head, "?") && p->n_children == 3)
-            match_reserve_bindings(c, p->children[2], first);
-        if (is_sym(head, "cons") || is_sym(head, "list") || is_sym(head, "or"))
-            for (int i = 1; i < p->n_children; ++i)
-                match_reserve_bindings(c, p->children[i], first);
+            ok = match_reserve_bindings(c, p->children[2], first);
+        if (ok && (is_sym(head, "cons") || is_sym(head, "list") || is_sym(head, "or"))) {
+            for (int i = 1; i < p->n_children && ok; ++i)
+                ok = match_reserve_bindings(c, p->children[i], first);
+        }
     }
+    compile_depth--;
+    return ok;
 }
 
 static void match_store_binding(FuncChunk* c, Node* name, int value, int first) {
@@ -50,11 +70,16 @@ static void match_store_binding(FuncChunk* c, Node* name, int value, int first) 
     chunk_emit(c, OP_SET_LOCAL, slot);
 }
 
-static void compile_match_pattern(FuncChunk* c, Node* p, int value, int first) {
+static int compile_match_pattern(FuncChunk* c, Node* p, int value, int first) {
+    if (!match_enter_pattern_depth()) {
+        chunk_emit(c, OP_FALSE, 0);
+        return 0;
+    }
     if (p->type == N_SYMBOL) {
         match_store_binding(c, p, value, first);
         chunk_emit(c, OP_TRUE, 0);
-        return;
+        compile_depth--;
+        return 1;
     }
     if (p->type != N_LIST || p->n_children == 0 || p->is_quote_sugar || p->is_numeric_literal) {
         chunk_emit(c, OP_GET_LOCAL, value);
@@ -63,7 +88,8 @@ static void compile_match_pattern(FuncChunk* c, Node* p, int value, int first) {
         else compile_expr(c, p, 0);
         chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_MATCH_LITERAL);
         c->n_locals--;
-        return;
+        compile_depth--;
+        return 1;
     }
     Node* head = p->children[0];
     if (is_sym(head, "?") && (p->n_children == 2 || p->n_children == 3)) {
@@ -73,12 +99,14 @@ static void compile_match_pattern(FuncChunk* c, Node* p, int value, int first) {
         Node call = {.type = N_LIST, .children = parts, .n_children = 2};
         compile_expr(c, &call, 0);
         if (p->n_children == 3) match_store_binding(c, p->children[2], value, first);
-        return;
+        compile_depth--;
+        return 1;
     }
     if (is_sym(head, "or")) {
         int success = -1;
+        int ok = 1;
         for (int i = 1; i < p->n_children; ++i) {
-            compile_match_pattern(c, p->children[i], value, first);
+            if (!compile_match_pattern(c, p->children[i], value, first)) { ok = 0; break; }
             int next = placeholder(c);
             match_jump(c, &success, OP_JUMP);
             patch(c, next, OP_JUMP_IF_FALSE, c->code_len);
@@ -88,23 +116,26 @@ static void compile_match_pattern(FuncChunk* c, Node* p, int value, int first) {
         match_join(c, success);
         chunk_emit(c, OP_TRUE, 0);
         patch(c, end, OP_JUMP, c->code_len);
-        return;
+        compile_depth--;
+        return ok;
     }
     int pair = is_sym(head, "cons");
     if ((!pair && !is_sym(head, "list")) || (pair && p->n_children != 3)) {
         vm_compile_error("unknown or malformed match pattern", head->symbol);
         chunk_emit(c, OP_FALSE, 0);
-        return;
+        compile_depth--;
+        return 1;
     }
 
     /* Walk a proper list to its end, or split a single pair at its tail.
      * All failure edges have just the cursor left above the clause slots. */
     int failed = -1;
+    int ok = 1;
     chunk_emit(c, OP_GET_LOCAL, value);
     int cursor = add_temporary_local(c, "");
     for (int i = 1; i < p->n_children; ++i) {
         if (pair && i == 2) {
-            compile_match_pattern(c, p->children[i], cursor, first);
+            if (!compile_match_pattern(c, p->children[i], cursor, first)) { ok = 0; break; }
         } else {
             chunk_emit(c, OP_GET_LOCAL, cursor);
             chunk_emit(c, OP_PAIR_P, 0);
@@ -112,7 +143,12 @@ static void compile_match_pattern(FuncChunk* c, Node* p, int value, int first) {
             chunk_emit(c, OP_GET_LOCAL, cursor);
             chunk_emit(c, OP_CAR, 0);
             int element = add_temporary_local(c, "");
-            compile_match_pattern(c, p->children[i], element, first);
+            if (!compile_match_pattern(c, p->children[i], element, first)) {
+                chunk_emit(c, OP_POPN, 1);
+                c->n_locals--;
+                ok = 0;
+                break;
+            }
             chunk_emit(c, OP_POPN, 1);
             c->n_locals--;
         }
@@ -134,6 +170,8 @@ static void compile_match_pattern(FuncChunk* c, Node* p, int value, int first) {
     patch(c, end, OP_JUMP, c->code_len);
     chunk_emit(c, OP_POPN, 1);
     c->n_locals--;
+    compile_depth--;
+    return ok;
 }
 
 static void compile_form_match(FuncChunk* c, Node* form, int tail) {
@@ -156,9 +194,18 @@ static void compile_form_match(FuncChunk* c, Node* form, int tail) {
         }
         if (clause->children[0]->type == N_SYMBOL) has_catchall = 1;
         int first = c->n_locals;
-        match_reserve_bindings(c, clause->children[0], first);
+        if (!match_reserve_bindings(c, clause->children[0], first)) {
+            int binding_count = c->n_locals - first;
+            for (int j = 0; j < binding_count; ++j) chunk_emit(c, OP_POP, 0);
+            c->n_locals = first;
+            break;
+        }
         int binding_count = c->n_locals - first;
-        compile_match_pattern(c, clause->children[0], subject, first);
+        if (!compile_match_pattern(c, clause->children[0], subject, first)) {
+            for (int j = 0; j < binding_count; ++j) chunk_emit(c, OP_POP, 0);
+            c->n_locals = first;
+            break;
+        }
         int next = placeholder(c);
         for (int j = first; j < first + binding_count; ++j) {
             c->locals[j].compiler_temporary = 0;
