@@ -16,6 +16,7 @@
  */
 
 #include "eshkol/backend/gpu/gpu_memory.h"
+#include "eshkol/backend/gpu/matmul_range_guard.h"
 #include <eshkol/logger.h>
 #include "cublas_loader.h"
 #include "cuda_matmul_budget.h"
@@ -633,8 +634,16 @@ static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
     } else if (budget >= 0.0) {
         // Accuracy-budget selector (stage 2 of #311).
         use_ozaki = cuda_select_f64(M, K, N, budget, &ozT, &pred_speedup);
-        why = use_ozaki ? "accuracy-budget selector"
-                        : "budget met cheapest by cublasDgemm";
+        if (use_ozaki && A->host_ptr && B->host_ptr &&
+            !eshkol_f64_matmul_operands_safe_for_f32(
+                static_cast<const double*>(A->host_ptr),
+                static_cast<const double*>(B->host_ptr), M, K, N, 0)) {
+            use_ozaki = false;
+            why = "operands outside reduced-precision range; using cublasDgemm";
+        } else {
+            why = use_ozaki ? "accuracy-budget selector"
+                            : "budget met cheapest by cublasDgemm";
+        }
     }
 
     const double work = 2.0 * (double)M * (double)K * (double)N;

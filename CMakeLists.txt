@@ -11289,7 +11289,9 @@ endif()
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/cuda_matmul_budget_test.cpp")
     add_executable(cuda_matmul_budget_test tests/backend/cuda_matmul_budget_test.cpp)
     target_compile_features(cuda_matmul_budget_test PRIVATE cxx_std_17)
-    target_include_directories(cuda_matmul_budget_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu)
+    target_include_directories(cuda_matmul_budget_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     add_test(NAME cuda_matmul_budget_test COMMAND cuda_matmul_budget_test)
 endif()
 

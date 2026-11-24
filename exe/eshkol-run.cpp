@@ -5476,7 +5476,7 @@ static int eshkol_run_main(int argc, char **argv)
     // the compilation unit. See requires_stdlib_module_explicitly()'s
     // doc comment for the full story.
     bool need_stdlib = !no_stdlib && (!shared_lib);
-    if (need_stdlib && !requires_stdlib_module_explicitly(asts)) {
+    if (need_stdlib && !source_files.empty() && !requires_stdlib_module_explicitly(asts)) {
         // The source didn't `(require stdlib)` explicitly, but the
         // user expects stdlib to be available.  Synthesize a top-of-
         // module require so process_requires() handles it
@@ -5500,7 +5500,9 @@ static int eshkol_run_main(int argc, char **argv)
         asts.insert(asts.begin(), req_ast);
     }
 
-    // Auto-link stdlib.o if the source requires stdlib and we're not in library mode.
+    // Auto-link stdlib.o if the source requires stdlib (or we are linking
+    // precompiled object files into an executable without --no-stdlib) and
+    // we're not in library mode.
     //
     // WASM: never auto-link the native stdlib.o. It is a wasm-incompatible
     // native object, and treating it as "pre-compiled" turns every stdlib
@@ -5509,7 +5511,9 @@ static int eshkol_run_main(int argc, char **argv)
     // function. For wasm we instead inline the stdlib source (below) and let
     // the wasm dead-strip (internalize + globalDCE in the emit path) drop
     // whatever the program does not reach, yielding a small self-contained module.
-    if (!shared_lib && !wasm_output && requires_stdlib(asts)) {
+    const bool object_link_needs_stdlib =
+        source_files.empty() && !compiled_files.empty() && !no_stdlib && !compile_only;
+    if (!shared_lib && !wasm_output && (requires_stdlib(asts) || object_link_needs_stdlib)) {
         // Check if stdlib.o is already in compiled_files
         bool has_stdlib = false;
         for (const auto& obj_file : compiled_files) {
@@ -6095,6 +6099,19 @@ static int eshkol_run_main(int argc, char **argv)
                 }
                 owned_link_temp_objects.cleanup();
 
+                if (depfile_path) {
+                    if (source_files.empty()) {
+                        eshkol_error("--emit-depfile requires a source file");
+                        eshkol_dispose_llvm_module(llvm_module);
+                        return 1;
+                    }
+                    if (!writeDepfile(depfile_path, exe_name, source_files[0], include_paths)) {
+                        eshkol_dispose_llvm_module(llvm_module);
+                        return 1;
+                    }
+                    eshkol_info("Wrote depfile: %s", depfile_path);
+                }
+
                 // Bug X (Noesis 2026-04-30): the link-branch path below
                 // already prints "[eshkol-run] compiled to a.out — run
                 // it (./a.out) or use eshkol-run -r" so users with the
@@ -6449,6 +6466,18 @@ static int eshkol_run_main(int argc, char **argv)
         }
 
         eshkol_info("Successfully created executable: %s", output);
+        if (depfile_path) {
+            if (source_files.empty()) {
+                eshkol_error("--emit-depfile requires a source file");
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+            if (!writeDepfile(depfile_path, output, source_files[0], include_paths)) {
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+            eshkol_info("Wrote depfile: %s", depfile_path);
+        }
         // BUG B (Noesis residual audit v3): bare `eshkol-run file.esk`
         // was silently producing a.out with no indication it had
         // compiled (rather than run) the script. Anyone expecting Lisp

@@ -6905,9 +6905,8 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
             {
                 Value* result;
                 if (call_args.size() == 1) {
-                    // Unary minus: (- x) => 0 - x
-                    Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-                    result = polymorphicSub(zero, call_args[0]);
+                    // Unary minus: (- x)
+                    result = polymorphicUnaryNeg(call_args[0]);
                 } else {
                     result = call_args[0];
                     for (size_t i = 1; i < call_args.size(); i++) {
@@ -8538,6 +8537,44 @@ Value* EshkolLLVMCodeGen::polymorphicAdd(Value* left_tagged, Value* right_tagged
 
 Value* EshkolLLVMCodeGen::polymorphicSub(Value* left_tagged, Value* right_tagged) {
         return arith_->sub(left_tagged, right_tagged);
+    }
+
+Value* EshkolLLVMCodeGen::polymorphicUnaryNeg(Value* operand) {
+        // IEEE-754 signed-zero preservation: (- 0.0) must emit fneg (-0.0),
+        // not 0.0 - 0.0 (+0.0). Non-double operands delegate to
+        // polymorphicSub(0, operand) so exact integers (including INT64_MIN
+        // bignum promotion), i128, bignums, rationals, complex, dual, AD nodes,
+        // Taylor towers, vectors, and tensors keep full numeric-tower dispatch.
+        Value* type_tag = tagged_->getType(operand);
+        Value* base_type = tagged_->getBaseType(type_tag);
+        Value* is_double = builder->CreateICmpEQ(
+            base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dbl_bb = BasicBlock::Create(*context, "unary_neg_double", func);
+        BasicBlock* other_bb = BasicBlock::Create(*context, "unary_neg_other", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "unary_neg_merge", func);
+
+        builder->CreateCondBr(is_double, dbl_bb, other_bb);
+
+        builder->SetInsertPoint(dbl_bb);
+        Value* dbl_val = tagged_->unpackDouble(operand);
+        Value* neg_dbl = builder->CreateFNeg(dbl_val, "fneg");
+        Value* dbl_res = tagged_->packDouble(neg_dbl);
+        BasicBlock* dbl_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(other_bb);
+        Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+        Value* other_res = polymorphicSub(zero, operand);
+        BasicBlock* other_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "unary_neg_res");
+        phi->addIncoming(dbl_res, dbl_exit);
+        phi->addIncoming(other_res, other_exit);
+        return phi;
     }
 
 Value* EshkolLLVMCodeGen::polymorphicMul(Value* left_tagged, Value* right_tagged) {
@@ -10464,7 +10501,7 @@ Value* EshkolLLVMCodeGen::makeVariadicOperatorClosureValue(const std::string& op
                 return packInt64ToTaggedValue(ConstantInt::get(int64_type, n), true);
             };
             std::function<Value*(Value*)> unary;
-            if (op == "-") unary = [&](Value* x) { return polymorphicSub(exact(0), x); };
+            if (op == "-") unary = [&](Value* x) { return polymorphicUnaryNeg(x); };
             if (op == "/") unary = [&](Value* x) { return polymorphicDiv(exact(1), x); };
             std::function<Value*()> nullary;
             if (op == "+") nullary = [&]() { return exact(0); };
@@ -20187,10 +20224,7 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenArithmeticTask(const eshkol_o
             TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             if (!tv.llvm_value) co_return nullptr;
             Value* tagged = typedValueToTaggedValue(tv);
-            // Create zero tagged value
-            Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-            // Return 0 - x
-            co_return polymorphicSub(zero, tagged);
+            co_return polymorphicUnaryNeg(tagged);
         }
 
         // Handle unary plus: (+ x) => identity
@@ -43111,10 +43145,9 @@ Function* EshkolLLVMCodeGen::createBuiltinArithmeticFunction(const std::string& 
         auto arg_it = builtin_func->arg_begin();
         Value* result = &*arg_it++;
 
-        // Handle unary minus: (- x) => 0 - x
+        // Handle unary minus: (- x)
         if (arity == 1 && operation == "-") {
-            Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-            result = polymorphicSub(zero, &*builtin_func->arg_begin());
+            result = polymorphicUnaryNeg(&*builtin_func->arg_begin());
         }
         // Handle unary plus: (+ x) => x (identity, result is already set)
         else if (arity == 1 && operation == "+") {

@@ -11,6 +11,7 @@
  */
 
 #include "eshkol/backend/gpu/gpu_memory.h"
+#include "eshkol/backend/gpu/matmul_range_guard.h"
 #include <eshkol/logger.h>
 #include <cstdlib>
 #include <cstring>
@@ -3015,45 +3016,64 @@ static int ozaki_ii_fast_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Eshkol
 // Router: dispatches to the correct tier-specific function
 static int metal_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                              uint64_t M, uint64_t K, uint64_t N) {
+    const double* host_a = static_cast<const double*>(A ? A->host_ptr : nullptr);
+    const double* host_b = static_cast<const double*>(B ? B->host_ptr : nullptr);
+    auto operands_safe_for_reduced = [&](int df64_pair) -> bool {
+        if (!host_a || !host_b) return true;
+        return eshkol_f64_matmul_operands_safe_for_f32(host_a, host_b, M, K, N, df64_pair) != 0;
+    };
+
     switch (g_metal_precision_tier) {
         case 1:
-            return metal_matmul_df64_dispatch(A, B, C, M, K, N);
+            if (operands_safe_for_reduced(1))
+                return metal_matmul_df64_dispatch(A, B, C, M, K, N);
+            break;
         case 2: {
-            const char* f32_env = std::getenv("ESHKOL_F32_KERNEL");
-            bool use_simd = f32_env && strcmp(f32_env, "simd") == 0 && g_matmul_f32_simd_pipeline;
-            return use_simd ? metal_matmul_f32_simd_full_dispatch(A, B, C, M, K, N)
-                            : metal_matmul_f64_via_mps(A, B, C, M, K, N);
+            if (operands_safe_for_reduced(0)) {
+                const char* f32_env = std::getenv("ESHKOL_F32_KERNEL");
+                bool use_simd = f32_env && strcmp(f32_env, "simd") == 0 && g_matmul_f32_simd_pipeline;
+                return use_simd ? metal_matmul_f32_simd_full_dispatch(A, B, C, M, K, N)
+                                : metal_matmul_f64_via_mps(A, B, C, M, K, N);
+            }
+            break;
         }
         case 3:
-            return metal_matmul_fp24_dispatch(A, B, C, M, K, N);
-        default: {
-            // Tier 0: fp53 default, Ozaki-II opt-in for exact DGEMM
-            const char* sf64_env = std::getenv("ESHKOL_SF64_KERNEL");
-            bool use_legacy = sf64_env && (strcmp(sf64_env, "legacy") == 0 || strcmp(sf64_env, "v2") == 0);
-            bool use_fp53 = sf64_env && strcmp(sf64_env, "fp53") == 0;
-            bool force_ozaki = sf64_env && strcmp(sf64_env, "ozaki") == 0;
-            bool ozaki_size_ok = (M >= 512 && K >= 512 && N >= 512);
+            if (operands_safe_for_reduced(0))
+                return metal_matmul_fp24_dispatch(A, B, C, M, K, N);
+            break;
+        default:
+            break;
+    }
 
-            // Ozaki-II reduced-precision FAST tier (opt-in): fully-GPU split +
-            // df32 CRT reconstruction. On any failure it falls through to the
-            // exact tier below, so a fast-tier miss never corrupts a result.
-            if (g_ozaki_fast_enabled && g_ozaki_fast_split_pipeline
-                && g_ozaki_fast_accum_pipeline && g_ozaki_fast_finalize_pipeline
-                && ozaki_size_ok) {
-                int fr = ozaki_ii_fast_dispatch(A, B, C, M, K, N);
-                if (fr == 0) return 0;
-                fprintf(stderr, "[GPU] Ozaki-II FAST dispatch returned %d; "
-                                "falling back to exact tier\n", fr);
-            }
+    {
+        // Tier 0 (or exact fallback when operands exceed reduced-precision range):
+        // fp53 default, Ozaki-II opt-in for exact DGEMM.
+        const char* sf64_env = std::getenv("ESHKOL_SF64_KERNEL");
+        bool use_legacy = sf64_env && (strcmp(sf64_env, "legacy") == 0 || strcmp(sf64_env, "v2") == 0);
+        bool use_fp53 = sf64_env && strcmp(sf64_env, "fp53") == 0;
+        bool force_ozaki = sf64_env && strcmp(sf64_env, "ozaki") == 0;
+        bool ozaki_size_ok = (M >= 512 && K >= 512 && N >= 512);
 
-            // Ozaki-II: CRT-based exact f64 via N f32 GEMMs (opt-in / fast fallback)
-            if ((force_ozaki || g_ozaki_fast_enabled) && g_matmul_ozaki_gemm_pipeline
-                && ozaki_size_ok)
-                return ozaki_ii_dispatch(A, B, C, M, K, N);
-            if (!use_legacy && g_matmul_fp53_pipeline)
-                return metal_matmul_fp53_dispatch(A, B, C, M, K, N);
-            return metal_matmul_sf64_dispatch(A, B, C, M, K, N);
+        // Ozaki-II reduced-precision FAST tier (opt-in): fully-GPU split +
+        // df32 CRT reconstruction. On any range violation or failure it falls
+        // through to the exact tier below.
+        if (g_ozaki_fast_enabled && g_ozaki_fast_split_pipeline
+            && g_ozaki_fast_accum_pipeline && g_ozaki_fast_finalize_pipeline
+            && ozaki_size_ok && operands_safe_for_reduced(0)) {
+            int fr = ozaki_ii_fast_dispatch(A, B, C, M, K, N);
+            if (fr == 0) return 0;
+            fprintf(stderr, "[GPU] Ozaki-II FAST dispatch returned %d; "
+                            "falling back to exact tier\n", fr);
         }
+
+        // Ozaki-II: CRT-based exact f64 via N f32 GEMMs (opt-in / fast fallback)
+        if ((force_ozaki || g_ozaki_fast_enabled) && g_matmul_ozaki_gemm_pipeline
+            && ozaki_size_ok && operands_safe_for_reduced(0))
+            return ozaki_ii_dispatch(A, B, C, M, K, N);
+        if (!use_legacy && g_matmul_fp53_pipeline)
+            return metal_matmul_fp53_dispatch(A, B, C, M, K, N);
+        (void)use_fp53;
+        return metal_matmul_sf64_dispatch(A, B, C, M, K, N);
     }
 }
 
