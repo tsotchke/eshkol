@@ -20,6 +20,7 @@
 
 #include <eshkol/eshkol_ffi.h>
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <stdexcept>
@@ -236,9 +237,13 @@ public:
      * interpreter. */
     double derivative(const std::string& func_source, double x) {
         validate_lambda_source(func_source, "derivative");
-        char buf[512];
-        snprintf(buf, sizeof(buf), "(derivative %s %g)", func_source.c_str(), x);
-        return eval_double(buf);
+        if (!std::isfinite(x)) {
+            throw py::value_error("derivative: evaluation point x must be finite");
+        }
+        char num[64];
+        snprintf(num, sizeof(num), "%.17g", x);
+        std::string expr = "(derivative " + func_source + " " + num + ")";
+        return eval_double(expr);
     }
 
     /* Compute gradient: gradient(f_source, point_list) */
@@ -246,8 +251,11 @@ public:
         validate_lambda_source(func_source, "gradient");
         std::string expr = "(gradient " + func_source + " (list";
         for (double v : point) {
+            if (!std::isfinite(v)) {
+                throw py::value_error("gradient: all point coordinates must be finite");
+            }
             char num[64];
-            snprintf(num, sizeof(num), " %g", v);
+            snprintf(num, sizeof(num), " %.17g", v);
             expr += num;
         }
         expr += "))";

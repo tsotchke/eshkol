@@ -1036,10 +1036,11 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     if (no_stdlib) compile_args.emplace_back("-n");
     if (strict_types) compile_args.emplace_back("--strict-types");
     if (unsafe_mode) compile_args.emplace_back("--unsafe");
-    if (opt_level != 0) {
-        compile_args.emplace_back("-O");
-        compile_args.push_back(std::to_string(opt_level));
-    }
+    // Forward opt_level unconditionally (including -O0): the child build runs
+    // with `-o`, which defaults to -O2 when -O is omitted, silently overriding
+    // both the -r default (-O0) and an explicit `-r -O0` invocation.
+    compile_args.emplace_back("-O");
+    compile_args.push_back(std::to_string(opt_level));
     if (target_triple && *target_triple) {
         compile_args.emplace_back("--target");
         compile_args.emplace_back(target_triple);

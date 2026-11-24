@@ -1561,6 +1561,66 @@ static GlobalValue::LinkageTypes publicDefinitionLinkage(bool library_mode) {
         : GlobalValue::ExternalLinkage;
 }
 
+// Scheme allows top-level definitions with ordinary names such as `stat`,
+// `open`, `close`, `time`, `free`, or `signal`. Emitting those as unmangled
+// global linker symbols shadows libc/POSIX routines invoked by libeshkol and
+// system libraries in the same process. Mangle colliding C/POSIX linker names
+// uniformly across defining modules and imported declarations while leaving
+// explicit C ABI exports (`:export` / `:export-name`) untouched.
+static bool isReservedCLinkerSymbol(const std::string& name) {
+    static const std::unordered_set<std::string> kReserved = {
+        "stat", "lstat", "fstat", "fstatat", "stat64", "lstat64", "fstat64",
+        "open", "openat", "creat", "close", "read", "write", "pread", "pwrite",
+        "lseek", "pipe", "pipe2", "dup", "dup2", "fcntl", "ioctl", "poll", "ppoll",
+        "select", "pselect", "kqueue", "kevent", "epoll_create", "epoll_ctl", "epoll_wait",
+        "socket", "socketpair", "bind", "listen", "accept", "accept4", "connect",
+        "send", "sendto", "sendmsg", "recv", "recvfrom", "recvmsg", "shutdown",
+        "getsockopt", "setsockopt", "getsockname", "getpeername",
+        "fork", "vfork", "execve", "execvp", "execv", "execl", "execlp",
+        "wait", "waitpid", "kill", "killpg", "raise", "signal", "sigaction",
+        "sigprocmask", "alarm", "pause", "exit", "_exit", "_Exit", "abort", "atexit",
+        "mkdir", "mkdirat", "rmdir", "unlink", "unlinkat", "rename", "renameat",
+        "link", "symlink", "readlink", "realpath", "chmod", "fchmod", "chown", "fchown",
+        "access", "faccessat", "truncate", "ftruncate", "chdir", "fchdir", "getcwd",
+        "umask", "chroot", "sync", "fsync", "fdatasync", "isatty", "ttyname",
+        "opendir", "readdir", "closedir", "mkstemp", "mkdtemp",
+        "mmap", "munmap", "mprotect", "msync", "madvise",
+        "getpid", "getppid", "getuid", "geteuid", "getgid", "getegid",
+        "setuid", "setgid", "setsid", "setpgid", "getpgid",
+        "malloc", "calloc", "realloc", "free", "aligned_alloc", "posix_memalign",
+        "memcpy", "memmove", "memset", "memcmp", "memchr",
+        "strlen", "strnlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
+        "strchr", "strrchr", "strstr", "strtok", "strdup", "strndup", "strerror", "perror",
+        "printf", "fprintf", "sprintf", "snprintf", "vprintf", "vfprintf", "vsprintf", "vsnprintf",
+        "scanf", "fscanf", "sscanf", "puts", "fputs", "putchar", "getchar", "fgets", "fgetc", "fputc",
+        "fopen", "fdopen", "freopen", "fclose", "fread", "fwrite", "fseek", "ftell", "rewind", "fflush",
+        "remove", "tmpfile", "tmpnam", "setvbuf", "fileno", "feof", "ferror", "clearerr",
+        "time", "clock", "clock_gettime", "gettimeofday", "difftime", "mktime",
+        "localtime", "localtime_r", "gmtime", "gmtime_r", "strftime",
+        "nanosleep", "sleep", "usleep",
+        "getenv", "setenv", "unsetenv", "putenv", "system", "popen", "pclose",
+        "dlopen", "dlsym", "dlclose", "dlerror",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+        "exp", "exp2", "expm1", "log", "log10", "log2", "log1p",
+        "pow", "sqrt", "cbrt", "hypot", "ceil", "floor", "round", "trunc", "fabs", "fmod", "remainder",
+        "erf", "erfc", "tgamma", "lgamma", "sinf", "cosf", "expf", "logf", "sqrtf", "powf",
+        "rand", "srand", "random", "srandom", "drand48", "srand48",
+        "qsort", "bsearch", "atoi", "atol", "atoll", "atof", "strtol", "strtoll", "strtoul", "strtod",
+        "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower", "tolower", "toupper",
+        "abs", "labs", "llabs", "div", "ldiv", "lldiv", "index", "rindex",
+        "setjmp", "longjmp", "_setjmp", "_longjmp", "sigsetjmp", "siglongjmp"
+    };
+    return kReserved.find(name) != kReserved.end();
+}
+
+static std::string mangleSchemeFunctionLinkerName(const std::string& name) {
+    if (isReservedCLinkerSymbol(name)) {
+        return "__eshkol_fn_" + name;
+    }
+    return name;
+}
+
 static GlobalValue::LinkageTypes sexprGlobalLinkage(
     bool library_mode,
     GlobalValue::LinkageTypes local_non_windows = GlobalValue::LinkOnceODRLinkage
@@ -2493,8 +2553,9 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
             {
                 std::lock_guard<std::mutex> lock(g_external_mutex);
                 for (const auto& [func_name, info] : g_external_functions) {
+                    const std::string llvm_ext_name = mangleSchemeFunctionLinkerName(func_name);
                     // Skip if already declared (local definition takes precedence)
-                    if (module->getFunction(func_name) || function_table.count(func_name)) {
+                    if (module->getFunction(llvm_ext_name) || function_table.count(func_name)) {
                         continue;
                     }
 
@@ -2504,7 +2565,7 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
                     Function* ext_func = Function::Create(
                         func_type,
                         GlobalValue::ExternalLinkage,
-                        func_name,
+                        llvm_ext_name,
                         module.get()
                     );
 
@@ -3851,7 +3912,12 @@ void EshkolLLVMCodeGen::createFunctionDeclaration(const eshkol_ast_t* ast) {
         // The function/variable namespaces are mutually exclusive — defining
         // `f` as a function clears any prior variable registration so reads
         // and calls of `f` see a function, not a stale value or closure.
-        std::string llvm_func_name = func_name;
+        const auto& def_op = ast->operation.define_op;
+        const bool explicit_c_export =
+            def_op.export_symbol || def_op.export_name != nullptr || def_op.is_weak;
+        std::string llvm_func_name = explicit_c_export
+            ? std::string(func_name)
+            : mangleSchemeFunctionLinkerName(func_name);
         GlobalValue::LinkageTypes link = publicDefinitionLinkage(library_mode);
         if (g_repl_mode_enabled) {
             int v = g_repl_define_counter.fetch_add(1, std::memory_order_relaxed);
@@ -3861,6 +3927,13 @@ void EshkolLLVMCodeGen::createFunctionDeclaration(const eshkol_ast_t* ast) {
             g_repl_user_function_names.insert(func_name);
             g_repl_user_variable_names.erase(func_name);
             g_repl_symbol_addresses.erase(func_name);
+        } else if (!library_mode && !def_op.is_external && !explicit_c_export &&
+                   llvm_func_name != "main" && llvm_func_name != "scheme_main" &&
+                   llvm_func_name != "_start") {
+            // Standalone executable definitions stay internal to the module so
+            // user-defined Scheme procedures never interpose on libc/POSIX or
+            // runtime symbols during linking.
+            link = GlobalValue::InternalLinkage;
         }
 
         Function* function = Function::Create(
