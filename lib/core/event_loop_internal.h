@@ -56,6 +56,19 @@ struct eshkol_event_loop {
     eshkol_event_reg_t* regs; /**< malloc'd, `max_events` entries.              */
     eshkol_event_t*     out;  /**< malloc'd, `max_events` entries; poll output. */
 
+    /* O(1) fd -> regs[] index table, free-list, and per-poll coalescing state. */
+    int*      fd_hash_keys;      /**< Open-addressed keys: >=0 fd, -1 empty, -2 tomb. */
+    int*      fd_hash_vals;      /**< Matching regs[] slot indices.                   */
+    int       fd_hash_cap;       /**< Power-of-two hash table capacity.               */
+    int       fd_hash_tombstones;/**< Tombstone count triggering periodic compaction. */
+    int*      reg_free_next;     /**< Intrusive free-slot list over [0, max_regs).    */
+    int       reg_free_head;     /**< Head of free-slot list, or -1 when full.        */
+    uint32_t* reg_emit_gen;      /**< Epoch stamp of last emit for each regs[] slot.  */
+    int*      reg_emit_idx;      /**< Output index in `out[]` for current epoch.      */
+    uint32_t  wake_emit_gen;     /**< Epoch stamp for internal wake_read pipe.        */
+    int       wake_emit_idx;     /**< Output index in `out[]` for wake_read.          */
+    uint32_t  emit_epoch;        /**< Monotonic per-poll coalescing epoch.            */
+
     intptr_t backend_fd;      /**< kqueue fd, epoll fd, or IOCP HANDLE. -1 = none. */
     void*    backend_data;    /**< Backend scratch (kevent/epoll_event array).  */
 };

@@ -2630,6 +2630,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   # builtins in system_builtins.c are compiled into libeshkol-runtime.a and
   # every AOT/JIT user link resolves against that archive alone.
   lib/core/event_loop.c
+  lib/core/http_event_server.c
 )
 
 # The selected event-loop backend is appended rather than listed above because
@@ -15636,6 +15637,24 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         TIMEOUT 60
         PASS_REGULAR_EXPRESSION "PASS: http_response_framing_test"
         FAIL_REGULAR_EXPRESSION "FAIL:")
+
+    if(UNIX AND NOT EMSCRIPTEN)
+        add_executable(http_event_loop_10k_gate
+            tests/protocol/http_event_loop_10k_gate.c
+            lib/core/http_event_server.c
+            lib/core/event_loop.c
+            ${ESHKOL_EVENT_LOOP_SRC}
+            lib/core/runtime_handle.cpp)
+        target_include_directories(http_event_loop_10k_gate PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core")
+        target_link_libraries(http_event_loop_10k_gate PRIVATE Threads::Threads)
+        add_test(NAME http_event_loop_10k_gate COMMAND http_event_loop_10k_gate)
+        set_tests_properties(http_event_loop_10k_gate PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: http_event_loop_10k_gate"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
 
     add_test(
         NAME security_hardening_jit
