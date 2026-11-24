@@ -102,6 +102,17 @@ int eshkol_ffi_eval_double(eshkol_ffi_context_t* ctx,
  *  @return 0 on success, non-zero on error. */
 int eshkol_ffi_eval_file(eshkol_ffi_context_t* ctx, const char* path);
 
+/** Bind a constructed FFI value directly to a top-level REPL variable name
+ *  without string serialization, preserving exact IEEE-754 bits and N-D tensor
+ *  shapes.
+ *  @param ctx    Context from eshkol_ffi_init()
+ *  @param name   Valid Scheme identifier name
+ *  @param value  FFI value to store in the variable's persistent slot
+ *  @return 0 on success, non-zero on error. */
+int eshkol_ffi_bind_value(eshkol_ffi_context_t* ctx,
+                          const char* name,
+                          eshkol_ffi_value_t value);
+
 /* ============================================================================
  * Value Construction
  * ============================================================================ */

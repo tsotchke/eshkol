@@ -355,6 +355,79 @@ extern "C" int eshkol_ffi_eval_file(eshkol_ffi_context_t* ctx, const char* path)
     return eshkol_ffi_eval(ctx, source.c_str(), NULL);
 }
 
+static bool ffi_valid_scheme_ident(const char* name) {
+    if (!name || !name[0]) return false;
+    size_t len = std::strlen(name);
+    if (len > 128) return false;
+    unsigned char first = static_cast<unsigned char>(name[0]);
+    if (std::isdigit(first) || first == '.' || first == '+' || first == '-') return false;
+    for (size_t i = 0; i < len; ++i) {
+        unsigned char c = static_cast<unsigned char>(name[i]);
+        if (std::isalnum(c)) continue;
+        switch (c) {
+            case '_': case '-': case '?': case '!': case '*': case '+':
+            case '/': case '<': case '>': case '=': case '$': case '%':
+            case '&': case '^': case '~':
+                continue;
+            default:
+                return false;
+        }
+    }
+    return true;
+}
+
+static std::string ffi_repl_storage_symbol(const char* name) {
+    std::string out = "__repl_storage_";
+    char encoded[4];
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(name); *p; ++p) {
+        if (std::isalnum(*p)) {
+            out.push_back(static_cast<char>(*p));
+        } else {
+            std::snprintf(encoded, sizeof(encoded), "_%02X", *p);
+            out += encoded;
+        }
+    }
+    return out;
+}
+
+extern "C" int eshkol_ffi_bind_value(eshkol_ffi_context_t* ctx,
+                                     const char* name,
+                                     eshkol_ffi_value_t value) {
+    if (!ctx || !ctx->initialized || !ctx->jit || !ctx->lookup) {
+        ffi_set_error("Invalid FFI context");
+        return -1;
+    }
+    if (!ffi_valid_scheme_ident(name)) {
+        ffi_set_error("bind_value: invalid Scheme identifier");
+        return -1;
+    }
+
+    /* Ensure the persistent 16-byte REPL variable storage slot exists. */
+    std::string def_expr = std::string("(define ") + name + " #f)";
+    if (eshkol_ffi_eval(ctx, def_expr.c_str(), NULL) != 0) {
+        return -1;
+    }
+
+    std::string storage_sym = ffi_repl_storage_symbol(name);
+    uint64_t addr = ctx->lookup(ctx->jit, storage_sym.c_str());
+    if (addr == 0) {
+        addr = ctx->lookup(ctx->jit, name);
+    }
+    if (addr == 0) {
+        ffi_set_error("bind_value: failed to resolve storage slot for '%s'", name);
+        return -1;
+    }
+
+    eshkol_tagged_value_t tv = from_ffi(value);
+    if (tv.type == ESHKOL_VALUE_HEAP_PTR) {
+        /* Runtime heap values carry their concrete subtype in the 8-byte
+         * object header; keep the tagged-value flags byte clean. */
+        tv.flags = 0;
+    }
+    std::memcpy(reinterpret_cast<void*>(static_cast<uintptr_t>(addr)), &tv, sizeof(tv));
+    return 0;
+}
+
 /* ============================================================================
  * Value Construction
  * ============================================================================ */
