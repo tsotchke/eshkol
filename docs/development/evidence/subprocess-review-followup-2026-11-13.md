@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: agent
+since: v1.4.0-connection
+sources: []
+---
+
 # Subprocess review followup — 2026-11-13
 
 Tested PROCESS source `d1814038877bc4fc416f588041382a34c59a83ba`, including shared foundation `b682c40c4fbb4bb0944226ff2d49b0928c1fa785` and integration `53220efc1638c77d108ab009d4a5e6939c488c7b`.

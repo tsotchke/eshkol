@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: agent
+since: v1.4.0-connection
+sources:
+  - lib/agent/unix_stream_socket.esk
+---
+
 # `agent.unix_stream_socket` — Unix-domain stream sockets
 
 Filesystem Unix stream sockets use the shared resource lease and explicit

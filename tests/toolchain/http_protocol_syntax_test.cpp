@@ -86,7 +86,7 @@ int main() {
     // the space is a second request line to any parser that reads the line.
     expect(!eshkol_http_valid_request_target(
                "/a HTTP/1.1\r\nX: 1\r\n\r\nGET /internal HTTP/1.1\r\n"
-               "Host: 10.0.0.5"),
+               "Host: 192.0.2.5"),
            "a target carrying a whole second request is refused");
 
     // ─── Authority: what may appear in a Host field ─────────────────────────
@@ -125,8 +125,8 @@ int main() {
     expect(!eshkol_http_valid_absolute_url("http://"),
            "a scheme with no authority is refused");
     expect(!eshkol_http_valid_absolute_url(
-               "http://10.0.0.5/a HTTP/1.1\r\nX: 1\r\n\r\nGET /internal "
-               "HTTP/1.1\r\nHost: 10.0.0.5"),
+               "http://192.0.2.5/a HTTP/1.1\r\nX: 1\r\n\r\nGET /internal "
+               "HTTP/1.1\r\nHost: 192.0.2.5"),
            "the audit's injected URL is refused as a URL");
 
     // ─── Header lines and blocks ────────────────────────────────────────────

@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: agent
+since: v1.4.0-connection
+sources: []
+---
+
 # Linux production and staged-package subprocess streaming evidence
 
 The [JSON record](subprocess-streaming-production-2026-11-10.json) preserves the

@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: agent
+since: v1.4.0-connection
+sources: []
+---
+
 # November 13 socket review follow-up
 
 The completed qualification below preserves raw suite failures and records separate targeted environment confirmations.

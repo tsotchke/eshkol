@@ -109,7 +109,9 @@ class FfiHarnessTests(unittest.TestCase):
         diagnostics = self.root / "success-diagnostics"
         result = self.invoke(diagnostic_dir=diagnostics)
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("Passed:         8", result.stdout)
+        expected_passed = 2 * len(list((ROOT / "tests" / "ffi").glob("*.esk")))
+        self.assertGreaterEqual(expected_passed, 10)
+        self.assertIn(f"Passed:         {expected_passed}", result.stdout)
         self.assertIn("Failed:         0", result.stdout)
         status = (diagnostics / "emergency_exit_surface_test.jit-orc-cache0.status").read_text()
         self.assertIn("ESHKOL_JIT_CACHE=0", status)

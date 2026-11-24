@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: runtime
+since: v1.4.0-connection
+sources: []
+---
+
 # Shared loop lease followup — 2026-11-13
 
 Tested shared source `b682c40c4fbb4bb0944226ff2d49b0928c1fa785`, based on integration `53220efc1638c77d108ab009d4a5e6939c488c7b`.

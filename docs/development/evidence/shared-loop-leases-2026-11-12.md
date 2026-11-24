@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: runtime
+since: v1.4.0-connection
+sources: []
+---
+
 # Shared explicit-loop lease foundation
 
 This branch adds loop-aware adoption, sticky cancellation, accepted deferred close and separately reserved cleanup results while preserving legacy net/TLS behavior. EVENT_LOOP, SOCKET, PROCESS and CLEANUP kinds use the common exact registry; platform kind values remain stable. Resource adapters are separate from this foundation.

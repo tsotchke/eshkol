@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: agent
+since: v1.4.0-connection
+sources: []
+---
+
 # Subprocess streaming local checkpoint — 2026-11-04
 
 Builds on #845. Base: `51a93586951b1c75b413b14531d0465c660ae579`,

@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: runtime
+since: v1.4.0-connection
+sources: []
+---
+
 # Runtime integration repairs
 
 The Taylor result-shape epoch output uses the stored 64-bit epoch type; refinement uses its explicit `<algorithm>` dependency; resident runtime units access the current memory context through the exported accessor. The JIT stdlib cache publishes completed objects from process-unique files, so concurrent writers never share one temporary name.

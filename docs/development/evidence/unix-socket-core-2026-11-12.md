@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: agent
+since: v1.4.0-connection
+sources: []
+---
+
 # Unix socket core: Linux execution record
 
 The initial core at `b4c26cde661f6995f9e055c04f084d476d065a1d` passed 65 selected Linux CTests, standalone shared/socket/PROCESS ASan/UBSan/leak checks, and a three-writer cold JIT cache check. The [historical manifest](unix-socket-core-2026-11-12.json) preserves source/artifact hashes and the original local-log hashes. Raw machine logs are retained locally and are not repository content. Summary commands use portable path placeholders.

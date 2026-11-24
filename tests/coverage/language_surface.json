@@ -4156,12 +4156,12 @@
           "exports": [
             {
               "name": "capability-allowed?",
-              "line": 16,
-              "definition_line": 63,
+              "line": 25,
+              "definition_line": 101,
               "definition_origin": {
                 "module": "core.capabilities",
                 "path": "lib/core/capabilities.esk",
-                "line": 63,
+                "line": 101,
                 "chain": [
                   "core.capabilities"
                 ]
@@ -4169,12 +4169,12 @@
             },
             {
               "name": "capability-clear-policy!",
-              "line": 13,
-              "definition_line": 57,
+              "line": 22,
+              "definition_line": 91,
               "definition_origin": {
                 "module": "core.capabilities",
                 "path": "lib/core/capabilities.esk",
-                "line": 57,
+                "line": 91,
                 "chain": [
                   "core.capabilities"
                 ]
@@ -4182,12 +4182,12 @@
             },
             {
               "name": "capability-install-policy!",
-              "line": 12,
-              "definition_line": 48,
+              "line": 21,
+              "definition_line": 78,
               "definition_origin": {
                 "module": "core.capabilities",
                 "path": "lib/core/capabilities.esk",
-                "line": 48,
+                "line": 78,
                 "chain": [
                   "core.capabilities"
                 ]
@@ -4195,12 +4195,12 @@
             },
             {
               "name": "capability-policy",
-              "line": 14,
-              "definition_line": 26,
+              "line": 23,
+              "definition_line": 39,
               "definition_origin": {
                 "module": "core.capabilities",
                 "path": "lib/core/capabilities.esk",
-                "line": 26,
+                "line": 39,
                 "chain": [
                   "core.capabilities"
                 ]
@@ -4208,12 +4208,12 @@
             },
             {
               "name": "capability-policy-active?",
-              "line": 15,
-              "definition_line": 29,
+              "line": 24,
+              "definition_line": 42,
               "definition_origin": {
                 "module": "core.capabilities",
                 "path": "lib/core/capabilities.esk",
-                "line": 29,
+                "line": 42,
                 "chain": [
                   "core.capabilities"
                 ]
@@ -4221,12 +4221,12 @@
             },
             {
               "name": "capability-require!",
-              "line": 17,
-              "definition_line": 69,
+              "line": 26,
+              "definition_line": 107,
               "definition_origin": {
                 "module": "core.capabilities",
                 "path": "lib/core/capabilities.esk",
-                "line": 69,
+                "line": 107,
                 "chain": [
                   "core.capabilities"
                 ]
@@ -4236,43 +4236,51 @@
           "top_level_definitions": [
             {
               "name": "*capability-allow-list*",
-              "line": 24
+              "line": 37
             },
             {
               "name": "*capability-policy-active*",
-              "line": 23
+              "line": 36
             },
             {
               "name": "capability-allowed?",
-              "line": 63
+              "line": 101
             },
             {
               "name": "capability-clear-policy!",
-              "line": 57
+              "line": 91
             },
             {
               "name": "capability-install-policy!",
-              "line": 48
+              "line": 78
+            },
+            {
+              "name": "capability-intersect",
+              "line": 70
+            },
+            {
+              "name": "capability-names-string",
+              "line": 52
             },
             {
               "name": "capability-policy",
-              "line": 26
+              "line": 39
             },
             {
               "name": "capability-policy-active?",
-              "line": 29
+              "line": 42
             },
             {
               "name": "capability-require!",
-              "line": 69
+              "line": 107
             },
             {
               "name": "capability-symbol-list?",
-              "line": 32
+              "line": 45
             },
             {
               "name": "capability-sync-runtime!",
-              "line": 39
+              "line": 63
             }
           ]
         },
@@ -13788,7 +13796,7 @@
     "builtins_in_llvm_aot_dispatch": 811,
     "builtins_aot_only": 247,
     "quantum_agent_ffi_builtins": 22,
-    "special_forms": 123,
+    "special_forms": 122,
     "ast_ops": 114,
     "prelude": 636
   },
@@ -13811,7 +13819,7 @@
     "memory_region": 4
   },
   "special_forms_by_category": {
-    "tensor_ad": 29,
+    "tensor_ad": 28,
     "control_flow": 26,
     "consciousness": 24,
     "binding_form": 16,
@@ -27189,11 +27197,6 @@
       "category": "control_flow"
     },
     {
-      "name": "matrix",
-      "op": "ESHKOL_TENSOR_OP",
-      "category": "tensor_ad"
-    },
-    {
       "name": "move",
       "op": "ESHKOL_MOVE_OP",
       "category": "memory_region"
@@ -31918,13 +31921,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 16,
+          "line": 25,
           "defined_at_top_level": true,
-          "definition_line": 63,
+          "definition_line": 101,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 63,
+            "line": 101,
             "chain": [
               "core.capabilities"
             ]
@@ -31937,7 +31940,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-allowed?",
-            "line": 63,
+            "line": 101,
             "chain": [
               "core.capabilities"
             ]
@@ -31947,13 +31950,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 16,
+          "line": 25,
           "defined_at_top_level": true,
-          "definition_line": 63,
+          "definition_line": 101,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 63,
+            "line": 101,
             "chain": [
               "core.capabilities"
             ]
@@ -31966,7 +31969,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-allowed?",
-            "line": 63,
+            "line": 101,
             "chain": [
               "core.capabilities"
             ]
@@ -31988,13 +31991,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 13,
+          "line": 22,
           "defined_at_top_level": true,
-          "definition_line": 57,
+          "definition_line": 91,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 57,
+            "line": 91,
             "chain": [
               "core.capabilities"
             ]
@@ -32007,7 +32010,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-clear-policy!",
-            "line": 57,
+            "line": 91,
             "chain": [
               "core.capabilities"
             ]
@@ -32017,13 +32020,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 13,
+          "line": 22,
           "defined_at_top_level": true,
-          "definition_line": 57,
+          "definition_line": 91,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 57,
+            "line": 91,
             "chain": [
               "core.capabilities"
             ]
@@ -32036,7 +32039,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-clear-policy!",
-            "line": 57,
+            "line": 91,
             "chain": [
               "core.capabilities"
             ]
@@ -32058,13 +32061,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 12,
+          "line": 21,
           "defined_at_top_level": true,
-          "definition_line": 48,
+          "definition_line": 78,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 48,
+            "line": 78,
             "chain": [
               "core.capabilities"
             ]
@@ -32077,7 +32080,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-install-policy!",
-            "line": 48,
+            "line": 78,
             "chain": [
               "core.capabilities"
             ]
@@ -32087,13 +32090,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 12,
+          "line": 21,
           "defined_at_top_level": true,
-          "definition_line": 48,
+          "definition_line": 78,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 48,
+            "line": 78,
             "chain": [
               "core.capabilities"
             ]
@@ -32106,7 +32109,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-install-policy!",
-            "line": 48,
+            "line": 78,
             "chain": [
               "core.capabilities"
             ]
@@ -32128,13 +32131,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 14,
+          "line": 23,
           "defined_at_top_level": true,
-          "definition_line": 26,
+          "definition_line": 39,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 26,
+            "line": 39,
             "chain": [
               "core.capabilities"
             ]
@@ -32147,7 +32150,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-policy",
-            "line": 26,
+            "line": 39,
             "chain": [
               "core.capabilities"
             ]
@@ -32157,13 +32160,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 14,
+          "line": 23,
           "defined_at_top_level": true,
-          "definition_line": 26,
+          "definition_line": 39,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 26,
+            "line": 39,
             "chain": [
               "core.capabilities"
             ]
@@ -32176,7 +32179,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-policy",
-            "line": 26,
+            "line": 39,
             "chain": [
               "core.capabilities"
             ]
@@ -32198,13 +32201,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 15,
+          "line": 24,
           "defined_at_top_level": true,
-          "definition_line": 29,
+          "definition_line": 42,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 29,
+            "line": 42,
             "chain": [
               "core.capabilities"
             ]
@@ -32217,7 +32220,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-policy-active?",
-            "line": 29,
+            "line": 42,
             "chain": [
               "core.capabilities"
             ]
@@ -32227,13 +32230,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 15,
+          "line": 24,
           "defined_at_top_level": true,
-          "definition_line": 29,
+          "definition_line": 42,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 29,
+            "line": 42,
             "chain": [
               "core.capabilities"
             ]
@@ -32246,7 +32249,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-policy-active?",
-            "line": 29,
+            "line": 42,
             "chain": [
               "core.capabilities"
             ]
@@ -32268,13 +32271,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 17,
+          "line": 26,
           "defined_at_top_level": true,
-          "definition_line": 69,
+          "definition_line": 107,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 69,
+            "line": 107,
             "chain": [
               "core.capabilities"
             ]
@@ -32287,7 +32290,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-require!",
-            "line": 69,
+            "line": 107,
             "chain": [
               "core.capabilities"
             ]
@@ -32297,13 +32300,13 @@
           "kind": "module_export",
           "module": "core.capabilities",
           "path": "lib/core/capabilities.esk",
-          "line": 17,
+          "line": 26,
           "defined_at_top_level": true,
-          "definition_line": 69,
+          "definition_line": 107,
           "definition_origin": {
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
-            "line": 69,
+            "line": 107,
             "chain": [
               "core.capabilities"
             ]
@@ -32316,7 +32319,7 @@
             "module": "core.capabilities",
             "path": "lib/core/capabilities.esk",
             "name": "capability-require!",
-            "line": 69,
+            "line": 107,
             "chain": [
               "core.capabilities"
             ]

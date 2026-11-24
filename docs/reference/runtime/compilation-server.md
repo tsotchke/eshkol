@@ -1,3 +1,12 @@
+---
+kind: reference
+status: current
+owner-area: runtime
+since: v1.4.0-connection
+sources:
+  - exe/eshkol-server.cpp
+---
+
 # The compilation server — request handling
 
 `exe/eshkol-server.cpp` is a small HTTP server that compiles Eshkol source to

@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: agent
+since: v1.4.0-connection
+sources: []
+---
+
 # Subprocess review revision
 
 The PROCESS module has reviewed contracts for all 40 exports and a matching source pin. Scoped stream callbacks borrow a PROCESS_STREAM owner; cleanup IDs inside aggregate data are explicitly unsupported in strict mode. The module source agrees with its reviewed contract pin, so strict compilation can use those rows.

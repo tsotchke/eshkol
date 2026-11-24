@@ -13,12 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code, on the LLVM JIT, ahead-of-time executables and the bytecode VM, from one
   policy store. A program that installs no policy is unaffected; under an active
   policy every capability it does not name is refused, and a refusal names the
-  capability.
+  capability. (#923)
 - A policy only ever narrows: installing one while another is active keeps the
   names both hold, and clearing is refused while a policy is active.
 - `(process-spawn-pty cmd)` returns `(pid . master-fd)` on every engine, so the
   program owns the pseudo-terminal descriptor, and `#f` when it cannot start the
   child. It previously returned the pid alone on the native engines.
+- Align runtime epochs, context access, atomic JIT stdlib cache publication, and
+  the single program-entry rule across engines. (#924)
+- Validate HTTP request targets, WebSocket handshakes, and compilation-server
+  request headers and budgets across native, JIT, AOT, and VM paths. (#927)
+- Align the Linux test and verification suites with the hosted runtime and
+  toolchain behavior. (#929)
+- Unify closure invocation across capture counts and resolve typed move
+  semantics per lexical scope. (#930)
+- Complete receipt contracts, modularity records, and single-name runtime event
+  records across release-evidence gates. (#933)
 
 
 ### Added

@@ -1,3 +1,11 @@
+---
+kind: report
+status: historical
+owner-area: agent
+since: v1.4.0-connection
+sources: []
+---
+
 # Socket review revision
 
 The [manifest](unix-socket-review-revision-2026-11-12.json) records **68/68 selected Linux CTests at eight-way parallelism**, **148/148 native O0 ownership checks**, and the [hosted native run](https://github.com/Gabriel-Kahen/eshkol/actions/runs/43312363510). Hosted Linux normal, Linux ASan/UBSan/leak, and macOS 15 arm64 kqueue all passed the socket/common/PROCESS suites. Original raw logs are retained locally or as hosted workflow artifacts; only portable summaries and original-byte hashes are repository content.
