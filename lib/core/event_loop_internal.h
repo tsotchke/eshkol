@@ -22,6 +22,9 @@
 #include "eshkol/core/event_loop.h"
 
 #include <stdint.h>
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+#include <pthread.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,7 +53,13 @@ struct eshkol_event_loop {
     int  max_events;          /**< Capacity for both registrations and results. */
     int  n_regs;              /**< Number of live entries in `regs`.            */
     int  last_os_error;       /**< errno / GetLastError from the last failure.  */
-    uintptr_t owner_thread; /**< Adopting thread token; no cross-thread I/O. */
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+    pthread_t owner_thread;   /**< Adopting thread identity; stable during TLS teardown. */
+#elif defined(_WIN32)
+    uint32_t  owner_thread;   /**< Adopting Win32 thread ID; no cross-thread I/O. */
+#else
+    uintptr_t owner_thread;   /**< Adopting thread token; no cross-thread I/O. */
+#endif
     unsigned int retain_count; /**< Scoped resources keep the loop alive. */
 
     eshkol_event_reg_t* regs; /**< malloc'd, `max_events` entries.              */

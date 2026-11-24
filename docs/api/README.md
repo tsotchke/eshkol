@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3123/7241 public symbols documented (43.1%), 4118 undocumented.
+**Coverage:** 3135/7253 public symbols documented (43.2%), 4118 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -133,13 +133,14 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-447/937 symbols documented.
+459/949 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
 | [`core/arity_contract.h`](core/arity_contract.md) | 3 | 3 |
 | [`core/ast_routing.h`](core/ast_routing.md) | 3 | 0 |
 | [`core/bignum.h`](core/bignum.md) | 45 | 27 |
+| [`core/collectives.h`](core/collectives.md) | 12 | 12 |
 | [`core/complex_math.h`](core/complex_math.md) | 33 | 30 |
 | [`core/config.h`](core/config.md) | 63 | 19 |
 | [`core/coroutine.h`](core/coroutine.md) | 33 | 11 |

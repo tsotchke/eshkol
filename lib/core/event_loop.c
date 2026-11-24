@@ -18,10 +18,23 @@
 #include "eshkol/core/handle.h"
 
 extern eshkol_handle_registry_t *eshkol_resource_registry(void);
-static _Thread_local unsigned char event_owner_token;
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
-    return loop && loop->owner_thread == (uintptr_t)&event_owner_token;
+    return loop && loop->owner_thread == (uint32_t)GetCurrentThreadId();
 }
+#elif !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
+    return loop && pthread_equal(loop->owner_thread, pthread_self());
+}
+#else
+int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
+    return loop && loop->owner_thread == (uintptr_t)1;
+}
+#endif
 
 #include <stdlib.h>
 #include <errno.h>
@@ -139,7 +152,13 @@ eshkol_event_loop_t* eshkol_event_loop_create(int max_events) {
         (eshkol_event_loop_t*)calloc(1, sizeof(eshkol_event_loop_t));
     if (!loop) return NULL;
 
-    loop->owner_thread = (uintptr_t)&event_owner_token;
+#if defined(_WIN32)
+    loop->owner_thread = (uint32_t)GetCurrentThreadId();
+#elif !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+    loop->owner_thread = pthread_self();
+#else
+    loop->owner_thread = (uintptr_t)1;
+#endif
     loop->max_registrations = max_events;
     loop->max_events = max_events + 1;
     loop->wake_read = loop->wake_write = -1;

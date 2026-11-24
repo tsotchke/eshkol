@@ -2631,6 +2631,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   # every AOT/JIT user link resolves against that archive alone.
   lib/core/event_loop.c
   lib/core/http_event_server.c
+  lib/core/collectives.c
 )
 
 # The selected event-loop backend is appended rather than listed above because
@@ -15654,6 +15655,26 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         set_tests_properties(http_event_loop_10k_gate PROPERTIES
             TIMEOUT 180
             PASS_REGULAR_EXPRESSION "PASS: http_event_loop_10k_gate"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+
+        add_executable(native_collectives_socket_test
+            tests/protocol/native_collectives_socket_test.c
+            lib/core/collectives.c
+            lib/core/net.c
+            lib/core/resource_lease.c
+            lib/core/event_loop.c
+            ${ESHKOL_EVENT_LOOP_SRC}
+            lib/core/runtime_handle.cpp)
+        target_compile_features(native_collectives_socket_test PRIVATE c_std_11 cxx_std_17)
+        target_compile_definitions(native_collectives_socket_test PRIVATE _GNU_SOURCE)
+        target_include_directories(native_collectives_socket_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/inc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/lib/core")
+        target_link_libraries(native_collectives_socket_test PRIVATE Threads::Threads)
+        add_test(NAME native_collectives_socket_test COMMAND native_collectives_socket_test)
+        set_tests_properties(native_collectives_socket_test PROPERTIES
+            TIMEOUT 60
+            PASS_REGULAR_EXPRESSION "PASS: native_collectives_socket_test"
             FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
 
