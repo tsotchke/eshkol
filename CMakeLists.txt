@@ -9210,11 +9210,32 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
     target_include_directories(eshkol-subprocess-stream-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
     target_link_libraries(eshkol-subprocess-stream-test PRIVATE Threads::Threads)
     if(APPLE)
-        target_link_options(eshkol-subprocess-stream-test PRIVATE "-Wl,-U,_eshkol_capability_enforce")
+        target_link_options(eshkol-subprocess-stream-test PRIVATE
+            "-Wl,-U,_eshkol_capability_enforce"
+            "-Wl,-U,_eshkol_capability_runtime_is_active")
     endif()
     add_test(NAME agent-subprocess-stream COMMAND eshkol-subprocess-stream-test)
     set_tests_properties(agent-subprocess-stream PROPERTIES
         TIMEOUT 60 LABELS "resource;subprocess;stream")
+
+    add_executable(eshkol-subprocess-sandbox-test
+        tests/agent/subprocess_sandbox_test.c
+        lib/agent/c/agent_subprocess.c
+        lib/core/capability_policy.cpp
+        lib/core/resource_lease.c
+        lib/core/event_loop.c
+        ${ESHKOL_EVENT_LOOP_SRC}
+        lib/core/runtime_handle.cpp)
+    target_compile_features(eshkol-subprocess-sandbox-test PRIVATE c_std_11 cxx_std_17)
+    target_compile_definitions(eshkol-subprocess-sandbox-test PRIVATE _GNU_SOURCE)
+    target_include_directories(eshkol-subprocess-sandbox-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-subprocess-sandbox-test PRIVATE Threads::Threads)
+    if(APPLE)
+        target_link_options(eshkol-subprocess-sandbox-test PRIVATE "-Wl,-U,_eshkol_capability_enforce")
+    endif()
+    add_test(NAME agent-subprocess-sandbox COMMAND eshkol-subprocess-sandbox-test)
+    set_tests_properties(agent-subprocess-sandbox PROPERTIES
+        TIMEOUT 60 LABELS "resource;subprocess;security")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_executable(eshkol-subprocess-stream-watch-failure-test
             tests/agent/subprocess_stream_watch_failure_test.c
