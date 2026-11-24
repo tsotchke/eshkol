@@ -809,37 +809,48 @@ static void format_literal(const char* text, char* out, size_t out_size) {
     out[pos] = '\0';
 }
 
-static void format_limit_ceiling(eshkol_limit_error_t error,
-                                 char* out, size_t out_size) {
+static const char* format_limit_ceiling(eshkol_limit_error_t error, char (&out)[64]) {
     switch (error) {
         case ESHKOL_LIMIT_OK:
-            format_literal("n/a", out, out_size);
+            format_literal("n/a", out, sizeof(out));
             break;
         case ESHKOL_LIMIT_HEAP_HARD:
         case ESHKOL_LIMIT_HEAP_SOFT:
             format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_heap_bytes),
-                                   " bytes", out, out_size);
+                                   " bytes", out, sizeof(out));
             break;
         case ESHKOL_LIMIT_STACK_OVERFLOW:
             format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_stack_depth),
-                                   " frames", out, out_size);
+                                   " frames", out, sizeof(out));
             break;
         case ESHKOL_LIMIT_TENSOR_SIZE:
             format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_tensor_elements),
-                                   " elements", out, out_size);
+                                   " elements", out, sizeof(out));
             break;
         case ESHKOL_LIMIT_STRING_LENGTH:
             format_u64_with_suffix(static_cast<uint64_t>(g_limits.max_string_length),
-                                   " bytes", out, out_size);
+                                   " bytes", out, sizeof(out));
             break;
-        case ESHKOL_LIMIT_TIMEOUT:
-            format_u64_with_suffix(g_limits.max_execution_time_ms,
-                                   "ms", out, out_size);
-            break;
+        case ESHKOL_LIMIT_TIMEOUT: {
+            // Write from the end so the decimal digits need no reversal or copy.
+            // A uint64_t has at most digits10 + 1 decimal digits.
+            static_assert(sizeof(out) >= std::numeric_limits<uint64_t>::digits10 + 1 + sizeof("ms"));
+            char* digit = out + sizeof(out);
+            *--digit = '\0';
+            *--digit = 's';
+            *--digit = 'm';
+            uint64_t remaining = g_limits.max_execution_time_ms;
+            do {
+                *--digit = static_cast<char>('0' + remaining % 10);
+                remaining /= 10;
+            } while (remaining);
+            return digit;
+        }
         default:
-            format_literal("n/a", out, out_size);
+            format_literal("n/a", out, sizeof(out));
             break;
     }
+    return out;
 }
 
 /** @brief Terminate (or merely record) a hard-limit violation.
@@ -853,8 +864,8 @@ static void format_limit_ceiling(eshkol_limit_error_t error,
 void eshkol_limit_enforce(eshkol_limit_error_t error, const char* detail) {
     g_last_error.store(error, std::memory_order_relaxed);
 
-    char ceiling[64];
-    format_limit_ceiling(error, ceiling, sizeof(ceiling));
+    char buffer[64];
+    const char* ceiling = format_limit_ceiling(error, buffer);
 
     if (!g_limits.enforce_hard_limits) {
         // Advisory mode: ESHKOL_ENFORCE_LIMITS=false documents that errors are

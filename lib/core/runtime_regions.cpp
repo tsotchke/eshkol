@@ -51,6 +51,19 @@ extern "C" void eshkol_region_pin_notice(void);
 thread_local eshkol_region_t* __region_stack[MAX_REGION_DEPTH] = {nullptr};
 thread_local uint64_t __region_stack_depth = 0;
 
+#ifdef ESHKOL_VERIFICATUM_NESTED_STACK
+// Independent push-time identities used by the single-owner restoration gate.
+struct NestedBinding {
+    eshkol_region_t* region;
+    arena_t* arena;
+};
+static thread_local struct {
+    NestedBinding frames[MAX_REGION_DEPTH];
+    arena_t* fallback;
+    uint64_t depth;
+} nested_bindings{};
+#endif
+
 // Default global arena for allocations outside any region.
 // Non-static to allow JIT code to access it directly. Weak where object format
 // support lets generated standalone code override it.
@@ -276,6 +289,9 @@ void eshkol_thread_init_worker(size_t arena_size_hint) {
         __region_stack[i] = nullptr;
     }
     __region_stack_depth = 0;
+#ifdef ESHKOL_VERIFICATUM_NESTED_STACK
+    nested_bindings = {};
+#endif
 
     (void)arena_create_thread_local(arena_size_hint);
 }
@@ -312,6 +328,9 @@ void eshkol_thread_shutdown_worker(void) {
         __region_stack[i] = nullptr;
     }
     __region_stack_depth = 0;
+#ifdef ESHKOL_VERIFICATUM_NESTED_STACK
+    nested_bindings = {};
+#endif
 }
 
 /**
@@ -594,6 +613,16 @@ void region_push(eshkol_region_t* region) {
     }
 
     region->is_active = 1;
+#ifdef ESHKOL_VERIFICATUM_NESTED_STACK
+    if (nested_bindings.depth != __region_stack_depth || !region->arena) std::abort();
+    if (nested_bindings.depth == 0) nested_bindings.fallback = __global_arena;
+    if (!nested_bindings.fallback || region->arena == nested_bindings.fallback) std::abort();
+    for (uint64_t i = 0; i < nested_bindings.depth; ++i) {
+        const auto& prior = nested_bindings.frames[i];
+        if (prior.region == region || prior.arena == region->arena) std::abort();
+    }
+    nested_bindings.frames[nested_bindings.depth++] = {region, region->arena};
+#endif
     __region_stack[__region_stack_depth++] = region;
 
     eshkol_debug("Pushed region '%s' (depth: %llu)",
@@ -611,6 +640,12 @@ void region_push(eshkol_region_t* region) {
  * if the stack is already empty.
  */
 void region_pop(void) {
+#ifdef ESHKOL_VERIFICATUM_NESTED_STACK
+    if (__region_stack_depth != nested_bindings.depth) std::abort();
+    if (__region_stack_depth &&
+        __region_stack[__region_stack_depth - 1] != nested_bindings.frames[__region_stack_depth - 1].region)
+        std::abort();
+#endif
     if (__region_stack_depth == 0) {
         eshkol_warn("Attempted to pop from empty region stack");
         return;
@@ -624,6 +659,29 @@ void region_pop(void) {
                  region->name ? region->name : "(anonymous)",
                  (unsigned long long)__region_stack_depth);
 
+#ifdef ESHKOL_VERIFICATUM_NESTED_STACK
+    const auto depth = __region_stack_depth;
+    if (depth > 0) {
+        const auto& parent = nested_bindings.frames[depth - 1];
+        const auto& child = nested_bindings.frames[depth];
+        if (region != child.region || region->arena != child.arena ||
+            region->parent != parent.region || __global_arena != nested_bindings.fallback ||
+            t_memctx.allocation_domain != parent.arena || eshkol_current_arena() != parent.arena)
+            std::abort();
+        for (uint64_t i = 0; i < depth; ++i) {
+            const auto& expected = nested_bindings.frames[i];
+            if (__region_stack[i] != expected.region || !expected.region->is_active ||
+                expected.region->arena != expected.arena)
+                std::abort();
+        }
+        for (uint64_t i = depth; i < MAX_REGION_DEPTH; ++i) {
+            if (__region_stack[i] != nullptr) std::abort();
+        }
+    }
+    nested_bindings.frames[depth] = {};
+    nested_bindings.depth = depth;
+    if (depth == 0) nested_bindings.fallback = nullptr;
+#endif
     region_destroy(region);
 }
 

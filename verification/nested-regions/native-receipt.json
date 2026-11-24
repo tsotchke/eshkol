@@ -1,0 +1,57 @@
+{
+  "lean": "Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release)",
+  "axioms": [
+    "'Verificatum.NestedRegions.pop_layout' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.NestedRegions.pop_child' depends on axioms: [propext, Quot.sound]"
+  ],
+  "recorded_binding_decisions": [
+    "true",
+    "false",
+    "false",
+    "false",
+    "true",
+    "false",
+    "false",
+    "false"
+  ],
+  "native": {
+    "normal_forms": [
+      "0010",
+      "0000110"
+    ],
+    "workloads": [
+      {
+        "parent_cursor": [
+          48,
+          48,
+          96
+        ],
+        "child_used": 2352,
+        "survivor_offset": 8,
+        "fresh_offset": 56
+      },
+      {
+        "parent_cursor": [
+          48,
+          48,
+          96
+        ],
+        "child_used": 16576,
+        "survivor_offset": 8,
+        "fresh_offset": 56
+      }
+    ],
+    "live_binding_decisions": [
+      "true",
+      "false",
+      "false",
+      "false",
+      "true",
+      "false",
+      "false",
+      "false"
+    ],
+    "elf_sha256": "5a400cd51f9670eeb14004ce527de3ba6d3461d29b739d8938ffe627adfe1e6a",
+    "runtime_sha256": "10a68815be29e4caacb0214af225b0a11a70c2f93c757be6b341d2117a698b22"
+  }
+}
