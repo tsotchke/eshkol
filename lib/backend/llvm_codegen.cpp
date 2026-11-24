@@ -1253,6 +1253,18 @@ namespace {
         return out;
     }
 
+    // Resolve the linker symbol name for a REPL-visible global variable.
+    // User-defined REPL variables live in private `__repl_storage_*` slots
+    // managed by ReplJITContext (hot-reloadable, collision-free with C/libm).
+    // Exported data globals discovered from stdlib.bc (e.g. `stream-null`)
+    // live under their raw public symbol name in stdlib until shadowed by a
+    // user definition. Caller must hold g_repl_mutex.
+    static std::string replGlobalStorageSymbolNameLocked(const std::string& name) {
+        return g_repl_user_variable_names.count(name) > 0
+                   ? replVarStorageSymbolName(name)
+                   : name;
+    }
+
     // Compute the LLVM symbol name used to back a top-level user variable's
     // storage. User-program globals MUST NOT be emitted under their raw Scheme
     // name: a name like `free`/`malloc`/`exit` would collide with the C runtime
@@ -9803,7 +9815,7 @@ Value* EshkolLLVMCodeGen::codegenVariable(const eshkol_ast_t* ast) {
             if (repl_it != g_repl_symbol_addresses.end() ||
                 g_repl_user_variable_names.count(var_name) > 0) {
                 // Variable exists in REPL context - create external global declaration
-                std::string storage_name = replVarStorageSymbolName(var_name);
+                std::string storage_name = replGlobalStorageSymbolNameLocked(var_name);
                 GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                 if (!global_var) {
                     // Create external declaration for this global variable
@@ -12225,7 +12237,7 @@ Value* EshkolLLVMCodeGen::codegenSet(const eshkol_operations_t* op) {
             auto repl_it = g_repl_symbol_addresses.find(var_name);
             if (repl_it != g_repl_symbol_addresses.end()) {
                 // Variable exists in REPL context - create external global declaration
-                std::string storage_name = replVarStorageSymbolName(var_name);
+                std::string storage_name = replGlobalStorageSymbolNameLocked(var_name);
                 GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                 if (!global_var) {
                     // Create external declaration for this global variable
@@ -18365,13 +18377,20 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
                     co_return packNullToTaggedValue();
                 }
             } else {
-                // REPL FIX: Check if symbol exists in REPL registry (from previous evaluation)
+                // REPL: Check if symbol exists in REPL registry (from previous evaluation)
                 if (g_repl_mode_enabled) {
-                    auto repl_it = g_repl_symbol_addresses.find(func_name);
-                    if (repl_it != g_repl_symbol_addresses.end()) {
+                    std::string storage_name;
+                    bool found_repl_sym = false;
+                    {
+                        std::lock_guard<std::mutex> lock(g_repl_mutex);
+                        if (g_repl_symbol_addresses.find(func_name) != g_repl_symbol_addresses.end()) {
+                            storage_name = replGlobalStorageSymbolNameLocked(func_name);
+                            found_repl_sym = true;
+                        }
+                    }
+                    if (found_repl_sym) {
                         // Symbol exists in JIT from previous evaluation
                         // Create an external GlobalVariable reference and load the closure
-                        std::string storage_name = replVarStorageSymbolName(func_name);
                         GlobalVariable* ext_var = module->getNamedGlobal(storage_name);
                         if (!ext_var) {
                             ext_var = new GlobalVariable(
@@ -32711,7 +32730,7 @@ Value* EshkolLLVMCodeGen::codegenLambda(const eshkol_operations_t* op) {
                     auto sym_it = g_repl_symbol_addresses.find(var_name);
                     if (sym_it != g_repl_symbol_addresses.end()) {
                         // Create external declaration for the global
-                        std::string storage_name = replVarStorageSymbolName(var_name);
+                        std::string storage_name = replGlobalStorageSymbolNameLocked(var_name);
                         GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                         if (!global_var) {
                             global_var = new GlobalVariable(
@@ -33970,7 +33989,7 @@ Value* EshkolLLVMCodeGen::codegenNamedLet(const eshkol_operations_t* op) {
                                  loop_name.c_str(), fv.c_str());
                     markFatalCodegenError();
                 } else if (g_repl_symbol_addresses.find(fv) != g_repl_symbol_addresses.end()) {
-                    std::string storage_name = replVarStorageSymbolName(fv);
+                    std::string storage_name = replGlobalStorageSymbolNameLocked(fv);
                     GlobalVariable* repl_global = module->getGlobalVariable(storage_name);
                     if (!repl_global) {
                         repl_global = new GlobalVariable(

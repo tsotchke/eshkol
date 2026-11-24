@@ -18065,8 +18065,28 @@ if(ESHKOL_BUILD_TESTS AND UNIX)
                     TIMEOUT 300 LABELS "resource;ipc;sse"
                     ENVIRONMENT "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
             endforeach()
+            add_test(NAME agent_session_persistence_jit
+                COMMAND ${CMAKE_COMMAND} -E env
+                    "ESHKOL_LIB_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                    "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+                    "ESHKOL_SESSION_TEST_DB=${CMAKE_CURRENT_BINARY_DIR}/agent_session_persistence_jit.db"
+                    $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/agent/session_persistence_test.esk")
+            set_tests_properties(agent_session_persistence_jit PROPERTIES
+                TIMEOUT 120 LABELS "agent;session"
+                PASS_REGULAR_EXPRESSION "PASS: session_persistence_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
         endif()
     endif()
+endif()
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND UNIX)
+    add_test(NAME repl_stdlib_global_resolution_test
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/repl_stdlib_global_resolution_test.sh"
+            $<TARGET_FILE:eshkol-run> "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(repl_stdlib_global_resolution_test PROPERTIES
+        TIMEOUT 120 LABELS "repl;compiler"
+        PASS_REGULAR_EXPRESSION "PASS: repl_stdlib_global_resolution_test"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
 endif()
 # Every harness that resolves the compiler, the VM or the compile database by
 # itself reads BUILD_DIR and falls back to a directory literally named "build".

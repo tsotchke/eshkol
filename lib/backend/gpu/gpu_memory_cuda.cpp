@@ -560,7 +560,9 @@ static inline void cuda_gemm_calibrate(int idx, double work, double measured_ns)
  *         loosest tier; "exact"/"full" (and any unparseable value) => 1e-15. */
 static double cuda_matmul_budget(void) {
     static const double budget = [] {
-        const double value = eshkol_cuda_parse_matmul_budget(std::getenv("ESHKOL_MATMUL_ACCURACY"));
+        const double value = eshkol_cuda_resolve_matmul_budget(
+            std::getenv("ESHKOL_MATMUL_ACCURACY"),
+            std::getenv("ESHKOL_GPU_PRECISION"));
         if (value >= 0.0) {
             eshkol_info("CUDA: accuracy-budget matmul selector engaged (budget=%.0e)", value);
         }
