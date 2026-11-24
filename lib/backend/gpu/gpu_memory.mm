@@ -45,6 +45,7 @@
 
 // GPU threshold (elements) - default 100K
 size_t g_gpu_threshold = 100000;
+static std::atomic<bool> g_gpu_threshold_explicit{false};
 
 // Active backend
 static EshkolGPUBackend g_active_backend = ESHKOL_GPU_NONE;
@@ -3656,7 +3657,10 @@ int eshkol_gpu_init(void) {
     // Allow override of GPU dispatch threshold via environment variable
     if (const char* env = std::getenv("ESHKOL_GPU_THRESHOLD")) {
         size_t val = static_cast<size_t>(std::atol(env));
-        if (val > 0) g_gpu_threshold = val;
+        if (val > 0) {
+            g_gpu_threshold = val;
+            g_gpu_threshold_explicit.store(true, std::memory_order_release);
+        }
     }
 
     // Try Metal first (macOS)
@@ -3928,6 +3932,7 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
 
 void eshkol_gpu_set_threshold(size_t threshold) {
     g_gpu_threshold = threshold;
+    g_gpu_threshold_explicit.store(true, std::memory_order_release);
 }
 
 size_t eshkol_gpu_get_threshold(void) {
@@ -3943,25 +3948,70 @@ int eshkol_gpu_should_use(size_t num_elements) {
     return (g_active_backend != ESHKOL_GPU_NONE && num_elements >= g_gpu_threshold) ? 1 : 0;
 }
 
+#if ESHKOL_GPU_METAL_AVAILABLE
+static bool metal_matmul_has_explicit_gpu_override(size_t num_elements) {
+    if (g_gpu_threshold_explicit.load(std::memory_order_acquire)) return true;
+    if (const char* env = std::getenv("ESHKOL_GPU_THRESHOLD")) {
+        if (std::atol(env) > 0) return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_GPU_MATMUL_THRESHOLD")) {
+        long long val = std::atoll(env);
+        if (val > 0 && num_elements >= static_cast<size_t>(val)) return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_SF64_KERNEL")) {
+        if (env[0] != '\0') return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_OZAKI_FAST")) {
+        if (env[0] != '\0' && std::strcmp(env, "0") != 0) return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_GPU_PRECISION")) {
+        if (std::strcmp(env, "high") == 0 ||
+            std::strcmp(env, "fast") == 0 ||
+            std::strcmp(env, "ml") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t /*dtype*/) {
     // dtype currently ignored on Metal (no f16 tensor-core GEMM path yet; a
     // Metal-shader f16 GEMM is a separate follow-up). Storage is already f64
     // precision-reduced for the logical dtype, so the f64 path stays correct.
+    size_t num_elements = M * N;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    // Apple Metal lacks native hardware FP64. For default exact FP64 matmul
+    // when BLAS (Apple Accelerate AMX) is available and below the 1B-element
+    // crossover, Accelerate delivers native IEEE-754 FP64 at 450-1100+ GFLOP/s
+    // with zero Metal shader-compilation latency, whereas software-emulated
+    // sf64/fp53 runs at ~50-200 GFLOP/s. Honor every explicit GPU override
+    // (ESHKOL_GPU_THRESHOLD, eshkol_gpu_set_threshold, ESHKOL_GPU_PRECISION,
+    // ESHKOL_SF64_KERNEL, ESHKOL_OZAKI_FAST, ESHKOL_GPU_MATMUL_THRESHOLD).
+    extern int eshkol_blas_available(void);
+    if (!metal_matmul_has_explicit_gpu_override(num_elements) &&
+        eshkol_blas_available() &&
+        num_elements < 1000000000ULL) {
+        extern void eshkol_matmul_f64(const double*, const double*, double*, uint64_t, uint64_t, uint64_t);
+        eshkol_matmul_f64(A, B, C, M, K, N);
+        return;
+    }
+#endif
+
     // Lazy GPU init — ensures g_active_backend is set before threshold check
     if (!g_gpu_initialized.load(std::memory_order_acquire)) {
         eshkol_gpu_init();
     }
 
-    size_t num_elements = M * N;
-
     // GPU path if available and large enough
     if (eshkol_gpu_should_use(num_elements)) {
-        EshkolGPUBuffer buf_a, buf_b, buf_c;
-        if (eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &buf_a) == 0 &&
-            eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &buf_b) == 0 &&
-            eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &buf_c) == 0) {
-
+        EshkolGPUBuffer buf_a = {}, buf_b = {}, buf_c = {};
+        const bool ok_a = eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &buf_a) == 0;
+        const bool ok_b = ok_a && eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &buf_b) == 0;
+        const bool ok_c = ok_b && eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &buf_c) == 0;
+        if (ok_c) {
             if (eshkol_gpu_matmul_f64(&buf_a, &buf_b, &buf_c, M, K, N) == 0) {
                 // Copy back if fallback allocation was used (host_ptr diverged from original)
                 // This happens when newBufferWithBytesNoCopy fails (non-page-aligned pointer)
@@ -3974,6 +4024,9 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                 return;
             }
         }
+        if (ok_a) eshkol_gpu_free(&buf_a);
+        if (ok_b) eshkol_gpu_free(&buf_b);
+        if (ok_c) eshkol_gpu_free(&buf_c);
         // GPU failed, fall through to CPU
         fprintf(stderr, "[GPU] matmul dispatch failed, falling back to CPU BLAS\n");
     }
