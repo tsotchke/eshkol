@@ -140,6 +140,27 @@
       "from": 8,
       "to": 6,
       "reason": "List and quoted-datum cons allocations in lib/core/runtime_list_helpers.cpp route through one local alloc_cons_cell helper."
+    },
+    {
+      "class": "H_wasm_glue",
+      "path": "scripts/wasm_exact_runtime.fragment.js",
+      "from": 28,
+      "to": 27,
+      "reason": "Browser WASM exact runtime fragment consolidated one duplicate subtype header read in commit 63b4d1a05."
+    },
+    {
+      "class": "H_wasm_glue",
+      "path": "site/static/eshkol-runtime.js",
+      "from": 45,
+      "to": 44,
+      "reason": "Generated browser runtime glue inherits the consolidated exact runtime fragment from commit 63b4d1a05."
+    },
+    {
+      "class": "H_wasm_glue",
+      "path": "web/eshkol-repl.js",
+      "from": 45,
+      "to": 44,
+      "reason": "Generated browser REPL glue inherits the consolidated exact runtime fragment from commit 63b4d1a05."
     }
   ]
 }

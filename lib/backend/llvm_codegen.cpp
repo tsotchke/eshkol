@@ -3080,33 +3080,7 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
 
                 // Step 4: Generate S-expressions for lambdas
                 if (!pending_lambda_sexprs.empty()) {
-                    for (size_t j = 0; j < pending_lambda_sexprs.size(); j++) {
-                        const auto& meta = pending_lambda_sexprs[j];
-                        Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-                        std::string sexpr_key = meta.lambda_name + "_sexpr";
-                        GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                        if (!sexpr_global) {
-                            sexpr_global = new GlobalVariable(
-                                *module, int64_type, false,
-                                sexprGlobalLinkage(library_mode),
-                                ConstantInt::get(int64_type, 0),
-                                sexpr_key
-                            );
-                        }
-                        builder->CreateStore(sexpr_ptr, sexpr_global);
-                        global_symbol_table[sexpr_key] = sexpr_global;
-
-                        // Register this lambda in the registry for homoiconic display
-                        Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                        if (lambda_func) {
-                            Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                            Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                            builder->CreateCall(eshkol_lambda_registry_add_func,
-                                {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                            eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
-                        }
-                    }
-                    pending_lambda_sexprs.clear();
+                    emitPendingLambdaRegistrations(arena_ptr);
 
                     // CRITICAL: Create S-expression aliases for variable-bound lambdas
                     // This copies lambda_sexpr values to var_sexpr globals AFTER they're populated
@@ -4274,11 +4248,11 @@ Function* EshkolLLVMCodeGen::createLibraryLambdaSExprChunkFunction(
         chunk_func->addFnAttr(Attribute::NoInline);
 
         BasicBlock* entry = BasicBlock::Create(*context, "entry", chunk_func);
-        BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", chunk_func);
-        IRBuilderBase::InsertPoint saved_point = builder->saveIP();
+        IRBuilderBase::InsertPointGuard insertion_guard(*builder);
         Function* saved_function = current_function;
 
         builder->SetInsertPoint(entry);
+        builder->SetCurrentDebugLocation(DebugLoc());
         current_function = chunk_func;
 
         Value* arena_param = chunk_func->arg_begin();
@@ -4288,11 +4262,7 @@ Function* EshkolLLVMCodeGen::createLibraryLambdaSExprChunkFunction(
             emitLambdaSExprRegistration(pending_lambda_sexprs[i]);
         }
 
-        builder->CreateBr(sexpr_continue);
-        builder->SetInsertPoint(sexpr_continue);
         builder->CreateRetVoid();
-
-        builder->restoreIP(saved_point);
         current_function = saved_function;
         return chunk_func;
     }
@@ -4950,44 +4920,7 @@ void EshkolLLVMCodeGen::createMainWrapper() {
                 builder->CreateCall(eshkol_lambda_registry_init_func);
                 eshkol_debug("Initialized lambda registry for homoiconic display");
 
-                // Generate S-expressions now that arena is ready
-
-                for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
-                    const auto& meta = pending_lambda_sexprs[i];
-                    
-                    Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-                    
-                    // Create or get global variable for this lambda's S-expression
-                    // Use ExternalLinkage for runtime resolution by display code
-                    std::string sexpr_key = meta.lambda_name + "_sexpr";
-                    GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                    if (!sexpr_global) {
-                        sexpr_global = new GlobalVariable(
-                            *module, int64_type, false,
-                            sexprGlobalLinkage(library_mode),
-                            ConstantInt::get(int64_type, 0),
-                            sexpr_key
-                        );
-                    }
-                    builder->CreateStore(sexpr_ptr, sexpr_global);
-
-                    // Add to global symbol table for display lookup
-                    global_symbol_table[sexpr_key] = sexpr_global;
-                    eshkol_debug("Generated S-expression for lambda %s", meta.lambda_name.c_str());
-
-                    // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                    if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                        Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                        builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                        eshkol_debug("Registered lambda '%s' in homoiconic registry", meta.lambda_name.c_str());
-                    }
-                }
-
-                // Clear pending list after generation
-                pending_lambda_sexprs.clear();
+                emitPendingLambdaRegistrations(arena_ptr);
 
                 // CRITICAL: Create S-expression aliases for variable-bound lambdas
                 // Scan symbol_table for lambda function references (var_func) and create var_sexpr aliases
@@ -5228,54 +5161,8 @@ void EshkolLLVMCodeGen::createMainWrapper() {
                 eshkol_debug("Called library init function for stdlib");
             }
 
-            // Generate S-expressions for pending lambdas (function definitions compiled in Step 2)
-            // NOTE: codegenLambdaToSExpr creates basic blocks, so we need a continuation block
-            if (!pending_lambda_sexprs.empty()) {
-                // Create a continuation block for after all S-expression generation
-                BasicBlock* sexpr_continue = BasicBlock::Create(*context, "sexpr_continue", main_func);
-
-                for (size_t i = 0; i < pending_lambda_sexprs.size(); i++) {
-                    const auto& meta = pending_lambda_sexprs[i];
-
-                    Value* sexpr_ptr = codegenLambdaToSExpr(meta.lambda_ast);
-
-                    // Create or get global variable for this lambda's S-expression
-                    std::string sexpr_key = meta.lambda_name + "_sexpr";
-                    GlobalVariable* sexpr_global = module->getNamedGlobal(sexpr_key);
-                    if (!sexpr_global) {
-                        sexpr_global = new GlobalVariable(
-                            *module, int64_type, false,
-                            sexprGlobalLinkage(library_mode),
-                            ConstantInt::get(int64_type, 0),
-                            sexpr_key
-                        );
-                    }
-                    builder->CreateStore(sexpr_ptr, sexpr_global);
-
-                    // Add to global symbol table for display lookup
-                    global_symbol_table[sexpr_key] = sexpr_global;
-                    eshkol_debug("Generated S-expression for lambda %s (top-level case)", meta.lambda_name.c_str());
-
-                    // Register this lambda in the registry for homoiconic display
-                    Function* lambda_func = resolveFunctionByLogicalName(meta.lambda_name);
-                    if (lambda_func) {
-                        Value* func_ptr_int = builder->CreatePtrToInt(lambda_func, intptr_type);
-                        Value* name_str = builder->CreateGlobalString(meta.lambda_name);
-                        builder->CreateCall(eshkol_lambda_registry_add_func,
-                            {func_ptr_int, toIntPtr(sexpr_ptr), name_str});
-                        eshkol_debug("Registered lambda '%s' in homoiconic registry (top-level case)", meta.lambda_name.c_str());
-                    }
-                }
-
-                // Branch to continuation and set it as the new insertion point
-                builder->CreateBr(sexpr_continue);
-                builder->SetInsertPoint(sexpr_continue);
-
-                // Update main_entry to point to the continuation block for generateIR
-                main_entry = sexpr_continue;
-
-                pending_lambda_sexprs.clear();
-            }
+            emitPendingLambdaRegistrations(arena_ptr);
+            main_entry = builder->GetInsertBlock();
         }
     }
 
@@ -6194,7 +6081,6 @@ Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCellCopying(Value* car_tagged, V
         // Return pointer to cons cell as int64
         return builder->CreatePtrToInt(cons_ptr, int64_type);
     }
-
 Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCellFromTaggedValue(Value* car_tagged, Value* cdr_tagged) {
         Value* arena_ptr = getArenaPtr();
         if (!arena_ptr) {
@@ -6211,7 +6097,7 @@ Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCellFromTaggedValue(Value* car_t
         if (outlining_metadata_cons) {
             const char* name = "__eshkol_metadata_cons";
             auto* helper_type = FunctionType::get(int64_type,
-                {arena_ptr->getType(), tagged_value_type, tagged_value_type}, false);
+                {tagged_value_type, tagged_value_type}, false);
             // A source procedure can legitimately have the helper's spelling.
             // Cache its compiler identity in module metadata, independently of
             // the user-visible symbol namespace. LLVM uniquifies its name.
@@ -6241,10 +6127,10 @@ Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCellFromTaggedValue(Value* car_t
                 builder->SetCurrentDebugLocation(DebugLoc());
                 current_function = helper;
                 Value* cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(),
-                                                {helper->getArg(0)});
+                                                {getArenaPtr()});
                 ctx_->emitConstructorAllocationCheck(cell);
-                tagged_->storeConsSlot(cell, false, helper->getArg(1));
-                tagged_->storeConsSlot(cell, true, helper->getArg(2));
+                tagged_->storeConsSlot(cell, false, helper->getArg(0));
+                tagged_->storeConsSlot(cell, true, helper->getArg(1));
                 builder->CreateRet(builder->CreatePtrToInt(cell, int64_type));
                 helper_cache->addOperand(MDNode::get(*context,
                     {ValueAsMetadata::get(helper)}));
@@ -6252,11 +6138,11 @@ Value* EshkolLLVMCodeGen::codegenTaggedArenaConsCellFromTaggedValue(Value* car_t
                 builder->restoreIP(saved_ip);
                 builder->SetCurrentDebugLocation(saved_loc);
             }
-            return builder->CreateCall(helper, {arena_ptr, car_tagged, cdr_tagged});
+            return builder->CreateCall(helper, {car_tagged, cdr_tagged});
         }
 
         // Allocate tagged cons cell with object header (consolidated pointer format)
-        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+        Value* cons_ptr = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {getArenaPtr()});
         ctx_->emitConstructorAllocationCheck(cons_ptr);
 
         // Both slots are stored whole (SW-183); see TaggedValueCodegen::storeConsSlot.
@@ -6508,68 +6394,73 @@ Function* EshkolLLVMCodeGen::closureEntryPoint(Function* body, size_t num_captur
         return entry;
     }
 
-Value* EshkolLLVMCodeGen::codegenWasmSmallClosureCall(Value* function_ptr, Value* captures,
-                                     Value* capture_count,
-                                     const std::vector<Value*>& arguments) {
-        const std::string name = "__eshkol_wasm_closure_call_" +
-                                 std::to_string(arguments.size());
-        // Metadata is module-owned and occupies no compiler-object fields.
-        // Its namespace is separate from user procedure names in the IR.
-        const std::string cache_key = "eshkol.wasm.closure.call." +
-                                      std::to_string(arguments.size());
-        NamedMDNode* cache = module->getNamedMetadata(cache_key);
-        Function* thunk = nullptr;
-        if (cache && cache->getNumOperands() == 1) {
-            auto* reference = dyn_cast<ValueAsMetadata>(cache->getOperand(0)->getOperand(0));
-            if (reference) thunk = dyn_cast<Function>(reference->getValue());
-        }
-        if (!thunk) {
+// Lower the capture-slot ABI once per argument count. Call sites pass the
+// environment base and the evaluated user arguments to a module-local thunk.
+Value* EshkolLLVMCodeGen::codegenClosureEntryCall(Value* function_ptr, Value* captures,
+                                                  Value* capture_count,
+                                                  const std::vector<Value*>& arguments) {
+        const std::string arity = std::to_string(arguments.size());
+        const std::string name = (wasm_codegen_ ? "__eshkol_wasm_closure_call_"
+                                                : "__eshkol_native_closure_call_") + arity;
+        // A Scheme procedure can have the same spelling. Retain the compiler's
+        // function by identity in the module, independently of its printed name.
+        const std::string key = (wasm_codegen_ ? "eshkol.wasm.closure.call."
+                                               : "eshkol.native.closure.call.") + arity;
+        auto* cache = module->getOrInsertNamedMetadata(key);
+        Function* thunk;
+        if (cache->getNumOperands()) {
+            thunk = mdconst::extract<Function>(cache->getOperand(0)->getOperand(0));
+        } else {
             Type* pointer_type = PointerType::getUnqual(*context);
-            std::vector<Type*> types{pointer_type, pointer_type, int64_type};
+            std::vector<Type*> types{pointer_type, pointer_type};
+            if (wasm_codegen_) types.push_back(int64_type);
             types.insert(types.end(), arguments.size(), tagged_value_type);
-            auto* type = FunctionType::get(tagged_value_type, types, false);
-            thunk = Function::Create(type, Function::InternalLinkage, name, module.get());
-            module->getOrInsertNamedMetadata(cache_key)->addOperand(
-                MDNode::get(*context, ValueAsMetadata::get(thunk)));
+            thunk = Function::Create(FunctionType::get(tagged_value_type, types, false),
+                                     Function::InternalLinkage, name, module.get());
+            cache->addOperand(MDNode::get(*context, ValueAsMetadata::get(thunk)));
             thunk->addFnAttr(Attribute::NoInline);
-            IRBuilder<> ir(*context);
-            ir.SetInsertPoint(BasicBlock::Create(*context, "entry", thunk));
+            IRBuilder<> ir(BasicBlock::Create(*context, "entry", thunk));
             auto parameter = thunk->arg_begin();
             Value* target = &*parameter++;
             Value* environment = &*parameter++;
-            Value* count = &*parameter++;
-            std::vector<Value*> values;
-            for (; parameter != thunk->arg_end(); ++parameter) values.push_back(&*parameter);
-            BasicBlock* invalid = BasicBlock::Create(*context, "captures_base_only", thunk);
-            const unsigned direct_slots = (unsigned)eshkol::kClosureCallCaptureSlots;
-            SwitchInst* dispatch = ir.CreateSwitch(count, invalid, direct_slots + 1);
-            for (unsigned n = 0; n <= direct_slots; ++n) {
-                BasicBlock* arm = BasicBlock::Create(*context, "captures_" + std::to_string(n), thunk);
-                dispatch->addCase(ConstantInt::get(int64_type, n), arm);
-                ir.SetInsertPoint(arm);
-                std::vector<Value*> call_values = values;
-                std::vector<Type*> call_types(values.size(), tagged_value_type);
-                for (unsigned i = 0; i < n; ++i) {
-                    call_values.push_back(ir.CreateGEP(tagged_value_type, environment,
-                                                       ConstantInt::get(int64_type, i)));
-                    call_types.push_back(pointer_type);
+            Value* count = wasm_codegen_ ? &*parameter++ : nullptr;
+            std::vector<Value*> user_args;
+            for (; parameter != thunk->arg_end(); ++parameter) user_args.push_back(&*parameter);
+
+            auto call_with_slots = [&](unsigned slots) {
+                std::vector<Value*> values = user_args;
+                std::vector<Type*> signature(values.size(), tagged_value_type);
+                for (unsigned i = 0; i < slots; ++i) {
+                    values.push_back(ir.CreateGEP(tagged_value_type, environment,
+                                                  ConstantInt::get(int64_type, i)));
+                    signature.push_back(pointer_type);
                 }
-                FunctionType* exact_type = FunctionType::get(tagged_value_type, call_types, false);
-                ir.CreateRet(ir.CreateCall(exact_type, target, call_values));
-            }
-            // More than 64 captures: the callee takes one pointer, the address
-            // of capture slot 0.
-            ir.SetInsertPoint(invalid);
-            {
-                std::vector<Value*> call_values = values;
-                std::vector<Type*> call_types(values.size(), tagged_value_type);
-                call_values.push_back(environment);
-                call_types.push_back(pointer_type);
-                FunctionType* exact_type = FunctionType::get(tagged_value_type, call_types, false);
-                ir.CreateRet(ir.CreateCall(exact_type, target, call_values));
+                auto* type = FunctionType::get(tagged_value_type, signature, false);
+                ir.CreateRet(ir.CreateCall(type, target, values));
+            };
+
+            const unsigned slots = eshkol::kClosureCallCaptureSlots;
+            if (wasm_codegen_) {
+                // call_indirect requires an exact signature. An entry point for
+                // a larger environment takes just the address of slot zero.
+                auto* large = BasicBlock::Create(*context, "captures_base_only", thunk);
+                auto* dispatch = ir.CreateSwitch(count, large, slots + 1);
+                for (unsigned n = 0; n <= slots; ++n) {
+                    auto* arm = BasicBlock::Create(*context, "captures_" + std::to_string(n), thunk);
+                    dispatch->addCase(ConstantInt::get(int64_type, n), arm);
+                    ir.SetInsertPoint(arm);
+                    call_with_slots(n);
+                }
+                ir.SetInsertPoint(large);
+                call_with_slots(1);
+            } else {
+                // Native caller-cleanup ABIs pass the full pointer tail. Each
+                // body consumes its declared prefix, including the large-env adapter.
+                call_with_slots(slots);
             }
         }
-        std::vector<Value*> parameters{function_ptr, captures, capture_count};
+        std::vector<Value*> parameters{function_ptr, captures};
+        if (wasm_codegen_) parameters.push_back(capture_count);
         parameters.insert(parameters.end(), arguments.begin(), arguments.end());
         return builder->CreateCall(thunk, parameters);
     }
@@ -7046,7 +6937,6 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
         // arguments -- enters both with the same call, after the same arity
         // check and rest-list construction. The capture count never selects
         // a path.
-        const int MAX_CLOSURE_DISPATCH_CAPTURES = (int)eshkol::kClosureCallCaptureSlots;
 
         // THE CALL PROTOCOL (SW-216): a procedure is entered only with an
         // argument count its declaration accepts -- exactly fixed_params, or
@@ -7210,16 +7100,6 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
             spread_rest_list = builder->CreateLoad(tagged_value_type, spread_rest_acc,
                                                    "var_spread_rest_list");
         }
-        // Hoist the capture-slot GEPs once (loop-invariant across every
-        // fixed-arity arm; each over-provisions the same MAX capture pointers).
-        // Recomputing them per arm would be O(fixed · MAX_CAP) GEPs and inflate
-        // the -O0 frame of every closure-calling function.
-        std::vector<Value*> var_hoisted_cap_ptrs;
-        var_hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
-        for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-            var_hoisted_cap_ptrs.push_back(builder->CreateGEP(tagged_value_type, captures_typed,
-                ConstantInt::get(int64_type, i)));
-        }
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
         SwitchInst* var_fixed_sw = builder->CreateSwitch(
             fixed_params,
@@ -7255,48 +7135,11 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
                 }
             }
 
-            // OVER-PROVISION captures (see the non-variadic switch comment):
-            // pass all MAX capture pointers and let the callee read only its own
-            // N. No per-capture switch, so one call per fixed-arity arm.
-            std::vector<Value*> full_args;
-            for (int i = 0; i < fixed_count; i++) {
-                if (spread) {
-                    // Slots at or beyond the runtime count hold tagged null,
-                    // which is the same padding the static path emits below.
-                    full_args.push_back(spread_arg_vals[(size_t)i]);
-                } else if ((size_t)i < call_args.size()) {
-                    full_args.push_back(call_args[(size_t)i]);
-                } else {
-                    full_args.push_back(packPtrToTaggedValue(
-                        ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL));
-                }
-            }
-            full_args.push_back(rest_list);
-            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-                full_args.push_back(var_hoisted_cap_ptrs[(size_t)i]);
-            }
-
-            std::vector<Type*> param_types;
-            for (int i = 0; i < fixed_count; i++) {
-                param_types.push_back(tagged_value_type);
-            }
-            param_types.push_back(tagged_value_type);
-            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-                param_types.push_back(PointerType::getUnqual(*context));
-            }
-            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-            Value* result;
-            if (wasm_codegen_) {
-                // Capture slots are supplied by the shared exact-signature
-                // thunk. Only actual user arguments belong in this vector.
-                std::vector<Value*> user_args(full_args.begin(),
-                    full_args.end() - MAX_CLOSURE_DISPATCH_CAPTURES);
-                result = codegenWasmSmallClosureCall(actual_func_ptr, captures_typed,
-                                                     num_captures, user_args);
-            } else {
-                result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-            }
+            const auto& supplied = spread ? spread_arg_vals : call_args;
+            std::vector<Value*> user_args(supplied.begin(), supplied.begin() + fixed_count);
+            user_args.push_back(rest_list);
+            Value* result = codegenClosureEntryCall(actual_func_ptr, captures_typed,
+                                                    num_captures, user_args);
             builder->CreateBr(merge_bb);
             variadic_results.push_back({builder->GetInsertBlock(), result});
         }
@@ -7379,14 +7222,7 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
         Value* clamped_arg_count = builder->CreateSelect(is_overflow,
             ConstantInt::get(int64_type, max_call_args), actual_arg_count);
 
-        // HOIST shared operands out of the per-arg-arm blocks. Each arm passes
-        // the same MAX capture pointers (over-provisioned) and loads the same
-        // padded argument slots; recomputing them per arm would be
-        // O(MAX_ARGS · MAX_CAP) GEPs, and at -O0 every one of those SSA values
-        // gets its own stack slot, inflating the frame of every closure-calling
-        // function. Compute each once here in the common predecessor (which
-        // dominates all arm blocks) and let the arms share them — O(MAX_ARGS +
-        // MAX_CAP).
+        // Load the padded arguments in the common predecessor of the arity arms.
         std::vector<Value*> hoisted_arg_vals;
         if (spread) {
             // Already loaded once, before the variadic split, so both dispatches
@@ -7400,43 +7236,9 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
                 hoisted_arg_vals.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
             }
         }
-        std::vector<Value*> hoisted_cap_ptrs;
-        hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
-        for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-            hoisted_cap_ptrs.push_back(builder->CreateGEP(tagged_value_type, captures_typed,
-                ConstantInt::get(int64_type, i)));
-        }
-
-        // Dispatch on the ARGUMENT count only. The capture count is handled by
-        // OVER-PROVISIONING: every case passes all MAX_CLOSURE_DISPATCH_CAPTURES
-        // capture pointers, and the callee — which is compiled with exactly its
-        // own N (<= MAX) capture-pointer parameters — simply reads the first N.
-        // Captures follow the fixed args positionally, so as long as arg_count
-        // matches the callee's fixed arity, the callee's slots [arg_count ..
-        // arg_count+N-1] line up with the first N pointers we pass. The extra
-        // (MAX-N) trailing pointer arguments are ignored by the callee; this is
-        // ABI-safe on caller-cleanup ABIs (AArch64 AAPCS, x86-64 SysV) exactly
-        // like the argument-padding already relied on above, and the over-count
-        // capture GEPs are pure address arithmetic that is never dereferenced.
-        //
-        // Why not switch on the capture count too (as before)? A per-(arg,cap)
-        // matrix emits O(MAX_CAP) distinct-signature calls per call site, which
-        // the -O2 optimizer cannot merge: raising MAX_CAP to 64 made -O2
-        // compilation of closure-heavy code (e.g. 256 nested closures) ~18x
-        // slower (13s -> 237s) and blew the -O0 frame. Over-provisioning keeps
-        // exactly one call per arg arm regardless of MAX_CAP, so the capture
-        // ceiling can be raised with negligible compile-time cost. A closure
-        // with more than MAX captures is entered through its slot-0 entry
-        // function, which reads only the first capture argument.
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
         SwitchInst* sw = builder->CreateSwitch(clamped_arg_count, nonvar_switch_default,
             max_call_args + 1);
-
-        // Note: results vector is declared earlier (before arithmetic check)
-
-        // Fixed capture-pointer parameter tail shared by every arg arm.
-        std::vector<Type*> cap_param_types(
-            (size_t)MAX_CLOSURE_DISPATCH_CAPTURES, PointerType::getUnqual(*context));
 
         for (int arg_count = 0; arg_count <= max_call_args; arg_count++) {
             BasicBlock* case_bb = BasicBlock::Create(*context,
@@ -7445,41 +7247,14 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
 
             builder->SetInsertPoint(case_bb);
 
-            // Assemble args from the hoisted, shared operands (see comment above
-            // the switch). Regular args are the loaded padded values; captures
-            // are pointers to the closure env slots (all MAX passed).
-            std::vector<Value*> full_args;
-            for (int i = 0; i < arg_count; i++) {
-                full_args.push_back(hoisted_arg_vals[(size_t)i]);
-            }
-            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
-                full_args.push_back(hoisted_cap_ptrs[(size_t)i]);
-            }
-
-            std::vector<Type*> param_types;
-            for (int i = 0; i < arg_count; i++) {
-                param_types.push_back(tagged_value_type);
-            }
-            param_types.insert(param_types.end(), cap_param_types.begin(), cap_param_types.end());
-            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-            Value* result;
-            if (wasm_codegen_) {
-                // Capture slots are supplied by the shared exact-signature
-                // thunk. Only actual user arguments belong in this vector.
-                std::vector<Value*> user_args(full_args.begin(),
-                    full_args.end() - MAX_CLOSURE_DISPATCH_CAPTURES);
-                result = codegenWasmSmallClosureCall(actual_func_ptr, captures_typed,
-                                                     num_captures, user_args);
-            } else {
-                result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-            }
-
+            std::vector<Value*> user_args(hoisted_arg_vals.begin(), hoisted_arg_vals.begin() + arg_count);
+            Value* result = codegenClosureEntryCall(actual_func_ptr, captures_typed,
+                                                    num_captures, user_args);
             builder->CreateBr(merge_bb);
             results.push_back({builder->GetInsertBlock(), result});
         }
 
-        // Default case (more than MAX_CAPTURES - shouldn't happen but handle gracefully)
+        // Default for an argument count outside the emitted arms.
         builder->SetInsertPoint(nonvar_switch_default);
         Value* default_result = packNullToTaggedValue();
         builder->CreateBr(merge_bb);

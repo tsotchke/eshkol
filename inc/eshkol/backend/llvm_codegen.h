@@ -934,6 +934,8 @@ private:
 
     void emitLambdaSExprRegistration(const LambdaSExprMetadata& meta) __attribute__((noinline, used));
 
+    void emitPendingLambdaRegistrations(Value* arena);
+
     Function* createLibraryLambdaSExprChunkFunction(
         FunctionType* init_type,
         size_t chunk_index,
@@ -1270,20 +1272,17 @@ private:
     // whose trailing @p num_captures parameters are capture-slot pointers.
     Function* closureEntryPoint(Function* body, size_t num_captures);
 
-    // WASM call_indirect requires the callee's exact capture tail. Cache one
-    // non-inline dispatcher per user-argument arity in the module: placing the
-    // 65-way capture switch at every call site would multiply compiler work.
-    // Native caller-cleanup calls keep their existing padded fast path.
-    Value* codegenWasmSmallClosureCall(Value* function_ptr, Value* captures,
-                                     Value* capture_count,
-                                     const std::vector<Value*>& arguments);
+    // Lower the capture-slot ABI once per argument count. Call sites pass the
+    // environment base and the evaluated user arguments to a module-local thunk.
+    Value* codegenClosureEntryCall(Value* function_ptr, Value* captures,
+                                   Value* capture_count,
+                                   const std::vector<Value*>& arguments);
 
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     // void eshkol_procedure_call_error(const eshkol_tagged_value_t* callee,
     //     int64_t expected, int64_t got, int64_t variadic)  -- never returns.
     Function* getProcedureCallErrorFunc();
-
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
                               bool parameter_dispatch = true,

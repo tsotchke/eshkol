@@ -1173,3 +1173,10 @@ compact recorded full-run fixture and negative controls for skipped lanes,
 advisory failures, incomplete or mismatched jobs, truncated API pages, and
 lookup failures under the runner's Bash settings. Patch identity remains
 available in the standalone equivalence helper for diagnostics only.
+
+The native compiler builds procedure-source lists in registration order. Executable
+and library entry points call small initialization functions, and each cell
+constructor reads the current allocation arena. `procedure_metadata_aot_ir`
+checks the generated executable IR and runs the procedure identity fixture.
+For native indirect closure calls it also checks that only one helper per argument
+count expands the capture-slot pointers passed to the callee.
