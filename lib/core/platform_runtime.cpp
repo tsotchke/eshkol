@@ -652,6 +652,16 @@ std::vector<InstallSearchRoot> install_library_roots(
             continue;
         }
         append_root(roots, base, InstallOrigin::CoLocated);
+#ifdef _WIN32
+        // Multi-config Windows generators place executables in `<build>/<Config>/`
+        // while precompiled stdlib artifacts (`stdlib.o` / `stdlib.bc`) live in
+        // `<build>/` one level up.
+        const std::string config_leaf = base.filename().string();
+        if (config_leaf == "Release" || config_leaf == "Debug" ||
+            config_leaf == "RelWithDebInfo" || config_leaf == "MinSizeRel") {
+            append_root(roots, base.parent_path(), InstallOrigin::CoLocated);
+        }
+#endif
         append_root(roots, base / ".." / "lib", InstallOrigin::CoLocated);
         append_root(roots, base / ".." / "lib" / "eshkol", InstallOrigin::CoLocated);
     }

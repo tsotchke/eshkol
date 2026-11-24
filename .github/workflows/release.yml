@@ -342,6 +342,7 @@ jobs:
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/"
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/eshkol/"
           runtime_archive="${{ matrix.build_dir }}/libeshkol-runtime.a"
+          repl_lib_archive="${{ matrix.build_dir }}/libeshkol-repl-lib.a"
           agent_ffi_archive="${{ matrix.build_dir }}/libeshkol-agent-ffi.a"
           agent_pcre2_archive="${{ matrix.build_dir }}/eshkol-agent-pcre2.a"
           agent_sqlite_archive="${{ matrix.build_dir }}/eshkol-agent-sqlite3.a"
@@ -350,6 +351,7 @@ jobs:
           agent_tree_sitter_archive="${{ matrix.build_dir }}/eshkol-agent-tree-sitter.a"
           agent_yoga_archive="${{ matrix.build_dir }}/eshkol-agent-yoga.a"
           test -s "$runtime_archive"
+          test -s "$repl_lib_archive"
           test -s "$agent_ffi_archive"
           test -s "$agent_pcre2_archive"
           test -s "$agent_sqlite_archive"
@@ -359,6 +361,8 @@ jobs:
           test -s "$agent_yoga_archive"
           cp "$runtime_archive" "$pkg_dir/lib/"
           cp "$runtime_archive" "$pkg_dir/lib/eshkol/"
+          cp "$repl_lib_archive" "$pkg_dir/lib/"
+          cp "$repl_lib_archive" "$pkg_dir/lib/eshkol/"
           cp "$agent_ffi_archive" "$pkg_dir/lib/"
           cp "$agent_ffi_archive" "$pkg_dir/lib/eshkol/"
           cp "$agent_pcre2_archive" "$pkg_dir/lib/"
@@ -850,7 +854,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-runtime', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-repl-lib', 'eshkol-runtime', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -957,6 +961,7 @@ jobs:
           $stdlibObject = Join-Path '${{ matrix.build_dir }}' 'stdlib.o'
           $stdlibBitcode = Join-Path '${{ matrix.build_dir }}' 'stdlib.bc'
           $runtimeLibrary = Join-Path $binaryDir 'eshkol-runtime.lib'
+          $replLibrary = Join-Path $binaryDir 'eshkol-repl-lib.lib'
           $agentFfiLibrary = Join-Path $binaryDir 'eshkol-agent-ffi.lib'
           $agentPcre2Library = Join-Path $binaryDir 'eshkol-agent-pcre2.lib'
           $agentSqliteLibrary = Join-Path $binaryDir 'eshkol-agent-sqlite3.lib'
@@ -986,6 +991,14 @@ jobs:
               $runtimeLibrary = $runtimeLibraryCandidate
             } else {
               throw "eshkol-runtime.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
+          if (-not (Test-Path $replLibrary -PathType Leaf)) {
+            $replLibraryCandidate = Join-Path '${{ matrix.build_dir }}' 'eshkol-repl-lib.lib'
+            if (Test-Path $replLibraryCandidate -PathType Leaf) {
+              $replLibrary = $replLibraryCandidate
+            } else {
+              throw "eshkol-repl-lib.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
             }
           }
           if (-not (Test-Path $agentFfiLibrary -PathType Leaf)) {
@@ -1045,6 +1058,8 @@ jobs:
           Copy-Item -LiteralPath $stdlibBitcode -Destination $libEshkolDir
           Copy-Item -LiteralPath $runtimeLibrary -Destination $libDir
           Copy-Item -LiteralPath $runtimeLibrary -Destination $libEshkolDir
+          Copy-Item -LiteralPath $replLibrary -Destination $libDir
+          Copy-Item -LiteralPath $replLibrary -Destination $libEshkolDir
           Copy-Item -LiteralPath $agentFfiLibrary -Destination $libDir
           Copy-Item -LiteralPath $agentFfiLibrary -Destination $libEshkolDir
           Copy-Item -LiteralPath $agentPcre2Library -Destination $libDir

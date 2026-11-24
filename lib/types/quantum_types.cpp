@@ -205,24 +205,62 @@ const char* const kPrimitiveSignatures[] = {
     "(call-with-quantum-region (body qregion-body)) a",
 };
 
-// Table types become ordinary annotation trees, so primitives and user
-// definitions take the same road to a SpecType.
-hott_type_expr_t* sxToAnnotation(const detail::Sx& sx) {
+// Convert a table S-expression directly to a SpecType without allocating
+// transient hott_type_expr_t nodes or permanent AST string arena entries.
+SpecType specFromSx(TypeEnvironment& env, const detail::Sx& sx) {
     if (!sx.list) {
         const auto* spelling = lookupBuiltinTypeSpelling(sx.atom);
-        if (spelling && spelling->kind != HOTT_TYPE_VAR) return hott_make_primitive_type(spelling->kind);
-        return hott_make_type_var(sx.atom.c_str());
+        if (spelling && spelling->kind != HOTT_TYPE_VAR) {
+            SpecType s;
+            switch (spelling->kind) {
+                case HOTT_TYPE_INTEGER: s.plain = BuiltinTypes::Int64; break;
+                case HOTT_TYPE_REAL: s.plain = BuiltinTypes::Float64; break;
+                case HOTT_TYPE_NUMBER: s.plain = BuiltinTypes::Number; break;
+                case HOTT_TYPE_BOOLEAN: s.plain = BuiltinTypes::Boolean; break;
+                case HOTT_TYPE_STRING: s.plain = BuiltinTypes::String; break;
+                case HOTT_TYPE_NULL: s.plain = BuiltinTypes::Null; break;
+                case HOTT_TYPE_ANY: s.plain = BuiltinTypes::Value; break;
+                default: s.plain = BuiltinTypes::Value; break;
+            }
+            return s;
+        }
+        if (auto spelled = parseIndexedSpelling(sx.atom)) {
+            SpecType s;
+            s.kind = SpecType::Kind::Indexed;
+            s.family = spelled->first;
+            s.index = spelled->second;
+            return s;
+        }
+        auto found = env.lookupType(sx.atom);
+        TypeId t = found ? *found : BuiltinTypes::Value;
+        if (t == BuiltinTypes::QReg || t == BuiltinTypes::QIdx) {
+            SpecType s;
+            s.kind = SpecType::Kind::Indexed;
+            s.family = t == BuiltinTypes::QReg ? Family::QReg : Family::QIdx;
+            s.index = IndexExpr::unknown();
+            return s;
+        }
+        if (!isBuiltinTypeName(sx.atom) && t == BuiltinTypes::Value && !found) {
+            SpecType s;
+            s.kind = SpecType::Kind::Var;
+            s.var = sx.atom;
+            return s;
+        }
+        SpecType s;
+        s.plain = t;
+        return s;
     }
     if (!sx.items.empty() && !sx.items[0].list && sx.items[0].atom == "->") {
-        std::vector<hott_type_expr_t*> ps;
-        for (size_t k = 1; k + 1 < sx.items.size(); ++k) ps.push_back(sxToAnnotation(sx.items[k]));
-        hott_type_expr_t* ret = sxToAnnotation(sx.items.back());
-        hott_type_expr_t* arrow = hott_make_arrow_type(ps.data(), ps.size(), ret);
-        for (auto* p : ps) hott_free_type_expr(p);
-        hott_free_type_expr(ret);
-        return arrow;
+        SpecType s;
+        s.kind = SpecType::Kind::Arrow;
+        for (size_t k = 1; k + 1 < sx.items.size(); ++k)
+            s.params.push_back(specFromSx(env, sx.items[k]));
+        s.result = std::make_shared<SpecType>(specFromSx(env, sx.items.back()));
+        return s;
     }
-    return hott_make_primitive_type(HOTT_TYPE_ANY);
+    SpecType s;
+    s.plain = BuiltinTypes::Value;
+    return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,24 +355,6 @@ std::optional<int64_t> literalNatural(const eshkol_ast_t* expr) {
 
 void Registry::bindPrimitives(TypeEnvironment& env,
                               const std::function<void(const std::string&, TypeId)>& bind) {
-    const auto resolve = [&env](const hott_type_expr_t* t) -> TypeId {
-        if (!t) return BuiltinTypes::Value;
-        switch (t->kind) {
-            case HOTT_TYPE_INTEGER: return BuiltinTypes::Int64;
-            case HOTT_TYPE_REAL: return BuiltinTypes::Float64;
-            case HOTT_TYPE_NUMBER: return BuiltinTypes::Number;
-            case HOTT_TYPE_BOOLEAN: return BuiltinTypes::Boolean;
-            case HOTT_TYPE_STRING: return BuiltinTypes::String;
-            case HOTT_TYPE_NULL: return BuiltinTypes::Null;
-            case HOTT_TYPE_ANY: return BuiltinTypes::Value;
-            case HOTT_TYPE_VAR: {
-                auto found = env.lookupType(t->var_name ? t->var_name : "");
-                return found ? *found : BuiltinTypes::Value;
-            }
-            default: return BuiltinTypes::Value;
-        }
-    };
-    const auto no_alias = [](const std::string&) { return false; };
     for (const char* text : kPrimitiveSignatures) {
         const std::string s(text);
         size_t i = 0;
@@ -345,13 +365,9 @@ void Registry::bindPrimitives(TypeEnvironment& env,
         for (size_t k = 1; k < head.items.size(); ++k) {
             const detail::Sx& p = head.items[k];
             if (!p.list || p.items.size() != 2) continue;
-            hott_type_expr_t* ann = sxToAnnotation(p.items[1]);
-            sig.params.push_back({p.items[0].atom, specFromAnnotation(env, ann, resolve, no_alias)});
-            hott_free_type_expr(ann);
+            sig.params.push_back({p.items[0].atom, specFromSx(env, p.items[1])});
         }
-        hott_type_expr_t* ret = sxToAnnotation(result);
-        sig.result = specFromAnnotation(env, ret, resolve, no_alias);
-        hott_free_type_expr(ret);
+        sig.result = specFromSx(env, result);
         sig.quantum = true;
         bind(sig.name, registerSignature(env, sig));
     }

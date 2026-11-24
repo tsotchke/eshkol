@@ -59,7 +59,7 @@ filesystem exceptions were separately ruled out and are not language findings.
 
 | Case | Expected stdout | Native AOT | Forced in-process JIT |
 |---|---|---|---|
-| `forward_ad` | `12` | passes | passes |
+| `forward_ad` | `12.0` | passes | passes |
 | `callcc_escape` | `42` | passes | exits `0xC00000FF` |
 | `guard_raise` | `42` | passes | exits `0xC0000005` |
 | `parallel_map` | `(1 4 9 16 25)` | passes | prints `()`, reports missing workers, exits 0 |

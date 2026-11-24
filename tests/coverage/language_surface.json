@@ -82,11 +82,11 @@
             {
               "name": "box-certify-bound",
               "line": 48,
-              "definition_line": 257,
+              "definition_line": 259,
               "definition_origin": {
                 "module": "core.ad.compact_bounds",
                 "path": "lib/core/ad/compact_bounds.esk",
-                "line": 257,
+                "line": 259,
                 "chain": [
                   "core.ad.compact_bounds"
                 ]
@@ -108,11 +108,11 @@
             {
               "name": "box-inf",
               "line": 48,
-              "definition_line": 244,
+              "definition_line": 246,
               "definition_origin": {
                 "module": "core.ad.compact_bounds",
                 "path": "lib/core/ad/compact_bounds.esk",
-                "line": 244,
+                "line": 246,
                 "chain": [
                   "core.ad.compact_bounds"
                 ]
@@ -134,11 +134,11 @@
             {
               "name": "box-sup",
               "line": 48,
-              "definition_line": 204,
+              "definition_line": 206,
               "definition_origin": {
                 "module": "core.ad.compact_bounds",
                 "path": "lib/core/ad/compact_bounds.esk",
-                "line": 204,
+                "line": 206,
                 "chain": [
                   "core.ad.compact_bounds"
                 ]
@@ -265,7 +265,7 @@
           "top_level_definitions": [
             {
               "name": "box-certify-bound",
-              "line": 257
+              "line": 259
             },
             {
               "name": "box-enclose",
@@ -273,7 +273,7 @@
             },
             {
               "name": "box-inf",
-              "line": 244
+              "line": 246
             },
             {
               "name": "box-midpoint",
@@ -281,7 +281,7 @@
             },
             {
               "name": "box-sup",
-              "line": 204
+              "line": 206
             },
             {
               "name": "box-width",
@@ -289,7 +289,7 @@
             },
             {
               "name": "cb-bisect",
-              "line": 185
+              "line": 187
             },
             {
               "name": "cb-cert",
@@ -301,7 +301,7 @@
             },
             {
               "name": "cb-default-budget",
-              "line": 202
+              "line": 204
             },
             {
               "name": "cb-enclose-with-partials",
@@ -345,7 +345,7 @@
             },
             {
               "name": "cb-point-lower",
-              "line": 194
+              "line": 196
             },
             {
               "name": "cb-prune",
@@ -30233,11 +30233,11 @@
           "path": "lib/core/ad/compact_bounds.esk",
           "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 257,
+          "definition_line": 259,
           "definition_origin": {
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
-            "line": 257,
+            "line": 259,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30250,7 +30250,7 @@
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
             "name": "box-certify-bound",
-            "line": 257,
+            "line": 259,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30262,11 +30262,11 @@
           "path": "lib/core/ad/compact_bounds.esk",
           "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 257,
+          "definition_line": 259,
           "definition_origin": {
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
-            "line": 257,
+            "line": 259,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30279,7 +30279,7 @@
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
             "name": "box-certify-bound",
-            "line": 257,
+            "line": 259,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30373,11 +30373,11 @@
           "path": "lib/core/ad/compact_bounds.esk",
           "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 244,
+          "definition_line": 246,
           "definition_origin": {
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
-            "line": 244,
+            "line": 246,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30390,7 +30390,7 @@
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
             "name": "box-inf",
-            "line": 244,
+            "line": 246,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30402,11 +30402,11 @@
           "path": "lib/core/ad/compact_bounds.esk",
           "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 244,
+          "definition_line": 246,
           "definition_origin": {
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
-            "line": 244,
+            "line": 246,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30419,7 +30419,7 @@
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
             "name": "box-inf",
-            "line": 244,
+            "line": 246,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30513,11 +30513,11 @@
           "path": "lib/core/ad/compact_bounds.esk",
           "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 204,
+          "definition_line": 206,
           "definition_origin": {
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
-            "line": 204,
+            "line": 206,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30530,7 +30530,7 @@
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
             "name": "box-sup",
-            "line": 204,
+            "line": 206,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30542,11 +30542,11 @@
           "path": "lib/core/ad/compact_bounds.esk",
           "line": 48,
           "defined_at_top_level": true,
-          "definition_line": 204,
+          "definition_line": 206,
           "definition_origin": {
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
-            "line": 204,
+            "line": 206,
             "chain": [
               "core.ad.compact_bounds"
             ]
@@ -30559,7 +30559,7 @@
             "module": "core.ad.compact_bounds",
             "path": "lib/core/ad/compact_bounds.esk",
             "name": "box-sup",
-            "line": 204,
+            "line": 206,
             "chain": [
               "core.ad.compact_bounds"
             ]

@@ -3755,6 +3755,9 @@ install(FILES inc/eshkol/backend/tensorcore_codegen.h
 if(TARGET eshkol-runtime)
   install(TARGETS eshkol-runtime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 endif()
+if(TARGET eshkol-repl-lib)
+  install(TARGETS eshkol-repl-lib ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+endif()
 install(FILES cmake/FindEshkol.cmake cmake/EshkolCompile.cmake
         DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/cmake)
 # The full (require ...)/(import ...) module-source tree, preserving lib/'s

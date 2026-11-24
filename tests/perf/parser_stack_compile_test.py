@@ -55,15 +55,19 @@ def main():
     root = Path(__file__).resolve().parents[2]
     scratch = root / ".scratch"
     scratch.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="parser-stack-", dir=scratch) as work:
+    with tempfile.TemporaryDirectory(prefix="parser-stack-", dir=scratch) as work, \
+         tempfile.TemporaryDirectory(prefix="parser-stack-bin-", dir=runtime_dir) as bin_dir:
         work = Path(work)
-        compiler = bounded_stack_executable(compiler, work / "compiler-8m")
+        # Keep the Darwin stack-limited copy directly under the build directory
+        # so build-tree stdlib module verification resolves the source tree.
+        compiler = bounded_stack_executable(compiler, Path(bin_dir) / "compiler-8m")
         # A private directory alone still permits -r to build an AOT cache
         # entry. Disable that shortcut so this case exercises ORC in process.
-        # The Darwin stack-limited copy is outside the build directory. Keep
-        # its runtime paired with the original compiler, not a system install.
+        # Disable the default 1000-level pass-depth count so the 16k-nesting
+        # probe exercises the actual 8 MiB stack guard across JIT and AOT.
         env = dict(os.environ, ESHKOL_LIB_DIR=str(runtime_dir), ESHKOL_JIT_CACHE="0",
-                   ESHKOL_JIT_CACHE_DIR=str(work / "jit-cache"))
+                   ESHKOL_JIT_CACHE_DIR=str(work / "jit-cache"),
+                   ESHKOL_MAX_PASS_DEPTH="0")
         commands = [
             ("stdlib", [str(compiler), "--shared-lib", "-c", "-o",
                         str(work / "stdlib"), "stdlib.esk"], root / "lib"),

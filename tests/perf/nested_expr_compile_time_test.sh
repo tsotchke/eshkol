@@ -217,6 +217,9 @@ else:
     argv += ["-O0", "-c", source, "-o", output]
 env = os.environ.copy()
 env["ESHKOL_JIT_CACHE_DIR"] = cache
+# ESH-0103 measures 1k -> 4k -> 16k codegen scaling; let the real stack guard
+# decide instead of stopping at the 1000-level default pass-depth budget.
+env["ESHKOL_MAX_PASS_DEPTH"] = "0"
 start = time.monotonic()
 with open(log, "w", encoding="utf-8") as stream:
     completed = subprocess.run(argv, env=env, stdout=stream, stderr=subprocess.STDOUT)

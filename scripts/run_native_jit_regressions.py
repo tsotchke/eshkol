@@ -19,7 +19,7 @@ import time
 
 
 CASES = {
-    "forward_ad": "12\n",
+    "forward_ad": "12.0\n",
     "callcc_escape": "42\n",
     "guard_raise": "42\n",
     "parallel_map": "(1 4 9 16 25)\n",

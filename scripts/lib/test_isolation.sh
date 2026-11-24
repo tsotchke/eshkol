@@ -493,11 +493,16 @@ eshkol_test_pin_toolchain() {
 
     # eshkol-run discovers stdlib.o/stdlib.bc and libeshkol-runtime.a relative
     # to its own location before it looks at ./build, so copying them alongside
-    # keeps the pinned compiler self-sufficient for both JIT and AOT.
+    # keeps the pinned compiler self-sufficient for both JIT and AOT. Also link
+    # the repository's lib/ tree at $pinned/lib so build-identity-verified
+    # stdlib module resolution finds every .esk source via bin/lib.
     for name in $ESHKOL_TEST_PIN_ARTIFACTS; do
         [ -f "$build_dir/$name" ] || continue
         cp -p -- "$build_dir/$name" "$pinned/$name" 2>/dev/null || true
     done
+    if [ -d "$ESHKOL_TEST_REPO_ROOT/lib" ] && [ ! -e "$pinned/lib" ]; then
+        ln -s "$ESHKOL_TEST_REPO_ROOT/lib" "$pinned/lib" 2>/dev/null || true
+    fi
 
     [ -x "$pinned/eshkol-run" ] \
         || eshkol_test_isolation_fail "failed to pin eshkol-run from $build_dir"

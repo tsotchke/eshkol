@@ -454,7 +454,17 @@ inline StagedOutput stage_output(const std::filesystem::path& output) {
             parent / staging_directory_name(leaf, current_process_id(), detail::next_sequence());
         std::error_code ec;
         if (std::filesystem::create_directory(directory, ec) && !ec) {
-            return {directory, directory / leaf, output};
+            std::filesystem::path artifact_leaf = leaf;
+#ifdef _WIN32
+            // Keep the staged link target within Windows MAX_PATH (260) when a
+            // long output leaf (such as a hash-keyed cache binary) would push
+            // `<dir>/<leaf>.link-<pid>-<n>.d/<leaf>` over the limit while
+            // preserving the extension the linker expects.
+            if ((directory / artifact_leaf).native().size() >= 240) {
+                artifact_leaf = "out" + output.extension().string();
+            }
+#endif
+            return {directory, directory / artifact_leaf, output};
         }
         if (ec) break; // The parent does not admit a new directory.
     }
