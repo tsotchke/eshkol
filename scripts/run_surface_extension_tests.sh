@@ -58,9 +58,17 @@ for relative in "${TESTS[@]}"; do
     binary="$RUN_DIR/$stem"
     output="$RUN_DIR/$stem.out"
     printf "Testing %-48s " "$stem"
-    "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$source_file" -o "$binary" \
-        >"$RUN_DIR/$stem.compile.out" 2>&1
-    "$binary" >"$output" 2>&1
+    if ! "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$source_file" -o "$binary" \
+        >"$RUN_DIR/$stem.compile.out" 2>&1; then
+        echo "COMPILE FAIL"
+        tail -80 "$RUN_DIR/$stem.compile.out"
+        exit 1
+    fi
+    if ! "$binary" >"$output" 2>&1; then
+        echo "RUNTIME FAIL"
+        tail -80 "$output"
+        exit 1
+    fi
     if grep -Eq '(^|[[:space:]:])FAIL([[:space:]:]|$)|Failed:[[:space:]]+[1-9]|ERROR:' "$output"; then
         echo "FAIL"
         tail -80 "$output"

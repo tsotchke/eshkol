@@ -76,6 +76,30 @@ for test_file in tests/parser/*.esk; do
         EXPECTS_ERROR=1
     fi
 
+    # Hosted runtime (eval ...) fixtures require the JIT compiler (same contract
+    # as CMakeLists.txt eval_*_jit entries) and carry committed .expected outputs.
+    case "$test_name" in
+        eval_conditions.esk|eval_input_cap.esk|eval_pattern_syntax.esk)
+            expected_file="${test_file%.esk}.expected"
+            eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
+            eval_rc=0
+            if [ "$test_name" = "eval_input_cap.esk" ]; then
+                ESHKOL_MAX_SOURCE_BYTES=65536 ./$BUILD_DIR/eshkol-run -r "$test_file" > "$ESHKOL_TEST_OUT" 2>/dev/null || eval_rc=$?
+            else
+                ./$BUILD_DIR/eshkol-run -r "$test_file" > "$ESHKOL_TEST_OUT" 2>/dev/null || eval_rc=$?
+            fi
+            if [ "$eval_rc" -eq 0 ] && [ -f "$expected_file" ] && cmp -s "$expected_file" "$ESHKOL_TEST_OUT"; then
+                echo -e "${GREEN}✅ PASS (JIT)${NC}"
+                ((PASS++)) || true
+            else
+                echo -e "${RED}❌ RUNTIME FAIL${NC}"
+                FAILED_TESTS+=("$test_name")
+                ((FAIL++)) || true
+            fi
+            continue
+            ;;
+    esac
+
     # Try to compile
     if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
         # Compilation succeeded, try to run

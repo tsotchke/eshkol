@@ -303,7 +303,7 @@
   (check "capability-policy & clear (inactive)"
     (and (not (capability-policy)) (capability-clear-policy!)))
   (check "stdlib random/time"
-    (and (tensor? rt) (tensor? rnt) (integer? tns) (integer? tus))))
+    (and (tensor? rt) (tensor? rnt) (integer? tns) (real? tus) (>= tus 0.0))))
 
 ;; 11. Core runtime forms: shared, procedure-arity, channel-try-recv!, make-logic-var,
 ;;     raise-continuable, let-syntax, letrec-syntax, type-name, hott, hott-eval
