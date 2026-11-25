@@ -1,0 +1,397 @@
+;;; core.blc.work_stealing_ledger -- Authorized Work-Stealing Branch Transfer,
+;;;   Speculative Late-Choice Cap, Example-Partition Minibatch Coverage,
+;;;   Unresolved-Mass SBLC Conditioning Status, TX-4 Atomic Failure Continuation,
+;;;   BF16 Rounding-Tie Counterexample, and Arena/Two-Cell Separation Contracts.
+;;;
+;;; All internal and exported bindings use the `blc-ws-` prefix to prevent any
+;;; symbol collision with `core.blc`, `core.sblc`, `core.blc.stochastic_blc`,
+;;; or `core.grothendieck`.
+
+(require stdlib)
+
+(provide
+  ;; Exact rational helpers
+  blc-ws-gcd
+  blc-ws-rat
+  blc-ws-rat=?
+  blc-ws-rat<?
+  blc-ws-rat<=?
+  blc-ws-rat+
+  blc-ws-rat*
+  ;; 1. Authorized Branch-Transfer Ledger
+  blc-ws-make-ledger
+  blc-ws-ledger-gen
+  blc-ws-ledger-occ
+  blc-ws-ledger-permitted?
+  blc-ws-ledger-spent
+  blc-ws-ledger-budget
+  blc-ws-ledger-result
+  blc-ws-commit
+  blc-ws-verify-branch-transfer-controls
+  ;; 2. Speculative Late-Choice Policy & 8-Beta Cap
+  blc-ws-sim-late-choice
+  blc-ws-verify-speculative-cap
+  ;; 3. Example-Partition Minibatch Coverage & Deterministic Rounding
+  blc-ws-verify-partition-coverage
+  blc-ws-partition-average-update
+  ;; 4. SBLC Unresolved-Mass vs. No-Consistent-Program Status
+  blc-ws-sblc-classify
+  blc-ws-verify-sblc-unresolved-status
+  ;; 5. TX-4 Atomic Failure Continuation & BF16 Rounding-Tie Counterexample
+  blc-ws-tx-apply-updates-atomic
+  blc-ws-verify-tx-failure-atomicity
+  blc-ws-round-half-to-even
+  blc-ws-verify-bf16-rounding-tie
+  ;; 6. Verified Arena Bump Allocation & Two-Cell Alias Separation
+  blc-ws-align-up
+  blc-ws-span-apart?
+  blc-ws-arena-bump-check
+  blc-ws-two-cell-admit?)
+
+;; ============================================================================
+;; Exact Reduced Rational Helpers
+;; ============================================================================
+
+(define (blc-ws-abs n) (if (< n 0) (- 0 n) n))
+
+(define (blc-ws-gcd a b)
+  (let loop ((x (blc-ws-abs a)) (y (blc-ws-abs b)))
+    (if (= y 0) x (loop y (remainder x y)))))
+
+(define (blc-ws-rat num den)
+  (if (= den 0)
+      (error "blc-ws-rat: zero denominator")
+      (let* ((sign (if (< den 0) -1 1))
+             (n (* sign num))
+             (d (* sign den))
+             (g (blc-ws-gcd n d)))
+        (cons (quotient n g) (quotient d g)))))
+
+(define (blc-ws-rat=? a b)
+  (and (= (car a) (car b)) (= (cdr a) (cdr b))))
+
+(define (blc-ws-rat<? a b)
+  (< (* (car a) (cdr b)) (* (car b) (cdr a))))
+
+(define (blc-ws-rat<=? a b)
+  (<= (* (car a) (cdr b)) (* (car b) (cdr a))))
+
+(define (blc-ws-rat+ a b)
+  (blc-ws-rat (+ (* (car a) (cdr b)) (* (car b) (cdr a)))
+              (* (cdr a) (cdr b))))
+
+(define (blc-ws-rat* a b)
+  (blc-ws-rat (* (car a) (car b)) (* (cdr a) (cdr b))))
+
+;; ============================================================================
+;; 1. Authorized Branch-Transfer Ledger
+;; ============================================================================
+;; Mirrors BranchTransfer.Ledger (generation, occurrence, permitted?, spent,
+;; budget, result) where result is either `'none` or `(list 'some val)`.
+
+(define (blc-ws-make-ledger gen occ permitted? spent budget result)
+  (vector 'blc-ws-ledger gen occ permitted? spent budget result))
+
+(define (blc-ws-ledger-gen l) (vector-ref l 1))
+(define (blc-ws-ledger-occ l) (vector-ref l 2))
+(define (blc-ws-ledger-permitted? l) (vector-ref l 3))
+(define (blc-ws-ledger-spent l) (vector-ref l 4))
+(define (blc-ws-ledger-budget l) (vector-ref l 5))
+(define (blc-ws-ledger-result l) (vector-ref l 6))
+
+(define (blc-ws-commit ledger gen occ cost val)
+  (if (and (blc-ws-ledger-permitted? ledger)
+           (= (blc-ws-ledger-gen ledger) gen)
+           (= (blc-ws-ledger-occ ledger) occ)
+           (eq? (blc-ws-ledger-result ledger) 'none)
+           (<= (+ (blc-ws-ledger-spent ledger) cost)
+               (blc-ws-ledger-budget ledger)))
+      (blc-ws-make-ledger
+        (blc-ws-ledger-gen ledger)
+        (blc-ws-ledger-occ ledger)
+        (blc-ws-ledger-permitted? ledger)
+        (+ (blc-ws-ledger-spent ledger) cost)
+        (blc-ws-ledger-budget ledger)
+        (list 'some val))
+      ledger))
+
+;; Decisive control: switch moves demanded branch from bit offset 16 to 83
+;; (advancing generation 0 -> 1) after thief claims old ticket. Stale thief
+;; report (gen=0, occ=16, cost=7) is refused leaving spent=4; renewed ticket
+;; (gen=1, occ=83, cost=7) completes with total spent=11. Also checks wrong
+;; occurrence, missing permit, one-short budget (10), and double-publish refusal.
+(define (blc-ws-verify-branch-transfer-controls)
+  (let* ((l-renewed (blc-ws-make-ledger 1 83 #t 4 11 'none))
+         ;; Stale thief tries to commit old (gen=0, occ=16, cost=7)
+         (after-stale (blc-ws-commit l-renewed 0 16 7 #t))
+         (stale-refused (and (eq? (blc-ws-ledger-result after-stale) 'none)
+                             (= (blc-ws-ledger-spent after-stale) 4)))
+         ;; Wrong occurrence on current generation (gen=1, occ=16)
+         (after-bad-occ (blc-ws-commit l-renewed 1 16 7 #t))
+         (bad-occ-refused (eq? (blc-ws-ledger-result after-bad-occ) 'none))
+         ;; Missing permit
+         (l-noperm (blc-ws-make-ledger 1 83 #f 4 11 'none))
+         (after-noperm (blc-ws-commit l-noperm 1 83 7 #t))
+         (noperm-refused (eq? (blc-ws-ledger-result after-noperm) 'none))
+         ;; One-short budget (budget=10, spent=4, cost=7 => 11 > 10)
+         (l-short (blc-ws-make-ledger 1 83 #t 4 10 'none))
+         (after-short (blc-ws-commit l-short 1 83 7 #t))
+         (short-refused (and (eq? (blc-ws-ledger-result after-short) 'none)
+                             (= (blc-ws-ledger-spent after-short) 4)))
+         ;; Authorized renewed ticket completes at exact charge 11
+         (after-ok (blc-ws-commit after-stale 1 83 7 #t))
+         (ok-accepted (and (equal? (blc-ws-ledger-result after-ok) (list 'some #t))
+                           (= (blc-ws-ledger-spent after-ok) 11)))
+         ;; Double-publish refused once result is populated
+         (after-dup (blc-ws-commit after-ok 1 83 0 #f))
+         (dup-refused (equal? (blc-ws-ledger-result after-dup) (list 'some #t))))
+    (list 'blc-ws-branch-transfer-controls
+          (list 'stale-refused stale-refused)
+          (list 'bad-occ-refused bad-occ-refused)
+          (list 'noperm-refused noperm-refused)
+          (list 'one-short-budget-refused short-refused)
+          (list 'renewed-accepted-charge-11 ok-accepted)
+          (list 'double-publish-refused dup-refused)
+          (list 'all-pass (and stale-refused bad-occ-refused noperm-refused
+                               short-refused ok-accepted dup-refused)))))
+
+;; ============================================================================
+;; 2. Speculative Late-Choice Policy & 8-Beta Cap
+;; ============================================================================
+;; Models a late-choice selector costing `m` contractions and an offered closed
+;; branch costing `n` contractions.
+;;   Caller-visible logical charge:
+;;     - not selected: m + 2
+;;     - selected:     m + n + 3
+;;   Discarded physical contractions under policy:
+;;     - `'demand-only`: 0
+;;     - `'eager`:       if selected then 0 else n
+;;     - `'capped`:      if selected then 0 else min(n, cap)
+
+(define (blc-ws-min a b) (if (< a b) a b))
+
+(define (blc-ws-sim-late-choice policy cap m n selected?)
+  (let* ((logical-charge (if selected? (+ m n 3) (+ m 2)))
+         (discarded-phys
+           (cond
+             (selected? 0)
+             ((eq? policy 'demand-only) 0)
+             ((eq? policy 'eager) n)
+             ((eq? policy 'capped) (blc-ws-min n cap))
+             (else (error "blc-ws-sim-late-choice: unknown policy")))))
+    (list 'blc-ws-call
+          (list 'policy policy)
+          (list 'logical-charge logical-charge)
+          (list 'discarded-physical discarded-phys))))
+
+(define (blc-ws-verify-speculative-cap)
+  (let* ((cases (list (list 12 200 #f) (list 12 200 #t)
+                      (list 25 180 #f) (list 25 180 #t)
+                      (list 8  5   #f) (list 8  5   #t)))
+         (check-one
+           (lambda (c)
+             (let* ((m (car c))
+                    (n (cadr c))
+                    (sel (caddr c))
+                    (d (blc-ws-sim-late-choice 'demand-only 8 m n sel))
+                    (e (blc-ws-sim-late-choice 'eager 8 m n sel))
+                    (p (blc-ws-sim-late-choice 'capped 8 m n sel))
+                    (lc-d (cadr (caddr d)))
+                    (lc-e (cadr (caddr e)))
+                    (lc-p (cadr (caddr p)))
+                    (dp-d (cadr (cadddr d)))
+                    (dp-e (cadr (cadddr e)))
+                    (dp-p (cadr (cadddr p))))
+               (and (= lc-d lc-e)
+                    (= lc-d lc-p)
+                    (= dp-d 0)
+                    (<= dp-p 8)
+                    (<= dp-p dp-e)))))
+         (all-ok (let loop ((cs cases))
+                   (cond
+                     ((null? cs) #t)
+                     ((check-one (car cs)) (loop (cdr cs)))
+                     (else #f)))))
+    (list 'blc-ws-speculative-cap-verification
+          (list 'logical-budget-invariant all-ok)
+          (list 'discarded-work-bounded-by-cap all-ok)
+          (list 'all-pass all-ok))))
+
+;; ============================================================================
+;; 3. Example-Partition Minibatch Coverage & Deterministic Averaging
+;; ============================================================================
+;; Each worker returns `(cons idx grad-rat)`. Receiver verifies that the set
+;; of indices is a disjoint, complete permutation of `{0, ..., n-1}`, restores
+;; canonical index order, and averages the exact rational rows identically
+;; regardless of worker completion order.
+
+(define (blc-ws-count-idx rows idx)
+  (let loop ((rs rows) (acc 0))
+    (if (null? rs)
+        acc
+        (loop (cdr rs) (if (= (caar rs) idx) (+ acc 1) acc)))))
+
+(define (blc-ws-verify-partition-coverage n rows)
+  (and (= (length rows) n)
+       (let loop ((i 0))
+         (if (= i n)
+             #t
+             (if (= (blc-ws-count-idx rows i) 1)
+                 (loop (+ i 1))
+                 #f)))))
+
+(define (blc-ws-lookup-idx rows idx)
+  (let loop ((rs rows))
+    (cond
+      ((null? rs) (error "blc-ws-lookup-idx: missing index"))
+      ((= (caar rs) idx) (cdar rs))
+      (else (loop (cdr rs))))))
+
+(define (blc-ws-partition-average-update n rows)
+  (if (not (blc-ws-verify-partition-coverage n rows))
+      (list 'invalid-partition)
+      (let loop ((i 0) (acc (blc-ws-rat 0 1)))
+        (if (= i n)
+            (list 'ok (blc-ws-rat* acc (blc-ws-rat 1 n)))
+            (loop (+ i 1) (blc-ws-rat+ acc (blc-ws-lookup-idx rows i)))))))
+
+;; ============================================================================
+;; 4. SBLC Unresolved-Mass vs. No-Consistent-Program Status
+;; ============================================================================
+;; Distinguishes unresolved probability mass under a finite step bound from
+;; genuinely inconsistent conditioning (zero matched AND zero unresolved mass).
+
+(define (blc-ws-sblc-classify matched-mass unresolved-mass step-bound)
+  (let* ((z (blc-ws-rat 0 1))
+         (status
+           (cond
+             ((blc-ws-rat<? z matched-mass) 'consistent)
+             ((blc-ws-rat<? z unresolved-mass) 'unresolved-under-step-bound)
+             (else 'no-consistent-program))))
+    (list 'blc-ws-sblc-verdict
+          (list 'matched-mass matched-mass)
+          (list 'unresolved-mass unresolved-mass)
+          (list 'step-bound step-bound)
+          (list 'status status))))
+
+(define (blc-ws-verify-sblc-unresolved-status)
+  (let* ((z (blc-ws-rat 0 1))
+         (one-sixteenth (blc-ws-rat 1 16))
+         ;; (I I) at step-bound 0: 0 matched, 1/16 unresolved -> unresolved-under-step-bound
+         (v0 (blc-ws-sblc-classify z one-sixteenth 0))
+         ;; (I I) at step-bound 1: 1/16 matched, 0 unresolved -> consistent
+         (v1 (blc-ws-sblc-classify one-sixteenth z 1))
+         ;; Contradictory observation: 0 matched, 0 unresolved -> no-consistent-program
+         (v-none (blc-ws-sblc-classify z z 1))
+         (ok0 (eq? (cadr (cadddr (cdr v0))) 'unresolved-under-step-bound))
+         (ok1 (eq? (cadr (cadddr (cdr v1))) 'consistent))
+         (ok-none (eq? (cadr (cadddr (cdr v-none))) 'no-consistent-program)))
+    (list 'blc-ws-sblc-status-check
+          (list 'zero-step-unresolved ok0)
+          (list 'one-step-consistent ok1)
+          (list 'zero-unresolved-inconsistent ok-none)
+          (list 'all-pass (and ok0 ok1 ok-none)))))
+
+;; ============================================================================
+;; 5. TX-4 Atomic Failure Continuation & BF16 Rounding-Tie Counterexample
+;; ============================================================================
+
+;; Applies a list of `(cons param-idx delta)` updates against a parameter count
+;; `n-params`. If ANY update is out-of-bounds (`idx < 0` or `idx >= n-params`),
+;; the failure continuation aborts atomically returning `(list 'err 1)` with
+;; zero partial success output committed.
+(define (blc-ws-tx-apply-updates-atomic n-params init-params updates)
+  (let loop ((us updates) (cur init-params))
+    (if (null? us)
+        (list 'ok cur)
+        (let ((idx (caar us))
+              (delta (cdar us)))
+          (if (or (< idx 0) (>= idx n-params))
+              (list 'err 1)
+              (let ((next
+                      (let rebuild ((ps cur) (i 0))
+                        (if (null? ps)
+                            '()
+                            (cons (if (= i idx) (+ (car ps) delta) (car ps))
+                                  (rebuild (cdr ps) (+ i 1)))))))
+                (loop (cdr us) next)))))))
+
+(define (blc-ws-verify-tx-failure-atomicity)
+  (let* ((init (list 10 20 30))
+         (good (blc-ws-tx-apply-updates-atomic 3 init (list (cons 0 1) (cons 2 -5))))
+         ;; Out-of-bounds update AFTER a valid first update must return sole `(err 1)`
+         (bad (blc-ws-tx-apply-updates-atomic 3 init (list (cons 0 1) (cons 99 1))))
+         (good-ok (and (eq? (car good) 'ok) (equal? (cadr good) (list 11 20 25))))
+         (bad-ok (equal? bad (list 'err 1))))
+    (list 'blc-ws-tx-atomicity
+          (list 'valid-sequence-commits good-ok)
+          (list 'oob-after-success-atomic-err-1 bad-ok)
+          (list 'all-pass (and good-ok bad-ok)))))
+
+;; Exact round-half-to-even of non-negative rational `r = n / d` to nearest integer.
+(define (blc-ws-round-half-to-even r)
+  (let* ((n (car r))
+         (d (cdr r))
+         (q (quotient n d))
+         (rem (remainder n d))
+         (twice-rem (* 2 rem)))
+    (cond
+      ((< twice-rem d) q)
+      ((> twice-rem d) (+ q 1))
+      (else (if (= (remainder q 2) 0) q (+ q 1))))))
+
+;; Parameter-31 BF16 rounding-tie divergence control:
+;; Exact scaled gradient falls strictly below half-grid (`1023/2048 < 1/2`),
+;; rounding to `1` (from integer base `1 + 1023/2048` -> `1`? wait: take `1 + 511/1024`:
+;; exact `1 + 511/1024 = 1535/1024` rounds to `1`, whereas BF16 quantization maps
+;; `511/1024` onto the tie `1/2`, so `1 + 1/2 = 3/2` rounds-to-even to `2`!).
+(define (blc-ws-verify-bf16-rounding-tie)
+  (let* ((exact-val (blc-ws-rat 1535 1024))
+         (bf16-tie-val (blc-ws-rat 3 2))
+         (r-exact (blc-ws-round-half-to-even exact-val))
+         (r-bf16 (blc-ws-round-half-to-even bf16-tie-val))
+         (diverged (and (= r-exact 1) (= r-bf16 2) (not (= r-exact r-bf16)))))
+    (list 'blc-ws-bf16-rounding-tie
+          (list 'exact-rounded r-exact)
+          (list 'bf16-tie-rounded r-bf16)
+          (list 'histories-diverge diverged)
+          (list 'all-pass diverged))))
+
+;; ============================================================================
+;; 6. Verified Arena Bump Alignment & Two-Cell Alias Separation
+;; ============================================================================
+
+(define (blc-ws-align-up v a)
+  (let ((r (remainder v a)))
+    (if (= r 0) v (+ v (- a r)))))
+
+(define (blc-ws-span-apart? b1 s1 b2 s2)
+  (or (= s1 0) (= s2 0) (<= (+ b1 s1) b2) (<= (+ b2 s2) b1)))
+
+;; Mirrors ArenaBump.ordinary_aligned + NativeAllocation.live_byte_excluded:
+;; Checks alignment in {8, 16, 64}, capacity fit, and pairwise disjointness
+;; of the newly granted span `[ptr, ptr+n)` against every live span `(base . size)`.
+(define (blc-ws-arena-bump-check base used cap n align live-spans)
+  (let* ((valid-align (or (= align 8) (= align 16) (= align 64)))
+         (ptr (if valid-align (blc-ws-align-up (+ base used) align) 0))
+         (req (if valid-align (blc-ws-align-up n align) 0))
+         (next-used (+ (- ptr base) req))
+         (fits (and valid-align (> n 0) (<= used cap) (<= next-used cap)))
+         (fresh (let loop ((ls live-spans))
+                  (cond
+                    ((null? ls) #t)
+                    ((blc-ws-span-apart? ptr n (caar ls) (cdar ls))
+                     (loop (cdr ls)))
+                    (else #f)))))
+    (list 'blc-ws-arena-bump
+          (list 'ptr ptr)
+          (list 'next-used next-used)
+          (list 'aligned (and valid-align (= (remainder ptr align) 0)))
+          (list 'fits fits)
+          (list 'fresh-from-live fresh)
+          (list 'admitted (and fits fresh)))))
+
+;; Mirrors TwoCell.Admits: admits a two-cell operation iff dst and src are
+;; strictly non-overlapping 1-byte spans (dst != src).
+(define (blc-ws-two-cell-admit? dst-addr src-addr)
+  (blc-ws-span-apart? dst-addr 1 src-addr 1))
