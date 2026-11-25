@@ -4,6 +4,7 @@
 (require core.integrable.lax)
 (require core.integrable.hitchin)
 (require core.integrable.quantum)
+(require core.integrable.hitchin_hodge)
 
 (provide
   ;; Lax pairs, Toda, Euler-Arnold, exact CYBE, Hirota KdV tau-function
@@ -13,6 +14,9 @@
   ;; Exact-field Hitchin spectral curves & Gaudin Poisson involution
   hitchin-spectral-poly-2x2 hitchin-spectral-curve-genus-2x2
   sl2-gaudin-hamiltonians sl2-gaudin-verify-involution
+  ;; Hitchin-Hodge period bridge (M15 <-> M13)
+  hitchin-cm-elliptic-bridge hitchin-genus2-cm-bridge
+  elliptic-period-ratio-gauss-legendre
   ;; Exact Q[i] QYBE, Transfer Matrix [T(u),T(v)]=0, Heisenberg XXX Bethe Ansatz
   yang-quantum-R-matrix xxz-quantum-R-matrix
   qybe-verify-exact

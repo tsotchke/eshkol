@@ -1,0 +1,99 @@
+;;; Executable Hitchin-Hodge integration & Lean 4 certificate producer (ADR-0063)
+;;; Connects M15 Hitchin spectral curves directly to M13 polarized Hodge structures,
+;;; Siegel period matrices, Hurwitz CM automorphisms, Gauss-Legendre numerical
+;;; period cross-checks, and emits eshkol.certificate.v1 JSON witnesses when
+;;; ESHKOL_CERTIFICATES is set (checked by eshkol_certcheck.py and Lean 4.12.0).
+
+(require stdlib)
+(require core.exact_linalg)
+(require core.exact_psd)
+(require core.certificate)
+(require core.hodge)
+(require core.integrable)
+
+(define checks 0)
+(define (expect name cond)
+  (set! checks (+ checks 1))
+  (if (not cond)
+      (begin
+        (display "FAIL: ") (display name) (newline)
+        (exit 1))))
+
+;; ---------------------------------------------------------------------------
+;; 1. Genus-1 CM Hitchin Spectral Curve <-> M13 Polarized Hodge Structure
+;; ---------------------------------------------------------------------------
+(define b1 (hitchin-cm-elliptic-bridge))
+(expect "hitchin-hodge-g1-genus=1" (= (vector-ref b1 1) 1))
+(expect "hitchin-hodge-g1-siegel-certified"
+        (eq? (vector-ref (vector-ref b1 4) 0) 'certified-siegel-period))
+(expect "hitchin-hodge-g1-HR1-exact" (eq? (vector-ref b1 6) #t))
+(expect "hitchin-hodge-g1-HR2-certified"
+        (eq? (vector-ref (vector-ref b1 7) 0) 'certified-hr2))
+(expect "hitchin-hodge-g1-CM-automorphism-exact" (eq? (vector-ref b1 8) #t))
+
+;; Independent Gauss-Legendre numerical period-ratio cross-check for y^2 = x^3 - x
+(define pr (elliptic-period-ratio-gauss-legendre))
+(define ratio (vector-ref pr 3))
+(expect "hitchin-hodge-g1-gauss-legendre-period-ratio=1" (< (abs (- ratio 1.0)) 1e-10))
+
+;; ---------------------------------------------------------------------------
+;; 2. Genus-2 Hyperelliptic Hitchin Spectral Curve <-> M13 Genus-2 Hodge/Siegel
+;; ---------------------------------------------------------------------------
+(define b2 (hitchin-genus2-cm-bridge))
+(expect "hitchin-hodge-g2-genus=2" (= (vector-ref b2 1) 2))
+(expect "hitchin-hodge-g2-siegel-certified"
+        (eq? (vector-ref (vector-ref b2 4) 0) 'certified-siegel-period))
+(expect "hitchin-hodge-g2-H1-decomp-valid" (hodge-decomposition-valid? (vector-ref b2 5)))
+(expect "hitchin-hodge-g2-HR1-exact" (eq? (vector-ref b2 6) #t))
+(expect "hitchin-hodge-g2-HR2-certified"
+        (eq? (vector-ref (vector-ref b2 7) 0) 'certified-hr2))
+(expect "hitchin-hodge-g2-Bolza-CM-aut-exact" (eq? (vector-ref b2 8) #t))
+(expect "hitchin-hodge-g2-H2-exterior-valid" (hodge-decomposition-valid? (vector-ref b2 9)))
+(expect "hitchin-hodge-g2-Hdg1-dim=4" (= (length (vector-ref b2 10)) 4))
+
+;; ---------------------------------------------------------------------------
+;; 3. Emit Real eshkol.certificate.v1 Witnesses for Independent Python & Lean 4 Check
+;; ---------------------------------------------------------------------------
+(define sink (certificate-open "hodge_hitchin_lean4"))
+
+;; Cert 1: Exact HR2 PSD witness for genus-1 Hitchin CM spectral curve H^{1,0}
+(define cert-hr2-g1 (cdr (car (vector-ref (vector-ref b1 7) 1))))
+(expect "cert-hr2-g1-is-certificate" (certificate? cert-hr2-g1))
+(certificate-record! sink cert-hr2-g1)
+
+;; Cert 2: Exact HR2 PSD witness for genus-2 Hitchin spectral curve H^{1,0}
+(define cert-hr2-g2 (cdr (car (vector-ref (vector-ref b2 7) 1))))
+(expect "cert-hr2-g2-is-certificate" (certificate? cert-hr2-g2))
+(certificate-record! sink cert-hr2-g2)
+
+;; Cert 3: Exact rational (non-integral!) coupled genus-2 Siegel Im(tau) PSD witness
+(define sp-coupled
+  (make-siegel-period 2
+    (vector (vector (hq 0 2)   (hq 0 1/2))
+            (vector (hq 0 1/2) (hq 0 3)))))
+(define sp-coupled-res (siegel-period-certify sp-coupled))
+(expect "siegel-coupled-g2-certified" (eq? (vector-ref sp-coupled-res 0) 'certified-siegel-period))
+(define cert-siegel-g2 (vector-ref sp-coupled-res 1))
+(certificate-record! sink cert-siegel-g2)
+
+;; Cert 4: Exact non-PSD refutation witness (flipped polarization / indefinite Im(tau))
+(define bad-im (vector (vector 1 2) (vector 2 1)))
+(define cert-bad-refute (certify-psd bad-im "siegel_indefinite_refute"))
+(expect "cert-bad-refute-is-non-psd" (not (psd-factor? (certificate-value cert-bad-refute))))
+(certificate-record! sink cert-bad-refute)
+
+;; Cert 5: Exact Chow cycle-class map rank certificate for CM surface Hdg^1(E_i x E_i)
+(define H1-Ei (vector-ref b1 5))
+(define H2-Ei-sq (hodge-tensor-product H1-Ei H1-Ei))
+(define hdg-sq (hodge-classes H2-Ei-sq))
+(define cmap-sq
+  (make-chow-cycle-map H2-Ei-sq (list (cons 'diag (car hdg-sq))
+                                      (cons 'cm-graph (cadr hdg-sq)))))
+(define rep-sq (hodge-cycle-class-certify cmap-sq))
+(define cert-chow-rank (vector-ref rep-sq 6))
+(expect "cert-chow-rank-is-certificate" (certificate? cert-chow-rank))
+(certificate-record! sink cert-chow-rank)
+
+(certificate-close! sink)
+
+(display "PASS: hodge_hitchin_lean4_test (") (display checks) (display " checks)") (newline)

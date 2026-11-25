@@ -11,9 +11,10 @@ conditions) and whose proof is `by decide`: the kernel evaluates both sides.
 The file depends on Lean core only (no Mathlib, no Lake package).
 
 Supported kinds: determinant (n <= 6), rank (integral matrix, rank and
-nullity <= 6), smith_normal_form, integer_gcd, primality (prime claims),
-cocycle, cohomology_class.  Other claims are listed in the file header as
-not exported; eshkol_certcheck.py checks every kind.
+nullity <= 6), smith_normal_form, psd (positive semidefinite and negative
+refutation witnesses, cleared to exact integers), integer_gcd, primality
+(prime claims), cocycle, cohomology_class.  Other claims are listed in the
+file header as not exported; eshkol_certcheck.py checks every kind.
 
 Usage:
     lean_export.py CERT.json -o OUT.lean
@@ -48,6 +49,20 @@ def mvmul (a : List (List Int)) (v : List Int) : List Int := a.map (fun r => dot
 
 def eye (n : Nat) : List (List Int) :=
   (List.range n).map (fun i => (List.range n).map (fun j => if i = j then 1 else 0))
+
+def transposeMat (m : List (List Int)) (cols : Nat) : List (List Int) :=
+  (List.range cols).map (fun j => col m j)
+
+def scaleMat (s : Int) (m : List (List Int)) : List (List Int) :=
+  m.map (fun r => r.map (fun x => s * x))
+
+def diagMat (ds : List Int) : List (List Int) :=
+  (List.range ds.length).map (fun i =>
+    (List.range ds.length).map (fun j => if i = j then ds.getD i 0 else 0))
+
+def allPos : List Int → Bool
+  | [] => true
+  | x :: xs => decide (x > 0) && allPos xs
 
 /-- Determinant by cofactor expansion along the first row (Laplace). -/
 def det : Nat → List (List Int) → Int
@@ -281,10 +296,53 @@ def stmt_class(c):
             f"    {last} := by decide"]
 
 
+def stmt_psd(c):
+    M = dec(c["inputs"]["matrix"])
+    n, nc, mrows = M
+    if n != nc:
+        raise Skip("non-square PSD matrix")
+    dM = lcm(*[Fraction(x).denominator for row in mrows for x in row]) if n > 0 else 1
+    Mi = (n, n, [[as_int(Fraction(x) * dM) for x in row] for row in mrows])
+    w = c["witness"]
+    ok = dec(c["output"])
+    if ok is True:
+        B = dec(w["B"])
+        D = dec(w["D"])
+        r, bc, brows = B
+        if bc != n or len(D) != r:
+            raise Skip("PSD factor dimension mismatch")
+        dB = lcm(*[Fraction(x).denominator for row in brows for x in row]) if r * n > 0 else 1
+        dD = lcm(*[Fraction(x).denominator for x in D]) if r > 0 else 1
+        Bi = (r, n, [[as_int(Fraction(x) * dB) for x in row] for row in brows])
+        Di = [as_int(Fraction(x) * dD) for x in D]
+        # Exact cleared identity: (dB^2 * dD) * (dM * M) = dM * (B_i^T * diag(D_i) * B_i)
+        lhs_scale = dB * dB * dD
+        rhs_scale = dM
+        return [
+            f"/-- Exact PSD certificate: ({lhs_scale} * {dM}) M = {rhs_scale} * B^T diag(D) B with D > 0. -/\n"
+            f"theorem {name('psd', c)} :\n"
+            f"    scaleMat {lint(lhs_scale)} {lmat(Mi)} =\n"
+            f"      scaleMat {lint(rhs_scale)} (mmul (mmul (transposeMat {lmat(Bi)} {n}) (diagMat {lvec(Di)}) {r}) {lmat(Bi)} {n}) ∧\n"
+            f"    allPos {lvec(Di)} = true ∧\n"
+            f"    transposeMat {lmat(Mi)} {n} = {lmat(Mi)} := by decide"
+        ]
+    v = dec(w["v"])
+    if len(v) != n:
+        raise Skip("PSD refutation vector dimension mismatch")
+    vi = scale_integral(v)
+    return [
+        f"/-- Exact non-PSD refutation: v^T ({dM} * M) v < 0 (and M is symmetric). -/\n"
+        f"theorem {name('psd_refute', c)} :\n"
+        f"    dot {lvec(vi)} (mvmul {lmat(Mi)} {lvec(vi)}) < 0 ∧\n"
+        f"    transposeMat {lmat(Mi)} {n} = {lmat(Mi)} := by decide"
+    ]
+
+
 EXPORTERS = {
     "determinant": stmt_determinant,
     "rank": stmt_rank,
     "smith_normal_form": stmt_snf,
+    "psd": stmt_psd,
     "integer_gcd": stmt_gcd,
     "primality": stmt_primality,
     "cocycle": stmt_cocycle,
