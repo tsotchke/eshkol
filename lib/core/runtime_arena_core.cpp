@@ -17,6 +17,7 @@
 #ifdef __cplusplus
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <vector>
 #endif
 
@@ -182,6 +183,219 @@ bool block_pool_put(arena_block_t* b) {
 }
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Eshkol OS Phase U3: OALR backing page hooks.
+//
+// When installed via eshkol_os_install_page_hooks(), every OALR arena control
+// struct, inline/overflow scope frame, and arena block is backed strictly by
+// zeroed, page-aligned spans from alloc_pages/free_pages with zero fallback to
+// malloc/free.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct OsPageHookRegistry {
+    std::mutex mu;
+    bool installed = false;
+    eshkol_os_page_hooks_t hooks{};
+};
+
+struct OsOalrAtomicStats {
+    std::atomic<uint64_t> alloc_calls{0};
+    std::atomic<uint64_t> free_calls{0};
+    std::atomic<uint64_t> pages_allocated{0};
+    std::atomic<uint64_t> pages_freed{0};
+    std::atomic<uint64_t> live_pages{0};
+    std::atomic<uint64_t> peak_live_pages{0};
+    std::atomic<uint64_t> oom_failures{0};
+    std::atomic<uint64_t> contract_violations{0};
+};
+
+OsPageHookRegistry g_os_page_registry;
+OsOalrAtomicStats g_os_oalr_stats;
+thread_local eshkol_os_page_status_t t_last_os_page_error = ESHKOL_OS_PAGE_OK;
+
+bool os_page_hooks_snapshot(eshkol_os_page_hooks_t* out) {
+    std::lock_guard<std::mutex> lock(g_os_page_registry.mu);
+    if (!g_os_page_registry.installed) return false;
+    if (out) *out = g_os_page_registry.hooks;
+    return true;
+}
+
+bool os_span_is_zeroed(const void* ptr, size_t byte_len) {
+    const uint8_t* p = static_cast<const uint8_t*>(ptr);
+    size_t i = 0;
+    for (; i + sizeof(uint64_t) <= byte_len; i += sizeof(uint64_t)) {
+        uint64_t word = 0;
+        std::memcpy(&word, p + i, sizeof(word));
+        if (word != 0) return false;
+    }
+    for (; i < byte_len; ++i) {
+        if (p[i] != 0) return false;
+    }
+    return true;
+}
+
+void* os_alloc_pages_checked(size_t num_pages, size_t* out_page_size) {
+    eshkol_os_page_hooks_t hooks{};
+    if (!os_page_hooks_snapshot(&hooks)) {
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_UNREGISTERED;
+        return nullptr;
+    }
+    if (num_pages == 0 || hooks.page_size == 0 ||
+        num_pages > SIZE_MAX / hooks.page_size) {
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_INVALID_ARG;
+        return nullptr;
+    }
+
+    g_os_oalr_stats.alloc_calls.fetch_add(1, std::memory_order_relaxed);
+    void* ptr = hooks.alloc_pages(num_pages, ESHKOL_OS_PAGE_FLAG_ZEROED, hooks.user_ctx);
+    if (!ptr) {
+        g_os_oalr_stats.oom_failures.fetch_add(1, std::memory_order_relaxed);
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_OOM;
+        return nullptr;
+    }
+
+    if (((uintptr_t)ptr & (hooks.page_size - 1)) != 0) {
+        g_os_oalr_stats.contract_violations.fetch_add(1, std::memory_order_relaxed);
+        (void)hooks.free_pages(ptr, num_pages, hooks.user_ctx);
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_ALIGNMENT;
+        return nullptr;
+    }
+
+    const size_t total_bytes = num_pages * hooks.page_size;
+    if (hooks.verify_zero_on_alloc != 0 && !os_span_is_zeroed(ptr, total_bytes)) {
+        g_os_oalr_stats.contract_violations.fetch_add(1, std::memory_order_relaxed);
+        (void)hooks.free_pages(ptr, num_pages, hooks.user_ctx);
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_NOT_ZEROED;
+        return nullptr;
+    }
+
+    g_os_oalr_stats.pages_allocated.fetch_add(num_pages, std::memory_order_relaxed);
+    uint64_t live = g_os_oalr_stats.live_pages.fetch_add(num_pages, std::memory_order_relaxed) + num_pages;
+    uint64_t prev_peak = g_os_oalr_stats.peak_live_pages.load(std::memory_order_relaxed);
+    while (live > prev_peak &&
+           !g_os_oalr_stats.peak_live_pages.compare_exchange_weak(
+               prev_peak, live, std::memory_order_relaxed)) {
+    }
+
+    t_last_os_page_error = ESHKOL_OS_PAGE_OK;
+    if (out_page_size) *out_page_size = hooks.page_size;
+    return ptr;
+}
+
+void os_free_pages_checked(void* base, size_t num_pages) {
+    if (!base || num_pages == 0) return;
+    eshkol_os_page_hooks_t hooks{};
+    if (!os_page_hooks_snapshot(&hooks) || !hooks.free_pages) {
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_UNREGISTERED;
+        return;
+    }
+    g_os_oalr_stats.free_calls.fetch_add(1, std::memory_order_relaxed);
+    const int rc = hooks.free_pages(base, num_pages, hooks.user_ctx);
+    if (rc != 0) {
+        g_os_oalr_stats.contract_violations.fetch_add(1, std::memory_order_relaxed);
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_FREE_FAILED;
+        return;
+    }
+    g_os_oalr_stats.pages_freed.fetch_add(num_pages, std::memory_order_relaxed);
+    g_os_oalr_stats.live_pages.fetch_sub(num_pages, std::memory_order_relaxed);
+}
+
+static inline bool scope_is_inline(const arena_t* arena, const arena_scope_t* scope) {
+    if (!arena || !arena->inline_scopes || arena->inline_scope_capacity == 0) return false;
+    return scope >= arena->inline_scopes &&
+           scope < (arena->inline_scopes + arena->inline_scope_capacity);
+}
+
+static arena_scope_t* alloc_arena_scope(arena_t* arena) {
+    if (!arena) return nullptr;
+    if (arena->page_backed) {
+        if (arena->inline_scopes && arena->inline_scope_used < arena->inline_scope_capacity) {
+            return &arena->inline_scopes[arena->inline_scope_used++];
+        }
+        return static_cast<arena_scope_t*>(os_alloc_pages_checked(1, nullptr));
+    }
+    return static_cast<arena_scope_t*>(malloc(sizeof(arena_scope_t)));
+}
+
+static void release_arena_scope(arena_t* arena, arena_scope_t* scope) {
+    if (!scope) return;
+    if (arena && scope_is_inline(arena, scope)) {
+        if (arena->inline_scope_used > 0) {
+            arena->inline_scope_used--;
+        }
+        return;
+    }
+    if (arena && arena->page_backed) {
+        os_free_pages_checked(scope, 1);
+        return;
+    }
+    free(scope);
+}
+
+}  // namespace
+
+extern "C" int eshkol_os_install_page_hooks(const eshkol_os_page_hooks_t* hooks) {
+    std::lock_guard<std::mutex> lock(g_os_page_registry.mu);
+    if (!hooks) {
+        g_os_page_registry.installed = false;
+        g_os_page_registry.hooks = {};
+        t_last_os_page_error = ESHKOL_OS_PAGE_OK;
+        return ESHKOL_OS_PAGE_OK;
+    }
+    const bool pow2 = hooks->page_size >= 4096 &&
+                      (hooks->page_size & (hooks->page_size - 1)) == 0;
+    if (!pow2 || !hooks->alloc_pages || !hooks->free_pages) {
+        t_last_os_page_error = ESHKOL_OS_PAGE_ERR_INVALID_ARG;
+        return ESHKOL_OS_PAGE_ERR_INVALID_ARG;
+    }
+    g_os_page_registry.hooks = *hooks;
+    g_os_page_registry.installed = true;
+    t_last_os_page_error = ESHKOL_OS_PAGE_OK;
+    return ESHKOL_OS_PAGE_OK;
+}
+
+extern "C" int eshkol_os_page_hooks_installed(void) {
+    std::lock_guard<std::mutex> lock(g_os_page_registry.mu);
+    return g_os_page_registry.installed ? 1 : 0;
+}
+
+extern "C" size_t eshkol_os_page_size(void) {
+    std::lock_guard<std::mutex> lock(g_os_page_registry.mu);
+    return g_os_page_registry.installed ? g_os_page_registry.hooks.page_size : 0;
+}
+
+extern "C" eshkol_os_page_status_t eshkol_os_oalr_last_error(void) {
+    return t_last_os_page_error;
+}
+
+extern "C" void eshkol_os_oalr_clear_error(void) {
+    t_last_os_page_error = ESHKOL_OS_PAGE_OK;
+}
+
+extern "C" void eshkol_os_oalr_get_stats(eshkol_os_oalr_stats_t* out) {
+    if (!out) return;
+    out->alloc_calls = g_os_oalr_stats.alloc_calls.load(std::memory_order_relaxed);
+    out->free_calls = g_os_oalr_stats.free_calls.load(std::memory_order_relaxed);
+    out->pages_allocated = g_os_oalr_stats.pages_allocated.load(std::memory_order_relaxed);
+    out->pages_freed = g_os_oalr_stats.pages_freed.load(std::memory_order_relaxed);
+    out->live_pages = g_os_oalr_stats.live_pages.load(std::memory_order_relaxed);
+    out->peak_live_pages = g_os_oalr_stats.peak_live_pages.load(std::memory_order_relaxed);
+    out->oom_failures = g_os_oalr_stats.oom_failures.load(std::memory_order_relaxed);
+    out->contract_violations = g_os_oalr_stats.contract_violations.load(std::memory_order_relaxed);
+}
+
+extern "C" void eshkol_os_oalr_reset_stats(void) {
+    g_os_oalr_stats.alloc_calls.store(0, std::memory_order_relaxed);
+    g_os_oalr_stats.free_calls.store(0, std::memory_order_relaxed);
+    g_os_oalr_stats.pages_allocated.store(0, std::memory_order_relaxed);
+    g_os_oalr_stats.pages_freed.store(0, std::memory_order_relaxed);
+    g_os_oalr_stats.live_pages.store(0, std::memory_order_relaxed);
+    g_os_oalr_stats.peak_live_pages.store(0, std::memory_order_relaxed);
+    g_os_oalr_stats.oom_failures.store(0, std::memory_order_relaxed);
+    g_os_oalr_stats.contract_violations.store(0, std::memory_order_relaxed);
+}
+
 static arena_block_t* create_arena_block(size_t size) {
     if (eshkol_alloc_failpoint_fire(ESHKOL_ALLOC_FAILPOINT_ARENA_BLOCK)) {
         eshkol_error("Failed to allocate arena block memory of size %zu", size);
@@ -206,6 +420,43 @@ static arena_block_t* create_arena_block(size_t size) {
         // refusing here would make "limits are not enforced" the more violent
         // of the two settings.
         eshkol_limit_enforce(ESHKOL_LIMIT_HEAP_HARD, "arena block");
+    }
+
+    // Eshkol OS Phase U3: when OS page hooks are installed, allocate strictly
+    // from zeroed OS pages with zero block-pool retention and zero malloc
+    // fallback on exhaustion.
+    eshkol_os_page_hooks_t page_hooks{};
+    if (os_page_hooks_snapshot(&page_hooks)) {
+        const size_t header_bytes = align_size(sizeof(arena_block_t), 16);
+        if (size > SIZE_MAX - header_bytes ||
+            (size + header_bytes) > SIZE_MAX - (page_hooks.page_size - 1)) {
+            t_last_os_page_error = ESHKOL_OS_PAGE_ERR_INVALID_ARG;
+            eshkol_track_deallocation(size);
+            return nullptr;
+        }
+        const size_t total_needed = header_bytes + size;
+        const size_t num_pages = (total_needed + page_hooks.page_size - 1) / page_hooks.page_size;
+        size_t active_page_size = page_hooks.page_size;
+        void* base = os_alloc_pages_checked(num_pages, &active_page_size);
+        if (!base) {
+            eshkol_track_deallocation(size);
+            return nullptr;
+        }
+        const size_t usable_size = num_pages * active_page_size - header_bytes;
+        if (usable_size > size &&
+            !eshkol_track_allocation(usable_size - size) &&
+            eshkol_limit_is_active(ESHKOL_LIMIT_ACTIVE_HEAP)) {
+            eshkol_limit_enforce(ESHKOL_LIMIT_HEAP_HARD, "os page arena block");
+        }
+        arena_block_t* block = static_cast<arena_block_t*>(base);
+        block->memory = static_cast<uint8_t*>(base) + header_bytes;
+        block->size = usable_size;
+        block->used = 0;
+        block->next = nullptr;
+        block->backing_base = base;
+        block->backing_pages = num_pages;
+        block->page_backed = true;
+        return block;
     }
 
     if (arena_block_t* pooled = block_pool_take(size)) {
@@ -238,6 +489,9 @@ static arena_block_t* create_arena_block(size_t size) {
     block->size = size;
     block->used = 0;
     block->next = nullptr;
+    block->backing_base = nullptr;
+    block->backing_pages = 0;
+    block->page_backed = false;
 
     return block;
 }
@@ -250,6 +504,12 @@ static void free_arena_block(arena_block_t* block) {
         // than by everything it has ever touched. Without this pairing the
         // heap ceiling would degrade into a cap on cumulative allocation.
         eshkol_track_deallocation(block->size);
+        if (block->page_backed) {
+            void* base = block->backing_base;
+            const size_t pages = block->backing_pages;
+            os_free_pages_checked(base, pages);
+            return;
+        }
         if (block_pool_put(block)) return;
         free(block->memory);
         free(block);
@@ -262,15 +522,32 @@ arena_t* arena_create(size_t default_block_size) {
         default_block_size = 1024; // Minimum block size
     }
 
-    arena_t* arena = (arena_t*)malloc(sizeof(arena_t));
-    if (!arena) {
-        eshkol_error("Failed to allocate arena structure");
-        return nullptr;
+    arena_t* arena = nullptr;
+    void* arena_page = nullptr;
+    size_t arena_page_size = 0;
+    const bool use_page_hooks = (eshkol_os_page_hooks_installed() != 0);
+
+    if (use_page_hooks) {
+        arena_page = os_alloc_pages_checked(1, &arena_page_size);
+        if (!arena_page) {
+            return nullptr;
+        }
+        arena = static_cast<arena_t*>(arena_page);
+    } else {
+        arena = (arena_t*)malloc(sizeof(arena_t));
+        if (!arena) {
+            eshkol_error("Failed to allocate arena structure");
+            return nullptr;
+        }
     }
 
     arena->current_block = create_arena_block(default_block_size);
     if (!arena->current_block) {
-        free(arena);
+        if (use_page_hooks) {
+            os_free_pages_checked(arena_page, 1);
+        } else {
+            free(arena);
+        }
         return nullptr;
     }
 
@@ -288,6 +565,28 @@ arena_t* arena_create(size_t default_block_size) {
     arena->first_tape_child = nullptr;
     arena->next_tape_sibling = nullptr;
     arena->is_tape_arena = false;
+    if (use_page_hooks) {
+        arena->arena_backing_base = arena_page;
+        arena->arena_backing_pages = 1;
+        const size_t scope_off = align_size(sizeof(arena_t), alignof(arena_scope_t));
+        if (arena_page_size > scope_off) {
+            arena->inline_scopes = reinterpret_cast<arena_scope_t*>(
+                static_cast<uint8_t*>(arena_page) + scope_off);
+            arena->inline_scope_capacity = (arena_page_size - scope_off) / sizeof(arena_scope_t);
+        } else {
+            arena->inline_scopes = nullptr;
+            arena->inline_scope_capacity = 0;
+        }
+        arena->inline_scope_used = 0;
+        arena->page_backed = true;
+    } else {
+        arena->arena_backing_base = nullptr;
+        arena->arena_backing_pages = 0;
+        arena->inline_scopes = nullptr;
+        arena->inline_scope_capacity = 0;
+        arena->inline_scope_used = 0;
+        arena->page_backed = false;
+    }
 
     eshkol_debug("Created arena with default block size %zu", default_block_size);
     return arena;
@@ -400,12 +699,20 @@ void arena_destroy(arena_t* arena) {
     arena_scope_t* scope = arena->current_scope;
     while (scope) {
         arena_scope_t* parent = scope->parent;
-        free(scope);
+        release_arena_scope(arena, scope);
         scope = parent;
     }
+    arena->current_scope = nullptr;
+    arena->inline_scope_used = 0;
 
     eshkol_debug("Destroyed arena, freed %zu bytes", arena->total_allocated);
-    free(arena);
+    if (arena->page_backed) {
+        void* base = arena->arena_backing_base;
+        const size_t pages = arena->arena_backing_pages;
+        os_free_pages_checked(base, pages);
+    } else {
+        free(arena);
+    }
 }
 
 // Core allocation function (thread-safe if arena was created with arena_create_threadsafe)
@@ -534,7 +841,7 @@ void arena_push_scope(arena_t* arena) {
     // likewise a no-op, so push/pop stay balanced.
     if (arena_scope_ops_are_commit_only(arena)) return;
 
-    arena_scope_t* scope = (arena_scope_t*)malloc(sizeof(arena_scope_t));
+    arena_scope_t* scope = alloc_arena_scope(arena);
     if (!scope) {
         eshkol_error("Failed to allocate arena scope");
         return;
@@ -606,7 +913,7 @@ void arena_pop_scope(arena_t* arena) {
     }
 
     arena->current_scope = scope->parent;
-    free(scope);
+    release_arena_scope(arena, scope);
 
     eshkol_debug("Popped arena scope");
 }
@@ -634,7 +941,7 @@ void arena_commit_scope(arena_t* arena) {
     }
     arena_scope_t* scope = arena->current_scope;
     arena->current_scope = scope->parent;
-    free(scope);
+    release_arena_scope(arena, scope);
     eshkol_debug("Committed arena scope (allocations kept)");
 }
 
@@ -1312,10 +1619,11 @@ void arena_reset(arena_t* arena) {
     arena_scope_t* scope = arena->current_scope;
     while (scope) {
         arena_scope_t* parent = scope->parent;
-        free(scope);
+        release_arena_scope(arena, scope);
         scope = parent;
     }
     arena->current_scope = nullptr;
+    arena->inline_scope_used = 0;
 
     eshkol_debug("Reset arena");
 }

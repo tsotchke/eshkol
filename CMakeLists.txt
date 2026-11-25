@@ -10588,6 +10588,33 @@ if(NOT WIN32 AND ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test
         endif()
     endif()
 
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u3_stdlib_and_oalr_hooks_test.cpp")
+        add_executable(os_u3_stdlib_and_oalr_hooks_test tests/toolchain/os_u3_stdlib_and_oalr_hooks_test.cpp)
+        target_compile_features(os_u3_stdlib_and_oalr_hooks_test PRIVATE cxx_std_17)
+        add_dependencies(os_u3_stdlib_and_oalr_hooks_test eshkol-run)
+        if(ESHKOL_LLVM_DIS_EXECUTABLE)
+            add_test(
+                NAME os_u3_stdlib_and_oalr_hooks_test
+                COMMAND os_u3_stdlib_and_oalr_hooks_test $<TARGET_FILE:eshkol-run> "${ESHKOL_LLVM_DIS_EXECUTABLE}"
+            )
+        else()
+            add_test(
+                NAME os_u3_stdlib_and_oalr_hooks_test
+                COMMAND os_u3_stdlib_and_oalr_hooks_test $<TARGET_FILE:eshkol-run>
+            )
+        endif()
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/os_u3_oalr_page_hooks_test.cpp")
+        add_executable(os_u3_oalr_page_hooks_test tests/toolchain/os_u3_oalr_page_hooks_test.cpp)
+        target_compile_features(os_u3_oalr_page_hooks_test PRIVATE cxx_std_17)
+        target_link_libraries(os_u3_oalr_page_hooks_test PRIVATE eshkol-runtime)
+        add_test(
+            NAME os_u3_oalr_page_hooks_test
+            COMMAND os_u3_oalr_page_hooks_test
+        )
+    endif()
+
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/freestanding_elf_link_smoke_test.cpp")
         add_executable(freestanding_elf_link_smoke_test tests/toolchain/freestanding_elf_link_smoke_test.cpp)
         target_compile_features(freestanding_elf_link_smoke_test PRIVATE cxx_std_17)

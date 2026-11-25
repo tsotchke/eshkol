@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 3138/7306 public symbols documented (43.0%), 4168 undocumented.
+**Coverage:** 3138/7324 public symbols documented (42.8%), 4186 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -134,7 +134,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 
 ### `core/`
 
-459/949 symbols documented.
+459/967 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
@@ -165,6 +165,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/net.h`](core/net.md) | 20 | 16 |
 | [`core/number_syntax.h`](core/number_syntax.md) | 22 | 2 |
 | [`core/object_limits.h`](core/object_limits.md) | 4 | 0 |
+| [`core/os_page_hooks.h`](core/os_page_hooks.md) | 13 | 0 |
 | [`core/prng_state.h`](core/prng_state.md) | 3 | 0 |
 | [`core/protobuf_wire.h`](core/protobuf_wire.md) | 22 | 9 |
 | [`core/rational.h`](core/rational.md) | 38 | 10 |
@@ -177,6 +178,7 @@ The reviewed DD-11 consumer-facing subset is tracked in [public_surface.md](publ
 | [`core/seed_entropy.h`](core/seed_entropy.md) | 2 | 0 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/stack_guard.h`](core/stack_guard.md) | 4 | 1 |
+| [`core/stdlib_partition.h`](core/stdlib_partition.md) | 5 | 0 |
 | [`core/string_escape.h`](core/string_escape.md) | 3 | 0 |
 | [`core/subprocess_stream.h`](core/subprocess_stream.md) | 11 | 0 |
 | [`core/symbol_syntax.h`](core/symbol_syntax.md) | 16 | 4 |

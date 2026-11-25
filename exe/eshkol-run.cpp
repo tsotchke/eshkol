@@ -21,6 +21,7 @@
 #include <eshkol/core/reader_limits.h>
 #include <eshkol/core/stack_guard.h>
 #include <eshkol/core/execution_profile.h>
+#include <eshkol/core/stdlib_partition.h>
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
@@ -2193,6 +2194,8 @@ static bool g_source_parse_failed = false;
 // codegen so a genuinely missing require is fatal and nothing is written. Found
 // by the P8 escape-closure fault-injection matrix.
 static bool g_module_load_failed = false;
+static eshkol::profile::ExecutionProfile g_active_execution_profile =
+    eshkol::profile::ExecutionProfile::HostedNative;
 /* Import aliases are semantic bindings, not generated Scheme definitions. */
 static std::map<std::string, std::string> g_import_bindings;
 
@@ -3748,6 +3751,25 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
                 std::string module_name = ast.operation.require_op.module_names[i];
 
+                // Eshkol OS Phase U3: enforce three-tier stdlib partition
+                // admission before any module is resolved or loaded. Under
+                // freestanding profiles, only freestanding-pure stdlib modules
+                // and user modules are admitted; os-userspace-oalr and
+                // hosted-os modules are rejected fail-closed.
+                const auto partition =
+                    eshkol::stdlib_partition::classify_stdlib_module(module_name);
+                if (!eshkol::stdlib_partition::partition_allowed_for_profile(
+                        partition, g_active_execution_profile)) {
+                    eshkol_error(
+                        "Module '%s' belongs to stdlib partition '%s', which is forbidden under execution profile '%s' "
+                        "(freestanding profiles admit only 'freestanding-pure' and user modules)",
+                        module_name.c_str(),
+                        eshkol::stdlib_partition::partition_name(partition),
+                        eshkol::profile::get(g_active_execution_profile).name);
+                    g_module_load_failed = true;
+                    continue;
+                }
+
                 // Check if this module is pre-compiled (e.g., from stdlib.o)
                 bool is_precompiled = using_precompiled_stdlib &&
                                       eshkol_module_is_precompiled(module_name.c_str());
@@ -4712,6 +4734,9 @@ static int eshkol_run_main(int argc, char **argv)
         const bool freestanding_kernel_profile =
             resolved.profile &&
             resolved.profile->id == eshkol::profile::ExecutionProfile::FreestandingKernelNative;
+        if (resolved.profile) {
+            g_active_execution_profile = resolved.profile->id;
+        }
         eshkol_set_target(resolved.target_triple);
         eshkol_set_freestanding_codegen(freestanding_native_profile ? 1 : 0);
         eshkol_set_freestanding_kernel_codegen(freestanding_kernel_profile ? 1 : 0);

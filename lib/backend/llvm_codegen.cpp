@@ -4904,11 +4904,24 @@ void EshkolLLVMCodeGen::verifyFreestandingKernelSafety() {
             return;
         }
 
+        auto isForbiddenOalrOrHostedAllocator = [](StringRef name) -> bool {
+            return name == "eshkol_os_alloc_pages" ||
+                   name == "eshkol_os_free_pages" ||
+                   name == "eshkol_os_install_page_hooks" ||
+                   name.starts_with("eshkol_os_oalr_") ||
+                   name.starts_with("arena_") ||
+                   name.starts_with("region_") ||
+                   name.starts_with("eshkol_region_") ||
+                   name == "malloc" || name == "calloc" ||
+                   name == "realloc" || name == "free";
+        };
+
         auto isAllowedNoAllocExternal = [&](const Function* callee) -> bool {
             if (!callee) return false;
+            const StringRef name = callee->getName();
+            if (isForbiddenOalrOrHostedAllocator(name)) return false;
             if (no_alloc_functions_.count(const_cast<Function*>(callee))) return true;
             if (callee->hasFnAttribute("eshkol.no-alloc")) return true;
-            const StringRef name = callee->getName();
             if (name.starts_with("llvm.")) return true;
             if (name.starts_with("eshkol_board_")) return true;
             if (name == "memcpy" || name == "memmove" || name == "memset" || name == "memcmp") {
@@ -4988,6 +5001,12 @@ void EshkolLLVMCodeGen::verifyFreestandingKernelSafety() {
                     }
 
                     if (callee->isDeclaration()) {
+                        if (isForbiddenOalrOrHostedAllocator(callee->getName())) {
+                            eshkol_error("NoAlloc/interrupt function '%s' calls forbidden allocating or unverified external symbol '%s' (OALR/page-allocator absolute region isolation)",
+                                         fn_name.c_str(), callee->getName().str().c_str());
+                            markFatalCodegenError();
+                            continue;
+                        }
                         if (!isAllowedNoAllocExternal(callee)) {
                             eshkol_error("NoAlloc/interrupt function '%s' calls forbidden allocating or unverified external symbol '%s'",
                                          fn_name.c_str(), callee->getName().str().c_str());
@@ -35534,6 +35553,28 @@ Value* EshkolLLVMCodeGen::codegenNamedLet(const eshkol_operations_t* op) {
             func_name,
             module.get()
         );
+
+        // Propagate freestanding safety constraints from the enclosing function
+        // into synthetic named-let loop helpers so `:no-alloc` / `:interrupt`
+        // verification covers loop bodies uniformly across kernel and MCU profiles.
+        Function* enclosing_fn = builder->GetInsertBlock()
+            ? builder->GetInsertBlock()->getParent()
+            : current_function;
+        if (enclosing_fn) {
+            if (no_alloc_functions_.count(enclosing_fn) != 0 ||
+                interrupt_functions_.count(enclosing_fn) != 0) {
+                no_alloc_functions_.insert(loop_func);
+                loop_func->addFnAttr("eshkol.no-alloc", "true");
+            }
+            if (fpu_safe_functions_.count(enclosing_fn) != 0) {
+                fpu_safe_functions_.insert(loop_func);
+                loop_func->addFnAttr("eshkol.fpu-safe", "true");
+            }
+            if (arch_hal_functions_.count(enclosing_fn) != 0) {
+                arch_hal_functions_.insert(loop_func);
+                loop_func->addFnAttr("eshkol.arch-hal", "true");
+            }
+        }
 
         // Register the capture-name list so codegenCall can forward capture
         // pointers when emitting non-tail recursive (loop ...) calls inside
