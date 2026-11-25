@@ -1,0 +1,4 @@
+(require core.net)
+(define hidden-listener (tcp-listen "127.0.0.1" 0))
+(provide initializer-leak-marker)
+(define initializer-leak-marker 1)

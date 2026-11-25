@@ -48,6 +48,8 @@ typedef struct MacroNode {
     int              is_int;
     int              is_verbatim;
     int              is_vector;
+    int              is_numeric_literal;
+    int              is_quote_sugar;
     long long        ival;
     int              is_bignum;
     int              macro_scope_limit;
@@ -325,8 +327,10 @@ static MacroNode* vm_macro_from_syn(const eshkol_syn* s) {
             if (!list) return NULL;
             /* Preserve reader provenance when syntax-rules returns a matched
              * list through a pattern variable. */
-            if (origin && origin->type == N_LIST)
+            if (origin && origin->type == N_LIST) {
                 list->is_quote_sugar = origin->is_quote_sugar;
+                list->is_numeric_literal = origin->is_numeric_literal;
+            }
             if (s->kind == ESHKOL_SYN_VECTOR) {
                 list->is_vector = 1;
                 macro_node_add_child(list, macro_make_symbol("vector"));

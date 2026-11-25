@@ -5,6 +5,7 @@
  * argument contract so existing ESKB modules cannot consume an unrelated slot. */
 #define VM_NATIVE_ERROR_WITH_IRRITANTS 2231
 #define VM_NATIVE_APPLY_PACKED 2232
+#define VM_NATIVE_MATCH_LITERAL 2233
 
 /* Pack a function's declared fixed arity into bits 32..40 of its func-PC
  * constant. The low 32 bits remain the code offset, so the metadata survives
@@ -152,7 +153,8 @@ typedef enum {
      * every lowered form; reaching it is execution evidence for that
      * construct. Normal compilation never emits this opcode. */
     OP_LANGUAGE_COVERAGE_FORM = 71,
-    OP_COUNT = 72
+    OP_LANGUAGE_COVERAGE_READ = 72, /* follows an executed binding load */
+    OP_COUNT = 73
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -310,6 +312,7 @@ typedef enum {
     HEAP_RIEMANNIAN_ADAM_STATE = 25,
     HEAP_FUTURE = 26,
     HEAP_I128 = 27,
+    HEAP_PRNG = 28,
 } HeapType;
 
 typedef struct {
@@ -338,6 +341,7 @@ typedef struct {
             int32_t* open_slots;
         } closure;
         struct { void* ptr; int subtype; } opaque;  /* for complex, rational, tensor, logic, etc. */
+        struct { uint64_t state; } prng; /* leaf, no pointers or external allocation */
     };
 } HeapObject;
 
@@ -371,10 +375,22 @@ typedef struct {
 } VmHeapRegionSlots;
 
 typedef struct {
+    uint64_t generation;
+    int32_t car_node;
+    int32_t cdr_node;
+    int* captures;
+    int capture_count;
+} VmAdPairNodes;
+
+typedef struct {
     VmRegionStack regions;
     HeapObject** objects;    /* array of pointers to arena-allocated objects */
     int32_t next_free;
     int32_t capacity;
+    /* Lazily allocated, heap-indexed reverse-tape metadata for pair fields.
+     * Kept out of HeapObject so ordinary VM objects pay no size overhead. */
+    VmAdPairNodes* ad_pair_nodes;
+    int32_t ad_nodes_capacity;
     /* SW-14 growth watchdog. Before the Stage-1 evacuator the VM heap had no
      * reclamation of any kind and this watchdog was the whole story; it is kept
      * because `with-region` is opt-in and a workload that never opens a region
@@ -436,6 +452,8 @@ static int vm_heap_budget_fatal(void) {
 /** @brief Initialize the VM heap: sets up its arena region stack and the
  *         object-pointer table (fixed capacity HEAP_SIZE). */
 static void heap_init(Heap* h) {
+    h->ad_pair_nodes = NULL;
+    h->ad_nodes_capacity = 0;
     vm_region_stack_init(&h->regions);
     h->capacity = HEAP_SIZE;
     h->objects = (HeapObject**)calloc(h->capacity, sizeof(HeapObject*));
@@ -628,6 +646,10 @@ static int32_t heap_alloc(Heap* h) {
         slot = h->next_free++;
     }
     h->objects[slot] = obj;
+    if (slot >= 0 && slot < h->ad_nodes_capacity) {
+        free(h->ad_pair_nodes[slot].captures);
+        h->ad_pair_nodes[slot] = (VmAdPairNodes){0, -1, -1, NULL, 0};
+    }
     if (h->regions.depth > 0) heap_region_record_slot(h, slot);
     heap_check_budget(h);
     return slot;
@@ -719,8 +741,82 @@ static void heap_destroy(Heap* h) {
     free(h->markbits);   h->markbits = NULL;   h->markbits_cap = 0;
     free(h->mark_stack); h->mark_stack = NULL; h->mark_stack_n = h->mark_stack_cap = 0;
     free(h->free_slots); h->free_slots = NULL; h->n_free_slots = h->cap_free_slots = 0;
+    for (int32_t i = 0; i < h->ad_nodes_capacity; ++i)
+        free(h->ad_pair_nodes[i].captures);
+    free(h->ad_pair_nodes); h->ad_pair_nodes = NULL; h->ad_nodes_capacity = 0;
     free(h->objects);
     h->objects = NULL;
+}
+
+static int heap_ad_pair_nodes_set(Heap* h, int32_t ptr, uint64_t generation,
+                                  int car_node, int cdr_node) {
+    if (!h || ptr < 0) return 0;
+    if (car_node == -1 && cdr_node == -1 && ptr >= h->ad_nodes_capacity) return 1;
+    if (ptr >= h->ad_nodes_capacity) {
+        int32_t capacity = h->capacity;
+        if (capacity <= ptr) capacity = ptr + 1;
+        if ((size_t)capacity > SIZE_MAX / sizeof(VmAdPairNodes)) return 0;
+        VmAdPairNodes* nodes = (VmAdPairNodes*)malloc((size_t)capacity * sizeof(VmAdPairNodes));
+        if (!nodes) return 0;
+        for (int32_t i = 0; i < capacity; ++i)
+            nodes[i] = (VmAdPairNodes){0, -1, -1, NULL, 0};
+        if (h->ad_nodes_capacity > 0) {
+            memcpy(nodes, h->ad_pair_nodes,
+                   (size_t)h->ad_nodes_capacity * sizeof(VmAdPairNodes));
+        }
+        free(h->ad_pair_nodes);
+        h->ad_pair_nodes = nodes;
+        h->ad_nodes_capacity = capacity;
+    }
+    free(h->ad_pair_nodes[ptr].captures);
+    h->ad_pair_nodes[ptr] = (VmAdPairNodes){generation, car_node, cdr_node, NULL, 0};
+    return 1;
+}
+
+static int heap_ad_pair_field_node(const Heap* h, int32_t ptr,
+                                   uint64_t generation, int cdr) {
+    if (!h || ptr < 0 || ptr >= h->ad_nodes_capacity) return -1;
+    if (h->ad_pair_nodes[ptr].generation != generation) return -1;
+    return cdr ? h->ad_pair_nodes[ptr].cdr_node : h->ad_pair_nodes[ptr].car_node;
+}
+
+static int heap_ad_pair_field_set(Heap* h, int32_t ptr, uint64_t generation,
+                                  int cdr, int node) {
+    int car_node = heap_ad_pair_field_node(h, ptr, generation, 0);
+    int cdr_node = heap_ad_pair_field_node(h, ptr, generation, 1);
+    if (cdr) cdr_node = node;
+    else car_node = node;
+    return heap_ad_pair_nodes_set(h, ptr, generation, car_node, cdr_node);
+}
+
+/* Closed scalar captures keep their tape nodes outside HeapObject. The table
+ * is indexed by stable heap slots; reuse and heap teardown release each array. */
+static int heap_ad_capture_node_set(Heap* h, int32_t ptr, uint64_t generation,
+                                    int index, int count, int node) {
+    if (!h || ptr < 0 || index < 0 || index >= count || count <= 0 ||
+        (size_t)count > SIZE_MAX / sizeof(int)) return 0;
+    if (ptr < h->ad_nodes_capacity && h->ad_pair_nodes[ptr].generation == generation &&
+        h->ad_pair_nodes[ptr].captures && h->ad_pair_nodes[ptr].capture_count == count) {
+        h->ad_pair_nodes[ptr].captures[index] = node;
+        return 1;
+    }
+    if (node == -1) return 1;
+    int* nodes = (int*)malloc((size_t)count * sizeof(int));
+    if (!nodes) return 0;
+    for (int i = 0; i < count; ++i) nodes[i] = -1;
+    nodes[index] = node;
+    // A real node forces lazy table allocation (an empty pair needs none).
+    if (!heap_ad_pair_nodes_set(h, ptr, generation, node, -1)) { free(nodes); return 0; }
+    h->ad_pair_nodes[ptr].car_node = -1;
+    h->ad_pair_nodes[ptr].captures = nodes;
+    h->ad_pair_nodes[ptr].capture_count = count;
+    return 1;
+}
+static int heap_ad_capture_node(const Heap* h, int32_t ptr, uint64_t generation, int index) {
+    if (!h || ptr < 0 || ptr >= h->ad_nodes_capacity || index < 0) return -1;
+    const VmAdPairNodes* row = &h->ad_pair_nodes[ptr];
+    return row->generation == generation && row->captures && index < row->capture_count
+        ? row->captures[index] : -1;
 }
 
 /*******************************************************************************
@@ -779,6 +875,7 @@ typedef struct VmNativeEscape {
     uint64_t frame_generation;
     int native_depth;
     int ad_live_passes;   /* forward passes live at the escape point (ADR-0027) */
+    void* active_tape;    /* reverse tape owned by the surviving interpreter */
 } VmNativeEscape;
 
 typedef struct VM {
@@ -892,6 +989,7 @@ typedef struct VM {
 
     uint32_t language_coverage_call_hash;
     int32_t language_coverage_call_pc;
+    int32_t language_coverage_load_pc; /* only the immediately executed load */
 
     /* Reverse-mode AD tracing context.
      * When active_tape != NULL, arithmetic operations (+,-,*,/,sin,cos,...)
@@ -912,6 +1010,7 @@ typedef struct VM {
     uint64_t ad_reverse_passes;
     uint64_t ad_tape_allocations;
     uint64_t ad_tape_nodes;
+    uint64_t ad_tape_generation;
     uint64_t ad_scalar_ad_nodes;
     uint64_t ad_tensor_ad_nodes;
     uint64_t ad_finite_difference_evals;
@@ -1033,6 +1132,12 @@ typedef struct VM {
         int active;
         int fd;
         int closed;
+        /* An open fragment sequence: the data opcode it began with and the
+         * bytes gathered so far. A fragment is never surfaced as a whole
+         * frame; the message is delivered on FIN (RFC 6455 section 5.4). */
+        int fragment_opcode;
+        char* fragment_data;
+        size_t fragment_length;
     } websocket_clients[16];
 
     char http_proxy_url[512];
@@ -1098,7 +1203,15 @@ static void vm_close_open_upvalues_from(VM* vm, int first_dead_slot) {
         HeapObject* cl = (e.obj >= 0 && e.obj < vm->heap.next_free) ? vm->heap.objects[e.obj] : NULL;
         if (cl && cl->type == HEAP_CLOSURE && e.uv >= 0 && e.uv < cl->closure.n_upvalues &&
             cl->closure.open_slots && cl->closure.open_slots[e.uv] == e.slot) {
-            if (e.slot >= 0 && e.slot < vm->sp) cl->closure.upvalues[e.uv] = vm->stack[e.slot];
+            if (e.slot >= 0 && e.slot < vm->sp) {
+                cl->closure.upvalues[e.uv] = vm->stack[e.slot];
+                if (vm->active_tape && !heap_ad_capture_node_set(&vm->heap, e.obj,
+                        vm->ad_tape_generation, e.uv, cl->closure.n_upvalues,
+                        vm->ad_node_map[e.slot])) {
+                    fprintf(stderr, "ERROR: reverse-gradient capture metadata allocation failed\n");
+                    vm->error = 1;
+                }
+            }
             cl->closure.open_slots[e.uv] = -1;
         }
         vm->open_uvs[i] = vm->open_uvs[--vm->n_open_uvs];
@@ -1230,6 +1343,9 @@ static int vm_tail_call_from_exception_handler(VM* vm, int argc, Value* func) {
          * closure from the root range while keeping every tail argument live. */
         for (int i = 0; i < argc; i++)
             vm->stack[target_fp + i] = vm->stack[vm->sp - argc + i];
+        if (vm->active_tape)
+            memmove(&vm->ad_node_map[target_fp], &vm->ad_node_map[vm->sp - argc],
+                    (size_t)argc * sizeof(int));
         if (target_fp > 0 && func) vm->stack[target_fp - 1] = *func;
         vm->sp = target_fp + argc;
         vm->fp = target_fp;
@@ -1240,6 +1356,9 @@ static int vm_tail_call_from_exception_handler(VM* vm, int argc, Value* func) {
     }
     for (int i = 0; i < argc; i++)
         vm->stack[target_fp + i] = vm->stack[vm->sp - argc + i];
+    if (vm->active_tape)
+        memmove(&vm->ad_node_map[target_fp], &vm->ad_node_map[vm->sp - argc],
+                (size_t)argc * sizeof(int));
     vm->sp = target_fp + argc;
     vm->fp = target_fp;
     vm->frame_count = target_frame_count;
@@ -1439,9 +1558,24 @@ static inline int is_heap_type(VM* vm, Value v, HeapType type) {
 }
 
 /** @brief Push @p v onto the VM's value stack, setting vm->error on
- *         overflow. */
+ *         overflow.
+ *
+ * The operand stack is this VM profile's one fixed capacity, so the report
+ * names it and says how it is set: a datum nested deeper than the stack is
+ * wide is answered here, in words, rather than by the process ending.  Reading
+ * such a datum has no depth limit of its own
+ * (inc/eshkol/core/reader_limits.h); it is building the value on the operand
+ * stack that this ceiling governs. */
 static void vm_push(VM* vm, Value v) {
-    if (vm->sp >= STACK_SIZE) { fprintf(stderr, "STACK OVERFLOW\n"); vm->error = 1; return; }
+    if (vm->sp >= STACK_SIZE) {
+        fprintf(stderr,
+                "ERROR: the operand stack is full at its %d slots "
+                "(ESHKOL_VM_STACK_SIZE): the expression or datum being built "
+                "needs more nesting than this VM profile carries\n",
+                (int)STACK_SIZE);
+        vm->error = 1;
+        return;
+    }
     vm->stack[vm->sp++] = v;
 }
 
@@ -1515,7 +1649,93 @@ static void print_tensor_recursive(VM* vm, const VmTensor* t, int dim, int64_t o
  *        the VM's heap. Most opaque heap types not yet given a full
  *        printer render as a `<type-name>` placeholder.
  */
-static void print_value_mode(VM* vm, Value v, int write_syntax) {
+/* ───────────────────────────────────────────────────────────────────────────
+ * Printing carries its own stack
+ *
+ * A list's spine was already walked iteratively here; a datum nests in the
+ * CAR, and a datum nests as deeply as the reader could read it, so the car
+ * descent and the vector-element descent are carried on an explicit work
+ * stack too.  A million-level quoted datum prints in full, on a constant
+ * number of native frames.
+ *
+ * A work item is one step of the output: a value to print, the remainder of a
+ * list body or of a vector body, or a piece of literal text.  Items are
+ * pushed in reverse, so popping replays the output order exactly.  A list or
+ * vector body carries its cursor rather than being expanded up front, so a
+ * long list still costs one item, not one per element.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+typedef enum { PV_VALUE, PV_LIST_REST, PV_VECTOR_REST, PV_TEXT } PrintWorkKind;
+
+typedef struct {
+    PrintWorkKind kind;
+    Value         value;
+    int           index;      /* vector cursor, or "not the first element" */
+    const char*   text;
+} PrintWork;
+
+typedef struct {
+    PrintWork  inline_slots[64];
+    PrintWork* slots;
+    size_t     n;
+    size_t     cap;
+    int        heap;
+    int        failed;
+} PrintWorkStack;
+
+static void pv_stack_init(PrintWorkStack* st) {
+    st->slots = st->inline_slots;
+    st->n = 0;
+    st->cap = sizeof(st->inline_slots) / sizeof(st->inline_slots[0]);
+    st->heap = 0;
+    st->failed = 0;
+}
+
+static void pv_stack_free(PrintWorkStack* st) {
+    if (st->heap) free(st->slots);
+    st->slots = st->inline_slots;
+    st->heap = 0;
+}
+
+static void pv_push(PrintWorkStack* st, PrintWork w) {
+    if (st->failed) return;
+    if (st->n == st->cap) {
+        const size_t next = st->cap * 2;
+        PrintWork* grown;
+        if (st->heap) {
+            grown = (PrintWork*)realloc(st->slots, next * sizeof(PrintWork));
+        } else {
+            grown = (PrintWork*)malloc(next * sizeof(PrintWork));
+            if (grown) memcpy(grown, st->slots, st->n * sizeof(PrintWork));
+        }
+        if (!grown) { st->failed = 1; return; }
+        st->slots = grown;
+        st->cap = next;
+        st->heap = 1;
+    }
+    st->slots[st->n++] = w;
+}
+
+static void pv_push_value(PrintWorkStack* st, Value v) {
+    PrintWork w; memset(&w, 0, sizeof(w));
+    w.kind = PV_VALUE; w.value = v;
+    pv_push(st, w);
+}
+
+static void pv_push_rest(PrintWorkStack* st, PrintWorkKind kind, Value v, int index) {
+    PrintWork w; memset(&w, 0, sizeof(w));
+    w.kind = kind; w.value = v; w.index = index;
+    pv_push(st, w);
+}
+
+static void pv_push_text(PrintWorkStack* st, const char* text) {
+    PrintWork w; memset(&w, 0, sizeof(w));
+    w.kind = PV_TEXT; w.text = text;
+    pv_push(st, w);
+}
+
+/* Emits one value, queueing the parts of it that are themselves values. */
+static void print_value_step(VM* vm, Value v, int write_syntax, PrintWorkStack* st) {
     switch ((int)v.type) {
         case VAL_NIL:   printf("()"); break;
         case VAL_INT:   printf("%lld", (long long)v.as.i); break;
@@ -1540,24 +1760,11 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
              * (native eshkol_display_fact prints the same). */
             if (v.as.ptr >= 0 && vm->heap.objects[v.as.ptr] &&
                 vm->heap.objects[v.as.ptr]->type == HEAP_FACT) {
-                print_value_mode(vm, vm->heap.objects[v.as.ptr]->cons.car, write_syntax);
+                pv_push_value(st, vm->heap.objects[v.as.ptr]->cons.car);
                 break;
             }
             printf("(");
-            Value cur = v;
-            int first = 1;
-            while (cur.type == VAL_PAIR) {
-                if (!first) printf(" ");
-                first = 0;
-                HeapObject* obj = vm->heap.objects[cur.as.ptr];
-                print_value_mode(vm, obj->cons.car, write_syntax);
-                cur = obj->cons.cdr;
-            }
-            if (cur.type != VAL_NIL) {
-                printf(" . ");
-                print_value_mode(vm, cur, write_syntax);
-            }
-            printf(")");
+            pv_push_rest(st, PV_LIST_REST, v, 0 /* this is the first element */);
             break;
         }
         case VAL_STRING: {
@@ -1596,13 +1803,10 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             printf("#(");
             if (obj && obj->opaque.ptr) {
-                VmVector* vec = (VmVector*)obj->opaque.ptr;
-                for (int i = 0; i < vec->len; i++) {
-                    if (i) printf(" ");
-                    print_value_mode(vm, vec->items[i], write_syntax);
-                }
+                pv_push_rest(st, PV_VECTOR_REST, v, 0);
+            } else {
+                printf(")");
             }
-            printf(")");
             break;
         }
         case VAL_CLOSURE: printf("<closure@%d>", v.as.ptr); break;
@@ -1718,11 +1922,67 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
         case VAL_MANIFOLD:    printf("<manifold>"); break;
         case VAL_RIEMANNIAN_ADAM_STATE: printf("<riemannian-adam-state>"); break;
         case VAL_PORT:        printf("<port>"); break;
+        case VAL_PRNG:        printf("#<prng>"); break;
         case VAL_FUTURE:      printf("<future>"); break;
         case VAL_EOF:         printf("#<eof>"); break;
         case VAL_VOID:        break; /* unspecified — produces no output */
         default: printf("<unknown>"); break;
     }
+}
+
+/**
+ * @brief Prints a value, in display form (@p write_syntax 0) or write form.
+ *
+ * Native stack use is constant in how deeply the value nests.  When the work
+ * stack cannot grow, the remaining structure is elided rather than the
+ * process ending: output already written stays written, and the elision is
+ * visible in it.
+ */
+static void print_value_mode(VM* vm, Value v, int write_syntax) {
+    PrintWorkStack st;
+    pv_stack_init(&st);
+    print_value_step(vm, v, write_syntax, &st);
+    while (st.n > 0 && !st.failed) {
+        const PrintWork w = st.slots[--st.n];
+        switch (w.kind) {
+            case PV_VALUE:
+                print_value_step(vm, w.value, write_syntax, &st);
+                break;
+            case PV_TEXT:
+                fputs(w.text, stdout);
+                break;
+            case PV_LIST_REST: {
+                Value cur = w.value;
+                if (cur.type == VAL_PAIR) {
+                    if (w.index) printf(" ");
+                    HeapObject* obj = vm->heap.objects[cur.as.ptr];
+                    pv_push_rest(&st, PV_LIST_REST, obj->cons.cdr, 1);
+                    pv_push_value(&st, obj->cons.car);
+                } else if (cur.type != VAL_NIL) {
+                    printf(" . ");
+                    pv_push_text(&st, ")");
+                    pv_push_value(&st, cur);
+                } else {
+                    printf(")");
+                }
+                break;
+            }
+            case PV_VECTOR_REST: {
+                HeapObject* obj = vm->heap.objects[w.value.as.ptr];
+                VmVector* vec = (obj && obj->opaque.ptr) ? (VmVector*)obj->opaque.ptr : NULL;
+                if (vec && w.index < vec->len) {
+                    if (w.index) printf(" ");
+                    pv_push_rest(&st, PV_VECTOR_REST, w.value, w.index + 1);
+                    pv_push_value(&st, vec->items[w.index]);
+                } else {
+                    printf(")");
+                }
+                break;
+            }
+        }
+    }
+    if (st.failed) printf(" ...");
+    pv_stack_free(&st);
 }
 
 /** Display-style printer used by diagnostics and the `display` primitive. */
@@ -1797,7 +2057,9 @@ static HeapObject* vm_callable_closure(VM* vm, Value callable, int argc) {
 /* Defined with the interpreter: the same entry used by OP_CALL. */
 static int vm_enter_call(VM* vm, int argc, int32_t return_pc);
 
-static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int argc) {
+static Value vm_call_closure_from_native_impl(VM* vm, Value closure, Value* args,
+                                              int argc, int* result_ad_node) {
+    if (result_ad_node) *result_ad_node = -1;
 
     /* Save VM state */
     int32_t saved_pc = vm->pc;
@@ -1825,6 +2087,9 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     Value result = NIL_VAL;
     if (vm->sp > saved_sp) {
         result = vm->stack[vm->sp - 1];
+        if (result_ad_node && !callee_error && vm->active_tape &&
+            vm->sp - 1 >= 0 && vm->sp - 1 < STACK_SIZE)
+            *result_ad_node = vm->ad_node_map[vm->sp - 1];
     }
 
     /* Restore VM state */
@@ -1836,6 +2101,18 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm->error = saved_error || callee_error;
 
     return result;
+}
+
+static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int argc) {
+    return vm_call_closure_from_native_impl(vm, closure, args, argc, NULL);
+}
+
+/* Traced variant used by VM reverse-gradient. It captures the map attached to
+ * the actual returned stack slot before restoring the caller's stack; tape
+ * length is not a proxy for output identity. */
+static Value vm_call_closure_from_native_traced(VM* vm, Value closure,
+        Value* args, int argc, int* result_ad_node) {
+    return vm_call_closure_from_native_impl(vm, closure, args, argc, result_ad_node);
 }
 
 /*******************************************************************************

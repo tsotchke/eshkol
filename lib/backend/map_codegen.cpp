@@ -249,7 +249,66 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
     Value* proc = nullptr;
     Function* proc_func = nullptr;
 
-    if (resolve_lambda_callback_) {
+    // Maps the lists with an already evaluated procedure value, through the
+    // runtime closure dispatcher.
+    auto mapWithProcedureValue = [&](Value* closure_val) -> Value* {
+        if (!codegen_ast_callback_) return nullptr;
+        std::vector<Value*> lists;
+        for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+            Value* list = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+            if (!list) return nullptr;
+            lists.push_back(list);
+        }
+        return lists.empty() ? nullptr : mapWithClosureN(closure_val, lists);
+    };
+
+    const bool proc_is_inline_lambda =
+        op->call_op.variables[0].type == ESHKOL_OP &&
+        op->call_op.variables[0].operation.op == ESHKOL_LAMBDA_OP;
+    // Capture arguments of an inline lambda called directly: the addresses of
+    // its closure's capture slots (see below).
+    std::vector<Value*> inline_lambda_captures;
+    if (proc_is_inline_lambda && codegen_ast_callback_) {
+        // An inline lambda is compiled once, here. One with no free variables
+        // yields its function and is called directly. One that closes over
+        // variables yields its closure value, whose environment holds the
+        // captures. Its arity is already known to match (checked above), so
+        // when the body takes its capture slots as parameters within the
+        // closure-call slot count, the loop calls the body directly and
+        // passes the slot addresses read from that closure -- the arguments
+        // the closure-call protocol itself would pass, without the per-call
+        // dispatch. Any other shape is entered through the protocol.
+        Value* lambda_value = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+        if (!lambda_value) {
+            eshkol_error("Failed to resolve procedure for map");
+            if (pop_function_context_) pop_function_context_(callback_context_);
+            return nullptr;
+        }
+        if (isa<Function>(lambda_value)) {
+            proc = lambda_value;
+        } else {
+            if (lambda_value->getType()->isPointerTy()) {
+                lambda_value = ctx_.builder().CreateLoad(ctx_.taggedValueType(), lambda_value,
+                                                         "map_proc_value");
+            }
+            Function* body = nullptr;
+            if (last_generated_lambda_name_ && !last_generated_lambda_name_->empty()) {
+                body = ctx_.module().getFunction(*last_generated_lambda_name_);
+            }
+            if (body && lambda_value->getType() == ctx_.taggedValueType() &&
+                closureBodyTakesSlotsDirectly(body, num_lists, ctx_.taggedValueType())) {
+                Value* closure_ptr = ctx_.builder().CreateIntToPtr(
+                    tagged_.unpackInt64(lambda_value), ctx_.ptrType(), "map_lambda_closure");
+                inline_lambda_captures = emitClosureCaptureArguments(
+                    ctx_.builder(), ctx_.taggedValueType(), closure_ptr, body, num_lists);
+                proc = body;
+            } else {
+                Value* result = mapWithProcedureValue(lambda_value);
+                if (pop_function_context_) pop_function_context_(callback_context_);
+                return result;
+            }
+        }
+    } else if (resolve_lambda_callback_) {
         proc = resolve_lambda_callback_(&op->call_op.variables[0], num_lists, callback_context_);
     }
 
@@ -410,6 +469,10 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
                 }
             }
         }
+    }
+
+    if (!inline_lambda_captures.empty()) {
+        closure_captures = std::move(inline_lambda_captures);
     }
 
     // Single-list map: (map proc list)
@@ -702,6 +765,13 @@ void MapCodegen::loadCapturedValues(
             }
         }
 
+        // Slot addresses read from the procedure's own closure are its
+        // captures; nothing is looked up by name for them.
+        if (i < closure_captures.size()) {
+            args.push_back(closure_captures[i]);
+            continue;
+        }
+
         // Construct capture storage key
         std::string capture_key = lambda_name + "_capture_" + var_name;
 
@@ -769,9 +839,6 @@ void MapCodegen::loadCapturedValues(
             } else {
                 args.push_back(storage);
             }
-        } else if (i < closure_captures.size()) {
-            // The procedure was reached by name: its closure's capture slot.
-            args.push_back(closure_captures[i]);
         } else {
             // Fall back to looking up the original variable name in current scope
             Value* var_storage = nullptr;

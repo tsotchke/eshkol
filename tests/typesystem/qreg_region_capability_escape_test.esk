@@ -1,0 +1,12 @@
+;; Type System Test: the region capability cannot escape inside a returned procedure
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: the quantum region 'qr' escapes its region inside a returned procedure
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define-quantum-region qr (allocator)
+  (lambda (n) (qmeasure (qalloc qr n))))
+
+(display ((allocator) 2))

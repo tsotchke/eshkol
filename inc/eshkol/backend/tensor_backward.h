@@ -233,6 +233,9 @@ void eshkol_backward_attention(
 
 /**
  * @brief Multi-head attention backward pass: computes gradients for Q, K, V and all projection weights.
+ * The tensor tape retains Q, K, V, W_Q, W_K, W_V, W_O, and attention in
+ * saved_tensors[0..7]. Optional ad_node_t* entries [8..11] receive the
+ * corresponding four weight gradients. A null entry denotes a constant.
  * @param grad_out Upstream gradient over the MHA output
  * @param saved_Q Forward-pass query input
  * @param saved_K Forward-pass key input

@@ -35,7 +35,7 @@ cat > "$WORK/lib.esk" <<EOF
 EOF
 
 cat > "$WORK/main.esk" <<EOF
-(load "$WORK/lib.esk")
+(load "lib.esk")
 (display "priv-result: ") (display (priv)) (newline)
 (display "pub-result: ") (display (pub)) (newline)
 EOF

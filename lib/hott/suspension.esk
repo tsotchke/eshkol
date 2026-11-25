@@ -1,0 +1,27 @@
+;;; Suspensions (ADR-0043): Susp A, with the circle as the suspension of
+;;; the booleans. Import with (hott (import suspension)).
+
+(hott
+  (import circle)
+
+  (data (Susp (l : Level) (A : (U l))) : (U l)
+    north
+    south
+    (merid (a : A) (dims i) (boundary ((= i 0) north) ((= i 1) south))))
+
+  (data Bool true false)
+
+  ;; S1 -> Susp Bool: the loop goes out along one meridian and back along the other
+  (define S1->SuspBool : (-> S1 (Susp 0 Bool))
+    (split (base north)
+           ((loop i) ((trans 0 (Susp 0 Bool) north south north
+                             (merid false) (sym 0 (Susp 0 Bool) north south (merid true)))
+                      i))))
+
+  (define SuspBool-merid : (-> Bool OmegaS1)
+    (split (false loop) (true (refl 0 S1 base))))
+
+  (define SuspBool->S1 : (-> (Susp 0 Bool) S1)
+    (split (north base)
+           (south base)
+           ((merid b i) ((SuspBool-merid b) i)))))

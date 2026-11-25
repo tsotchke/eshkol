@@ -11,49 +11,75 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run"
+case "${BUILD_DIR:-build}" in
+    /*) RUN="${BUILD_DIR}/eshkol-run" ;;
+    *) RUN="$ROOT/${BUILD_DIR:-build}/eshkol-run" ;;
+esac
+case "${BUILD_DIR:-build}" in
+    /*) BUILD_DIR_PATH="${BUILD_DIR}" ;;
+    *) BUILD_DIR_PATH="$ROOT/${BUILD_DIR:-build}" ;;
+esac
+
+# ICC's source stamp is bound to its registered repo root, while --cwd only
+# selects where the test command runs. Refuse a named ICC invocation if those
+# roots differ, before opening sockets or producing test evidence.
+if [ -n "${ICC_REPO_NAME:-}" ]; then
+    ICC_BIN="${ICC_BIN:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+    if [ ! -x "$ICC_BIN" ]; then
+        echo "FAIL: ICC receipt producer unavailable: $ICC_BIN"
+        exit 3
+    fi
+    REGISTERED_ROOT=$("$ICC_BIN" resolve --repo "$ICC_REPO_NAME" --format json 2>/dev/null | python3 -c '
+import json, os, sys
+try:
+    path = json.load(sys.stdin).get("repo", {}).get("path", "")
+    print(os.path.realpath(path) if path else "")
+except Exception:
+    print("")
+')
+    CHECKOUT_ROOT=$(cd "$ROOT" && pwd -P)
+    if [ -z "$REGISTERED_ROOT" ] || [ "$REGISTERED_ROOT" != "$CHECKOUT_ROOT" ]; then
+        echo "FAIL: ICC repo $ICC_REPO_NAME resolves to '$REGISTERED_ROOT', but test checkout is '$CHECKOUT_ROOT'"
+        exit 3
+    fi
+fi
+
+if [ "${1:-}" = "--verify-icc-checkout-only" ]; then
+    if [ -z "${ICC_REPO_NAME:-}" ]; then
+        echo "FAIL: ICC_REPO_NAME is required for checkout verification"
+        exit 3
+    fi
+    echo "PASS: ICC repo $ICC_REPO_NAME resolves to the test checkout"
+    exit 0
+fi
+if [ "$#" -gt 0 ]; then
+    echo "FAIL: unexpected argument: $1"
+    exit 2
+fi
 
 if [ ! -x "$RUN" ]; then
-    echo "SKIP: $RUN not built"
-    exit 0
+    echo "FAIL: $RUN not built; HTTP server evidence is unavailable"
+    exit 2
+fi
+
+# Bind the run to the exact runner digest and fail if it predates any
+# build-relevant source change. The ICC test receipt separately stamps the
+# clean source tree and declares this runner as measured data.
+TRACE_DIR="${TRACE_DIR:-$ROOT/scripts/icc_traces}"
+. "$ROOT/scripts/lib/evidence_paths.sh"
+eshkol_evidence_abs_var TRACE_DIR "$ROOT" || exit $?
+mkdir -p "$TRACE_DIR"
+. "$ROOT/scripts/lib/build_fingerprint.sh"
+eshkol_emit_build_fingerprint_event "$TRACE_DIR" "v14_http_server_roundtrip" "$BUILD_DIR_PATH" eshkol-run
+if ! python3 "$ROOT/scripts/check_build_fingerprint.py" \
+    --build-dir "$BUILD_DIR_PATH" --trace-dir "$TRACE_DIR" --format json; then
+    echo "FAIL: eshkol-run build fingerprint is stale or mismatched"
+    exit 1
 fi
 
 WORK=$(mktemp -d -t eshkol_http_server.XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
 RUN_TIMEOUT="${ESHKOL_HTTP_SERVER_SMOKE_TIMEOUT:-120}"
-
-run_with_timeout() {
-    local seconds="$1"
-    shift
-
-    local timeout_marker="$WORK/timeout"
-    rm -f "$timeout_marker"
-
-    "$@" &
-    local cmd_pid=$!
-
-    (
-        sleep "$seconds"
-        if kill -0 "$cmd_pid" 2>/dev/null; then
-            touch "$timeout_marker"
-            kill "$cmd_pid" 2>/dev/null || true
-            sleep 1
-            kill -9 "$cmd_pid" 2>/dev/null || true
-        fi
-    ) &
-    local watchdog_pid=$!
-
-    wait "$cmd_pid"
-    local rc=$?
-
-    kill "$watchdog_pid" 2>/dev/null || true
-    wait "$watchdog_pid" 2>/dev/null || true
-
-    if [ -f "$timeout_marker" ]; then
-        return 124
-    fi
-    return "$rc"
-}
 
 cat > "$WORK/http_server.esk" <<'EOF'
 (require stdlib)
@@ -99,8 +125,8 @@ cat > "$WORK/http_server.esk" <<'EOF'
 (define srv (create-server-with-retry 5))
 (if (not (server-handle? srv))
     (begin
-      (display "SKIP: http-server-create unavailable") (newline)
-      (exit 0))
+      (display "FAIL: http-server-create unavailable") (newline)
+      (exit 1))
     #t)
 
 (check "http-server-create returns positive handle" #t (server-handle? srv))
@@ -177,7 +203,10 @@ cat > "$WORK/http_server.esk" <<'EOF'
 (if (> failed 0) (exit 1) (exit 0))
 EOF
 
-ESHKOL_PATH="$ROOT" run_with_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/http_server.esk"
+source "$ROOT/scripts/lib/test_isolation.sh"
+ESHKOL_TEST_ISOLATION_NO_TRAP=1 eshkol_test_isolation_init "http-server-smoke"
+trap 'eshkol_test_isolation_cleanup; rm -rf "$WORK"' EXIT
+ESHKOL_TEST_TIMEOUT_FORCE_PYTHON=1 ESHKOL_LIB_DIR="$BUILD_DIR_PATH" ESHKOL_PATH="$ROOT" eshkol_test_timeout "$RUN_TIMEOUT" "$RUN" -r "$WORK/http_server.esk"
 rc=$?
 if [ "$rc" -eq 124 ]; then
     echo "FAIL: http server smoke timed out after ${RUN_TIMEOUT}s"

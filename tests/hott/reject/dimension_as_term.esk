@@ -1,0 +1,3 @@
+;; expect-error: used where a term is expected
+(hott (import numbers)
+  (define bad : (Path Nat 0 0) (lambda (i) i)))

@@ -1,0 +1,5 @@
+(require core.net)
+;; The user callee shadows close, so this real acquisition remains unconsumed.
+(define (tcp-close x) x)
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (not (network-error? socket)) (tcp-close socket))

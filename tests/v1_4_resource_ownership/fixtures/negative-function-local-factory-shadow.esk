@@ -1,0 +1,5 @@
+(import (core net))
+(define (unused)
+  (define (tcp-listen host port) 7)
+  7)
+(define socket (tcp-listen "127.0.0.1" 0))

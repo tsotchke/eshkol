@@ -1,0 +1,14 @@
+;; Run with ESHKOL_MAX_SOURCE_BYTES=65536: a datum whose spelling is over the
+;; input cap raises a condition naming the cap; one under it evaluates.
+(define (message-of thunk)
+  (guard (e ((error-object? e) (error-object-message e))
+            (#t 'not-an-error-object))
+    (thunk)
+    'no-condition))
+(define (ones n)
+  (let loop ((i 0) (acc '()))
+    (if (= i n) acc (loop (+ i 1) (cons 1 acc)))))
+(display (message-of (lambda () (eval (cons '+ (ones 40000))))))
+(newline)
+(display (eval (cons '+ (ones 1000))))
+(newline)

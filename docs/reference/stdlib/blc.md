@@ -23,6 +23,10 @@ and error text, taken from reading `lib/core/blc.esk` directly. All samples
 below were run under both the JIT (`eshkol-run -r`) and AOT (`eshkol-run -o`)
 engines; JIT and AOT outputs are byte-identical for every sample on this page.
 
+The stochastic extension — fair choice, exact rational distributions and the
+`2^-length` program prior over a separate `sblc-v1` code — is
+[`core.sblc`](sblc.md); this module is unchanged by it.
+
 ## Term representation
 
 Terms are homoiconic s-expressions, tagged with a symbol as the `car`:
@@ -301,13 +305,12 @@ function is reduced first, then the argument; reduction also proceeds under
 ```
 
 ### `(blc-eval term)`
-Repeatedly applies `blc-step` until it reports no further reduction
-(`reduced?` is `#f`), returning the beta normal form. Uses **normal-order**
-(leftmost-outermost) reduction, so it reaches a normal form whenever one
-exists even when a divergent subterm is discarded before it would ever be
-reduced (applicative order would loop on such terms). Step-counts against
-[`blc-max-steps`](#blc-max-steps); once the count exceeds the bound, signals
-`"blc-eval: no normal form within step bound"` instead of looping forever.
+Returns the full beta normal form, including beneath lambdas. Evaluation
+uses lexical environments for pending arguments and demands them in
+leftmost-outermost order. Each application of a lambda spends one of the
+same contractions counted by repeated `blc-step`. Discarded arguments can
+diverge without preventing a result. An already-normal term is returned
+directly. [Performance and verification](../../../benchmarks/blc_eval.md)
 
 ```scheme
 (require core.blc)
@@ -474,10 +477,10 @@ Upper bound (`1000000`) on the number of `blc-step` contractions `blc-eval`
 (and hence `blc-apply`) will perform before giving up on a term. It is an
 ordinary top-level `define`, not a parameter — there is no supported way to
 rebind it for a single call; changing the bound means editing this constant
-in `lib/core/blc.esk`. `blc-eval-loop` compares the running step count
-against it with `>` (strictly greater), so a term that finishes in exactly
-`blc-max-steps` steps still succeeds — the bound is only exceeded, and only
-then does evaluation abort, once one more step would have been attempted.
+in `lib/core/blc.esk`. Finishing in exactly `blc-max-steps` contractions
+succeeds. Attempting a further contraction signals
+`"blc-eval: no normal form within step bound"`. Looking up an argument and
+rebuilding the output tree consume no contractions.
 
 ```scheme
 (require core.blc)

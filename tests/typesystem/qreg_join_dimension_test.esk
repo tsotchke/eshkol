@@ -1,0 +1,13 @@
+;; Type System Test: qjoin adds dimensions: qreg<1> joined with qreg<2> is qreg<3>
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: quantum register dimension mismatch in argument 1 of 'four': expected qreg<4>, got qreg<3>
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define (four (r : qreg<4>)) : list (qmeasure r))
+(define-quantum-region qr (joined)
+  (four (qjoin (qalloc qr 1) (qalloc qr 2))))
+
+(display (joined))

@@ -18,6 +18,7 @@
  * pre-reduce-extract baseline.
  */
 #include <eshkol/backend/tensor_codegen.h>
+#include <eshkol/backend/tensor_shape_guard.h>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -72,13 +73,13 @@ void emitStructuralIntErrorLocation(CodegenContext& ctx) {
         llvm::ConstantInt::get(ctx.int32Type(), ctx.currentSourceColumn())});
 }
 
-llvm::Value* extractStructuralIntOrRaise(CodegenContext& ctx,
-                                         TaggedValueCodegen& tagged,
-                                         llvm::Value* value,
+} // namespace
+
+llvm::Value* TensorCodegen::extractStructuralIntOrRaise(llvm::Value* value,
                                          const char* proc_name,
                                          const char* expected_type) {
     if (!value) {
-        return llvm::ConstantInt::get(ctx.int64Type(), 0);
+        return llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
 
     llvm::Type* value_type = value->getType();
@@ -86,71 +87,77 @@ llvm::Value* extractStructuralIntOrRaise(CodegenContext& ctx,
         return value;
     }
     if (value_type->isIntegerTy()) {
-        return ctx.builder().CreateSExtOrTrunc(value, ctx.int64Type());
+        return ctx_.builder().CreateSExtOrTrunc(value, ctx_.int64Type());
     }
 
-    if (value_type != ctx.taggedValueType()) {
-        llvm::Function* func = ctx.builder().GetInsertBlock()->getParent();
+    if (value_type != ctx_.taggedValueType()) {
+        llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
-            ctx.context(), "axis_type_error", func);
-        ctx.builder().CreateBr(err_block);
-        ctx.builder().SetInsertPoint(err_block);
-        emitStructuralIntErrorLocation(ctx);
+            ctx_.context(), "axis_type_error", func);
+        ctx_.builder().CreateBr(err_block);
+        ctx_.builder().SetInsertPoint(err_block);
+        emitStructuralIntErrorLocation(ctx_);
 
-        llvm::Function* type_error_fn = ctx.module().getFunction("eshkol_type_error");
+        // Same condition and message as the tagged branch below, with the
+        // operand's type taken from its static type instead of a runtime tag.
+        llvm::Function* type_error_fn = ctx_.module().getFunction("eshkol_type_error_with_value");
         if (!type_error_fn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
-                ctx.builder().getVoidTy(),
-                {ctx.builder().getPtrTy(), ctx.builder().getPtrTy()},
+                ctx_.builder().getVoidTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
                 false);
             type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                "eshkol_type_error", &ctx.module());
+                "eshkol_type_error_with_value", &ctx_.module());
             type_error_fn->setDoesNotReturn();
         }
+        const char* actual_type = value_type->isFloatingPointTy() ? "double" : "non-integer value";
 
-        llvm::Value* proc = ctx.builder().CreateGlobalString(proc_name, "axis_int_proc");
-        llvm::Value* expected = ctx.builder().CreateGlobalString(expected_type, "axis_int_expected");
-        ctx.builder().CreateCall(type_error_fn, {proc, expected});
-        ctx.builder().CreateUnreachable();
-        return llvm::ConstantInt::get(ctx.int64Type(), 0);
+        llvm::Value* proc = ctx_.builder().CreateGlobalString(proc_name, "axis_int_proc");
+        llvm::Value* expected = ctx_.builder().CreateGlobalString(expected_type, "axis_int_expected");
+        llvm::Value* actual = ctx_.builder().CreateGlobalString(actual_type, "axis_int_actual");
+        ctx_.builder().CreateCall(type_error_fn, {proc, expected, actual});
+        ctx_.builder().CreateUnreachable();
+        // The refusal is unconditional: there is no success block, and the
+        // caller lowers the rest of the reduction with the value returned
+        // here. That IR continues in its own unreachable block.
+        ctx_.continueAfterNoReturn("axis_type_error_dead");
+        return llvm::ConstantInt::get(ctx_.int64Type(), 0);
     }
 
-    llvm::Value* type_tag = tagged.getType(value);
-    llvm::Value* base_type = tagged.getBaseType(type_tag);
-    llvm::Value* is_int = ctx.builder().CreateICmpEQ(base_type,
-        llvm::ConstantInt::get(ctx.int8Type(), ESHKOL_VALUE_INT64));
+    llvm::Value* type_tag = tagged_.getType(value);
+    llvm::Value* base_type = tagged_.getBaseType(type_tag);
+    llvm::Value* is_int = ctx_.builder().CreateICmpEQ(base_type,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
 
-    llvm::Function* func = ctx.builder().GetInsertBlock()->getParent();
+    llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
     llvm::BasicBlock* ok_block = llvm::BasicBlock::Create(
-        ctx.context(), "axis_int_ok", func);
+        ctx_.context(), "axis_int_ok", func);
     llvm::BasicBlock* err_block = llvm::BasicBlock::Create(
-        ctx.context(), "axis_type_error", func);
-    ctx.builder().CreateCondBr(is_int, ok_block, err_block);
+        ctx_.context(), "axis_type_error", func);
+    ctx_.builder().CreateCondBr(is_int, ok_block, err_block);
 
-    ctx.builder().SetInsertPoint(err_block);
-    emitStructuralIntErrorLocation(ctx);
-    llvm::Function* type_error_fn = ctx.module().getFunction("eshkol_type_error_with_operand");
+    ctx_.builder().SetInsertPoint(err_block);
+    emitStructuralIntErrorLocation(ctx_);
+    llvm::Function* type_error_fn = ctx_.module().getFunction("eshkol_type_error_with_operand");
     if (!type_error_fn) {
         llvm::FunctionType* ft = llvm::FunctionType::get(
-            ctx.builder().getVoidTy(),
-            {ctx.builder().getPtrTy(), ctx.builder().getPtrTy(), ctx.builder().getPtrTy()},
+            ctx_.builder().getVoidTy(),
+            {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()},
             false);
         type_error_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-            "eshkol_type_error_with_operand", &ctx.module());
+            "eshkol_type_error_with_operand", &ctx_.module());
         type_error_fn->setDoesNotReturn();
     }
-    llvm::Value* slot = ctx.builder().CreateAlloca(ctx.taggedValueType(), nullptr, "axis_err_slot");
-    ctx.builder().CreateStore(value, slot);
-    llvm::Value* proc = ctx.builder().CreateGlobalString(proc_name, "axis_int_proc");
-    llvm::Value* expected = ctx.builder().CreateGlobalString(expected_type, "axis_int_expected");
-    ctx.builder().CreateCall(type_error_fn, {proc, expected, slot});
-    ctx.builder().CreateUnreachable();
+    llvm::Value* slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "axis_err_slot");
+    ctx_.builder().CreateStore(value, slot);
+    llvm::Value* proc = ctx_.builder().CreateGlobalString(proc_name, "axis_int_proc");
+    llvm::Value* expected = ctx_.builder().CreateGlobalString(expected_type, "axis_int_expected");
+    ctx_.builder().CreateCall(type_error_fn, {proc, expected, slot});
+    ctx_.builder().CreateUnreachable();
 
-    ctx.builder().SetInsertPoint(ok_block);
-    return tagged.unpackInt64(value);
+    ctx_.builder().SetInsertPoint(ok_block);
+    return tagged_.unpackInt64(value);
 }
-
-} // namespace
 
 llvm::Value* TensorCodegen::adNodeFromTensorElementBits(llvm::Value* elem_bits, const std::string& name) {
     if (!autodiff_ || !elem_bits) {
@@ -498,7 +505,7 @@ llvm::Value* TensorCodegen::emitDenseTensorArithmetic(
         return b.CreateLoad(ctx_.taggedValueType(), jet_result_slot);
     };
     {
-        llvm::Value* any_jet = b.CreateOr(isDualTensor(a.tensor), isDualTensor(c.tensor),
+        llvm::Value* any_jet = b.CreateOr(isTaggedNumericTensor(a.tensor), isTaggedNumericTensor(c.tensor),
                                           "dense_arith_any_jet");
         llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(
             ctx_.context(), "dense_arith_jet", fn);
@@ -812,7 +819,7 @@ llvm::Value* TensorCodegen::tensorArithmeticInternal(llvm::Value* arg1, llvm::Va
         // the numeric kernels below read f64 slots only.
         if (autodiff_ && hasJetTensorArithmeticRule(operation)) {
             llvm::Value* any_jet = ctx_.builder().CreateOr(
-                isDualTensor(a1_ptr), isDualTensor(a2_ptr), "arith_any_jet");
+                isTaggedNumericTensor(a1_ptr), isTaggedNumericTensor(a2_ptr), "arith_any_jet");
             llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(
                 ctx_.context(), "arith_jet", current_func);
             llvm::BasicBlock* numeric_bb = llvm::BasicBlock::Create(
@@ -950,6 +957,10 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
 
     // Scheme vector: [length:i64, element0:tagged_value, element1:tagged_value, ...]
     llvm::Value* svec_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_a_ptr);
+    llvm::Value* svec_b_len = ctx_.builder().CreateLoad(ctx_.int64Type(), svec_b_ptr);
+    emitCatchableTensorContractGuard(ctx_,
+        ctx_.builder().CreateICmpEQ(svec_len, svec_b_len),
+        "tensor-dot: Scheme vector lengths must match", "svec_dot_length");
 
     // Dot product loop for Scheme vectors
     llvm::BasicBlock* svec_loop_cond = llvm::BasicBlock::Create(ctx_.context(), "svec_dot_cond", current_func);
@@ -1039,6 +1050,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // Width is auto-detected: 2 (NEON/SSE2), 4 (AVX), or 8 (AVX-512)
     // Falls back to scalar when SIMD_WIDTH == 1
     ctx_.builder().SetInsertPoint(dot_1d_block);
+    emitMatchingTensorShapes(ctx_, {tensor_a_ptr, tensor_b_ptr}, "tensor-dot");
 
     llvm::Value* ad_dot_tagged_result = nullptr;
     llvm::BasicBlock* ad_dot_exit_block = nullptr;
@@ -1208,18 +1220,20 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // C[i,j] = sum_k(A[i,k] * B[k,j])
     ctx_.builder().SetInsertPoint(dot_2d_block);
 
-    // Guard: tensor-dot matmul only supports 2D tensors. Emit runtime error for ndim > 2.
-    {
-        llvm::Value* too_many_dims = ctx_.builder().CreateICmpUGT(a_num_dims,
-            llvm::ConstantInt::get(ctx_.int64Type(), 2));
+    // Guard: matmul takes 1-D and 2-D operands only. The left operand is
+    // checked first, then the right, and the message names the rank found.
+    for (llvm::Value* num_dims : {a_num_dims, b_num_dims_early}) {
+        llvm::Value* unsupported = ctx_.builder().CreateOr(
+            ctx_.builder().CreateICmpEQ(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+            ctx_.builder().CreateICmpUGT(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 2)));
         llvm::BasicBlock* matmul_dims_ok = llvm::BasicBlock::Create(ctx_.context(), "matmul_dims_ok", current_func);
         llvm::BasicBlock* matmul_dims_err = llvm::BasicBlock::Create(ctx_.context(), "matmul_dims_err", current_func);
-        ctx_.builder().CreateCondBr(too_many_dims, matmul_dims_err, matmul_dims_ok);
+        ctx_.builder().CreateCondBr(unsupported, matmul_dims_err, matmul_dims_ok);
 
         ctx_.builder().SetInsertPoint(matmul_dims_err);
         ctx_.emitRaiseFmt(
             "tensor-dot: only supports 1D and 2D tensors (got %lldD)",
-            {a_num_dims});
+            {num_dims});
 
         ctx_.builder().SetInsertPoint(matmul_dims_ok);
     }
@@ -1704,6 +1718,14 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(typed_result_tensor_ptr);
 }
 
+static llvm::Value* combineReduction(llvm::IRBuilder<>& builder, const std::string& op,
+                                     llvm::Value* accumulator, llvm::Value* value) {
+    if (op == "*") return builder.CreateFMul(accumulator, value);
+    if (op == "max") return builder.CreateSelect(builder.CreateFCmpOGT(accumulator, value), accumulator, value);
+    if (op == "min") return builder.CreateSelect(builder.CreateFCmpOLT(accumulator, value), accumulator, value);
+    return builder.CreateFAdd(accumulator, value);
+}
+
 llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     // tensor-reduce-all: (tensor-reduce-all tensor function initial-value)
     // Reduces entire tensor to a single value by applying a binary function
@@ -1769,22 +1791,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::Value* svec_elem_val = extractAsDouble(svec_elem_tagged);
 
     llvm::Value* svec_current_acc = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_acc);
-    llvm::Value* svec_new_acc = nullptr;
-
-    if (func_name == "+") {
-        svec_new_acc = ctx_.builder().CreateFAdd(svec_current_acc, svec_elem_val);
-    } else if (func_name == "*") {
-        svec_new_acc = ctx_.builder().CreateFMul(svec_current_acc, svec_elem_val);
-    } else if (func_name == "max") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(svec_current_acc, svec_elem_val);
-        svec_new_acc = ctx_.builder().CreateSelect(cmp, svec_current_acc, svec_elem_val);
-    } else if (func_name == "min") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(svec_current_acc, svec_elem_val);
-        svec_new_acc = ctx_.builder().CreateSelect(cmp, svec_current_acc, svec_elem_val);
-    } else {
-        svec_new_acc = ctx_.builder().CreateFAdd(svec_current_acc, svec_elem_val);
-    }
-
+    llvm::Value* svec_new_acc = combineReduction(ctx_.builder(), func_name, svec_current_acc, svec_elem_val);
     ctx_.builder().CreateStore(svec_new_acc, svec_acc);
     llvm::Value* svec_next_i = ctx_.builder().CreateAdd(svec_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(svec_next_i, svec_counter);
@@ -1850,13 +1857,16 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
             ctx_.builder().SetInsertPoint(xla_reduce_block);
             llvm::Value* xla_result = xla_->emitReduce(tensor_ptr, -1, xla_reduce_op);
             if (xla_result) {
+                auto* reduced = llvm::BasicBlock::Create(ctx_.context(), "treduce_xla_value", current_func);
+                ctx_.builder().CreateCondBr(ctx_.builder().CreateIsNotNull(xla_result), reduced, scalar_reduce_block);
+                ctx_.builder().SetInsertPoint(reduced);
                 // Extract scalar from 1-element result tensor
                 llvm::Value* xla_elems_ptr = ctx_.builder().CreateStructGEP(tensor_type, xla_result,
                     TypeSystem::TENSOR_ELEMENTS_IDX, "xla_reduce_elems_ptr");
                 llvm::Value* xla_elems = ctx_.builder().CreateLoad(ctx_.ptrType(), xla_elems_ptr, "xla_reduce_elems");
                 llvm::Value* xla_int_val = ctx_.builder().CreateLoad(ctx_.int64Type(), xla_elems, "xla_reduce_int");
                 llvm::Value* xla_reduce_val = ctx_.builder().CreateBitCast(xla_int_val, ctx_.doubleType(), "xla_reduce_dbl");
-                ctx_.builder().CreateStore(xla_reduce_val, tensor_acc);
+                ctx_.builder().CreateStore(combineReduction(ctx_.builder(), func_name, tensor_initial, xla_reduce_val), tensor_acc);
                 ctx_.builder().CreateBr(tensor_loop_exit);
             } else {
                 // XLA returned nullptr, fall back to scalar loop
@@ -1882,22 +1892,7 @@ llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {
     llvm::Value* tensor_elem_val = ctx_.builder().CreateBitCast(tensor_elem_bits, ctx_.doubleType());
 
     llvm::Value* tensor_current_acc = ctx_.builder().CreateLoad(ctx_.doubleType(), tensor_acc);
-    llvm::Value* tensor_new_acc = nullptr;
-
-    if (func_name == "+") {
-        tensor_new_acc = ctx_.builder().CreateFAdd(tensor_current_acc, tensor_elem_val);
-    } else if (func_name == "*") {
-        tensor_new_acc = ctx_.builder().CreateFMul(tensor_current_acc, tensor_elem_val);
-    } else if (func_name == "max") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOGT(tensor_current_acc, tensor_elem_val);
-        tensor_new_acc = ctx_.builder().CreateSelect(cmp, tensor_current_acc, tensor_elem_val);
-    } else if (func_name == "min") {
-        llvm::Value* cmp = ctx_.builder().CreateFCmpOLT(tensor_current_acc, tensor_elem_val);
-        tensor_new_acc = ctx_.builder().CreateSelect(cmp, tensor_current_acc, tensor_elem_val);
-    } else {
-        tensor_new_acc = ctx_.builder().CreateFAdd(tensor_current_acc, tensor_elem_val);
-    }
-
+    llvm::Value* tensor_new_acc = combineReduction(ctx_.builder(), func_name, tensor_current_acc, tensor_elem_val);
     ctx_.builder().CreateStore(tensor_new_acc, tensor_acc);
     llvm::Value* tensor_next_i = ctx_.builder().CreateAdd(tensor_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(tensor_next_i, tensor_counter);
@@ -1928,11 +1923,10 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     }
 
     llvm::Value* tensor_val = codegenAST(&op->call_op.variables[0]);
-    // Evaluate initial_value for side effects but we don't pass it to the runtime
-    // (the runtime knows the correct identity for each op)
-    codegenAST(&op->call_op.variables[2]);
+    llvm::Value* initial_value = codegenAST(&op->call_op.variables[2]);
     llvm::Value* dimension_value = codegenAST(&op->call_op.variables[3]);
-    if (!tensor_val || !dimension_value) return nullptr;
+    if (!tensor_val || !initial_value || !dimension_value) return nullptr;
+    llvm::Value* initial = taggedNumericToDouble(ctx_, tagged_, initial_value);
 
     // Get function name to determine op code
     eshkol_ast_t* func_ast = &op->call_op.variables[1];
@@ -1974,14 +1968,16 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
 
     // Handle negative axis: if axis < 0, axis += rank
     llvm::Value* axis_val = extractStructuralIntOrRaise(
-        ctx_, tagged_, dimension_value, "tensor-reduce", "integer axis");
+        dimension_value, "tensor-reduce", "integer axis");
     llvm::Value* is_negative = ctx_.builder().CreateICmpSLT(axis_val, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted_axis = ctx_.builder().CreateAdd(axis_val, src_num_dims);
     axis_val = ctx_.builder().CreateSelect(is_negative, adjusted_axis, axis_val);
     // An axis that does not address a reducible dimension used to reach
     // eshkol_xla_reduce, which returned NULL, which was packed as a heap
     // pointer and displayed as `()` — an error that read as an empty result.
-    axis_val = checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
+    axis_val = func_name == "mean"
+        ? checkReduceAxis(axis_val, src_num_dims, src_dims_ptr, "tensor-reduce")
+        : checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
 
     // Load arena
     llvm::Value* arena_ptr = ctx_.currentArena();
@@ -2000,6 +1996,37 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
         {arena_ptr, src_elements_ptr, src_total, src_dims_ptr, src_num_dims, axis_val, op_code_val},
         "reduce_dim_result");
 
+    // Combine the seed with each independently reduced slice.
+    auto& builder = ctx_.builder();
+    emitConditionGuard(builder.CreateIsNotNull(result), "tensor-reduce: reduction failed", "reduce_result");
+    llvm::Value* values = builder.CreateLoad(ptrTy, builder.CreateStructGEP(tensor_type, result, 2));
+    llvm::Value* count = builder.CreateLoad(i64Ty, builder.CreateStructGEP(tensor_type, result, 3));
+    auto* length = builder.CreateLoad(i64Ty, builder.CreateGEP(i64Ty, src_dims_ptr, axis_val));
+    auto* empty_slice = builder.CreateICmpEQ(length, builder.getInt64(0));
+    llvm::Value* seed = initial;
+    if (func_name == "mean") {
+        seed = builder.CreateFDiv(initial, builder.CreateSIToFP(length, ctx_.doubleType()));
+    }
+
+    auto* entry = builder.GetInsertBlock();
+    auto* parent = entry->getParent();
+    auto* loop = llvm::BasicBlock::Create(ctx_.context(), "reduce_seed_loop", parent);
+    auto* body = llvm::BasicBlock::Create(ctx_.context(), "reduce_seed_body", parent);
+    auto* done = llvm::BasicBlock::Create(ctx_.context(), "reduce_seed_done", parent);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(loop);
+    auto* index = builder.CreatePHI(i64Ty, 2);
+    index->addIncoming(builder.getInt64(0), entry);
+    builder.CreateCondBr(builder.CreateICmpULT(index, count), body, done);
+    builder.SetInsertPoint(body);
+    auto* element = builder.CreateGEP(ctx_.doubleType(), values, index);
+    auto* value = builder.CreateLoad(ctx_.doubleType(), element);
+    auto* combined = combineReduction(builder, func_name, seed, value);
+    builder.CreateStore(builder.CreateSelect(empty_slice, initial, combined), element);
+    auto* next = builder.CreateAdd(index, builder.getInt64(1));
+    index->addIncoming(next, body);
+    builder.CreateBr(loop);
+    builder.SetInsertPoint(done);
     return tagged_.packHeapPtr(result);
 }
 
@@ -2023,7 +2050,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
 
     // Handle negative axis: if axis < 0, axis += rank
     llvm::Value* axis = extractStructuralIntOrRaise(
-        ctx_, tagged_, axis_val, "tensor-reduce-axis", "integer axis");
+        axis_val, "tensor-reduce-axis", "integer axis");
     llvm::Value* is_negative = builder.CreateICmpSLT(axis, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted = builder.CreateAdd(axis, src_num_dims);
     axis = builder.CreateSelect(is_negative, adjusted, axis);
@@ -2033,7 +2060,7 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     // the numeric path let eshkol_xla_reduce return NULL, which was packed as a
     // heap pointer and displayed as `()`. A rank-1 operand reduced to rank 0
     // and displayed as `#()`. All three read as an empty result, not an error.
-    axis = checkReduceAxis(axis, src_num_dims, "tensor-reduce-axis");
+    axis = checkReduceAxis(axis, src_num_dims, src_dims_ptr, "tensor-reduce-axis");
 
     if (autodiff_ && op_code >= 0 && op_code <= 3) {
         llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());
@@ -2495,7 +2522,7 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::Value* dsum_result = nullptr;
     llvm::BasicBlock* dsum_exit_block = nullptr;
     if (autodiff_) {
-        llvm::Value* tsum_is_dual = isDualTensor(src_ptr);
+        llvm::Value* tsum_is_dual = isTaggedNumericTensor(src_ptr);
         llvm::BasicBlock* dsum_bb = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual", current_func);
         llvm::BasicBlock* tsum_normal_bb = llvm::BasicBlock::Create(ctx_.context(), "tsum_not_dual", current_func);
         ctx_.builder().CreateCondBr(tsum_is_dual, dsum_bb, tsum_normal_bb);

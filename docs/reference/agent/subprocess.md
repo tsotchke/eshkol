@@ -111,3 +111,77 @@ children, which remains subject to the operating system's process limits.
 
 Subprocess spawning is gated by the `subprocess` / `shell` capabilities when a
 policy is active — see [capabilities](capabilities.md).
+
+## Scoped output streaming (POSIX first slice)
+
+`call-with-subprocess-streams` extends the existing argv launcher with a checked,
+output-only session on the existing event loop. It does not use the legacy
+wait/capture reader threads. Stdin is null. Windows and Wasm return an explicit
+unsupported result from the new native interface; standalone VM typed externs
+reject this agent bridge. The existing process interfaces retain their contracts.
+
+```scheme
+(call-with-subprocess-streams loop argv
+  '((teardown-ms . 500) (term-grace-ms . 100))
+  (lambda (session)
+    ;; Reuse a bytevector and service stdout and stderr fairly.
+    (process-stream-poll session 100)
+    (process-stream-read! session 'stdout buffer 0 (bytevector-length buffer))))
+```
+
+This example illustrates one read; a complete consumer continues servicing both
+streams until both EOFs and observed exit. Kernel-pipe backpressure preserves
+bytes while the consumer is slow. Retaining application output remains the
+caller's memory responsibility; use scratch regions for temporary result values.
+
+| Procedure | Result |
+|---|---|
+| `(process-stream-read! session which buffer start count)` | Read into caller bytevector. Access through `process-stream-read-status` (`data`, `would-block`, `eof`, `error`), `process-stream-read-count`, and `process-stream-read-error` (operation and native code) |
+| `(process-stream-poll session timeout-ms)` | Ready bits: stdout 1, stderr 2, newly observed child exit 4; zero means timeout. Exit notification is delivered once; status remains observable |
+| `(process-stream-status session)` | Exact exit code or `#f` while running; independent of pipe EOF |
+| `(process-cancel! session grace-ms)` | Nonblocking direct-child TERM request; later poll/status advances escalation and reap without waiting for EOF |
+| `process-stream-result-value` / `process-stream-result-cleanup-status` / `process-stream-result-cleanup-ticket` | Inspect normal scope result: receiver value, `reaped`/`cleanup-pending`/`cleanup-error`, and optional native cleanup ticket |
+| `(process-cleanup-tickets)` / `(process-cleanup-status ticket)` | Discover closed scopes and observe retained cleanup, including after exceptional exits |
+| `(process-cleanup-drain! loop timeout-ms)` / `(process-cleanup-consume! ticket)` | Advance closed processes on a live loop; retire terminal records. Pending ownership cannot be consumed |
+| `(process-stream-runtime-shutdown!)` | Release native stream module state; busy while PROCESS records remain. Shared SOCKET/other owners remain valid. Shutdown is terminal for this process-local stream runtime |
+
+Options include `cwd`, `env`, `teardown-ms`, and `term-grace-ms`. Only null stdin,
+event-loop mode, and direct-child ownership are admitted in this scoped slice;
+piped stdin and process groups are rejected. All timeout/count inputs must be
+exact nonnegative signed-word integers, with positive read counts and valid
+bytevector ranges. Zero-timeout polling never sleeps or starts cancellation.
+
+The common native registry owns one exclusive process lease covering both output
+pipes. A session retains its loop until detachment; closing that loop early is
+rejected. On return, exception, or continuation escape, the scope requests watch
+removal and bounded teardown. Pipe descriptors, the loop retain and the lease
+remain owned until watch removal succeeds; a genuine removal failure preserves
+them for repair/retry. Re-entry raises before acquiring another child. Exceptions
+keep their original value.
+
+If reap is not confirmed before teardown expires, a pre-reserved native record
+retains sole ownership. Its ticket survives closure of the original loop, and
+query/drain operations progress cleanup on the owning thread. Only confirmed
+terminal records can be consumed. Unconsumed records remain budgeted against
+the subprocess limit. Cleanup remains available after capability revocation.
+
+This slice exposes per-session readiness through the existing native loop. A
+caller loop may carry verified PROCESS and shared managed socket watches;
+unmanaged or tampered registrations are rejected rather than consumed by the
+per-session poller. A
+general resource-event polling API, Windows streaming, nonblocking stdin, and
+VM adapters remain separate integration work. The helper does not add `io-mode` dispatch to the
+legacy `process-spawn-argv-options` procedure, which rejects event-loop mode;
+use the scoped entry point above.
+
+Native `--strict-resources` uses reviewed contracts for all 40 module exports
+and a matching source pin. Scoped callbacks borrow a PROCESS_STREAM owner.
+Cleanup IDs inside aggregate results remain explicitly unsupported in strict
+mode; the checker does not treat these as tracked cleanup ownership. See the
+[current followup evidence](../../development/evidence/subprocess-review-followup-2026-11-13.md)
+for own-branch native checks and separate combined-source public CLI results.
+
+Focused checks: `tests/agent/run_subprocess_stream_test.sh` exercises native
+lifecycle and byte-preservation behavior; `scripts/test_subprocess_stream_public.py`
+exercises actual JIT/AOT public calls and explicit VM rejection. Direct native
+checks do not establish engine qualification.

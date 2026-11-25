@@ -17,7 +17,7 @@ Dot product of two vectors.
 (display (tensor-dot #(1.0 2.0 3.0) #(4.0 5.0 6.0))) (newline)
 ```
 ```
-32
+32.0
 ```
 
 ### `(tensor-norm v)`
@@ -27,7 +27,7 @@ L2 norm, `(sqrt (tensor-dot v v))`.
 (display (tensor-norm #(3.0 4.0))) (newline)
 ```
 ```
-5
+5.0
 ```
 
 ## Optimizers

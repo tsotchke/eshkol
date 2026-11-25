@@ -10,6 +10,7 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cxx', default='c++')
+    parser.add_argument('--generated-include', type=Path, default=Path('build/generated'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     header = (root/'inc/eshkol/eshkol.h').read_text()
@@ -40,11 +41,11 @@ int main() {
             if msvc:
                 command = [args.cxx, '/nologo', '/std:c++17', '/W4', '/we4061', '/we4062']
                 if include: command += ['/I'+str(include)]
-                command += ['/I'+str(root/'inc'), str(path), '/Fe:'+str(executable), '/Fo:'+str(work/(name+'.obj'))]
+                command += ['/I'+str(args.generated_include), '/I'+str(root/'inc'), str(path), '/Fe:'+str(executable), '/Fo:'+str(work/(name+'.obj'))]
             else:
                 command = [args.cxx, '-std=c++17', '-Werror=switch', '-Werror=switch-enum']
                 if include: command += ['-I', str(include)]
-                command += ['-I', str(root/'inc'), str(path), '-o', str(executable)]
+                command += ['-I', str(args.generated_include), '-I', str(root/'inc'), str(path), '-o', str(executable)]
             result = subprocess.run(command, capture_output=True, text=True, timeout=90)
             if (result.returncode == 0) != success:
                 raise AssertionError(name+': unexpected compiler outcome\n'+result.stderr)

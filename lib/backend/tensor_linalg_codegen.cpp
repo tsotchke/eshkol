@@ -233,6 +233,71 @@ llvm::Value* TensorCodegen::tensorLU(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(cons1);
 }
 
+TensorCodegen::ExactLinalgDispatch TensorCodegen::beginExactLinalgDispatch(
+        int32_t kind, llvm::Value* a_tagged, llvm::Value* b_tagged, const char* op_name) {
+    ExactLinalgDispatch d;
+    const bool a_tag = a_tagged && a_tagged->getType() == ctx_.taggedValueType();
+    const bool b_tag = b_tagged && b_tagged->getType() == ctx_.taggedValueType();
+    // Only a tagged operand can name a tensor at all.
+    if (!a_tag && !b_tag) return d;
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    // Entry-block slots, so a call inside a loop does not grow the stack.
+    auto entry_slot = [&](llvm::Value* value, const char* slot_name) -> llvm::Value* {
+        llvm::Function* f = builder.GetInsertBlock()->getParent();
+        llvm::IRBuilderBase::InsertPoint ip = builder.saveIP();
+        builder.SetInsertPoint(&f->getEntryBlock(), f->getEntryBlock().begin());
+        llvm::AllocaInst* slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, slot_name);
+        builder.restoreIP(ip);
+        if (value) builder.CreateStore(value, slot);
+        return slot;
+    };
+    llvm::Value* null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* a_slot = a_tag ? entry_slot(a_tagged, "linalg_exact_a") : null_ptr;
+    llvm::Value* b_slot = b_tag ? entry_slot(b_tagged, "linalg_exact_b") : null_ptr;
+    llvm::FunctionCallee test_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_linalg_operands_exact",
+        llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* any_exact = builder.CreateICmpNE(
+        builder.CreateCall(test_fn, {a_slot, b_slot}, "linalg_any_exact"),
+        llvm::ConstantInt::get(ctx_.int32Type(), 0));
+    llvm::Function* fn = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* exact_bb = llvm::BasicBlock::Create(ctx_.context(), "linalg_exact", fn);
+    llvm::BasicBlock* f64_bb = llvm::BasicBlock::Create(ctx_.context(), "linalg_f64", fn);
+    d.join = llvm::BasicBlock::Create(ctx_.context(), "linalg_join", fn);
+    builder.CreateCondBr(any_exact, exact_bb, f64_bb);
+
+    builder.SetInsertPoint(exact_bb);
+    emitSetErrorLocation();
+    llvm::Value* out_slot = entry_slot(nullptr, "linalg_exact_out");
+    llvm::FunctionCallee exact_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_exact_linalg_tagged",
+        llvm::FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.int32Type(), ctx_.ptrType(), ctx_.ptrType(),
+             ctx_.ptrType(), ctx_.ptrType()}, false));
+    builder.CreateCall(exact_fn, {ctx_.currentArena(),
+                                  llvm::ConstantInt::get(ctx_.int32Type(), kind),
+                                  a_slot, b_slot, ctx_.internCString(op_name), out_slot});
+    d.exact_value = builder.CreateLoad(ctx_.taggedValueType(), out_slot, "linalg_exact_value");
+    d.exact_exit = builder.GetInsertBlock();
+    builder.CreateBr(d.join);
+
+    builder.SetInsertPoint(f64_bb);
+    return d;
+}
+
+llvm::Value* TensorCodegen::finishExactLinalgDispatch(const ExactLinalgDispatch& d,
+                                                      llvm::Value* f64_result) {
+    if (!d.join || !f64_result) return f64_result;
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::BasicBlock* f64_exit = builder.GetInsertBlock();
+    builder.CreateBr(d.join);
+    builder.SetInsertPoint(d.join);
+    llvm::PHINode* phi = builder.CreatePHI(ctx_.taggedValueType(), 2, "linalg_result");
+    phi->addIncoming(d.exact_value, d.exact_exit);
+    phi->addIncoming(f64_result, f64_exit);
+    return phi;
+}
+
 llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     // tensor-det: (tensor-det A) -> scalar determinant
     if (op->call_op.num_vars != 1) {
@@ -243,6 +308,7 @@ llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     llvm::IRBuilder<>& builder = ctx_.builder();
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     if (!a_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(0, a_tagged, nullptr, "tensor-det");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-det",
@@ -306,7 +372,7 @@ llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     llvm::Function* det_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_det_from_lu", det_ft);
     llvm::Value* det = builder.CreateCall(det_fn, {lu_data, n, sign}, "det_val");
 
-    return tagged_.packDouble(det);
+    return finishExactLinalgDispatch(exact, tagged_.packDouble(det));
 }
 
 llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
@@ -319,14 +385,35 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
     llvm::IRBuilder<>& builder = ctx_.builder();
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     if (!a_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(1, a_tagged, nullptr, "tensor-inverse");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-inverse",
                                                     TensorOperandMode::RequireMatrix);
 
+    // RequireMatrix enforces a numeric tensor with rank >= 2. Inverse itself
+    // is defined only for rank exactly 2, so validate rank before reading dims.
+    llvm::Value* rank_field = builder.CreateStructGEP(tensor_type, a_ptr, 1);
+    llvm::Value* rank = builder.CreateLoad(ctx_.int64Type(), rank_field);
+    emitRankGuard(rank, 2, "tensor-inverse: expected a rank-2 matrix", "inverse_rank");
+
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
     llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
     llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims_ptr);
+    llvm::Value* second_dim_ptr = builder.CreateGEP(ctx_.int64Type(), dims_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* second_dim = builder.CreateLoad(ctx_.int64Type(), second_dim_ptr);
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* shape_bad = llvm::BasicBlock::Create(ctx_.context(), "inv_shape_bad", current_func);
+    llvm::BasicBlock* shape_ok = llvm::BasicBlock::Create(ctx_.context(), "inv_shape_ok", current_func);
+    llvm::Value* shape_valid = builder.CreateAnd(
+        builder.CreateICmpSGT(n, llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+        builder.CreateAnd(builder.CreateICmpEQ(n, second_dim),
+            builder.CreateICmpSLE(n, llvm::ConstantInt::get(ctx_.int64Type(), 1073741823))));
+    builder.CreateCondBr(shape_valid, shape_ok, shape_bad);
+    builder.SetInsertPoint(shape_bad);
+    ctx_.emitRaise("tensor-inverse: expected a non-empty square matrix within size limits");
+    builder.SetInsertPoint(shape_ok);
     llvm::Value* elems_field = builder.CreateStructGEP(tensor_type, a_ptr, 2);
     llvm::Value* src_elems = builder.CreateLoad(ctx_.ptrType(), elems_field);
 
@@ -334,83 +421,34 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
     llvm::Value* byte_size = builder.CreateMul(nn, llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* arena_ptr = ctx_.currentArena();
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
-    llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_lu");
-    emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-inverse: out of memory");
-    llvm::Value* piv_size = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, piv_size}, "inv_piv");
-    emitArenaAllocNullCheck(builder, ctx_, piv_data, "tensor-inverse: out of memory (pivot)");
-    llvm::Value* inv_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_data");
-    emitArenaAllocNullCheck(builder, ctx_, inv_data, "tensor-inverse: out of memory (result)");
+    llvm::Value* work_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_work");
+    emitArenaAllocNullCheck(builder, ctx_, work_data, "tensor-inverse: out of memory (work)");
 
-    // Copy tensor elements to double array
-    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
-    llvm::BasicBlock* copy_cond = llvm::BasicBlock::Create(ctx_.context(), "inv_cp_cond", current_func);
-    llvm::BasicBlock* copy_body = llvm::BasicBlock::Create(ctx_.context(), "inv_cp_body", current_func);
-    llvm::BasicBlock* copy_done = llvm::BasicBlock::Create(ctx_.context(), "inv_cp_done", current_func);
-
-    llvm::Value* copy_i = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), copy_i);
-    builder.CreateBr(copy_cond);
-
-    builder.SetInsertPoint(copy_cond);
-    llvm::Value* ci = builder.CreateLoad(ctx_.int64Type(), copy_i);
-    builder.CreateCondBr(builder.CreateICmpULT(ci, nn), copy_body, copy_done);
-
-    builder.SetInsertPoint(copy_body);
-    llvm::Value* sp = builder.CreateGEP(ctx_.int64Type(), src_elems, ci);
-    llvm::Value* bits = builder.CreateLoad(ctx_.int64Type(), sp);
-    llvm::Value* dval = builder.CreateBitCast(bits, ctx_.doubleType());
-    llvm::Value* dp = builder.CreateGEP(ctx_.doubleType(), lu_data, ci);
-    builder.CreateStore(dval, dp);
-    builder.CreateStore(builder.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), copy_i);
-    builder.CreateBr(copy_cond);
-
-    builder.SetInsertPoint(copy_done);
-
-    // LU decompose
-    llvm::FunctionType* lu_ft = llvm::FunctionType::get(
-        ctx_.int64Type(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
-    llvm::Function* lu_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_decompose", lu_ft);
-    builder.CreateCall(lu_fn, {lu_data, piv_data, n});
-
-    // Compute inverse
-    llvm::FunctionType* inv_ft = llvm::FunctionType::get(
-        ctx_.voidType(), {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
-    llvm::Function* inv_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(), "eshkol_lu_inverse", inv_ft);
-    builder.CreateCall(inv_fn, {lu_data, piv_data, inv_data, n});
-
-    // Create result tensor and copy doubles back as int64 bitpatterns
     std::vector<llvm::Value*> dims = {n, n};
     llvm::Value* result_ptr = createTensorWithDims(dims);
     if (!result_ptr) return nullptr;
-
     llvm::Value* res_elems_field = builder.CreateStructGEP(tensor_type, result_ptr, 2);
     llvm::Value* res_elems = builder.CreateLoad(ctx_.ptrType(), res_elems_field);
 
-    llvm::BasicBlock* cp2_cond = llvm::BasicBlock::Create(ctx_.context(), "inv_cp2_cond", current_func);
-    llvm::BasicBlock* cp2_body = llvm::BasicBlock::Create(ctx_.context(), "inv_cp2_body", current_func);
-    llvm::BasicBlock* cp2_done = llvm::BasicBlock::Create(ctx_.context(), "inv_cp2_done", current_func);
+    // Tensor slots and doubles have the same 64-bit payload representation.
+    // The checked kernel reads the source directly and writes into result slots.
+    llvm::FunctionType* inv_ft = llvm::FunctionType::get(ctx_.int32Type(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* inv_fn = getOrDeclareRuntimeFunc(ctx_.module(), ctx_.context(),
+        "eshkol_tensor_inverse_checked_abi", inv_ft);
+    llvm::Value* inv_status = builder.CreateCall(inv_fn,
+        {src_elems, work_data, res_elems, n}, "inv_status");
+    current_func = builder.GetInsertBlock()->getParent();
+    llvm::Value* inv_ok = builder.CreateICmpEQ(inv_status,
+        llvm::ConstantInt::get(ctx_.int32Type(), 0));
+    llvm::BasicBlock* inv_bad = llvm::BasicBlock::Create(ctx_.context(), "inv_failed", current_func);
+    llvm::BasicBlock* inv_ready = llvm::BasicBlock::Create(ctx_.context(), "inv_ready", current_func);
+    builder.CreateCondBr(inv_ok, inv_ready, inv_bad);
+    builder.SetInsertPoint(inv_bad);
+    ctx_.emitRaise("tensor-inverse: matrix is singular or contains non-finite values");
+    builder.SetInsertPoint(inv_ready);
 
-    llvm::Value* cp2_i = builder.CreateAlloca(ctx_.int64Type());
-    builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), cp2_i);
-    builder.CreateBr(cp2_cond);
-
-    builder.SetInsertPoint(cp2_cond);
-    llvm::Value* ci2 = builder.CreateLoad(ctx_.int64Type(), cp2_i);
-    builder.CreateCondBr(builder.CreateICmpULT(ci2, nn), cp2_body, cp2_done);
-
-    builder.SetInsertPoint(cp2_body);
-    llvm::Value* inv_p = builder.CreateGEP(ctx_.doubleType(), inv_data, ci2);
-    llvm::Value* inv_val = builder.CreateLoad(ctx_.doubleType(), inv_p);
-    llvm::Value* inv_bits = builder.CreateBitCast(inv_val, ctx_.int64Type());
-    llvm::Value* res_p = builder.CreateGEP(ctx_.int64Type(), res_elems, ci2);
-    builder.CreateStore(inv_bits, res_p);
-    builder.CreateStore(builder.CreateAdd(ci2, llvm::ConstantInt::get(ctx_.int64Type(), 1)), cp2_i);
-    builder.CreateBr(cp2_cond);
-
-    builder.SetInsertPoint(cp2_done);
-
-    return tagged_.packHeapPtr(result_ptr);
+    return finishExactLinalgDispatch(exact, tagged_.packHeapPtr(result_ptr));
 }
 
 llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
@@ -424,6 +462,7 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     llvm::Value* b_tagged = codegenAST(&op->call_op.variables[1]);
     if (!a_tagged || !b_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(2, a_tagged, b_tagged, "tensor-solve");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-solve",
@@ -546,7 +585,7 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
         builder.SetInsertPoint(done);
     }
 
-    return tagged_.packHeapPtr(result_ptr);
+    return finishExactLinalgDispatch(exact, tagged_.packHeapPtr(result_ptr));
 }
 
 llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
@@ -565,6 +604,7 @@ llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
     llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
     llvm::Value* b_tagged = codegenAST(&op->call_op.variables[1]);
     if (!a_tagged || !b_tagged) return nullptr;
+    const ExactLinalgDispatch exact = beginExactLinalgDispatch(3, a_tagged, b_tagged, "linear-solve");
 
     llvm::StructType* tensor_type = ctx_.tensorType();
     // Native typed validation first: reject wrong-typed operands via
@@ -663,7 +703,7 @@ llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
     builder.CreateUnreachable();
 
     builder.SetInsertPoint(ok_bb);
-    return tagged_.packHeapPtr(result_ptr);
+    return finishExactLinalgDispatch(exact, tagged_.packHeapPtr(result_ptr));
 }
 
 llvm::Value* TensorCodegen::tensorCholesky(const eshkol_operations_t* op) {

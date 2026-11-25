@@ -7,6 +7,7 @@
 
 #include <eshkol/platform_runtime.h>
 #include <eshkol/module_resolver.h>
+#include "sha256_internal.h"
 #include <eshkol/build_config.h>
 #include <eshkol/eshkol.h>
 
@@ -37,6 +38,8 @@
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
+
+extern "C" int eshkol_capability_require(const char* capability);
 
 namespace eshkol::platform {
 
@@ -649,6 +652,16 @@ std::vector<InstallSearchRoot> install_library_roots(
             continue;
         }
         append_root(roots, base, InstallOrigin::CoLocated);
+#ifdef _WIN32
+        // Multi-config Windows generators place executables in `<build>/<Config>/`
+        // while precompiled stdlib artifacts (`stdlib.o` / `stdlib.bc`) live in
+        // `<build>/` one level up.
+        const std::string config_leaf = base.filename().string();
+        if (config_leaf == "Release" || config_leaf == "Debug" ||
+            config_leaf == "RelWithDebInfo" || config_leaf == "MinSizeRel") {
+            append_root(roots, base.parent_path(), InstallOrigin::CoLocated);
+        }
+#endif
         append_root(roots, base / ".." / "lib", InstallOrigin::CoLocated);
         append_root(roots, base / ".." / "lib" / "eshkol", InstallOrigin::CoLocated);
     }
@@ -714,13 +727,30 @@ ResolvedInstallArtifact resolve_install_artifact(
     const std::vector<InstallSearchRoot>& roots,
     const std::vector<std::string>& leaf_names
 ) {
+    return resolve_install_artifact(roots, leaf_names, InstallArtifactAdmission{});
+}
+
+ResolvedInstallArtifact resolve_install_artifact(
+    const std::vector<InstallSearchRoot>& roots,
+    const std::vector<std::string>& leaf_names,
+    const InstallArtifactAdmission& belongs_to_this_build
+) {
     // Location-major: a root is exhausted before the next one is opened.
     for (const auto& root : roots) {
         for (const auto& leaf : leaf_names) {
             auto resolved = canonical_if_exists(root.path / leaf);
-            if (!resolved.empty()) {
-                return {resolved.string(), root.origin, root.path};
+            if (resolved.empty()) {
+                continue;
             }
+            // A system prefix is searched because it might hold this build's
+            // install, not because anyone named it. A file there that another
+            // build produced is not this compiler's artifact.
+            if (root.origin == InstallOrigin::SystemFallback &&
+                belongs_to_this_build &&
+                !belongs_to_this_build(resolved.string())) {
+                continue;
+            }
+            return {resolved.string(), root.origin, root.path};
         }
     }
     return {};
@@ -791,15 +821,12 @@ std::string module_file_if_regular(const std::filesystem::path& candidate) {
  *  the extension-appended one — both probed inside every tier, so an omitted
  *  extension resolves wherever the file lives rather than only when the
  *  working directory happens to hold it. */
-std::vector<std::string> module_path_candidates(const std::string& module_name) {
-    const bool is_path_literal =
-        !module_name.empty() &&
-        (module_name[0] == '/' ||
-         module_name.rfind("./", 0) == 0 ||
-         module_name.rfind("../", 0) == 0 ||
-         module_name.find('/') != std::string::npos ||
-         (module_name.size() > 4 &&
-          module_name.compare(module_name.size() - 4, 4, ".esk") == 0));
+std::vector<std::string> module_path_candidates(std::string module_name) {
+    std::replace(module_name.begin(), module_name.end(), '\\', '/');
+    const bool has_extension = module_name.size() >= 4 &&
+        module_name.compare(module_name.size() - 4, 4, ".esk") == 0;
+    const bool is_path_literal = has_extension || module_name.front() == '.' ||
+                                 module_name.find('/') != std::string::npos;
 
     if (!is_path_literal) {
         std::string dotted = module_name;
@@ -809,13 +836,72 @@ std::vector<std::string> module_path_candidates(const std::string& module_name) 
         return {dotted + ".esk"};
     }
 
-    const bool has_extension =
-        module_name.size() >= 4 &&
-        module_name.compare(module_name.size() - 4, 4, ".esk") == 0;
     if (has_extension) {
         return {module_name};
     }
     return {module_name, module_name + ".esk"};
+}
+
+struct StdlibModule {
+    const char* path;
+    const char* sha256;
+    bool precompiled;
+};
+
+constexpr StdlibModule stdlib_modules[] = {
+#include <eshkol/stdlib_modules.inc>
+};
+
+std::vector<std::string> module_entry_points(const std::vector<std::string>& candidates) {
+    auto directory = std::filesystem::path(candidates.back()).replace_extension();
+    return {(directory / (directory.filename().string() + ".esk")).generic_string(),
+            (directory / "index.esk").generic_string()};
+}
+
+const StdlibModule* find_stdlib_module(const std::vector<std::string>& candidates) {
+    auto find = [](const std::filesystem::path& path) -> const StdlibModule* {
+        const auto key = path.lexically_normal().generic_string();
+        const auto end = std::end(stdlib_modules);
+        auto it = std::lower_bound(std::begin(stdlib_modules), end, key,
+            [](const StdlibModule& module, const std::string& relative) {
+                return module.path < relative;
+            });
+        return it != end && it->path == key ? it : nullptr;
+    };
+    for (const auto& candidate : candidates) {
+        if (auto module = find(candidate)) return module;
+    }
+    for (const auto& entry : module_entry_points(candidates)) {
+        if (auto module = find(entry)) return module;
+    }
+    return nullptr;
+}
+
+const StdlibModule* stdlib_module(const std::string& name) {
+    if (!eshkol_module_name_allowed(name.c_str())) return nullptr;
+    return find_stdlib_module(module_path_candidates(name));
+}
+
+std::string verified_module(const std::filesystem::path& root, const StdlibModule& module) {
+    std::string path = module_file_if_regular(root / module.path);
+    if (path.empty()) return {};
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return {};
+    SysSha256 hash;
+    sys_sha256_init(&hash);
+    unsigned char buffer[8192];
+    while (file.read(reinterpret_cast<char*>(buffer), sizeof(buffer)) || file.gcount()) {
+        sys_sha256_update(&hash, buffer, static_cast<size_t>(file.gcount()));
+    }
+    if (!file.eof() || file.bad()) return {};
+    unsigned char digest[32];
+    sys_sha256_final(&hash, digest);
+    static constexpr char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(digest); ++i) {
+        if (module.sha256[2 * i] != hex[digest[i] >> 4] ||
+            module.sha256[2 * i + 1] != hex[digest[i] & 15]) return {};
+    }
+    return path;
 }
 
 /** @brief First candidate of @p candidates that exists under @p dir. */
@@ -868,16 +954,40 @@ InstallSearchRoot module_source_root() {
 std::string resolve_module_source_path(const std::string& module_name,
                                        const std::string& base_dir,
                                        const std::string& lib_dir) {
-    if (module_name.empty()) {
-        return {};
-    }
-
+    if (!eshkol_module_name_allowed(module_name.c_str()) ||
+        module_name.find('\0') != std::string::npos) return {};
     const auto candidates = module_path_candidates(module_name);
-
-    // An absolute path literal names exactly one file; the tiers below are
-    // about *finding* a relative one and must not be consulted for it.
-    if (module_name[0] == '/' || std::filesystem::path(module_name).is_absolute()) {
-        return probe_module_dir(std::filesystem::path(), candidates);
+    if (const auto* module = find_stdlib_module(candidates)) {
+        // These roots are independent of the launch spelling and project.
+        // Hash the selected source against this compiler's identity manifest.
+        static const auto installed_roots = [] {
+            std::vector<std::filesystem::path> roots;
+#ifdef __EMSCRIPTEN__
+            roots.emplace_back("/lib"); // differential runner's staged image
+#else
+            auto bin = executable_real_directory();
+            if (!bin.empty()) {
+                roots.push_back(bin / "lib");
+                roots.push_back(bin / ".." / "share" / "eshkol" / "lib");
+                roots.push_back(bin / ".." / "lib");
+                std::error_code ec;
+                if (std::filesystem::equivalent(bin, ESHKOL_MODULE_BUILD_DIR, ec) ||
+                    std::filesystem::equivalent(bin.parent_path(), ESHKOL_MODULE_BUILD_DIR, ec)) {
+                    roots.emplace_back(ESHKOL_MODULE_SOURCE_DIR);
+                }
+            }
+            if (!nonempty_env("ESHKOL_SYSTEM_PREFIXES")) {
+                for (const auto& prefix : system_prefixes())
+                    roots.push_back(prefix / "share" / "eshkol" / "lib");
+            }
+#endif
+            return roots;
+        }();
+        for (const auto& root : installed_roots) {
+            auto path = verified_module(root, *module);
+            if (!path.empty()) return path;
+        }
+        return {};
     }
 
     // Tier 1: the directory of the file doing the require/import/load. A
@@ -930,31 +1040,28 @@ std::string resolve_module_source_path(const std::string& module_name,
         }
     }
 
-    // Tier 4: the installed library directory, including directory-as-module
-    // entry points so `(require web)` finds lib/web/web.esk or lib/web/index.esk.
+    // Explicit library roots also support directory entry points.
+    const auto entries = module_entry_points(candidates);
+    auto probe_library = [&](const std::filesystem::path& root) {
+        auto path = probe_module_dir(root, candidates);
+        return path.empty() ? probe_module_dir(root, entries) : path;
+    };
+    if (const char* library = nonempty_env("ESHKOL_LIB_DIR")) {
+        for (auto root : {std::filesystem::path(library), std::filesystem::path(library) / "lib"}) {
+            auto path = probe_library(root);
+            if (!path.empty()) return path;
+        }
+    }
     if (!lib_dir.empty()) {
-        if (auto found = probe_module_dir(lib_dir, candidates); !found.empty()) {
-            return found;
-        }
-        std::error_code ec;
-        std::filesystem::path dir_module = std::filesystem::path(lib_dir) / module_name;
-        if (std::filesystem::is_directory(dir_module, ec) && !ec) {
-            auto entry = module_file_if_regular(dir_module / (module_name + ".esk"));
-            if (!entry.empty()) return entry;
-            auto index = module_file_if_regular(dir_module / "index.esk");
-            if (!index.empty()) return index;
+        auto path = probe_library(lib_dir);
+        if (!path.empty()) return path;
+    }
+    if (nonempty_env("ESHKOL_SYSTEM_PREFIXES")) {
+        for (const auto& prefix : system_prefixes()) {
+            auto path = probe_library(prefix / "share" / "eshkol" / "lib");
+            if (!path.empty()) return path;
         }
     }
-
-    // Tier 5: build-tree fallback. A layout whose module root resolved
-    // elsewhere (or not at all) can still be running out of a tree with a
-    // plain lib/ beside or above the working directory.
-    for (const char* fallback : {"lib", "../lib"}) {
-        if (auto found = probe_module_dir(fallback, candidates); !found.empty()) {
-            return found;
-        }
-    }
-
     return {};
 }
 
@@ -1481,12 +1588,11 @@ std::vector<std::string> host_runtime_link_args() {
     std::string item;
 
 #ifdef __linux__
-    // Binary Linux releases carry the native image-codec closure beside the
-    // executables.  CMake records the builder's concrete PNG/JPEG locations
-    // (and -lwebp) in build_config.h so source-tree/Nix builds remain exact;
-    // those absolute development paths are not valid after relocating a
-    // release archive.  Prefer the package-local regular-file aliases when
-    // the bundle exists, while leaving ordinary source builds unchanged.
+    // Binary Linux releases may carry runtime dependencies in
+    // lib/eshkol/runtime-deps beside the executables (none today: image I/O
+    // codecs are built into the runtime).  When that directory exists, put it
+    // on the generated program's search and run paths; ordinary source
+    // builds are unchanged.
     const auto executable_dir = executable_directory();
     const auto dependency_dir = executable_dir.empty()
         ? std::filesystem::path{}
@@ -1507,36 +1613,47 @@ std::vector<std::string> host_runtime_link_args() {
 
     while (std::getline(stream, item, ';')) {
         if (!item.empty()) {
+#ifdef __APPLE__
+            static constexpr std::string_view openssl_static_marker =
+                "__ESHKOL_OPENSSL_STATIC__/";
+            if (item.rfind(openssl_static_marker, 0) == 0) {
+                const std::string filename = item.substr(openssl_static_marker.size());
+                // The marker is deliberately a two-file allowlist. Resolve it
+                // only beside an installed compiler and reject symlinked or
+                // missing payloads instead of falling back to the build host.
+                if (filename != "libssl.a" && filename != "libcrypto.a") {
+                    args.push_back("/__eshkol_invalid_openssl_static__/" + filename);
+                    continue;
+                }
+                const auto executable_dir = executable_directory();
+                const auto dependency_dir = executable_dir.empty()
+                    ? std::filesystem::path{}
+                    : executable_dir.parent_path() / "lib" / "eshkol" / "runtime-deps";
+                const auto packaged = dependency_dir / filename;
+                std::error_code ec;
+                const auto directory_status = std::filesystem::symlink_status(dependency_dir, ec);
+                const bool safe_directory = !ec &&
+                    std::filesystem::is_directory(directory_status) &&
+                    !std::filesystem::is_symlink(directory_status);
+                ec.clear();
+                const auto file_status = std::filesystem::symlink_status(packaged, ec);
+                if (safe_directory && !ec && std::filesystem::is_regular_file(file_status)) {
+                    args.push_back(std::filesystem::absolute(packaged).string());
+                } else {
+                    // A deliberately nonexistent path makes the linker fail
+                    // closed if the required staged payload is absent or unsafe.
+                    args.push_back(std::filesystem::absolute(
+                        dependency_dir / ("." + filename + ".missing")).string());
+                }
+                continue;
+            }
+#endif
             static constexpr std::string_view cuda_marker =
                 "__ESHKOL_CUDA_LIB__/";
             if (item.rfind(cuda_marker, 0) == 0) {
                 cuda_libraries.emplace_back(item.substr(cuda_marker.size()));
                 continue;
             }
-#ifdef __linux__
-            if (has_packaged_dependency_dir && std::filesystem::path(item).is_absolute()) {
-                const std::string filename = std::filesystem::path(item).filename().string();
-                const char* alias = nullptr;
-                if (filename.rfind("libpng", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libpng.so";
-                } else if (filename.rfind("libjpeg", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libjpeg.so";
-                } else if (filename.rfind("libwebp", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libwebp.so";
-                } else if (filename.rfind("libsharpyuv", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libsharpyuv.so";
-                } else if (filename.rfind("libz", 0) == 0 && filename.find(".so") != std::string::npos) {
-                    alias = "libz.so";
-                }
-                if (alias != nullptr) {
-                    const auto packaged = dependency_dir / alias;
-                    std::error_code ec;
-                    if (std::filesystem::is_regular_file(packaged, ec)) {
-                        item = packaged.generic_string();
-                    }
-                }
-            }
-#endif
             args.push_back(cxx_driver_link_arg(std::move(item)));
         }
     }
@@ -1544,6 +1661,51 @@ std::vector<std::string> host_runtime_link_args() {
     auto cuda_args = cuda_runtime_link_args(cuda_libraries);
     args.insert(args.end(), cuda_args.begin(), cuda_args.end());
 
+    return args;
+}
+
+std::vector<std::string> macos_packaged_llvm_link_args(
+    const std::filesystem::path& dependency_dir) {
+    std::error_code ec;
+    const auto dir_status = std::filesystem::symlink_status(dependency_dir, ec);
+    const auto llvm_alias = dependency_dir / "libLLVM-21.dylib";
+    ec.clear();
+    const auto file_status = std::filesystem::symlink_status(llvm_alias, ec);
+    if (!ec && std::filesystem::is_directory(dir_status) &&
+        !std::filesystem::is_symlink(dir_status) &&
+        std::filesystem::is_regular_file(file_status) &&
+        !std::filesystem::is_symlink(file_status)) {
+        const auto package_path = std::filesystem::absolute(dependency_dir).string();
+        // Persistent `-r` outputs live outside the package. Their runpath is
+        // resolved from the relocated installed compiler.
+        return {"-L" + package_path, "-Wl,-rpath," + package_path};
+    }
+    // An absent package closure must not silently fall through to a host LLVM
+    // found in the consumer's ordinary linker search path.
+    return {"/__eshkol_package_runtime_missing__/libLLVM-21.dylib"};
+}
+
+std::vector<std::string> host_llvm_link_args() {
+    std::vector<std::string> args;
+    std::stringstream stream(ESHKOL_HOST_LLVM_LINK_ARGS);
+    std::string item;
+    while (std::getline(stream, item, ';')) {
+        if (item.empty()) {
+            continue;
+        }
+#ifdef __APPLE__
+        if (item == "__ESHKOL_MACOS_LLVM_LINK__") {
+            const auto executable_dir = executable_directory();
+            const auto dependency_dir = executable_dir.empty()
+                ? std::filesystem::path{}
+                : executable_dir.parent_path() / "lib" / "eshkol" / "runtime-deps";
+            auto packaged_args = macos_packaged_llvm_link_args(dependency_dir);
+            args.insert(args.end(), packaged_args.begin(), packaged_args.end());
+            continue;
+        }
+#endif
+        args.push_back(cxx_driver_link_arg(std::move(item)));
+    }
     return args;
 }
 
@@ -1653,6 +1815,10 @@ std::string shell_quote(std::string_view argument) {
  * @return -1 if @p arguments is empty; otherwise the subprocess's exit
  *         status (platform-specific encoding). */
 int run_command(const std::vector<std::string>& arguments) {
+    /* Running an external program is a capability sink: under a policy that
+     * does not grant `subprocess` nothing is launched and the caller sees the
+     * same -1 it gets for an empty argument vector. */
+    if (!eshkol_capability_require("subprocess")) return -1;
     if (arguments.empty()) {
         return -1;
     }
@@ -1741,9 +1907,77 @@ std::filesystem::path resolve_executable_output(const std::filesystem::path& bas
 
 } // namespace eshkol::platform
 
+static int copy_module_path(const std::string& path, char* output, size_t size) {
+    if (!output || path.empty() || path.size() >= size) return 0;
+    std::memcpy(output, path.c_str(), path.size() + 1);
+    return 1;
+}
+
+extern "C" int eshkol_canonical_source_file_c(const char* path, char* output, size_t size) {
+    return path && copy_module_path(eshkol::platform::module_file_if_regular(path), output, size);
+}
+
+extern "C" const char* eshkol_stdlib_module_path(const char* name) {
+    const auto* module = name ? eshkol::platform::stdlib_module(name) : nullptr;
+    return module ? module->path : nullptr;
+}
+
+extern "C" int eshkol_module_is_precompiled(const char* name) {
+    const auto* module = name ? eshkol::platform::stdlib_module(name) : nullptr;
+    return module && module->precompiled;
+}
+
 /* C entry point for the bytecode VM's C unity build. Keep the policy in the
  * canonical C++ resolver above; this adapter only converts its std::string
  * result into a caller-owned buffer. */
+/**
+ * @brief Whether @p host_path names a source file inside the Eshkol module
+ *        tree — the directory that carries stdlib.esk.
+ *
+ * The capability policy treats a foreign declaration differently depending on
+ * who wrote it: a module shipped with the language declares the runtime entry
+ * points it is built on and carries its own gates, while a program's own
+ * `(extern …)` is the program reaching outside the language and needs the `ffi`
+ * capability. This is the question that separates the two.
+ *
+ * Compares canonical paths, so a symlinked or relative spelling of the same
+ * file answers the same. An unknown or unreadable path answers 0 — a file the
+ * runtime cannot place is treated as the program's own.
+ *
+ * @param host_path Absolute or relative path to a source file; NULL answers 0.
+ * @return 1 when the file lies inside the module tree, 0 otherwise.
+ */
+extern "C" int eshkol_path_is_stdlib_module(const char* host_path) {
+    if (!host_path || !*host_path) return 0;
+
+    std::error_code ec;
+    const std::filesystem::path root = eshkol::platform::module_source_root().path;
+    if (root.empty()) return 0;
+
+    /* Only a root that actually carries the standard library confers the
+     * exemption. module_source_root() falls back to the first directory that
+     * merely exists so that a partial install still resolves user modules, and
+     * it honours a library directory named in the environment — both chosen by
+     * whoever launches the compiler. Neither is evidence that the files in it
+     * are Eshkol's own, and a project's own ./lib must not become exempt
+     * because it happened to be picked. */
+    if (!std::filesystem::exists(root / "stdlib.esk", ec) || ec) return 0;
+
+    std::filesystem::path canonical_root = std::filesystem::weakly_canonical(root, ec);
+    if (ec) { canonical_root = root; ec.clear(); }
+    std::filesystem::path canonical_file =
+        std::filesystem::weakly_canonical(std::filesystem::path(host_path), ec);
+    if (ec) { canonical_file = std::filesystem::path(host_path); ec.clear(); }
+
+    auto root_it = canonical_root.begin();
+    auto file_it = canonical_file.begin();
+    for (; root_it != canonical_root.end(); ++root_it, ++file_it) {
+        if (file_it == canonical_file.end()) return 0;
+        if (*root_it != *file_it) return 0;
+    }
+    return 1;
+}
+
 extern "C" int eshkol_resolve_module_source_path_c(const char* module_name,
                                                     const char* base_dir,
                                                     const char* lib_dir,
@@ -1751,9 +1985,6 @@ extern "C" int eshkol_resolve_module_source_path_c(const char* module_name,
                                                     size_t output_size) {
     if (!module_name || !output || output_size == 0) return 0;
     const std::string resolved = eshkol::platform::resolve_module_source_path(
-        module_name, base_dir ? base_dir : ".", lib_dir ? lib_dir : eshkol::platform::module_source_root().path.string());
-    if (resolved.empty() || resolved.size() + 1 > output_size) return 0;
-    std::copy(resolved.begin(), resolved.end(), output);
-    output[resolved.size()] = '\0';
-    return 1;
+        module_name, base_dir ? base_dir : ".", lib_dir ? lib_dir : "");
+    return copy_module_path(resolved, output, output_size);
 }

@@ -1,0 +1,31 @@
+;;; VM execution-backed verification of exported stdlib value constants
+;;; (core.ad.interval, core.ad.taylor_models, core.streams) and logic vars.
+
+(define failures 0)
+(define (check label cond)
+  (if cond
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ")
+        (display label)
+        (newline)
+        #f)))
+
+(check "iv-eps" (> iv-eps 0.0))
+(check "iv-rel-pad" (= iv-rel-pad (* 8.0 iv-eps)))
+(check "iv-abs-pad" (> iv-abs-pad 0.0))
+(check "stream-null" (null? stream-null))
+(check "tm-nsamp" (> tm-nsamp 0))
+(check "tm-safety" (> tm-safety 1.0))
+(check "make-logic-var" (logic-var? (make-logic-var "?cov-x")))
+
+(if (= failures 0)
+    (begin
+      (display "PASS: wave9_vm_value_constants_test")
+      (newline))
+    (begin
+      (display "FAIL: wave9_vm_value_constants_test failures=")
+      (display failures)
+      (newline)
+      (exit 1)))

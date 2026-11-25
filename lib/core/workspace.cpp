@@ -12,6 +12,7 @@
 #include <eshkol/core/workspace.h>
 #include <eshkol/eshkol.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -257,17 +258,44 @@ void eshkol_ws_step_finalize(eshkol_workspace_t* ws,
     const eshkol_tagged_value_t* results, uint32_t num_modules) {
     if (!ws || !results || num_modules == 0) return;
 
-    /* Extract salience scores and proposal tensors from cons pairs */
-    double salience[16];   /* max 16 modules */
-    const ws_tensor_layout_t* proposals[16];
+    const uint32_t count = (num_modules <= ws->num_modules) ? num_modules : ws->num_modules;
+    if (count == 0) return;
+
+    double stack_salience[16];
+    const ws_tensor_layout_t* stack_proposals[16];
+    double stack_exp_sal[16];
+
+    double* salience = stack_salience;
+    const ws_tensor_layout_t** proposals = stack_proposals;
+    double* exp_sal = stack_exp_sal;
+
+    if (count > 16) {
+        salience = (double*)malloc(count * sizeof(double));
+        proposals = (const ws_tensor_layout_t**)malloc(count * sizeof(const ws_tensor_layout_t*));
+        exp_sal = (double*)malloc(count * sizeof(double));
+        if (!salience || !proposals || !exp_sal) {
+            if (salience != stack_salience) free(salience);
+            if (proposals != stack_proposals) free(proposals);
+            if (exp_sal != stack_exp_sal) free(exp_sal);
+            return;
+        }
+    }
+
     uint32_t valid = 0;
 
-    for (uint32_t i = 0; i < num_modules && i < 16; i++) {
+    for (uint32_t i = 0; i < count; i++) {
         const eshkol_tagged_value_t* r = &results[i];
 
-        /* Result should be a HEAP_PTR to a cons cell */
+        /* Verify the object header actually tags a cons cell before reading car/cdr. */
         if (r->type != ESHKOL_VALUE_HEAP_PTR || !r->data.ptr_val) {
-            salience[i] = -1e30;  /* effectively zero after softmax */
+            salience[i] = -1e30;
+            proposals[i] = NULL;
+            continue;
+        }
+        const eshkol_object_header_t* pair_hdr =
+            (const eshkol_object_header_t*)((const uint8_t*)r->data.ptr_val - sizeof(eshkol_object_header_t));
+        if (pair_hdr->subtype != HEAP_SUBTYPE_CONS) {
+            salience[i] = -1e30;
             proposals[i] = NULL;
             continue;
         }
@@ -286,37 +314,44 @@ void eshkol_ws_step_finalize(eshkol_workspace_t* ws,
             salience[i] = 0.0;
         }
 
-        /* Cdr = proposal tensor (HEAP_PTR to tensor) */
+        /* Cdr = proposal tensor (verify HEAP_SUBTYPE_TENSOR header before dereferencing). */
+        proposals[i] = NULL;
         if (cdr->type == ESHKOL_VALUE_HEAP_PTR && cdr->data.ptr_val) {
-            proposals[i] = (const ws_tensor_layout_t*)cdr->data.ptr_val;
-        } else {
-            proposals[i] = NULL;
+            const eshkol_object_header_t* cdr_hdr =
+                (const eshkol_object_header_t*)((const uint8_t*)cdr->data.ptr_val - sizeof(eshkol_object_header_t));
+            if (cdr_hdr->subtype == HEAP_SUBTYPE_TENSOR) {
+                proposals[i] = (const ws_tensor_layout_t*)cdr->data.ptr_val;
+            }
         }
 
         valid++;
     }
 
-    if (valid == 0) return;
+    if (valid == 0) {
+        if (salience != stack_salience) free(salience);
+        if (proposals != stack_proposals) free(proposals);
+        if (exp_sal != stack_exp_sal) free(exp_sal);
+        return;
+    }
 
     /* Softmax over salience scores */
     double max_sal = salience[0];
-    for (uint32_t i = 1; i < num_modules && i < 16; i++) {
+    for (uint32_t i = 1; i < count; i++) {
         if (salience[i] > max_sal) max_sal = salience[i];
     }
 
     double sum_exp = 0.0;
-    double exp_sal[16];
-    for (uint32_t i = 0; i < num_modules && i < 16; i++) {
+    for (uint32_t i = 0; i < count; i++) {
         exp_sal[i] = exp(salience[i] - max_sal);
         sum_exp += exp_sal[i];
     }
 
     /* Normalize and find winner */
     uint32_t winner = 0;
-    double best_score = 0.0;
+    double best_score = -1.0;
     eshkol_workspace_module_t* modules = WS_MODULES(ws);
-    for (uint32_t i = 0; i < num_modules && i < 16; i++) {
-        double normalized = exp_sal[i] / sum_exp;
+    for (uint32_t i = 0; i < count; i++) {
+        double normalized = sum_exp > 0.0 ? (exp_sal[i] / sum_exp) : 0.0;
         modules[i].salience = normalized;
         if (normalized > best_score) {
             best_score = normalized;
@@ -336,6 +371,10 @@ void eshkol_ws_step_finalize(eshkol_workspace_t* ws,
     }
 
     ws->step_count++;
+
+    if (salience != stack_salience) free(salience);
+    if (proposals != stack_proposals) free(proposals);
+    if (exp_sal != stack_exp_sal) free(exp_sal);
 }
 
 /* ===== Display ===== */

@@ -101,19 +101,23 @@ and measured: `tests/ad/matmul_tape_node_count_test.esk` ratchets the count and
 6×6 matmul equals that of a 2×2 once the gradient driver's per-input variable
 nodes are subtracted.
 
-**CRITICAL — `finite_difference_evals == 0` is a vacuous gate on the LLVM
-backend** (conformity audit item c3). `eshkol_ad_count_fd()`
-(`lib/core/runtime_autodiff.cpp:51`) has **zero callers** anywhere in
-`lib/`, `inc/`, or emitted IR. The Stage-1 acceptance assertion
-`(= (ad-finite-difference-evals) 0)` (`tests/ad/one_pass_gradient_test.esk:89`)
-is therefore true by construction and proves nothing — the counter is
-structurally incapable of being nonzero. The VM's separate counter *is*
-wired (`vm_native.c:13574`, `:13647`), which is how the VM's own FD paths
-(`divergence`/`curl`) were found in the first place. **BUILD ITEM, #2
-priority:** call `eshkol_ad_count_fd()` from every remaining FD site so
-the assertion becomes real; expect it to then *fail* until the VM's
-`divergence`/`curl` are converted off central differences. Blocks
-ADR-0000 Stage 1's gate and Stage 5's exit criterion.
+**Finite-difference counter: live instrument; scoped exactness evidence remains required.**
+The earlier conformity finding that `eshkol_ad_count_fd()` had zero native
+callers has been addressed. `lib/core/system_builtins.c` exposes
+`ad-note-finite-difference!`, the LLVM lowering resolves it, and the explicit
+`record-fd-op!` escape hatch in `lib/core/ad/tape.esk` reports each perturbation.
+The VM implements the same write end in `lib/backend/vm_native.c`.
+
+`tests/ad/fd_counter_negative_test.esk` checks both directions: a real central-
+difference backward over two inputs reports exactly four perturbations and
+makes the zero-FD assertion false; the corresponding exact tape computation
+leaves the counter at zero. Its 12 checks pass on actual ORC, separately
+compiled AOT, and direct VM source execution in the current local integration
+qualification (2026-10-20). The counter is therefore capable of detecting the
+instrumented FD path; its zero value alone does not prove that every numerical
+operator is exact or that every possible fallback is instrumented. Retain
+source-bound operator gates and negative controls for each claimed exactness
+scope rather than treating counter liveness as whole-campaign completion.
 
 Both items are cited from `ROADMAP.md`'s "ADR-0000 stage attainment"
 section and from `docs/design/adr/0000-unified-trajectory.md` §0.

@@ -1,0 +1,3 @@
+;; A factory function's handle result is dropped instead of bound to an owner.
+(define (open-log path) (open-output-file path))
+(open-log "strict-dropped.txt")

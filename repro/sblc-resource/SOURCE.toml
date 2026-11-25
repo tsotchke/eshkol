@@ -1,0 +1,7 @@
+schema_version = 1
+license = "MIT"
+source_kind = "selected source donation"
+upstream_base = "14dd4d0fbb2714e6fc40e99f53eb91b18a7f68be"
+source_owners = ["nsr-reduction SP-1", "nsr-reduction SP-2"]
+adaptation = "Rational atomic-choice beta laws adapted to depth-two fair choices and exact beta-plus-coin accounting"
+scope = "Admitted binary recursive sources and static shared/fresh latent sequence composition"

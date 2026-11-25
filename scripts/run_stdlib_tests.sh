@@ -76,6 +76,17 @@ echo ""
 # Run each test
 for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
     test_name=$(basename "$test_file")
+    # Three long-run effective-homology checks require 29-33 GB RAM and are owned
+    # by scripts/run_effective_gate.sh (excluded from default CTest as well).
+    # Opt in via ESHKOL_RUN_HEAVY_EFFECTIVE_TESTS=1 on high-memory hosts.
+    if [ "${ESHKOL_RUN_HEAVY_EFFECTIVE_TESTS:-0}" != "1" ]; then
+        case "$test_name" in
+            effective_hypercover_test.esk|effective_hypercover_3type_test.esk|effective_pi6_s3_test.esk)
+                printf "Skipping %-49s (29-33 GB; owned by run_effective_gate.sh)\n" "$test_name"
+                continue
+                ;;
+        esac
+    fi
     test_bin="$RUN_DIR/${test_name%.esk}"
     test_output="$RUN_DIR/${test_name%.esk}.out"
     compile_output="$RUN_DIR/${test_name%.esk}.compile.out"
@@ -85,14 +96,27 @@ for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
     rm -f "$test_bin" "$test_bin.tmp.o" "$test_output" "$compile_output"
 
     # Try to compile
-    if "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$test_file" -o "$test_bin" > "$compile_output" 2>&1; then
+    if "$ESHKOL_RUN" -I "$ROOT_DIR/tests" -L"$ROOT_DIR/$BUILD_DIR" "$test_file" -o "$test_bin" > "$compile_output" 2>&1; then
         # Compilation succeeded, try to run
         if "$test_bin" > "$test_output" 2>&1; then
+            # test_condition_counts.esk intentionally registers 2 failing
+            # core.testing checks to assert pass/fail counts, then exits 0
+            # only when it prints "PASS: condition counts".
+            if [ "$test_name" = "test_condition_counts.esk" ]; then
+                if grep -Fxq "PASS: condition counts" "$test_output"; then
+                    echo -e "${GREEN}✅ PASS${NC}"
+                    ((PASS++)) || true
+                else
+                    echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
+                    head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
+                    RUNTIME_ERRORS+=("$test_name")
+                    ((FAIL++)) || true
+                fi
             # Check if there were any errors in output
             # `error:` alone is a compiler diagnostic, not a verdict: these
             # programs print their own FAIL lines and exit 0, so scan for
             # failure markers too — anywhere on the line, not just column 0.
-            if eshkol_test_output_has_failure "$test_output" 'error:'; then
+            elif eshkol_test_output_has_failure "$test_output" 'error:'; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                 head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
                 RUNTIME_ERRORS+=("$test_name")

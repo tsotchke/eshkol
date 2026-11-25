@@ -42,6 +42,12 @@
 
 namespace eshkol {
 
+/** Byte offsets of a source interpolation in a decoded string token. */
+struct InterpolationSpan {
+    size_t start;  ///< opening tilde
+    size_t end;    ///< one past the closing brace
+};
+
 /** One node of reader syntax. */
 struct SyntaxDatum {
     enum class Kind : uint8_t {
@@ -60,6 +66,7 @@ struct SyntaxDatum {
     uint32_t line = 0;
     uint32_t column = 0;
     std::vector<SyntaxDatum> items;
+    std::vector<InterpolationSpan> interpolations;
 
     bool isSymbol() const { return kind == Kind::Symbol; }
     bool isList() const { return kind == Kind::List; }
@@ -116,6 +123,22 @@ void syntax_replace_macro(const eshkol_macro_def_t* macro, MacroSyntax syntax);
  */
 eshkol_ast_t parse_syntax_datum(const SyntaxDatum& datum,
                                 const std::set<std::string>& macro_names);
+
+/** One token of reader syntax, as a producer other than the reader spells it. */
+struct SyntaxToken {
+    int token_type = 0;     ///< parser token type (TOKEN_LPAREN, TOKEN_SYMBOL, ...)
+    std::string text;       ///< decoded spelling
+    bool verbatim = false;  ///< symbol spelled with |vertical bars| (a symbol named ".")
+};
+
+/**
+ * Parse one datum given as its tokens in reading order, exactly as
+ * parse_syntax_datum() parses the same datum. The token sequence is flat, so
+ * a producer can spell a datum of any nesting depth without a tree of its
+ * own; the parser holds nesting on heap continuation frames.
+ */
+eshkol_ast_t parse_syntax_tokens(std::vector<SyntaxToken> tokens,
+                                 const std::set<std::string>& macro_names);
 
 /**
  * While alive, the next form parsed is a top-level form of a program

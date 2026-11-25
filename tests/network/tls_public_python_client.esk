@@ -1,0 +1,46 @@
+;;; Public Scheme TLS client against the Python SSL server test harness.
+(require stdlib)
+(require core.tls)
+(define tests-passed 0)
+(define tests-failed 0)
+(define (check name condition)
+  (if condition
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name) (newline))))
+(define port __TLS_PORT__)
+(define ca-file __TLS_CERT__)
+(define context (tls-client-context ca-file))
+(check "public Scheme client context" (and (tls-available?) (not (tls-error? context))))
+(define session
+  (if (tls-error? context) context
+      (tls-connect context "127.0.0.1" port "localhost" 3000)))
+(check "public Scheme client verifies Python localhost certificate"
+       (not (tls-error? session)))
+(if (not (tls-error? context)) (tls-context-close context) #f)
+(define payload (string (integer->char 65) (integer->char 0) (integer->char 233)))
+(define sent (if (tls-error? session) session (tls-write session payload 2000)))
+(check "public Scheme sends NUL and UTF-8 bytes to Python SSL"
+       (= sent (string-byte-length payload)))
+(define early (if (tls-error? session) session (tls-read session 32 80)))
+(check "partial TLS record respects read deadline"
+       (and (tls-error? early) (= (tls-error-code early) -2)))
+(define first-byte (if (tls-error? session) session (tls-read session 1 1000)))
+(check "partial-record retry can use a different read buffer"
+       (and (string? first-byte) (string=? first-byte "R")))
+(define buffered (if (tls-error? session) session (tls-read session 32 0)))
+(define remainder (string (integer->char 0) (integer->char 233)))
+(define tail
+  (if (tls-error? buffered)
+      (if (= (tls-error-code buffered) -2)
+          (tls-read session 32 1000)
+          buffered)
+      buffered))
+(check "zero-timeout read delivers or retains buffered plaintext"
+       (and (string? tail) (string=? tail remainder)))
+(define closed (if (tls-error? session) session (tls-session-close session)))
+(check "public Scheme closes Python peer session" (= closed 0))
+(display "TLS Python public API: ") (display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed") (newline)
+(if (> tests-failed 0) (error "TLS Python public API failures") #t)

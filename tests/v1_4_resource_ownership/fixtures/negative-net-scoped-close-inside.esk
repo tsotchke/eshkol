@@ -1,0 +1,11 @@
+(require core.net)
+;; The scope closes the listener it lent, so closing it inside the body is a
+;; second close of the same handle.
+(define port
+  (call-with-tcp-listener "127.0.0.1" 0
+    (lambda (listener)
+      (let ((p (net-local-port listener)))
+        (tcp-close listener)
+        p))))
+(display port)
+(newline)

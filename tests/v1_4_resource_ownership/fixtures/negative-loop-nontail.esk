@@ -1,0 +1,6 @@
+;; A non-tail call to the loop while a handle is open is outside the loop rule.
+(define in (open-input-file "strict-nontail.txt"))
+(define n
+  (let loop ((i 0))
+    (if (< i 3) (+ 1 (loop (+ i 1))) 0)))
+(close-port in)

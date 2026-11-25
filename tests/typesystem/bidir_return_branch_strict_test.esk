@@ -1,0 +1,10 @@
+;; Bidirectional checking (ADR-0042) under --types=strict: the branch that
+;; does not fit the return annotation is a compile-time error.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: [ERROR] Type error: result of 'f': expected Int64, got String (line 9
+
+(define (f (b : boolean)) : integer
+  (cond (b 1)
+        (else "no")))
+(display (f #t))

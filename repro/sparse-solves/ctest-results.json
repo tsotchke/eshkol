@@ -1,0 +1,9 @@
+{
+  "scope": "Standalone registration project; readiness test executed; native gate independently qualified; full upstream CTest not run",
+  "registered_tests": [
+    "sparse-solves_native",
+    "sparse-solves_readiness"
+  ],
+  "readiness_returncode": 0,
+  "ctest_cmake_sha256": "ab09ebdbd51eb9134b66ac5f632545634b1b6fd20803845f39522c5796a5b5eb"
+}

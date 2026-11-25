@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Run the phased v1.3 evolve evidence recipe and ask ICC for readiness.
+# Collect release evidence for the configured project and ask ICC for readiness.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 export PYTHONPATH="$REPO_ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
-export RELEASE_TARGET="${RELEASE_TARGET:-v1.3.6-evolve}"
-RELEASE_TARGET="$(python3 -c 'import os; from release_target import validate_target; print(validate_target(os.environ["RELEASE_TARGET"]))')"
+identity_args=()
+if [ "${RELEASE_TAG+x}" ]; then identity_args+=(--tag "$RELEASE_TAG"); fi
+if [ "${RELEASE_TARGET+x}" ]; then identity_args+=(--target "$RELEASE_TARGET"); fi
+RELEASE_TARGET="$(python3 scripts/release_target.py ${identity_args+"${identity_args[@]}"})"
 export RELEASE_TARGET
 . "$REPO_ROOT/scripts/lib/durable_work_root.sh"
 
@@ -179,6 +181,13 @@ run_final_evidence_phase() {
     # Doc-claims grading queries the ICC index; refresh it before that producer.
     "$ICC_BIN" reindex --repo "$ICC_REPO" --full
     scripts/run_v1_3_release_producers.sh
+    # CTest and smoke already contributed their events in the preceding phases.
+    for producer in ad_exact_taylor ad_exact_coefficients ad_numerics symbolic_fields \
+        sympy_exact_ad_oracle ad_nested signed_curvature v14_connection sblc sheaf \
+        topos ring transcript simplicial effective category monoidal groebner theory; do
+        bash "scripts/run_${producer}_gate.sh"
+    done
+    bash scripts/run_nlab_conformance.sh
     python3 scripts/check_release_build_cohort.py verify --build-dir "$BUILD_DIR" --manifest "$COHORT_MANIFEST" --trace "$TRACE_DIR/release-build-cohort.jsonl"
     python3 scripts/verify_v1_3_release_evidence.py --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR"
     "$ICC_BIN" architecture-verify --repo "$ICC_REPO" --model "$ARCH_MODEL" --trace-dir "$TRACE_DIR" --emit-trace --format markdown
@@ -200,11 +209,12 @@ run_readiness_phase() {
     "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format json > "${READINESS_JSON:?}"
     "$ICC_BIN" readiness --repo "$ICC_REPO" --target "$RELEASE_TARGET" --trace-dir "$TRACE_DIR" --trace-latest "$ARCH_TRACE_GLOB" --format markdown
 
-    status="$(jq -r '.status // ""' "$READINESS_JSON")"
-    if [ "$status" != "ready" ]; then
-        echo "$RELEASE_TARGET readiness is $status, expected ready" >&2
-        exit 1
-    fi
+    python3 - "$READINESS_JSON" "$RELEASE_TARGET" <<'PYVERDICT'
+import json, sys
+from release_readiness_guard import check_verdict
+with open(sys.argv[1], encoding="utf-8") as verdict:
+    check_verdict(json.load(verdict), sys.argv[2])
+PYVERDICT
 }
 
 case "$PHASE" in

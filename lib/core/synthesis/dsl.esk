@@ -1,0 +1,297 @@
+;;; core.synthesis.dsl -- typed component libraries for program synthesis.
+;;;
+;;; A synthesis problem is stated over a typed DSL. Types are symbols:
+;;;   int  bool  list (of integers)  str
+;;;   int->int  int->bool  int*int->int        (function values)
+;;; A component is #(syn-comp name arg-types ret-type impl cost term):
+;;;   name      the operator symbol that appears in synthesised programs
+;;;   impl      a TOTAL Scheme procedure: on an argument outside the
+;;;             component's domain it returns the bottom marker syn-bottom
+;;;             (head of the empty list, a value past the magnitude bound),
+;;;             so enumeration never raises
+;;;   cost      a positive integer; program cost is the sum of its component
+;;;             costs (variables cost 1). Lowering a component's cost moves it
+;;;             earlier in cost-ordered enumeration: this is the hook through
+;;;             which a learned scorer guides search
+;;;   term      for arity-0 components, the program text of the constant
+;;;             (a literal or a lambda term)
+;;;
+;;; Programs are Eshkol s-expressions over component names, variables,
+;;; literals and lambda terms; (syn-eval program env) runs one and
+;;; (syn-program->procedure program vars) turns one into a procedure.
+;;;
+;;; Design: ADR-0052 (docs/design/adr/0052-program-synthesis.md);
+;;; reference: docs/reference/stdlib/synthesis.md.
+
+(require stdlib)
+
+(provide syn-bottom syn-bottom? syn-component syn-comp? syn-comp-name syn-comp-args syn-comp-ret
+         syn-comp-impl syn-comp-cost syn-comp-term syn-comp-arity syn-with-cost syn-library-costs
+         syn-int-components syn-list-components syn-lambda-components syn-bool-components
+         syn-string-components syn-default-library syn-library-add
+         syn-head syn-last syn-take syn-drop syn-access syn-minimum syn-maximum syn-sum syn-count
+         syn-sort syn-reverse syn-map syn-filter syn-count-if syn-zipwith syn-scanl1 syn-cons syn-append
+         syn-substr syn-pos syn-tokens syn-upcase syn-downcase syn-length
+         syn-eval syn-program->procedure syn-program-size syn-program-components syn-show
+         syn-type-of-value syn-value-ok?)
+
+;; ---------------------------------------------------------------------------
+;; Bottom and the value bounds that keep enumeration finite
+;; ---------------------------------------------------------------------------
+(define syn-bottom 'syn-bottom)
+(define (syn-bottom? x) (eq? x 'syn-bottom))
+(define syn-int-bound 1000000)
+(define syn-list-bound 64)
+(define (syn-int x) (if (and (integer? x) (exact? x) (<= (abs x) syn-int-bound)) x syn-bottom))
+(define (syn-ints-ok? l) (cond ((null? l) #t) ((syn-bottom? (car l)) #f) (else (syn-ints-ok? (cdr l)))))
+(define (syn-list l)
+  (if (and (syn-ints-ok? l) (<= (length l) syn-list-bound)) l syn-bottom))
+(define (syn-value-ok? v)
+  (cond ((syn-bottom? v) #f)
+        ((pair? v) (syn-ints-ok? v))
+        (else #t)))
+(define (syn-type-of-value v)
+  (cond ((boolean? v) 'bool) ((and (integer? v) (exact? v)) 'int) ((string? v) 'str)
+        ((or (null? v) (pair? v)) 'list) (else #f)))
+
+;; ---------------------------------------------------------------------------
+;; Components
+;; ---------------------------------------------------------------------------
+(define (syn-component name args ret impl cost . term)
+  (vector 'syn-comp name args ret impl cost (if (null? term) #f (car term))))
+(define (syn-comp? c) (and (vector? c) (= (vector-length c) 7) (eq? (vector-ref c 0) 'syn-comp)))
+(define (syn-comp-name c) (vector-ref c 1))
+(define (syn-comp-args c) (vector-ref c 2))
+(define (syn-comp-ret c) (vector-ref c 3))
+(define (syn-comp-impl c) (vector-ref c 4))
+(define (syn-comp-cost c) (vector-ref c 5))
+(define (syn-comp-term c) (vector-ref c 6))
+(define (syn-comp-arity c) (length (syn-comp-args c)))
+(define (syn-with-cost c cost)
+  (if (not (and (integer? cost) (> cost 0))) (error "syn-with-cost: cost must be a positive integer"))
+  (vector 'syn-comp (syn-comp-name c) (syn-comp-args c) (syn-comp-ret c) (syn-comp-impl c) cost (syn-comp-term c)))
+;; Re-cost a library from an alist (name-or-term . cost); unlisted components keep theirs.
+(define (syn-library-costs lib costs)
+  (map (lambda (c)
+         (let ((hit (assoc (or (syn-comp-term c) (syn-comp-name c)) costs)))
+           (if hit (syn-with-cost c (cdr hit)) c)))
+       lib))
+(define (syn-library-add lib . comps) (append lib comps))
+
+;; Total list primitives (exported so synthesised programs run as Eshkol code).
+(define (syn-head l) (if (pair? l) (car l) syn-bottom))
+(define (syn-last l) (if (pair? l) (if (null? (cdr l)) (car l) (syn-last (cdr l))) syn-bottom))
+(define (syn-take n l)
+  (if (< n 0) syn-bottom
+      (let loop ((n n) (l l) (acc '())) (if (or (= n 0) (null? l)) (reverse acc) (loop (- n 1) (cdr l) (cons (car l) acc))))))
+(define (syn-drop n l)
+  (if (< n 0) syn-bottom (let loop ((n n) (l l)) (if (or (= n 0) (null? l)) l (loop (- n 1) (cdr l))))))
+(define (syn-access n l)
+  (if (< n 0) syn-bottom (let loop ((n n) (l l)) (cond ((null? l) syn-bottom) ((= n 0) (car l)) (else (loop (- n 1) (cdr l)))))))
+(define (syn-minimum l) (if (pair? l) (fold-left min (car l) (cdr l)) syn-bottom))
+(define (syn-maximum l) (if (pair? l) (fold-left max (car l) (cdr l)) syn-bottom))
+(define (syn-sum l) (syn-int (fold-left + 0 l)))
+(define (syn-count l) (length l))
+(define (syn-reverse l) (reverse l))
+(define (syn-cons x l) (syn-list (cons x l)))
+(define (syn-append a b) (syn-list (append a b)))
+;; Stable merge sort (ascending).
+(define (syn-sort l)
+  (define (merge a b)
+    (cond ((null? a) b) ((null? b) a)
+          ((<= (car a) (car b)) (cons (car a) (merge (cdr a) b)))
+          (else (cons (car b) (merge a (cdr b))))))
+  (define (split l a b) (if (null? l) (cons a b) (split (cdr l) b (cons (car l) a))))
+  (if (or (null? l) (null? (cdr l))) l
+      (let ((h (split l '() '()))) (merge (syn-sort (car h)) (syn-sort (cdr h))))))
+(define (syn-map f l) (syn-list (map f l)))
+(define (syn-filter p l) (filter (lambda (x) (eq? (p x) #t)) l))
+(define (syn-count-if p l) (length (syn-filter p l)))
+(define (syn-zipwith f a b)
+  (let loop ((a a) (b b) (acc '()))
+    (if (or (null? a) (null? b)) (syn-list (reverse acc)) (loop (cdr a) (cdr b) (cons (f (car a) (car b)) acc)))))
+(define (syn-scanl1 f l)
+  (if (null? l) '()
+      (let loop ((l (cdr l)) (acc (list (car l))))
+        (cond ((null? l) (syn-list (reverse acc)))
+              ((syn-bottom? (car acc)) syn-bottom)
+              (else (loop (cdr l) (cons (f (car acc) (car l)) acc)))))))
+
+;; ---------------------------------------------------------------------------
+;; Strings: tokens and positions (the FlashFill position language)
+;; ---------------------------------------------------------------------------
+;; Token classes: alpha, upper, lower, digit, alnum, space, or a punctuation
+;; character c (written (char c)). A token is a maximal run of the class.
+(define (syn-in-class? c cls)
+  (cond ((eq? cls 'alpha) (char-alphabetic? c))
+        ((eq? cls 'upper) (char-upper-case? c))
+        ((eq? cls 'lower) (char-lower-case? c))
+        ((eq? cls 'digit) (char-numeric? c))
+        ((eq? cls 'alnum) (or (char-alphabetic? c) (char-numeric? c)))
+        ((eq? cls 'space) (char-whitespace? c))
+        ((pair? cls) (char=? c (cadr cls)))
+        (else #f)))
+;; List of (start . end) of the tokens of class cls in s, left to right.
+(define (syn-tokens s cls)
+  (let ((n (string-length s)))
+    (let loop ((i 0) (start #f) (acc '()))
+      (cond ((= i n) (reverse (if start (cons (cons start n) acc) acc)))
+            ((syn-in-class? (string-ref s i) cls) (loop (+ i 1) (or start i) acc))
+            (start (loop (+ i 1) #f (cons (cons start i) acc)))
+            (else (loop (+ i 1) #f acc))))))
+;; Position expressions:  k >= 0          absolute index k
+;;                        (end m)         length - m
+;;                        (tok cls k side) start or end of the k-th token of
+;;                                         class cls (k < 0 counts from the right)
+(define (syn-pos s p)
+  (let ((n (string-length s)))
+    (cond ((integer? p) (if (<= p n) p syn-bottom))
+          ((eq? (car p) 'end) (if (<= (cadr p) n) (- n (cadr p)) syn-bottom))
+          ((eq? (car p) 'tok)
+           (let* ((toks (syn-tokens s (cadr p))) (k (caddr p)) (m (length toks))
+                  (idx (if (> k 0) (- k 1) (+ m k))))
+             (if (and (>= idx 0) (< idx m))
+                 (let ((tk (list-ref toks idx))) (if (eq? (cadddr p) 'start) (car tk) (cdr tk)))
+                 syn-bottom)))
+          (else syn-bottom))))
+(define (syn-substr s p1 p2)
+  (if (not (string? s)) syn-bottom
+      (let ((a (syn-pos s p1)) (b (syn-pos s p2)))
+        (if (or (syn-bottom? a) (syn-bottom? b) (> a b)) syn-bottom (substring s a b)))))
+(define (syn-upcase s) (if (string? s) (string-upcase s) syn-bottom))
+(define (syn-downcase s) (if (string? s) (string-downcase s) syn-bottom))
+(define (syn-length s) (if (string? s) (string-length s) syn-bottom))
+
+;; ---------------------------------------------------------------------------
+;; Default libraries
+;; ---------------------------------------------------------------------------
+(define (syn-int-components)
+  (list (syn-component 0 '() 'int (lambda () 0) 1 0)
+        (syn-component 1 '() 'int (lambda () 1) 1 1)
+        (syn-component 2 '() 'int (lambda () 2) 1 2)
+        (syn-component 3 '() 'int (lambda () 3) 1 3)
+        (syn-component '+ '(int int) 'int (lambda (a b) (syn-int (+ a b))) 1)
+        (syn-component '- '(int int) 'int (lambda (a b) (syn-int (- a b))) 1)
+        (syn-component '* '(int int) 'int (lambda (a b) (syn-int (* a b))) 1)
+        (syn-component 'max '(int int) 'int max 1)
+        (syn-component 'min '(int int) 'int min 1)
+        (syn-component 'if '(bool int int) 'int (lambda (c a b) (if c a b)) 1)))
+
+(define (syn-bool-components)
+  (list (syn-component '< '(int int) 'bool < 1)
+        (syn-component '= '(int int) 'bool = 1)
+        (syn-component 'not '(bool) 'bool not 1)
+        (syn-component 'even? '(int) 'bool even? 1)
+        (syn-component 'null? '(list) 'bool null? 1)))
+
+(define (syn-lambda-components)
+  (list (syn-component 'inc '() 'int->int (lambda () (lambda (e) (syn-int (+ e 1)))) 1 '(lambda (e) (+ e 1)))
+        (syn-component 'dec '() 'int->int (lambda () (lambda (e) (syn-int (- e 1)))) 1 '(lambda (e) (- e 1)))
+        (syn-component 'dbl '() 'int->int (lambda () (lambda (e) (syn-int (* e 2)))) 1 '(lambda (e) (* e 2)))
+        (syn-component 'tpl '() 'int->int (lambda () (lambda (e) (syn-int (* e 3)))) 1 '(lambda (e) (* e 3)))
+        (syn-component 'sqr '() 'int->int (lambda () (lambda (e) (syn-int (* e e)))) 1 '(lambda (e) (* e e)))
+        (syn-component 'neg '() 'int->int (lambda () (lambda (e) (- e))) 1 '(lambda (e) (- e)))
+        (syn-component 'even '() 'int->bool (lambda () even?) 1 '(lambda (e) (even? e)))
+        (syn-component 'odd '() 'int->bool (lambda () odd?) 1 '(lambda (e) (odd? e)))
+        (syn-component 'pos '() 'int->bool (lambda () (lambda (e) (> e 0))) 1 '(lambda (e) (> e 0)))
+        (syn-component 'negp '() 'int->bool (lambda () (lambda (e) (< e 0))) 1 '(lambda (e) (< e 0)))
+        (syn-component 'add '() 'int*int->int (lambda () (lambda (a b) (syn-int (+ a b)))) 1 '(lambda (a b) (+ a b)))
+        (syn-component 'mul '() 'int*int->int (lambda () (lambda (a b) (syn-int (* a b)))) 1 '(lambda (a b) (* a b)))
+        (syn-component 'mx '() 'int*int->int (lambda () max) 1 '(lambda (a b) (max a b)))
+        (syn-component 'mn '() 'int*int->int (lambda () min) 1 '(lambda (a b) (min a b)))))
+
+(define (syn-list-components)
+  (list (syn-component 'nil '() 'list (lambda () '()) 1 ''())
+        (syn-component 'syn-head '(list) 'int syn-head 1)
+        (syn-component 'syn-last '(list) 'int syn-last 1)
+        (syn-component 'syn-minimum '(list) 'int syn-minimum 1)
+        (syn-component 'syn-maximum '(list) 'int syn-maximum 1)
+        (syn-component 'syn-sum '(list) 'int syn-sum 1)
+        (syn-component 'syn-count '(list) 'int syn-count 1)
+        (syn-component 'syn-access '(int list) 'int syn-access 1)
+        (syn-component 'syn-take '(int list) 'list syn-take 1)
+        (syn-component 'syn-drop '(int list) 'list syn-drop 1)
+        (syn-component 'syn-reverse '(list) 'list syn-reverse 1)
+        (syn-component 'syn-sort '(list) 'list syn-sort 1)
+        (syn-component 'syn-cons '(int list) 'list syn-cons 1)
+        (syn-component 'syn-append '(list list) 'list syn-append 1)
+        (syn-component 'syn-map '(int->int list) 'list syn-map 1)
+        (syn-component 'syn-filter '(int->bool list) 'list syn-filter 1)
+        (syn-component 'syn-count-if '(int->bool list) 'int syn-count-if 1)
+        (syn-component 'syn-zipwith '(int*int->int list list) 'list syn-zipwith 1)
+        (syn-component 'syn-scanl1 '(int*int->int list) 'list syn-scanl1 1)))
+
+(define (syn-string-components)
+  (list (syn-component "" '() 'str (lambda () "") 1 "")
+        (syn-component " " '() 'str (lambda () " ") 1 " ")
+        (syn-component 'string-append '(str str) 'str (lambda (a b) (string-append a b)) 1)
+        (syn-component 'syn-upcase '(str) 'str syn-upcase 1)
+        (syn-component 'syn-downcase '(str) 'str syn-downcase 1)
+        (syn-component 'syn-length '(str) 'int syn-length 1)
+        (syn-component 'number->string '(int) 'str number->string 1)))
+
+(define (syn-default-library)
+  (append (syn-int-components) (syn-bool-components) (syn-lambda-components)
+          (syn-list-components) (syn-string-components)))
+
+;; ---------------------------------------------------------------------------
+;; Evaluation of program text
+;; ---------------------------------------------------------------------------
+;; The operator table maps every operator name that synthesis can emit to the
+;; procedure that implements it; lambda terms close over the environment.
+(define syn-operators
+  (list (cons '+ (lambda (a b) (syn-int (+ a b)))) (cons '- (lambda (a b) (syn-int (- a b))))
+        (cons '* (lambda (a b) (syn-int (* a b)))) (cons 'max max) (cons 'min min)
+        (cons '< <) (cons '> >) (cons '= =) (cons 'not not) (cons 'even? even?) (cons 'odd? odd?) (cons 'null? null?)
+        (cons 'syn-head syn-head) (cons 'syn-last syn-last) (cons 'syn-minimum syn-minimum)
+        (cons 'syn-maximum syn-maximum) (cons 'syn-sum syn-sum) (cons 'syn-count syn-count)
+        (cons 'syn-access syn-access) (cons 'syn-take syn-take) (cons 'syn-drop syn-drop)
+        (cons 'syn-reverse syn-reverse) (cons 'syn-sort syn-sort) (cons 'syn-cons syn-cons)
+        (cons 'syn-append syn-append) (cons 'syn-map syn-map) (cons 'syn-filter syn-filter)
+        (cons 'syn-count-if syn-count-if) (cons 'syn-zipwith syn-zipwith) (cons 'syn-scanl1 syn-scanl1)
+        (cons 'string-append string-append)
+        (cons 'syn-upcase syn-upcase) (cons 'syn-downcase syn-downcase) (cons 'syn-length syn-length)
+        (cons 'number->string number->string) (cons 'syn-substr syn-substr)))
+
+(define (syn-any-bottom? xs) (cond ((null? xs) #f) ((syn-bottom? (car xs)) #t) (else (syn-any-bottom? (cdr xs)))))
+
+;; env: alist variable -> value. Unknown operators and unbound variables are
+;; errors (they are not part of the DSL); a bottom argument yields bottom.
+(define (syn-eval p env)
+  (cond ((symbol? p)
+         (let ((b (assq p env))) (if b (cdr b) (error "syn-eval: unbound variable" p))))
+        ((not (pair? p)) p)
+        ((eq? (car p) 'quote) (cadr p))
+        ((eq? (car p) 'lambda)
+         (let ((params (cadr p)) (body (caddr p)))
+           (if (= (length params) 1)
+               (lambda (a) (syn-eval body (cons (cons (car params) a) env)))
+               (lambda (a b) (syn-eval body (cons (cons (car params) a) (cons (cons (cadr params) b) env)))))))
+        ((eq? (car p) 'if)
+         (let ((c (syn-eval (cadr p) env)))
+           (cond ((syn-bottom? c) syn-bottom) (c (syn-eval (caddr p) env)) (else (syn-eval (cadddr p) env)))))
+        (else
+         (let ((op (assq (car p) syn-operators)))
+           (if (not op) (error "syn-eval: unknown operator" (car p)))
+           (let ((args (map (lambda (a) (syn-eval a env)) (cdr p))))
+             (if (syn-any-bottom? args) syn-bottom (apply (cdr op) args)))))))
+
+(define (syn-program->procedure p vars)
+  (lambda args
+    (syn-eval p (map cons vars args))))
+
+(define (syn-program-size p)
+  (cond ((pair? p)
+         (cond ((eq? (car p) 'quote) 1)
+               ((eq? (car p) 'lambda) (syn-program-size (caddr p)))
+               (else (fold-left + 1 (map syn-program-size (cdr p))))))
+        (else 1)))
+
+;; Operator names used in a program (lambda terms count as their own term).
+(define (syn-program-components p)
+  (cond ((not (pair? p)) '())
+        ((eq? (car p) 'quote) '())
+        ((eq? (car p) 'lambda) (list p))
+        (else (cons (car p) (apply append (map syn-program-components (cdr p)))))))
+
+(define (syn-show p) (let ((port (open-output-string))) (write p port) (get-output-string port)))

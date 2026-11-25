@@ -1,0 +1,6 @@
+Type error in eval (cyclic datum): expected an acyclic expression
+4
+eval: the symbol |__eshkol_desugar_x| is spelled the way the compiler spells the bindings it generates, which no program text can name
+#t
+1000000
+20

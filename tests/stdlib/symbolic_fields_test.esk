@@ -1,0 +1,247 @@
+;;; core.symbolic coefficient fields, the series coefficient norm and
+;;; polynomial-valued duals.
+;;;
+;;; Verifies: GF(p) ring axioms and canonical representatives, Fermat
+;;; inverses, Q <-> GF(p) field maps, field mismatch refusal, the
+;;; deterministic primality check (including a bignum modulus),
+;;; transcendental series over GF(p) up to the characteristic, the
+;;; weighted l1 norm of B_rho (exact value, per-variable weights, Laurent
+;;; terms, submultiplicativity), `series-of` over the built-in AD
+;;; operators (exact coefficients, an ansatz whose residual uses
+;;; `derivative-n` internally, vector-valued procedures), collection by a
+;;; grading variable, and affine solves over Q and GF(p).
+;;; Runs unchanged under JIT and AOT.
+(require stdlib)
+
+(define pass 0)
+(define fail 0)
+(define (check nm ok)
+  (if ok
+      (begin (set! pass (+ pass 1)) (display "PASS: ") (display nm) (newline))
+      (begin (set! fail (+ fail 1)) (display "FAIL: ") (display nm) (newline))))
+
+(define (raises? thunk)
+  (equal? 'it-raised (guard (exn (else 'it-raised)) (thunk) 'it-did-not-raise)))
+
+(define (all-exact? l) (or (null? l) (and (exact? (car l)) (all-exact? (cdr l)))))
+
+;; ============================================================
+;; Coefficient fields
+;; ============================================================
+
+(define F7 (coefficient-field-gf 7))
+(define FQ (coefficient-field-q))
+(check "GF(7) is a coefficient field of characteristic 7"
+       (and (coefficient-field? F7) (= (coefficient-field-characteristic F7) 7)))
+(check "Q has characteristic 0" (= (coefficient-field-characteristic FQ) 0))
+(check "a Q polynomial reports the Q field"
+       (= (coefficient-field-characteristic (poly-field (poly-var 'x))) 0))
+(check "a composite modulus is refused" (raises? (lambda () (coefficient-field-gf 91))))
+(check "1 is refused" (raises? (lambda () (coefficient-field-gf 1))))
+(check "an inexact modulus is refused" (raises? (lambda () (coefficient-field-gf 7.0))))
+(check "the Mersenne prime 2^61-1 is admitted"
+       (= (coefficient-field-characteristic (coefficient-field-gf 2305843009213693951)) 2305843009213693951))
+(check "a bignum prime 10^20+39 is admitted"
+       (coefficient-field? (coefficient-field-gf 100000000000000000039)))
+(check "a bignum composite (2^61-1)^2 is refused"
+       (raises? (lambda () (coefficient-field-gf (* 2305843009213693951 2305843009213693951)))))
+(check "a Carmichael number 561 is refused" (raises? (lambda () (coefficient-field-gf 561))))
+
+(define (gf p) (poly->field p F7))
+(define gx (gf (poly-var 'x)))
+(define gy (gf (poly-var 'y)))
+(define ga (gf (poly (list 'x) (list (cons (list 2) 3) (cons (list 0) -1)))))    ; 3x^2 + 6
+(define gb (gf (poly (list 'x 'y) (list (cons (list 1 1) 5) (cons (list 0 0) 1/2))))) ; 5xy + 4
+(define gc (gf (poly (list 'y) (list (cons (list 2) 2/3)))))                      ; 3y^2
+
+(check "Q -> GF(7) reduces -1 to 6" (= (poly-coeff ga (list (cons 'x 0))) 6))
+(check "Q -> GF(7) reduces 1/2 to 4" (= (poly-coeff gb '()) 4))
+(check "Q -> GF(7) reduces 2/3 to 3" (= (poly-coeff gc (list (cons 'y 2))) 3))
+(check "GF(7) values carry the GF(7) field"
+       (= (coefficient-field-characteristic (poly-field ga)) 7))
+
+(define (check-ring tag a b c one zero)
+  (check (string-append tag ": + commutative") (poly=? (poly+ a b) (poly+ b a)))
+  (check (string-append tag ": * commutative") (poly=? (poly* a b) (poly* b a)))
+  (check (string-append tag ": + associative") (poly=? (poly+ (poly+ a b) c) (poly+ a (poly+ b c))))
+  (check (string-append tag ": * associative") (poly=? (poly* (poly* a b) c) (poly* a (poly* b c))))
+  (check (string-append tag ": distributive") (poly=? (poly* a (poly+ b c)) (poly+ (poly* a b) (poly* a c))))
+  (check (string-append tag ": additive identity") (poly=? (poly+ a zero) a))
+  (check (string-append tag ": additive inverse") (poly=? (poly- a a) zero))
+  (check (string-append tag ": multiplicative identity") (poly=? (poly* a one) a)))
+(check-ring "GF(7)" ga gb gc (poly->field (poly-const 1) F7) (poly->field (poly-const 0) F7))
+
+(check "7x vanishes in GF(7)" (poly=? (poly-scale gx 7) (poly->field (poly-const 0) F7)))
+(check "(x+1)^7 = x^7 + 1 in GF(7) (Frobenius)"
+       (poly=? (poly-expt (poly+ gx (poly->field (poly-const 1) F7)) 7)
+               (poly+ (poly-expt gx 7) (poly->field (poly-const 1) F7))))
+(check "d/dx x^7 = 0 in GF(7)" (poly=? (poly-deriv (poly-expt gx 7) 'x) (poly->field (poly-const 0) F7)))
+(check "d/dx 3x^2 = 6x in GF(7)" (= (poly-coeff (poly-deriv ga 'x) (list (cons 'x 1))) 6))
+(check "poly-eval over GF(7) at x=3: 3*9+6 = 33 = 5"
+       (= (poly-eval ga (list (cons 'x 3))) 5))
+(check "poly-eval over GF(7) admits a rational point x=1/2: 3/4+6 = 3*2+6 = 5"
+       (= (poly-eval ga (list (cons 'x 1/2))) 5))
+(check "every GF(7) coefficient is a canonical representative"
+       (let loop ((ts (caddr (poly* ga gb))))
+         (or (null? ts) (and (exact? (cdar ts)) (<= 0 (cdar ts)) (< (cdar ts) 7) (loop (cdr ts))))))
+(check "GF(7) -> Q lifts representatives" (= (poly-coeff (poly->field ga FQ) (list (cons 'x 0))) 6))
+(check "Q -> GF(7) refuses a denominator divisible by 7"
+       (raises? (lambda () (poly->field (poly-const 1/7) F7))))
+(check "GF(7) -> GF(11) has no ring map" (raises? (lambda () (poly->field ga (coefficient-field-gf 11)))))
+(check "mixing fields in poly+ is refused" (raises? (lambda () (poly+ ga (poly-var 'x)))))
+(check "mixing fields in poly* is refused" (raises? (lambda () (poly* (poly-var 'x) ga))))
+(check "poly=? is false across fields" (not (poly=? (poly-var 'x) gx)))
+(check "Q values keep their original 3-element shape" (= (length (poly-var 'x)) 3))
+
+;; Series over GF(p): exp(log(1+x)) = 1+x while every k! is a unit, and
+;; the 1/7! coefficient is refused.
+(define F11 (coefficient-field-gf 11))
+(define gxs (series->field (series (list 'x) (list (cons (list 1) 1)) 6) F11))
+(define g1px (series->field (series (list 'x) (list (cons (list 0) 1) (cons (list 1) 1)) 6) F11))
+(define (coeffs s n) (let loop ((k 0) (acc '())) (if (> k n) (reverse acc) (loop (+ k 1) (cons (series-coeff s (list (cons 'x k))) acc)))))
+(check "GF(11): exp(log(1+x)) = 1+x to order 6" (equal? (coeffs (series-exp (series-log gxs)) 6) (coeffs g1px 6)))
+(check "GF(11): sin^2 + cos^2 = 1 to order 6"
+       (equal? (coeffs (series+ (series* (series-sin gxs) (series-sin gxs)) (series* (series-cos gxs) (series-cos gxs))) 6)
+               (list 1 0 0 0 0 0 0)))
+(check "GF(11): (1+x) * 1/(1+x) = 1" (equal? (coeffs (series* g1px (series-inverse g1px)) 6) (list 1 0 0 0 0 0 0)))
+(check "GF(11): series-integrate divides in the field: x^2 -> x^3/3 = 4x^3"
+       (= (series-coeff (series-integrate (series* gxs gxs) 'x) (list (cons 'x 3))) 4))
+(check "GF(5): exp to order 5 needs 1/5!, which is refused"
+       (raises? (lambda () (series-exp (series->field (series (list 'x) (list (cons (list 1) 1)) 5) (coefficient-field-gf 5))))))
+
+;; ============================================================
+;; Coefficient norm (weighted l1 norm of B_rho)
+;; ============================================================
+
+(define f-norm (series (list 'x 'y) (list (cons (list 0 0) 1) (cons (list 1 0) -2) (cons (list 1 1) 3/4)) 6)) ; 1 - 2x + 3/4 xy
+(check "norm with rho=1/2: 1 + 2*(1/2) + 3/4*(1/4) = 35/16"
+       (let ((n (series-norm f-norm 1/2))) (and (exact? n) (= n 35/16))))
+(check "norm with per-variable weights x:1/2 y:3: 1 + 1 + 3/4*3/2 = 25/8"
+       (= (series-norm f-norm (list (cons 'x 1/2) (cons 'y 3))) 25/8))
+(check "norm accepts a polynomial" (= (series-norm (series->poly f-norm) 1) 15/4))
+(check "norm of a Laurent term uses rho^-k: 2/tau at rho=1/4 is 8"
+       (= (series-norm (series (list 'tau) (list (cons (list -1) 2)) 3) 1/4) 8))
+(check "norm of the zero series is 0" (= (series-norm (series (list 'x) '() 3) 1/2) 0))
+(define g-norm (series (list 'x 'y) (list (cons (list 0 0) -1/3) (cons (list 0 1) 5) (cons (list 2 0) 1)) 6))
+(check "norm is submultiplicative: |fg| <= |f||g|"
+       (<= (series-norm (series* f-norm g-norm) 1/2) (* (series-norm f-norm 1/2) (series-norm g-norm 1/2))))
+(check "norm satisfies the triangle inequality"
+       (<= (series-norm (series+ f-norm g-norm) 1/2) (+ (series-norm f-norm 1/2) (series-norm g-norm 1/2))))
+(check "norm is refused over GF(p)" (raises? (lambda () (series-norm gxs 1))))
+(check "norm refuses a nonpositive weight" (raises? (lambda () (series-norm f-norm 0))))
+(check "norm refuses a missing per-variable weight" (raises? (lambda () (series-norm f-norm (list (cons 'x 1))))))
+
+;; ============================================================
+;; Polynomial-valued duals: series-of over the built-in AD operators
+;; ============================================================
+
+;; A polynomial procedure comes back as itself.
+(define (cubic x y) (+ (* x x y) (* -3 y) 1/2))
+(define s-cubic (series-of cubic (list 'x 'y) (list 0 0) 3))
+(check "series-of a polynomial at 0 is the polynomial"
+       (poly=? (series->poly s-cubic)
+               (poly (list 'x 'y) (list (cons (list 2 1) 1) (cons (list 0 1) -3) (cons (list 0 0) 1/2)))))
+(check "series-of truncates at the requested order"
+       (= (series-coeff (series-of cubic (list 'x 'y) (list 0 0) 2) (list (cons 'x 2) (cons 'y 1))) 0))
+(check "series-of at an exact rational point is exact (displacement coefficients)"
+       ;; cubic(1/2 + dx, 1 + dy): coefficient of dx is 2*(1/2)*1 = 1, of dx*dy is 2*(1/2) = 1
+       (let ((s (series-of cubic (list 'x 'y) (list 1/2 1) 3)))
+         (and (= (series-coeff s (list (cons 'x 1))) 1)
+              (= (series-coeff s (list (cons 'x 1) (cons 'y 1))) 1)
+              (= (series-coeff s '()) (cubic 1/2 1))
+              (exact? (series-coeff s (list (cons 'x 1) (cons 'y 1)))))))
+
+;; A rational procedure: the Taylor series of 1/(1-x-y) has binomial
+;; coefficients C(i+j, i).
+(define s-geom (series-of (lambda (x y) (/ 1 (- 1 x y))) (list 'x 'y) (list 0 0) 4))
+(check "series-of 1/(1-x-y): coefficient of x^2 y^2 is C(4,2) = 6"
+       (= (series-coeff s-geom (list (cons 'x 2) (cons 'y 2))) 6))
+(check "series-of 1/(1-x-y): coefficient of x^1 y^3 is 4"
+       (= (series-coeff s-geom (list (cons 'x 1) (cons 'y 3))) 4))
+
+;; An ansatz with unknown coefficients a, b: u(x) = a x^2 + b x. The
+;; residual of u'' + u' - (2 + 2x) uses the built-in derivative-n inside;
+;; series-of over (a, b, x) returns it as a polynomial-valued value.
+(define (ansatz a b) (lambda (x) (+ (* a x x) (* b x))))
+(define (residual a b x)
+  (let ((u (ansatz a b)))
+    (- (+ (derivative-n u x 2) (derivative-n u x 1)) (+ 2 (* 2 x)))))
+(define r-sym (series-of residual (list 'a 'b 'x) (list 0 0 0) 3))
+(define r-poly (series->poly r-sym))
+;; residual = 2a + 2ax + b - 2 - 2x
+(check "residual of the ansatz is the expected polynomial"
+       (poly=? r-poly (poly (list 'a 'b 'x)
+                            (list (cons (list 1 0 0) 2) (cons (list 1 0 1) 2) (cons (list 0 1 0) 1)
+                                  (cons (list 0 0 0) -2) (cons (list 0 0 1) -2)))))
+(define r-collected (poly-collect r-poly 'x))
+(check "collecting powers of x gives two coefficient equations" (= (length r-collected) 2))
+(check "collected keys are ascending powers of x"
+       (and (equal? (car (car r-collected)) (list 0)) (equal? (car (cadr r-collected)) (list 1))))
+(define r-solution (poly-solve-linear (map cdr r-collected) (list 'a 'b)))
+(check "solving the collected equations: a = 1, b = 0, unique"
+       (and (= (cdr (assq 'a (car r-solution))) 1)
+            (= (cdr (assq 'b (car r-solution))) 0)
+            (null? (cdr r-solution))))
+(check "the solved ansatz makes the residual vanish identically"
+       (poly=? (series->poly (series-of (lambda (x) (residual 1 0 x)) (list 'x) (list 0) 3))
+               (poly-const 0)))
+
+;; The same ansatz over GF(7): same solution, computed in the field.
+(define r-solution-7 (poly-solve-linear (map (lambda (e) (poly->field (cdr e) F7)) r-collected) (list 'a 'b)))
+(check "GF(7) solve agrees: a = 1, b = 0"
+       (and (= (cdr (assq 'a (car r-solution-7))) 1) (= (cdr (assq 'b (car r-solution-7))) 0)))
+
+;; Graded value with a Laurent grading parameter: s(q, x) = q^-1 * (a - 1)
+;; + q^0 * (b + x) collected by q.
+(define laurent-ansatz
+  (series (list 'q 'a 'b 'x)
+          (list (cons (list -1 1 0 0) 1) (cons (list -1 0 0 0) -1) (cons (list 0 0 1 0) 1) (cons (list 0 0 0 1) 1))
+          4))
+(define lc (series-collect laurent-ansatz 'q))
+(check "series-collect keeps the q^-1 grade first" (equal? (car (car lc)) (list -1)))
+(check "the q^-1 coefficient is a - 1"
+       (poly=? (series->poly (cdr (car lc))) (poly (list 'a) (list (cons (list 1) 1) (cons (list 0) -1)))))
+(check "collecting q and x together separates every grade"
+       (= (length (series-collect laurent-ansatz (list 'q 'x))) 3))
+
+;; Vector-valued procedures give one series per component.
+(define vs (series-of (lambda (x y) (vector (* x y) (+ x 1))) (list 'x 'y) (list 0 0) 2))
+(check "vector-valued series-of returns a vector of series"
+       (and (vector? vs) (= (vector-length vs) 2)
+            (= (series-coeff (vector-ref vs 0) (list (cons 'x 1) (cons 'y 1))) 1)
+            (= (series-coeff (vector-ref vs 1) '()) 1)))
+
+;; A transcendental demotes only the coefficients it touches.
+(define s-exp (series-of (lambda (x) (exp x)) (list 'x) (list 0) 3))
+(check "series-of exp at 0: coefficient of x^2 is 1/2 to f64 rounding"
+       (< (abs (- (series-coeff s-exp (list (cons 'x 2))) 0.5)) 1e-12))
+
+;; Affine solve shapes and refusals.
+(define under (poly-solve-linear (list (poly (list 'a 'b) (list (cons (list 1 0) 1) (cons (list 0 1) 1) (cons (list 0 0) -3))))
+                                 (list 'a 'b)))
+(check "underdetermined: one basis vector for a + b = 3" (= (length (cdr under)) 1))
+(check "underdetermined: the particular solution satisfies a + b = 3"
+       (= (+ (cdr (assq 'a (car under))) (cdr (assq 'b (car under)))) 3))
+(check "an inconsistent system raises"
+       (raises? (lambda () (poly-solve-linear (list (poly (list 'a) (list (cons (list 1) 1) (cons (list 0) -1)))
+                                                    (poly (list 'a) (list (cons (list 1) 1) (cons (list 0) -2))))
+                                              (list 'a)))))
+(check "an inconsistent GF(7) system raises"
+       (raises? (lambda () (poly-solve-linear (list (poly->field (poly (list 'a) (list (cons (list 1) 1) (cons (list 0) -1))) F7)
+                                                    (poly->field (poly (list 'a) (list (cons (list 1) 1) (cons (list 0) -2))) F7))
+                                              (list 'a)))))
+(check "a non-affine equation is refused"
+       (raises? (lambda () (poly-linear-system (list (poly (list 'a) (list (cons (list 2) 1)))) (list 'a)))))
+(check "an equation in a variable outside the unknowns is refused"
+       (raises? (lambda () (poly-linear-system (list (poly (list 'a 'x) (list (cons (list 1 1) 1)))) (list 'a)))))
+(check "series-of refuses repeated variables" (raises? (lambda () (series-of cubic (list 'x 'x) (list 0 0) 2))))
+(check "series-of refuses a negative order" (raises? (lambda () (series-of cubic (list 'x 'y) (list 0 0) -1))))
+(define sys (poly-linear-system (list (poly (list 'a 'b) (list (cons (list 1 0) 2) (cons (list 0 1) 3) (cons (list 0 0) -5)))) (list 'a 'b)))
+(check "poly-linear-system returns exact_linalg row vectors"
+       (and (equal? (vector->list (vector-ref (car sys) 0)) (list 2 3)) (= (vector-ref (cdr sys) 0) 5)))
+
+(newline) (display "Passed: ") (display pass) (newline)
+(display "Failed: ") (display fail) (newline)
+(if (> fail 0)
+    (begin (display "RESULT: FAIL") (newline) (exit 1))
+    (begin (display "PASS: symbolic_fields_test") (newline)))

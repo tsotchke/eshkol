@@ -1,0 +1,205 @@
+;;
+;; core.ml.hnsw — hierarchical navigable small-world index (v1.5.0, ADR-0049).
+;;
+;; Approximate k-nearest-neighbour search over vectors (Malkov & Yashunin,
+;; "Efficient and robust approximate nearest neighbor search using
+;; Hierarchical Navigable Small World graphs", 2018). Each point is assigned
+;; a level floor(-ln(U) * mL), mL = 1/ln(M), and is linked on every layer up
+;; to that level to its M nearest already-inserted neighbours (2M on layer 0).
+;; A query descends greedily from the top-layer entry point and runs a beam
+;; search of width ef on layer 0.
+;;
+;; Levels come from a deterministic LCG seeded at creation, so an index built
+;; from the same points in the same order is the same graph on every engine.
+;;
+;; `hnsw-index-kb!` indexes the facts of a knowledge base under a caller's
+;; embedding function, and `kb-query-nearest` returns the facts whose
+;; embeddings are nearest a query vector: the vector side of a KB query.
+;;
+;;   (define idx (make-hnsw 8 'l2))
+;;   (hnsw-insert! idx (vector ...) 'payload)
+;;   (hnsw-search idx q 5 40)   ; => ((payload . distance) ...) nearest first
+;;
+
+(provide make-hnsw hnsw-insert! hnsw-search hnsw-count hnsw-dim hnsw-payload hnsw-vector
+         hnsw-brute-force hnsw-distance hnsw-index-kb! kb-query-nearest)
+
+;; ── helpers ──
+(define (hn-reverse l) (let loop ((l l) (a '())) (if (pair? l) (loop (cdr l) (cons (car l) a)) a)))
+(define (hn-length l) (let loop ((l l) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+(define (hn-take l k) (if (or (= k 0) (not (pair? l))) '() (cons (car l) (hn-take (cdr l) (- k 1)))))
+(define (hn-memv x l) (if (pair? l) (if (= x (car l)) #t (hn-memv x (cdr l))) #f))
+
+;; insert (d . id) into a list sorted by ascending d
+(define (hn-insert-sorted p l)
+  (if (or (not (pair? l)) (< (car p) (car (car l)))) (cons p l) (cons (car l) (hn-insert-sorted p (cdr l)))))
+
+(define (hn-grow v n fill)
+  (let ((r (make-vector n fill)))
+    (let loop ((i 0)) (if (< i (vector-length v)) (begin (vector-set! r i (vector-ref v i)) (loop (+ i 1))) r))))
+
+;; ── index ──
+;; #(dim metric M M0 efc mL seed count vectors payloads links levels entry max-level)
+;;   links : vector over nodes of vectors over layers of neighbour-id lists
+(define (make-hnsw dim metric . opts)
+  (let* ((m (if (pair? opts) (car opts) 8))
+         (efc (if (and (pair? opts) (pair? (cdr opts))) (cadr opts) 64)))
+    (if (not (or (eq? metric 'l2) (eq? metric 'cosine)))
+        (error "make-hnsw: metric must be 'l2 or 'cosine" metric))
+    (vector dim metric m (* 2 m) efc (/ 1.0 (log (exact->inexact (max m 2)))) 1234567
+            0 (make-vector 16 #f) (make-vector 16 #f) (make-vector 16 #f) (make-vector 16 0) -1 -1)))
+
+(define (hnsw-dim idx) (vector-ref idx 0))
+(define (hnsw-count idx) (vector-ref idx 7))
+(define (hnsw-vector idx i) (vector-ref (vector-ref idx 8) i))
+(define (hnsw-payload idx i) (vector-ref (vector-ref idx 9) i))
+
+(define (hn-dot a b)
+  (let loop ((i 0) (s 0.0)) (if (< i (vector-length a)) (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i)))) s)))
+
+;; squared Euclidean distance, or 1 - cos for 'cosine
+(define (hnsw-distance idx a b)
+  (if (eq? (vector-ref idx 1) 'l2)
+      (let loop ((i 0) (s 0.0))
+        (if (< i (vector-length a))
+            (let ((d (- (vector-ref a i) (vector-ref b i)))) (loop (+ i 1) (+ s (* d d))))
+            s))
+      (- 1.0 (/ (hn-dot a b) (sqrt (+ (* (hn-dot a a) (hn-dot b b)) 1.0e-300))))))
+
+(define (hn-dist-to idx q id) (hnsw-distance idx q (hnsw-vector idx id)))
+
+(define (hn-neighbours idx id layer)
+  (let ((ls (vector-ref (vector-ref idx 10) id)))
+    (if (< layer (vector-length ls)) (vector-ref ls layer) '())))
+
+(define (hn-set-neighbours! idx id layer nbrs)
+  (vector-set! (vector-ref (vector-ref idx 10) id) layer nbrs))
+
+;; next level from the index's LCG
+(define (hn-random-level! idx)
+  (let* ((s (modulo (+ (* (vector-ref idx 6) 1103515245) 12345) 2147483648))
+         (u (/ (+ (exact->inexact s) 1.0) 2147483649.0)))
+    (vector-set! idx 6 s)
+    (inexact->exact (floor (* (- (log u)) (vector-ref idx 5))))))
+
+;; Beam search on one layer from entry ids; returns up to ef (d . id) pairs,
+;; nearest first.
+(define (hn-search-layer idx q entries ef layer)
+  (let* ((seen (let loop ((es entries) (acc '())) (if (pair? es) (loop (cdr es) (cons (car es) acc)) acc)))
+         (start (let loop ((es entries) (acc '()))
+                  (if (pair? es) (loop (cdr es) (hn-insert-sorted (cons (hn-dist-to idx q (car es)) (car es)) acc)) acc))))
+    (let loop ((cands start) (results start) (visited seen))
+      (if (not (pair? cands))
+          (hn-take results ef)
+          (let* ((c (car cands))
+                 (worst (car (let last ((l results)) (if (pair? (cdr l)) (last (cdr l)) (car l))))))
+            (if (and (>= (hn-length results) ef) (> (car c) worst))
+                (hn-take results ef)
+                (let scan ((ns (hn-neighbours idx (cdr c) layer)) (cs (cdr cands)) (rs results) (vs visited))
+                  (if (pair? ns)
+                      (let ((n (car ns)))
+                        (if (hn-memv n vs)
+                            (scan (cdr ns) cs rs vs)
+                            (let* ((d (hn-dist-to idx q n))
+                                   (full (>= (hn-length rs) ef))
+                                   (rworst (car (let last ((l rs)) (if (pair? (cdr l)) (last (cdr l)) (car l))))))
+                              (if (or (not full) (< d rworst))
+                                  (scan (cdr ns) (hn-insert-sorted (cons d n) cs)
+                                        (hn-take (hn-insert-sorted (cons d n) rs) ef) (cons n vs))
+                                  (scan (cdr ns) cs rs (cons n vs))))))
+                      (loop cs rs vs)))))))))
+
+;; keep the `m` nearest of a neighbour list (relative to node `id`)
+(define (hn-prune idx id nbrs m)
+  (let ((v (hnsw-vector idx id)))
+    (let loop ((ns nbrs) (acc '()))
+      (if (pair? ns)
+          (loop (cdr ns) (hn-insert-sorted (cons (hnsw-distance idx v (hnsw-vector idx (car ns))) (car ns)) acc))
+          (let strip ((l (hn-take acc m)) (out '())) (if (pair? l) (strip (cdr l) (cons (cdr (car l)) out)) (hn-reverse out)))))))
+
+(define (hn-ensure-capacity! idx)
+  (let ((n (hnsw-count idx)) (cap (vector-length (vector-ref idx 8))))
+    (if (>= n cap)
+        (begin (vector-set! idx 8 (hn-grow (vector-ref idx 8) (* 2 cap) #f))
+               (vector-set! idx 9 (hn-grow (vector-ref idx 9) (* 2 cap) #f))
+               (vector-set! idx 10 (hn-grow (vector-ref idx 10) (* 2 cap) #f))
+               (vector-set! idx 11 (hn-grow (vector-ref idx 11) (* 2 cap) 0))))))
+
+;; insert a vector with a payload; returns its id
+(define (hnsw-insert! idx vec payload)
+  (if (not (= (vector-length vec) (hnsw-dim idx)))
+      (error "hnsw-insert!: vector dimension does not match the index" (vector-length vec) (hnsw-dim idx)))
+  (hn-ensure-capacity! idx)
+  (let* ((id (hnsw-count idx))
+         (level (hn-random-level! idx))
+         (layers (make-vector (+ level 1) '()))
+         (entry (vector-ref idx 12))
+         (top (vector-ref idx 13)))
+    (vector-set! (vector-ref idx 8) id vec)
+    (vector-set! (vector-ref idx 9) id payload)
+    (vector-set! (vector-ref idx 10) id layers)
+    (vector-set! (vector-ref idx 11) id level)
+    (vector-set! idx 7 (+ id 1))
+    (if (< entry 0)
+        (begin (vector-set! idx 12 id) (vector-set! idx 13 level))
+        (let descend ((layer top) (ep entry))
+          (if (> layer level)
+              ;; greedy step on the layers above the new node's level
+              (descend (- layer 1) (cdr (car (hn-search-layer idx vec (list ep) 1 layer))))
+              (let link ((layer (min level top)) (eps (list ep)))
+                (if (>= layer 0)
+                    (let* ((found (hn-search-layer idx vec eps (vector-ref idx 4) layer))
+                           (mmax (if (= layer 0) (vector-ref idx 3) (vector-ref idx 2)))
+                           (chosen (let strip ((l (hn-take found (vector-ref idx 2))) (o '()))
+                                     (if (pair? l) (strip (cdr l) (cons (cdr (car l)) o)) (hn-reverse o)))))
+                      (hn-set-neighbours! idx id layer chosen)
+                      (let back ((cs chosen))
+                        (if (pair? cs)
+                            (let* ((n (car cs)) (nn (cons id (hn-neighbours idx n layer))))
+                              (hn-set-neighbours! idx n layer (if (> (hn-length nn) mmax) (hn-prune idx n nn mmax) nn))
+                              (back (cdr cs)))))
+                      (link (- layer 1) (let strip ((l found) (o '())) (if (pair? l) (strip (cdr l) (cons (cdr (car l)) o)) (hn-reverse o))))))))))
+    (if (> level top) (begin (vector-set! idx 12 id) (vector-set! idx 13 level)))
+    id))
+
+;; the k nearest stored points to q with beam width ef (>= k):
+;; a list of (payload . distance), nearest first
+(define (hnsw-search idx q k ef)
+  (if (< (vector-ref idx 12) 0)
+      '()
+      (let descend ((layer (vector-ref idx 13)) (ep (vector-ref idx 12)))
+        (if (> layer 0)
+            (descend (- layer 1) (cdr (car (hn-search-layer idx q (list ep) 1 layer))))
+            (let loop ((l (hn-take (hn-search-layer idx q (list ep) (max ef k) 0) k)) (acc '()))
+              (if (pair? l)
+                  (loop (cdr l) (cons (cons (hnsw-payload idx (cdr (car l))) (car (car l))) acc))
+                  (hn-reverse acc)))))))
+
+;; exact k nearest by a linear scan (the reference the index is measured against)
+(define (hnsw-brute-force idx q k)
+  (let loop ((i 0) (acc '()))
+    (if (< i (hnsw-count idx))
+        (loop (+ i 1) (hn-insert-sorted (cons (hn-dist-to idx q i) i) acc))
+        (let out ((l (hn-take acc k)) (r '()))
+          (if (pair? l) (out (cdr l) (cons (cons (hnsw-payload idx (cdr (car l))) (car (car l))) r)) (hn-reverse r))))))
+
+;; ── knowledge-base side ──
+(define (hn-fresh-vars k)
+  (let loop ((i (- k 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons (string->symbol (string-append "?hnsw-arg-" (number->string i))) acc)))))
+
+;; index every fact (pred a1 ... ak) of the KB under (embed fact); returns the
+;; number of facts indexed
+(define (hnsw-index-kb! idx kb pred arity embed)
+  (let* ((vars (hn-fresh-vars arity)))
+    (let loop ((ss (kb-query kb (cons pred vars))) (n 0))
+      (if (pair? ss)
+          (let ((fact (cons pred (let w ((vs vars) (o '())) (if (pair? vs) (w (cdr vs) (cons (walk (car vs) (car ss)) o)) (hn-reverse o))))))
+            (hnsw-insert! idx (embed fact) fact)
+            (loop (cdr ss) (+ n 1)))
+          n))))
+
+;; the k facts whose embeddings are nearest q
+(define (kb-query-nearest idx q k . ef)
+  (let loop ((l (hnsw-search idx q k (if (pair? ef) (car ef) (max 32 k)))) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car (car l)) acc)) (hn-reverse acc))))

@@ -1,0 +1,11 @@
+;;; Copyright (C) 2026 Richard Hoekstra. SPDX-License-Identifier: MIT
+;;; Seven bytecode programs, independent integer answers, and canonical inputs.
+(provide mix-fixture-statics mix-fixture-inputs mix-fixture-answers mix-fixture-sources)
+(define mix-fixture-statics '
+(((code . 0) (n . 0)) ((code . 768) (n . 1)) ((code . 2211925263104) (n . 3)) ((code . 360854218745053447) (n . 4)) ((code . 67109632) (n . 2)) ((code . 73187892058390785) (n . 4)) ((code . 3987724869397317804577645228750078720) (n . 8))))
+(define mix-fixture-inputs '
+(-20 -19 -18 -17 -16 -15 -14 -13 -12 -11 -10 -9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19))
+(define mix-fixture-answers '
+((0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0) (-20 -19 -18 -17 -16 -15 -14 -13 -12 -11 -10 -9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19) (-45 -42 -39 -36 -33 -30 -27 -24 -21 -18 -15 -12 -9 -6 -3 0 3 6 9 12 15 18 21 24 27 30 33 36 39 42 45 48 51 54 57 60 63 66 69 72) (-162 -154 -146 -138 -130 -122 -114 -106 -98 -90 -82 -74 -66 -58 -50 -42 -34 -26 -18 -10 -2 6 14 22 30 38 46 54 62 70 78 86 94 102 110 118 126 134 142 150) (400 361 324 289 256 225 196 169 144 121 100 81 64 49 36 25 16 9 4 1 0 1 4 9 16 25 36 49 64 81 100 121 144 169 196 225 256 289 324 361) (404 365 328 293 260 229 200 173 148 125 104 85 68 53 40 29 20 13 8 5 4 5 8 13 20 29 40 53 68 85 104 125 148 173 200 229 260 293 328 365) (1984 1733 1498 1279 1076 889 718 563 424 301 194 103 28 -31 -74 -101 -112 -107 -86 -49 4 73 158 259 376 509 658 823 1004 1201 1414 1643 1888 2149 2426 2719 3028 3353 3694 4051)))
+(define mix-fixture-sources '
+((program () 0) (program () (prim + 0 (var x))) (program () (prim * (prim + (prim + 0 (var x)) 5) 3)) (program () (prim - (prim + (prim * (prim + 0 7) (var x)) (var x)) 2)) (program () (prim * (prim + 0 (var x)) (var x))) (program () (prim + (prim * (prim * (prim + 0 1) (var x)) (var x)) 4)) (program () (prim + (prim * (prim + (prim * (prim - (prim * (prim + (prim + 0 (var x)) 9) 2) 3) (var x)) 1) 4) (var x)))))

@@ -493,7 +493,7 @@ Computes det(A) via LU decomposition as product of diagonal elements of U,
 adjusted for permutation sign.
 
 **Matrix Inverse** (`tensor_codegen.cpp`): `(tensor-inverse A)`.
-Computes A^(-1) by solving `A * X = I` column by column via LU.
+Computes A^(-1) with partial-pivoting Gauss-Jordan elimination through the shared checked native/VM kernel.
 
 ```scheme
 (define A #(#(4.0 3.0) #(6.0 3.0)))

@@ -4,9 +4,20 @@
 ;; with no common supertype join to Value; neither claims the other branch's
 ;; type. The checker used to prefer the concrete branch, and to fall back to the
 ;; then-branch, so each `if` below warned while its `cond` twin was silent.
+;;
+;; The join is not what an argument is checked by (ADR-0042): an argument is
+;; checked tail by tail, so each branch that cannot fit the parameter is
+;; reported at that branch -- the same diagnostic for the `if` and for its
+;; `cond` twin, and none for the branch that fits.
 ;; EXPECT-MODE: default
 ;; EXPECT-COMPILE: ok
-;; EXPECT-NO-STDERR: Type warning
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64 (line 26:48)
+;; EXPECT-STDERR: argument 1 of 'label': expected String, got Int64 (line 27:56)
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got List (line 30:50)
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got Vector (line 30:59)
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got List (line 31:58)
+;; EXPECT-STDERR: argument 1 of 'area': expected Number, got Vector (line 31:74)
+;; EXPECT-NO-STDERR: got Value
 
 (define (area (w : number) (h : number)) (* w h))
 (define (label (s : string)) (string-length s))

@@ -479,7 +479,7 @@ theta &lt;- theta - lr * m_hat / (sqrt(v_hat) + eps)</code></pre>
 <h3 id="solvers">Solvers</h3>
 <p><strong>Linear Solve</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-solve A b)</code>. Solves <code>Ax = b</code> via LU decomposition with forward/backward substitution. Returns x.</p>
 <p><strong>Determinant</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-det A)</code>. Computes det(A) via LU decomposition as product of diagonal elements of U, adjusted for permutation sign.</p>
-<p><strong>Matrix Inverse</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-inverse A)</code>. Computes A^(-1) by solving <code>A * X = I</code> column by column via LU.</p>
+<p><strong>Matrix Inverse</strong> (<code>tensor_codegen.cpp</code>): <code>(tensor-inverse A)</code>. Computes A^(-1) with partial-pivoting Gauss-Jordan elimination through the shared checked native/VM kernel.</p>
 <pre class="scheme"><code>(define A #(#(4.0 3.0) #(6.0 3.0)))
 (define b #(10.0 12.0))
 (tensor-solve A b)                ; =&gt; #(1.0 2.0)

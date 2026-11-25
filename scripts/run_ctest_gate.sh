@@ -36,18 +36,9 @@
 #   gate: a criterion that silently stops being covered because its tests were
 #   renamed or configured out is exactly the hole this script closes.
 #
-#   A group may also declare a MEMBER FLOOR — the third column, or `-` for
-#   none. "Matched at least one" is the right rule for a pillar whose test set
-#   is configuration-dependent (the fixed-point engine's shared-ABI test only
-#   exists when the shared library is built), but it is the WRONG rule for a
-#   pillar whose whole claim is that several suites hold TOGETHER. The
-#   exact-coefficient Taylor tier (P6) and the reverse-over-Taylor seed tangent
-#   (P5) rewrote the SAME tower-extraction point from two directions, so
-#   "68/68 and 18/18 in one run" is the acceptance; with no floor, deleting the
-#   reverse-over-Taylor registration would leave the group matching, green, and
-#   no longer making that claim. The floor is a MINIMUM, not an equality, so
-#   adding tests to a pillar never fails the gate — a shrink-only ratchet, the
-#   same shape as the P8 baselines.
+#   The third column sets the minimum number of measured passes. A dash
+#   requires one pass. A timeout or a required skip leaves the group
+#   unresolved. A policy-approved optional skip contributes zero passes.
 #
 # USAGE
 #   scripts/run_ctest_gate.sh [--build-dir DIR] [-- <extra ctest args>]
@@ -103,6 +94,7 @@ fi
 # Each line becomes one roll-up event of kind "ctest", consumed by one
 # criterion under `eshkol-compiler-readiness`.
 CTEST_GATE_GROUPS=$(cat <<'GROUPS'
+quantum_circuit_contract_gate	^quantum_circuit_export_(aot|driver_selftest)$	2	Validated static circuit export and deliberate harness-failure checks
 fixed_point_exact_accumulation_gate	^fixedpoint_	-	Fixed-point / i128 exact-accumulation engine
 exact_input_ad_identity_gate	^(exact_point_ad|exact_taylor|exactness_runtime_property)_(runtime|aot)_smoke$	-	Exact-input AD identity tier
 taylor_tower_exactness_gate	^(taylor_tower|taylor_tower_mono|exact_taylor|reverse_over_taylor|taylor_numerics|region_evac_taylor_exact)_(runtime|aot)_smoke$	12	Taylor-tower exactness stack (P1/P2/P5/P6/P11) in one run
@@ -110,6 +102,7 @@ runtime_closure_arity_spread_gate	^runtime_closure_arity_spread_	-	Runtime-closu
 define_library_same_unit_gate	^define_library_same_unit_	-	R7RS same-unit define-library resolution
 module_load_path_engine_parity_gate	^load_path_engine_parity_test$	-	Relative (load …) resolves identically on every execution engine
 squared_distance_exact_gate	^squared_distance_gradcheck$	-	Squared geodesic distance is exact and differentiable THROUGH the diagonal
+v140_codebase_gate	^(image_codecs_test|image_io_language_test|test_native_image_io_contract|runtime_regions_test|doc_truth_ratchet_unit|doc_truth_ratchet_phase1)$	6	v1.4.0 codebase row: built-in image codecs, region units, doc-truth ratchet phase 1
 native_cross_entropy_gradient_gate	^(cross_entropy_gradient_|tensor_backward_dual_impl_gradcheck$|qllm_bridge_gradcheck$)	7	Native CE gradients and explicit unsupported-loss refusals on JIT/AOT and both tensor lowerings
 GROUPS
 )
@@ -209,47 +202,15 @@ echo
 RESULTS="$RUN_DIR/ctest-results.tsv"
 if [ "$HAVE_JUNIT" -eq 1 ] && [ -s "$JUNIT" ]; then
     eshkol_require_output_file_path "$RESULTS"
-    python3 - "$JUNIT" > "$RESULTS" <<'PY'
-import re, sys, xml.etree.ElementTree as ET
-root = ET.parse(sys.argv[1]).getroot()
-# CTest reports a per-test TIMEOUT (its own TIMEOUT test property firing,
-# distinct from a test that ran to completion and returned nonzero) as a
-# failed testcase whose <failure>/<error> text names it — CTest itself has
-# no separate JUnit "status" value for it. A timeout is exactly the shape
-# scripts/lib/harness_outcome.sh calls INFRA: the harness could not obtain
-# a verdict in the time budget, which says nothing about whether the code
-# is right. Folding it into FAIL here is the same defect class the
-# 2026-08-25 architecture audit measured in run_vm_parity.sh and
-# run_language_coverage.sh (section 3) — a clock fact reported as a
-# code-correctness verdict.
-TIMEOUT_RE = re.compile(r"\btimeout\b", re.IGNORECASE)
-for case in root.iter("testcase"):
-    name = case.get("name") or ""
-    if not name:
-        continue
-    status = case.get("status") or ""
-    failure_el = case.find("failure")
-    error_el = case.find("error")
-    failed = (failure_el is not None or error_el is not None
-              or status in ("fail", "failed", "notrun", "error"))
-    skipped = case.find("skipped") is not None or status == "skipped"
-    if skipped:
-        print("%s\tSKIP\tconfigured test skipped" % name)
-        continue
-    detail = "%s in %ss" % (status or ("failed" if failed else "passed"),
-                            case.get("time") or "?")
-    if failed:
-        failure_text = " ".join(filter(None, [
-            (failure_el.get("message") if failure_el is not None else None),
-            (failure_el.text if failure_el is not None else None),
-            (error_el.get("message") if error_el is not None else None),
-            (error_el.text if error_el is not None else None),
-        ]))
-        if TIMEOUT_RE.search(failure_text) or TIMEOUT_RE.search(status):
-            print("%s\tINFRA\t%s" % (name, detail))
-            continue
-    print("%s\t%s\t%s" % (name, "FAIL" if failed else "PASS", detail))
-PY
+    PYTHONPATH="$REPO_ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - "$JUNIT" "$RUN_DIR/optional-policy.json" > "$RESULTS" <<'PYJUNIT' || exit 1
+import sys
+from release_publication_contract import junit_outcomes, read_json
+labels = {"passed": "PASS", "failed": "FAIL", "infra": "INFRA", "skipped": "SKIP"}
+exclusions = read_json(sys.argv[2])["exclusions"]
+for name, outcome in junit_outcomes(sys.argv[1]).items():
+    detail = "optional" if outcome == "skipped" and name in exclusions else outcome
+    print(f"{name}\t{labels[outcome]}\t{detail}")
+PYJUNIT
 else
     # `      1/126 Test   #1: name .......   Passed    0.42 sec`
     # CTest's console verdict word for a per-test TIMEOUT firing is
@@ -269,7 +230,7 @@ else
     ' "$RUN_LOG" > "$RESULTS"
 fi
 
-TOTAL=0; PASSED=0; FAILED=0; INFRA=0
+TOTAL=0; PASSED=0; FAILED=0; INFRA=0; REQUIRED_SKIPS=0
 while IFS="$(printf '\t')" read -r name verdict detail; do
     [ -n "$name" ] || continue
     TOTAL=$((TOTAL + 1))
@@ -280,6 +241,7 @@ while IFS="$(printf '\t')" read -r name verdict detail; do
             emit_test_result "ctest-full::$name" "$verdict" "$detail"
             ;;
         SKIP)
+            if [ "$detail" != optional ]; then REQUIRED_SKIPS=$((REQUIRED_SKIPS + 1)); fi
             echo "SKIP ctest::$name — $detail"
             ;;
         INFRA)
@@ -339,14 +301,17 @@ GROUP_FAILURES=0
 GROUP_INFRA=0
 while IFS="$(printf '\t')" read -r event regex floor label; do
     [ -n "${event:-}" ] || continue
-    matched=0; g_pass=0; g_fail=0; g_infra=0; g_skip=0; first_fail=""
+    matched=0; g_pass=0; g_fail=0; g_infra=0; g_skip=0; g_required_skip=0; first_fail=""
     while IFS="$(printf '\t')" read -r name verdict detail; do
         [ -n "$name" ] || continue
         printf '%s' "$name" | grep -Eq "$regex" || continue
         matched=$((matched + 1))
         case "$verdict" in
             PASS)  g_pass=$((g_pass + 1)) ;;
-            SKIP) g_skip=$((g_skip + 1)) ;;
+            SKIP)
+                g_skip=$((g_skip + 1))
+                if [ "$detail" != optional ]; then g_required_skip=$((g_required_skip + 1)); fi
+                ;;
             INFRA) g_infra=$((g_infra + 1)) ;;
             *)
                 g_fail=$((g_fail + 1))
@@ -362,86 +327,42 @@ while IFS="$(printf '\t')" read -r event regex floor label; do
         echo "FAILED ctest-group::$event — ABSENT (no test matches /$regex/)"
         continue
     fi
-    # Member floor (see GROUPS above). A pillar that claims several suites hold
-    # TOGETHER stops making that claim the moment one of them is unregistered,
-    # and it does so while still matching, still green and still reported.
-    if [ "$floor" != "-" ] && [ "$matched" -lt "$floor" ]; then
-        GROUP_FAILURES=$((GROUP_FAILURES + 1))
-        emit_event "$event" FAIL "SHRUNK: $matched configured test(s) match /$regex/, floor is $floor — $label no longer covers what it asserts"
-        emit_test_result "ctest-group::$event" FAIL "$matched < floor $floor"
-        echo "FAILED ctest-group::$event — SHRUNK ($matched < floor $floor)"
-        continue
-    fi
+    if [ "$floor" = "-" ]; then floor=1; fi
     if [ "$g_fail" -gt 0 ]; then
         GROUP_FAILURES=$((GROUP_FAILURES + 1))
         emit_event "$event" FAIL "$label: $g_fail/$matched failed — $first_fail"
         emit_test_result "ctest-group::$event" FAIL "$g_fail/$matched failed"
         echo "FAILED ctest-group::$event ($g_fail/$matched) — $first_fail"
-    elif [ "$g_pass" -eq 0 ]; then
-        # Every matched test in this group hit INFRA (e.g. its own per-test
-        # ctest TIMEOUT) — no defect was observed, but no PASS was either.
-        # Never counted toward GROUP_FAILURES (an unresolved clock fact must
-        # not fail the gate), and never a false PASS either — reported as
-        # its own state, loudly.
+    elif [ "$matched" -lt "$floor" ]; then
+        GROUP_FAILURES=$((GROUP_FAILURES + 1))
+        emit_event "$event" FAIL "$label: $matched configured members, $floor required"
+        emit_test_result "ctest-group::$event" FAIL "$matched configured members below floor $floor"
+    elif [ "$g_pass" -lt "$floor" ] || [ "$g_infra" -gt 0 ] || [ "$g_required_skip" -gt 0 ]; then
         GROUP_INFRA=$((GROUP_INFRA + 1))
-        emit_event "$event" INFRA "$label: $g_infra/$matched infra (no verdict obtained)"
-        echo "INFRA  ctest-group::$event ($g_infra/$matched) — no verdict obtained"
+        emit_event "$event" INFRA "$label: $g_pass measured PASS, $g_skip skipped, $g_infra timed out; floor $floor"
+        echo "INFRA ctest-group::$event ($g_pass/$matched)"
     else
-        emit_event "$event" PASS "$label: $g_pass measured PASS, $g_skip configured skips out of $matched$([ "$g_infra" -gt 0 ] && printf '; %d infra' "$g_infra")"
-        emit_test_result "ctest-group::$event" PASS "$g_pass measured PASS; $g_skip optional/unresolved configured skips (policy receipt decides)"
-        echo "PASSED ctest-group::$event ($g_pass/$matched)$([ "$g_infra" -gt 0 ] && printf ' — %d infra (no verdict)' "$g_infra")"
+        emit_event "$event" PASS "$label: $g_pass measured PASS, $g_skip optional skips out of $matched"
+        emit_test_result "ctest-group::$event" PASS "$g_pass measured PASS; $g_skip optional skips"
+        echo "PASSED ctest-group::$event ($g_pass/$matched)"
     fi
 done <<GROUPS_EOF
 $CTEST_GATE_GROUPS
 GROUPS_EOF
 
 # ── suite roll-up ────────────────────────────────────────────────────────
-#
-# ctest itself returns nonzero on ANY non-Passed test, timeouts included, so
-# CTEST_RC == 0 used to be required for a green gate — which means a single
-# per-test ctest TIMEOUT (an environment fact: this host was too slow/loaded
-# to finish inside the test's TIMEOUT property) failed the whole suite
-# exactly like a real wrong-answer test would, indistinguishably. That is
-# the same class of defect the 2026-08-25 architecture audit measured in
-# run_vm_parity.sh and run_language_coverage.sh (section 3).
-#
-# The fix: PASS no longer requires CTEST_RC == 0 outright. It requires no
-# real FAILED test and no failed/absent group — and if CTEST_RC is still
-# nonzero, that nonzero must be FULLY explained by counted INFRA tests
-# (INFRA -gt 0), never silently assumed. If CTEST_RC is nonzero for any
-# OTHER reason — every parsed testcase says PASS/INFRA yet ctest itself
-# disagrees — that is a harness contradiction (the same shape
-# scripts/run_all_tests.sh already guards: individual verdicts and the
-# aggregate disagreeing), and is treated as a failure rather than trusted.
 SUMMARY="$PASSED/$TOTAL ctest tests passed"
 if [ "$FAILED" -eq 0 ] && [ "$GROUP_FAILURES" -eq 0 ] && [ "$SELF_VERDICT_FAILURES" -eq 0 ]; then
+    if [ "$INFRA" -gt 0 ] || [ "$GROUP_INFRA" -gt 0 ] || [ "$REQUIRED_SKIPS" -gt 0 ]; then
+        emit_event "ctest_suite_green" INFRA "$SUMMARY; $INFRA timeouts; $REQUIRED_SKIPS required skips; $GROUP_INFRA unresolved groups"
+        echo "ctest gate: INFRA ($SUMMARY)" >&2
+        exit 1
+    fi
     if [ "$CTEST_RC" -eq 0 ]; then
         emit_event "ctest_suite_green" PASS "$SUMMARY"
         emit_test_result "ctest::suite" PASS "$SUMMARY"
-        echo
-        echo "Trace written: $TRACE_FILE"
         echo "ctest gate: PASS ($SUMMARY)"
-        true # retain per-test outcomes durably
         exit 0
-    elif [ "$INFRA" -gt 0 ]; then
-        SUMMARY="$SUMMARY; $INFRA infra (no verdict, not counted as failure)"
-        emit_event "ctest_suite_green" PASS "$SUMMARY"
-        emit_test_result "ctest::suite" PASS "$SUMMARY"
-        echo
-        echo "Trace written: $TRACE_FILE"
-        echo "ctest gate: PASS ($SUMMARY)"
-        echo "WARNING: $INFRA ctest test(s) could not obtain a verdict (per-test TIMEOUT) — re-run under less contention if this persists." >&2
-        true # retain per-test outcomes durably
-        exit 0
-    else
-        DETAIL="$SUMMARY; every parsed testcase is PASS/INFRA but ctest itself exited $CTEST_RC with 0 INFRA to explain it — harness contradiction, not trusted"
-        emit_event "ctest_suite_green" FAIL "$DETAIL"
-        emit_test_result "ctest::suite" FAIL "$DETAIL"
-        echo
-        echo "Trace written: $TRACE_FILE"
-        echo "ctest gate: FAIL ($DETAIL)" >&2
-        true # retain per-test outcomes durably
-        exit 1
     fi
 fi
 

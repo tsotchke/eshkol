@@ -33,6 +33,11 @@
 
 ;; ---- a zero tolerance can only answer x itself ----
 (show "3/10 within 0" (rationalize 3/10 0))
+(show "1/2048 within 0" (rationalize 1/2048 0))
+(show "1/2048 within narrow epsilon" (rationalize 1/2048 1/10000000))
+(show "closed endpoint 1/10 within 1/15" (rationalize 1/10 1/15))
+(show "large denominator" (rationalize 1/3000000000 1/9000000000000000000))
+(show "large exact integer interval" (rationalize 9007199254740993 1))
 
 ;; ---- an interval containing an integer answers with an integer ----
 (show "3 within 1" (rationalize 3 1))
@@ -55,4 +60,35 @@
 (newline)
 (display "zero-tolerance-identity ")
 (display (if (= (rationalize 3/10 0) 3/10) "PASS" "FAIL"))
+(newline)
+
+;; Enumerate possible denominators up to that of the input (itself admissible).
+;; The least absolute numerator at each denominator lies nearest zero.
+(define (enumerated-simplest x tolerance)
+  (let ((lo (- (abs x) tolerance)) (hi (+ (abs x) tolerance)))
+    (if (<= lo 0) 0
+        (let loop ((q 1))
+          (let ((p (ceiling (* lo q))))
+            (if (<= p (* hi q)) (/ (if (< x 0) (- p) p) q)
+                (loop (+ q 1))))))))
+
+(define (interval-grid p d)
+  (cond ((> d 13) #t)
+        ((> p 15) (interval-grid -15 (+ d 1)))
+        (else
+         (let ((x (/ p d)) (tol (/ 1 (* d (+ 1 (abs p))))))
+           (and (= (rationalize x tol) (enumerated-simplest x tol))
+                (interval-grid (+ p 1) d))))))
+
+(if (and (= (rationalize 1/2048 0) 1/2048)
+         (= (rationalize 1/2048 1/10000000) 1/2048)
+         (= (rationalize 1/10 1/15) 1/6)
+         (= (rationalize 1/3000000000 1/9000000000000000000) 1/3000000000)
+         (= (rationalize 9007199254740993 1) 9007199254740992)
+         (= (rationalize 123456789123456789123456789123456789 1)
+            123456789123456789123456789123456788)
+         (inexact? (rationalize 0.3 1/10))
+         (interval-grid -15 1))
+    (display "PASS: rational intervals")
+    (begin (display "FAIL: rational intervals") (newline) (exit 1)))
 (newline)

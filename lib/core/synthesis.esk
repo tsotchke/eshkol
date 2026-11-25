@@ -1,0 +1,23 @@
+;;; core.synthesis -- programs from types and examples.
+;;;
+;;; Usage: (require core.synthesis)
+;;;
+;;; Loads the whole facility (each part can also be required alone):
+;;;   core.synthesis.dsl         typed component libraries, total primitives,
+;;;                              the FlashFill position language, evaluation
+;;;   core.synthesis.enumerate   bottom-up enumeration by cost with
+;;;                              observational-equivalence pruning
+;;;   core.synthesis.deduce      deductive splitting: FlashFill for strings,
+;;;                              map / filter / filter-then-map for lists,
+;;;                              and the syn-synthesize driver
+;;;   core.synthesis.benchmarks  the 42-task benchmark set with held-out checks
+;;;
+;;; Type-directed completion of `??` holes in source programs is done by the
+;;; compiler itself (docs/reference/language/synthesis-holes.md).
+;;; Reference: docs/reference/stdlib/synthesis.md; design: ADR-0052
+;;; (docs/design/adr/0052-program-synthesis.md).
+
+(require core.synthesis.dsl)
+(require core.synthesis.enumerate)
+(require core.synthesis.deduce)
+(require core.synthesis.benchmarks)

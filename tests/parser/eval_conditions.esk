@@ -1,0 +1,39 @@
+;; What eval does with a datum it cannot evaluate: it raises a condition that
+;; a guard catches, and a datum of any nesting depth converts.
+(define (message-of thunk)
+  (guard (e ((error-object? e) (error-object-message e))
+            (#t 'not-an-error-object))
+    (thunk)
+    'no-condition))
+
+;; A cyclic datum raises; shared, acyclic structure still evaluates.
+(define cyclic (list '+ 1 2))
+(set-cdr! (cddr cyclic) cyclic)
+(display (message-of (lambda () (eval cyclic))))
+(newline)
+(define shared (list 1 2))
+(display (eval (list '+ (list 'car (list 'quote shared))
+                     (list 'cadr (list 'quote shared))
+                     (list 'car (list 'quote shared)))))
+(newline)
+
+;; A reserved spelling made at run time raises and names the symbol.
+(display (message-of
+          (lambda () (eval (list 'define (string->symbol "__eshkol_desugar_x") 1)))))
+(newline)
+
+;; A datum nested a million levels deep converts, evaluates and compares.
+(define (nest n)
+  (let loop ((i 0) (d '()))
+    (if (= i n) d (loop (+ i 1) (list d)))))
+(define deep (nest 1000000))
+(define back (eval (list 'quote deep)))
+(display (equal? back deep))
+(newline)
+(display (let loop ((d back) (k 0)) (if (null? d) k (loop (car d) (+ k 1)))))
+(newline)
+
+;; Environment values are converted in the same macro scope as the body.
+(eval '(define-syntax twice (syntax-rules () ((_ e) (* 2 e)))))
+(display (eval '(twice x) (list (cons 'x '(twice 5)))))
+(newline)

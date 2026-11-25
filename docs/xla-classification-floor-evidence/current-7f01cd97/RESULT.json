@@ -1,0 +1,32 @@
+{
+  "producer_source_head": "75b09d6eae5e139cdf89b1574b37c5fcc10d4c93",
+  "engine_source_head": "7f01cd9707d4368dc6731ad6d91ae8d1eec6a76a",
+  "engine_sha256": "4782240036dae1b33f77fbaea3aba60767c3d483c3aa0983e836ff03c8ce37e5",
+  "command": [
+    "/Users/tyr/Desktop/infinite_context_coder/.venv/bin/python",
+    "scripts/gen_builtin_parity_plan.py",
+    "--eshkol-run",
+    "/Users/tyr/Desktop/eshkol/.scratch/v14-connection-20261019/recovery-20261019/connection-port/build/eshkol-run",
+    "--out",
+    "/Users/tyr/Desktop/eshkol/.scratch/v14-connection-20261019/recovery-20261019/xla-classification-floor/evidence-current-7f01cd97/floor-reference-plan.txt",
+    "--work",
+    "/Users/tyr/Desktop/eshkol/.scratch/v14-connection-20261019/recovery-20261019/xla-classification-floor/evidence-current-7f01cd97/work",
+    "--builtin",
+    "modulo",
+    "--builtin",
+    "mod",
+    "--builtin",
+    "floor-remainder",
+    "--builtin",
+    "floor-quotient",
+    "--builtin",
+    "quotient",
+    "--builtin",
+    "remainder"
+  ],
+  "exit": 0,
+  "reference_count": 6,
+  "NOREF_count": 0,
+  "scope": "Current source-bound host reference generation only, no XLA/deviceexecution. Prior/usr/local/binrefs preserved asunqualifiedoldtoolevidence.",
+  "pass": true
+}

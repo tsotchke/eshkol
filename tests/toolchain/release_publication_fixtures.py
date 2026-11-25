@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import release_publication_contract as contract
 
 SHA = "a" * 40
-TARGET = "v1.3.6-evolve"
+TAG = "v1.4.0-connection"
+TARGET = "v1.4-connection"
 
 
 def dump(path, value):

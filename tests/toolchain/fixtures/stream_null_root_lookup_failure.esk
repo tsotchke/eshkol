@@ -1,0 +1,4 @@
+(require stdlib)
+(define evaluated stream-null)
+(display "ROOT_LOOKUP_OK")
+(newline)

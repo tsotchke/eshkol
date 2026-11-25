@@ -278,26 +278,55 @@ static void* tensor_operand_checked_core(const eshkol_tagged_value_t* val,
  * it or read only its shape (TensorCodegen::unpackTensorOperandChecked holds
  * the one list of them).
  */
-extern "C" void* eshkol_tensor_operand_carrier_checked(const eshkol_tagged_value_t* val,
-                                                       const char* op_name) {
-    return tensor_operand_checked_core(val, op_name);
-}
+/* Operand policy bits: which tagged numeric dtypes an operator has a rule
+ * for. An operator listed for neither reads f64 slots only and refuses both. */
+enum : int32_t {
+    TENSOR_ACCEPT_DUAL  = 1,   /* forward-mode jet tensors (ADR-0020 amendment 2) */
+    TENSOR_ACCEPT_EXACT = 2,   /* exact element tensors (ADR-0058) */
+};
 
-static void refuse_dual_tensor(const eshkol_tensor_t* t, const char* op_name) {
-    if (t && t->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
+/* Refuse a tagged numeric tensor the operator has no rule for, by name. */
+static void refuse_tagged_numeric(const eshkol_tensor_t* t, const char* op_name,
+                                  int32_t accept) {
+    if (!t) return;
+    if (t->dtype == ESHKOL_TENSOR_DTYPE_DUAL && !(accept & TENSOR_ACCEPT_DUAL)) {
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
             "%s: a forward-mode derivative cannot pass through this tensor operation "
             "(it has no rule for a tensor of dual numbers); differentiate with gradient "
             "or restructure the computation",
             op_name ? op_name : "tensor-op");
     }
+    if (t->dtype == ESHKOL_TENSOR_DTYPE_EXACT && !(accept & TENSOR_ACCEPT_EXACT)) {
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
+            "%s: this tensor operation has no exact rule, and an exact tensor is never "
+            "rounded implicitly; convert it explicitly with (tensor-cast t 'f64) first",
+            op_name ? op_name : "tensor-op");
+    }
+}
+
+static void refuse_dual_tensor(const eshkol_tensor_t* t, const char* op_name) {
+    refuse_tagged_numeric(t, op_name, 0);
+}
+
+/* The one operand boundary with an explicit policy: `accept` is the set of
+ * tagged numeric dtypes the operator has a rule for (TensorCodegen::
+ * unpackTensorOperandChecked derives it from its two carrier lists). */
+extern "C" void* eshkol_tensor_operand_policy_checked(const eshkol_tagged_value_t* val,
+                                                      const char* op_name,
+                                                      int32_t accept) {
+    void* t = tensor_operand_checked_core(val, op_name);
+    refuse_tagged_numeric(static_cast<const eshkol_tensor_t*>(t), op_name, accept);
+    return t;
+}
+
+extern "C" void* eshkol_tensor_operand_carrier_checked(const eshkol_tagged_value_t* val,
+                                                       const char* op_name) {
+    return eshkol_tensor_operand_policy_checked(val, op_name, TENSOR_ACCEPT_DUAL);
 }
 
 void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                                     const char* op_name) {
-    void* t = tensor_operand_checked_core(val, op_name);
-    refuse_dual_tensor(static_cast<const eshkol_tensor_t*>(t), op_name);
-    return t;
+    return eshkol_tensor_operand_policy_checked(val, op_name, 0);
 }
 
 /*
@@ -321,8 +350,9 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
  * numeric collection: the distinction is whether the op writes through the
  * pointer, not which argument slot it occupies.
  */
-void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
-                                        const char* op_name) {
+extern "C" void* eshkol_tensor_destination_policy_checked(const eshkol_tagged_value_t* val,
+                                                          const char* op_name,
+                                                          int32_t accept) {
     if (val) {
         if (val->type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
             void* ptr = (void*)(uintptr_t)val->data.ptr_val;
@@ -335,7 +365,7 @@ void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
                         op_name, "numeric tensor (this vector holds non-numeric elements)", val);
                     return nullptr;  /* not reached */
                 }
-                refuse_dual_tensor(static_cast<const eshkol_tensor_t*>(ptr), op_name);
+                refuse_tagged_numeric(static_cast<const eshkol_tensor_t*>(ptr), op_name, accept);
                 return ptr;
             }
         }
@@ -351,13 +381,18 @@ void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
                                      op_name ? op_name : "tensor-op");
                 return nullptr;
             }
-            refuse_dual_tensor(static_cast<const eshkol_tensor_t*>(t), op_name);
+            refuse_tagged_numeric(static_cast<const eshkol_tensor_t*>(t), op_name, accept);
             return (void*)t;
         }
     }
 
     eshkol_type_error_with_operand(op_name, "tensor (updated in place)", val);
     return nullptr;  /* not reached (type error raises) */
+}
+
+void* eshkol_tensor_destination_checked(const eshkol_tagged_value_t* val,
+                                        const char* op_name) {
+    return eshkol_tensor_destination_policy_checked(val, op_name, 0);
 }
 
 /*

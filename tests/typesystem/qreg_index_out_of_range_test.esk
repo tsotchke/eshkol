@@ -1,0 +1,12 @@
+;; Type System Test: a qubit index outside its register is rejected at compile time
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: qubit index 2 in argument 2 of 'qh' is out of range for qreg<2>
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define-quantum-region qr (oops)
+  (qmeasure (qh (qalloc qr 2) 2)))
+
+(display (oops))

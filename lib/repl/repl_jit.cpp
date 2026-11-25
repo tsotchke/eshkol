@@ -5,6 +5,7 @@
 //
 
 #include "repl_jit.h"
+#include <eshkol/core/introspection.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/frontend/ast_strings.h>
@@ -12,15 +13,26 @@
 #include <eshkol/llvm_backend.h>
 #include <eshkol/module_visibility.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/module_resolver.h>
+#include <eshkol/stdlib_identity.h>
 #include <eshkol/runtime_exports.h>
+#include "../core/keychain_native.h"
 #include "eshkol/core/curvature_runtime.h"
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/i128_runtime.h>
+#include <eshkol/core/linear_solve.h>
 #include <eshkol/core/rational.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>  // For the SW-10 limit poll symbol
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
+#include "eshkol/core/net.h"
+#include "eshkol/core/tls.h"
+#if defined(ESHKOL_PLATFORM_LAYER)
+#include <eshkol/platform/audio.h>   // Platform layer bridge (ADR-0053)
+#include <eshkol/platform/midi.h>
+#include <eshkol/platform/window.h>
+#endif
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include "../frontend/library_registry.h"  // R7RS same-unit define-library resolution
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -45,6 +57,7 @@
 #include <llvm/IR/CFG.h>  // For predecessors()
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Support/Errc.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/DynamicLibrary.h>
 #include <llvm/Support/MemoryBuffer.h>  // For loading object files
@@ -57,6 +70,7 @@
 #include <llvm/Support/xxhash.h>                 // For content-hashing stdlib.bc
 #include <llvm/Support/FileSystem.h>             // For atomic cache writes
 #include <llvm/ADT/StringExtras.h>               // For utohexstr
+#include <llvm/ADT/SmallString.h>
 #include <llvm/Object/ObjectFile.h>              // For reading an object's ABI guard symbol
 
 #include <iostream>
@@ -96,6 +110,9 @@ private:
     uint64_t id_;
 };
 }
+
+extern "C" void eshkol_build_quoted_datum_sret(
+    eshkol_tagged_value_t* out, arena_t* arena, const uint8_t* data, uint64_t len);
 
 extern "C" void eshkol_repl_set_native_eval_boundary(
     eshkol::ReplNativeEvalBoundary boundary) {
@@ -408,7 +425,9 @@ extern "C" {
     int64_t eshkol_utf8_strlen(const char* s);
     int64_t eshkol_string_byte_length(const char* s);
     int64_t eshkol_utf8_ref(const char* s, int64_t k);
+    void* eshkol_runtime_string_to_list(void* arena, const char* s);
     char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena);
+    int32_t eshkol_utf8_is_valid(const uint8_t* bytes, int64_t len);
     int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
     int64_t eshkol_tensor_linear_from_index_arg(const eshkol_tagged_value_t* tv,
                                                 const int64_t* dims, int64_t ndim);
@@ -597,6 +616,13 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_energy_from_tagged(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_create(int32_t num_qubits) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_qexpect_destroy(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_gate(int64_t handle, int32_t kind, int32_t q0, int32_t q1,
+                                    int32_t param, double coef) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_qexpect_add_term(int64_t handle, double coef, const char* paulis)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_qexpect_parameter_count(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
     void* eshkol_vqe_ad_prepare(int64_t handle, const void* params)
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_ad_prepared_energy(const void* prepared)
@@ -666,6 +692,38 @@ extern "C" {
     void qllm_process_kill(void* proc, int32_t signal) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_destroy(void* proc) ESHKOL_OPTIONAL_AGENT_FFI;
     void qllm_process_free_buffer(char* buf) ESHKOL_OPTIONAL_AGENT_FFI;
+
+    int64_t eshkol_process_stream_open(int64_t, const char*, const char*, const char*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_process_stream_read_bytevector(int64_t, int32_t, void*, int64_t, int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_poll(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_exit_code(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_cancel(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_close(int64_t, int32_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_process_cleanup_next(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_cleanup_status(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_cleanup_drain(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_cleanup_consume(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_process_stream_runtime_shutdown(void) ESHKOL_OPTIONAL_AGENT_FFI;
+
+    /* Optional Unix-domain stream socket bridge, implemented by the native
+     * agent FFI socket and bytevector bindings. */
+    int64_t eshkol_unix_stream_socket_listen(int64_t, const char*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_accept(int64_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_connect_begin(int64_t, const char*, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_connect_finish(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_read_bytevector(int64_t, void*, int64_t, int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_write_bytevector(int64_t, void*, int64_t, int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_poll(int64_t, int32_t, int32_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_cancel(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_close(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_close_request(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_cleanup_result_packed(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_cleanup_retry(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_cleanup_release(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_cleanup_detach(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_unix_stream_socket_cleanup_ticket(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_last_os_error(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_unix_stream_socket_last_path_error(void) ESHKOL_OPTIONAL_AGENT_FFI;
 
     void* qllm_ffi_linear_create(int64_t in_dim, int64_t out_dim)
         ESHKOL_OPTIONAL_AGENT_FFI;
@@ -1333,6 +1391,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_allocate_tagged_cons_cell);
     ADD_SYMBOL(arena_allocate_tagged_cons_batch);
     ADD_SYMBOL(arena_allocate_cons_with_header);
+    ADD_SYMBOL(eshkol_build_quoted_datum_sret);
 
     // String allocation
     ADD_SYMBOL(arena_allocate_string_with_header);
@@ -1389,6 +1448,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_raise_secondary_exception);
     ADD_SYMBOL(eshkol_make_exception);
     ADD_SYMBOL(eshkol_make_exception_with_header);
+    ADD_SYMBOL(eshkol_value_has_type_tag);
     ADD_SYMBOL(eshkol_push_exception_handler);
     ADD_SYMBOL(eshkol_raise_allocation_failure);
     ADD_SYMBOL(eshkol_pop_exception_handler);
@@ -1433,7 +1493,10 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_remove);
     ADD_SYMBOL(eshkol_rename);
     ADD_SYMBOL(eshkol_capability_runtime_clear);
+    ADD_SYMBOL(eshkol_capability_runtime_host_reset);
     ADD_SYMBOL(eshkol_capability_runtime_begin_install);
+    ADD_SYMBOL(eshkol_capability_runtime_end_install);
+    ADD_SYMBOL(eshkol_capability_runtime_install);
     ADD_SYMBOL(eshkol_capability_runtime_allow);
     // core.curvature: the ADR-0018 signed-curvature chart (lib/core/curvature_runtime.c)
     ADD_SYMBOL(eshkol_curvature_last_error);
@@ -1459,9 +1522,19 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_curvature_migrate_point);
     ADD_SYMBOL(eshkol_curvature_migrate_tangent);
     ADD_SYMBOL(eshkol_curvature_migrate_temperature);
+    ADD_SYMBOL(eshkol_keychain_size);
+    ADD_SYMBOL(eshkol_keychain_get_into);
+    ADD_SYMBOL(eshkol_keychain_set);
+    ADD_SYMBOL(eshkol_keychain_delete);
+    ADD_SYMBOL(eshkol_keychain_has);
     ADD_SYMBOL(eshkol_capability_runtime_is_active);
     ADD_SYMBOL(eshkol_capability_runtime_allows);
     ADD_SYMBOL(eshkol_capability_runtime_allows_file_mode);
+    ADD_SYMBOL(eshkol_capability_runtime_file_mode_missing);
+    ADD_SYMBOL(eshkol_capability_runtime_deny);
+    ADD_SYMBOL(eshkol_capability_require);
+    ADD_SYMBOL(eshkol_capability_enforce);
+    ADD_SYMBOL(eshkol_shell_command);
     ADD_SYMBOL(eshkol_mkdir);
     ADD_SYMBOL(eshkol_rmdir);
     ADD_SYMBOL(eshkol_chdir);
@@ -1495,7 +1568,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     }
 #endif
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && defined(ESHKOL_AGENT_FFI_LINKED)
     // ===== OPTIONAL AGENT FFI EXPORTS =====
     // Agent FFI modules are optional at configure time and their symbols
     // are not referenced by C++ code. When linked into eshkol-run/repl,
@@ -1577,6 +1650,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_exact_ground_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_optimize);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_energy_from_tagged);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_gate);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_add_term);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_qexpect_parameter_count);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepare);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_inputs);
@@ -1610,6 +1688,34 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_kill);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_destroy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_free_buffer);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_open);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_read_bytevector);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_poll);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_exit_code);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_cancel);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_next);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_status);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_drain);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_cleanup_consume);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_process_stream_runtime_shutdown);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_listen);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_accept);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_connect_begin);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_connect_finish);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_read_bytevector);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_write_bytevector);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_poll);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_cancel);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_close_request);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_cleanup_result_packed);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_cleanup_retry);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_cleanup_release);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_cleanup_detach);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_cleanup_ticket);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_last_os_error);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_stream_socket_last_path_error);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_create);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_ffi_linear_destroy);
@@ -1825,6 +1931,12 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_tensor_normalize_apply);
     ADD_SYMBOL(eshkol_tensor_pow_scalar);
     ADD_SYMBOL(eshkol_tensor_map_libm);
+    ADD_SYMBOL(eshkol_tensor_inverse_checked_abi);
+    // Keep native solver ABI reachable independently of the portable VM path.
+    ADD_SYMBOL(eshkol_linear_solve);
+    ADD_SYMBOL(eshkol_linear_solve_with_options);
+    ADD_SYMBOL(eshkol_linear_solve_raise);
+    ADD_SYMBOL(eshkol_linear_solve_query_options);
     ADD_SYMBOL(eshkol_shapes_equal);
     ADD_SYMBOL(eshkol_broadcast_elementwise_f64);
     ADD_SYMBOL(eshkol_batch_matmul_f64);
@@ -1863,10 +1975,83 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_rational_binary_tagged_ptr);
     ADD_SYMBOL(eshkol_rational_compare_tagged_ptr);
     ADD_SYMBOL(eshkol_bignum_compare_tagged);
+    // Bounded numeric-address networking, shared by FFI and native AOT.
+    ADD_SYMBOL(eshkol_net_open);
+    ADD_SYMBOL(eshkol_net_accept);
+    ADD_SYMBOL(eshkol_net_read);
+    ADD_SYMBOL(eshkol_net_write);
+    ADD_SYMBOL(eshkol_net_sendto);
+    ADD_SYMBOL(eshkol_net_recvfrom);
+    ADD_SYMBOL(eshkol_net_address);
+    ADD_SYMBOL(eshkol_net_port);
+    ADD_SYMBOL(eshkol_net_nonblocking);
+    ADD_SYMBOL(eshkol_net_close);
+#if defined(ESHKOL_PLATFORM_LAYER)
+    // Platform layer bridge used by lib/platform/*.esk (ADR-0053).
+    ADD_SYMBOL(eshkol_plat_backend);
+    ADD_SYMBOL(eshkol_plat_backend_name);
+    ADD_SYMBOL(eshkol_plat_select_backend);
+    ADD_SYMBOL(eshkol_plat_window_open);
+    ADD_SYMBOL(eshkol_plat_window_close);
+    ADD_SYMBOL(eshkol_plat_window_query);
+    ADD_SYMBOL(eshkol_plat_window_set);
+    ADD_SYMBOL(eshkol_plat_window_set_title);
+    ADD_SYMBOL(eshkol_plat_window_fill_rect);
+    ADD_SYMBOL(eshkol_plat_window_get_pixel);
+    ADD_SYMBOL(eshkol_plat_window_present);
+    ADD_SYMBOL(eshkol_plat_window_read_presented);
+    ADD_SYMBOL(eshkol_plat_window_next_event);
+    ADD_SYMBOL(eshkol_plat_window_event_field);
+    ADD_SYMBOL(eshkol_plat_window_event_real);
+    ADD_SYMBOL(eshkol_plat_window_push_event);
+    ADD_SYMBOL(eshkol_plat_audio_open);
+    ADD_SYMBOL(eshkol_plat_audio_close);
+    ADD_SYMBOL(eshkol_plat_audio_control);
+    ADD_SYMBOL(eshkol_plat_audio_write);
+    ADD_SYMBOL(eshkol_plat_audio_commit);
+    ADD_SYMBOL(eshkol_plat_audio_available);
+    ADD_SYMBOL(eshkol_plat_audio_read);
+    ADD_SYMBOL(eshkol_plat_audio_stat);
+    ADD_SYMBOL(eshkol_plat_midi_open);
+    ADD_SYMBOL(eshkol_plat_midi_close);
+    ADD_SYMBOL(eshkol_plat_midi_stage);
+    ADD_SYMBOL(eshkol_plat_midi_send_staged);
+    ADD_SYMBOL(eshkol_plat_midi_receive);
+    ADD_SYMBOL(eshkol_plat_midi_byte);
+    ADD_SYMBOL(eshkol_plat_midi_timestamp);
+    ADD_SYMBOL(eshkol_plat_midi_stat);
+    ADD_SYMBOL(eshkol_plat_midi_source_count);
+    ADD_SYMBOL(eshkol_plat_midi_source_name);
+#endif
+    // Optional native TLS context construction.
+    ADD_SYMBOL(eshkol_tls_available);
+    ADD_SYMBOL(eshkol_tls_client_context);
+    ADD_SYMBOL(eshkol_tls_server_context);
+    ADD_SYMBOL(eshkol_tls_context_close);
+    ADD_SYMBOL(eshkol_tls_listen);
+    ADD_SYMBOL(eshkol_tls_accept);
+    ADD_SYMBOL(eshkol_tls_connect);
+    ADD_SYMBOL(eshkol_tls_listener_port);
+    ADD_SYMBOL(eshkol_tls_read);
+    ADD_SYMBOL(eshkol_tls_write);
+    ADD_SYMBOL(eshkol_tls_session_close);
+    ADD_SYMBOL(eshkol_tls_listener_close);
+    ADD_SYMBOL(eshkol_resident_open);
+    ADD_SYMBOL(eshkol_resident_close);
+    ADD_SYMBOL(eshkol_resident_enter);
+    ADD_SYMBOL(eshkol_resident_leave);
+    ADD_SYMBOL(eshkol_resident_hold);
+    ADD_SYMBOL(eshkol_resident_get);
+    ADD_SYMBOL(eshkol_resident_export);
+    ADD_SYMBOL(eshkol_resident_release);
+    ADD_SYMBOL(eshkol_resident_compact);
+    ADD_SYMBOL(eshkol_resident_stat);
     ADD_SYMBOL(eshkol_utf8_strlen);
     ADD_SYMBOL(eshkol_string_byte_length);
     ADD_SYMBOL(eshkol_utf8_ref);
+    ADD_SYMBOL(eshkol_runtime_string_to_list);
     ADD_SYMBOL(eshkol_utf8_substring);
+    ADD_SYMBOL(eshkol_utf8_is_valid);
     ADD_SYMBOL(eshkol_unwrap_list_index);
     ADD_SYMBOL(eshkol_tensor_linear_from_index_arg);
     ADD_SYMBOL(eshkol_tensor_slice_offset_from_index_arg);
@@ -2719,8 +2904,8 @@ void ReplJITContext::registerLambdaVar(const std::string& var_name) {
  * @return The resolved path, or an empty string if no root carries it.
  */
 static std::string findStdlibObject() {
-    return platform::resolve_install_artifact(
-        platform::install_library_roots(), {"stdlib.o"}).path;
+    return eshkol::stdlib_identity::resolve_artifact(
+        platform::install_library_roots(), "stdlib.o").path;
 }
 
 /**
@@ -2743,15 +2928,14 @@ static std::string findStdlibObject() {
  * @param buffer The object file's bytes.
  * @param foreign Set to the guard symbol the object actually names, when it
  *        names one that is not ours.
- * @return true if the object may be loaded: it either names this build's guard
- *         symbol, or names none at all (an object predating the guard, or one
- *         whose symbol table could not be read — neither is evidence of a
- *         mismatch, and refusing on absence would break existing installs).
+ * @return true if the object may be loaded by the ABI check: it either names
+ *         this build's guard symbol or names none. The stdlib identity check
+ *         runs separately and rejects unstamped stdlib objects before load.
  */
 static bool objectMatchesRunningAbi(llvm::MemoryBufferRef buffer,
                                     std::string& foreign) {
     static constexpr llvm::StringRef kGuardPrefix = "eshkol_object_abi_v";
-    const llvm::StringRef expected(ESHKOL_ABI_FINGERPRINT_NAME);
+    const llvm::StringRef expected(static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
 
     auto obj_or_err = llvm::object::ObjectFile::createObjectFile(buffer);
     if (!obj_or_err) {
@@ -2792,8 +2976,8 @@ static bool objectMatchesRunningAbi(llvm::MemoryBufferRef buffer,
  * @return The resolved path, or an empty string if no root carries it.
  */
 static std::string findStdlibBitcode() {
-    return platform::resolve_install_artifact(
-        platform::install_library_roots(), {"stdlib.bc"}).path;
+    return eshkol::stdlib_identity::resolve_artifact(
+        platform::install_library_roots(), "stdlib.bc").path;
 }
 
 // Discover and register stdlib symbols dynamically from .bc metadata.
@@ -2802,9 +2986,8 @@ static std::string findStdlibBitcode() {
 /**
  * @brief Discovers all stdlib functions and data globals by parsing stdlib.bc's IR, and registers them with the REPL's compiler-visible symbol tables.
  *
- * Marks the built-in stdlib module names as already-loaded (to prevent
- * circular re-import), then, if stdlib.bc can be located and parsed,
- * iterates every non-declaration, non-internal-linkage function to register
+ * When stdlib.bc is available, iterates every non-declaration,
+ * non-internal-linkage function to register
  * its name/arity (via eshkol_repl_register_function() and
  * defined_lambdas_/registered_lambdas_), reading back the `eshkol-variadic`
  * function attribute where present so REPL callers know how many trailing
@@ -2818,31 +3001,6 @@ static std::string findStdlibBitcode() {
  * is disabled.
  */
 void ReplJITContext::registerStdlibSymbols() {
-    // Mark stdlib modules as loaded to prevent re-loading
-    loaded_modules.insert("stdlib");
-    loaded_modules.insert("core.io");
-    loaded_modules.insert("core.operators.arithmetic");
-    loaded_modules.insert("core.operators.compare");
-    loaded_modules.insert("core.logic.predicates");
-    loaded_modules.insert("core.logic.types");
-    loaded_modules.insert("core.logic.boolean");
-    loaded_modules.insert("core.functional.compose");
-    loaded_modules.insert("core.functional.curry");
-    loaded_modules.insert("core.functional.flip");
-    loaded_modules.insert("core.control.trampoline");
-    loaded_modules.insert("core.list.compound");
-    loaded_modules.insert("core.list.generate");
-    loaded_modules.insert("core.list.transform");
-    loaded_modules.insert("core.list.query");
-    loaded_modules.insert("core.list.sort");
-    loaded_modules.insert("core.list.higher_order");
-    loaded_modules.insert("core.list.search");
-    loaded_modules.insert("core.list.convert");
-    loaded_modules.insert("core.strings");
-    loaded_modules.insert("core.json");
-    loaded_modules.insert("core.data.csv");
-    loaded_modules.insert("core.data.base64");
-
     // Dynamic discovery: parse .bc to find all exported functions and globals.
     // Bitcode preserves original IR types (struct params, not scalarized),
     // so F.arg_size() gives the real arity.
@@ -2970,16 +3128,19 @@ void ReplJITContext::registerStdlibSymbols() {
  * compilation pipeline as REPL-compiled code so aggregate tagged-value
  * arguments use a consistent ABI; (3) the legacy precompiled stdlib.o via
  * addObjectFile() for installations that have not shipped stdlib.bc; and
- * (4) JIT-compiling the stdlib from source via loadModule(), the slowest but
- * always-correct path. On success, registers stdlib symbols
+ * (4) JIT-compiling the stdlib from source via loadModule() only when no
+ * precompiled artifact was found. A found incompatible or unreadable artifact
+ * returns an LLVM error instead of falling through to source. On success,
+ * registers stdlib symbols
  * (registerStdlibSymbols()) and explicitly invokes
  * `__eshkol_lib_init__`/`__eshkol_init_parallel_workers` since ORC does not
  * reliably run Eshkol's library/global-ctor initializers for REPL preloads.
- * @return true if the stdlib was loaded (or already had been) by any path.
+ * @return success if loaded (or already loaded); an LLVM error for an
+ *         incompatible/unreadable artifact or failed source fallback.
  */
-bool ReplJITContext::loadStdlib() {
+llvm::Error ReplJITContext::loadStdlib() {
     if (stdlib_loaded_) {
-        return true;  // Already loaded — idempotent.
+        return llvm::Error::success();  // Already loaded — idempotent.
     }
 
     if (!jit_) {
@@ -3044,118 +3205,170 @@ bool ReplJITContext::loadStdlib() {
         std::string bc_path = findStdlibBitcode();
         if (!bc_path.empty()) {
             if (auto bc_buf = MemoryBuffer::getFile(bc_path)) {
-                uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());
-                std::string triple = llvm::sys::getProcessTriple();
-                for (char& c : triple)
-                    if (c == '/' || c == '\\' || c == ':') c = '_';
-                std::filesystem::path bc_fs(bc_path);
-                // Bump the version tag whenever the emit config below changes
-                // (code model, sections, opt level, or external-data import
-                // lowering or exported initializer names) so an existing
-                // cached object built with a different
-                // contract is not reused.
-                //
-                // The object ABI is part of that contract and is named
-                // explicitly. It is tempting to argue it is already covered:
-                // flipping the layout rebuilds stdlib.bc, whose content hash is
-                // in the key. But that only holds where stdlib.bc is rebuilt.
-                // An installation that ships a prebuilt stdlib.bc and changes
-                // only the runtime keeps the same content hash and the same
-                // triple, and would be handed back an object compiled for the
-                // other header layout — which links, runs, and reads the wrong
-                // bytes. The tag comes from the same four numbers as the link
-                // guard, so it renames itself when the layout moves.
-                // v5 additionally exports the JIT-specific worker initializer;
-                // a v4 Windows object keeps that initializer local and cannot
-                // satisfy LLJIT's explicit registration lookup.
-                std::filesystem::path cache_o =
-                    bc_fs.parent_path() /
-                    ("stdlib-jit-v5-" + llvm::utohexstr(content_hash) + "-" +
-                     triple + "-" + ESHKOL_OBJECT_ABI_CACHE_TAG + ".o");
+                // A cache entry is derived from this bitcode, so reject foreign
+                // bitcode before either creating or reusing its object cache.
+                // The later IR path performs the same check for uncached loads.
+                auto identity_ctx = std::make_unique<LLVMContext>();
+                auto identity_mod = parseBitcodeFile(
+                    (*bc_buf)->getMemBufferRef(), *identity_ctx);
+                std::string bc_identity;
+                const bool bc_identity_ok = identity_mod &&
+                    eshkol::stdlib_identity::matches_module(
+                        **identity_mod, bc_identity);
+                if (!bc_identity_ok) {
+                    std::string reason = bc_identity;
+                    if (!identity_mod) reason = toString(identity_mod.takeError());
+                    return llvm::createStringError(
+                        llvm::errc::invalid_argument,
+                        "rejecting stdlib.bc %s: %s; expected %s",
+                        bc_path.c_str(),
+                        reason.empty() ? "unreadable bitcode" : reason.c_str(),
+                        static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+                } else {
+                    uint64_t content_hash = llvm::xxh3_64bits((*bc_buf)->getBuffer());
+                    std::string triple = llvm::sys::getProcessTriple();
+                    for (char& c : triple)
+                        if (c == '/' || c == '\\' || c == ':') c = '_';
+                    std::filesystem::path bc_fs(bc_path);
+                    // Bump the version tag whenever the emit config below changes
+                    // (code model, sections, opt level, or external-data import
+                    // lowering) so an existing cached object built with a different
+                    // contract is not reused.
+                    //
+                    // The object ABI is part of that contract and is named
+                    // explicitly. It is tempting to argue it is already covered:
+                    // flipping the layout rebuilds stdlib.bc, whose content hash is
+                    // in the key. But that only holds where stdlib.bc is rebuilt.
+                    // An installation that ships a prebuilt stdlib.bc and changes
+                    // only the runtime keeps the same content hash and the same
+                    // triple, and would be handed back an object compiled for the
+                    // other header layout — which links, runs, and reads the wrong
+                    // bytes. The tag comes from the same four numbers as the link
+                    // guard, so it renames itself when the layout moves.
+                    // v5 exports the JIT worker initializer; a v4 Windows object
+                    // cannot satisfy LLJIT's explicit registration lookup.
+                    std::filesystem::path cache_o =
+                        bc_fs.parent_path() /
+                        ("stdlib-jit-v5-" + llvm::utohexstr(content_hash) + "-" +
+                         triple + "-" + ESHKOL_OBJECT_ABI_CACHE_TAG + ".o");
 
-                std::error_code ec;
-                bool have_obj = std::filesystem::exists(cache_o, ec);
-                if (!have_obj) {
-                    auto emit_ctx = std::make_unique<LLVMContext>();
-                    auto emit_mod =
-                        parseBitcodeFile((*bc_buf)->getMemBufferRef(), *emit_ctx);
-                    if (emit_mod) {
-                        auto emit_jtmb = orc::JITTargetMachineBuilder::detectHost();
-                        if (emit_jtmb) {
-                            configure_jit_target_machine_builder(*emit_jtmb);
-                            if (auto emit_tm = emit_jtmb->createTargetMachine()) {
-                                (*emit_mod)->setDataLayout(
-                                    (*emit_tm)->createDataLayout());
-                                (*emit_mod)->setTargetTriple(
-                                    (*emit_tm)->getTargetTriple());
-                                eshkol::prepare_jit_module_for_target(
-                                    **emit_mod, (*emit_tm)->getTargetTriple());
-                                eshkol::expose_jit_parallel_initializer(
-                                    **emit_mod,
-                                    eshkol::kJitStdlibParallelInitializer);
-                                std::filesystem::path tmp_o = cache_o;
-                                tmp_o += ".tmp";
-                                std::error_code wec;
-                                raw_fd_ostream os(tmp_o.string(), wec,
-                                                  sys::fs::OF_None);
-                                if (!wec) {
-                                    legacy::PassManager pm;
-                                    if (!(*emit_tm)->addPassesToEmitFile(
-                                            pm, os, nullptr,
-                                            CodeGenFileType::ObjectFile)) {
-                                        pm.run(**emit_mod);
-                                        os.flush();
+                    std::error_code ec;
+                    bool have_obj = std::filesystem::exists(cache_o, ec);
+                    if (!have_obj) {
+                        auto emit_ctx = std::make_unique<LLVMContext>();
+                        auto emit_mod =
+                            parseBitcodeFile((*bc_buf)->getMemBufferRef(), *emit_ctx);
+                        if (emit_mod) {
+                            auto emit_jtmb = orc::JITTargetMachineBuilder::detectHost();
+                            if (emit_jtmb) {
+                                configure_jit_target_machine_builder(*emit_jtmb);
+                                if (auto emit_tm = emit_jtmb->createTargetMachine()) {
+                                    (*emit_mod)->setDataLayout(
+                                        (*emit_tm)->createDataLayout());
+                                    (*emit_mod)->setTargetTriple(
+                                        (*emit_tm)->getTargetTriple());
+                                    eshkol::prepare_jit_module_for_target(
+                                        **emit_mod, (*emit_tm)->getTargetTriple());
+                                    eshkol::expose_jit_parallel_initializer(
+                                        **emit_mod,
+                                        eshkol::kJitStdlibParallelInitializer);
+                                    // Each process owns its temporary inode. A shared
+                                    // .tmp lets another writer truncate a published object.
+                                    SmallString<256> tmp_o;
+                                    int tmp_fd = -1;
+                                    std::error_code wec = sys::fs::createUniqueFile(
+                                        cache_o.string() + ".%%%%%%.tmp", tmp_fd, tmp_o);
+                                    if (!wec) {
+                                        raw_fd_ostream os(tmp_fd, true);
+                                        legacy::PassManager pm;
+                                        bool emitted = !(*emit_tm)->addPassesToEmitFile(
+                                                pm, os, nullptr,
+                                                CodeGenFileType::ObjectFile);
+                                        if (emitted) {
+                                            pm.run(**emit_mod);
+                                            os.flush();
+                                        }
                                         os.close();
-                                        std::filesystem::rename(tmp_o, cache_o, ec);
-                                        have_obj = !ec &&
-                                                   std::filesystem::exists(cache_o, ec);
+                                        if (emitted && !os.has_error()) {
+                                                std::filesystem::rename(
+                                                    tmp_o.c_str(), cache_o, ec);
+                                                // Another process may have published first.
+                                                have_obj = std::filesystem::exists(cache_o, ec);
+                                        } else if (os.has_error()) {
+                                            os.clear_error();
+                                        }
+                                        sys::fs::remove(tmp_o);
                                     }
+                                } else {
+                                    consumeError(emit_tm.takeError());
                                 }
                             } else {
-                                consumeError(emit_tm.takeError());
+                                consumeError(emit_jtmb.takeError());
                             }
                         } else {
-                            consumeError(emit_jtmb.takeError());
+                            consumeError(emit_mod.takeError());
                         }
-                    } else {
-                        consumeError(emit_mod.takeError());
                     }
-                }
 
-                if (have_obj) {
-                    if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
-                        // Belt to the key's braces. The tag above keeps a
-                        // foreign-ABI object from being *named*; this keeps one
-                        // from being *loaded* if it is reached by any other
-                        // route (a hand-copied cache dir, a partially upgraded
-                        // install). Cheap, and the failure it prevents is
-                        // silent.
-                        std::string foreign;
-                        if (!objectMatchesRunningAbi((*obj_buf)->getMemBufferRef(),
-                                                     foreign)) {
-                            std::cerr
-                                << "Warning: ignoring cached stdlib object built "
-                                   "for a different object ABI ("
-                                << foreign << ", this build is "
-                                << ESHKOL_ABI_FINGERPRINT_NAME << "): "
-                                << cache_o.string() << std::endl;
-                            have_obj = false;
+                    if (have_obj) {
+                        auto obj_buf = MemoryBuffer::getFile(cache_o.string());
+                        if (!obj_buf) {
+                            return llvm::createStringError(
+                                obj_buf.getError(),
+                                "rejecting cached stdlib object %s: could not read object",
+                                cache_o.string().c_str());
+                        }
+                        {
+                            // Belt to the key's braces. The tag above keeps a
+                            // foreign-ABI object from being *named*; this keeps one
+                            // from being *loaded* if it is reached by any other
+                            // route (a hand-copied cache dir, a partially upgraded
+                            // install). Cheap, and the failure it prevents is
+                            // silent.
+                            std::string foreign;
+                            std::string cached_identity;
+                            const bool identity_ok =
+                                eshkol::stdlib_identity::matches_object(
+                                    (*obj_buf)->getMemBufferRef(), cached_identity);
+                            if (!identity_ok) {
+                                return llvm::createStringError(
+                                    llvm::errc::invalid_argument,
+                                    "rejecting cached stdlib object %s: %s; expected %s",
+                                    cache_o.string().c_str(), cached_identity.c_str(),
+                                    static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+                            }
+                            if (have_obj && !objectMatchesRunningAbi(
+                                                (*obj_buf)->getMemBufferRef(),
+                                                foreign)) {
+                                return llvm::createStringError(
+                                    llvm::errc::invalid_argument,
+                                    "rejecting cached stdlib object %s built for a different object ABI (%s, this build is %s)",
+                                    cache_o.string().c_str(), foreign.c_str(),
+                                    static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
+                            }
                         }
                     }
-                }
-                if (have_obj) {
-                    if (auto obj_buf = MemoryBuffer::getFile(cache_o.string())) {
-                        auto& dylib = jit_->getMainJITDylib();
-                        if (auto err =
-                                jit_->addObjectFile(dylib, std::move(*obj_buf))) {
-                            consumeError(std::move(err));  // fall through to IR path
-                        } else {
-                            registerStdlibSymbols();
-                            run_stdlib_initializers(cache_o.string());
-                            std::cerr << "[REPL] Loaded stdlib from cached object: "
-                                      << cache_o.string() << std::endl;
-                            stdlib_loaded_ = true;
-                            return true;
+                    if (have_obj) {
+                        auto obj_buf = MemoryBuffer::getFile(cache_o.string());
+                        if (!obj_buf) {
+                            return llvm::createStringError(
+                                obj_buf.getError(),
+                                "rejecting cached stdlib object %s: could not read object",
+                                cache_o.string().c_str());
+                        }
+                        {
+                            auto& dylib = jit_->getMainJITDylib();
+                            if (auto err =
+                                    jit_->addObjectFile(dylib, std::move(*obj_buf))) {
+                                consumeError(std::move(err));  // fall through to IR path
+                            } else {
+                                registerStdlibSymbols();
+                                run_stdlib_initializers(cache_o.string());
+                                std::cerr << "[REPL] Loaded stdlib from cached object: "
+                                          << cache_o.string() << std::endl;
+                                stdlib_loaded_ = true;
+                                return llvm::Error::success();
+                            }
                         }
                     }
                 }
@@ -3171,75 +3384,96 @@ bool ReplJITContext::loadStdlib() {
     std::string stdlib_bc_path = findStdlibBitcode();
     if (!stdlib_bc_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_bc_path);
-        if (buffer_or_err) {
+        if (!buffer_or_err) {
+            return llvm::createStringError(
+                buffer_or_err.getError(), "cannot read stdlib.bc %s",
+                stdlib_bc_path.c_str());
+        }
+        {
             auto module_context = std::make_unique<LLVMContext>();
             auto mod_or_err = parseBitcodeFile(
                 buffer_or_err->get()->getMemBufferRef(), *module_context);
-            if (mod_or_err) {
-                std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
-                if (stdlib_module->getDataLayout().isDefault()) {
-                    stdlib_module->setDataLayout(jit_->getDataLayout());
-                }
-                eshkol::prepare_jit_module_for_target(
-                    *stdlib_module, jit_->getTargetTriple());
-                eshkol::expose_jit_parallel_initializer(
-                    *stdlib_module, eshkol::kJitStdlibParallelInitializer);
-
-                auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
-                auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
-                if (auto err = jit_->addIRModule(std::move(tsm))) {
-                    std::string err_msg;
-                    raw_string_ostream err_stream(err_msg);
-                    err_stream << err;
-                    std::cerr << "Warning: Failed to load stdlib.bc (" << err_msg
-                              << "), falling back to stdlib.o" << std::endl;
-                } else {
-                    registerStdlibSymbols();
-                    run_stdlib_initializers(stdlib_bc_path);
-                    std::cerr << "[REPL] Loaded stdlib bitcode from: "
-                              << stdlib_bc_path << std::endl;
-                    stdlib_loaded_ = true;
-                    return true;
-                }
-            } else {
-                std::string err_msg;
-                raw_string_ostream err_stream(err_msg);
-                err_stream << mod_or_err.takeError();
-                std::cerr << "Warning: Failed to parse stdlib.bc (" << err_msg
-                          << "), falling back to stdlib.o" << std::endl;
+            if (!mod_or_err) {
+                return llvm::createStringError(
+                    llvm::errc::invalid_argument, "cannot parse stdlib.bc %s: %s",
+                    stdlib_bc_path.c_str(), toString(mod_or_err.takeError()).c_str());
             }
-        } else {
-            std::cerr << "Warning: Failed to read stdlib.bc at " << stdlib_bc_path
-                      << ": " << buffer_or_err.getError().message()
-                      << ", falling back to stdlib.o" << std::endl;
+            {
+                std::unique_ptr<Module> stdlib_module = std::move(*mod_or_err);
+                std::string found_identity;
+                if (!eshkol::stdlib_identity::matches_module(
+                        *stdlib_module, found_identity)) {
+                    return llvm::createStringError(
+                        llvm::errc::invalid_argument,
+                        "rejecting stdlib.bc %s: %s; expected %s",
+                        stdlib_bc_path.c_str(), found_identity.c_str(),
+                        static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+                } else {
+                    if (stdlib_module->getDataLayout().isDefault()) {
+                        stdlib_module->setDataLayout(jit_->getDataLayout());
+                    }
+                    eshkol::prepare_jit_module_for_target(
+                        *stdlib_module, jit_->getTargetTriple());
+                    eshkol::expose_jit_parallel_initializer(
+                        *stdlib_module, eshkol::kJitStdlibParallelInitializer);
+
+                    auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
+                    auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
+                    if (auto err = jit_->addIRModule(std::move(tsm))) {
+                        std::string err_msg;
+                        raw_string_ostream err_stream(err_msg);
+                        err_stream << err;
+                        std::cerr << "Warning: Failed to load stdlib.bc (" << err_msg
+                                  << "), falling back to stdlib.o" << std::endl;
+                    } else {
+                        registerStdlibSymbols();
+                        run_stdlib_initializers(stdlib_bc_path);
+                        std::cerr << "[REPL] Loaded stdlib bitcode from: "
+                                  << stdlib_bc_path << std::endl;
+                        stdlib_loaded_ = true;
+                        return llvm::Error::success();
+                    }
+                }
+            }
         }
     }
 
-    // Legacy fallback: load pre-compiled stdlib.o via addObjectFile.  This is
-    // kept for installed layouts that have not shipped stdlib.bc yet, but it is
-    // no longer the preferred path for the REPL because it crosses the native
-    // object ABI for Eshkol aggregate values.
+    // Object fallback: load a matching precompiled stdlib.o when a package
+    // carries the identity marker but omits stdlib.bc. A found incompatible or
+    // unreadable object is fatal; source compilation is used only when no
+    // precompiled artifact exists.
     std::string stdlib_obj_path = findStdlibObject();
     if (!stdlib_obj_path.empty()) {
         auto buffer_or_err = MemoryBuffer::getFile(stdlib_obj_path);
+        if (!buffer_or_err) {
+            return llvm::createStringError(
+                buffer_or_err.getError(), "cannot read stdlib.o %s",
+                stdlib_obj_path.c_str());
+        }
         // This path has no cache key to carry the ABI: it loads whatever
         // stdlib.o the install roots resolve to. That is precisely the
         // arrangement in which a stale artifact survives an ABI change — the
         // file name says nothing about the layout it was compiled for, and
         // nothing else on this path checks. So the object is asked directly,
-        // and a mismatch falls through to JIT-from-source, which is slower and
-        // correct, rather than loading and being wrong.
+        // and a mismatch returns an error before loading.
         std::string foreign;
-        bool abi_ok = true;
-        if (buffer_or_err &&
-            !objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
-            std::cerr << "Warning: ignoring stdlib.o built for a different object "
-                         "ABI (" << foreign << ", this build is "
-                      << ESHKOL_ABI_FINGERPRINT_NAME << "): " << stdlib_obj_path
-                      << ", falling back to JIT compilation" << std::endl;
-            abi_ok = false;
+        std::string found_identity;
+        if (!eshkol::stdlib_identity::matches_object(
+                (*buffer_or_err)->getMemBufferRef(), found_identity)) {
+            return llvm::createStringError(
+                llvm::errc::invalid_argument,
+                "rejecting stdlib.o %s: %s; expected %s",
+                stdlib_obj_path.c_str(), found_identity.c_str(),
+                static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
         }
-        if (buffer_or_err && abi_ok) {
+        if (!objectMatchesRunningAbi((*buffer_or_err)->getMemBufferRef(), foreign)) {
+            return llvm::createStringError(
+                llvm::errc::invalid_argument,
+                "rejecting stdlib.o %s built for a different object ABI (%s, this build is %s)",
+                stdlib_obj_path.c_str(), foreign.c_str(),
+                static_cast<const char*>(ESHKOL_ABI_FINGERPRINT_NAME));
+        }
+        {
             auto& main_dylib = jit_->getMainJITDylib();
             auto err = jit_->addObjectFile(main_dylib, std::move(*buffer_or_err));
             if (!err) {
@@ -3247,14 +3481,8 @@ bool ReplJITContext::loadStdlib() {
                 run_stdlib_initializers(stdlib_obj_path);
                 std::cerr << "[REPL] Loaded stdlib from: " << stdlib_obj_path << std::endl;
                 stdlib_loaded_ = true;
-                return true;
-            } else {
-                std::string err_msg;
-                raw_string_ostream err_stream(err_msg);
-                err_stream << err;
-                std::cerr << "Warning: Failed to load stdlib.o (" << err_msg
-                          << "), falling back to JIT compilation" << std::endl;
-            }
+                return llvm::Error::success();
+            } else consumeError(std::move(err));
         }
     }
 
@@ -3266,7 +3494,11 @@ bool ReplJITContext::loadStdlib() {
     if (loaded) {
         stdlib_loaded_ = true;
     }
-    return loaded;
+    if (!loaded) {
+        return llvm::createStringError(llvm::errc::invalid_argument,
+                                       "could not load stdlib from source");
+    }
+    return llvm::Error::success();
 }
 
 /**
@@ -3281,10 +3513,10 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
 /**
  * @brief Loads @p module_name into the REPL, parsing and batch-compiling its source unless it can be satisfied from the precompiled stdlib.
  *
- * If @p allow_precompiled_stdlib is set and @p module_name is "stdlib" or a
- * `core.*` module, first tries loadStdlib(); if the precompiled stdlib
- * genuinely provides that module name, returns immediately. Otherwise
- * resolves the module's source path (resolveModulePath()), reads and parses
+ * If @p allow_precompiled_stdlib is set, the build manifest determines
+ * which requests the precompiled image satisfies. Import modifiers recover
+ * the provider's exports from its verified source. For a source module,
+ * the resolver selects its canonical path and the loader reads and parses
  * it into ASTs, and processes it in two passes: `(provide ...)` and
  * `(define ...)` forms determine each module's exported vs. private symbol
  * surface (recorded into module_exports_) and qualifies private names in the
@@ -3294,34 +3526,20 @@ bool ReplJITContext::loadModule(const std::string& module_name) {
  * (continuing past a failed dependency with a warning rather than aborting
  * the whole module), while all remaining top-level forms are collected and
  * compiled together in one executeBatch() call so later definitions can
- * forward-reference earlier ones. Idempotent per module name and per
- * resolved path via the loaded_modules set.
+ * forward-reference earlier ones. The loaded_modules set tracks canonical paths.
  * @return true on success; false if the module cannot be found/opened.
  */
 bool ReplJITContext::loadModule(const std::string& module_name,
                                bool allow_precompiled_stdlib,
-                               bool enforce_visibility) {
-    // Check if already loaded by NAME first (for stdlib.o preloaded modules)
-    if (loaded_modules.count(module_name)) {
-        return true;  // Already loaded via stdlib.o
-    }
-
-    // For stdlib or core.* modules, use precompiled stdlib.o if available.
-    // stdlib.o does NOT include every core.* module (core.testing is the
-    // obvious example — heavy state, not commonly used). After loading
-    // stdlib.o we re-check whether the requested name was registered by
-    // registerStdlibSymbols; if it wasn't, fall through to JIT compile
-    // the individual source file.
+                               bool enforce_visibility, bool need_exports) {
+    bool precompiled = false;
     if (allow_precompiled_stdlib && !loading_stdlib_from_source_ &&
-        (module_name == "stdlib" || module_name.find("core.") == 0)) {
-        if (loadStdlib()) {
-            if (loaded_modules.count(module_name)) {
-                return true;  // Module is genuinely in stdlib.o — done.
-            }
-            // Module name starts with core.* but stdlib.o doesn't carry
-            // it — JIT-compile the source below.
+        eshkol_stdlib_module_path(module_name.c_str())) {
+        if (llvm::Error error = loadStdlib()) {
+            throw std::runtime_error(toString(std::move(error)));
         }
-        // If stdlib.o loading failed, fall through to JIT compilation
+        precompiled = eshkol_module_is_precompiled(module_name.c_str());
+        if (precompiled && !need_exports) return true;
     }
 
     std::string module_path = resolveModulePath(module_name);
@@ -3333,10 +3551,11 @@ bool ReplJITContext::loadModule(const std::string& module_name,
 
     // Check if already loaded by PATH
     if (loaded_modules.count(module_path)) {
-        return true;  // Already loaded, success
+        auto known = module_exports_.find(module_path);
+        if (known != module_exports_.end()) module_exports_[module_name] = known->second;
+        return true;
     }
     loaded_modules.insert(module_path);
-    loaded_modules.insert(module_name);  // Also track by name
 
     // Read the module file
     std::ifstream module_file(module_path);
@@ -3395,6 +3614,10 @@ bool ReplJITContext::loadModule(const std::string& module_name,
     // symbols are importable.
     module_exports_[module_name] = has_provide ? exported_symbols : defined_symbols;
     module_exports_[module_path] = module_exports_[module_name];
+    if (precompiled) {
+        for (auto& form : module_asts) eshkol_ast_clean(&form);
+        return true;
+    }
 
     // Establish the module boundary in the module's own AST before it is
     // compiled. Private names become module-qualified, while lexical binders
@@ -3425,6 +3648,8 @@ bool ReplJITContext::loadModule(const std::string& module_name,
                 // unrelated call sites.
                 try {
                     execute(&ast_item);
+                } catch (const OwnershipRefusal&) {
+                    throw;
                 } catch (const std::exception& e) {
                     std::cerr << "[WARN] dependency load failed during module init: "
                               << e.what()
@@ -3447,6 +3672,9 @@ bool ReplJITContext::loadModule(const std::string& module_name,
             // Caller-owned heap result; this load path has no use for it.
             delete static_cast<int64_t*>(
                 executeBatch(batch_asts, true, module_path, content));
+        } catch (const OwnershipRefusal&) {
+            for (auto& ast_item : module_asts) eshkol_ast_clean(&ast_item);
+            throw;
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
@@ -3577,7 +3805,7 @@ void ReplJITContext::rememberPersistentMacros(const std::vector<eshkol_ast_t>& a
     }
 }
 
-void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
+std::set<std::string> ReplJITContext::persistentMacroNames() const {
     std::set<std::string> names;
     for (const auto& ast_item : persistent_macro_asts_) {
         if (ast_item.type == ESHKOL_OP &&
@@ -3587,7 +3815,11 @@ void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
             names.insert(ast_item.operation.define_syntax_op.macro->name);
         }
     }
-    eshkol_parser_seed_macro_names(stream, names);
+    return names;
+}
+
+void ReplJITContext::seedParserMacroNames(std::istream& stream) const {
+    eshkol_parser_seed_macro_names(stream, persistentMacroNames());
 }
 
 /**
@@ -3636,20 +3868,6 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
 }
 
 /**
- * @brief Searches a set of platform-specific candidate paths for the Eshkol `lib` directory (module source root).
- * @return The first existing candidate directory path, or an empty string if none is found.
- */
-// Find the lib directory. The selection rule itself lives in
-// platform::module_source_root(), shared with the AOT driver, so the two
-// lanes cannot disagree about which tree carries stdlib.esk.
-static std::string findLibDir() {
-    return platform::module_source_root().path.string();
-}
-
-// Global lib directory cache
-static std::string g_lib_dir;
-
-/**
  * @brief Resolves a `(require ...)` module name (or a literal `(load ...)` /
  *        `(import "...")` path) to a canonical, existing `.esk` file path.
  *
@@ -3662,17 +3880,7 @@ static std::string g_lib_dir;
  * module is not on any tier of the search path.
  */
 static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir) {
-    // Initialize lib dir if needed
-    if (g_lib_dir.empty()) {
-        g_lib_dir = findLibDir();
-    }
-
-    // One resolver, shared with the AOT driver. Everything about the search
-    // order — path-literal detection, the requiring file's directory ahead of
-    // the working directory, $ESHKOL_PATH ahead of the install, the
-    // directory-as-module entry points — is stated once, in
-    // platform::resolve_module_source_path().
-    return platform::resolve_module_source_path(module_name, base_dir, g_lib_dir);
+    return platform::resolve_module_source_path(module_name, base_dir);
 }
 
 /**
@@ -3782,6 +3990,8 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     // from code that legitimately executed must not be mistaken for a
     // compile-time objection to this batch.
     CompilationUnit compilation_unit(*this);
+    OwnershipTransaction ownership(ownership_bindings_);
+    takeOwnershipRefusal();
 
     LLVMModuleRef c_module = source_path.empty()
         ? eshkol_generate_llvm_ir(
@@ -3803,6 +4013,9 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         if (!silent) {
             std::cerr << "Failed to generate LLVM IR from batch" << std::endl;
         }
+        if (takeOwnershipRefusal())
+            throw OwnershipRefusal("ownership analysis refused " +
+                                   (source_path.empty() ? module_name : source_path));
         throw std::runtime_error("LLVM IR generation failed for REPL batch");
     }
 
@@ -3969,6 +4182,7 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+    ownership.commit();
 
     for (const auto& [source_name, func_name_export, arity] : exported_function_infos) {
         uint64_t func_addr_export = lookupSymbol(func_name_export);
@@ -4022,7 +4236,19 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
     void* result = nullptr;
     if (entry_func && !func_name.empty()) {
         uint64_t func_addr = lookupSymbol(func_name);
-        if (func_addr != 0) {
+        if (func_addr == 0) {
+            // `silent == false` is the batch/file CLI path (`eshkol-run -r`).
+            // ORC can report a missing external while materializing the entry
+            // lookup; lookupSymbol consumes that Error and returns zero, so
+            // without this check executeBatch returned nullptr and the driver
+            // mistook a failed file for a successful no-result batch. Module
+            // loads use silent batches and keep their established warning /
+            // recovery behavior, as does the interactive REPL.
+            if (!silent) {
+                throw std::runtime_error(
+                    "failed to resolve JIT batch entry function: " + func_name);
+            }
+        } else {
             incrementEvalCounter();
             typedef int32_t (*EvalFunc)(int32_t, char**);
             EvalFunc eval_func = reinterpret_cast<EvalFunc>(func_addr);
@@ -4143,12 +4369,6 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 return nullptr;
             }
 
-            // X3: Reject paths that escape the project directory via ".." traversal
-            if (canonical_path.find("..") != std::string::npos) {
-                std::cerr << "Import path escapes project directory: " << canonical_path << std::endl;
-                return nullptr;
-            }
-
             if (loaded_modules.count(canonical_path)) {
                 // Already loaded, return nil
                 return nullptr;
@@ -4188,6 +4408,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                         ast_item.operation.op == ESHKOL_IMPORT_OP) {
                         try {
                             execute(&ast_item);
+                        } catch (const OwnershipRefusal&) {
+                            throw;
                         } catch (const std::exception& e) {
                             // See companion site at executeFile() — warn so
                             // dependency-load failures don't surface as
@@ -4211,6 +4433,9 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 try {
                     last_result = executeBatch(batch_asts, true,
                                                canonical_path, content);
+                } catch (const OwnershipRefusal&) {
+                    for (auto& ast_item : file_asts) eshkol_ast_clean(&ast_item);
+                    throw;
                 } catch (const std::exception& e) {
                     // Loaded-file batch failed.  Warn so the user knows the
                     // file partially failed to load — silent failure here
@@ -4244,6 +4469,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                 // unit. Its bindings are in the top-level environment already,
                 // so importing it loads nothing (R7RS-small 5.6.1).
                 if (const std::set<std::string>* unit_exports =
+                        eshkol_stdlib_module_path(module_name.c_str()) ? nullptr :
                         eshkol::library_registry::exports(module_name)) {
                     auto& known = module_exports_[module_name];
                     known.insert(unit_exports->begin(), unit_exports->end());
@@ -4251,7 +4477,11 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                     continue;
                 }
 
-                if (!loadModule(module_name, true, !inline_load)) {
+                const auto& request = ast->operation.require_op;
+                const bool need_exports = (request.import_prefixes && request.import_prefixes[i] &&
+                                           *request.import_prefixes[i]) ||
+                                          (request.num_import_renames && request.num_import_renames[i]);
+                if (!loadModule(module_name, true, !inline_load, need_exports)) {
                     uint32_t defined_at = 0;
                     if (eshkol::library_registry::plannedLater(module_name, &defined_at)) {
                         throw std::runtime_error(
@@ -4318,6 +4548,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Compilation span for the addModule() gate; see executeBatch() for why it
     // opens immediately before codegen rather than at function entry.
     CompilationUnit compilation_unit(*this);
+    OwnershipTransaction ownership(ownership_bindings_);
 
     // Generate LLVM IR using the existing Eshkol compiler
     std::string module_name = "__repl_module_" + std::to_string(eval_id);
@@ -4333,6 +4564,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
                             persistent_macro_asts_.end());
     }
     codegen_asts.push_back(*ast);
+    takeOwnershipRefusal();
     // Optional host test rendezvous. It is a no-op in production and lets the
     // EREPL self-test deterministically request SIGINT while this C++ compile
     // path is active, before generated code can be entered.
@@ -4343,6 +4575,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
         codegen_asts.data(), codegen_asts.size(), module_name.c_str());
 
     if (!c_module) {
+        if (takeOwnershipRefusal()) throw OwnershipRefusal("ownership analysis refused the input");
         throw std::runtime_error("Failed to generate LLVM IR from AST");
     }
 
@@ -4487,6 +4720,7 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Release module + extract its context for proper ThreadSafeModule pairing
     auto module_context = eshkol_extract_module_context_for_jit(c_module);
     addModule(std::unique_ptr<Module>(cpp_module), std::move(module_context));
+    ownership.commit();
 
     for (const auto& [func_name_export, arity] : exported_function_infos) {
         uint64_t func_addr_export = lookupSymbol(func_name_export);

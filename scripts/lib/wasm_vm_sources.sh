@@ -30,10 +30,13 @@
 
 ESHKOL_WASM_VM_SOURCES=(
     "$REPO_ROOT/lib/backend/vm_wasm_repl.c"
+    "$REPO_ROOT/lib/core/gensym_sequence.cpp"
+    "$REPO_ROOT/lib/core/table_hash.cpp"
     "$REPO_ROOT/lib/core/unicode.cpp"
     "$REPO_ROOT/lib/core/platform_runtime.cpp"
     "$REPO_ROOT/lib/core/model_io_atomic.c"
     "$REPO_ROOT/lib/core/tensor_validation.cpp"
+    "$REPO_ROOT/lib/core/linear_solve_portable.c"
     "$REPO_ROOT/lib/core/tensor_cross_entropy.c"
     # The GPU seam for the wasm target (ADR-0029): the VM's tensor natives
     # reach eshkol_gpu_* exactly as on native; in the browser the WebGPU
@@ -41,6 +44,12 @@ ESHKOL_WASM_VM_SOURCES=(
     "$REPO_ROOT/lib/backend/gpu/gpu_memory_webgpu.cpp"
     # eshkol_printf, which the GPU backend reports allocation failures through.
     "$REPO_ROOT/lib/core/logger.cpp"
+    # The capability policy store. The browser bundle links the same store as
+    # the native runtime, so a policy a program installs holds on every engine
+    # rather than only where the store happened to be compiled in.
+    "$REPO_ROOT/lib/core/capability_policy.cpp"
+    # Shared reader input-size cap and compiler traversal-depth budget.
+    "$REPO_ROOT/lib/core/reader_limits.c"
 )
 
 # Compile/link flags every WASM VM build uses (both consumers above).
@@ -64,8 +73,6 @@ ESHKOL_WASM_VM_FLAGS=(
 # newly introduced runtime dependency has to be either linked or consciously
 # added, never silently turned into an abort.
 ESHKOL_WASM_ALLOWED_UNDEFINED=(
-    eshkol_capability_require
-    eshkol_linear_solve
     eshkol_qrng_double
     eshkol_qrng_uint64
 )

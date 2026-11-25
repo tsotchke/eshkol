@@ -150,18 +150,76 @@ VmBytevector* vm_bv_from_bytes(VmRegionStack* rs, const int* bytes, int n) {
 }
 
 /**
- * @brief Native call 689: `(utf8->string bv [start [end]])` — interpret
- *        the [start,end) byte range as UTF-8 and build a new string,
- *        counting UTF-8 lead bytes (non-continuation bytes) to derive the
- *        character length when the fuller VmString layout (with
- *        byte_len/char_len) is available.
+ * @brief Strict RFC 3629 UTF-8 validator for bytevector slices.
+ *
+ * Rejects lone continuation bytes, overlong encodings, UTF-16 surrogates,
+ * codepoints above U+10FFFF, and truncated multi-byte sequences.
+ */
+static int vm_bv_utf8_is_valid(const uint8_t* bytes, int len) {
+    if (len < 0) return 0;
+    if (len == 0) return 1;
+    if (!bytes) return 0;
+    int i = 0;
+    while (i < len) {
+        uint8_t b0 = bytes[i];
+        if (b0 < 0x80u) {
+            i += 1;
+        } else if (b0 >= 0xC2u && b0 <= 0xDFu) {
+            if (i + 1 >= len) return 0;
+            if ((bytes[i + 1] & 0xC0u) != 0x80u) return 0;
+            i += 2;
+        } else if (b0 == 0xE0u) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1], b2 = bytes[i + 2];
+            if (b1 < 0xA0u || b1 > 0xBFu || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if ((b0 >= 0xE1u && b0 <= 0xECu) || (b0 >= 0xEEu && b0 <= 0xEFu)) {
+            if (i + 2 >= len) return 0;
+            if ((bytes[i + 1] & 0xC0u) != 0x80u || (bytes[i + 2] & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if (b0 == 0xEDu) {
+            if (i + 2 >= len) return 0;
+            uint8_t b1 = bytes[i + 1], b2 = bytes[i + 2];
+            if (b1 < 0x80u || b1 > 0x9Fu || (b2 & 0xC0u) != 0x80u) return 0;
+            i += 3;
+        } else if (b0 == 0xF0u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1], b2 = bytes[i + 2], b3 = bytes[i + 3];
+            if (b1 < 0x90u || b1 > 0xBFu ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else if (b0 >= 0xF1u && b0 <= 0xF3u) {
+            if (i + 3 >= len) return 0;
+            if ((bytes[i + 1] & 0xC0u) != 0x80u ||
+                (bytes[i + 2] & 0xC0u) != 0x80u ||
+                (bytes[i + 3] & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else if (b0 == 0xF4u) {
+            if (i + 3 >= len) return 0;
+            uint8_t b1 = bytes[i + 1], b2 = bytes[i + 2], b3 = bytes[i + 3];
+            if (b1 < 0x80u || b1 > 0x8Fu ||
+                (b2 & 0xC0u) != 0x80u || (b3 & 0xC0u) != 0x80u) return 0;
+            i += 4;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/**
+ * @brief Native call 688/2217/2218: `(utf8->string bv [start [end]])` —
+ *        validate the [start,end) byte range as RFC 3629 UTF-8 and build a
+ *        new string. A negative @p end means `bv->len`; invalid ranges or
+ *        ill-formed UTF-8 sequences return NULL rather than silently clamping
+ *        or minting invalid string bytes.
  */
 VmString* vm_bv_utf8_to_string(VmRegionStack* rs, const VmBytevector* bv, int start, int end) {
     if (!bv) return NULL;
-    if (start < 0) start = 0;
-    if (end < 0 || end > bv->len) end = bv->len;
-    if (start > end) start = end;
+    if (end < 0) end = bv->len;
+    if (start < 0 || end < start || end > bv->len) return NULL;
     int n = end - start;
+    if (!vm_bv_utf8_is_valid(bv->data + start, n)) return NULL;
 
     VmString* s = (VmString*)vm_alloc_object(rs, VM_SUBTYPE_STRING, sizeof(VmString));
     if (!s) return NULL;
@@ -183,7 +241,7 @@ VmString* vm_bv_utf8_to_string(VmRegionStack* rs, const VmBytevector* bv, int st
 #endif
     s->data = (char*)vm_alloc(rs, (size_t)(n + 1));
     if (!s->data) return NULL;
-    memcpy(s->data, bv->data + start, (size_t)n);
+    if (n > 0) memcpy(s->data, bv->data + start, (size_t)n);
     s->data[n] = '\0';
     return s;
 }

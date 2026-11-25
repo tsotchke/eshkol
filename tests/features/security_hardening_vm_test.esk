@@ -1,0 +1,109 @@
+;;; Bytecode VM security and safety verification suite:
+;;; 1. Strict RFC 3629 UTF-8 validation and slice bounds on utf8->string
+;;; 2. Unified capability-denied? predicate
+;;; 3. Non-tail self-calls inside match, do, let-values, call/cc, dynamic-wind, parameterize
+
+(require stdlib)
+(require core.capabilities)
+
+(define failures 0)
+
+(define (assert-true label cond)
+  (if cond
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ")
+        (display label)
+        (newline)
+        #f)))
+
+(define (raises? thunk)
+  (guard (e (#t #t))
+    (thunk)
+    #f))
+
+(let* ((valid-bv (string->utf8 "hello café"))
+       (roundtrip (utf8->string valid-bv))
+       (slice (utf8->string valid-bv 0 5))
+       (overlong (bytevector #xc0 #xaf))
+       (lone-cont (bytevector #x80))
+       (surrogate (bytevector #xed #xa0 #x80))
+       (too-large (bytevector #xf4 #x90 #x80 #x80))
+       (truncated (bytevector #xe2 #x82)))
+  (assert-true "vm utf8->string valid roundtrip" (string=? roundtrip "hello café"))
+  (assert-true "vm utf8->string valid slice" (string=? slice "hello"))
+  (assert-true "vm utf8->string rejects overlong" (raises? (lambda () (utf8->string overlong))))
+  (assert-true "vm utf8->string rejects lone continuation" (raises? (lambda () (utf8->string lone-cont))))
+  (assert-true "vm utf8->string rejects surrogate" (raises? (lambda () (utf8->string surrogate))))
+  (assert-true "vm utf8->string rejects > U+10FFFF" (raises? (lambda () (utf8->string too-large))))
+  (assert-true "vm utf8->string rejects truncated" (raises? (lambda () (utf8->string truncated))))
+  (assert-true "vm utf8->string rejects negative start" (raises? (lambda () (utf8->string valid-bv -1 2))))
+  (assert-true "vm utf8->string rejects start > end" (raises? (lambda () (utf8->string valid-bv 4 2))))
+  (assert-true "vm utf8->string rejects end > len" (raises? (lambda () (utf8->string valid-bv 0 999))))
+  (assert-true "vm utf8->string rejects non-bytevector" (raises? (lambda () (utf8->string "not-a-bv")))))
+
+(assert-true "vm capability-denied? on outcome vector"
+  (capability-denied? (vector 'err 'denied "network denied")))
+(assert-true "vm capability-denied? false on unrelated error"
+  (guard (e (#t (not (capability-denied? e))))
+    (error "some other error")
+    #f))
+(assert-true "vm capability-denied? true on capability error"
+  (guard (e (#t (capability-denied? e)))
+    (error "capability denied: network" 'network)
+    #f))
+
+(define (rec-match n)
+  (match n
+    (0 1)
+    (k (+ 1 (rec-match (- k 1))))))
+
+(define (rec-do n)
+  (if (= n 0)
+      0
+      (do ((i 0 (+ i 1)))
+          ((= i 1) (+ n (rec-do (- n 1)))))))
+
+(define (rec-let-values n)
+  (if (= n 0)
+      0
+      (let-values (((a b) (values n (- n 1))))
+        (+ a (rec-let-values b)))))
+
+(define (rec-callcc n)
+  (if (= n 0)
+      0
+      (call/cc (lambda (k) (+ n (rec-callcc (- n 1)))))))
+
+(define (rec-dwind n)
+  (if (= n 0)
+      0
+      (dynamic-wind
+        (lambda () #f)
+        (lambda () (+ n (rec-dwind (- n 1))))
+        (lambda () #f))))
+
+(define p-depth (make-parameter 0))
+(define (rec-param n)
+  (if (= n 0)
+      0
+      (parameterize ((p-depth n))
+        (+ (p-depth) (rec-param (- n 1))))))
+
+(assert-true "vm non-tail self-call in match" (= (rec-match 5) 6))
+(assert-true "vm non-tail self-call in do" (= (rec-do 5) 15))
+(assert-true "vm non-tail self-call in let-values" (= (rec-let-values 5) 15))
+(assert-true "vm non-tail self-call in call/cc" (= (rec-callcc 5) 15))
+(assert-true "vm non-tail self-call in dynamic-wind" (= (rec-dwind 5) 15))
+(assert-true "vm non-tail self-call in parameterize" (= (rec-param 5) 15))
+
+(if (= failures 0)
+    (begin
+      (display "PASS: security_hardening_vm_test")
+      (newline))
+    (begin
+      (display "FAILURES: ")
+      (display failures)
+      (newline)
+      (exit 1)))

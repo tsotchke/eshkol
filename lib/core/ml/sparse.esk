@@ -1,0 +1,197 @@
+;;
+;; core.ml.sparse — compressed sparse row (CSR) matrices (v1.5.0, ADR-0049).
+;;
+;; A sparse matrix stores only its structural nonzeros: row-ptr (rows+1
+;; offsets), col-idx (column of each stored entry, ascending within a row) and
+;; values. Every operation is written over generic arithmetic, so the stored
+;; values may be AD carriers: `sparse-with-values` swaps a pattern's values for
+;; a parameter vector, and `gradient` differentiates a loss through
+;; `sparse-matvec` / `sparse-matmul` with respect to the nonzeros only.
+;;
+;;   (define s (sparse-from-triplets 3 3 '((0 0 2.0) (1 2 -1.0) (2 1 4.0))))
+;;   (sparse-matvec s (vector 1.0 2.0 3.0))   ; => #(2. -3. 8.)
+;;
+
+(provide sparse-from-triplets sparse-from-dense sparse->dense sparse->triplets
+         sparse? sparse-rows sparse-cols sparse-nnz sparse-ref sparse-values sparse-with-values
+         sparse-matvec sparse-transpose sparse-matmul sparse-add sparse-scale sparse-map-values
+         sparse-identity)
+
+;; #(sparse-csr rows cols row-ptr col-idx values)
+(define (sparse? x) (and (vector? x) (= (vector-length x) 6) (eq? (vector-ref x 0) 'sparse-csr)))
+(define (sparse-rows s) (vector-ref s 1))
+(define (sparse-cols s) (vector-ref s 2))
+(define (sp-rp s) (vector-ref s 3))
+(define (sp-ci s) (vector-ref s 4))
+(define (sparse-values s) (vector-ref s 5))
+(define (sparse-nnz s) (vector-length (sparse-values s)))
+
+(define (sp-reverse l) (let loop ((l l) (a '())) (if (pair? l) (loop (cdr l) (cons (car l) a)) a)))
+
+;; insert (col . value) into a row list sorted by column, summing duplicates
+(define (sp-row-insert col v row)
+  (cond ((or (not (pair? row)) (< col (car (car row)))) (cons (cons col v) row))
+        ((= col (car (car row))) (cons (cons col (+ (cdr (car row)) v)) (cdr row)))
+        (else (cons (car row) (sp-row-insert col v (cdr row))))))
+
+;; build from per-row sorted lists of (col . value)
+(define (sp-from-rows nrows ncols rows)
+  (let* ((nnz (let loop ((i 0) (n 0)) (if (< i nrows) (loop (+ i 1) (+ n (let c ((r (vector-ref rows i)) (k 0)) (if (pair? r) (c (cdr r) (+ k 1)) k)))) n)))
+         (rp (make-vector (+ nrows 1) 0)) (ci (make-vector nnz 0)) (vals (make-vector nnz 0.0)))
+    (let loop ((i 0) (k 0))
+      (if (< i nrows)
+          (begin
+            (vector-set! rp i k)
+            (loop (+ i 1)
+                  (let fill ((r (vector-ref rows i)) (k k))
+                    (if (pair? r)
+                        (begin (vector-set! ci k (car (car r))) (vector-set! vals k (cdr (car r))) (fill (cdr r) (+ k 1)))
+                        k))))
+          (vector-set! rp nrows k)))
+    (vector 'sparse-csr nrows ncols rp ci vals)))
+
+(define (sp-check-index who i n)
+  (if (not (and (integer? i) (exact? i) (>= i 0) (< i n))) (error who "index out of range" i n)))
+
+;; triplets: list of (row col value); duplicates are summed
+(define (sparse-from-triplets nrows ncols triplets)
+  (let ((rows (make-vector nrows '())))
+    (let loop ((ts triplets))
+      (if (pair? ts)
+          (let ((i (car (car ts))) (j (cadr (car ts))) (v (car (cddr (car ts)))))
+            (sp-check-index "sparse-from-triplets: row" i nrows)
+            (sp-check-index "sparse-from-triplets: column" j ncols)
+            (vector-set! rows i (sp-row-insert j v (vector-ref rows i)))
+            (loop (cdr ts)))))
+    (sp-from-rows nrows ncols rows)))
+
+;; dense input: a vector of row vectors; exact and inexact zeros are not stored
+(define (sparse-from-dense m)
+  (let* ((nrows (vector-length m)) (ncols (if (> nrows 0) (vector-length (vector-ref m 0)) 0))
+         (rows (make-vector nrows '())))
+    (let li ((i 0))
+      (if (< i nrows)
+          (begin
+            (vector-set! rows i
+              (let lj ((j (- ncols 1)) (acc '()))
+                (if (< j 0) acc
+                    (let ((v (vector-ref (vector-ref m i) j)))
+                      (lj (- j 1) (if (and (number? v) (zero? v)) acc (cons (cons j v) acc)))))))
+            (li (+ i 1)))))
+    (sp-from-rows nrows ncols rows)))
+
+(define (sparse->dense s)
+  (let ((out (make-vector (sparse-rows s) #f)))
+    (let li ((i 0))
+      (if (< i (sparse-rows s))
+          (let ((row (make-vector (sparse-cols s) 0.0)))
+            (let lk ((k (vector-ref (sp-rp s) i)))
+              (if (< k (vector-ref (sp-rp s) (+ i 1)))
+                  (begin (vector-set! row (vector-ref (sp-ci s) k) (vector-ref (sparse-values s) k)) (lk (+ k 1)))))
+            (vector-set! out i row)
+            (li (+ i 1)))
+          out))))
+
+(define (sparse->triplets s)
+  (let li ((i (- (sparse-rows s) 1)) (acc '()))
+    (if (< i 0) acc
+        (li (- i 1)
+            (let lk ((k (- (vector-ref (sp-rp s) (+ i 1)) 1)) (a acc))
+              (if (< k (vector-ref (sp-rp s) i)) a
+                  (lk (- k 1) (cons (list i (vector-ref (sp-ci s) k) (vector-ref (sparse-values s) k)) a))))))))
+
+(define (sparse-identity n)
+  (let loop ((i (- n 1)) (ts '())) (if (< i 0) (sparse-from-triplets n n ts) (loop (- i 1) (cons (list i i 1.0) ts)))))
+
+;; entry (i, j): the stored value, or 0
+(define (sparse-ref s i j)
+  (sp-check-index "sparse-ref: row" i (sparse-rows s))
+  (sp-check-index "sparse-ref: column" j (sparse-cols s))
+  (let loop ((lo (vector-ref (sp-rp s) i)) (hi (- (vector-ref (sp-rp s) (+ i 1)) 1)))
+    (if (> lo hi) 0.0
+        (let* ((mid (quotient (+ lo hi) 2)) (c (vector-ref (sp-ci s) mid)))
+          (cond ((= c j) (vector-ref (sparse-values s) mid))
+                ((< c j) (loop (+ mid 1) hi))
+                (else (loop lo (- mid 1))))))))
+
+;; the same pattern with new values (length nnz), e.g. a parameter vector
+(define (sparse-with-values s vals)
+  (if (not (= (vector-length vals) (sparse-nnz s)))
+      (error "sparse-with-values: expected one value per stored entry" (vector-length vals) (sparse-nnz s)))
+  (vector 'sparse-csr (sparse-rows s) (sparse-cols s) (sp-rp s) (sp-ci s) vals))
+
+(define (sparse-map-values f s)
+  (let* ((n (sparse-nnz s)) (vals (make-vector n 0.0)))
+    (let loop ((k 0)) (if (< k n) (begin (vector-set! vals k (f (vector-ref (sparse-values s) k))) (loop (+ k 1)))))
+    (sparse-with-values s vals)))
+
+(define (sparse-scale c s) (sparse-map-values (lambda (v) (* c v)) s))
+
+;; y = S x
+(define (sparse-matvec s x)
+  (if (not (= (vector-length x) (sparse-cols s)))
+      (error "sparse-matvec: vector length does not match the column count" (vector-length x) (sparse-cols s)))
+  (let ((y (make-vector (sparse-rows s) 0.0)))
+    (let li ((i 0))
+      (if (< i (sparse-rows s))
+          (begin
+            (vector-set! y i
+              (let lk ((k (vector-ref (sp-rp s) i)) (acc 0.0))
+                (if (< k (vector-ref (sp-rp s) (+ i 1)))
+                    (lk (+ k 1) (+ acc (* (vector-ref (sparse-values s) k) (vector-ref x (vector-ref (sp-ci s) k)))))
+                    acc)))
+            (li (+ i 1)))
+          y))))
+
+(define (sparse-transpose s)
+  (let ((rows (make-vector (sparse-cols s) '())))
+    (let li ((i (- (sparse-rows s) 1)))
+      (if (>= i 0)
+          (begin
+            (let lk ((k (- (vector-ref (sp-rp s) (+ i 1)) 1)))
+              (if (>= k (vector-ref (sp-rp s) i))
+                  (let ((j (vector-ref (sp-ci s) k)))
+                    (vector-set! rows j (cons (cons i (vector-ref (sparse-values s) k)) (vector-ref rows j)))
+                    (lk (- k 1)))))
+            (li (- i 1)))))
+    (sp-from-rows (sparse-cols s) (sparse-rows s) rows)))
+
+;; C = A B (Gustavson's row-by-row product)
+(define (sparse-matmul a b)
+  (if (not (= (sparse-cols a) (sparse-rows b)))
+      (error "sparse-matmul: inner dimensions differ" (sparse-cols a) (sparse-rows b)))
+  (let ((rows (make-vector (sparse-rows a) '())))
+    (let li ((i 0))
+      (if (< i (sparse-rows a))
+          (begin
+            (vector-set! rows i
+              (let lk ((k (vector-ref (sp-rp a) i)) (acc '()))
+                (if (< k (vector-ref (sp-rp a) (+ i 1)))
+                    (let ((r (vector-ref (sp-ci a) k)) (av (vector-ref (sparse-values a) k)))
+                      (lk (+ k 1)
+                          (let lb ((q (vector-ref (sp-rp b) r)) (acc acc))
+                            (if (< q (vector-ref (sp-rp b) (+ r 1)))
+                                (lb (+ q 1) (sp-row-insert (vector-ref (sp-ci b) q) (* av (vector-ref (sparse-values b) q)) acc))
+                                acc))))
+                    acc)))
+            (li (+ i 1)))))
+    (sp-from-rows (sparse-rows a) (sparse-cols b) rows)))
+
+(define (sparse-add a b)
+  (if (not (and (= (sparse-rows a) (sparse-rows b)) (= (sparse-cols a) (sparse-cols b))))
+      (error "sparse-add: shapes differ"))
+  (let ((rows (make-vector (sparse-rows a) '())))
+    (let li ((i 0))
+      (if (< i (sparse-rows a))
+          (begin
+            (vector-set! rows i
+              (let lk ((k (vector-ref (sp-rp b) i))
+                       (acc (let la ((k (vector-ref (sp-rp a) i)) (acc '()))
+                              (if (< k (vector-ref (sp-rp a) (+ i 1)))
+                                  (la (+ k 1) (sp-row-insert (vector-ref (sp-ci a) k) (vector-ref (sparse-values a) k) acc))
+                                  acc))))
+                (if (< k (vector-ref (sp-rp b) (+ i 1)))
+                    (lk (+ k 1) (sp-row-insert (vector-ref (sp-ci b) k) (vector-ref (sparse-values b) k) acc))
+                    acc)))
+            (li (+ i 1)))))
+    (sp-from-rows (sparse-rows a) (sparse-cols a) rows)))

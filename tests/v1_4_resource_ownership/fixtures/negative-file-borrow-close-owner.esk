@@ -1,0 +1,3 @@
+;; Closing the owner while the borrow form holds a loan on it.
+(define in (open-input-file "strict-borrow-owner.txt"))
+(borrow in (close-port in))

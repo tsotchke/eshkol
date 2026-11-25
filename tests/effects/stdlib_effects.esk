@@ -1,0 +1,67 @@
+;;; The standard effects of core.effects.
+(require core.effects)
+
+(define (show label v) (display label) (display ": ") (display v) (newline))
+
+;; Store
+(show "store" (with-store 1 (lambda () (put (+ (get) 41)) (get))))
+(show "run-store" (run-store 0 (lambda () (put 5) (put (* 2 (get))) 'done)))
+
+;; Reader, nested with Store
+(show "reader+store"
+      (with-store 0 (lambda ()
+        (with-reader 10 (lambda ()
+          (put (+ (get) (ask)))
+          (local-reader (lambda (e) (* e 3)) (lambda () (put (+ (get) (ask)))))
+          (get))))))
+
+;; Writer
+(show "writer" (run-writer (lambda () (tell 'a) (tell 'b) (+ 1 2))))
+
+;; Throw
+(show "throw" (catch-throw (lambda () (+ 1 (throw 'oops))) (lambda (e) (list 'caught e))))
+(show "throw->result" (list (throw->result (lambda () 5)) (throw->result (lambda () (throw 'x)))))
+
+;; Choice: all Pythagorean triples with sides up to 13
+(show "triples"
+      (all-choices (lambda ()
+        (let* ((a (choose-range 1 13)) (b (choose-range a 13)) (c (choose-range b 13)))
+          (if (= (+ (* a a) (* b b)) (* c c)) (list a b c) (fail))))))
+(show "first-choice" (first-choice (lambda () (let ((x (choose '(1 2 3 4)))) (if (> x 2) x (fail)))) 'none))
+(show "first-choice-none" (first-choice (lambda () (fail)) 'none))
+
+;; state shared across branches vs state local to branches
+(show "store-outside-choice"
+      (with-store 0 (lambda () (all-choices (lambda () (put (+ (get) 1)) (if (decide) (get) (get)))))))
+(show "store-inside-choice"
+      (all-choices (lambda () (run-store/pure 0 (lambda () (put (+ (get) 1)) (if (decide) (get) (* 10 (get))))))))
+
+;; Yield
+(define (count-to n) (lambda () (let loop ((i 1)) (if (<= i n) (begin (yield i) (loop (+ i 1)))))))
+(show "generator->list" (generator->list (count-to 5)))
+(show "generator-fold" (generator-fold + 0 (count-to 100)))
+(for-each-yield (lambda (v) (display v) (display " ")) (count-to 3))
+(newline)
+(define g (make-generator (count-to 3)))
+(let* ((a (g)) (b (g)) (c (g)) (d (g)))
+  (show "make-generator" (list a b c (generator-done? d))))
+
+;; Async: tasks interleave at operations; await joins
+(show "async"
+      (run-async (lambda ()
+        (let* ((log '())
+               (say (lambda (x) (set! log (cons x log))))
+               (t1 (async-spawn (lambda () (say 'a1) (async-yield) (say 'a2) 'A)))
+               (t2 (async-spawn (lambda () (say 'b1) (async-yield) (say 'b2) 'B))))
+          (let* ((r1 (await t1)) (r2 (await t2)))
+            (list r1 r2 (reverse log)))))))
+
+;; Async: a timer and a descriptor wait on the event loop
+(show "async-io"
+      (run-async (lambda ()
+        (let* ((p (make-pipe))
+               (reader (async-spawn (lambda () (await-readable (car p)) 'readable)))
+               (writer (async-spawn (lambda () (async-sleep 20) (fd-write (cdr p) "x") 'wrote))))
+          (let ((r (list (await writer) (await reader))))
+            (fd-close (car p)) (fd-close (cdr p))
+            r)))))

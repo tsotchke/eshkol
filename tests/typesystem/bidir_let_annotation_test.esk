@@ -1,0 +1,8 @@
+;; Bidirectional checking (ADR-0042): an annotated let binding checks its
+;; initializer against the annotation.
+;; EXPECT-MODE: types-strict
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: [ERROR] Type error: binding 'x': expected Int64, got String
+
+(define (f) (let ((x : integer "seven")) x))
+(display (f))

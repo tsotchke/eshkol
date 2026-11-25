@@ -1,0 +1,26 @@
+;;; Identity types: J, transport, ap, apd and the groupoid laws (ADR-0043).
+(hott
+  (import numbers)
+  ;; J computes on refl definitionally when the motive is an inductive type
+  (example (Pi ((n : Nat))
+             (Path Nat (J 0 0 Nat n (lambda (x) (lambda (p) Nat)) n n (refl 0 Nat n)) n))
+           (lambda (n) (refl 0 Nat n)))
+  ;; and up to the path J-refl in general
+  (define (J-refl-Nat (n : Nat)) : (Path Nat (J 0 0 Nat n (lambda (x) (lambda (p) Nat)) n n (refl 0 Nat n)) n)
+    (J-refl 0 0 Nat n (lambda (x) (lambda (p) Nat)) n))
+  ;; ap of a composite path is the composite of ap, here definitionally on numerals
+  (define one-two : (Path Nat 1 1) (refl 0 Nat 1))
+  (example (Path (Path Nat 2 2) (ap 0 0 Nat Nat (lambda (n) (suc n)) 1 1 one-two) (refl 0 Nat 2))
+           (refl 0 (Path Nat 2 2) (refl 0 Nat 2)))
+  ;; sym is an involution, definitionally
+  (example (Pi ((a b : Int) (p : (Path Int a b)))
+             (Path (Path Int a b) (sym 0 Int b a (sym 0 Int a b p)) p))
+           (lambda (a b p) (refl 0 (Path Int a b) p))))
+
+(define (show x) (display x) (newline))
+(show (hott-eval (subst 0 0 Nat (lambda (n) Nat) 3 3 (refl 0 Nat 3) 7)))
+(show (hott-eval ((trans 0 Nat 2 2 2 (refl 0 Nat 2) (refl 0 Nat 2)) i1)))
+(show (hott-eval (add 2 (add 3 4))))
+;; a HoTT form inside a procedure body is elaborated like any other
+(define (seven) (hott-eval (add 3 4)))
+(show (seven))

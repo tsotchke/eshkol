@@ -1,0 +1,23 @@
+;; OUTPUT: tensor-dot: tensor ranks and extents must match
+;; OUTPUT: tensor-dot: Scheme vector lengths must match
+;; OUTPUT: #t
+;; OUTPUT: tensor-dot: tensor ranks and extents must match
+;; OUTPUT: tensor-dot: only supports 1D and 2D tensors (got 3D)
+;; OUTPUT: tensor-dot: matmul inner dimensions mismatch (2 vs 1)
+;; OUTPUT: #t
+;; OUTPUT: tensor-dot: only supports 1D and 2D tensors (got 3D)
+;; OUTPUT: tensor-dot: only supports 1D and 2D tensors (got 3D)
+
+(define (report thunk)
+  (guard (e ((error-object? e) (display (error-object-message e))))
+    (display (thunk)))
+  (newline))
+(report (lambda () (tensor-dot #(1.0) #(2.0 3.0))))
+(report (lambda () (tensor-dot (vector 1) (vector 2 3))))
+(report (lambda () (= 0.0 (tensor-dot #() #()))))
+(report (lambda () (tensor-dot #() #(1.0))))
+(report (lambda () (tensor-dot #(#(#(1.0))) #(1.0))))
+(report (lambda () (tensor-dot #(1.0 2.0) #(#(3.0)))))
+(report (lambda () (= 11.0 (tensor-ref (tensor-dot #(1.0 2.0) #(#(3.0) #(4.0))) 0))))
+(report (lambda () (tensor-dot #(1.0) #(#(#(1.0))))))
+(report (lambda () (tensor-dot #(#(1.0)) #(#(#(1.0))))))

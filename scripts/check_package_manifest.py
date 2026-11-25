@@ -237,6 +237,18 @@ def _check_cmake_integration(entries: list, package_dir: Path, platform_name: st
         _check_leaf(package_dir / entry["path"], f"cmake integration module {entry['path']!r}", errors)
 
 
+def _check_runtime_dependencies(entries: list, package_dir: Path, platform_name: str, errors: list[str], checked: list[int]) -> None:
+    for entry in entries:
+        if not _platform_allowed(entry, platform_name) or not entry.get("required", True):
+            continue
+        relative = Path(entry.get("path", ""))
+        if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+            errors.append(f"runtime dependency has unsafe package path: {entry!r}")
+            continue
+        checked[0] += 1
+        _check_leaf(package_dir / relative, f"runtime dependency {relative.as_posix()!r}", errors)
+
+
 def _check_integration_contract(
     entries: list,
     package_dir: Path,
@@ -320,6 +332,7 @@ def evaluate(
     _check_stdlib_sources(surface.get("stdlib_sources", []), package_dir, repo_root, platform_name, errors, checked)
     _check_docs(surface.get("docs", []), package_dir, platform_name, errors, checked)
     _check_cmake_integration(surface.get("cmake_integration", []), package_dir, platform_name, errors, checked)
+    _check_runtime_dependencies(surface.get("runtime_dependencies", []), package_dir, platform_name, errors, checked)
     _check_integration_contract(
         surface.get("integration_contract", []),
         package_dir, repo_root, platform_name, errors, checked,

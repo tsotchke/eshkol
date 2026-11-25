@@ -21,28 +21,31 @@ layouts and purposes.
 
 ```scheme
 ;; vector holds heterogeneous values
-(vector 1 "two" 3.0)            ;; => #(1 two 3)   (int, string, double)
+(vector 1 "two" 3.0)            ;; => #(1 two 3.0)   (int, string, double)
 
 ;; tensor is homogeneous doubles with dtype + shape
 (define t (tensor 1.0 2.0 3.0))
 (tensor-dtype t)                ;; => f64
 (tensor-shape t)                ;; => (3)
-t                               ;; => #(1 2 3)
+t                               ;; => #(1.0 2.0 3.0)
 ```
 
 > **Display note.** Both containers print with the `#(…)` reader syntax, so
 > `display` alone does not tell them apart — use `tensor-dtype`/`tensor-shape`
-> (defined only for tensors) or the surrounding context. Integers and whole
-> doubles both print without a decimal point (`3.0` → `3`), and strings print
-> without quotes.
+> (defined only for tensors) or the surrounding context. An exact integer prints
+> as `3` and a whole double as `3.0`, so a tensor's f64 elements always show
+> their decimal point; strings print without quotes. A numeric literal written
+> with integers, `#(1 2 3)`, is read as an f64 tensor and prints
+> `#(1.0 2.0 3.0)`; `(vector 1 2 3)` keeps its exact integers and prints
+> `#(1 2 3)`, as does an exact tensor made with `(tensor-cast … 'exact)`.
 
 ---
 
 ## Creating tensors
 
 ```scheme
-(tensor 1.0 2.0 3.0)                       ;; 1-D tensor from elements  => #(1 2 3)
-#(1.0 2.0 3.0)                             ;; literal tensor            => #(1 2 3)
+(tensor 1.0 2.0 3.0)                       ;; 1-D tensor from elements  => #(1.0 2.0 3.0)
+#(1.0 2.0 3.0)                             ;; literal tensor            => #(1.0 2.0 3.0)
 (make-tensor (list 2 2) 0.0)               ;; shape (2 2) filled with 0.0
 (tensor-reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2))  ;; reshape flat -> 2x2
 ```
@@ -64,10 +67,10 @@ specified by the shape-operation contract.
 own nesting, whatever built it — lists, vectors, or a mix, to any rank up to 8:
 
 ```scheme
-(tensor (list 1.0 2.0 3.0))                        ;; => #(1 2 3)        shape (3)
-(tensor (list (list 1.0 2.0) (list 3.0 4.0)))      ;; => #((1 2) (3 4))  shape (2 2)
-(tensor #(#(1 2) #(3 4)))                          ;; => #((1 2) (3 4))  shape (2 2)
-(tensor (list (vector 1.0 2.0) (vector 3.0 4.0)))  ;; => #((1 2) (3 4))  shape (2 2)
+(tensor (list 1.0 2.0 3.0))                        ;; => #(1.0 2.0 3.0)            shape (3)
+(tensor (list (list 1.0 2.0) (list 3.0 4.0)))      ;; => #((1.0 2.0) (3.0 4.0))    shape (2 2)
+(tensor #(#(1 2) #(3 4)))                          ;; => #((1.0 2.0) (3.0 4.0))    shape (2 2)
+(tensor (list (vector 1.0 2.0) (vector 3.0 4.0)))  ;; => #((1.0 2.0) (3.0 4.0))    shape (2 2)
 (tensor (list (list (list 1.0 2.0) (list 3.0 4.0)) ;; rank 3
               (list (list 5.0 6.0) (list 7.0 8.0)))) ;; shape (2 2 2)
 ```
@@ -166,6 +169,22 @@ Tensors carry a dtype tag. The default is `f64`. `tensor-cast` converts between
 (tensor-dtype (tensor-cast t 'f16))     ;; => f16
 (tensor-dtype (tensor-cast t 'bf16))    ;; => bf16
 (tensor-dtype (tensor-cast t 'f64))     ;; => f64
+```
+
+**Exact elements.** `(tensor-cast X 'exact)` builds an exact tensor (ADR-0058):
+each element is an exact rational of the scalar tower, kept whole, and `X` may
+be a tensor, a list, a vector or a rectangular nest of them. A finite double
+converts as `exact` converts it. `(make-tensor shape fill :dtype 'exact)` fills
+with an exact value. `(tensor-dtype t)` is `exact`, and `(tensor-cast t 'f64)`
+converts back. The kernels with an exact rule and the contagion rules are listed in
+[exact_linalg.md](../stdlib/exact_linalg.md#exact-tensors); every other kernel
+refuses an exact tensor by name.
+
+```scheme
+(define q (tensor-cast (list 1/3 2/7) 'exact))
+(tensor-dtype q)                        ;; => exact
+(tensor-ref q 0)                        ;; => 1/3
+(tensor-ref (tensor 1/3) 0)             ;; => 0.3333333333333333 (the default f64 tensor)
 ```
 
 **Status.** The dtype metadata and `tensor-cast` tagging are wired for all four

@@ -27,12 +27,12 @@
 ;; linear accounting) that will replace it. Note the loop is only undecidable
 ;; because it MENTIONS `q`: a loop that does not is charged zero uses whatever
 ;; its trip count, which is what qubit_linear_do_loop_ok_test.esk pins.
-(define (h (q : Qubit)) : Qubit q)
+(define (observe (q : Qubit)) : Int (if (null? q) 0 1))
 
 (define (loop-over (n : Int) (q : Qubit))
   (let repeat ((i 0))
     (if (< i n)
-        (begin (h q) (repeat (+ i 1)))
+        (begin (observe q) (repeat (+ i 1)))
         i)))
 (display "a loop body is outside the enforced fragment")
 (newline)

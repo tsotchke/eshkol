@@ -1,0 +1,72 @@
+;; Refinement types (ADR-0044): every obligation in this program is proved by
+;; the built-in decision procedure, so it compiles and runs unchanged.
+
+(define-type Pos (Refine Integer (> x 0)))
+(define-type NonNeg (Refine Integer (>= x 0)))
+
+;; A precondition: the divisor is never zero.
+(define (safe-div (n : Integer) (d : (Refine Integer (not (= d 0))))) : Integer
+  (quotient n d))
+
+;; A dependent precondition and a postcondition naming both bounds.
+(define (clamp (lo : Integer) (hi : (Refine Integer (>= hi lo))) (x : Integer))
+  : (Refine Integer v (and (<= lo v) (<= v hi)))
+  (cond ((< x lo) lo)
+        ((> x hi) hi)
+        (else x)))
+
+;; Postconditions proved from branch conditions.
+(define (abs-int (x : Integer)) : NonNeg
+  (if (< x 0) (- x) x))
+
+(define (pred-of-pos (n : Pos)) : NonNeg
+  (- n 1))
+
+;; Arithmetic facts: halving an even number, the range of modulo.
+(define (half (n : (Refine Integer (even? n)))) : (Refine Integer h (= (* 2 h) n))
+  (quotient n 2))
+
+(define (digit (n : Integer)) : (Refine Integer d (and (<= 0 d) (< d 10)))
+  (modulo n 10))
+
+;; Index bounds inside an annotated function, through a loop invariant.
+(define (sum-vec (v : (vector integer))) : Integer
+  (let loop ((i : NonNeg 0) (acc 0))
+    (if (< i (vector-length v))
+        (loop (+ i 1) (+ acc (vector-ref v i)))
+        acc)))
+
+(define (get (v : (vector integer))
+             (i : (Refine Integer (and (<= 0 i) (< i (vector-length v))))))
+  (vector-ref v i))
+
+;; Calls to refined functions establish their result refinements.
+(define (safe-mean (a : Integer) (b : Integer) (count : Pos)) : Integer
+  (safe-div (+ a b) count))
+
+(define (last-index (v : (Refine (vector integer) (> (vector-length v) 0)))) : NonNeg
+  (- (vector-length v) 1))
+
+;; Reals as intervals: inexact arithmetic stays within its rounding error.
+(define (positive-part (x : (Refine Real (> x 2.0)))) : (Refine Real y (> y 0.0))
+  (- x 1.0))
+
+;; Exact rationals.
+(define (below-one (q : (Refine Rational (< q 1)))) : (Refine Rational r (< r 2))
+  (+ q 1/2))
+
+;; Unannotated callers: every argument here is proved at the boundary.
+(display (safe-div 17 5)) (newline)
+(display (clamp 0 10 42)) (newline)
+(display (clamp 0 10 -3)) (newline)
+(display (abs-int -7)) (newline)
+(display (pred-of-pos 1)) (newline)
+(display (half 18)) (newline)
+(display (digit 1234)) (newline)
+(display (sum-vec (vector 1 2 3 4))) (newline)
+(display (get (vector 5 6 7) 2)) (newline)
+(display (safe-mean 3 5 2)) (newline)
+(display (last-index (vector 9 9 9))) (newline)
+(display (positive-part 3.5)) (newline)
+(display (below-one 1/4)) (newline)
+(display (the (Refine Integer (> k 100)) (* 11 11))) (newline)

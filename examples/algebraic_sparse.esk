@@ -1,0 +1,33 @@
+(require stdlib)
+(require core.ad.algebraic_sparse)
+(define field (make-algebraic-field '(-2 0 1) 3 1))
+(define alpha (algebraic-generator field))
+(define point (vector alpha (algebraic-element field 2)))
+(define (objective xs)
+  (let* ((ctx (algebraic-ad-context (vector-ref xs 0)))
+         (mul (algebraic-domain-ref (algebraic-domain ctx) 'mul))
+         (x (vector-ref xs 0)) (y (vector-ref xs 1)))
+    (mul x (mul y y))))
+(define h (algebraic-sparse-hessian field objective point '((0 1) (1 1))))
+;; For f(x,y)=x*y^2, H01=2*y=4, H11=2*x=2*sqrt(2), H00=0.
+(define failures 0)
+(define passes 0)
+(define (check name ok)
+  (if ok (set! passes (+ passes 1))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+(check "mixed coefficient is exactly four"
+  (= (algebraic-rational (algebraic-sparse-hessian-ref h 0 1)) 4))
+(check "diagonal coefficient is exactly twice sqrt(2)"
+  (algebraic-equal? (algebraic-sparse-hessian-ref h 1 1) (algebraic-scale alpha 2)))
+(check "unlisted zero diagonal is exact"
+  (= (algebraic-rational (algebraic-sparse-hessian-ref h 0 0)) 0))
+(check "summary counts the actual two scalar probes"
+  (equal? (vector->list (algebraic-sparse-hessian-summary h)) '(2 2 2 2 scalar)))
+(check "no finite differences" (= (ad-finite-difference-evals) 0))
+(display "H(0,1) = " ) (write (algebraic-sparse-hessian-ref h 0 1)) (newline)
+(display "H(1,1) = " ) (write (algebraic-sparse-hessian-ref h 1 1)) (newline)
+(display "probes/colors = " ) (write (vector->list (algebraic-sparse-hessian-summary h))) (newline)
+(display "Passed: ") (display passes) (display " Failed: ") (display failures) (newline)
+(if (> failures 0) (begin (display "RESULT: FAIL") (newline) (exit 1)))
+(display "RESULT: PASS") (newline)

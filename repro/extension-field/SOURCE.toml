@@ -1,0 +1,7 @@
+schema_version = 1
+license = "MIT"
+source_kind = "selected source donation"
+upstream_base = "fb8a9415b3dd05bb82ebf42db2fe894240f8b4f0"
+source_owners = ["extension-field", "finite-field", "polynomial-core", "ring-protocol"]
+adaptation = "Finite-field algorithms over Eshkol core.ring; prime admission strengthened; supplied modulus only"
+scope = "GF(p^m), Frobenius, conjugates and minimal polynomials; no compiler/runtime changes"

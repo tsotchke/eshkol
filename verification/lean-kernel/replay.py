@@ -14,7 +14,10 @@ except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
 HERE = Path(__file__).resolve().parent
-RECEIPT_SHA256 = "247e14884d514688afe18433ce48f55be249952ccd4cc4ed54be3a252b53c48a"
+RECEIPTS = {
+    "original": ("R0.toml", "247e14884d514688afe18433ce48f55be249952ccd4cc4ed54be3a252b53c48a"),
+    "blc-v2": ("R0-blc-v2.toml", "e90cb4c6edb939c3470797dd25b26f4e0d73c9b9c633699afc23984ec0571e28"),
+}
 DIGESTS = {
     "mt.ndjson": "d4cb6b03bc24222a3c3c1608158da7aedbc466602d63bfee40ac31a41eb7d664",
     "mt-wrong-body.ndjson": "f834bcebd6b66b0d4a6350b99b3d446dc619e154c0951bec44104462b1dd5b5d",
@@ -31,9 +34,10 @@ def verify(result, code=0, diagnostic=None):
         raise ValueError(f"{result.args} exited {result.returncode}: {output[:2000]}")
 
 
-def replay(candidate):
-    receipt_bytes = (HERE / "R0.toml").read_bytes()
-    if hashlib.sha256(receipt_bytes).hexdigest() != RECEIPT_SHA256:
+def replay(candidate, profile):
+    filename, expected_digest = RECEIPTS[profile]
+    receipt_bytes = (HERE / filename).read_bytes()
+    if hashlib.sha256(receipt_bytes).hexdigest() != expected_digest:
         raise ValueError("Unrecognized R0 receipt or premises")
     receipt = tomllib.loads(receipt_bytes.decode())
     for name, digest in receipt["artifacts"].items():
@@ -186,11 +190,13 @@ def replay(candidate):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", type=Path, help="path to a built standalone checker")
+    parser.add_argument("--receipt", choices=RECEIPTS, default="blc-v2",
+                        help="use original with the original BLC source or blc-v2 with the optimized source")
     args = parser.parse_args()
     candidate = args.candidate
     if candidate is None:
         candidate = HERE / "check"
     try:
-        replay(candidate.resolve())
+        replay(candidate.resolve(), args.receipt)
     except (KeyError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         sys.exit(str(error))

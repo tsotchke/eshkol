@@ -1361,6 +1361,8 @@ function Invoke-CppTypeSuite {
         (Join-Path $script:ProjectRoot "lib/types/type_relation.cpp"),
         (Join-Path $script:ProjectRoot "lib/types/type_checker.cpp"),
         (Join-Path $script:ProjectRoot "lib/types/dependent.cpp"),
+        (Join-Path $script:ProjectRoot "lib/types/quantum_types.cpp"),
+        (Join-Path $script:ProjectRoot "lib/types/quantum_index.cpp"),
         (Join-Path $script:ProjectRoot "lib/core/ast.cpp")
     )
 
@@ -1689,7 +1691,8 @@ switch ($Mode) {
     "all" {
         $suiteResults += Invoke-JitCacheSuite
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Features Test Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:"
-        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Stdlib Test Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:"
+        $stdlibExclude = if ($env:ESHKOL_RUN_HEAVY_EFFECTIVE_TESTS -eq "1") { @() } else { @("effective_hypercover_test.esk", "effective_hypercover_3type_test.esk", "effective_pi6_s3_test.esk") }
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Stdlib Test Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:" -ExcludeNames $stdlibExclude
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "list" -Title "Eshkol List Test Suite" -Patterns @("tests/list/*.esk") -RuntimeErrorRegex "error:"
         $suiteResults += Invoke-MemorySuite
         $suiteResults += Invoke-ModulesSuite

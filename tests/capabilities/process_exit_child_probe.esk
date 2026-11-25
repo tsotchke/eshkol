@@ -1,0 +1,20 @@
+;;; A program that ends while a child it started is still running leaves that
+;;; child running, and its own exit does not wait for the child.
+;;;
+;;; The child is a script the driver wrote, spawned by path with no arguments:
+;;; the native engines hand a command string to /bin/sh and the bytecode VM
+;;; execs it directly, and a bare path is the one spelling that means the same
+;;; thing to both.
+;;;
+;;; ESHKOL_EXIT_CHILD_SCRIPT names it. In the "survives" case it writes a
+;;; marker a little after the parent is gone, which the driver looks for; in
+;;; the "stubborn" case it ignores SIGTERM and outlives the parent by a long
+;;; way, and the driver times the parent's exit.
+(require stdlib)
+
+(define script (getenv "ESHKOL_EXIT_CHILD_SCRIPT"))
+
+(define pid (process-spawn script ""))
+(display "spawned:")
+(display (if (and (number? pid) (> pid 0)) "yes" "no"))
+(newline)

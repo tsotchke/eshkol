@@ -83,6 +83,14 @@ Use the remaining docs as operational references while implementation proceeds.
   - append-only architecture and governance decision log
 - [SELF_HOSTED_RUNNERS.md](SELF_HOSTED_RUNNERS.md)
   - safe ephemeral container runners, cache setup, and operator security checklist
+- [PLATFORM_LAYER.md](PLATFORM_LAYER.md)
+  - v1.8.0 windows and events, real-time audio and MIDI: backends, real-time contract, verification
+- [VULKAN_COMPUTE.md](VULKAN_COMPUTE.md)
+  - v1.8.0 Vulkan compute backend inside the ordinary GPU dispatch
+- [EMBEDDED_TARGETS.md](EMBEDDED_TARGETS.md)
+  - v1.8.0 ARM and RISC-V bare-metal targets, freestanding runtime subset, QEMU boards
+- [OS_ENABLEMENT_PLAN.md](OS_ENABLEMENT_PLAN.md)
+  - upstream compiler/runtime phases (U1–U5) and downstream `eshkol-kernel` phases (K1–K5) for a complete OS written in Eshkol
 
 ## Current Status
 

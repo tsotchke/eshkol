@@ -1,0 +1,2 @@
+;; expect-error: boundary clauses disagree
+(hott (data T a b (p (dims i) (boundary ((= i 0) a) ((= i 0) b)))))

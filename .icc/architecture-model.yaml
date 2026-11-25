@@ -13,14 +13,14 @@ description: >
   Verified by `icc architecture-verify --repo eshkol --model
   .icc/architecture-model.yaml`.
 
-  Ground truth: tests/coverage/language_surface.json (1,118 constructs including
-  22 opt-in Agent FFI quantum APIs, 116 special forms, 113 AST ops) and
-  scripts/language_coverage.py (dynamic execution-backed coverage tracker). 1,118
-  is the enforced floor in tests/coverage/coverage_policy.json (baseline_surface_total).
-  The latest additions are raise-continuable and type-name. Release qualification
-  requires fresh execution evidence for the complete surface at the candidate
-  commit. scripts/check_surface_counts.py fails CI if this file drifts from the
-  manifest again.
+  Ground truth: tests/coverage/language_surface.json (1,651 constructs including
+  22 opt-in Agent FFI quantum APIs, 122 special forms, 114 AST ops) and
+  scripts/language_coverage.py (dynamic execution-backed coverage tracker). 1,651
+  is the enforced floor in tests/coverage/coverage_policy.json (baseline_surface_total)
+  and tests/coverage/execution_deficit.json (1,651/1,651 execution-backed, 0 deficit).
+  Release qualification requires fresh execution evidence for the complete surface
+  at the candidate commit. scripts/check_surface_counts.py fails CI if this file
+  drifts from the manifest again.
 
   FIDELITY HONESTY: ICC's C symbol index does not AST-resolve C/C++ the way it
   resolves Python, so every invariant whose sites are .c/.cpp/.h/.js files is
@@ -97,7 +97,7 @@ components:
       - lib/backend/tail_call_codegen.cpp
       - lib/backend/system_codegen.cpp
     entry_points:
-      - {path: lib/backend/eshkol_compiler.c}
+      - {path: lib/backend/llvm_codegen.cpp}
 
   - id: bytecode-vm
     role: backend
@@ -135,9 +135,16 @@ components:
       evacuator must deep-walk every interior-pointer heap subtype (ESH-0214d).
     modules:
       - lib/core/runtime_regions.cpp
+      - lib/core/runtime_regions_evacuation.cpp
+      - lib/core/runtime_regions_handles.cpp
+      - lib/core/runtime_regions_resident.cpp
+      - lib/core/runtime_regions_internal.h
       - lib/core/arena_memory.h
     entry_points:
       - {path: lib/core/runtime_regions.cpp}
+      - {path: lib/core/runtime_regions_evacuation.cpp}
+      - {path: lib/core/runtime_regions_handles.cpp}
+      - {path: lib/core/runtime_regions_resident.cpp}
 
   - id: ad-tower
     role: backend
@@ -161,6 +168,23 @@ components:
       - lib/backend/arithmetic_codegen.cpp
     entry_points:
       - {path: lib/backend/arithmetic_codegen.cpp}
+
+  - id: lambda-calculus
+    role: runtime
+    description: >
+      Lambda-calculus foundations in pure Eshkol (ADR-0005, ADR-0017):
+      core.blc, Tromp's binary lambda calculus and the deterministic truth
+      oracle, and core.sblc, the stochastic binary lambda calculus (the
+      four-form sblc-v1 prefix code, seeded sampling over the isolated PRNG,
+      exact rational distributions under a step bound, the 2^-length prior
+      and exact conditioning). Probabilities are numeric-tower rationals.
+    modules:
+      - lib/core/blc.esk
+      - lib/core/sblc.esk
+      - tests/stdlib/sblc_test.esk
+      - scripts/run_sblc_gate.sh
+    entry_points:
+      - {path: lib/core/sblc.esk}
 
   - id: quantum-backend
     role: backend
@@ -262,9 +286,9 @@ dataflows:
     consumes: [builtin_dispatch]
     key_space: {kind: builtin_name, identifier: "BUILTINS[] table entry name"}
     description: >
-      Native closure table (eshkol_compiler.c BUILTINS[]) and the VM table
-      (eshkol_vm.c BUILTINS[]) index the same builtin-name space; a name present
-      in one but absent in the other is a VM-parity gap.
+      Native builtin lowering (llvm_codegen.cpp / builtin_factory_codegen.cpp)
+      and the VM table (eshkol_vm.c BUILTINS[]) index the same builtin-name
+      space; a name present in one but absent in the other is a VM-parity gap.
 
   - id: ad_graph
     producer: ad-tower
@@ -454,6 +478,16 @@ capabilities:
     dependencies: [ad-tower]
     dependency_constructor: 'run_case "fd-counter" tests/ad/fd_counter_negative_test\.esk'
     dependency_paths: [scripts/run_ad_exactness_gate.sh]
+
+  - id: sblc_exact_semantics
+    feature: Stochastic binary lambda calculus with exact rational distribution semantics, prior and conditioning (ADR-0017 first slice)
+    entry_points:
+      - {path: lib/core/sblc.esk}
+    arming:
+      kind: runtime_event
+      path: scripts/run_sblc_gate.sh
+      pattern: sblc_first_slice
+    dependencies: [lambda-calculus, numeric-tower]
 
 # --------------------------------------------------------------------------
 # INVARIANTS — one per incident class from the adversarial campaign
@@ -698,7 +732,7 @@ invariants:
         path: inc/eshkol/eshkol.h
         key_pattern: 'HEAP_SUBTYPE_([A-Z0-9_]+)\s*=\s*\d+,\s*//.*\[DEEPWALK\]'
       - id: region-evacuator-switch
-        path: lib/core/runtime_regions.cpp
+        path: lib/core/runtime_regions_evacuation.cpp
         key_pattern: 'case\s+HEAP_SUBTYPE_(\w+)\s*:\s*return\s+EVAC_(?!LEAF\b)'
 
   # 6b. The SAME invariant for the bytecode VM's Stage-1 evacuator (SW-14).

@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Capabilities and processes
+
+- The capability policy covers the shell, process creation, sockets and foreign
+  code, on the LLVM JIT, ahead-of-time executables and the bytecode VM, from one
+  policy store. A program that installs no policy is unaffected; under an active
+  policy every capability it does not name is refused, and a refusal names the
+  capability. (#923)
+- A policy only ever narrows: installing one while another is active keeps the
+  names both hold, and clearing is refused while a policy is active.
+- `(process-spawn-pty cmd)` returns `(pid . master-fd)` on every engine, so the
+  program owns the pseudo-terminal descriptor, and `#f` when it cannot start the
+  child. It previously returned the pid alone on the native engines.
+- Align runtime epochs, context access, atomic JIT stdlib cache publication, and
+  the single program-entry rule across engines. (#924)
+- Validate HTTP request targets, WebSocket handshakes, and compilation-server
+  request headers and budgets across native, JIT, AOT, and VM paths. (#927)
+- Align the Linux test and verification suites with the hosted runtime and
+  toolchain behavior. (#929)
+- Unify closure invocation across capture counts and resolve typed move
+  semantics per lexical scope. (#930)
+- Complete receipt contracts, modularity records, and single-name runtime event
+  records across release-evidence gates. (#933)
+
+
+### Added
+
+- **Mathematics now runs on finite structures that decide their own claims.** Add `core.sheaf`
+  (sites, sieves, Grothendieck topologies, sheaf cohomology by Cech descent), `core.topos`
+  (presheaf toposes with Kripke–Joyal forcing cross-checked against the subobject classifier),
+  `core.ring` (rings as a functor-of-points value: one program, many carriers — integers,
+  rationals, IEEE binary64, modular arithmetic, Taylor jets, polynomial rings, group rings),
+  `core.category` (finite category theory, adjunctions through comma categories, Kan
+  extensions), and `core.simplicial` / `core.homological` (simplicial sets, chain complexes,
+  homology with torsion). Measured against nLab: 141 claims across 51 pages, decided and
+  reported in `docs/reports/NLAB_CONFORMANCE.md`. Reader's guide:
+  `docs/guide/MATHEMATICS.md`. Lawvere theories, Gröbner bases and monoidal categories with
+  the ZX calculus follow in v1.4.x.
+- **Recurrent cells, stop-gradient and gradient estimators (v1.5.0, ADR-0049).**
+  `core.ml.recurrent` provides LSTM and GRU cells over a flat parameter vector,
+  trained by reverse-mode backpropagation through time with no hand-written
+  backward pass. The new builtin `stop-gradient` returns a number's primal on
+  the native backend, the VM and the browser lane, and
+  `core.ml.gradient_estimators` adds straight-through, Gumbel-Softmax,
+  straight-through Gumbel, Bernoulli and score-function estimators that
+  compose with `gradient`. Reverse mode through a named-let loop that keeps AD
+  nodes only inside a list now records each iteration's own node.
+
 ### Fixed
+
+- Preserve the caller's tensor dimensions in the C embedding constructors, including empty axes. Invalid shapes return the null value. (#940)
 
 - Preserve signed-curvature geometry across VM and AD engines, including
   flat-curvature continuity and manifold primitive output contracts. (#912)
@@ -33,12 +82,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the same initializer contract instead of reusing objects whose local
   initializer cannot be found by the JIT. (#869)
 
+### Changed
+
+- Speed up normal-order `blc-eval` with lexical environments while preserving
+  the public contraction limit and the `core.blc` interface. (#942)
+
 ### Added
 
 - Add exact-rational affine solution families with particular solutions and
   complete nullspace bases, including explicit ambient dimensions for empty
   systems. Add JIT/AOT acceptance and determinant-oracle tests, plus negative
   controls for the AOT test harness. (#785)
+- Add a rational heat-stencil example with a discrete refinement proof and a native grid-access replay. (#945)
+- Propose ADR-0061 and add the standalone Verificatum R0 checker and replay for the Lean export of modus tollens. (#941)
 - **One chart for every sign of the curvature (ADR-0018).** Every
   constant-curvature op evaluates the kappa-stereographic chart in the
   canonical-flat gauge `alpha = 1`: the ball of radius `2/sqrt(-K)`, Euclidean
@@ -51,6 +107,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an independent binary128 reference checks it at every finite binade of `K`
   of both signs. Legacy ball coordinates migrate by `x_v2 = 2 x_v1`
   (`migrate-legacy-ball-point`); distances are unchanged by the migration. (#854)
+- **Sockets and TLS sessions are resource leases.** TCP and UDP sockets are
+  owned through the shared runtime handle registry: one operation per handle,
+  one monotonic deadline per operation, waits on the event loop, cancellation
+  and close from any thread, byte-counted bytevector I/O, shutdown, explicit
+  datagram truncation, and scoped forms that close on return, exception and
+  continuation escape. TLS sessions start on owned TCP streams in either role,
+  hold the stream's lease, verify peers by default and report untrusted and
+  mismatched certificates separately (ADR-0055, Proposed).
+- **Linear handles with compile-time tracking, and the borrow pattern.** Under
+  `--strict-resources`, every native handle family (sockets, TLS, file ports,
+  the event loop, threads, mutexes, condition variables, subprocesses) moves
+  through `open -> borrowed -> open -> closed`, checked across branches, loops,
+  function calls, closures, `guard`, `dynamic-wind` and `call/cc`. An unclosed
+  handle, a double close, a use after close, a close while borrowed and an
+  escaping loan are compile errors. `call-with-port`, `call-with-input-file`
+  and `call-with-output-file` close their port on a raise or a continuation
+  escape as well as on return. One contract table describes every handle
+  operation (ADR-0056, `docs/reference/language/linear-handles.md`).
+- **Differentiation nests to any depth in every mode.** Every pass is a level
+  with a 64-bit perturbation tag that is never reused, so nesting holds however
+  many passes a program has run. A vector-point `gradient` inside a live pass
+  is computed as forward columns, an outermost reverse pass over an inner
+  forward pass that captures a computed value is taken as forward columns, and
+  a curried `gradient` under a reverse pass linearises against each component
+  of its point. Forward over reverse, reverse over forward and reverse over
+  reverse over reverse answer exactly to depth 4 and beyond, with exact inputs
+  exact through every level, on the JIT, AOT and the VM
+  (`tests/ad/nested_depth_matrix_test.esk`, ADR-0057).
+- **Image I/O needs no codec library on any platform.** PNG (every colour
+  type, bit depth and interlacing), JPEG (baseline, extended and progressive
+  Huffman decode; baseline encode), BMP and WebP (VP8 lossy and VP8L lossless
+  decode with alpha and the extended container; lossless encode) are decoded
+  and encoded by codecs built into the runtime, with the same output on every
+  platform. Files written as PNG or JPEG keep the bytes the previous system
+  libpng/libjpeg path produced, decoded pixels match the previous
+  libpng/libjpeg/libwebp path, and `image-write` with `"webp"` now writes
+  lossless WebP. Builds, CI images and release packages no longer carry
+  libpng, libjpeg or libwebp.
+- **Region runtime in four units.** The region lifecycle, escape and
+  evacuation, user region handles and resident owners are separate
+  translation units behind a hidden-visibility internal header; function
+  bodies and exported symbols are unchanged.
+- **Doc-truth ratchet, phase 1.** `scripts/doc_truth_ratchet.py` ranks every
+  typed claim in `docs/` by verification status and records a per-document
+  quota (`docs/reports/doc_truth/quota.json`, summary in
+  `docs/reports/DOC_TRUTH_RANKING.md`). The `doc_truth_ratchet_phase1` CTest
+  recomputes the ranking into the build directory and reports against the
+  quota; `ESHKOL_DOC_TRUTH_ENFORCE=ON` is the phase-2 switch that makes it
+  release-blocking.
+
+- **Exact algebraic calculus spans composed fields and maintained objectives.**
+  Add certified field composition and nested derivatives (#793), exact matrix
+  calculus (#794), coupled polynomial root towers (#795), preflighted packed
+  products (#796), sparse exact Hessians (#797), and live polynomial moments
+  with exact parameter gradients (#798). Preserve explicit arithmetic and
+  shape limits, defensive results, and refusal of unsupported inputs. (#838)
+- **Event-loop evidence runs in isolation.** Add a source/build-bound producer
+  for the existing ICC criterion, checking all 27 named assertions on uncached
+  ORC and AOT with stable source, compiler, runtime and stdlib artifacts.
+  Local qualification covers kqueue; other backends need their own evidence.
+  The sparse-curvature example now checks its exact analytic results and emits
+  the verdict required by its configured acceptance tests. (#838)
+
+- **Exact algebraic computation composes with finite differentiation.** Add
+  optional polynomial and selected real algebraic-field arithmetic, together
+  with field-valued dual, hyperdual and Taylor carriers and checked implicit
+  roots. Contributions from [Richard's field work](https://github.com/tsotchke/eshkol/pull/788)
+  and [algebraic AD](https://github.com/tsotchke/eshkol/pull/791) preserve exact
+  coefficients and reject unproved branches. (#837)
+- **Standing incremental circuits retain signed updates.** Add persistent DBSP
+  arrangements, simultaneous joins, keyed aggregates and a streaming
+  least-squares example with a strict dyadic binary64 reference. Contributions
+  from [circuits](https://github.com/tsotchke/eshkol/pull/789) and
+  [aggregates](https://github.com/tsotchke/eshkol/pull/790). (#837)
+
+- Begin v1.4-connection's managed-resource substrate with a hosted C API for
+  exclusive borrowing and exactly-once close attempts. Generation-tagged IDs
+  and per-borrow leases reject stale accesses; callbacks can re-enter without
+  holding the registry lock. Compiler-enforced ownership and public Scheme
+  resource integration remain planned work. (#836)
+- **Exact rational affine solves preserve complete solution families.** Add
+  `core.exact_linalg` support for rectangular, singular, and overdetermined
+  systems, returning a particular solution with a complete nullspace basis;
+  reject inconsistent or inexact inputs. ([#785](https://github.com/tsotchke/eshkol/pull/785))
+- **Rational PSD decisions return checkable certificates.** Add optional
+  `core.exact_psd` weighted Gram factors for positive semidefinite matrices and
+  explicit negative directions for indefinite matrices. ([#786](https://github.com/tsotchke/eshkol/pull/786))
+
+- **Sparse tensor snapshots share unchanged storage across versions.** Add
+  optional `core.dbsp.tensor_snapshot` with block-level copy-on-write updates,
+  historical reads, and matrix read views that reuse finite delta products.
+  ([#787](https://github.com/tsotchke/eshkol/pull/787))
+- **v1.4 evidence gates validate analytic, HTTP, and resource-limit results.** Add a JIT/AOT order-8 GUW oracle gate, bind HTTP loopback receipts to the registered source and fresh build evidence, make resource-limit enforcement fail closed when its VM test binary is unavailable, and read build fingerprints from CMake's configured source checkout.
+
+### Fixed
+
+- Native AOT and JIT reject foreign or unstamped stdlib artifacts before user
+  execution, including explicitly supplied objects and cached JIT objects.
+  Compiler-produced stdlib object and bitcode carry a matching release, object
+  ABI and source identity; a discovered mismatch is a hard error. (#837)
+
+- Initialize deferred tensor constructor cells before widening to derivative
+  carriers, avoiding reads of reused arena bytes during promotion. (#836)
+
+- VM numeric reader tensor literals preserve their native binary64 cell
+  exactness during construction and integer mutation, including large literals.
+  Ordinary and quoted vectors retain their exact integer values. (#836)
+
+- Native linking removes only scratch objects exclusively reserved by the
+  compiler. Caller objects, packaged stdlib objects and pre-existing files
+  with temporary-looking names survive successful and failed links. (#836)
+- Preserve R7RS inexactness when finite integral doubles, including positive
+  zero, round-trip through `number->string` and `string->number`.
+- **Static quantum circuits export a validated OpenQASM 3 subset.**
+  Add opt-in `core.quantum.circuit` with 25 standard gate kinds, measurement,
+  reset, barriers, explicit zero-state initialization and logical resource
+  counts. A portable AOT contract gate and optional independent OpenQASM/Qiskit
+  oracle cover all gate kinds and 100 deterministic generated circuits.
+  This module exports descriptions; it does not simulate or submit hardware jobs. (#872)
 
 - Windows in-process JIT regression probes with exact-output checks, native
   AOT controls, bounded subprocesses, and retained JSON evidence. Seven cases
@@ -62,8 +237,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- Propose ADR-0061 and add the standalone Verificatum R0 checker and replay for the Lean export of modus tollens. (#941)
-
 - Correct the Linux download instructions, native REPL command, RK4 accuracy
   description, and exact-rational power reference. Qualify AD overhead and
   arena-memory timing claims on the website. (#870)
@@ -71,6 +244,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the VM’s supported AD algorithms and operation limits. (#883, #899)
 
 ## [1.3.6-evolve] - 2026-10-15
+
+Published on 2026-10-19 ([release](https://github.com/tsotchke/eshkol/releases/tag/v1.3.6-evolve)).
+The preparation record below retains the intended date and source-stage contract.
 
 PREPARED FOR PUBLICATION. Intended release date: Thursday, October 15, 2026.
 The final measurement contract requires <!-- release-record:ctest -->CTest **823/823**<!-- /release-record --> and <!-- release-record:vm-parity -->VM parity differential **411/411**<!-- /release-record -->.

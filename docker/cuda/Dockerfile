@@ -11,7 +11,7 @@
 ARG CUDA_IMAGE=nvidia/cuda:12.4.1-devel-ubuntu22.04
 FROM ${CUDA_IMAGE}
 
-ARG VERSION=1.1.11
+ARG VERSION
 ARG LLVM_MAJOR=21
 # apt.llvm.org suite; must match the base image's Ubuntu release.
 ARG UBUNTU_CODENAME=jammy
@@ -45,9 +45,6 @@ RUN apt-get install -y \
     pkg-config \
     libssl-dev \
     libncurses-dev \
-    libpng-dev \
-    libjpeg-dev \
-    libwebp-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy source

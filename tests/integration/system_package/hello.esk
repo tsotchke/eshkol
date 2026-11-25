@@ -6,5 +6,13 @@
 ; cmake/FindEshkol.cmake's "Every program needs stdlib.o" note. A consumer
 ; project that only ever compiled explicit-main-style sources would not have
 ; caught the missing-stdlib.o link failure this fixture exists to pin.
+(require core.tls)
+(require core.capabilities)
+(if (tls-available?)
+    (begin
+      (capability-install-policy! '(network))
+      (let ((context (tls-client-context #f)))
+        (if (tls-error? context) (error "system package TLS context did not initialize"))
+        (tls-context-close context))))
 (display "system-package-integration-ok")
 (newline)

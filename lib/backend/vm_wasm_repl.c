@@ -39,10 +39,11 @@ void repl_reset(void) {
  *         session (initializing it on first use), printing output via the
  *         session's own output plumbing.
  * @return Always an empty string on success, or an error message if VM
- *         initialization failed.
+ *         initialization or source validation fails.
  */
 EMSCRIPTEN_KEEPALIVE
 const char* repl_eval(const char* source) {
+    if (!source) return "ERROR: source is required";
     if (!g_session) repl_init();
     if (!g_session) return "ERROR: VM init failed";
     repl_session_eval(g_session, source, 1);

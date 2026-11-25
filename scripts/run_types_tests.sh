@@ -73,8 +73,18 @@ for test_file in tests/types/*.esk; do
 
     # Clean up stale temp files before each test
     eshkol_test_reset_bin
+    EXPECTS_COMPILE_FAIL=0
+    if grep -q ";; EXPECT-COMPILE: fail" "$test_file"; then
+        EXPECTS_COMPILE_FAIL=1
+    fi
     # Try to compile
     if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
+        if [ $EXPECTS_COMPILE_FAIL -eq 1 ]; then
+            echo -e "${RED}❌ UNEXPECTED COMPILE PASS${NC}"
+            FAILED_TESTS+=("$test_name")
+            ((FAIL++)) || true
+            continue
+        fi
         # Compilation succeeded, try to run
         eshkol_require_output_file_path "$ESHKOL_TEST_OUT"
         if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
@@ -96,10 +106,15 @@ for test_file in tests/types/*.esk; do
             ((FAIL++)) || true
         fi
     else
-        echo -e "${RED}❌ COMPILE FAIL${NC}"
-        FAILED_TESTS+=("$test_name")
-        ((COMPILE_FAIL++)) || true
-        ((FAIL++)) || true
+        if [ $EXPECTS_COMPILE_FAIL -eq 1 ] && [ ! -e "$ESHKOL_TEST_BIN" ]; then
+            echo -e "${GREEN}✅ PASS (expected compile error)${NC}"
+            ((PASS++)) || true
+        else
+            echo -e "${RED}❌ COMPILE FAIL${NC}"
+            FAILED_TESTS+=("$test_name")
+            ((COMPILE_FAIL++)) || true
+            ((FAIL++)) || true
+        fi
     fi
 done
 

@@ -1,0 +1,40 @@
+{
+  "schema": "icc.research_method.v1",
+  "method": "pjrt-program-reuse",
+  "domain": "Identical StableHLO module, same selected PJRT client/device, three serial host-f64 executions",
+  "objective_metric": "pjrt_compile_calls_for_three_executions",
+  "objective_sense": "lower_is_better",
+  "baselines": [
+    {
+      "name": "eaa executeStableHLO convenience API",
+      "value": 3,
+      "citation": "eaa54ba3 lib/backend/xla/xla_runtime.cpp executeStableHLO calls PjrtClient::compile and destroyExecutable once per invocation; three invocations imply three compile calls",
+      "basis": "Source-derived operation count, not elapsed-time measurement"
+    }
+  ],
+  "decision_points": [
+    {
+      "name": "compiled executable lifetime",
+      "current_choice": "compile and destroy inside each convenience call",
+      "alternatives": [
+        {
+          "choice": "explicit typed RAII program holding its originating PJRT session; caller compiles once and executes three times",
+          "analytic_basis": "Move compile outside the three-iteration execution loop. Exactly one explicit compile before loop replaces three convenience calls; all three execute/transfer paths remain, no implicit cache or host fallback. Program destroys executable once after final use.",
+          "reported_effect": "Calculated compile call reduction only; hardware compile cost and net wall-time gain unmeasured",
+          "effect_direction": "improves",
+          "effect_metric": "pjrt_compile_calls_for_three_executions",
+          "predicted_delta": {
+            "value": -2,
+            "metric": "pjrt_compile_calls_for_three_executions",
+            "baseline": 3,
+            "baseline_ref": "source-derived eaa executeStableHLO compile once per call"
+          },
+          "transferability_note": "Authored decomposition; ICC ranks supplied mechanism, not independently derived speedup. Reuse valid only while module, client/session and device remain matching. Transfers/execution work unchanged. Real plugin/SDK/hardware confirmation unavailable.",
+          "unmeasured_precondition": "New typed reusable API not implemented yet. Preserve plugin/client/executable lifetime across runtime teardown/reinitialize; refuse wrong-owner execution.",
+          "falsifying_experiment": "Existing offline plugin-backed C++ wrapper control: three equal numerical executions with exactly one compile and one final executable destroy; baseline same three convenience executions compile3. Reject if any hidden recompilation, incorrect result, wrong-owner acceptance or teardown order failure. Counter receipt must distinguish offline control from physical device speed.",
+          "cost_class": "forward-pass-only"
+        }
+      ]
+    }
+  ]
+}

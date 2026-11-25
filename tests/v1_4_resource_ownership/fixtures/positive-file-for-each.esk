@@ -1,0 +1,4 @@
+;; for-each runs its procedure zero or more times; the procedure only uses the port.
+(define out (open-output-file "strict-each.txt"))
+(for-each (lambda (s) (write-string s out) (newline out)) (list "a" "b" "c"))
+(close-port out)

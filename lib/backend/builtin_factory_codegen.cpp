@@ -190,7 +190,7 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
         std::vector<Type*> strlen_args;
         strlen_args.push_back(PointerType::get(*context, 0));  // str
         FunctionType* strlen_type = FunctionType::get(
-            int64_type, strlen_args, false);
+            types->getSizeType(), strlen_args, false);
         Function* strlen_func = Function::Create(
             strlen_type, Function::ExternalLinkage, "strlen", module.get());
         function_table["strlen"] = strlen_func;
@@ -296,13 +296,17 @@ void EshkolLLVMCodeGen::createBuiltinFunctions() {
             unsetenv_type, Function::ExternalLinkage, eshkol::runtime::unsetenv_symbol, module.get());
         function_table["unsetenv"] = unsetenv_func;
 
-        // system: int system(const char* command)
+        // system: int eshkol_shell_command(const char* command) — the runtime
+        // entry point `(system cmd)` lowers to. It applies the "shell"
+        // capability gate and then calls the host command interpreter, so the
+        // gate holds for every backend from one place.
         std::vector<Type*> system_args;
         system_args.push_back(PointerType::get(*context, 0));  // command
         FunctionType* system_type = FunctionType::get(
             int32_type, system_args, false);
         Function* system_func = Function::Create(
-            system_type, Function::ExternalLinkage, "system", module.get());
+            system_type, Function::ExternalLinkage,
+            eshkol::runtime::shell_command_symbol, module.get());
         function_table["system"] = system_func;
 
         // usleep: int usleep(useconds_t usec) - sleep for microseconds

@@ -1,0 +1,3 @@
+(provide opener)
+;; A module exports a closure that captures a handle constructor.
+(define opener (lambda (path) (open-input-file path)))

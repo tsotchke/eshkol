@@ -7,6 +7,20 @@ constexpr size_t LIB_INIT_AST_CHUNK_SIZE = 4;
 constexpr size_t LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE = 4;
 }
 
+// Keep procedure-source construction in small functions on both executable
+// and library entry paths. Registration order matters for nested lambdas.
+void EshkolLLVMCodeGen::emitPendingLambdaRegistrations(Value* arena) {
+    auto& pending = eshkol::llvm_codegen_detail::pendingLambdaSExprs();
+    auto* init_type = FunctionType::get(void_type, {arena->getType()}, false);
+    for (size_t begin = 0; begin < pending.size(); begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE) {
+        size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, pending.size());
+        Function* chunk = createLibraryLambdaSExprChunkFunction(
+            init_type, begin / LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, begin, end);
+        builder->CreateCall(chunk, {arena});
+    }
+    pending.clear();
+}
+
 void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         using namespace eshkol::hott;
 
@@ -228,7 +242,9 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         // v1.2 batch 3
         function_return_types["process-setpgid"] = BuiltinTypes::Boolean;
         function_return_types["process-kill-tree"] = BuiltinTypes::Boolean;
-        function_return_types["process-spawn-pty"] = BuiltinTypes::Integer;
+        // (pid . master-fd) on success, -1 otherwise — the same shape on both
+        // engines, so the program owns the pseudo-terminal descriptor.
+        function_return_types["process-spawn-pty"] = BuiltinTypes::Value;
         function_return_types["process-read-nonblocking"] = BuiltinTypes::String;
         // v1.2 batch 4
         function_return_types["process-pid"] = BuiltinTypes::Integer;
@@ -288,6 +304,18 @@ void EshkolLLVMCodeGen::registerBuiltinReturnTypes() {
         function_return_types["event-loop-poll"] = BuiltinTypes::Value;
         function_return_types["event-loop-close"] = BuiltinTypes::Boolean;
         function_return_types["event-loop-backend"] = BuiltinTypes::String;
+        /* Stackful coroutines. Every result is a tagged value: resume and
+         * yield carry arbitrary values, status is a symbol, and the handle
+         * constructors share the event loop's integer-handle convention. */
+        function_return_types["make-coroutine"] = BuiltinTypes::Value;
+        function_return_types["coroutine-resume"] = BuiltinTypes::Value;
+        function_return_types["coroutine-raise"] = BuiltinTypes::Value;
+        function_return_types["coroutine-yield"] = BuiltinTypes::Value;
+        function_return_types["coroutine-status"] = BuiltinTypes::Value;
+        function_return_types["coroutine-release!"] = BuiltinTypes::Boolean;
+        function_return_types["current-coroutine"] = BuiltinTypes::Value;
+        function_return_types["coroutine?"] = BuiltinTypes::Boolean;
+        function_return_types["coroutine-stats"] = BuiltinTypes::Value;
         function_return_types["fd-write"] = BuiltinTypes::Integer;
         function_return_types["make-line-reader"] = BuiltinTypes::Integer;
         function_return_types["line-reader-poll"] = BuiltinTypes::String;
@@ -616,22 +644,7 @@ void EshkolLLVMCodeGen::createLibraryInitFunction(const eshkol_ast_t* asts, size
         eshkol_debug("Library init: initialized lambda registry");
 
         // Generate S-expressions for lambdas and register them
-        if (!eshkol::llvm_codegen_detail::pendingLambdaSExprs().empty()) {
-            std::vector<Function*> sexpr_chunks;
-            for (size_t begin = 0, chunk_index = 0;
-                 begin < eshkol::llvm_codegen_detail::pendingLambdaSExprs().size();
-                 begin += LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE, chunk_index++) {
-                size_t end = std::min(begin + LIB_INIT_LAMBDA_SEXPR_CHUNK_SIZE,
-                                      eshkol::llvm_codegen_detail::pendingLambdaSExprs().size());
-                sexpr_chunks.push_back(createLibraryLambdaSExprChunkFunction(
-                    init_type, chunk_index, begin, end));
-            }
-            for (Function* chunk_func : sexpr_chunks) {
-                builder->CreateCall(chunk_func, {arena_param});
-            }
-
-            eshkol::llvm_codegen_detail::pendingLambdaSExprs().clear();
-        }
+        emitPendingLambdaRegistrations(arena_param);
 
         // Return void
         builder->CreateRetVoid();

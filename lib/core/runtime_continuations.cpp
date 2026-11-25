@@ -9,7 +9,9 @@
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
 #include "../../inc/eshkol/eshkol.h"
+#include "../../inc/eshkol/core/coroutine.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <csetjmp>
@@ -28,8 +30,84 @@ extern "C" void __asan_unpoison_memory_region(void const volatile* addr, size_t 
 extern "C" void __asan_handle_no_return(void);
 #endif
 
-// Dynamic extent belongs to the executing thread, like its exception stack.
+/* A stack image spans every live frame between the capture point and the
+ * stack base, including the redzones the address sanitizer places around each
+ * frame's locals. Those bytes belong to the image exactly as the locals do, so
+ * under ASan the image is copied by an uninstrumented word loop; every other
+ * build uses memcpy. Semantics are identical either way. */
+#if defined(ESHKOL_CONT_ASAN)
+#  if defined(__clang__)
+#    define ESHKOL_CONT_NO_ASAN __attribute__((no_sanitize("address")))
+#  else
+#    define ESHKOL_CONT_NO_ASAN __attribute__((no_sanitize_address))
+#  endif
+ESHKOL_CONT_NO_ASAN
+static void copy_stack_image(void* dst, const void* src, size_t len) {
+    volatile unsigned char* d = (volatile unsigned char*)dst;
+    const volatile unsigned char* s = (const volatile unsigned char*)src;
+    size_t i = 0;
+    if ((((uintptr_t)d | (uintptr_t)s) & (sizeof(uintptr_t) - 1)) == 0) {
+        volatile uintptr_t* dw = (volatile uintptr_t*)d;
+        const volatile uintptr_t* sw = (const volatile uintptr_t*)s;
+        const size_t words = len / sizeof(uintptr_t);
+        for (size_t w = 0; w < words; ++w) dw[w] = sw[w];
+        i = words * sizeof(uintptr_t);
+    }
+    for (; i < len; ++i) d[i] = s[i];
+}
+#else
+static inline void copy_stack_image(void* dst, const void* src, size_t len) {
+    memcpy(dst, src, len);
+}
+#endif
+
+// Dynamic extent belongs to the executing context, like its exception stack:
+// the thread's own computation, or the coroutine running on it (the coroutine
+// runtime swaps this through eshkol_dynamic_wind_context_save/_load).
 thread_local eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
+
+// The algebraic-effect handler context (ADR-0045) is dynamic state of the
+// executing thread too. The runtime holds it, like the dynamic-wind chain and
+// the exception-handler chain, so a handler installed inside `with-region` is
+// referenced rather than copied out through the region store boundary (a
+// copy would separate the handler from the computation it handles). It is a
+// list of handler frames, innermost first; zero-initialised = '().
+thread_local eshkol_tagged_value_t g_effect_context = {};
+
+extern "C" void eshkol_effect_context_get(eshkol_tagged_value_t* out) {
+    if (out) *out = g_effect_context;
+}
+
+extern "C" void eshkol_effect_context_set(const eshkol_tagged_value_t* value) {
+    if (value) g_effect_context = *value;
+}
+
+// Id of the execution context running on this thread: 0 for the thread's own
+// stack, otherwise the running coroutine's. Stamped into every stack image so
+// a continuation is re-entered only on the stack it was captured from.
+static thread_local uint64_t t_exec_context_id = 0;
+
+// The dynamic state this file owns moves with the execution context: the
+// dynamic-wind chain, the context id and the effect-handler context. A
+// coroutine that suspends inside `handle` resumes with that handler
+// installed, and the context it switched to runs with its own handlers, never
+// the coroutine's (ADR-0030, ADR-0045). A fresh coroutine starts with no
+// handlers, as it starts with no winds.
+extern "C" void eshkol_dynamic_wind_context_save(eshkol_exec_context_t* ctx) {
+    ctx->wind_stack = g_dynamic_wind_stack;
+    ctx->context_id = t_exec_context_id;
+    ctx->effect_context = g_effect_context;
+}
+
+extern "C" void eshkol_dynamic_wind_context_load(const eshkol_exec_context_t* ctx) {
+    g_dynamic_wind_stack = (eshkol_dynamic_wind_entry_t*)ctx->wind_stack;
+    t_exec_context_id = ctx->context_id;
+    g_effect_context = ctx->effect_context;
+}
+
+extern "C" uint64_t eshkol_exec_context_current_id(void) {
+    return t_exec_context_id;
+}
 
 /* ── Stack-copying re-entrant continuations ──────────────────────────────────
  *
@@ -114,8 +192,14 @@ static uintptr_t eshkol_stack_base(void) {
  * so such a continuation is refused at invocation rather than admitted
  * without the check. Only 0 (no bracketed evaluation at all) is admitted
  * unconditionally. */
-/* Bytes reserved in front of a stack image for its capture header. Kept a
- * multiple of 16 so the image itself stays 16-byte aligned. */
+/* Bytes reserved in front of a stack image for its capture header: the host
+ * evaluation (8 bytes) and the owning execution context (8 bytes). Kept a
+ * multiple of 16 so the image itself stays 16-byte aligned.
+ *
+ * An image taken on a coroutine stack holds only that coroutine's frames, never
+ * a host frame, so it records host evaluation 0: it stays valid across
+ * top-level evaluations for as long as its coroutine lives. What it records
+ * instead is its owner, and it is re-entered only while that owner runs. */
 #define ESHKOL_IMAGE_HEADER 16u
 /* Extent id of an evaluation whose entry could not be recorded. */
 #define ESHKOL_EXTENT_UNRECORDED UINT64_MAX
@@ -170,6 +254,14 @@ uint64_t image_extent(const eshkol_continuation_state_t* state) {
     memcpy(&id, (const char*)state->saved_stack - ESHKOL_IMAGE_HEADER, sizeof(id));
     return id;
 }
+
+uint64_t image_owner(const eshkol_continuation_state_t* state) {
+    if (!state->saved_stack || !state->saved_len) return 0;
+    uint64_t id = 0;
+    memcpy(&id, (const char*)state->saved_stack - ESHKOL_IMAGE_HEADER + sizeof(uint64_t),
+           sizeof(id));
+    return id;
+}
 } // namespace
 
 extern "C" uint64_t eshkol_continuation_extent_enter(void* host_frame) {
@@ -197,9 +289,42 @@ extern "C" void eshkol_continuation_extent_leave(uint64_t id) {
     }
 }
 
+/**
+ * @brief Refuse a continuation whose stack image belongs to another execution
+ *        context.
+ *
+ * Restoring an image writes it back to the addresses it was copied from. An
+ * image taken on coroutine A names A's stack; restoring it while B (or the
+ * thread's own computation) runs would overwrite A's suspended frames and
+ * resume on a stack nothing is scheduled to own. The invocation raises a
+ * catchable condition in the invoking context instead, before any dynamic
+ * state is touched. Images taken on the thread's own stack (owner 0) are
+ * governed by the host-extent rule and the parallel boundary instead.
+ */
+/* Refuse a continuation invocation with a catchable condition. Does not
+ * return. Shared by the owner and host-extent admission checks. */
+[[noreturn]] static void refuse_continuation(const char* reason) {
+    eshkol_exception_t* exc = eshkol_make_exception_with_header(ESHKOL_EXCEPTION_ERROR, reason);
+    if (exc) eshkol_raise(exc);   /* does not return */
+    eshkol_error("%s (and the condition object could not be allocated)", reason);
+    exit(1);
+}
+
+extern "C" void eshkol_continuation_check_owner(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    const uint64_t owner = image_owner(state);
+    if (owner == 0 || owner == t_exec_context_id) return;
+    refuse_continuation(
+        "continuation cannot be resumed: it was captured inside a different "
+        "coroutine, and a continuation is resumed only on the coroutine whose "
+        "stack it captured");
+}
+
 extern "C" void eshkol_continuation_check_extent(void* state_void) {
     auto* state = (eshkol_continuation_state_t*)state_void;
     if (!state) return;
+    eshkol_continuation_check_owner(state);
     const uint64_t captured = image_extent(state);
     if (!captured) return;
     volatile char here = 0;
@@ -210,15 +335,10 @@ extern "C" void eshkol_continuation_check_extent(void* state_void) {
             if (st.entries[i].id == captured) return;
         }
     }
-    eshkol_exception_t* exc = eshkol_make_exception_with_header(
-        ESHKOL_EXCEPTION_ERROR,
+    refuse_continuation(
         "continuation cannot be resumed: it was captured during an earlier "
         "top-level evaluation that has already returned, and this host resumes "
         "a continuation only within the evaluation that captured it");
-    if (exc) eshkol_raise(exc);   /* does not return */
-    eshkol_error("continuation captured by a finished top-level evaluation was invoked, "
-                 "and the condition object could not be allocated");
-    exit(1);
 }
 
 /**
@@ -250,11 +370,14 @@ extern "C" void eshkol_continuation_capture_stack(void* arena_void, void* state_
                                                 len + ESHKOL_IMAGE_HEADER, 16);
     if (!block) return;                    /* escape-only rather than half-captured */
 
-    /* Header: the host evaluation this image belongs to (see above). */
-    const uint64_t extent = current_host_extent();
+    /* Header: the host evaluation and the execution context this image
+     * belongs to (see above). A coroutine image has no host frames. */
+    const uint64_t owner = t_exec_context_id;
+    const uint64_t extent = owner ? 0 : current_host_extent();
     memcpy(block, &extent, sizeof(extent));
+    memcpy(block + sizeof(extent), &owner, sizeof(owner));
     char* copy = block + ESHKOL_IMAGE_HEADER;
-    memcpy(copy, (const void*)lo, len);
+    copy_stack_image(copy, (const void*)lo, len);
     state->stack_lo = (void*)lo;
     state->stack_hi = (void*)base;
     state->saved_stack = copy;
@@ -301,11 +424,12 @@ static void resume_trampoline(eshkol_continuation_state_t* state) {
     __asan_handle_no_return();
 #endif
 
-    memcpy(state->stack_lo, state->saved_stack, (size_t)state->saved_len);
-    // Windows longjmp normally walks native unwind metadata. After memcpy,
-    // those intervening frames have been replaced by the captured stack and
-    // cannot be unwound again. Hosted targets can provide a context restore;
-    // the freestanding core retains its ordinary longjmp fallback.
+    copy_stack_image(state->stack_lo, state->saved_stack, (size_t)state->saved_len);
+    // Windows longjmp normally walks native unwind metadata. After the stack
+    // image is restored, those intervening frames have been replaced by the
+    // captured stack and cannot be unwound again. Hosted targets can provide
+    // a context restore; the freestanding core retains its ordinary longjmp
+    // fallback.
     if (g_continuation_restore_hook) {
         g_continuation_restore_hook(state->jmp_buf_ptr, 1);
         abort();  // A context-restoration hook must not return.
@@ -553,104 +677,91 @@ extern "C" void* eshkol_make_continuation_closure(void* arena_void, void* state_
     return (void*)closure;
 }
 
-// Call a 0-arg Eshkol closure from C runtime (for dynamic-wind thunks)
-// Handles closures with 0-4 captures by matching LLVM calling convention
-static eshkol_tagged_value_t call_thunk_closure(eshkol_closure_t* closure) {
-    if (!closure || !closure->func_ptr) {
-        eshkol_tagged_value_t null_val;
-        memset(&null_val, 0, sizeof(null_val));
-        null_val.type = ESHKOL_VALUE_NULL;
-        return null_val;
-    }
+// The wind entry is written by generated code's runtime calls and read here;
+// its field offsets are part of that contract on every 64-bit target.
+static_assert(sizeof(void*) != 8 ||
+              (offsetof(eshkol_dynamic_wind_entry_t, before) == 0 &&
+               offsetof(eshkol_dynamic_wind_entry_t, after) == 16 &&
+               offsetof(eshkol_dynamic_wind_entry_t, prev) == 32 &&
+               offsetof(eshkol_dynamic_wind_entry_t, native_after) == 40 &&
+               offsetof(eshkol_dynamic_wind_entry_t, native_after_arg) == 48 &&
+               offsetof(eshkol_dynamic_wind_entry_t, call_thunk) == 56 &&
+               sizeof(eshkol_dynamic_wind_entry_t) == 64),
+              "eshkol_dynamic_wind_entry_t layout: before, after, prev, "
+              "native_after, native_after_arg, call_thunk");
 
-    size_t num_captures = 0;
-    if (closure->env) {
-        num_captures = CLOSURE_ENV_GET_NUM_CAPTURES(closure->env->num_captures);
-    }
+// An entry that holds a procedure always holds the caller that enters it.
+// eshkol_push_dynamic_wind establishes this when the entry is created, so an
+// extent can never be left with an exit thunk the runtime is unable to run.
+[[noreturn]] static void wind_thunk_caller_missing(const char* where) {
+    eshkol_error("dynamic-wind: %s holds a procedure but no thunk caller; "
+                 "the entry cannot run its before/after thunk", where);
+    abort();
+}
 
+// Enter the `before` or `after` thunk of a dynamic-wind entry.
+//
+// The runtime does not call a procedure's code address itself: how a procedure
+// receives its captured variables, whether it takes a rest list, and what a
+// continuation or a parameter object does when applied are all decided by the
+// compiler. The entry therefore carries the thunk caller the compiler emitted
+// next to the `dynamic-wind` form, and every thunk -- whatever it captures --
+// is entered through it, exactly as on the normal-return path.
+static void call_wind_thunk(const eshkol_dynamic_wind_entry_t* entry,
+                            const eshkol_tagged_value_t* thunk) {
+    if (!entry || !thunk || thunk->type != ESHKOL_VALUE_CALLABLE) return;
+    if (!entry->call_thunk) wind_thunk_caller_missing("a wind entry");
     eshkol_tagged_value_t result;
     memset(&result, 0, sizeof(result));
     result.type = ESHKOL_VALUE_NULL;
-
-#if defined(__aarch64__) || defined(_M_ARM64)
-    // AArch64 returns this 16-byte aggregate in registers, so the thunk bridge
-    // must match the direct return ABI instead of passing a hidden result slot.
-    typedef eshkol_tagged_value_t (*fn0_t)(void);
-    typedef eshkol_tagged_value_t (*fn1_t)(void*);
-    typedef eshkol_tagged_value_t (*fn2_t)(void*, void*);
-    typedef eshkol_tagged_value_t (*fn3_t)(void*, void*, void*);
-    typedef eshkol_tagged_value_t (*fn4_t)(void*, void*, void*, void*);
-
-    switch (num_captures) {
-        case 0:
-            result = ((fn0_t)(uintptr_t)closure->func_ptr)();
-            break;
-        case 1:
-            result = ((fn1_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0]);
-            break;
-        case 2:
-            result = ((fn2_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1]);
-            break;
-        case 3:
-            result = ((fn3_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2]);
-            break;
-        case 4:
-            result = ((fn4_t)(uintptr_t)closure->func_ptr)(&closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2], &closure->env->captures[3]);
-            break;
-        default:
-            result = ((fn0_t)(uintptr_t)closure->func_ptr)();
-            break;
-    }
-#else
-    // The currently-supported x86/Windows thunk ABI uses a hidden return buffer,
-    // so the runtime bridge must pass the result slot first.
-    typedef void (*fn0_t)(eshkol_tagged_value_t*);
-    typedef void (*fn1_t)(eshkol_tagged_value_t*, void*);
-    typedef void (*fn2_t)(eshkol_tagged_value_t*, void*, void*);
-    typedef void (*fn3_t)(eshkol_tagged_value_t*, void*, void*, void*);
-    typedef void (*fn4_t)(eshkol_tagged_value_t*, void*, void*, void*, void*);
-
-    switch (num_captures) {
-        case 0:
-            ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
-            break;
-        case 1:
-            ((fn1_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0]);
-            break;
-        case 2:
-            ((fn2_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0], &closure->env->captures[1]);
-            break;
-        case 3:
-            ((fn3_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2]);
-            break;
-        case 4:
-            ((fn4_t)(uintptr_t)closure->func_ptr)(&result, &closure->env->captures[0], &closure->env->captures[1], &closure->env->captures[2], &closure->env->captures[3]);
-            break;
-        default:
-            ((fn0_t)(uintptr_t)closure->func_ptr)(&result);
-            break;
-    }
-#endif
-
-    return result;
+    entry->call_thunk(thunk, &result);
 }
 
-// Call a thunk stored as a tagged value (CALLABLE type)
-static void call_thunk_from_tagged(const eshkol_tagged_value_t* thunk) {
-    if (!thunk || thunk->type != ESHKOL_VALUE_CALLABLE) return;
-    eshkol_closure_t* closure = (eshkol_closure_t*)(uintptr_t)thunk->data.int_val;
-    call_thunk_closure(closure);
+// Run the exit action of one dynamic-wind entry.
+static void run_wind_after(eshkol_dynamic_wind_entry_t* entry) {
+    if (entry->native_after) {
+        void (*cleanup)(void*) = entry->native_after;
+        entry->native_after = nullptr;  // exactly once, even if the entry is re-entered
+        cleanup(entry->native_after_arg);
+        return;
+    }
+    call_wind_thunk(entry, &entry->after);
 }
 
 // Push a dynamic-wind entry onto the global stack
 extern "C" void eshkol_push_dynamic_wind(void* arena_void,
-    const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after) {
+    const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after,
+    eshkol_thunk_caller_t call_thunk) {
     arena_t* arena = (arena_t*)arena_void;
+    if (!call_thunk &&
+        ((before && before->type == ESHKOL_VALUE_CALLABLE) ||
+         (after && after->type == ESHKOL_VALUE_CALLABLE))) {
+        wind_thunk_caller_missing("eshkol_push_dynamic_wind");
+    }
     eshkol_dynamic_wind_entry_t* entry = (eshkol_dynamic_wind_entry_t*)
         arena_allocate_aligned(arena, sizeof(eshkol_dynamic_wind_entry_t), 8);
     if (!entry) return;
     entry->before = *before;
     entry->after = *after;
+    entry->native_after = nullptr;
+    entry->native_after_arg = nullptr;
+    entry->call_thunk = call_thunk;
+    entry->prev = g_dynamic_wind_stack;
+    g_dynamic_wind_stack = entry;
+}
+
+// Push a frame whose exit action is a native cleanup (borrow scopes).
+extern "C" void eshkol_push_dynamic_wind_cleanup(void* arena_void,
+    void (*cleanup)(void* arg), void* arg) {
+    arena_t* arena = (arena_t*)arena_void;
+    eshkol_dynamic_wind_entry_t* entry = (eshkol_dynamic_wind_entry_t*)
+        arena_allocate_aligned(arena, sizeof(eshkol_dynamic_wind_entry_t), 8);
+    if (!entry) return;
+    entry->before = eshkol_tagged_value_t{};
+    entry->after = eshkol_tagged_value_t{};
+    entry->native_after = cleanup;
+    entry->native_after_arg = arg;
+    entry->call_thunk = nullptr;
     entry->prev = g_dynamic_wind_stack;
     g_dynamic_wind_stack = entry;
 }
@@ -668,7 +779,7 @@ extern "C" void eshkol_unwind_dynamic_wind(void* saved_wind_mark) {
     while (g_dynamic_wind_stack != nullptr && g_dynamic_wind_stack != mark) {
         eshkol_dynamic_wind_entry_t* entry = g_dynamic_wind_stack;
         g_dynamic_wind_stack = entry->prev;
-        call_thunk_from_tagged(&entry->after);
+        run_wind_after(entry);
     }
 }
 
@@ -689,7 +800,7 @@ static void eshkol_wind_enter(eshkol_dynamic_wind_entry_t* target,
                               eshkol_dynamic_wind_entry_t* common) {
     if (!target || target == common) return;
     eshkol_wind_enter(target->prev, common);
-    call_thunk_from_tagged(&target->before);
+    call_wind_thunk(target, &target->before);
     g_dynamic_wind_stack = target;
 }
 
@@ -725,7 +836,7 @@ extern "C" void eshkol_reroot_dynamic_wind(void* target_void) {
     while (g_dynamic_wind_stack != common) {
         eshkol_dynamic_wind_entry_t* entry = g_dynamic_wind_stack;
         g_dynamic_wind_stack = entry->prev;
-        call_thunk_from_tagged(&entry->after);
+        run_wind_after(entry);
     }
     /* Enter: outermost `before` first. */
     eshkol_wind_enter(target, common);

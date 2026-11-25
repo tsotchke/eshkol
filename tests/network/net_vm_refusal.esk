@@ -1,0 +1,4 @@
+;; The bytecode VM refuses core.net explicitly instead of running sockets.
+(require core.net)
+(display (tcp-listen "127.0.0.1" 0))
+(newline)

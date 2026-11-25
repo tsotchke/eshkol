@@ -1,0 +1,15 @@
+return: 42
+identity-return: 7
+op: 50
+fun=tail-k: (5 5)
+deep: (a a a)
+forward: (outer e)
+clause-scope: (inner outer)
+abort: (aborted 1)
+abort-skips-return: 2
+commute-1: (1 y)
+commute-2: (1 y)
+k-returns: (clause (r 101))
+variadic: (got (1 2 3))
+first-class: (9 9)
+meta: (Ask (log-all) #t #f 1 -1)

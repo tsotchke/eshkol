@@ -6,7 +6,7 @@
 #
 # Usage: ./scripts/build-docker.sh [options]
 #   --platform PLAT   Target platform: linux/amd64 or linux/arm64
-#   --version VER     Version string (default: 1.0.0)
+#   --version VER     Version string (default: CMake project release)
 #   --output DIR      Output directory for artifacts
 #   --no-cache        Build without Docker cache
 #   --debug           Build debug instead of release
@@ -19,7 +19,6 @@ set -e
 
 # Defaults
 PLATFORM="linux/amd64"
-VERSION="1.0.0"
 OUTPUT_DIR="./dist"
 NO_CACHE=""
 BUILD_TYPE="release"
@@ -107,6 +106,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ -z "${VERSION+x}" ]; then
+    VERSION="$(python3 "$(dirname "$0")/release_target.py" --package-version)"
+fi
 validate_package_version "$VERSION"
 
 # Get project root

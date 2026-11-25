@@ -1,7 +1,7 @@
 /**
  * @file event_loop_internal.h
- * @brief Private contract between lib/core/event_loop.c and the one
- *        per-platform backend file CMake selects.
+ * @brief Private runtime-core contract for event_loop.c, resource_lease.c
+ *        maintenance accounting, and the selected per-platform backend.
  *
  * Not installed and not part of the public API — include
  * <eshkol/core/event_loop.h> instead.
@@ -35,16 +35,23 @@ typedef struct {
 } eshkol_event_reg_t;
 
 /**
- * @brief The loop. Transparent to the backend, opaque to everyone else.
+ * @brief The loop. Transparent inside the shared runtime core; opaque to SDK adapters.
  *
  * Mirrors the GPU backend's `EshkolGPUBuffer` convention: a shared struct
  * carrying a `backend_data` escape hatch rather than a vtable, because exactly
  * one backend is ever compiled in.
  */
 struct eshkol_event_loop {
+    int max_registrations;    /**< Public descriptor registration capacity. */
+    int wake_read, wake_write; /**< Internal wake pipe, outside public slots. */
+    void (*maintenance)(void *);
+    void *maintenance_data;
+    unsigned int managed_owners; /**< Live or unresolved managed owners; terminal tickets excluded. */
     int  max_events;          /**< Capacity for both registrations and results. */
     int  n_regs;              /**< Number of live entries in `regs`.            */
     int  last_os_error;       /**< errno / GetLastError from the last failure.  */
+    uintptr_t owner_thread; /**< Adopting thread token; no cross-thread I/O. */
+    unsigned int retain_count; /**< Scoped resources keep the loop alive. */
 
     eshkol_event_reg_t* regs; /**< malloc'd, `max_events` entries.              */
     eshkol_event_t*     out;  /**< malloc'd, `max_events` entries; poll output. */

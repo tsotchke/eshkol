@@ -1,0 +1,11 @@
+;;; The same for a pseudo-terminal child, for the half that is the runtime's:
+;;; the program's exit does not wait for it. The child itself is hung up when
+;;; the terminal's master descriptor goes away with the program, which is the
+;;; terminal's own behaviour and not something the runtime sends.
+(require stdlib)
+
+(define script (getenv "ESHKOL_EXIT_CHILD_SCRIPT"))
+(define handle (process-spawn-pty script))
+(display "spawned:")
+(display (if (pair? handle) "yes" "no"))
+(newline)

@@ -1,0 +1,64 @@
+schema = 1
+release = "Verificatum R0 / optimized BLC replay"
+r0_revision = "53a755e593a4be72e2787b0cea6b3b723c7d6e4b"
+blc_revision = "c12a0709b94bc010e1a327840b623df8f3be91b2"
+claim_scope = { theorem = "mt", format = "3.1.0", calculus = "restricted-dependent-pi", kind = "independent-executable-replay", universal_executable_soundness = false }
+eshkol_base = "6925e2f3154ba3b192e836fc1a05f473c9819bf7"
+lean = "4.35.0"
+lean_revision = "eb6cafb7290e8bd5f2937522d8d804f58f02bafc"
+node_observed = "22.23.2"
+reference = "con-ron from official Lean 4.35.0 Linux archive"
+checker_revision = "content-addressed by check, import.esk, kernel.esk and VM artifact entries"
+
+[premises]
+logical = ["An empty axiom allowlist for imported declarations", "False is the empty inductive in Prop with its validated single recursor", "Concrete successor universes, impredicative Pi into Prop; one symbolic level in the recursor schema"]
+conversion = ["binder-name-independent de Bruijn terms", "beta contraction", "delta unfolding of checked safe definitions", "structural congruence"]
+implementation = ["Eshkol interpreter in the pinned WASM bundle", "Node byte I/O, fatal UTF-8 decoding, numeric scalar transport, worker timeout and verdict serialization", "Eshkol NDJSON decoder, declaration admission, inference and target comparison"]
+environment = ["Host CPU, Node, system libraries and OS remain trusted", "No network-isolation claim"]
+coverage = ["Safe monomorphic definitions and theorems; scoped variables, sorts, constants, annotated lambda, Pi, application", "Pinned False package checked before admission, including unused recursor metadata", "Axioms refused, opaque declarations and general inductives unsupported", "No quotient, general universe conversion, recursor use, proof-irrelevance conversion, or full Lean compatibility"]
+refinement = ["Lean proofs concern a model with resolved constants, numeric universes, validated False and portable expanded targets", "Faithful import from bytes and execution of the Eshkol checker are outside those proofs", "Binder differential inputs use the pure annotated var/lam/app fragment with a fixed domain annotation", "No compiler refinement claim"]
+
+[proof_axioms]
+"Verificatum.Binders.erase_beta" = ["propext", "Quot.sound"]
+"Verificatum.Typing.check_sound" = ["propext"]
+"Verificatum.Typing.target_binding_sound" = ["propext"]
+
+[binder_corpus]
+cases = 1560
+original = 684
+exhaustive = 871
+named = 5
+sha256 = "97bf65fc95fd4c7fe5aa306b488660e4c45af3242a20397046c0b7d0ad9051be"
+domain = "Exhaustive subcorpus: all 1..4-node bodies in width 3 by all 1..3-node arguments in width 2; named cases include depth 24. Campaigns can overlap."
+
+[required_verdicts]
+"mt.ndjson/target" = "ACCEPT/checked"
+"mt-wrong-body.ndjson/target" = "REJECT/application-domain"
+"mt.ndjson/other" = "REJECT/target"
+"changed.ndjson/target" = "REJECT/target"
+"mt-other-recursor.ndjson/target" = "REJECT/declaration"
+"missing-rec.ndjson/target" = "REJECT/declaration"
+"axiom.ndjson/target" = "REJECT/axiom-policy"
+"opaque.ndjson/target" = "UNSUPPORTED/declaration"
+"alpha.ndjson/target" = "ACCEPT/checked"
+"astral.ndjson/target" = "ACCEPT/checked"
+"component.ndjson/target" = "REJECT/undeclared-constant"
+"duplicate.ndjson/target" = "ERROR/duplicate-json-key"
+"duplicate-index.ndjson/target" = "ERROR/duplicate-index"
+"bad-unicode.ndjson/target" = "ERROR/surrogate"
+"unknown.ndjson/target" = "UNSUPPORTED/format-version"
+"over-budget.ndjson/target" = "ERROR/byte-budget"
+
+[artifacts]
+"mt.ndjson" = "d4cb6b03bc24222a3c3c1608158da7aedbc466602d63bfee40ac31a41eb7d664"
+"mt-wrong-body.ndjson" = "f834bcebd6b66b0d4a6350b99b3d446dc619e154c0951bec44104462b1dd5b5d"
+"Target.lean" = "cf613cedb60e8a38c349ddc71a93b48b4252e2bb5e050291f610fa52840b121e"
+"import.esk" = "1c0eb5a351966304fd1bfa0f919795719f1f465af09df6b226801dacfb949a0a"
+"kernel.esk" = "12170c8816e9f92b656597a895305357aa5aebd620149f95a41c099f561c4ec8"
+"check" = "1ccb92ad834429aa54bf75da249543648b9541212ff6e84a3148b6f91e02c82f"
+"Binders.lean" = "91d562dda3f9bb297cf12cfa50fe7bec9ab0be386745dd71026e86bbbad368bc"
+"Typing.lean" = "2587483bce8dcd7fe2a9e46f972e77557ed998fa273d3146f3180e73a417d5c3"
+"binder-replay.cjs" = "724beae0626371048f74594c971b55653538789ef49d24163ac41be7c18b172f"
+"../../site/static/eshkol-vm.wasm" = "89c331d162c85ba785569684ec70b391e32f8a08eab8d4499b41fb53437628d0"
+"../../site/static/eshkol-vm.js" = "b5f1152fd6193d5ec9856b6e502558c38e53533f0397ad7403a7c19908678813"
+"../../lib/core/blc.esk" = "377fd102c5d5cac33007f310679c927868008dfd39c86f63dbd69278dfc36213"

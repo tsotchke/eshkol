@@ -1,18 +1,34 @@
+#include <iostream>
+#include <cstdio>
+#include <new>
 /*
  * Copyright (C) tsotchke
  *
  * SPDX-License-Identifier: MIT
  *
  */
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+#include <eshkol/frontend/incrementalize.h>
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+#include <eshkol/frontend/scalar_lowering.h>
+#endif
 #include <eshkol/eshkol.h>
 #include <eshkol/abi_fingerprint.h>
 #include <eshkol/logger.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/core/reader_limits.h>
+#include <eshkol/core/stack_guard.h>
 #include <eshkol/core/execution_profile.h>
 #include <eshkol/backend/vm.h>
 #include <eshkol/build_config.h>
 #include <eshkol/platform_runtime.h>
+#include <eshkol/module_resolver.h>
+#include <eshkol/backend/debug_artifact.h>
+#include <eshkol/stdlib_identity.h>
+#include <eshkol/strict_source_identity.h>
+#include <eshkol/frontend/ownership.h>
 #include <eshkol/pkg/subprocess.h>
 
 #include <eshkol/llvm_backend.h>
@@ -23,7 +39,10 @@
 #include "../lib/frontend/library_registry.h"
 
 #include <llvm/Config/llvm-config.h>
+#include <llvm/Support/Errc.h>
+#include <llvm/Support/ErrorHandling.h>
 #include <llvm/Support/SHA256.h>
+#include <llvm-c/Core.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -34,6 +53,7 @@
 #include <errno.h>
 #include <filesystem>
 #include <eshkol/backend/link_probe.h>
+#include <eshkol/driver_output_ownership.h>
 
 #include <fstream>
 #include <iterator>
@@ -53,10 +73,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <optional>
 #ifdef _WIN32
 #include <process.h>
 #else
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -265,7 +287,9 @@ static const std::string& resolveLlvmLibDir() {
                 return dir;
             }
         }
-        // Known prefixes as a last resort before the baked path.
+        // Known prefixes are a developer-build fallback. Release packages
+        // resolve LLVM beside the installed executable instead.
+#ifndef ESHKOL_RELOCATABLE_MACOS_TLS
         std::vector<std::string> candidates = {
             "/opt/homebrew/opt/llvm/lib",
             "/opt/homebrew/opt/llvm@" + major + "/lib",
@@ -279,6 +303,7 @@ static const std::string& resolveLlvmLibDir() {
                 return dir;
             }
         }
+#endif
         return std::string{};
     }();
     return cached;
@@ -289,6 +314,14 @@ static void append_host_llvm_link_args(std::vector<std::string>& link_args) {
 #if defined(_WIN32)
     append_space_separated_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
 #else
+#  if defined(__APPLE__)
+    if (std::string(ESHKOL_HOST_LLVM_LINK_ARGS).find(
+            "__ESHKOL_MACOS_LLVM_LINK__") != std::string::npos) {
+        const auto packaged_args = eshkol::platform::host_llvm_link_args();
+        link_args.insert(link_args.end(), packaged_args.begin(), packaged_args.end());
+        return;
+    }
+#  endif
     // Prepend a runtime-resolved LLVM -L (and rpath on ELF) so the libdir is
     // searched BEFORE the build-time absolute Cellar path baked into
     // ESHKOL_HOST_LLVM_LINK_ARGS. This makes a binary built on one host link
@@ -488,8 +521,14 @@ std::filesystem::path resolveSelfPath(const char* argv0) {
 // cache entry survive a stdlib change. Both sides therefore go through the one
 // shared, location-major root list.
 std::filesystem::path findBuildArtifact(const std::string& name) {
-    const auto resolved = eshkol::platform::resolve_install_artifact(
-        eshkol::platform::install_library_roots(), {name});
+    // stdlib.bc and stdlib.o take the stdlib resolution, so the key names the
+    // copy the loader admits; any other artifact has no identity to consult.
+    const bool is_stdlib_artifact = name == "stdlib.bc" || name == "stdlib.o";
+    const auto resolved = is_stdlib_artifact
+        ? eshkol::stdlib_identity::resolve_artifact(
+              eshkol::platform::install_library_roots(), name)
+        : eshkol::platform::resolve_install_artifact(
+              eshkol::platform::install_library_roots(), {name});
     return resolved.found() ? std::filesystem::path(resolved.path)
                             : std::filesystem::path{};
 }
@@ -620,6 +659,7 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     hashUpdate(hash, "no-stdlib", std::to_string(no_stdlib));
     hashUpdate(hash, "strict-types", std::to_string(strict_types));
     hashUpdate(hash, "unsafe", std::to_string(unsafe_mode));
+    hashUpdate(hash, "xla-enabled", std::to_string(eshkol_config_is_xla_enabled()));
     hashUpdate(hash, "opt-level", std::to_string(opt_level));
     hashUpdate(hash, "target-triple", target_triple ? target_triple : "");
     // Environment the compiler reads while it generates code. Each variable
@@ -629,6 +669,7 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     // and set-to-empty are distinct, as ESHKOL_TARGET_FEATURES treats them.
     // A compile-time environment read added to the backend belongs here.
     static constexpr const char* kCodegenEnvironment[] = {
+        "ESHKOL_XLA_VERBOSE",
         "ESHKOL_XLA_THRESHOLD",
         "ESHKOL_DENSE_TENSOR_AD_NODES",
         "ESHKOL_NO_ITER_SCOPE",
@@ -754,10 +795,24 @@ static std::string aotModuleCacheKey(const std::filesystem::path& source_path,
                                      const char* target_triple,
                                      const std::vector<char*>& linked_libs,
                                      const std::vector<char*>& lib_paths,
-                                     const std::vector<char*>& include_paths) {
-    return makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
-                               unsafe_mode, opt_level, target_triple,
-                               linked_libs, lib_paths, include_paths);
+                                     const std::vector<char*>& include_paths,
+                                     LLVMModuleRef generated_module) {
+    // IR is already generated before this lookup. Include its full semantics:
+    // the executable-cache inputs alone omit library mode, embedded stdlib
+    // identity, and other choices that change the compiled module. A separate
+    // schema also prevents reuse of entries made with the incomplete old key.
+    char* ir = LLVMPrintModuleToString(generated_module);
+    if (!ir) return {};
+    llvm::SHA256 hash;
+    hashUpdate(hash, "schema", "eshkol-aot-module-cache-v2-generated-ir");
+    hashUpdate(hash, "input-key",
+               makeJitRunCacheKey(source_path, self_path, no_stdlib, strict_types,
+                                  unsafe_mode, opt_level, target_triple,
+                                  linked_libs, lib_paths, include_paths));
+    // The IR is the final field; hash it directly without another large copy.
+    hash.update(llvm::StringRef(ir));
+    LLVMDisposeMessage(ir);
+    return sha256Hex(hash);
 }
 
 // `-r` runs a single file through the persistent AOT cache for speed. That is
@@ -1298,6 +1353,14 @@ static struct option long_options[] = {
     {"require-vm-entry-zero-arg", required_argument, nullptr, 263},
     {"features", no_argument, nullptr, 264},
     {"abi-fingerprint", no_argument, nullptr, 266},
+    {"embed-stdlib-identity", required_argument, nullptr, 267},
+    {"strict-resources", no_argument, nullptr, 268},
+    {"types", required_argument, nullptr, 269},
+    /* The one documented input-size cap and the code-nesting budget, shared
+     * with the bytecode VM and both readers (inc/eshkol/core/reader_limits.h).
+     * Data nesting has no limit and none is configurable. */
+    {"max-source-bytes", required_argument, nullptr, 270},
+    {"max-pass-depth", required_argument, nullptr, 271},
     {0, 0, 0, 0}
 };
 
@@ -1306,7 +1369,7 @@ static std::set<std::string> imported_files;
 
 // Set to track pre-compiled modules (when linking with .o files like stdlib.o)
 // When a module is in this set, process_requires() will skip loading it
-static std::set<std::string> precompiled_modules;
+static bool using_precompiled_stdlib = false;
 
 // ===== MODULE DEPENDENCY RESOLVER =====
 // Provides cycle detection and topological sorting for module loading
@@ -1476,401 +1539,143 @@ static ModuleSymbolTable g_symbol_table;
 
 // ===== END MODULE SYMBOL TABLE =====
 
-// ===== OWNERSHIP ANALYSIS =====
-// Compile-time tracking of owned values for OALR memory management
-
-class OwnershipAnalyzer {
-public:
-    // Ownership state for a variable
-    enum class State {
-        UNOWNED,    // Normal value, no ownership tracking
-        OWNED,      // Owned value, must be consumed before scope exit
-        MOVED,      // Has been moved, cannot be used
-        BORROWED    // Currently borrowed by a borrow expression
-    };
-
-    struct VariableInfo {
-        State state;
-        std::string defined_at;  // Location info for error messages
-        bool is_owned_binding;   // Was bound with (owned ...)
-    };
-
-    // Ownership scope (lexical block)
-    struct Scope {
-        std::map<std::string, VariableInfo> variables;
-        std::string name;  // For debugging
-        std::set<std::string> borrowed_vars;  // Variables currently borrowed in this scope
-    };
-
-    OwnershipAnalyzer() : has_errors_(false) {}
-
-    // Run analysis on all ASTs
-    bool analyze(const std::vector<eshkol_ast_t>& asts) {
-        has_errors_ = false;
-        errors_.clear();
-        scope_stack_.clear();
-
-        // Push global scope
-        pushScope("global");
-
-        for (const auto& ast : asts) {
-            analyzeAST(&ast);
-        }
-
-        // Check global scope exit
-        checkScopeExit();
-        popScope();
-
-        return !has_errors_;
-    }
-
-    // Get error messages
-    const std::vector<std::string>& getErrors() const { return errors_; }
-    bool hasErrors() const { return has_errors_; }
-
-    // Print all errors
-    void printErrors() const {
-        for (const auto& err : errors_) {
-            eshkol_error("%s", err.c_str());
-        }
-    }
-
-private:
-    std::vector<Scope> scope_stack_;
-    std::vector<std::string> errors_;
-    bool has_errors_;
-
-    struct WorkItem {
-        enum class Kind { AST, LET_BINDING, EXIT_SCOPE, UNBORROW };
-        Kind kind = Kind::AST;
-        const eshkol_ast_t* ast = nullptr;
-        const eshkol_operations_t* op = nullptr;
-        uint64_t index = 0;
-        std::string name;
-
-        static WorkItem astNode(const eshkol_ast_t* node) {
-            WorkItem item;
-            item.ast = node;
-            return item;
-        }
-        static WorkItem continuation(Kind kind, const eshkol_operations_t* op,
-                                     uint64_t index = 0) {
-            WorkItem item;
-            item.kind = kind;
-            item.op = op;
-            item.index = index;
-            return item;
-        }
-        static WorkItem unborrow(std::string name) {
-            WorkItem item;
-            item.kind = Kind::UNBORROW;
-            item.name = std::move(name);
-            return item;
-        }
-    };
-
-    void pushScope(const std::string& name = "") {
-        scope_stack_.push_back(Scope{{}, name, {}});
-    }
-
-    void popScope() {
-        if (!scope_stack_.empty()) {
-            scope_stack_.pop_back();
-        }
-    }
-
-    Scope& currentScope() {
-        return scope_stack_.back();
-    }
-
-    // Look up variable in all scopes
-    VariableInfo* lookupVariable(const std::string& name) {
-        for (auto it = scope_stack_.rbegin(); it != scope_stack_.rend(); ++it) {
-            auto var_it = it->variables.find(name);
-            if (var_it != it->variables.end()) {
-                return &var_it->second;
-            }
-        }
-        return nullptr;
-    }
-
-    // Check if variable is currently borrowed anywhere
-    bool isBorrowed(const std::string& name) {
-        for (const auto& scope : scope_stack_) {
-            if (scope.borrowed_vars.count(name) > 0) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void reportError(const std::string& msg) {
-        errors_.push_back(msg);
-        has_errors_ = true;
-    }
-
-    // Check scope exit for unconsumed owned values
-    void checkScopeExit() {
-        if (scope_stack_.empty()) return;
-
-        const auto& scope = currentScope();
-
-        // Global scope owned values don't require consumption (they live until program exit)
-        if (scope.name == "global") return;
-
-        for (const auto& [name, info] : scope.variables) {
-            if (info.state == State::OWNED && info.is_owned_binding) {
-                reportError("Owned value '" + name + "' not consumed before scope exit" +
-                           (info.defined_at.empty() ? "" : " (defined at " + info.defined_at + ")"));
-            }
-        }
-    }
-
-    // Get variable name from AST
-    std::string getVarName(const eshkol_ast_t* ast) {
-        if (ast && ast->type == ESHKOL_VAR && ast->variable.id) {
-            return ast->variable.id;
-        }
-        return "";
-    }
-
-    void analyzeAST(const eshkol_ast_t* ast) {
-        if (!ast) return;
-
-        // Heap-backed records preserve post-child actions without recursive calls.
-        std::vector<WorkItem> work;
-        work.push_back(WorkItem::astNode(ast));
-
-        while (!work.empty()) {
-            WorkItem item = std::move(work.back());
-            work.pop_back();
-
-            if (item.kind == WorkItem::Kind::EXIT_SCOPE) {
-                checkScopeExit();
-                popScope();
-                continue;
-            }
-            if (item.kind == WorkItem::Kind::UNBORROW) {
-                currentScope().borrowed_vars.erase(item.name);
-                continue;
-            }
-            if (item.kind == WorkItem::Kind::LET_BINDING) {
-                if (item.index == item.op->let_op.num_bindings) {
-                    work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, item.op));
-                    work.push_back(WorkItem::astNode(item.op->let_op.body));
-                    continue;
-                }
-                const eshkol_ast_t* binding = &item.op->let_op.bindings[item.index];
-                work.push_back(WorkItem::continuation(
-                    WorkItem::Kind::LET_BINDING, item.op, item.index + 1));
-                if (binding->type == ESHKOL_CONS) {
-                    std::string var_name = getVarName(binding->cons_cell.car);
-                    bool is_owned = transfersOwnership(binding->cons_cell.cdr);
-                    if (!var_name.empty()) {
-                        currentScope().variables[var_name] = {
-                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned
-                        };
-                    }
-                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
-                }
-                continue;
-            }
-
-            if (!item.ast) continue;
-            const eshkol_ast_t* node = item.ast;
-            switch (node->type) {
-                case ESHKOL_VAR: {
-                    std::string name = getVarName(node);
-                    if (!name.empty()) {
-                        VariableInfo* info = lookupVariable(name);
-                        if (info && info->state == State::MOVED) {
-                            reportError("Use of moved value '" + name + "'");
-                        }
-                    }
-                    break;
-                }
-
-                case ESHKOL_CONS:
-                    work.push_back(WorkItem::astNode(node->cons_cell.cdr));
-                    work.push_back(WorkItem::astNode(node->cons_cell.car));
-                    break;
-
-                case ESHKOL_OP: {
-                    const eshkol_operations_t* op = &node->operation;
-                    switch (op->op) {
-                        case ESHKOL_DEFINE_OP: {
-                            std::string name = op->define_op.name ? op->define_op.name : "";
-                            if (!name.empty()) {
-                                bool is_owned = transfersOwnership(op->define_op.value);
-                                currentScope().variables[name] = {
-                                    is_owned ? State::OWNED : State::UNOWNED, name, is_owned
-                                };
-                                work.push_back(WorkItem::astNode(op->define_op.value));
-                            }
-                            break;
-                        }
-
-                        case ESHKOL_OWNED_OP:
-                            work.push_back(WorkItem::astNode(op->owned_op.value));
-                            break;
-
-                        case ESHKOL_MOVE_OP: {
-                            std::string var_name = getVarName(op->move_op.value);
-                            if (!var_name.empty()) {
-                                VariableInfo* info = lookupVariable(var_name);
-                                if (info) {
-                                    if (info->state == State::MOVED) {
-                                        reportError("Double move of '" + var_name + "' - value already moved");
-                                    } else if (isBorrowed(var_name)) {
-                                        reportError("Cannot move '" + var_name + "' while it is borrowed");
-                                    } else {
-                                        info->state = State::MOVED;
-                                    }
-                                }
-                            } else {
-                                work.push_back(WorkItem::astNode(op->move_op.value));
-                            }
-                            break;
-                        }
-
-                        case ESHKOL_BORROW_OP: {
-                            std::string var_name = getVarName(op->borrow_op.value);
-                            if (!var_name.empty()) {
-                                VariableInfo* info = lookupVariable(var_name);
-                                if (info && info->state == State::MOVED) {
-                                    reportError("Cannot borrow moved value '" + var_name + "'");
-                                } else {
-                                    currentScope().borrowed_vars.insert(var_name);
-                                }
-                            }
-                            if (!var_name.empty()) work.push_back(WorkItem::unborrow(var_name));
-                            for (uint64_t i = op->borrow_op.num_body_exprs; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->borrow_op.body[i - 1]));
-                            }
-                            break;
-                        }
-
-                        case ESHKOL_LET_OP:
-                        case ESHKOL_LET_STAR_OP:
-                            pushScope("let");
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::LET_BINDING, op));
-                            break;
-
-                        case ESHKOL_LETREC_OP: {
-                            pushScope("letrec");
-                            for (uint64_t i = 0; i < op->let_op.num_bindings; ++i) {
-                                const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                                if (binding->type == ESHKOL_CONS) {
-                                    std::string var_name = getVarName(binding->cons_cell.car);
-                                    bool is_owned = transfersOwnership(binding->cons_cell.cdr);
-                                    if (!var_name.empty()) {
-                                        currentScope().variables[var_name] = {
-                                            is_owned ? State::OWNED : State::UNOWNED, "", is_owned
-                                        };
-                                    }
-                                }
-                            }
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
-                            work.push_back(WorkItem::astNode(op->let_op.body));
-                            for (uint64_t i = op->let_op.num_bindings; i > 0; --i) {
-                                const eshkol_ast_t* binding = &op->let_op.bindings[i - 1];
-                                if (binding->type == ESHKOL_CONS) {
-                                    work.push_back(WorkItem::astNode(binding->cons_cell.cdr));
-                                }
-                            }
-                            break;
-                        }
-
-                        case ESHKOL_LAMBDA_OP:
-                            pushScope("lambda");
-                            for (uint64_t i = 0; i < op->lambda_op.num_params; ++i) {
-                                std::string param_name = getVarName(&op->lambda_op.parameters[i]);
-                                if (!param_name.empty()) {
-                                    currentScope().variables[param_name] = {State::UNOWNED, "", false};
-                                }
-                            }
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
-                            work.push_back(WorkItem::astNode(op->lambda_op.body));
-                            break;
-
-                        case ESHKOL_CALL_OP:
-                        case ESHKOL_IF_OP:
-                        case ESHKOL_COND_OP:
-                        case ESHKOL_AND_OP:
-                        case ESHKOL_OR_OP:
-                            for (uint64_t i = op->call_op.num_vars; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->call_op.variables[i - 1]));
-                            }
-                            work.push_back(WorkItem::astNode(op->call_op.func));
-                            break;
-
-                        case ESHKOL_SEQUENCE_OP:
-                            for (uint64_t i = op->sequence_op.num_expressions; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->sequence_op.expressions[i - 1]));
-                            }
-                            break;
-
-                        case ESHKOL_WITH_REGION_OP:
-                            pushScope("region");
-                            work.push_back(WorkItem::continuation(WorkItem::Kind::EXIT_SCOPE, op));
-                            for (uint64_t i = op->with_region_op.num_body_exprs; i > 0; --i) {
-                                work.push_back(WorkItem::astNode(&op->with_region_op.body[i - 1]));
-                            }
-                            break;
-
-                        case ESHKOL_SHARED_OP:
-                            work.push_back(WorkItem::astNode(op->shared_op.value));
-                            break;
-
-                        case ESHKOL_WEAK_REF_OP:
-                            work.push_back(WorkItem::astNode(op->weak_ref_op.value));
-                            break;
-
-                        case ESHKOL_SET_OP:
-                            work.push_back(WorkItem::astNode(op->set_op.value));
-                            break;
-
-                        case ESHKOL_QUOTE_OP:
-                        default:
-                            break;
-                    }
-                    break;
-                }
-
-                default:
-                    break;
-            }
-        }
-    }
-
-    // Check if expression is (owned ...)
-    bool isOwnedExpr(const eshkol_ast_t* ast) {
-        if (!ast) return false;
-        if (ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_OWNED_OP) {
-            return true;
-        }
-        return false;
-    }
-
-    // Check if expression is (move ...)
-    bool isMoveExpr(const eshkol_ast_t* ast) {
-        if (!ast) return false;
-        if (ast->type == ESHKOL_OP && ast->operation.op == ESHKOL_MOVE_OP) {
-            return true;
-        }
-        return false;
-    }
-
-    // Check if expression transfers ownership (owned or move)
-    bool transfersOwnership(const eshkol_ast_t* ast) {
-        return isOwnedExpr(ast) || isMoveExpr(ast);
-    }
+// A resource contract is trusted only for the exact stock SDK module source
+// reviewed for it (inc/eshkol/strict_resource_contracts.h). Export names alone
+// are not a contract: an edited module could keep its surface while changing
+// acquisition/close behavior.
+namespace sr = eshkol::strict_resources;
+static eshkol::ResourceContracts g_resource_contracts;
+static std::map<std::string, const sr::ModuleContract*> g_verified_resource_modules;
+static bool g_verified_stdlib_artifact_identity = false;
+// Identity-verified stdlib definitions of operations that have a builtin
+// handle contract (for-each, map, ...): the stdlib body is the reviewed one.
+static const std::set<std::string> kStrictStdlibScalarPrimitives = {
+    "inexact->exact", "make-rational"
 };
+static size_t g_module_ast_prefix_count = 0;
+static bool g_capture_strict_source_identity = false;
+static std::map<std::string, std::string> g_strict_source_identities;
+static bool g_strict_source_identity_conflict = false;
 
-// Global ownership analyzer
-static OwnershipAnalyzer g_ownership_analyzer;
+static std::string strictSourceDigest(const std::string& bytes) {
+    llvm::SHA256 hash;
+    hash.update(llvm::StringRef(bytes.data(), bytes.size()));
+    return sha256Hex(hash);
+}
 
-// ===== END OWNERSHIP ANALYSIS =====
+static void recordStrictSourceIdentity(const std::filesystem::path& path) {
+    if (!g_capture_strict_source_identity) return;
+    std::error_code ec;
+    const std::string canonical = std::filesystem::weakly_canonical(path, ec).string();
+    const std::string key = canonical.empty() ? path.string() : canonical;
+    const std::string bytes = readFileBytes(path);
+    const std::string digest = strictSourceDigest(bytes);
+    if (!eshkol::strict_source_identity::remember(g_strict_source_identities, key, digest))
+        g_strict_source_identity_conflict = true;
+}
+
+static void recordStrictSourceIdentityBytes(const std::filesystem::path& path,
+                                            const std::string& bytes) {
+    if (!g_capture_strict_source_identity) return;
+    std::error_code ec;
+    const std::string canonical = std::filesystem::weakly_canonical(path, ec).string();
+    const std::string key = canonical.empty() ? path.string() : canonical;
+    const std::string digest = strictSourceDigest(bytes);
+    if (!eshkol::strict_source_identity::remember(g_strict_source_identities, key, digest))
+        g_strict_source_identity_conflict = true;
+}
+
+static bool strictSourceIdentitiesUnchanged(std::string* changed_path = nullptr) {
+    if (g_strict_source_identity_conflict) {
+        if (changed_path) *changed_path = "source parsed with multiple contents";
+        return false;
+    }
+    return eshkol::strict_source_identity::unchanged(g_strict_source_identities,
+        [](const std::string& path) { return strictSourceDigest(readFileBytes(path)); },
+        changed_path);
+}
+
+static bool hasVerifiedResourceModuleIdentity(const sr::ModuleContract& contract,
+                                              const std::string& module_path,
+                                              const std::set<std::string>& exports) {
+    std::set<std::string> names;
+    for (size_t i = 0; i < contract.count; ++i) names.insert(contract.contracts[i].name);
+    if (exports != names) return false;
+    if (g_capture_strict_source_identity) {
+        std::error_code ec;
+        const std::string canonical = std::filesystem::weakly_canonical(module_path, ec).string();
+        const std::string key = canonical.empty() ? module_path : canonical;
+        auto parsed_source = g_strict_source_identities.find(key);
+        return parsed_source != g_strict_source_identities.end() &&
+               parsed_source->second == contract.sha256;
+    }
+    const std::string bytes = readFileBytes(module_path);
+    if (bytes.empty()) return false;
+    llvm::SHA256 hash;
+    hash.update(llvm::StringRef(bytes.data(), bytes.size()));
+    return sha256Hex(hash) == contract.sha256;
+}
+
+// Returns the module's contract when its source matches the reviewed pin.
+// A module that has a contract but does not match is recorded as untrusted;
+// the strict profile then refuses the program instead of guessing.
+static const sr::ModuleContract* recordResourceModuleIdentity(const std::string& module_name,
+                                                              const std::string& module_path,
+                                                              const std::set<std::string>& exports) {
+    const sr::ModuleContract* contract = sr::findModuleContract(module_name.c_str());
+    if (!contract) return nullptr;
+    if (hasVerifiedResourceModuleIdentity(*contract, module_path, exports)) {
+        g_verified_resource_modules[module_name] = contract;
+        g_resource_contracts.untrusted_modules.erase(module_name);
+        return contract;
+    }
+    g_verified_resource_modules.erase(module_name);
+    g_resource_contracts.untrusted_modules.insert(module_name);
+    return nullptr;
+}
+
+// A precompiled object can execute a body different from the parsed
+// declarations, so source identity cannot authenticate its runtime effects.
+static void recordOpaqueResourceModule(const std::string& module_name) {
+    if (!sr::findModuleContract(module_name.c_str())) return;
+    g_verified_resource_modules.erase(module_name);
+    g_resource_contracts.untrusted_modules.insert(module_name);
+}
+
+static void recordTrustedResourceDefinitions(const std::vector<eshkol_ast_t>& module_asts,
+                                             const sr::ModuleContract& contract) {
+    for (const auto& ast : module_asts) {
+        if (ast.type != ESHKOL_OP || ast.operation.op != ESHKOL_DEFINE_OP ||
+            !ast.operation.define_op.name) continue;
+        const sr::Contract* entry = sr::findContract(contract.contracts, contract.count,
+                                                     ast.operation.define_op.name);
+        if (entry) g_resource_contracts.definitions[ast.operation.define_op.name] = entry;
+    }
+}
+
+static void recordVerifiedStdlibScalarPrimitives(
+    const std::vector<eshkol_ast_t>& module_asts) {
+    if (!g_verified_stdlib_artifact_identity) return;
+    for (const auto& ast : module_asts) {
+        if (ast.type != ESHKOL_OP) continue;
+        const char* name = nullptr;
+        if (ast.operation.op == ESHKOL_DEFINE_OP)
+            name = ast.operation.define_op.name;
+        else if (ast.operation.op == ESHKOL_EXTERN_OP)
+            name = ast.operation.extern_op.name;
+        if (name && kStrictStdlibScalarPrimitives.count(name))
+            g_resource_contracts.scalar_primitives.insert(name);
+        if (const sr::Contract* contract = sr::findBuiltinContract(name))
+            g_resource_contracts.stdlib_contracts[name] = contract;
+    }
+}
+
+static bool checkStrictOwnership(const std::vector<eshkol_ast_t>& forms) {
+    auto errors = eshkol::checkOwnership(forms, &g_resource_contracts);
+    if (!errors.empty()) eshkol_error("Ownership analysis failed:");
+    for (const auto& error : errors) eshkol_error("%s", error.c_str());
+    return errors.empty();
+}
 
 // ===== ESCAPE ANALYSIS =====
 // Compile-time tracking of value flow for allocation decisions
@@ -2378,11 +2183,6 @@ static EscapeAnalyzer g_escape_analyzer;
 // Forward declarations
 static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode);
 static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t>& asts, bool debug_mode);
-// Module tree root (lib/), resolved once by find_lib_dir() before any of the
-// require/import/load lanes run. Declared here because process_imports() —
-// which sits above find_lib_dir() — now shares the one resolver and so needs
-// the same lib_dir tier every other lane passes.
-static std::string g_lib_dir;
 static bool g_source_parse_failed = false;
 // ESH-0361: a required module that does not resolve on ANY search path is a hard
 // dependency failure. process_requires() prints "Module '…' not found" and used
@@ -2450,8 +2250,19 @@ static void print_help(int x = 0)
         "\t    this build was compiled against, as KEY=VALUE lines, then exit.\n"
         "\t--debug-info:[-g] = Emit DWARF debug info (enables lldb/gdb source-level debugging).\n"
         "\t--optimize:[-O] N = Set LLVM optimization level (0=none, 1=basic, 2=full, 3=aggressive).\n"
-        "\t--strict-types = Type errors are fatal (default: gradual/warnings).\n"
-        "\t--unsafe = Skip all type checks.\n\n"
+        "\t--types=gradual|strict = Type-checking mode (default gradual: type mismatches warn).\n"
+        "\t                 strict makes every type error fatal. Dependent-type obligations\n"
+        "\t                 and linearity violations are fatal in both modes.\n"
+        "\t--strict-types = Same as --types=strict.\n"
+        "\t--max-source-bytes=N = Largest source text accepted, in bytes (N, NK,\n"
+        "\t                 NM, NG; default 64M, 0 removes the cap). Also\n"
+        "\t                 ESHKOL_MAX_SOURCE_BYTES. Nesting DEPTH has no limit:\n"
+        "\t                 both readers carry nesting on their own heap stack.\n"
+        "\t--max-pass-depth=N = Levels of CODE nesting the compiler will descend\n"
+        "\t                 (default 1000, 0 removes the count). Also\n"
+        "\t                 ESHKOL_MAX_PASS_DEPTH. Quoted DATA is unaffected.\n"
+        "\t--strict-resources = Check core.net resource ownership in the supported native fragment.\n"
+        "\t--unsafe = Skip static type and ownership checks for legacy programs.\n\n"
         "Eshkol Compiler v%s\n",
         ESHKOL_VER
     );
@@ -2466,7 +2277,6 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
         eshkol_error("File not found: %s", filepath.c_str());
         return;
     }
-
     // Normalize path to prevent duplicate imports
     std::string normalized_path = std::filesystem::canonical(filepath).string();
 
@@ -2479,11 +2289,14 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
     }
     imported_files.insert(normalized_path);
 
-    std::ifstream read_file(filepath);
+    std::ifstream read_file(filepath, std::ios::binary);
     if (!read_file.is_open()) {
         eshkol_error("Failed to open file: %s", filepath.c_str());
         return;
     }
+    const std::string source_bytes(
+        (std::istreambuf_iterator<char>(read_file)), std::istreambuf_iterator<char>());
+    recordStrictSourceIdentityBytes(filepath, source_bytes);
 
     if (debug_mode) {
         eshkol_info("Loading file: %s", filepath.c_str());
@@ -2495,7 +2308,8 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
     eshkol_set_parse_source_context(filepath.c_str());
     eshkol_reset_parse_line_counter();
 
-    eshkol_ast_t ast = eshkol_parse_next_ast(read_file);
+    std::istringstream parse_stream(source_bytes);
+    eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(parse_stream);
     while (ast.type != ESHKOL_INVALID) {
         if (debug_mode) {
             printf("\n=== AST Debug Output ===\n");
@@ -2503,13 +2317,13 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
             printf("========================\n\n");
         }
         asts.push_back(ast);
-        ast = eshkol_parse_next_ast(read_file);
+        ast = eshkol_parse_next_ast_from_stream(parse_stream);
     }
     /* ESHKOL_INVALID is also the parser's EOF sentinel.  If the stream has
      * not reached EOF, however, the invalid node is a reported syntax error
      * and compilation must not silently truncate the file and return success
      * (notably for the R7RS `syntax-error` form). */
-    if (!read_file.eof()) g_source_parse_failed = true;
+    if (!parse_stream.eof()) g_source_parse_failed = true;
 
     read_file.close();
 }
@@ -2537,9 +2351,10 @@ static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& 
             // through the same resolver rather than a private base_dir-only
             // rule that answered differently from every other lane.
             std::string resolved = eshkol::platform::resolve_module_source_path(
-                import_path, base_dir, g_lib_dir);
+                import_path, base_dir);
             if (resolved.empty()) {
                 eshkol_error("Import file not found: %s", import_path.c_str());
+                g_module_load_failed = true;
                 continue;
             }
             std::filesystem::path resolved_path(resolved);
@@ -2617,16 +2432,90 @@ static void report_artifact_resolution(
 }
 
 // Find the pre-compiled stdlib.o file
-static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
+static llvm::Error validate_stdlib_object_file(const std::string& path)
 {
-    const auto resolved = eshkol::platform::resolve_install_artifact(
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer) {
+        return llvm::createStringError(
+            llvm::errc::io_error,
+            "rejecting precompiled stdlib object %s: could not read object (%s)",
+            path.c_str(), buffer.getError().message().c_str());
+    }
+    std::string found_identity;
+    if (!eshkol::stdlib_identity::matches_object(
+            (*buffer)->getMemBufferRef(), found_identity)) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib object %s: %s; expected %s. Rebuild or reinstall the matching Eshkol package",
+            path.c_str(), found_identity.c_str(),
+            static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+    }
+    g_verified_stdlib_artifact_identity = true;
+    return llvm::Error::success();
+}
+
+static llvm::Expected<std::string> find_stdlib_object(
+    const std::vector<char*>& lib_paths)
+{
+    const auto resolved = eshkol::stdlib_identity::resolve_artifact(
         eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
-        {"stdlib.o"});
-    // stdlib.o carries no build stamp (it is generated Eshkol code, not a
-    // stamped archive), so only its origin is reportable.
+        "stdlib.o");
+    if (resolved.found()) {
+        if (llvm::Error error = validate_stdlib_object_file(resolved.path))
+            return error;
+    }
+    // Origin is still useful after identity validation; foreign artifacts are
+    // rejected above before they can enter the link command.
     report_artifact_resolution("precompiled stdlib object", resolved,
                                /*verify_version=*/false);
     return resolved.path;
+}
+
+static llvm::Error validate_stdlib_bitcode_file(const std::string& path)
+{
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer) {
+        return llvm::createStringError(
+            buffer.getError(), "rejecting precompiled stdlib bitcode %s: cannot read",
+            path.c_str());
+    }
+    llvm::LLVMContext context;
+    auto module = llvm::parseBitcodeFile((*buffer)->getMemBufferRef(), context);
+    if (!module) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib bitcode %s: cannot parse (%s)",
+            path.c_str(), llvm::toString(module.takeError()).c_str());
+    }
+    std::string found_identity;
+    if (!eshkol::stdlib_identity::matches_module(**module, found_identity)) {
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "rejecting precompiled stdlib bitcode %s: %s; expected %s",
+            path.c_str(), found_identity.c_str(), static_cast<const char*>(ESHKOL_STDLIB_IDENTITY_SYMBOL));
+    }
+    g_verified_stdlib_artifact_identity = true;
+    return llvm::Error::success();
+}
+
+static llvm::Error validate_resolved_stdlib_artifacts(
+    const std::vector<char*>& lib_paths)
+{
+    const auto roots = eshkol::platform::install_library_roots(
+        explicit_library_dirs(lib_paths));
+    const auto bitcode = eshkol::stdlib_identity::resolve_artifact(
+        roots, "stdlib.bc");
+    if (bitcode.found()) {
+        if (llvm::Error error = validate_stdlib_bitcode_file(bitcode.path))
+            return error;
+    }
+    const auto object = eshkol::stdlib_identity::resolve_artifact(
+        roots, "stdlib.o");
+    if (object.found()) {
+        if (llvm::Error error = validate_stdlib_object_file(object.path))
+            return error;
+    }
+    return llvm::Error::success();
 }
 
 // Find the runtime library. Prefer the split runtime archive; fall back to the
@@ -2709,17 +2598,15 @@ static std::string shared_library_output_path(const char* requested_output,
     return parent.empty() ? name : (parent / name).generic_string();
 }
 
-// Check if any AST contains a require for stdlib or core.* modules.
-// Used to decide whether stdlib.o needs to be auto-linked: any core.*
-// require pulls in symbols whose bodies live in stdlib.o, same as an
-// explicit `(require stdlib)` would.
+// An explicitly required installed module can itself require the precompiled
+// stdlib. Make the object available to that module's dependencies.
 static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
 {
     for (const auto& ast : asts) {
         if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
                 std::string module_name = ast.operation.require_op.module_names[i];
-                if (module_name == "stdlib" || module_name.find("core.") == 0) {
+                if (eshkol_stdlib_module_path(module_name.c_str())) {
                     return true;
                 }
             }
@@ -2752,8 +2639,8 @@ static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& a
     for (const auto& ast : asts) {
         if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
-                std::string module_name = ast.operation.require_op.module_names[i];
-                if (module_name == "stdlib") {
+                const char* path = eshkol_stdlib_module_path(ast.operation.require_op.module_names[i]);
+                if (path && std::string_view(path) == "stdlib.esk") {
                     return true;
                 }
             }
@@ -2779,46 +2666,15 @@ static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& a
 // silently dropped its agent-FFI link requirement, producing an executable with
 // unresolved qllm_process_* / eshkol_sqlite_* symbols.
 
-// Find the library base directory (lib/) that holds the module sources.
-//
-// Executable-relative before cwd: stdlib + core.* belong to the Eshkol
-// install, not to the cwd. A downstream project (run from its own cwd) may
-// have its OWN lib/ that would otherwise shadow Eshkol's — which breaks stdlib
-// submodule discovery (collect_all_submodules parses <lib>/stdlib.esk), so
-// e.g. (require core.manifold) is not recognised as precompiled and AOT tries
-// to source-resolve it and fails. That makes the -r run-cache fall back to the
-// in-process JIT every run. install_module_roots() encodes that order (and
-// puts $ESHKOL_LIB_DIR ahead of it, and the system prefixes last).
-//
-// The selection itself lives in platform::module_source_root() so the
-// in-process JIT cannot drift from it; only the user-facing note about where
-// the tree came from is the driver's business.
-static std::string find_lib_dir()
-{
-    const auto root = eshkol::platform::module_source_root();
-    if (root.origin == eshkol::platform::InstallOrigin::NotFound) {
-        return {};
-    }
-
-    std::error_code ec;
-    if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
-        eshkol::platform::ResolvedInstallArtifact resolved{
-            root.path.string(), root.origin, root.path};
-        report_artifact_resolution("module source tree", resolved,
-                                   /*verify_version=*/false);
-    }
-    return root.path.string();
-}
-
 // Resolve a module name / path literal to a source file.
 //
 // Thin forwarder onto platform::resolve_module_source_path(), which is the
 // single authority shared with the in-process JIT. The AOT lane and the JIT
 // lane used to carry separate copies of the search order and disagreed about
 // what a relative `(load "…")` means — see the header for the full contract.
-static std::string resolve_module_path(const std::string& module_name, const std::string& base_dir, const std::string& lib_dir)
+static std::string resolve_module_path(const std::string& module_name, const std::string& base_dir)
 {
-    return eshkol::platform::resolve_module_source_path(module_name, base_dir, lib_dir);
+    return eshkol::platform::resolve_module_source_path(module_name, base_dir);
 }
 
 // Is `module_name` an agent.* module whose native symbols actually live in
@@ -2933,7 +2789,7 @@ static bool fileTextRequiresAgentFfi(const std::string& text,
                     tok.pop_back();
                 if (tok.empty()) continue;
                 if (agent_module_needs_ffi_archive(tok)) return true;
-                std::string mp = resolve_module_path(tok, base_dir, g_lib_dir);
+                std::string mp = resolve_module_path(tok, base_dir);
                 if (!mp.empty() && agent_module_path_needs_ffi_archive(mp))
                     return true;
             }
@@ -2966,23 +2822,8 @@ static void collectTransitiveSources(
     out[canon] = text;  // record bytes (empty string keeps "seen" marker)
     if (text.empty()) return;
 
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     std::string base_dir = path.parent_path().string();
     if (base_dir.empty()) base_dir = ".";
-
-    // Resolve a referenced module/path against the referring file's directory,
-    // then the -I include paths, then resolve_module_path's own search order
-    // (cwd, $ESHKOL_PATH, lib dir).
-    auto resolve_ref = [&](const std::string& ref) -> std::string {
-        std::string mp = resolve_module_path(ref, base_dir, g_lib_dir);
-        if (!mp.empty()) return mp;
-        for (char* inc : include_paths) {
-            if (!inc || !*inc) continue;
-            mp = resolve_module_path(ref, inc, g_lib_dir);
-            if (!mp.empty()) return mp;
-        }
-        return "";
-    };
 
     static const char* kForms[] = {"(load", "(import", "(require"};
     for (const char* form : kForms) {
@@ -3005,7 +2846,7 @@ static void collectTransitiveSources(
                 while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
                     tok.pop_back();
                 if (tok.empty()) continue;
-                std::string mp = resolve_ref(tok);
+                std::string mp = resolve_module_path(tok, base_dir);
                 if (!mp.empty())
                     collectTransitiveSources(mp, include_paths, out);
             }
@@ -3042,7 +2883,6 @@ static bool transitiveClosureRequiresAgentFfi(
     const std::filesystem::path& entry_source,
     const std::vector<char*>& include_paths)
 {
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     std::map<std::string, std::string> sources;  // canonical path -> bytes
     collectTransitiveSources(entry_source, include_paths, sources);
     for (const auto& entry : sources) {
@@ -3079,20 +2919,8 @@ static void collectTransitiveSourcePaths(
     std::string text = readFileBytes(path);
     if (text.empty()) return;
 
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     std::string base_dir = path.parent_path().string();
     if (base_dir.empty()) base_dir = ".";
-
-    auto resolve_ref = [&](const std::string& ref) -> std::string {
-        std::string mp = resolve_module_path(ref, base_dir, g_lib_dir);
-        if (!mp.empty()) return mp;
-        for (char* inc : include_paths) {
-            if (!inc || !*inc) continue;
-            mp = resolve_module_path(ref, inc, g_lib_dir);
-            if (!mp.empty()) return mp;
-        }
-        return "";
-    };
 
     static const char* kForms[] = {"(load", "(import", "(require"};
     for (const char* form : kForms) {
@@ -3115,7 +2943,7 @@ static void collectTransitiveSourcePaths(
                 while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
                     tok.pop_back();
                 if (tok.empty()) continue;
-                std::string mp = resolve_ref(tok);
+                std::string mp = resolve_module_path(tok, base_dir);
                 if (!mp.empty())
                     collectTransitiveSourcePaths(mp, include_paths, order, seen);
             }
@@ -3184,39 +3012,6 @@ static bool writeDepfile(const std::string& depfile_path,
         return false;
     }
     return true;
-}
-
-// Recursively discover all modules that a library requires.
-// Used to mark all sub-modules of a pre-compiled library as pre-compiled.
-// NOTE: Does NOT use load_file_asts to avoid polluting imported_files.
-static void collect_all_submodules(const std::string& module_name,
-                                   std::set<std::string>& out,
-                                   const std::string& lib_dir) {
-    if (out.count(module_name)) return;  // already visited
-    out.insert(module_name);
-
-    // Find and parse the module source to discover its requires
-    std::string module_path = resolve_module_path(module_name, ".", lib_dir);
-    if (module_path.empty()) return;
-
-    // Parse directly — do NOT use load_file_asts (it tracks imported_files
-    // and would prevent process_requires from loading these modules later)
-    std::ifstream file(module_path);
-    if (!file.is_open()) return;
-
-    eshkol_set_parse_source_context(module_path.c_str());
-    eshkol_reset_parse_line_counter();
-    eshkol_ast_t ast = eshkol_parse_next_ast(file);
-    while (ast.type != ESHKOL_INVALID) {
-        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
-            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
-                std::string sub = ast.operation.require_op.module_names[i];
-                collect_all_submodules(sub, out, lib_dir);
-            }
-        }
-        eshkol_set_parse_source_context(module_path.c_str());
-        ast = eshkol_parse_next_ast(file);
-    }
 }
 
 // ===== SYMBOL VISIBILITY HELPERS =====
@@ -3327,7 +3122,8 @@ static uint64_t resolve_unit_libraries_in_require(eshkol_ast_t& require_ast)
     for (uint64_t i = 0; i < require_op.num_modules; i++) {
         const char* raw_name = require_op.module_names[i];
         const std::set<std::string>* unit_exports =
-            raw_name ? eshkol::library_registry::exports(raw_name) : nullptr;
+            raw_name && !eshkol_stdlib_module_path(raw_name)
+                ? eshkol::library_registry::exports(raw_name) : nullptr;
 
         if (unit_exports) {
             // Record the surface so a later duplicate import of the same
@@ -3389,10 +3185,47 @@ static void resolve_unit_libraries_in_form(eshkol_ast_t& form)
 static void update_ast_references(eshkol_ast_t* ast,
                                   const std::map<std::string, std::string>& rename_map);
 
-// Update references in an AST node recursively
-static void update_ast_references(eshkol_ast_t* ast,
-                                  const std::map<std::string, std::string>& rename_map) {
-    if (!ast) return;
+// Renaming carries a SCOPED rename map at each level (a binder shadows the
+// names below it), so this walk stays recursive while the readers do not.  It
+// therefore states its own budget: it consults the shared pass-depth budget
+// and the native stack headroom at every level and reports an ordinary
+// diagnostic instead of descending further.  Reading, and quoted data, have no
+// depth limit at all (inc/eshkol/core/reader_limits.h).
+static size_t g_update_ast_references_depth = 0;
+static bool   g_update_ast_references_reported = false;
+
+static bool update_ast_references_within_budget() {
+    const size_t budget = eshkol_reader_max_pass_depth();
+    const bool over_budget = (budget != 0 && g_update_ast_references_depth >= budget);
+    if (!over_budget && eshkol_stack_headroom_ok()) return true;
+    if (!g_update_ast_references_reported) {
+        g_update_ast_references_reported = true;
+        char message[320];
+        eshkol_reader_depth_message("renaming references in a form",
+                                    budget != 0 ? budget : g_update_ast_references_depth,
+                                    message, sizeof(message));
+        eshkol_error("%s", message);
+    }
+    return false;
+}
+
+namespace {
+struct UpdateAstReferencesDepth {
+    UpdateAstReferencesDepth() { ++g_update_ast_references_depth; }
+    ~UpdateAstReferencesDepth() { --g_update_ast_references_depth; }
+};
+}  // namespace
+
+// One node's worth of reference updating.  Children that inherit the SAME
+// rename map are handed to the caller's worklist rather than descended into,
+// so a chain of calls, a sequence or a quoted datum -- which is where nesting
+// actually gets deep -- costs one worklist entry per level and no native stack
+// at all.  Only a child that needs a SCOPED map (a definition's body, a
+// lambda's body, a let's bindings and body: a binder shadows the names below
+// it) is descended into, and that nesting is lexical.
+static void update_ast_references_node(eshkol_ast_t* ast,
+                                       const std::map<std::string, std::string>& rename_map,
+                                       std::vector<eshkol_ast_t*>& pending) {
 
     switch (ast->type) {
         case ESHKOL_VAR: {
@@ -3411,10 +3244,10 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_COND_OP:  // cond uses call_op structure
                 case ESHKOL_IF_OP:    // if uses call_op structure
                     if (ast->operation.call_op.func) {
-                        update_ast_references(ast->operation.call_op.func, rename_map);
+                        pending.push_back(ast->operation.call_op.func);
                     }
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                        pending.push_back(&ast->operation.call_op.variables[i]);
                     }
                     break;
 
@@ -3422,7 +3255,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_OR_OP:
                     // NOTE: AND_OP/OR_OP use sequence_op structure, NOT call_op!
                     for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
-                        update_ast_references(&ast->operation.sequence_op.expressions[i], rename_map);
+                        pending.push_back(&ast->operation.sequence_op.expressions[i]);
                     }
                     break;
 
@@ -3509,9 +3342,9 @@ static void update_ast_references(eshkol_ast_t* ast,
                         for (uint64_t i = 0; i < let.num_bindings; ++i) {
                             eshkol_ast_t* binding = &let.bindings[i];
                             if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
-                                update_ast_references(binding->cons_cell.cdr, rename_map);
+                                pending.push_back(binding->cons_cell.cdr);
                             } else {
-                                update_ast_references(binding, rename_map);
+                                pending.push_back(binding);
                             }
                             erase_binding_name(body_renames, *binding);
                         }
@@ -3523,7 +3356,7 @@ static void update_ast_references(eshkol_ast_t* ast,
 
                 case ESHKOL_SEQUENCE_OP:
                     for (uint64_t i = 0; i < ast->operation.sequence_op.num_expressions; i++) {
-                        update_ast_references(&ast->operation.sequence_op.expressions[i], rename_map);
+                        pending.push_back(&ast->operation.sequence_op.expressions[i]);
                     }
                     break;
 
@@ -3535,88 +3368,88 @@ static void update_ast_references(eshkol_ast_t* ast,
                             ast->operation.set_op.name = eshkol_ast_string_copy(it->second);
                         }
                     }
-                    update_ast_references(ast->operation.set_op.value, rename_map);
+                    pending.push_back(ast->operation.set_op.value);
                     break;
 
                 // Calculus operations - function + point (or expression)
                 case ESHKOL_GRADIENT_OP:
                     if (ast->operation.gradient_op.function) {
-                        update_ast_references(ast->operation.gradient_op.function, rename_map);
+                        pending.push_back(ast->operation.gradient_op.function);
                     }
                     if (ast->operation.gradient_op.point) {
-                        update_ast_references(ast->operation.gradient_op.point, rename_map);
+                        pending.push_back(ast->operation.gradient_op.point);
                     }
                     break;
 
                 case ESHKOL_DERIVATIVE_OP:
                     if (ast->operation.derivative_op.function) {
-                        update_ast_references(ast->operation.derivative_op.function, rename_map);
+                        pending.push_back(ast->operation.derivative_op.function);
                     }
                     if (ast->operation.derivative_op.point) {
-                        update_ast_references(ast->operation.derivative_op.point, rename_map);
+                        pending.push_back(ast->operation.derivative_op.point);
                     }
                     break;
 
                 case ESHKOL_DIRECTIONAL_DERIV_OP:
                     if (ast->operation.directional_deriv_op.function) {
-                        update_ast_references(ast->operation.directional_deriv_op.function, rename_map);
+                        pending.push_back(ast->operation.directional_deriv_op.function);
                     }
                     if (ast->operation.directional_deriv_op.point) {
-                        update_ast_references(ast->operation.directional_deriv_op.point, rename_map);
+                        pending.push_back(ast->operation.directional_deriv_op.point);
                     }
                     if (ast->operation.directional_deriv_op.direction) {
-                        update_ast_references(ast->operation.directional_deriv_op.direction, rename_map);
+                        pending.push_back(ast->operation.directional_deriv_op.direction);
                     }
                     break;
 
                 case ESHKOL_JACOBIAN_OP:
                     if (ast->operation.jacobian_op.function) {
-                        update_ast_references(ast->operation.jacobian_op.function, rename_map);
+                        pending.push_back(ast->operation.jacobian_op.function);
                     }
                     if (ast->operation.jacobian_op.point) {
-                        update_ast_references(ast->operation.jacobian_op.point, rename_map);
+                        pending.push_back(ast->operation.jacobian_op.point);
                     }
                     break;
 
                 case ESHKOL_HESSIAN_OP:
                     if (ast->operation.hessian_op.function) {
-                        update_ast_references(ast->operation.hessian_op.function, rename_map);
+                        pending.push_back(ast->operation.hessian_op.function);
                     }
                     if (ast->operation.hessian_op.point) {
-                        update_ast_references(ast->operation.hessian_op.point, rename_map);
+                        pending.push_back(ast->operation.hessian_op.point);
                     }
                     break;
 
                 case ESHKOL_DIVERGENCE_OP:
                     if (ast->operation.divergence_op.function) {
-                        update_ast_references(ast->operation.divergence_op.function, rename_map);
+                        pending.push_back(ast->operation.divergence_op.function);
                     }
                     if (ast->operation.divergence_op.point) {
-                        update_ast_references(ast->operation.divergence_op.point, rename_map);
+                        pending.push_back(ast->operation.divergence_op.point);
                     }
                     break;
 
                 case ESHKOL_CURL_OP:
                     if (ast->operation.curl_op.function) {
-                        update_ast_references(ast->operation.curl_op.function, rename_map);
+                        pending.push_back(ast->operation.curl_op.function);
                     }
                     if (ast->operation.curl_op.point) {
-                        update_ast_references(ast->operation.curl_op.point, rename_map);
+                        pending.push_back(ast->operation.curl_op.point);
                     }
                     break;
 
                 case ESHKOL_LAPLACIAN_OP:
                     if (ast->operation.laplacian_op.function) {
-                        update_ast_references(ast->operation.laplacian_op.function, rename_map);
+                        pending.push_back(ast->operation.laplacian_op.function);
                     }
                     if (ast->operation.laplacian_op.point) {
-                        update_ast_references(ast->operation.laplacian_op.point, rename_map);
+                        pending.push_back(ast->operation.laplacian_op.point);
                     }
                     break;
 
                 case ESHKOL_DIFF_OP:
                     if (ast->operation.diff_op.expression) {
-                        update_ast_references(ast->operation.diff_op.expression, rename_map);
+                        pending.push_back(ast->operation.diff_op.expression);
                     }
                     break;
 
@@ -3629,10 +3462,10 @@ static void update_ast_references(eshkol_ast_t* ast,
                 case ESHKOL_UNQUOTE_OP:
                 case ESHKOL_UNQUOTE_SPLICING_OP:
                     if (ast->operation.call_op.func) {
-                        update_ast_references(ast->operation.call_op.func, rename_map);
+                        pending.push_back(ast->operation.call_op.func);
                     }
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                        pending.push_back(&ast->operation.call_op.variables[i]);
                     }
                     break;
 
@@ -3643,63 +3476,63 @@ static void update_ast_references(eshkol_ast_t* ast,
                 // Control flow operations
                 case ESHKOL_DYNAMIC_WIND_OP:
                     if (ast->operation.dynamic_wind_op.before) {
-                        update_ast_references(ast->operation.dynamic_wind_op.before, rename_map);
+                        pending.push_back(ast->operation.dynamic_wind_op.before);
                     }
                     if (ast->operation.dynamic_wind_op.thunk) {
-                        update_ast_references(ast->operation.dynamic_wind_op.thunk, rename_map);
+                        pending.push_back(ast->operation.dynamic_wind_op.thunk);
                     }
                     if (ast->operation.dynamic_wind_op.after) {
-                        update_ast_references(ast->operation.dynamic_wind_op.after, rename_map);
+                        pending.push_back(ast->operation.dynamic_wind_op.after);
                     }
                     break;
 
                 case ESHKOL_CALL_CC_OP:
                     if (ast->operation.call_cc_op.proc) {
-                        update_ast_references(ast->operation.call_cc_op.proc, rename_map);
+                        pending.push_back(ast->operation.call_cc_op.proc);
                     }
                     break;
 
                 case ESHKOL_GUARD_OP: {
                     for (uint64_t i = 0; i < ast->operation.guard_op.num_body_exprs; i++) {
-                        update_ast_references(&ast->operation.guard_op.body[i], rename_map);
+                        pending.push_back(&ast->operation.guard_op.body[i]);
                     }
                     for (uint64_t i = 0; i < ast->operation.guard_op.num_clauses; i++) {
-                        update_ast_references(&ast->operation.guard_op.clauses[i], rename_map);
+                        pending.push_back(&ast->operation.guard_op.clauses[i]);
                     }
                     break;
                 }
 
                 case ESHKOL_RAISE_OP:
                     if (ast->operation.raise_op.exception) {
-                        update_ast_references(ast->operation.raise_op.exception, rename_map);
+                        pending.push_back(ast->operation.raise_op.exception);
                     }
                     break;
 
                 case ESHKOL_VALUES_OP:
                     for (uint64_t i = 0; i < ast->operation.values_op.num_values; i++) {
-                        update_ast_references(&ast->operation.values_op.expressions[i], rename_map);
+                        pending.push_back(&ast->operation.values_op.expressions[i]);
                     }
                     break;
 
                 case ESHKOL_CALL_WITH_VALUES_OP:
                     if (ast->operation.call_with_values_op.producer) {
-                        update_ast_references(ast->operation.call_with_values_op.producer, rename_map);
+                        pending.push_back(ast->operation.call_with_values_op.producer);
                     }
                     if (ast->operation.call_with_values_op.consumer) {
-                        update_ast_references(ast->operation.call_with_values_op.consumer, rename_map);
+                        pending.push_back(ast->operation.call_with_values_op.consumer);
                     }
                     break;
 
                 case ESHKOL_MATCH_OP: {
                     if (ast->operation.match_op.expr) {
-                        update_ast_references(ast->operation.match_op.expr, rename_map);
+                        pending.push_back(ast->operation.match_op.expr);
                     }
                     for (uint64_t i = 0; i < ast->operation.match_op.num_clauses; i++) {
                         if (ast->operation.match_op.clauses[i].guard) {
-                            update_ast_references(ast->operation.match_op.clauses[i].guard, rename_map);
+                            pending.push_back(ast->operation.match_op.clauses[i].guard);
                         }
                         if (ast->operation.match_op.clauses[i].body) {
-                            update_ast_references(ast->operation.match_op.clauses[i].body, rename_map);
+                            pending.push_back(ast->operation.match_op.clauses[i].body);
                         }
                     }
                     break;
@@ -3708,34 +3541,34 @@ static void update_ast_references(eshkol_ast_t* ast,
                 // Memory management operations - FIXED: with_region_op.body is an array
                 case ESHKOL_WITH_REGION_OP:
                     for (uint64_t i = 0; i < ast->operation.with_region_op.num_body_exprs; i++) {
-                        update_ast_references(&ast->operation.with_region_op.body[i], rename_map);
+                        pending.push_back(&ast->operation.with_region_op.body[i]);
                     }
                     break;
 
                 case ESHKOL_OWNED_OP:
-                    update_ast_references(ast->operation.owned_op.value, rename_map);
+                    pending.push_back(ast->operation.owned_op.value);
                     break;
 
                 case ESHKOL_MOVE_OP:
-                    update_ast_references(ast->operation.move_op.value, rename_map);
+                    pending.push_back(ast->operation.move_op.value);
                     break;
 
                 // FIXED: borrow_op.body is an array
                 case ESHKOL_BORROW_OP:
                     if (ast->operation.borrow_op.value) {
-                        update_ast_references(ast->operation.borrow_op.value, rename_map);
+                        pending.push_back(ast->operation.borrow_op.value);
                     }
                     for (uint64_t i = 0; i < ast->operation.borrow_op.num_body_exprs; i++) {
-                        update_ast_references(&ast->operation.borrow_op.body[i], rename_map);
+                        pending.push_back(&ast->operation.borrow_op.body[i]);
                     }
                     break;
 
                 case ESHKOL_SHARED_OP:
-                    update_ast_references(ast->operation.shared_op.value, rename_map);
+                    pending.push_back(ast->operation.shared_op.value);
                     break;
 
                 case ESHKOL_WEAK_REF_OP:
-                    update_ast_references(ast->operation.weak_ref_op.value, rename_map);
+                    pending.push_back(ast->operation.weak_ref_op.value);
                     break;
 
                 // Logic/consciousness operations use call_op structure
@@ -3780,7 +3613,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                     // codegen as direct function calls with the same arg
                     // shape as ESHKOL_CALL_OP.
                     for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                        update_ast_references(&ast->operation.call_op.variables[i], rename_map);
+                        pending.push_back(&ast->operation.call_op.variables[i]);
                     }
                     break;
 
@@ -3793,7 +3626,7 @@ static void update_ast_references(eshkol_ast_t* ast,
                     // private-extern-bearing module under process_requires +
                     // rename_private_symbols.
                     for (uint64_t i = 0; i < ast->operation.extern_op.num_params; i++) {
-                        update_ast_references(&ast->operation.extern_op.parameters[i], rename_map);
+                        pending.push_back(&ast->operation.extern_op.parameters[i]);
                     }
                     break;
 
@@ -3807,16 +3640,35 @@ static void update_ast_references(eshkol_ast_t* ast,
         case ESHKOL_CONS:
             // Traverse cons cells
             if (ast->cons_cell.car) {
-                update_ast_references(ast->cons_cell.car, rename_map);
+                pending.push_back(ast->cons_cell.car);
             }
             if (ast->cons_cell.cdr) {
-                update_ast_references(ast->cons_cell.cdr, rename_map);
+                pending.push_back(ast->cons_cell.cdr);
             }
             break;
 
         default:
+
+
             // Literals, etc. - no update needed
             break;
+    }
+}
+
+// Update references throughout an AST.  Same-scope children are drained from
+// an explicit worklist; scoped children re-enter here with their own map, and
+// that lexical nesting is what the budget above governs.
+static void update_ast_references(eshkol_ast_t* ast,
+                                  const std::map<std::string, std::string>& rename_map) {
+    if (!ast) return;
+    if (!update_ast_references_within_budget()) return;
+    UpdateAstReferencesDepth depth_level;
+    std::vector<eshkol_ast_t*> pending;
+    pending.push_back(ast);
+    while (!pending.empty()) {
+        eshkol_ast_t* node = pending.back();
+        pending.pop_back();
+        if (node) update_ast_references_node(node, rename_map, pending);
     }
 }
 
@@ -3870,9 +3722,6 @@ static void rename_private_symbols(std::vector<eshkol_ast_t>& asts,
 // Process require statements (new module system)
 static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode)
 {
-    if (g_lib_dir.empty()) {
-        g_lib_dir = find_lib_dir();
-    }
 
     flatten_top_level_sequences(asts);
 
@@ -3899,22 +3748,21 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                 std::string module_name = ast.operation.require_op.module_names[i];
 
                 // Check if this module is pre-compiled (e.g., from stdlib.o)
-                bool is_precompiled = precompiled_modules.count(module_name) > 0;
-
-                // All sub-modules of pre-compiled libraries are already in
-                // precompiled_modules (populated by collect_all_submodules),
-                // so the direct lookup above is sufficient.
+                bool is_precompiled = using_precompiled_stdlib &&
+                                      eshkol_module_is_precompiled(module_name.c_str());
 
                 if (is_precompiled) {
                     // For pre-compiled modules, we parse to get function declarations
                     // but strip the bodies. The actual code comes from the .o file.
-                    std::string module_path = resolve_module_path(module_name, base_dir, g_lib_dir);
+                    std::string module_path = resolve_module_path(module_name, base_dir);
                     if (module_path.empty()) {
                         if (debug_mode) {
-                            eshkol_warn("Pre-compiled module %s source not found - skipping declarations", module_name.c_str());
+                            eshkol_info("Using precompiled module %s without source declarations",
+                                        module_name.c_str());
                         }
                         continue;
                     }
+                    recordStrictSourceIdentity(module_path);
 
                     if (debug_mode) {
                         eshkol_info("Module %s is pre-compiled - loading declarations from %s", module_name.c_str(), module_path.c_str());
@@ -3928,8 +3776,18 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         continue;
                     }
 
+                    // These name pointers originate in declarations belonging
+                    // to the identity-validated precompiled stdlib closure.
+                    // Only the closed scalar-primitive allowlist may use this
+                    // provenance to avoid a false UNKNOWN effect summary.
+                    recordVerifiedStdlibScalarPrimitives(module_asts);
+
                     // Collect module exports BEFORE processing requires (process_requires may modify ASTs)
                     std::set<std::string> module_exports = collect_module_exports(module_asts);
+                    // A precompiled object can execute a body different from
+                    // the parsed declarations, so source identity cannot
+                    // authenticate its runtime effects.
+                    recordOpaqueResourceModule(module_name);
                     std::set<std::string> module_defined_symbols = collect_defined_symbols(module_asts);
                     std::set<std::string> r7rs_alias_sources =
                         module_exports.empty() ? module_defined_symbols : module_exports;
@@ -3998,7 +3856,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     continue;
                 }
 
-                std::string module_path = resolve_module_path(module_name, base_dir, g_lib_dir);
+                std::string module_path = resolve_module_path(module_name, base_dir);
 
                 if (module_path.empty()) {
                     uint32_t defined_at = 0;
@@ -4018,15 +3876,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         continue;
                     }
                     eshkol_error("Module '%s' not found", module_name.c_str());
-                    eshkol_error("  Searched:");
-                    eshkol_error("    - %s/%s.esk", base_dir.c_str(), module_name.c_str());
-                    if (!g_lib_dir.empty()) {
-                        // Convert dots to slashes for display
-                        std::string path_display = module_name;
-                        for (char& c : path_display) if (c == '.') c = '/';
-                        eshkol_error("    - %s/%s.esk", g_lib_dir.c_str(), path_display.c_str());
-                    }
-                    eshkol_error("    - $ESHKOL_PATH entries");
+                    eshkol_error("  Referring directory: %s", base_dir.c_str());
                     // ESH-0361: record the unresolved dependency so the driver can
                     // refuse to emit a program that silently dropped it. Keep the
                     // `continue` so every missing module is listed, not just the
@@ -4034,6 +3884,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                     g_module_load_failed = true;
                     continue;
                 }
+                recordStrictSourceIdentity(module_path);
 
                 if (debug_mode) {
                     eshkol_info("Requiring module '%s' from: %s", module_name.c_str(), module_path.c_str());
@@ -4066,6 +3917,9 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
 
                 // Collect exports from this module BEFORE processing sub-modules
                 std::set<std::string> exports = collect_module_exports(module_asts);
+                if (const sr::ModuleContract* resource_contract =
+                        recordResourceModuleIdentity(module_name, module_path, exports))
+                    recordTrustedResourceDefinitions(module_asts, *resource_contract);
                 std::set<std::string> defined_symbols = collect_defined_symbols(module_asts);
                 const bool inline_load = ast.operation.require_op.is_load;
                 std::set<std::string> r7rs_alias_sources =
@@ -4138,6 +3992,7 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
     for (auto& ast : required_asts) {
         asts.push_back(ast);
     }
+    g_module_ast_prefix_count = required_asts.size();
     for (auto& ast : new_asts) {
         asts.push_back(ast);
     }
@@ -4258,10 +4113,214 @@ static char** intern_driver_module_name_array(const std::string& name) {
     return storage.back().data();
 }
 
+// Whether a native artifact is linked in a staging directory and renamed onto
+// its output. A Windows debug build is linked in place: its debug database is
+// named and located from the link's own output path.
+static bool native_output_uses_staging(bool debug_info) {
+#ifdef _WIN32
+    return !debug_info;
+#else
+    (void)debug_info;
+    return true;
+#endif
+}
+
+// Own only the files this driver creates for a native build: the scratch
+// object it compiles before the link and the staging directory the linker
+// writes into. Entries in compiled_files may be caller-owned object files.
+// Naming, liveness and reclaim rules live in driver_output_ownership.h.
+struct OwnedLinkTemporaryObjects {
+    std::vector<std::string> paths;
+    eshkol::driver::OutputClaim claim;
+    eshkol::driver::StagedOutput staged;
+
+    // False once a build is known to have no claim and no staging: the output
+    // is a device or other non-regular file, written in place.
+    bool owns_output = true;
+
+    // How long a compile waits for another live compile of the same output.
+    // ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS overrides the bound; 0 does not wait.
+    static unsigned claim_wait_seconds() {
+        if (const char* text = std::getenv("ESHKOL_OUTPUT_CLAIM_WAIT_SECONDS")) {
+            char* end = nullptr;
+            const unsigned long value = std::strtoul(text, &end, 10);
+            if (end != text && *end == '\0' && value <= 86400ul) {
+                return static_cast<unsigned>(value);
+            }
+        }
+        return 30;
+    }
+
+    // Take ownership of @p output for this build and clear what a driver that
+    // no longer exists left beside it. Another live compile of the same output
+    // is waited for, up to the bound; answers false, with the reason logged,
+    // when it still owns the output after that.
+    bool claim_output(const std::string& output) {
+        using Result = eshkol::driver::OutputClaim::Result;
+        if (!eshkol::driver::output_admits_ownership(output)) {
+            owns_output = false;
+            return true;
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(claim_wait_seconds());
+        Result result = claim.acquire(output);
+        bool announced = false;
+        while ((result == Result::HeldElsewhere || result == Result::TryAgain) &&
+               std::chrono::steady_clock::now() < deadline) {
+            if (!announced && result == Result::HeldElsewhere) {
+                eshkol_info("Waiting for another compile that is producing %s", output.c_str());
+                announced = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            result = claim.acquire(output);
+        }
+        if (result == Result::HeldElsewhere) {
+            eshkol_error("Another compile is producing %s; it owns that output until it finishes",
+                         output.c_str());
+            return false;
+        }
+        if (result == Result::TryAgain) {
+            eshkol_error("Cannot claim output %s: the system had no file lock to give within the wait",
+                         output.c_str());
+            return false;
+        }
+        if (result == Result::NotSupported) {
+            // Staging and the single rename still apply: the artifact is whole.
+            eshkol_info("No file lock is available beside %s; compiling without an output claim",
+                        output.c_str());
+            eshkol::driver::reclaim_abandoned(output);
+            return true;
+        }
+        if (result == Result::Unavailable) {
+            eshkol_error("Cannot claim output %s: its directory does not admit a new file",
+                         output.c_str());
+            return false;
+        }
+        eshkol::driver::reclaim_abandoned(output);
+        return true;
+    }
+
+    // Create this process's scratch object for @p output. Answers its path,
+    // or an empty string when the directory does not admit a new file.
+    std::string reserve_for(const std::string& output) {
+        const std::filesystem::path out(output);
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            std::filesystem::path candidate = out;
+            candidate.replace_filename(eshkol::driver::scratch_object_name(
+                out.filename().string(), eshkol::driver::current_process_id(),
+                eshkol::driver::detail::next_sequence()));
+            const std::string path = candidate.generic_string();
+            // Exclusive creation: an existing file of this name is not ours.
+            FILE* file = std::fopen(path.c_str(), "wbx");
+            if (file) {
+                paths.push_back(path);
+                std::fclose(file);
+                return path;
+            }
+            if (errno != EEXIST) break;
+        }
+        return {};
+    }
+
+    // Where the linker should write so that @p output appears in one step.
+    // Answers @p output itself when staging is not used for this build.
+    std::string stage_for(const std::string& output, bool use_staging) {
+        if (!use_staging || !owns_output) return output;
+        staged = eshkol::driver::stage_output(output);
+        if (!staged.valid()) return {};
+        paths.push_back(staged.directory.generic_string());
+        return staged.artifact.generic_string();
+    }
+
+    // Move the staged artifact onto its output. True when nothing was staged.
+    bool publish() {
+        if (!staged.valid()) return true;
+        const bool ok = eshkol::driver::publish_staged_output(staged);
+        staged = {};
+        return ok;
+    }
+
+    // Remove the scratch files. The claim stays until the driver is done with
+    // the output; the destructor gives it up on every return path.
+    void cleanup() {
+        for (const auto& path : paths) {
+            std::error_code ec;
+            std::filesystem::remove_all(path, ec);
+        }
+        paths.clear();
+        staged = {};
+    }
+
+    ~OwnedLinkTemporaryObjects() { cleanup(); }
+};
 
 
+
+/* The compiler's own body; main() below gives it an allocation boundary. */
+static int eshkol_run_main(int argc, char **argv);
+
+/**
+ * @brief Entry point.
+ *
+ * Reading has no depth limit, so a datum nests until memory runs out; when it
+ * does, that is reported as an ordinary error with a nonzero exit status
+ * rather than ending the process abruptly. The reader has its own boundary
+ * (eshkol_parse_next_ast_from_stream); this one covers every later pass, so
+ * the compiler always leaves a diagnostic behind.
+ */
 int main(int argc, char **argv)
 {
+    // LLVM reports an allocation it cannot satisfy through its own fatal-error
+    // path, which ends the process rather than raising. Routing it here makes
+    // running out of memory inside code generation the same ordinary,
+    // positioned diagnostic it is inside the reader.
+    llvm::install_bad_alloc_error_handler(
+        [](void*, const char* reason, bool) {
+            eshkol_error("out of memory generating code (%s): this program "
+                         "needs more memory than this process has. Nesting "
+                         "depth is bounded by memory, not by a limit; the "
+                         "input-size cap is configurable with "
+                         "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N",
+                         reason ? reason : "allocation failed");
+            std::exit(1);
+        },
+        nullptr);
+    llvm::install_fatal_error_handler(
+        [](void*, const char* reason, bool) {
+            eshkol_error("code generation could not continue: %s",
+                         reason ? reason : "no reason given");
+            std::exit(1);
+        },
+        nullptr);
+
+    try {
+        return eshkol_run_main(argc, argv);
+    } catch (const std::bad_alloc&) {
+        eshkol_error("out of memory: this program needs more memory than this "
+                     "process has. Nesting depth is bounded by memory, not by "
+                     "a limit; the input-size cap is configurable with "
+                     "ESHKOL_MAX_SOURCE_BYTES or --max-source-bytes=N");
+        return 1;
+    }
+}
+
+static int eshkol_run_main(int argc, char **argv)
+{
+    g_verified_resource_modules.clear();
+    g_resource_contracts.untrusted_modules.clear();
+    g_resource_contracts.definitions.clear();
+    g_verified_stdlib_artifact_identity = false;
+    g_resource_contracts.scalar_primitives.clear();
+    g_resource_contracts.stdlib_contracts.clear();
+    g_strict_source_identities.clear();
+    g_strict_source_identity_conflict = false;
+    g_capture_strict_source_identity = false;
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+    eshkol::frontend::enable_self_hosted_incremental();
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+    eshkol::frontend::enable_self_hosted_scalar_lowering();
+#endif
     // First local, so it is destroyed last: every AST consumer in main() has
     // finished before the AST string owner is released (ADR-0021).
     eshkol::frontend::AstStringsTeardownOnReturn ast_strings_teardown;
@@ -4276,6 +4335,11 @@ int main(int argc, char **argv)
     // the real judgment here means both routes out of this driver enforce ONE
     // rule; see inc/eshkol/backend/vm.h for why the VM takes it as a hook.
     eshkol_vm_install_linear_check(eshkol_linear_check_source);
+    // Refinement types (ADR-0044) take the same route to the VM.
+    eshkol_vm_install_refinement_check(eshkol_refinement_check_source);
+    // The same cubical kernel for HoTT forms on the VM route (ADR-0043).
+    eshkol_vm_install_hott_form(eshkol_hott_form_source);
+    eshkol_vm_install_dependent_check(eshkol_dependent_check_source);
 
     // Baseline for the artifact-emission gate below. Sampled before anything
     // can report a diagnostic, so the gate covers every compilation stage —
@@ -4309,6 +4373,7 @@ int main(int argc, char **argv)
     uint8_t wasm_output = 0;
     uint8_t no_stdlib = 0;
     uint8_t strict_types = 0;
+    uint8_t strict_resources = 0;
     uint8_t unsafe_mode = 0;
     uint8_t debug_info = 0;  // -g flag: emit DWARF debug info for lldb/gdb
     int opt_level = 0;       // -O flag: LLVM optimization level (0-3)
@@ -4316,6 +4381,7 @@ int main(int argc, char **argv)
 
     std::vector<char*> source_files;
     std::vector<char*> compiled_files;
+    OwnedLinkTemporaryObjects owned_link_temp_objects;
     std::vector<char*> linked_libs;
     std::vector<char*> lib_paths;
     std::vector<char*> include_paths;
@@ -4334,6 +4400,7 @@ int main(int argc, char **argv)
     std::vector<std::string> required_vm_entries;
     std::vector<std::string> required_zero_arg_vm_entries;
     const char* depfile_path = nullptr;  // --emit-depfile PATH (ESH-0215)
+    const char* stdlib_identity_symbol = nullptr;
 
     if (argc == 1) print_help(1);
 
@@ -4424,8 +4491,46 @@ int main(int argc, char **argv)
         case 256:
             strict_types = 1;
             break;
+        case 269:
+            // --types=gradual|strict (ADR-0042). gradual is the default:
+            // nominal type mismatches warn and compilation continues; strict
+            // makes every type error fatal (the same as --strict-types). In
+            // both, a failed dependent-type obligation and a linearity
+            // violation are fatal.
+            if (optarg && std::string(optarg) == "strict") {
+                strict_types = 1;
+            } else if (optarg && std::string(optarg) == "gradual") {
+                strict_types = 0;
+            } else {
+                eshkol_error("--types takes gradual or strict, got '%s'", optarg ? optarg : "");
+                return 1;
+            }
+            break;
+        case 270: {
+            size_t bytes = 0;
+            if (!optarg || !eshkol_reader_parse_size(optarg, &bytes)) {
+                eshkol_error("--max-source-bytes takes a byte count "
+                             "(N, NK, NM, NG); 0 removes the cap");
+                return 1;
+            }
+            eshkol_reader_set_max_source_bytes(bytes);
+            break;
+        }
+        case 271: {
+            size_t depth = 0;
+            if (!optarg || !eshkol_reader_parse_size(optarg, &depth)) {
+                eshkol_error("--max-pass-depth takes a level count; "
+                             "0 removes the count");
+                return 1;
+            }
+            eshkol_reader_set_max_pass_depth(depth);
+            break;
+        }
         case 257:
             unsafe_mode = 1;
+            break;
+        case 268:
+            strict_resources = 1;
             break;
         case 258:
             printf("Eshkol Compiler v%s\n", ESHKOL_VER);
@@ -4493,6 +4598,9 @@ int main(int argc, char **argv)
             printf("runtime_header_size=%zu\n", eshkol_abi_runtime_header_size());
             return 0;
         }
+        case 267:
+            stdlib_identity_symbol = optarg;
+            break;
         case 'f':
             /* Native AOT object emission is configured with Reloc::PIC_. */
             break;
@@ -4621,7 +4729,6 @@ int main(int argc, char **argv)
     // way instead of quietly emitting one of the two.
     bool emit_shared_library = false;
     std::string shared_library_path;
-    std::string shared_library_temp_object;
     if (shared_lib) {
         if (wasm_output) {
             fprintf(stderr, "--shared-lib cannot be combined with --wasm\n");
@@ -4651,6 +4758,25 @@ int main(int argc, char **argv)
         }
     }
 
+    // Validate every positional input before opening sources or reserving any
+    // output artifact. Silently skipping an unknown suffix can otherwise turn
+    // `eshkol-run bad.eskb -o app` into a successful empty executable.
+    for (int i = optind; i < argc; ++i) {
+        const std::filesystem::path input(argv[i]);
+        const std::string ext = input.extension().string();
+        const bool source_input = ext == ".esk";
+        const bool object_input = ext == ".o";
+        if (!source_input && !object_input) {
+            eshkol_error("Unsupported input file type '%s' (expected .esk source%s)",
+                         argv[i], run_mode ? "" : " or .o object");
+            return 1;
+        }
+        if (run_mode && object_input) {
+            eshkol_error("--run accepts .esk source files; object input '%s' is not runnable", argv[i]);
+            return 1;
+        }
+    }
+
     // -g on a JIT path has no artifact to carry DWARF: `-r`/`-e`/the REPL
     // execute in memory and eshkol_enable_debug_info() is only reached on the
     // AOT codegen path.  Say so instead of accepting the flag and doing
@@ -4675,6 +4801,26 @@ int main(int argc, char **argv)
         fprintf(stderr, "--require-vm-entry-zero-arg requires a VM profile with --emit-eskb\n");
         return 1;
     }
+    if (strict_resources && vm_only_profile) {
+        eshkol_error("--strict-resources is currently supported only by native compilation "
+                     "(JIT -r and AOT); the bytecode VM profile is refused rather than run unchecked");
+        return 1;
+    }
+    if (strict_resources && eval_expr) {
+        eshkol_error("--strict-resources cannot certify dynamic --eval expressions");
+        return 1;
+    }
+    if (strict_resources && wasm_output) {
+        eshkol_error("--strict-resources currently supports native CPU artifacts only");
+        return 1;
+    }
+    if (strict_resources && !linked_libs.empty()) {
+        eshkol_error("Strict resource error: opaque -l libraries are unsupported with --strict-resources");
+        return 1;
+    }
+    // Every unit this driver compiles under --strict-resources passes the
+    // strict verdict first; code generation applies no second verdict.
+    if (strict_resources) eshkol::setStrictVerdictApplied(true);
 
     if (!include_paths.empty()) {
         std::string merged;
@@ -4741,7 +4887,11 @@ int main(int argc, char **argv)
 
         // Load stdlib for eval mode
         if (!no_stdlib) {
-            jit_ctx.loadStdlib();
+            if (llvm::Error error = jit_ctx.loadStdlib()) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
         }
 
         // Parse the expression using istringstream (no temp file needed)
@@ -4825,7 +4975,13 @@ int main(int argc, char **argv)
             std::getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
         const bool language_coverage_tracing =
             language_coverage_trace_dir && *language_coverage_trace_dir;
-        if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir &&
+        if (!no_stdlib) {
+            if (llvm::Error error = validate_resolved_stdlib_artifacts(lib_paths)) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                return 1;
+            }
+        }
+        if (argc - optind == 1 && !strict_resources && !debug_mode && !dump_ast && !dump_ir &&
             !language_coverage_tracing && compile_defines.empty()) {
             if (auto cached_status = tryRunFromPersistentJitCache(
                     argv[0], argv[optind], no_stdlib, strict_types, unsafe_mode,
@@ -4850,7 +5006,11 @@ int main(int argc, char **argv)
 
         // Load stdlib for run mode
         if (!no_stdlib) {
-            jit_ctx.loadStdlib();
+            if (llvm::Error error = jit_ctx.loadStdlib()) {
+                std::cerr << llvm::toString(std::move(error)) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
         }
 
         // Process each input file
@@ -4872,6 +5032,7 @@ int main(int argc, char **argv)
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                 return 1;
             }
+            const std::string file_source_bytes = readFileBytes(filepath);
 
             if (debug_mode) {
                 eshkol_info("JIT running: %s", filepath.c_str());
@@ -4885,18 +5046,9 @@ int main(int argc, char **argv)
             // two answers depending only on whether the cache was in play.
             eshkol::platform::ScopedRequiringFile requiring_file(filepath);
 
-            // Set source context so runtime type errors carry a
-            // "file:line:col:" prefix (v1.3 source-span errors), matching
-            // the AOT path. Read the file text once for diagnostics.
-            {
-                std::ifstream src_stream(filepath);
-                if (src_stream.is_open()) {
-                    std::string src_text(
-                        (std::istreambuf_iterator<char>(src_stream)),
-                        std::istreambuf_iterator<char>());
-                    eshkol_set_source_context(filepath.c_str(), src_text.c_str());
-                }
-            }
+            // Runtime diagnostics and both strict-analysis parses share the
+            // same source bytes, so a file edit cannot change the checked AST.
+            eshkol_set_source_context(filepath.c_str(), file_source_bytes.c_str());
 
             // Architectural fix for the per-form JIT module boundary class:
             //
@@ -4916,7 +5068,8 @@ int main(int argc, char **argv)
             file_asts.reserve(64);
             eshkol_reset_parse_errors();
             {
-                eshkol_ast_t ast = eshkol_parse_next_ast(file);
+                std::istringstream parse_stream(file_source_bytes);
+                eshkol_ast_t ast = eshkol_parse_next_ast_from_stream(parse_stream);
                 while (ast.type != ESHKOL_INVALID) {
                     if (debug_mode) {
                         printf("=== AST ===\n");
@@ -4924,7 +5077,7 @@ int main(int argc, char **argv)
                         printf("===========\n");
                     }
                     file_asts.push_back(ast);
-                    ast = eshkol_parse_next_ast(file);
+                    ast = eshkol_parse_next_ast_from_stream(parse_stream);
                 }
             }
             // ESH-0361: a hard parse error (e.g. an unbalanced paren →
@@ -4940,6 +5093,76 @@ int main(int argc, char **argv)
                 file.close();
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                 return 1;
+            }
+
+            std::vector<eshkol_ast_t> strict_checked_user_asts;
+            if (strict_resources) {
+                if (argc - optind != 1) {
+                    eshkol_error("--strict-resources currently requires one source file in --run mode");
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                std::string base_dir = std::filesystem::path(filepath).parent_path().string();
+                if (base_dir.empty()) base_dir = ".";
+                g_strict_source_identities.clear();
+                g_capture_strict_source_identity = true;
+                recordStrictSourceIdentityBytes(filepath, file_source_bytes);
+                // Analyze a fresh parse copy so the normal in-process JIT
+                // still executes its established per-module require path.
+                // process_requires rewrites AST bindings while flattening
+                // modules, so sharing the original AST here would make the
+                // subsequent JIT import execute a different program.
+                std::vector<eshkol_ast_t> strict_asts;
+                eshkol_reset_parse_line_counter();
+                eshkol_reset_parse_errors();
+                {
+                    std::istringstream strict_parse_stream(file_source_bytes);
+                    eshkol_ast_t strict_ast = eshkol_parse_next_ast_from_stream(strict_parse_stream);
+                    while (strict_ast.type != ESHKOL_INVALID) {
+                        strict_asts.push_back(strict_ast);
+                        strict_ast = eshkol_parse_next_ast_from_stream(strict_parse_stream);
+                    }
+                }
+                if (eshkol_parse_had_error()) {
+                    eshkol_error("Strict resource analysis parse failed; refusing to run");
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                g_module_load_failed = false;
+                process_requires(strict_asts, base_dir, debug_mode);
+                process_imports(strict_asts, base_dir, debug_mode);
+                if (g_module_load_failed) {
+                    eshkol_error("Unresolved module dependency; refusing strict resource analysis");
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                if (!checkStrictOwnership(strict_asts)) {
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                std::string changed_source;
+                if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+                    eshkol_error("A source module changed after strict resource analysis; refusing to run: %s",
+                                 changed_source.c_str());
+                    file.close();
+                    eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                    return 1;
+                }
+                g_capture_strict_source_identity = false;
+                const size_t module_prefix = std::min(g_module_ast_prefix_count,
+                                                       strict_asts.size());
+                strict_checked_user_asts.insert(strict_checked_user_asts.end(),
+                    strict_asts.begin() + static_cast<std::ptrdiff_t>(module_prefix),
+                    strict_asts.end());
+                // The resource pass used the AOT resolver on an isolated AST
+                // parse. Restore the JIT compilation-unit registry before the
+                // original ASTs enter their normal module-load path.
+                eshkol::library_registry::reset();
+                g_module_load_failed = false;
             }
 
             // Process require/import up front so their module contents are
@@ -4983,9 +5206,18 @@ int main(int argc, char **argv)
                         return 1;
                     }
                 } else {
-                    update_ast_references(&ast, g_import_bindings);
-                    batch.push_back(ast);
+                    if (!strict_resources) {
+                        update_ast_references(&ast, g_import_bindings);
+                        batch.push_back(ast);
+                    }
                 }
+            }
+
+            if (strict_resources) {
+                // Execute the exact expanded user forms that the analyzer
+                // checked, after the ordinary JIT require path has loaded the
+                // source modules into this JIT context.
+                batch = std::move(strict_checked_user_asts);
             }
 
             if (!batch.empty()) {
@@ -5040,6 +5272,12 @@ int main(int argc, char **argv)
             source_files.push_back(argv[optind]);
         else if (ends_with(tmp, ".o"))
             compiled_files.push_back(argv[optind]);
+    }
+
+    if (strict_resources && !compiled_files.empty()) {
+        eshkol_error("Strict resource error: opaque .o inputs cannot be certified by --strict-resources");
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+        return 1;
     }
 
     if (vm_only_profile) {
@@ -5174,6 +5412,11 @@ int main(int argc, char **argv)
     // missing/unreadable entry file is fatal here and nothing is written,
     // symmetric with the -r path's top-level existence check. Found by the P8
     // escape-closure fault-injection matrix.
+    if (strict_resources) {
+        g_strict_source_identities.clear();
+        g_strict_source_identity_conflict = false;
+        g_capture_strict_source_identity = true;
+    }
     for (const auto &source_file : source_files) {
         if (!std::filesystem::exists(source_file)) {
             eshkol_error("File not found: %s", source_file);
@@ -5195,6 +5438,16 @@ int main(int argc, char **argv)
         eshkol_error("Source parsing failed; refusing to compile a truncated program");
         eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
         return 1;
+    }
+
+    if (strict_resources) {
+        std::string changed_source;
+        if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+            eshkol_error("A source module changed during strict resource compilation; refusing to compile: %s",
+                         changed_source.c_str());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
     }
 
     // Bug Y (Noesis 2026-04-30): stdlib auto-loading was previously
@@ -5268,12 +5521,30 @@ int main(int argc, char **argv)
 
         if (!has_stdlib) {
             // Try to find stdlib.o automatically
-            std::string stdlib_path = find_stdlib_object(lib_paths);
-            if (!stdlib_path.empty()) {
-                eshkol_info("Auto-linking pre-compiled stdlib: %s", stdlib_path.c_str());
-                compiled_files.push_back(
-                    const_cast<char*>(intern_driver_string(stdlib_path)));
+            auto stdlib_path = find_stdlib_object(lib_paths);
+            if (!stdlib_path) {
+                std::cerr << llvm::toString(stdlib_path.takeError()) << std::endl;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
             }
+            if (!stdlib_path->empty()) {
+                eshkol_info("Auto-linking pre-compiled stdlib: %s",
+                            stdlib_path->c_str());
+                compiled_files.push_back(
+                    const_cast<char*>(intern_driver_string(*stdlib_path)));
+            }
+        }
+    }
+
+    // Explicitly named stdlib objects bypass automatic artifact resolution, so
+    // validate them at the same admission boundary before any output is emitted.
+    for (const auto& obj_file : compiled_files) {
+        const std::string filename = std::filesystem::path(obj_file).filename().string();
+        if (filename != "stdlib.o" && filename != "libstdlib.o") continue;
+        if (llvm::Error error = validate_stdlib_object_file(obj_file)) {
+            std::cerr << llvm::toString(std::move(error)) << std::endl;
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
         }
     }
 
@@ -5281,34 +5552,12 @@ int main(int argc, char **argv)
     // Every module recursively required by a pre-compiled library is also pre-compiled.
     // Skipped for wasm: see the auto-link comment above — wasm inlines stdlib
     // from source and dead-strips it rather than importing a native .o.
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     for (const auto& obj_file : compiled_files) {
         if (wasm_output) break;
         std::string filename = std::filesystem::path(obj_file).filename().string();
         if (filename == "stdlib.o" || filename == "libstdlib.o") {
             eshkol_info("Detected pre-compiled stdlib: %s", obj_file);
-            // Recursively discover all modules included in stdlib.
-            // collect_all_submodules parses lib/stdlib.esk to build the
-            // set — if that source file is missing or unreadable (e.g.
-            // stdlib.o was installed without the accompanying .esk
-            // tree), we end up with an empty precompiled set and
-            // process_requires will then try to load core.* modules
-            // from source instead, doubling up symbols at link time.
-            // Fail loudly up-front instead of silently producing a bad
-            // binary.
-            size_t before = precompiled_modules.size();
-            collect_all_submodules("stdlib", precompiled_modules, g_lib_dir);
-            size_t added = precompiled_modules.size() - before;
-            eshkol_info("Pre-compiled modules: %zu total (+%zu from stdlib)",
-                        precompiled_modules.size(), added);
-            if (added == 0) {
-                eshkol_error(
-                    "stdlib.o is linked but no .esk sources were found under "
-                    "lib_dir=%s — precompiled-module detection is empty, which "
-                    "will produce duplicate symbols at link time. Check that "
-                    "the lib/ tree is installed alongside stdlib.o.",
-                    g_lib_dir.c_str());
-            }
+            using_precompiled_stdlib = true;
             // Tell codegen that stdlib is being used (for homoiconic display support)
             eshkol_set_uses_stdlib(1);
         }
@@ -5407,17 +5656,17 @@ int main(int argc, char **argv)
     };
     auto esh0103_t_own0 = esh0103_now();
 
-    // Run ownership analysis before code generation
-    if (!asts.empty()) {
-        eshkol_info("Running ownership analysis...");
-        if (!g_ownership_analyzer.analyze(asts)) {
-            eshkol_error("Ownership analysis failed:");
-            g_ownership_analyzer.printErrors();
+    if (strict_resources && !checkStrictOwnership(asts)) return 1;
+
+    if (strict_resources) {
+        std::string changed_source;
+        if (!strictSourceIdentitiesUnchanged(&changed_source)) {
+            eshkol_error("A source module changed after strict resource analysis; refusing code generation: %s",
+                         changed_source.c_str());
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
             return 1;
         }
-        if (debug_mode) {
-            eshkol_info("Ownership analysis passed");
-        }
+        g_capture_strict_source_identity = false;
     }
 
     auto esh0103_t_own1 = esh0103_now();
@@ -5543,6 +5792,17 @@ int main(int argc, char **argv)
             return running_as_cache_build_child() ? kCacheBuildDiagnosticRejectExit : 1;
         }
 
+        if (stdlib_identity_symbol) {
+            const bool stdlib_source = source_files.size() == 1 &&
+                std::filesystem::path(source_files[0]).filename() == "stdlib.esk";
+            if (!library_codegen || !compile_only || wasm_output || !stdlib_source ||
+                eshkol_add_stdlib_identity(llvm_module, stdlib_identity_symbol) != 0) {
+                eshkol_error("--embed-stdlib-identity is valid only while compiling the standard library object");
+                eshkol_dispose_llvm_module(llvm_module);
+                return 1;
+            }
+        }
+
         // Handle different output modes
         if (dump_ir) {
             // Dump IR to file
@@ -5622,7 +5882,7 @@ int main(int argc, char **argv)
                     std::filesystem::path(source_files[0]),
                     resolveSelfPath(argv[0]), no_stdlib, strict_types,
                     unsafe_mode, opt_level, target_triple, linked_libs,
-                    lib_paths, include_paths)
+                    lib_paths, include_paths, llvm_module)
                 : std::string();
             const auto cached_object = module_cache_root.empty() ||
                                        module_cache_key.empty()
@@ -5728,7 +5988,14 @@ int main(int argc, char **argv)
             const std::string library_path =
                 shared_library_output_path(output, module_name);
             shared_library_path = library_path;
-            const std::string temp_obj = library_path + ".tmp.o";
+            if (!owned_link_temp_objects.claim_output(library_path)) {
+                return 1;
+            }
+            const std::string temp_obj = owned_link_temp_objects.reserve_for(library_path);
+            if (temp_obj.empty()) {
+                eshkol_error("Cannot create a temporary object beside %s", library_path.c_str());
+                return 1;
+            }
 
             eshkol_info("Compiling shared-library object: %s", temp_obj.c_str());
             auto esh0103_t_shared0 = esh0103_now();
@@ -5738,7 +6005,6 @@ int main(int argc, char **argv)
                 return 1;
             }
             esh0103_report("emit-object", esh0103_t_shared0, esh0103_now());
-            shared_library_temp_object = temp_obj;
             compiled_files.push_back(
                 const_cast<char*>(intern_driver_string(temp_obj)));
             output = const_cast<char*>(intern_driver_string(library_path));
@@ -5766,9 +6032,17 @@ int main(int argc, char **argv)
                 output ? std::filesystem::path(output) : std::filesystem::path("a.out")
             ).generic_string();
 
+            if (!owned_link_temp_objects.claim_output(exe_name)) {
+                return 1;
+            }
+
             if (!compiled_files.empty()) {
                 // Compile main program to temp .o, then link with stdlib.o etc.
-                std::string temp_obj = exe_name + ".tmp.o";
+                std::string temp_obj = owned_link_temp_objects.reserve_for(exe_name);
+                if (temp_obj.empty()) {
+                    eshkol_error("Cannot create a temporary object beside %s", exe_name.c_str());
+                    return 1;
+                }
                 eshkol_info("Compiling to temp object: %s", temp_obj.c_str());
                 if (eshkol_compile_llvm_ir_to_object(llvm_module, temp_obj.c_str()) != 0) {
                     eshkol_error("Object file compilation failed");
@@ -5795,13 +6069,30 @@ int main(int argc, char **argv)
                     linked_lib_ptrs = const_cast<const char**>(linked_libs.data());
                 }
 
-                if (eshkol_compile_llvm_ir_to_executable(llvm_module, exe_name.c_str(),
+                // Build in this process's staging directory and move the
+                // finished executable onto its name in one step.
+                // A debug build is linked in place: this backend writes the
+                // debug companion beside the path it links.
+                const std::string staged_exe = owned_link_temp_objects.stage_for(
+                    exe_name, !debug_info && native_output_uses_staging(debug_info));
+                if (staged_exe.empty()) {
+                    eshkol_error("Cannot create a staging directory beside %s", exe_name.c_str());
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                if (eshkol_compile_llvm_ir_to_executable(llvm_module, staged_exe.c_str(),
                                                        lib_path_ptrs, lib_paths.size(),
                                                        linked_lib_ptrs, linked_libs.size()) != 0) {
                     eshkol_error("Executable compilation failed");
                     eshkol_dispose_llvm_module(llvm_module);
                     return 1;
                 }
+                if (!owned_link_temp_objects.publish()) {
+                    eshkol_error("Cannot move the finished executable onto %s", exe_name.c_str());
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                owned_link_temp_objects.cleanup();
 
                 // Bug X (Noesis 2026-04-30): the link-branch path below
                 // already prints "[eshkol-run] compiled to a.out — run
@@ -5944,11 +6235,9 @@ int main(int argc, char **argv)
         link_args.emplace_back("-framework");
         link_args.emplace_back("Foundation");
         link_args.emplace_back("-framework");
-        link_args.emplace_back("ImageIO");
+        link_args.emplace_back("CoreFoundation");
         link_args.emplace_back("-framework");
         link_args.emplace_back("CoreGraphics");
-        link_args.emplace_back("-framework");
-        link_args.emplace_back("CoreFoundation");
         // Add the macOS SDK lib dir so `-lobjc` resolves portably (libobjc.tbd
         // lives in <sdk>/usr/lib). Resolved at runtime, never hardcoded, so a
         // freshly-built binary links on any mac regardless of the builder host.
@@ -6051,9 +6340,17 @@ int main(int argc, char **argv)
 #endif
         }
 
-        // Add output
+        // Add output. The linker writes into this process's staging
+        // directory; the artifact is moved onto its name after the link.
+        const std::string link_target = owned_link_temp_objects.stage_for(
+            output, native_output_uses_staging(debug_info));
+        if (link_target.empty()) {
+            eshkol_error("Cannot create a staging directory beside %s", output);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
         link_args.emplace_back("-o");
-        link_args.emplace_back(output);
+        link_args.emplace_back(link_target);
 #if !defined(_WIN32) && !defined(__APPLE__)
         link_args.emplace_back("-lm");
         // libdl: see lib/backend/llvm_codegen.cpp for rationale
@@ -6077,21 +6374,6 @@ int main(int argc, char **argv)
         // turns that into a reported link failure instead of an infinite hang.
         int result = eshkol::pkg::run_subprocess(
             link_args, nullptr, link_subprocess_timeout_seconds());
-
-        // Clean up temp object files (mkstemp-created files in TMPDIR)
-        for (const auto &compiled_file : compiled_files) {
-            std::string file(compiled_file);
-            if (file.find("eshkol_") != std::string::npos && file.find(".o") != std::string::npos) {
-                std::remove(file.c_str());
-            }
-        }
-        // The shared-library scratch object is named after the library, not
-        // after an mkstemp template, so remove it explicitly (on failure too —
-        // a stale .tmp.o must never be mistaken for the artifact).
-        if (!shared_library_temp_object.empty()) {
-            std::error_code temp_object_ec;
-            std::filesystem::remove(shared_library_temp_object, temp_object_ec);
-        }
 
         // When this process is the AOT-build child of a `-r` cache miss, report
         // a LINK-stage failure with a distinct sentinel so the parent treats it
@@ -6125,13 +6407,34 @@ int main(int argc, char **argv)
         // have.
         {
             std::error_code artifact_ec;
-            if (!std::filesystem::is_regular_file(output, artifact_ec)) {
+            if (!std::filesystem::is_regular_file(link_target, artifact_ec)) {
                 eshkol_error("Link reported success but no artifact was written "
                              "at '%s'", output);
                 eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
                 return link_failure_exit;
             }
+            if (!owned_link_temp_objects.publish()) {
+                eshkol_error("Cannot move the linked artifact onto '%s'", output);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return link_failure_exit;
+            }
         }
+
+        if (debug_info) {
+            const int debug_status = eshkol::backend::finishNativeDebugArtifact(
+                output, link_subprocess_timeout_seconds());
+            if (debug_status != 0) {
+                eshkol_error("Debug symbol generation failed with exit code %d "
+                             "(macOS requires dsymutil; ESHKOL_DSYMUTIL can select it)",
+                             debug_status);
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
+        }
+
+        // Remove only scratch objects this driver created, after debug-map
+        // collection. The lifetime guard also cleans them on every error path.
+        owned_link_temp_objects.cleanup();
 
         if (emit_shared_library) {
             eshkol_info("Successfully created shared library: %s", output);

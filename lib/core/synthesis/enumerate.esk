@@ -1,0 +1,150 @@
+;;; core.synthesis.enumerate -- bottom-up enumerative synthesis with
+;;; observational-equivalence pruning over a typed component library.
+;;;
+;;; Programs are built in order of increasing cost (the sum of component costs;
+;;; variables cost 1). Every candidate is evaluated on all example inputs at
+;;; once; its vector of outputs is its observable behaviour. A candidate whose
+;;; (type, outputs) pair has been seen before is observationally equivalent on
+;;; the examples to a cheaper program already in the bank and is discarded, so
+;;; the bank holds one program per behaviour (Udupa et al., PLDI 2013;
+;;; Albarghouthi, Gulwani, Kincaid, CAV 2013). Composition only ever combines
+;;; arguments of the component's declared types, so every program built is
+;;; well typed. Search stops at the first program whose outputs equal the
+;;; examples', which is therefore a cheapest consistent program.
+;;;
+;;; Costs come from the library (syn-with-cost / syn-library-costs): uniform
+;;; costs give size-ordered search; any other cost assignment, for example one
+;;; derived from a learned scorer's component probabilities as
+;;; round(-log2 p), reorders the search without changing its completeness.
+;;;
+;;; Design: ADR-0052. Reference: docs/reference/stdlib/synthesis.md.
+
+(require stdlib)
+(require core.synthesis.dsl)
+
+(provide syn-spec syn-spec? syn-spec-vars syn-spec-types syn-spec-examples syn-spec-goal
+         syn-enumerate syn-result? syn-result-found? syn-result-program syn-result-cost
+         syn-result-evaluated syn-result-kept syn-result-method syn-make-result syn-consistent?
+         syn-compositions)
+
+;; A specification: variables, their types, examples ((input ...) . output),
+;; and the goal type.
+(define (syn-spec vars types examples goal)
+  (if (not (= (length vars) (length types))) (error "syn-spec: one type per variable"))
+  (for-each (lambda (ex)
+              (if (not (= (length (car ex)) (length vars))) (error "syn-spec: example arity differs from the variables")))
+            examples)
+  (vector 'syn-spec vars types examples goal))
+(define (syn-spec? s) (and (vector? s) (= (vector-length s) 5) (eq? (vector-ref s 0) 'syn-spec)))
+(define (syn-spec-vars s) (vector-ref s 1))
+(define (syn-spec-types s) (vector-ref s 2))
+(define (syn-spec-examples s) (vector-ref s 3))
+(define (syn-spec-goal s) (vector-ref s 4))
+
+;; #(syn-result found? program cost evaluated kept method)
+(define (syn-make-result found program cost evaluated kept method)
+  (vector 'syn-result found program cost evaluated kept method))
+(define (syn-result? r) (and (vector? r) (= (vector-length r) 7) (eq? (vector-ref r 0) 'syn-result)))
+(define (syn-result-found? r) (vector-ref r 1))
+(define (syn-result-program r) (vector-ref r 2))
+(define (syn-result-cost r) (vector-ref r 3))
+(define (syn-result-evaluated r) (vector-ref r 4))
+(define (syn-result-kept r) (vector-ref r 5))
+(define (syn-result-method r) (vector-ref r 6))
+
+;; Does a program reproduce every example?
+(define (syn-consistent? program spec)
+  (let ((vars (syn-spec-vars spec)))
+    (let loop ((exs (syn-spec-examples spec)))
+      (or (null? exs)
+          (and (equal? (syn-eval program (map cons vars (car (car exs)))) (cdr (car exs)))
+               (loop (cdr exs)))))))
+
+;; All lists of k positive integers summing to total.
+(define (syn-compositions total k)
+  (cond ((= k 0) (if (= total 0) '(()) '()))
+        ((< total k) '())
+        ((= k 1) (list (list total)))
+        (else
+         (let loop ((first 1) (acc '()))
+           (if (> first (- total (- k 1))) (reverse acc)
+               (loop (+ first 1)
+                     (append (reverse (map (lambda (rest) (cons first rest)) (syn-compositions (- total first) (- k 1)))) acc)))))))
+
+(define (syn-function-type? t) (memq t '(int->int int->bool int*int->int)))
+
+(define (syn-opt options key default)
+  (let ((hit (assq key options))) (if hit (cdr hit) default)))
+
+;; Enumerate. options: alist with max-cost (default 8), max-evaluated
+;; (default 200000) and observational-equivalence (default #t; #f keeps every
+;; distinct program, for measuring what the pruning saves). Returns a
+;; syn-result; method 'enumerate.
+(define (syn-enumerate spec lib . options-arg)
+  (let* ((options (if (null? options-arg) '() (car options-arg)))
+         (max-cost (syn-opt options 'max-cost 8))
+         (max-evaluated (syn-opt options 'max-evaluated 200000))
+         (oe (syn-opt options 'observational-equivalence #t))
+         (vars (syn-spec-vars spec))
+         (examples (syn-spec-examples spec))
+         (m (length examples))
+         (goal (syn-spec-goal spec))
+         (expected (map cdr examples))
+         (bank (make-hash-table))           ; (type . cost) -> list of (program . outputs)
+         (seen (make-hash-table))           ; (type . outputs) -> #t
+         (evaluated 0) (kept 0) (found #f) (found-cost #f))
+    (define (column i) (map (lambda (ex) (list-ref (car ex) i)) examples))
+    (define (bank-ref type cost) (hash-table-ref/default bank (cons type cost) '()))
+    (define (offer! type cost program outs)
+      ;; outs already free of bottom
+      (let ((key (if (or (not oe) (syn-function-type? type)) (cons type program) (cons type outs))))
+        (if (not (hash-table-ref/default seen key #f))
+            (begin
+              (hash-table-set! seen key #t)
+              (hash-table-set! bank (cons type cost) (cons (cons program outs) (bank-ref type cost)))
+              (set! kept (+ kept 1))
+              (if (and (not found) (eq? type goal) (equal? outs expected))
+                  (begin (set! found program) (set! found-cost cost)))))))
+    (define (outs-ok? outs) (cond ((null? outs) #t) ((syn-value-ok? (car outs)) (outs-ok? (cdr outs))) (else #f)))
+    ;; apply impl example-wise over the argument output columns
+    (define (apply-columns impl cols)
+      (let loop ((cols cols) (acc '()))
+        (if (null? (car cols)) (reverse acc)
+            (loop (map cdr cols) (cons (apply impl (map car cols)) acc)))))
+    (define (expand! comp cost)
+      ;; all argument tuples of the component whose costs sum to cost - comp-cost
+      (let ((args (syn-comp-args comp)) (impl (syn-comp-impl comp)) (name (syn-comp-name comp)))
+        (for-each
+          (lambda (split)
+            (let walk ((ts args) (cs split) (progs '()) (cols '()))
+              (if (and (not found) (<= evaluated max-evaluated))
+                  (if (null? ts)
+                      (let ((outs (apply-columns impl (reverse cols))))
+                        (set! evaluated (+ evaluated 1))
+                        (if (outs-ok? outs)
+                            (offer! (syn-comp-ret comp) cost (cons name (reverse progs)) outs)))
+                      (for-each (lambda (entry)
+                                  (if (not found)
+                                      (walk (cdr ts) (cdr cs) (cons (car entry) progs) (cons (cdr entry) cols))))
+                                (bank-ref (car ts) (car cs)))))))
+          (syn-compositions (- cost (syn-comp-cost comp)) (length args)))))
+    ;; cost 1: the variables
+    (let loop ((vs vars) (ts (syn-spec-types spec)) (i 0))
+      (if (pair? vs)
+          (begin (offer! (car ts) 1 (car vs) (column i)) (loop (cdr vs) (cdr ts) (+ i 1)))))
+    (let level ((cost 1))
+      (if (and (not found) (<= cost max-cost) (<= evaluated max-evaluated))
+          (begin
+            (for-each
+              (lambda (comp)
+                (if (not found)
+                    (if (= (syn-comp-arity comp) 0)
+                        (if (= (syn-comp-cost comp) cost)
+                            (let ((v ((syn-comp-impl comp))))
+                              (set! evaluated (+ evaluated 1))
+                              (offer! (syn-comp-ret comp) cost (syn-comp-term comp)
+                                      (let rep ((k m) (acc '())) (if (= k 0) acc (rep (- k 1) (cons v acc)))))))
+                        (if (> cost (syn-comp-cost comp)) (expand! comp cost)))))
+              lib)
+            (level (+ cost 1)))))
+    (syn-make-result (if found #t #f) found found-cost evaluated kept 'enumerate)))

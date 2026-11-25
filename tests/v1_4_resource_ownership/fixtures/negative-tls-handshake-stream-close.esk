@@ -1,0 +1,19 @@
+(require core.net)
+(require core.tls)
+;; The stream moved into the session at the handshake; closing it afterwards
+;; closes a handle this scope no longer owns.
+(define ctx (tls-client-context #f))
+(if (tls-error? ctx)
+    (display "no tls")
+    (begin
+      (define stream (tcp-connect "127.0.0.1" 9 100))
+      (if (network-error? stream)
+          (tls-context-close ctx)
+          (begin
+            (define session (tls-client-start ctx stream "localhost" 100))
+            (if (tls-error? session)
+                (tls-context-close ctx)
+                (begin (tcp-close stream)
+                       (tls-session-close session)
+                       (tls-context-close ctx)))))))
+(newline)

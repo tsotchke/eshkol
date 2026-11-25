@@ -1,6 +1,14 @@
+#include "../core/ascription_tags.h"
 #include <eshkol/builtin_libraries.h>
+#include <eshkol/core/reader_limits.h>
+#include <eshkol/core/stack_guard.h>
 #include <eshkol/module_resolver.h>
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
+#include "vm_embedded_modules.h"
+#endif
+static int vm_reject_type_violations(const char* source, const char* source_name);
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
+static void compile_form_match(FuncChunk* c, Node* form, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 static Node** vm_collect_body_nodes(Node* node, int body_start, int* out_n);
 
@@ -15,7 +23,7 @@ static void vm_macro_capture_values(Node* node, FuncChunk* owner, int context) {
         for (FuncChunk* frame = owner; frame; frame = frame->enclosing) {
             int found = 0;
             for (int i = frame->n_locals - 1; i >= 0; --i) {
-                if (strcmp(frame->locals[i].name, node->symbol) != 0) continue;
+                if (frame->locals[i].compiler_temporary || strcmp(frame->locals[i].name, node->symbol) != 0) continue;
                 if (frame->enclosing || frame->locals[i].depth != 0) {
                     node->macro_value_owner = frame->binding_env_id;
                     node->macro_value_slot = frame->locals[i].slot;
@@ -37,6 +45,22 @@ static void vm_macro_capture_definition(VmMacro* macro, FuncChunk* owner) {
         vm_macro_capture_values((Node*)macro->rules[i].template_node, owner, context);
 }
 
+static EshkolTagSet vm_ascription_tags(Node* type) {
+    if (!type) return 0;
+    if (type->type == N_SYMBOL) return eshkol_ground_type_tags(type->symbol);
+    if (type->type != N_LIST || type->n_children < 2 || type->children[0]->type != N_SYMBOL) return 0;
+    const char* head = type->children[0]->symbol;
+    if (eshkol_type_spelling_equal(head, "+") && type->n_children == 3)
+        return vm_ascription_tags(type->children[1]) | vm_ascription_tags(type->children[2]);
+    if (eshkol_type_spelling_equal(head, "refine")) return vm_ascription_tags(type->children[1]);
+    if (eshkol_type_spelling_equal(head, "forall")) return vm_ascription_tags(type->children[type->n_children - 1]);
+    if (eshkol_type_spelling_equal(head, "pi") || eshkol_type_spelling_equal(head, "->"))
+        return eshkol_ground_type_tags("procedure");
+    if (eshkol_type_spelling_equal(head, "sigma") || eshkol_type_spelling_equal(head, "*"))
+        return eshkol_ground_type_tags("pair");
+    return eshkol_ground_type_tags(head);
+}
+
 static int resolve_macro_local(FuncChunk* c, const Node* identifier) {
     int owner = identifier->macro_value_owner;
     /* A still-colored identifier is bound by a binder of its own expansion
@@ -47,7 +71,7 @@ static int resolve_macro_local(FuncChunk* c, const Node* identifier) {
     if (owner == c->binding_env_id) return identifier->macro_value_slot;
     if (owner < 0 && !c->enclosing)
         for (int i = c->n_locals - 1; i >= 0; --i)
-            if (c->locals[i].depth == 0 &&
+            if (!c->locals[i].compiler_temporary && c->locals[i].depth == 0 &&
                 strcmp(c->locals[i].name, identifier->symbol) == 0)
                 return c->locals[i].slot;
     return -1;
@@ -111,7 +135,7 @@ static void vm_prescan_unit_syntax(FuncChunk* unit, const char* source) {
 static const Local* vm_find_exact_local(FuncChunk* c, const char* name, FuncChunk** where) {
     for (FuncChunk* p = c; p; p = p->enclosing) {
         for (int i = p->n_locals - 1; i >= 0; --i) {
-            if (strcmp(p->locals[i].name, name) == 0) {
+            if (!p->locals[i].compiler_temporary && strcmp(p->locals[i].name, name) == 0) {
                 if (where) *where = p;
                 return &p->locals[i];
             }
@@ -666,7 +690,7 @@ static int vm_head_user_rebound(FuncChunk* c, const Node* identifier) {
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
         compile_expr(c, node->children[i], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
     }
 }
 
@@ -812,14 +836,139 @@ static int compile_depth = 0;
  *         bumps/checks compile_depth (erroring past 1000 nested
  *         expressions) around the actual compilation call. */
 static void vm_compile_error(const char* message, const char* detail);
-static void compile_expr(FuncChunk* c, Node* node, int tail) {
-    compile_depth++;
-    if (compile_depth > 1000) {
-        /* Fail closed: the subexpression emits no code, so the compilation
-         * must not produce a program. */
-        vm_compile_error("expression nesting too deep (>1000)", NULL);
-        compile_depth--;
+
+/* A let-family binding may carry a type annotation, `(name : type init)`, as
+ * the native reader accepts. Types (refinements included, ADR-0044) are checked
+ * by the front-end bridge before this compiler runs, so here the annotation is
+ * dropped once, in place, and every let form below sees `(name init)`. */
+static void vm_strip_binding_annotations(Node* node) {
+    if (!node || node->type != N_LIST || node->n_children < 3) return;
+    Node* head = node->children[0];
+    if (!head || head->type != N_SYMBOL) return;
+    if (!eshkol_syntax_base_is(head->symbol, "let") && !eshkol_syntax_base_is(head->symbol, "let*") &&
+        !eshkol_syntax_base_is(head->symbol, "letrec") && !eshkol_syntax_base_is(head->symbol, "letrec*"))
         return;
+    Node* bindings = node->children[1];
+    if (bindings && bindings->type == N_SYMBOL && node->n_children >= 4) bindings = node->children[2];
+    if (!bindings || bindings->type != N_LIST || bindings->is_vector) return;
+    for (int i = 0; i < bindings->n_children; ++i) {
+        Node* b = bindings->children[i];
+        if (!b || b->type != N_LIST || b->n_children != 4) continue;
+        Node* colon = b->children[1];
+        if (!colon || colon->type != N_SYMBOL || !eshkol_syntax_base_is(colon->symbol, ":")) continue;
+        b->children[1] = b->children[3];
+        b->n_children = 2;
+    }
+}
+
+/* ── HoTT forms (ADR-0043) ─────────────────────────────────────────────── */
+
+static EshkolHottFormFn g_vm_hott_form = NULL;
+
+void eshkol_vm_install_hott_form(EshkolHottFormFn fn) { g_vm_hott_form = fn; }
+
+/* A new compilation unit: a fresh kernel, so declarations never carry over between programs. */
+static void vm_hott_begin_unit(void) {
+    if (!g_vm_hott_form) return;
+    int ok = 1;
+    char* r = g_vm_hott_form(NULL, &ok);
+    free(r);
+}
+
+/* Print a HoTT form back to text (kernel syntax: symbols, naturals, lists).
+ * Returns 0 on success, -1 for a datum outside the kernel syntax. */
+typedef struct { char* p; size_t len, cap; } VmHottText;
+
+static int vm_hott_append(VmHottText* t, const char* s) {
+    size_t n = strlen(s);
+    if (t->len + n + 1 > t->cap) {
+        size_t cap = t->cap ? t->cap * 2 : 256;
+        while (cap < t->len + n + 1) cap *= 2;
+        char* p = (char*)realloc(t->p, cap);
+        if (!p) return -1;
+        t->p = p;
+        t->cap = cap;
+    }
+    memcpy(t->p + t->len, s, n + 1);
+    t->len += n;
+    return 0;
+}
+
+static int vm_hott_print(const Node* n, VmHottText* t) {
+    if (n->type == N_SYMBOL) return vm_hott_append(t, n->symbol);
+    if (n->type == N_NUMBER && n->is_int && n->ival >= 0) {
+        char tmp[32];
+        snprintf(tmp, sizeof tmp, "%lld", (long long)n->ival);
+        return vm_hott_append(t, tmp);
+    }
+    if (n->type == N_LIST && !n->is_vector && !n->is_quote_sugar) {
+        if (vm_hott_append(t, "(") < 0) return -1;
+        for (int i = 0; i < n->n_children; i++) {
+            if (i && vm_hott_append(t, " ") < 0) return -1;
+            if (vm_hott_print(n->children[i], t) < 0) return -1;
+        }
+        return vm_hott_append(t, ")");
+    }
+    return -1;
+}
+
+/* (hott decl...): checked, no code. (hott-eval term): the normal form, as a quoted datum. */
+static void compile_hott_form(FuncChunk* c, Node* node) {
+    int is_eval = is_sym(node->children[0], "hott-eval");
+    if (!g_vm_hott_form) {
+        vm_compile_error("this build cannot check HoTT forms",
+                         "no HoTT kernel is installed; link a driver that calls "
+                         "eshkol_vm_install_hott_form()");
+        return;
+    }
+    VmHottText text = {NULL, 0, 0};
+    if (vm_hott_print(node, &text) < 0) {
+        free(text.p);
+        vm_compile_error("HoTT form contains a datum outside the kernel syntax", NULL);
+        return;
+    }
+    int ok = 1;
+    char* result = g_vm_hott_form(text.p, &ok);
+    free(text.p);
+    if (!ok || !result) {
+        vm_compile_error("HoTT: form rejected by the cubical kernel", result);
+        free(result);
+        return;
+    }
+    if (is_eval) {
+        Node* datum = parse_sexp_from_string(result);
+        if (!datum) {
+            vm_compile_error("HoTT: the normal form could not be read back", result);
+        } else {
+            compile_quote(c, datum);
+        }
+    } else {
+        chunk_emit(c, OP_VOID, 0);  /* a declaration is an expression with no value */
+    }
+    free(result);
+}
+
+static void compile_expr(FuncChunk* c, Node* node, int tail) {
+    vm_strip_binding_annotations(node);
+    compile_depth++;
+    /* CODE nesting has a documented, configurable budget; DATA nesting has
+     * none — the reader, quoted-datum emission and the runtime all carry
+     * their own stack, so a million-level quoted datum goes through this
+     * function at depth two.  The native-stack guard is consulted whatever
+     * the budget is, so raising the budget cannot turn into a signal: this
+     * pass still refuses, one frame before the bound.  Fail closed either
+     * way: the subexpression emits no code, so no program may be produced. */
+    {
+        const size_t budget = eshkol_reader_max_pass_depth();
+        if ((budget && (size_t)compile_depth > budget) || !eshkol_stack_headroom_ok()) {
+            char message[320];
+            eshkol_reader_depth_message("compiling a nested expression",
+                                        budget ? budget : (size_t)compile_depth,
+                                        message, sizeof(message));
+            vm_compile_error("expression nesting too deep", message);
+            compile_depth--;
+            return;
+        }
     }
     compile_expr_impl(c, node, tail);
     compile_depth--;
@@ -909,7 +1058,7 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
          * claimed here — test value on top, nothing emitted since — is the
          * frame offset that value already occupies. */
         int arrow_tmp = -1;
-        if (is_arrow) arrow_tmp = add_local(c, "__cond_arrow_test__");
+        if (is_arrow) arrow_tmp = add_temporary_local(c, "__cond_arrow_test__");
         int jnext = placeholder(c);
         if (is_arrow) {
             /* The receiver is evaluated only on the truthy path (R7RS), then
@@ -944,7 +1093,7 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
 
 /** @brief Compile a `(case key-expr ((datum...) body...)... [(else
  *         body...)])` special form: evaluates the key once, then for each
- *         clause tests it (via OP_EQ against each quoted datum) and
+ *         clause tests it (via the existing eqv? native against each quoted datum) and
  *         branches to the matching clause's body, with `else` always
  *         taken as a fallback. */
 static void compile_form_case(FuncChunk* c, Node* node, int tail) {
@@ -966,12 +1115,12 @@ static void compile_form_case(FuncChunk* c, Node* node, int tail) {
         /* ((val1 val2 ...) body ...) */
         Node* vals = clause->children[0];
         if (vals->type != N_LIST) continue;
-        /* Test key against each val: DUP, EQ, if true → jump to body */
+        /* case uses eqv?, not numeric =: OP_EQ coerces symbols to zero. */
         int body_patches[16]; int n_bp = 0;
         for (int v = 0; v < vals->n_children; v++) {
             chunk_emit(c, OP_DUP, 0);
             compile_quote(c, vals->children[v]);
-            chunk_emit(c, OP_EQ, 0);
+            chunk_emit(c, OP_NATIVE_CALL, 133); /* eqv? */
             /* If true, jump to body */
             if (n_bp < 16) body_patches[n_bp++] = c->code_len;
             chunk_emit(c, OP_JUMP_IF_FALSE, 0); /* placeholder: if false, continue */
@@ -1738,8 +1887,7 @@ static int vm_track_loaded_module(const char* path) {
 static void vm_seed_entry_module_path(const char* source_path) {
     if (!source_path || !*source_path || source_path[0] == '<') return;
     char path[VM_MAX_MODULE_PATH];
-    if (eshkol_resolve_module_source_path_c(
-            source_path, NULL, NULL, path, sizeof(path)))
+    if (eshkol_canonical_source_file_c(source_path, path, sizeof(path)))
         (void)vm_track_loaded_module(path);
 }
 #else
@@ -1758,20 +1906,201 @@ static void vm_seed_entry_module_path(const char* source_path) {
  */
 static int g_vm_bootstrapping_standard_library = 0;
 
+/* The standalone VM lowers the exact extern declarations used by
+ * core.dbsp.sqlite_changefeed, including checkpoint content hashes, through
+ * explicit typed native bridges.
+ * This is deliberately a closed signature table: it is not a general foreign
+ * function interface, and unknown declarations fail compilation rather than
+ * becoming ordinary calls to the symbol `extern`. */
+typedef struct {
+    const char* name;
+    const char* result;
+    const char* args[6];
+    int n_args;
+    const char* real_name;
+    int native_id;
+} VmTypedExternSpec;
+
+static const VmTypedExternSpec VM_TYPED_EXTERNS[] = {
+    /* VM-local implementation: this deliberately resets the VM's own logic
+     * registry and intern pool rather than depending on the hosted runtime. */
+    {"eshkol-logic-reset", "void", {NULL}, 0, "eshkol_logic_registry_reset", 2251},
+    /* The capability policy's two entry points. core.capabilities declares
+     * these, so without them a program running on this engine could read a
+     * policy but never install one — and the engine's own capability gates
+     * would have nothing to consult. Installing is one call carrying the whole
+     * set, so this table offers no way to add a capability to a policy that is
+     * already settled. The runtime's staged installer is deliberately absent.
+     * They reach the same process-wide policy store the native runtime uses
+     * (lib/core/capability_policy.cpp). */
+    {"capability-runtime-clear-raw", "i32", {NULL}, 0, "eshkol_capability_runtime_clear", 2253},
+    {"capability-runtime-install-raw", "i32", {"ptr"}, 1, "eshkol_capability_runtime_install", 2254},
+    {"sha256-raw", "i32", {"ptr", "i64", "ptr", "i64"}, 4, "eshkol_sha256", VM_NATIVE_SHA256_EXTERN},
+    {"hmac-sha256-raw", "i32", {"ptr", "i64", "ptr", "i64", "ptr", "i64"}, 6, "eshkol_hmac_sha256", VM_NATIVE_HMAC_SHA256_EXTERN},
+    {"random-bytes-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_bytes", VM_NATIVE_RANDOM_BYTES_EXTERN},
+    {"random-hex-raw", "i32", {"ptr", "i64"}, 2, "eshkol_random_hex", VM_NATIVE_RANDOM_HEX_EXTERN},
+    {"sqlite-open-raw", "i64", {"ptr"}, 1, "eshkol_sqlite_open", VM_NATIVE_SQLITE_OPEN},
+    {"sqlite-close-raw", "void", {"i64"}, 1, "eshkol_sqlite_close", VM_NATIVE_SQLITE_CLOSE},
+    {"sqlite-exec-raw", "i32", {"i64", "ptr"}, 2, "eshkol_sqlite_exec", VM_NATIVE_SQLITE_EXEC},
+    {"sqlite-prepare-raw", "i64", {"i64", "ptr"}, 2, "eshkol_sqlite_prepare", VM_NATIVE_SQLITE_PREPARE},
+    {"sqlite-step-raw", "i32", {"i64"}, 1, "eshkol_sqlite_step", VM_NATIVE_SQLITE_STEP},
+    {"sqlite-reset-raw", "i32", {"i64"}, 1, "eshkol_sqlite_reset", VM_NATIVE_SQLITE_RESET},
+    {"sqlite-finalize-raw", "void", {"i64"}, 1, "eshkol_sqlite_finalize", VM_NATIVE_SQLITE_FINALIZE},
+    {"sqlite-bind-text-raw", "i32", {"i64", "i32", "ptr"}, 3, "eshkol_sqlite_bind_text", VM_NATIVE_SQLITE_BIND_TEXT},
+    {"sqlite-bind-int-raw", "i32", {"i64", "i32", "i64"}, 3, "eshkol_sqlite_bind_int", VM_NATIVE_SQLITE_BIND_INT},
+    {"sqlite-bind-double-raw", "i32", {"i64", "i32", "double"}, 3, "eshkol_sqlite_bind_double", VM_NATIVE_SQLITE_BIND_DOUBLE},
+    {"sqlite-bind-null-raw", "i32", {"i64", "i32"}, 2, "eshkol_sqlite_bind_null", VM_NATIVE_SQLITE_BIND_NULL},
+    {"sqlite-column-text-raw", "i32", {"i64", "i32", "ptr", "i64"}, 4, "eshkol_sqlite_column_text", VM_NATIVE_SQLITE_COLUMN_TEXT},
+    {"sqlite-column-bytes-raw", "i64", {"i64", "i32"}, 2, "eshkol_sqlite_column_bytes", VM_NATIVE_SQLITE_COLUMN_BYTES},
+    {"sqlite-column-int-raw", "i64", {"i64", "i32"}, 2, "eshkol_sqlite_column_int", VM_NATIVE_SQLITE_COLUMN_INT},
+    {"sqlite-column-double-raw", "double", {"i64", "i32"}, 2, "eshkol_sqlite_column_double", VM_NATIVE_SQLITE_COLUMN_DOUBLE},
+    {"sqlite-column-count-raw", "i32", {"i64"}, 1, "eshkol_sqlite_column_count", VM_NATIVE_SQLITE_COLUMN_COUNT},
+    {"sqlite-column-name-raw", "i32", {"i64", "i32", "ptr", "i64"}, 4, "eshkol_sqlite_column_name", VM_NATIVE_SQLITE_COLUMN_NAME},
+    {"sqlite-column-type-raw", "i32", {"i64", "i32"}, 2, "eshkol_sqlite_column_type", VM_NATIVE_SQLITE_COLUMN_TYPE},
+    {"sqlite-last-error-raw", "i32", {"i64", "ptr", "i64"}, 3, "eshkol_sqlite_last_error", VM_NATIVE_SQLITE_LAST_ERROR},
+    {"sqlite-last-insert-rowid-raw", "i64", {"i64"}, 1, "eshkol_sqlite_last_insert_rowid", VM_NATIVE_SQLITE_LAST_INSERT_ROWID},
+    {"sqlite-changes-raw", "i32", {"i64"}, 1, "eshkol_sqlite_changes", VM_NATIVE_SQLITE_CHANGES},
+};
+
+static const VmTypedExternSpec* vm_typed_extern_spec(const Node* form) {
+    if (!form || form->type != N_LIST || form->n_children < 3 ||
+        !is_sym(form->children[0], "extern") ||
+        form->children[1]->type != N_SYMBOL || form->children[2]->type != N_SYMBOL)
+        return NULL;
+    const char* name = form->children[2]->symbol;
+    for (size_t i = 0; i < sizeof(VM_TYPED_EXTERNS) / sizeof(VM_TYPED_EXTERNS[0]); ++i) {
+        const VmTypedExternSpec* spec = &VM_TYPED_EXTERNS[i];
+        if (strcmp(name, spec->name) != 0) continue;
+        if (strcmp(form->children[1]->symbol, spec->result) != 0 ||
+            form->n_children != spec->n_args + 5) return NULL;
+        for (int a = 0; a < spec->n_args; ++a) {
+            Node* arg = form->children[3 + a];
+            if (arg->type != N_SYMBOL || strcmp(arg->symbol, spec->args[a]) != 0)
+                return NULL;
+        }
+        Node* modifier = form->children[3 + spec->n_args];
+        Node* real_name = form->children[4 + spec->n_args];
+        if (modifier->type != N_SYMBOL || strcmp(modifier->symbol, ":real") != 0 ||
+            real_name->type != N_SYMBOL || strcmp(real_name->symbol, spec->real_name) != 0)
+            return NULL;
+        return spec;
+    }
+    return NULL;
+}
+
+/* Native sockets own kernel descriptors through the hosted resource lease
+ * registry, which the bytecode VM does not carry; report that explicitly. */
+static int vm_extern_is_socket_lease(const Node* form) {
+    if (!form || form->type != N_LIST || form->n_children < 2) return 0;
+    Node* real_name = form->children[form->n_children - 1];
+    return real_name && real_name->type == N_SYMBOL &&
+           (strncmp(real_name->symbol, "eshkol_net_", 11) == 0 ||
+            strncmp(real_name->symbol, "eshkol_tls_", 11) == 0);
+}
+
+static int vm_compile_typed_extern_binding(FuncChunk* c, Node* form) {
+    const VmTypedExternSpec* spec = vm_typed_extern_spec(form);
+    if (!spec && vm_extern_is_socket_lease(form)) {
+        vm_compile_error("core.net and core.tls are not supported by the bytecode VM",
+                         "TCP/UDP/TLS sockets run on the native JIT and AOT engines");
+        return 0;
+    }
+    if (!spec) {
+        vm_compile_error("unsupported or malformed VM extern declaration",
+                         "only the exact core.capabilities, agent.sqlite and agent.crypto ABI signatures are admitted");
+        return 0;
+    }
+    if (resolve_local(c, spec->name) >= 0) {
+        vm_compile_error("duplicate typed extern declaration", spec->name);
+        return 0;
+    }
+
+    /* Materialize a normal bytecode closure so ESKB carries only the stable
+     * native-call ID; no process pointer or foreign symbol is serialized. */
+    if (add_local(c, spec->name) < 0) {
+        vm_compile_error("unable to allocate typed extern binding", spec->name);
+        return 0;
+    }
+    int function_constant = chunk_add_const(c, INT_VAL(0));
+    if (function_constant < 0) {
+        vm_compile_error("unable to allocate typed extern closure constant", spec->name);
+        return 0;
+    }
+    int skip_body = placeholder(c);
+    int function_pc = c->code_len;
+    c->constants[function_constant].as.i = VM_PACK_FUNC_ARITY(function_pc, spec->n_args);
+    for (int a = 0; a < spec->n_args; ++a) chunk_emit(c, OP_GET_LOCAL, a);
+    chunk_emit(c, OP_NATIVE_CALL, spec->native_id);
+    chunk_emit(c, OP_RETURN, 0);
+    patch(c, skip_body, OP_JUMP, c->code_len);
+    chunk_emit(c, OP_CLOSURE, function_constant);
+    return 1;
+}
+
+#include "vm_binding_origins.h"
+
+static uint64_t vm_binding_source_hash(const char* source) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (const unsigned char* p = (const unsigned char*)source; *p; ++p)
+        hash = (hash ^ *p) * UINT64_C(1099511628211);
+    return hash;
+}
+
+static uint32_t vm_module_binding_id(const char* module, const char* name,
+                                      int line, uint64_t source_hash) {
+    if (!module || !name) return 0;
+    for (size_t i = 0; i < sizeof(vm_binding_origins)/sizeof(vm_binding_origins[0]); ++i) {
+        const VmBindingOrigin* origin = &vm_binding_origins[i];
+        if (origin->line == line && origin->source_hash == source_hash &&
+            strcmp(origin->module, module) == 0 && strcmp(origin->name, name) == 0)
+            return origin->id;
+    }
+    return 0;
+}
+
+static uint32_t vm_local_binding_id(const FuncChunk* c, int slot) {
+    for (int i = c->n_locals - 1; i >= 0; --i)
+        if (c->locals[i].slot == slot) return c->locals[i].coverage_binding_id;
+    return 0;
+}
+
+static void vm_emit_binding_read(FuncChunk* c, uint32_t id) {
+    if (id && vm_language_coverage_compilation_enabled())
+        chunk_emit(c, OP_LANGUAGE_COVERAGE_READ, (int)id);
+}
+
+static int vm_reject_linear_violations(const char* source, const char* source_name);
+
 static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                                      int enforce_visibility, char exports[][128], int max_exports) {
     if (!mod_name || !*mod_name) return -1;
 
-#if defined(ESHKOL_VM_TEST_MODULES)
+    if (!eshkol_module_name_allowed(mod_name)) {
+        compile_packed_string_literal(c, ESHKOL_MODULE_REFUSAL_PREFIX,
+                                      sizeof(ESHKOL_MODULE_REFUSAL_PREFIX) - 1);
+        compile_packed_string_literal(c, mod_name, strlen(mod_name));
+        chunk_emit(c, OP_NATIVE_CALL, 554); /* _string-append-2 */
+        chunk_emit(c, OP_NATIVE_CALL, 237); /* error */
+        return -1;
+    }
+
+#if defined(ESHKOL_VM_TEST_MODULES) || defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES)
     /* The differential WASM build has already loaded the canonical stdlib
      * image. Test fixtures may require it just as desktop programs do, but it
      * must not be reopened through MEMFS. */
-    if (strcmp(mod_name, "stdlib") == 0) return 0;
+    const char* installed_path = eshkol_stdlib_module_path(mod_name);
+    if (installed_path && strcmp(installed_path, "stdlib.esk") == 0) return 0;
 #endif
 
-#if defined(ESHKOL_VM_NO_DISASM) && !defined(ESHKOL_VM_BUILDING_STDLIB_CACHE) && !defined(ESHKOL_VM_TEST_MODULES)
-    /* Product WASM resolves the embedded standard library, not the filesystem. */
-    return -1;
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES) && !defined(ESHKOL_VM_TEST_MODULES)
+    char path[VM_MAX_MODULE_PATH];
+    const char* embedded_source = NULL;
+    if (!installed_path || !vm_embedded_module_lookup(installed_path, &embedded_source, path, sizeof(path))) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "module source not found: %s", mod_name);
+        vm_compile_error(msg, "product WASM embeds only the supported core modules");
+        return -1;
+    }
 #else
     /* Both dotted module names and path literals go through the same resolver
      * as native JIT/AOT. Its source_path argument makes nested relative loads
@@ -1787,6 +2116,7 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                          "load/require must resolve an existing source file");
         return -1;
     }
+#endif
 
     /* Track the canonical path, not the spelling, so `x.esk` and `./x.esk`
      * cannot compile the same module twice. */
@@ -1794,7 +2124,18 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     if (tracked < 0) return -1;
     if (tracked == 0 && (!exports || max_exports <= 0)) return 0;
 
-    /* Read and parse the file */
+    /* Read the selected module source. Product modules come from the generated
+     * registry; native and test-module builds retain their filesystem reader. */
+#if defined(ESHKOL_VM_PRODUCT_EMBEDDED_MODULES) && !defined(ESHKOL_VM_TEST_MODULES)
+    size_t embedded_len = strlen(embedded_source);
+    char* src = (char*)malloc(embedded_len + 1);
+    if (!src) {
+        vm_compile_error("cannot allocate embedded module source buffer", path);
+        return -1;
+    }
+    memcpy(src, embedded_source, embedded_len + 1);
+    long len = (long)embedded_len;
+#else
     FILE* mf = fopen(path, "r");
     if (!mf) {
         char msg[512];
@@ -1827,6 +2168,16 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         return -1;
     }
     src[len] = '\0';
+#endif
+
+    /* The bootstrap establishes the compiler's standard environment. A source
+     * dependency selected by the program receives the same type and ownership
+     * judgment as its entry unit before its forms can contribute bytecode. */
+    if (tracked > 0 && !g_vm_bootstrapping_standard_library &&
+        vm_reject_type_violations(src, path)) {
+        free(src);
+        return -1;
+    }
 
     /* Parse the complete module before compiling it. This gives loaded source
      * the same forward-procedure and same-location redefinition semantics as
@@ -1840,13 +2191,21 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         return -1;
     }
     Node* forms[VM_MAX_FORWARD_FUNCTIONS * 8];
+    uint32_t binding_ids[VM_MAX_FORWARD_FUNCTIONS * 8] = {0};
+    const uint64_t source_hash = vm_binding_source_hash(src);
+    const char* line_cursor = src;
+    int source_line = 1;
     int n_forms = 0;
     src_ptr = src;
     while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
         skip_ws();
         if (!*src_ptr) break;
+        while (line_cursor < src_ptr) if (*line_cursor++ == '\n') ++source_line;
+        const int definition_line = source_line;
         Node* expr = parse_sexp();
         if (!expr) break;
+        binding_ids[n_forms] = vm_module_binding_id(mod_name,
+            vm_define_bound_name(expr), definition_line, source_hash);
         forms[n_forms++] = expr;
     }
 
@@ -1876,10 +2235,22 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
         for (int i = 0; i < n_forms; ++i) {
             Node* form = forms[i];
             const char* name = vm_define_bound_name(form);
-            if ((form->type == N_LIST && form->n_children > 0 && is_sym(form->children[0], "extern")) ||
-                (name && resolve_local(c, name) >= 0)) {
+            /* An extern this engine has no binding for is dropped rather than
+             * failing the bootstrap — core.net and core.tls declare sockets the
+             * bytecode VM does not carry, and the modules around them still
+             * load. One the typed table admits is kept and compiled below, so a
+             * module in the standard library reaches the runtime entry points it
+             * declares: that is what lets core.capabilities install a policy
+             * here as well as on the native engines. */
+            int droppable_extern = form->type == N_LIST && form->n_children > 0 &&
+                                   is_sym(form->children[0], "extern") &&
+                                   vm_typed_extern_spec(form) == NULL;
+            if (droppable_extern || (name && resolve_local(c, name) >= 0)) {
                 free_node(form);
-            } else forms[kept++] = form;
+            } else {
+                binding_ids[kept] = binding_ids[i];
+                forms[kept++] = form;
+            }
         }
         n_forms = kept;
     }
@@ -1929,9 +2300,6 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
             vm_mangle_module_form(forms[i], mod_name, private_names, n_private);
     }
 
-    char module_exports[64][128];
-    const int n_module_exports = vm_collect_module_form_exports(
-        forms, n_forms, module_exports, 64);
 
     char saved_redefined[VM_MAX_REDEFINED_NAMES][128];
     const int saved_n_redefined = g_vm_n_redefined;
@@ -1980,14 +2348,21 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
                 }
             }
         }
-        if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
+        if (forms[i]->type == N_LIST && forms[i]->n_children > 0 &&
+            is_sym(forms[i]->children[0], "extern")) {
+            (void)vm_compile_typed_extern_binding(c, forms[i]);
+        } else if (do_box) vm_compile_boxed_variable_define(c, forms[i]);
         else compile_expr(c, forms[i], 0);
+        const char* bound = vm_define_bound_name(forms[i]);
+        if (bound) {
+            int slot = resolve_local(c, bound);
+            if (slot >= 0) c->locals[slot].coverage_binding_id = binding_ids[i];
+        }
         if (c->n_locals == before) chunk_emit(c, OP_POP, 0);
         free_node(forms[i]);
     }
 
     g_vm_module_predeclared_depth--;
-    vm_unit_library_define(mod_name, module_exports, n_module_exports);
 
     g_vm_n_redefined = saved_n_redefined;
     memcpy(g_vm_redefined_names, saved_redefined, sizeof(saved_redefined));
@@ -1996,7 +2371,6 @@ static int vm_compile_module_by_name(FuncChunk* c, const char* mod_name,
     free(owned_source_path);
     free(src);
     return discovered_exports;
-#endif
 }
 
 /* Establish the same canonical stdlib namespace that native compilation
@@ -2024,6 +2398,44 @@ static void vm_reset_compilation_unit_modules(void) {
     vm_clear_planned_libraries();
 }
 
+/* A persistent REPL evaluation may load modules while it compiles. If that
+ * evaluation later fails, its bytecode and locals are rolled back, so restore
+ * the compiler-side module and forward-function registries too. Loading a
+ * module appends entries to these per-unit registries; restoring their counts
+ * makes the next eval compile those sources and reserve their function slots
+ * again. */
+typedef struct VmModuleStateSnapshot {
+    int n_forward_functions;
+    int n_loaded;
+    int n_unit_libraries;
+    int n_private_imports;
+    int n_public_imports;
+    int n_import_bindings;
+    int n_planned_libraries;
+} VmModuleStateSnapshot;
+
+static void vm_module_state_snapshot(VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    snapshot->n_forward_functions = g_vm_n_forward_functions;
+    snapshot->n_loaded = g_compiler_ctx.n_loaded;
+    snapshot->n_unit_libraries = g_compiler_ctx.n_unit_libraries;
+    snapshot->n_private_imports = g_vm_n_private_imports;
+    snapshot->n_public_imports = g_vm_n_public_imports;
+    snapshot->n_import_bindings = g_vm_n_import_bindings;
+    snapshot->n_planned_libraries = g_vm_n_planned_libraries;
+}
+
+static void vm_module_state_restore(const VmModuleStateSnapshot* snapshot) {
+    if (!snapshot) return;
+    g_vm_n_forward_functions = snapshot->n_forward_functions;
+    g_compiler_ctx.n_loaded = snapshot->n_loaded;
+    g_compiler_ctx.n_unit_libraries = snapshot->n_unit_libraries;
+    g_vm_n_private_imports = snapshot->n_private_imports;
+    g_vm_n_public_imports = snapshot->n_public_imports;
+    g_vm_n_import_bindings = snapshot->n_import_bindings;
+    g_vm_n_planned_libraries = snapshot->n_planned_libraries;
+}
+
 /**
  * @brief Compile a `(require module.name)` form: resolves the dotted
  *        module name to a `lib/module/name.esk` source path, and if not
@@ -2046,9 +2458,9 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
      * the caller's POP balances; the file-loading path adds real bindings, so a
      * placeholder is emitted there only if it happened to add none. */
     int locals_at_start = c->n_locals;
-    if (node->n_children >= 2 &&
-        (node->children[1]->type == N_SYMBOL || node->children[1]->type == N_STRING)) {
-        const Node* module_node = node->children[1];
+    for (int i = 1; i < node->n_children; ++i) {
+        const Node* module_node = node->children[i];
+        if (module_node->type != N_SYMBOL && module_node->type != N_STRING) continue;
         const char* module_name = module_node->type == N_STRING
             ? module_node->string_data : module_node->symbol;
         /* A `require` may also name a library this unit defines: the two
@@ -2243,6 +2655,10 @@ static void compile_form_import(FuncChunk* c, Node* node, int tail) {
     (void)tail;
     int locals_at_start = c->n_locals;
     for (int i = 1; i < node->n_children; i++) {
+        if (node->children[i]->type == N_STRING) {
+            vm_compile_module_by_name(c, node->children[i]->string_data, 0, NULL, 0);
+            continue;
+        }
         char visible[64][128];
         if (vm_resolve_unit_import_set(node->children[i], visible, 64) >= 0) continue;
         const Node* lib = vm_import_set_library_datum(node->children[i]);
@@ -2321,6 +2737,15 @@ static void compile_form_define_library(FuncChunk* c, Node* node, int tail) {
     char library_name[256];
     int named = vm_library_name_from_datum(node->children[1], library_name,
                                            sizeof(library_name));
+
+    if (named && !eshkol_module_name_allowed(library_name)) {
+        vm_compile_error("invalid library name", library_name);
+        return;
+    }
+    if (named && eshkol_stdlib_module_path(library_name)) {
+        vm_compile_error("library name belongs to the installed stdlib", library_name);
+        return;
+    }
 
     char exports[64][128];
     int n_exports = 0;
@@ -2547,9 +2972,9 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
         Node* binding = bindings->children[i];
         if (binding->type != N_LIST || binding->n_children != 2) continue;
         compile_expr(c, binding->children[0], 0);
-        parameter_slots[n_bindings] = add_local(c, "__parameterize_parameter__");
+        parameter_slots[n_bindings] = add_temporary_local(c, "__parameterize_parameter__");
         compile_expr(c, binding->children[1], 0);
-        raw_value_slots[n_bindings] = add_local(c, "__parameterize_raw_value__");
+        raw_value_slots[n_bindings] = add_temporary_local(c, "__parameterize_raw_value__");
         n_bindings++;
     }
 
@@ -2560,7 +2985,7 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_GET_LOCAL, parameter_slots[i]);
         chunk_emit(c, OP_GET_LOCAL, raw_value_slots[i]);
         chunk_emit(c, OP_NATIVE_CALL, 705); /* parameter-convert */
-        converted_value_slots[i] = add_local(c, "__parameterize_value__");
+        converted_value_slots[i] = add_temporary_local(c, "__parameterize_value__");
     }
 
     /* Enter every binding.  Native 702 records a parameter cleanup entry in
@@ -2682,7 +3107,7 @@ static void compile_form_define_values(FuncChunk* c, Node* node) {
      * written (ADR-0026). */
     if (c->enclosing == NULL && c->scope_depth == 0) vm_decolor_tree(node->children[1]);
     compile_expr(c, node->children[2], 0);
-    int result_slot = add_local(c, "__define_values_result__");
+    int result_slot = add_temporary_local(c, "__define_values_result__");
     compile_bind_values_formals(c, result_slot, node->children[1], NULL, 0);
 }
 
@@ -2707,7 +3132,7 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
         Node* binding = bindings_list->children[b];
         if (binding->type != N_LIST || binding->n_children != 2) continue;
         compile_expr(c, binding->children[1], 0);
-        result_slots[n_bindings] = add_local(c, "__let_values_result__");
+        result_slots[n_bindings] = add_temporary_local(c, "__let_values_result__");
         formals[n_bindings] = binding->children[0];
         n_bindings++;
         if (sequential) {
@@ -2764,7 +3189,7 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
     (void)head; (void)tail;
     int saved_locals = c->n_locals;
     compile_expr(c, node->children[1], 0);   /* the handler procedure */
-    add_local(c, "__handler__");
+    add_temporary_local(c, "__handler__");
     int handler_patch = c->code_len;
     chunk_emit(c, OP_PUSH_HANDLER, 0);
     chunk_emit(c, OP_NATIVE_CALL, 2244);     /* %handler-procedure! */
@@ -2923,7 +3348,7 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
          * alias the slot the receiver is about to be pushed into, which is
          * what the first cut of this fix did. */
         int arrow_tmp = -1;
-        if (is_arrow) arrow_tmp = add_local(&handler_func, "__guard_arrow_test__");
+        if (is_arrow) arrow_tmp = add_temporary_local(&handler_func, "__guard_arrow_test__");
         int jnext = handler_func.code_len;
         chunk_emit(&handler_func, OP_JUMP_IF_FALSE, 0);
         if (is_test_only) {
@@ -4919,6 +5344,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         if (slot >= 0) {
             chunk_emit(c, OP_GET_LOCAL, slot);
+            vm_emit_binding_read(c, vm_local_binding_id(c, slot));
             /* If boxed, unbox: the local holds a vector, read element 0 */
             for (int li = c->n_locals - 1; li >= 0; li--) {
                 if (c->locals[li].slot == slot && c->locals[li].boxed) {
@@ -5001,6 +5427,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     }
                     if (final_uv >= 0) {
                         chunk_emit(c, OP_GET_UPVALUE, final_uv);
+                        vm_emit_binding_read(c, vm_local_binding_id(chain[d], enc_slot));
                         /* Unbox if the captured variable is boxed */
                         if (final_boxed) {
                             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
@@ -5011,7 +5438,15 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                 }
             }
         }
-        if (node->symbol[0] == '?') {
+        if (strcmp(node->symbol, "??") == 0) {
+            /* An unbound `??` is a synthesis hole (ADR-0052). Holes are
+             * completed by the native compiler's type checker; this compiler
+             * has none, so it names the hole instead of reading it as data. */
+            vm_compile_error("synthesis hole ?? is completed by the native compiler "
+                             "(eshkol-run -r or a native build); the bytecode compiler does not complete holes",
+                             node->symbol);
+            chunk_emit(c, OP_NIL, 0);
+        } else if (node->symbol[0] == '?') {
             compile_symbol_literal(c, node->symbol);
         } else if (vm_private_import_matches_unqualified(node->symbol)) {
             vm_compile_error("module-private binding is not visible to this importer",
@@ -5028,6 +5463,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (node->type != N_LIST || node->n_children == 0) { chunk_emit(c, OP_NIL, 0); return; }
 
     Node* head = node->children[0];
+
+    if (is_sym(head, "differentiate") && !vm_head_user_rebound(c, head) && node->n_children >= 2) {
+        Node* mode = node->children[1];
+        if (mode && mode->type == N_LIST && mode->n_children == 2 &&
+            is_sym(mode->children[0], "quote") &&
+            (is_sym(mode->children[1], "numeric") || is_sym(mode->children[1], "incremental"))) {
+            vm_compile_error("differentiate interpretation requires the native compiler frontend", NULL);
+            chunk_emit(c, OP_NIL, 0);
+            return;
+        }
+    }
 
     /* R7RS `(newline port)` is an explicit-port primitive, not the prelude's
      * zero-argument closure. Handle it before generic head rebinding/call
@@ -5053,21 +5499,23 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int argc = node->n_children - 1;
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push the (rebound) function */
-        add_local(c, "__call_func__");
+        add_temporary_local(c, "__call_func__");
         for (int i = 1; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            add_local(c, "__call_arg__");
+            add_temporary_local(c, "__call_arg__");
         }
+        const int emit_tail_call = vm_tail_call_allowed(c, head, tail);
+        if (emit_tail_call) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+        }
+        /* The admission and runtime checks bind this marker to the immediate
+         * call instruction. Handler cleanup must precede the marker. */
         if (vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (vm_tail_call_allowed(c, head, tail)) {
-            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
-                chunk_emit(c, OP_POP_HANDLER, 0);
-            vm_emit_call(c, argc, 1);
-        } else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, emit_tail_call);
         c->n_locals = saved_locals; /* CALL consumed func+args */
         return;
     }
@@ -5075,7 +5523,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "gpu-matmul") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 440);
@@ -5086,7 +5534,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         if (native_id >= 0) {
             int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[2], 0);
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[3], 0);
             c->n_locals = __opnd_s;
             chunk_emit(c, OP_NATIVE_CALL, native_id);
@@ -5098,8 +5546,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         if (native_id >= 0) {
             compile_expr(c, node->children[2], 0);
             /* gpu-reduce is a FULL reduction to a number, as on native: pass
-             * #f ("no axis"), not -1, which names the last axis (SW-202). */
-            chunk_emit(c, OP_CONST, chunk_add_const(c, BOOL_VAL(0)));
+             * the empty optional-argument list ("no axis"), as the prelude's
+             * tensor-sum does when it is called without an axis. */
+            chunk_emit(c, OP_NIL, 0);
             chunk_emit(c, OP_NATIVE_CALL, native_id);
             return;
         }
@@ -5172,20 +5621,37 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         } else if (node->n_children == 3) {
             int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[1], 0);                     /* start */
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[2], 0);                     /* stop  */
             c->n_locals = __opnd_s;
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));   /* step  */
         } else { /* node->n_children == 4 */
             int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
             compile_expr(c, node->children[1], 0);                     /* start */
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[2], 0);                     /* stop  */
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[3], 0);                     /* step  */
             c->n_locals = __opnd_s;
         }
         chunk_emit(c, OP_NATIVE_CALL, 419);
+        return;
+    }
+
+    if (is_sym(head, "utf8->string") &&
+        (node->n_children < 2 || node->n_children > 4)) {
+        vm_compile_error("utf8->string requires 1 to 3 arguments", NULL);
+        return;
+    }
+    if (is_sym(head, "utf8->string") &&
+        (node->n_children == 3 || node->n_children == 4)) {
+        int __opnd_s = c->n_locals;
+        compile_expr(c, node->children[1], 0);
+        add_operand_local(c);
+        compile_expr(c, node->children[2], 0);
+        c->n_locals = __opnd_s;
+        if (node->n_children == 4) compile_expr(c, node->children[3], 0);
+        chunk_emit(c, OP_NATIVE_CALL, node->n_children == 4 ? 2218 : 2217);
         return;
     }
 
@@ -5200,7 +5666,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         (node->n_children == 3 || node->n_children == 4)) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         if (node->n_children == 4) compile_expr(c, node->children[3], 0);
@@ -5218,7 +5684,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         (node->n_children == 3 || node->n_children == 4)) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);          /* bv    */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);          /* start */
         c->n_locals = __opnd_s;
         if (node->n_children == 4) {
@@ -5237,11 +5703,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         (node->n_children == 5 || node->n_children == 6)) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);          /* to    */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);          /* at    */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[3], 0);          /* from  */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[4], 0);          /* start */
         c->n_locals = __opnd_s;
         if (node->n_children == 6) {
@@ -5293,7 +5759,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "fg-infer!") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(1e-8)));
@@ -5437,7 +5903,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");                    /* accumulator on stack */
+            add_operand_local(c);                    /* accumulator on stack */
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_ADD, 0);
             c->n_locals = saved;                            /* ADD collapsed acc+operand → 1 */
@@ -5449,7 +5915,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_SUB, 0);
             c->n_locals = saved;
@@ -5460,7 +5926,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_MUL, 0);
             c->n_locals = saved;
@@ -5469,9 +5935,21 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
     if (is_sym(head, "/")) {
         int saved = c->n_locals;
+        if (node->n_children == 2) {
+            /* Scheme's unary division is the reciprocal. Keep it on the same
+             * numeric opcode path as binary division so exact operands remain
+             * exact and inexact operands retain IEEE behavior. Compile the
+             * sole operand once; the constant numerator has no effects. */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));
+            add_operand_local(c);
+            compile_expr(c, node->children[1], 0);
+            chunk_emit(c, OP_DIV, 0);
+            c->n_locals = saved;
+            return;
+        }
         compile_expr(c, node->children[1], 0);
         for (int i = 2; i < node->n_children; i++) {
-            add_local(c, "__operand__");
+            add_operand_local(c);
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_DIV, 0);
             c->n_locals = saved;
@@ -5519,7 +5997,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "display") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 2226);
@@ -5593,12 +6071,12 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
             chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
             int saved_locals = c->n_locals;
-            add_local(c, "__vec_literal__");
+            add_temporary_local(c, "__vec_literal__");
             for (int i = 1; i < node->n_children; i++) {
                 chunk_emit(c, OP_DUP, 0);                                   /* vec */
                 chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1)));/* idx */
                 int elem_locals = c->n_locals;
-                add_local(c, "__vec_literal_idx__");
+                add_temporary_local(c, "__vec_literal_idx__");
                 compile_expr(c, node->children[i], 0);                      /* val */
                 c->n_locals = elem_locals;
                 /* Operand 1 marks only the final store for large reader
@@ -5625,7 +6103,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* (make-vector n) or (make-vector n fill) — emit via NATIVE or direct */
         int s = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        if (node->n_children >= 3) { add_local(c, "__operand__"); compile_expr(c, node->children[2], 0); c->n_locals = s; }
+        if (node->n_children >= 3) { add_operand_local(c); compile_expr(c, node->children[2], 0); c->n_locals = s; }
         else chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         /* make-vector: n and fill are on stack, dispatch to runtime native */
         chunk_emit(c, OP_NATIVE_CALL, 218);
@@ -5656,7 +6134,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "exact-rational") && node->n_children == 3) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 330);
@@ -5727,6 +6205,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (cond (test1 expr1) (test2 expr2) ... (else exprN)) */
     if (is_sym(head, "cond") && node->n_children >= 2) { compile_form_cond(c, node, tail); return; }
+
+    if (is_sym(head, "match") && node->n_children >= 2) {
+        compile_form_match(c, node, tail);
+        return;
+    }
 
     /* (case expr ((val ...) body ...) ... (else body ...))
      * Compiles as: evaluate key, then for each clause: DUP key, test each val,
@@ -5886,7 +6369,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* Handled via NATIVE_CALL 70 which unpacks the list at runtime */
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0); /* push f */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0); /* push args list */
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 70); /* apply: takes f and args-list from stack */
@@ -5898,7 +6381,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         node->n_children == 3) {
         int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
         c->n_locals = saved;
         chunk_emit(c, OP_NATIVE_CALL, 70);
@@ -5945,6 +6428,38 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if ((is_sym(head, "delay") || is_sym(head, "delay-force")) &&
         node->n_children == 2) {
         compile_form_delay(c, node, tail);
+        return;
+    }
+
+    /* ADR-0047: (certify (f arg ...)) → (certify-call "f" f (list arg ...)),
+     * the same rewrite the native parser performs. The synthetic nodes
+     * borrow f and the arguments from the source tree. */
+    if (is_sym(head, "certify")) {
+        Node* call = node->n_children == 2 ? node->children[1] : NULL;
+        if (!call || call->type != N_LIST || call->is_vector || call->n_children < 1 ||
+            call->children[0]->type != N_SYMBOL || call->children[0]->is_verbatim) {
+            vm_compile_error("certify expects one call (f arg ...) whose operator is a name", NULL);
+            return;
+        }
+        VmCaseBuilder b = {0};
+        Node* outer = vm_case_new_node(&b, N_LIST);
+        Node* lst = vm_case_new_node(&b, N_LIST);
+        Node* name = make_string_node(call->children[0]->symbol);
+        if (!outer || !lst || !name) {
+            free_node(name);
+            vm_case_free_builder(&b);
+            vm_compile_error("unable to allocate the certify expansion", NULL);
+            return;
+        }
+        add_child(outer, vm_case_symbol(&b, "certify-call"));
+        add_child(outer, name);
+        add_child(outer, call->children[0]);
+        add_child(lst, vm_case_symbol(&b, "list"));
+        for (int i = 1; i < call->n_children; ++i) add_child(lst, call->children[i]);
+        add_child(outer, lst);
+        compile_expr(c, outer, tail);
+        free_node(name);
+        vm_case_free_builder(&b);
         return;
     }
 
@@ -6093,7 +6608,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "cons") && node->n_children == 3) {
         int s = c->n_locals;
         compile_expr(c, node->children[2], 0); /* cdr first (SOS) */
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[1], 0); /* car second (TOS) */
         c->n_locals = s;
         chunk_emit(c, OP_CONS, 0); return;
@@ -6109,7 +6624,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
          * the list came back as (). */
         int s = c->n_locals;
         chunk_emit(c, OP_NIL, 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         for (int i = node->n_children - 1; i >= 1; i--) {
             compile_expr(c, node->children[i], 0);
             chunk_emit(c, OP_CONS, 0);
@@ -6303,17 +6818,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         /* Note: self-reference upvalue is already patched by OP_CLOSE_UPVALUE
          * at line above (after OP_CLOSURE). No additional open_upvalues needed. */
 
-        /* Call the loop function with initial values */
+        /* Keep the live callee and preceding arguments in the compiler's
+         * slot model while lowering each initializer. A nested let otherwise
+         * assigns its first local to the callee's slot and reads a closure
+         * instead of its own value (e.g. Taylor-model Horner initialization). */
+        int call_locals = c->n_locals;
         chunk_emit(c, OP_GET_LOCAL, loop_slot);
+        add_operand_local(c);
         for (int i = 0; i < bindings->n_children; i++) {
             Node* b = bindings->children[i];
             if (b->type == N_LIST && b->n_children >= 2)
                 compile_expr(c, b->children[1], 0);
             else
                 chunk_emit(c, OP_NIL, 0);
+            add_operand_local(c);
         }
         int body_tail = 1 > 0 ? 0 : tail; /* don't tail-call — need POPN cleanup */
         chunk_emit(c, body_tail ? OP_TAIL_CALL : OP_CALL, bindings->n_children);
+        c->n_locals = call_locals; /* CALL consumed callee and initial values. */
 
         /* The loop is finished, so every by-reference slot it opened into THIS
          * frame must be closed (native 152) before the frame can go away.  A
@@ -6375,7 +6897,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "do") && node->n_children >= 3) { compile_form_do(c, node, tail); return; }
 
     /* (and e1 e2 ...) — short circuit */
-    if (is_sym(head, "and") && node->n_children >= 2) {
+    if (is_sym(head, "and") && node->n_children >= 1) {
+        /* (and) is the identity of conjunction: #t (R7RS 4.2.1). */
+        if (node->n_children == 1) { chunk_emit(c, OP_TRUE, 0); return; }
         /* With one operand, and is just that operand and therefore preserves
          * the surrounding tail position. With multiple operands the first
          * operand must return normally so the short-circuit branch can test it. */
@@ -6392,7 +6916,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /* (or e1 e2 ...) — short circuit */
-    if (is_sym(head, "or") && node->n_children >= 2) {
+    if (is_sym(head, "or") && node->n_children >= 1) {
+        /* (or) is the identity of disjunction: #f (R7RS 4.2.1). */
+        if (node->n_children == 1) { chunk_emit(c, OP_FALSE, 0); return; }
         compile_expr(c, node->children[1], tail && node->n_children == 2);
         for (int i = 2; i < node->n_children; i++) {
             chunk_emit(c, OP_DUP, 0);
@@ -6438,9 +6964,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
          eshkol_syntax_base_is(node->children[3]->symbol, "dtype"))) {
         int __opnd_s = c->n_locals;  /* SW-189: pushed operands are tracked locals */
         compile_expr(c, node->children[1], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[2], 0);
-        add_local(c, "__operand__");
+        add_operand_local(c);
         compile_expr(c, node->children[4], 0);
         c->n_locals = __opnd_s;
         chunk_emit(c, OP_NATIVE_CALL, 423);
@@ -6552,9 +7078,16 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "owned") && node->n_children == 2) { compile_expr(c, node->children[1], tail); return; }
     if (is_sym(head, "move") && node->n_children == 2) { compile_expr(c, node->children[1], tail); return; }
     if (is_sym(head, "borrow") && node->n_children >= 3) {
-        compile_expr(c, node->children[1], 0); /* the borrowed value */
-        for (int i = 2; i < node->n_children; i++)
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+        /* The borrowed operand is evaluated for its effects and discarded;
+         * the body is a sequence whose last expression is the result, so the
+         * stack holds exactly one value afterwards, as for begin. */
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_POP, 0);
+        for (int i = 2; i < node->n_children; i++) {
+            const int last = i == node->n_children - 1;
+            compile_expr(c, node->children[i], tail && last);
+            if (!last) chunk_emit(c, OP_POP, 0);
+        }
         return;
     }
     if (is_sym(head, "shared") && node->n_children == 2) { compile_expr(c, node->children[1], tail); return; }
@@ -6566,8 +7099,27 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* -- define-type (type alias: compile-time only, no runtime effect) -- */
-    if (is_sym(head, "define-type")) { return; }
+    /* -- define-type (type alias: compile-time only, no runtime effect). It
+     *    is not a definition of a variable, so like every expression it
+     *    leaves one value -- the unspecified value -- for its context to
+     *    consume, and the enclosing sequence's pop stays balanced. -- */
+    if (is_sym(head, "define-type")) { chunk_emit(c, OP_VOID, 0); return; }
+
+    /* A declaration yields the unspecified value. An ascription checks its
+     * evaluated operand before yielding that same value. */
+    if (is_sym(head, ":") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
+        chunk_emit(c, OP_VOID, 0);
+        return;
+    }
+    if (is_sym(head, "the") && node->n_children == 3 && !vm_head_user_rebound(c, head)) {
+        compile_expr(c, node->children[2], 0);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(vm_ascription_tags(node->children[1]))));
+        chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_CHECK_ASCRIPTION);
+        return;
+    }
+
+    /* -- HoTT forms (ADR-0043): the cubical kernel, through the driver's hook -- */
+    if (is_sym(head, "hott") || is_sym(head, "hott-eval")) { compile_hott_form(c, node); return; }
 
 
     if (is_sym(head, "vref") && node->n_children == 3) {
@@ -6718,7 +7270,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             for (FuncChunk* p = c; p; p = p->enclosing) {
                 int li = -1;
                 for (int i = p->n_locals - 1; i >= 0; i--) {
-                    if (strcmp(p->locals[i].name, head->symbol) == 0) { li = i; break; }
+                    if (!p->locals[i].compiler_temporary && strcmp(p->locals[i].name, head->symbol) == 0) { li = i; break; }
                 }
                 if (li < 0) continue;
                 if (p->enclosing == NULL) {
@@ -6767,10 +7319,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         int saved_locals = c->n_locals;
         compile_expr(c, head, 0);  /* push function */
-        add_local(c, "__call_func__");
+        add_temporary_local(c, "__call_func__");
         for (int i = 1; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
-            add_local(c, "__call_arg__");
+            add_temporary_local(c, "__call_arg__");
         }
         for (int i = 0; i < pad_absent_args; i++) {
             /* ESHKOL_ABSENT_ARG — the marker the native op reads as "this
@@ -6779,19 +7331,20 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * source program evaluates to, so an op cannot mistake a real
              * argument for an absent one. */
             chunk_emit(c, OP_VOID, 0);
-            add_local(c, "__call_arg__");
+            add_temporary_local(c, "__call_arg__");
             argc++;
         }
+        const int emit_tail_call = vm_tail_call_allowed(c, head, tail);
+        if (emit_tail_call) {
+            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
+                chunk_emit(c, OP_POP_HANDLER, 0);
+        }
+        /* Keep the coverage marker adjacent to its actual call opcode. */
         if (head->type == N_SYMBOL && vm_language_coverage_compilation_enabled()) {
             chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
                        (int)vm_language_coverage_name_hash(head->symbol));
         }
-        if (vm_tail_call_allowed(c, head, tail)) {
-            for (int i = 0; i < c->guard_pop_on_self_tail; i++)
-                chunk_emit(c, OP_POP_HANDLER, 0);
-            vm_emit_call(c, argc, 1);
-        } else
-            chunk_emit(c, OP_CALL, argc);
+        vm_emit_call(c, argc, emit_tail_call);
         c->n_locals = saved_locals; /* CALL consumed func+args, restore n_locals */
         return;
     }

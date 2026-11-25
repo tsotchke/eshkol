@@ -1,0 +1,39 @@
+{
+  "schema": "icc.research_method.v1",
+  "method": "checked-inverse-elimination",
+  "domain": "dense f64 inverse, one CPU call, same pivot/nonfinite contract",
+  "objective_metric": "scalar_multiply_subtract_pairs_n256",
+  "objective_sense": "lower_is_better",
+  "baselines": [
+    {
+      "name": "current full Gauss-Jordan shared kernel",
+      "citation": "inc/eshkol/core/tensor_inverse_checked.h@0bf8808397cba768153e0336bf7f6056dc8a0e95",
+      "value": 33423360,
+      "basis": "Calculated from two full n-column multiply/subtract loops per non-pivot row per pivot, not measured runtime."
+    }
+  ],
+  "decision_points": [
+    {
+      "name": "elimination schedule",
+      "current_choice": "Gauss-Jordan updates work and inverse for every nonpivot row",
+      "alternatives": [
+        {
+          "choice": "forward elimination below pivot, then back substitution of inverse rows",
+          "analytic_basis": "Old pairs=2*n^2*(n-1)=33423360; proposed work pairs=sum(j^2,j=0..n-1) plus inverse pairs=n^2*(n-1)=22271360. Both maintain work and result matrices, no additional workspace; leading flops 4*n^3 -> (8/3)*n^3.",
+          "reported_effect": "unmeasured wall time; calculated scalar pair reduction only",
+          "transferability_note": "n256 count excludes pivots, divisions, loads, stores and branches; cannot imply CPU/GPU latency, RSS, or framework speedup. Same precision and errors must pass all route oracles.",
+          "effect_direction": "improves",
+          "effect_metric": "scalar_multiply_subtract_pairs_n256",
+          "predicted_delta": {
+            "value": -11152000,
+            "metric": "scalar_multiply_subtract_pairs_n256",
+            "baseline": 33423360,
+            "baseline_ref": "shared header source at0bf88083"
+          },
+          "falsifying_experiment": "Instrument loop pair counts for n1,2,3,16,256; reject count derivation on mismatch. Run unchanged pivot/scaled/singular/nonfinite/both-side residual and823 exact certificates on4routes; benchmark separately before any wall-time claim.",
+          "cost_class": "forward-pass-only"
+        }
+      ]
+    }
+  ]
+}

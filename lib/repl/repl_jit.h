@@ -7,6 +7,7 @@
 #ifndef ESHKOL_REPL_JIT_H
 #define ESHKOL_REPL_JIT_H
 
+#include <eshkol/frontend/ownership.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -29,6 +30,7 @@ namespace llvm {
     }
 }
 #include <llvm/ExecutionEngine/Orc/Core.h>  // IntrusiveRefCntPtr for ResourceTrackerSP
+#include <llvm/Support/Error.h>
 
 // C interface
 #include <eshkol/eshkol.h>
@@ -156,13 +158,15 @@ public:
      * Load the standard library (stdlib.esk) into the REPL environment.
      * This makes all stdlib functions available for use.
      *
-     * @return true on success, false on error
+     * @return success on load; an LLVM error when a found artifact is
+     *         incompatible/unreadable or the source fallback cannot load.
      */
-    bool loadStdlib();
+    llvm::Error loadStdlib();
 
     // Seed a fresh interactive parser stream with macros retained from prior
     // REPL evaluations; file/module streams remain isolated.
     void seedParserMacroNames(std::istream& stream) const;
+    std::set<std::string> persistentMacroNames() const;
 
     /**
      * Load a module by name (e.g., "core.functional.compose" or "stdlib")
@@ -303,6 +307,7 @@ private:
     // files are compiled in one batch, while following top-level forms are
     // compiled in fresh batches with fresh MacroExpander instances. Keep
     // define-syntax forms here so macro visibility matches AOT load semantics.
+    OwnershipBindings ownership_bindings_;
     std::vector<eshkol_ast_t> persistent_macro_asts_;
 
     // SHARED ARENA: Single persistent arena shared across all evaluations
@@ -347,7 +352,7 @@ private:
 
     // Load a module, optionally preferring the precompiled stdlib object path.
     bool loadModule(const std::string& module_name, bool allow_precompiled_stdlib,
-                    bool enforce_visibility = true);
+                    bool enforce_visibility = true, bool need_exports = false);
 
     // Inject external declarations for previously-defined symbols
     void injectPreviousSymbols(llvm::Module* module);

@@ -10,6 +10,9 @@
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
+#include <stdexcept>
+#include <string>
+
 namespace eshkol {
 
 FunctionCache::FunctionCache(llvm::Module& mod, TypeSystem& ts)
@@ -38,13 +41,19 @@ void FunctionCache::reset() {
 llvm::Function* FunctionCache::getOrCreateFunction(const char* name,
                                                     llvm::FunctionType* ft,
                                                     llvm::Function*& cache) {
-    if (!cache) {
-        cache = module.getFunction(name);
-        if (!cache) {
-            cache = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                           name, &module);
-        }
+    // Validate before publishing the cached pointer. A rejected declaration
+    // must remain rejected if the caller catches the error and retries.
+    llvm::Function* candidate = cache ? cache : module.getFunction(name);
+    if (candidate && candidate->getFunctionType() != ft) {
+        throw std::runtime_error(std::string("Function declaration type mismatch for ") + name);
     }
+    if (!candidate) {
+        if (module.getNamedValue(name)) {
+            throw std::runtime_error(std::string("Function declaration name conflicts with a non-function: ") + name);
+        }
+        candidate = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, &module);
+    }
+    cache = candidate;
     return cache;
 }
 

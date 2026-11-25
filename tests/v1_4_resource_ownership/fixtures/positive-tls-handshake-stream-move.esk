@@ -1,0 +1,17 @@
+(require core.net)
+(require core.tls)
+;; The TCP stream moves into the session at the handshake, so the session is
+;; the only close site for both from then on.
+(define ctx (tls-client-context #f))
+(if (tls-error? ctx)
+    (display "no tls")
+    (begin
+      (define stream (tcp-connect "127.0.0.1" 9 100))
+      (if (network-error? stream)
+          (tls-context-close ctx)
+          (begin
+            (define session (tls-client-start ctx stream "localhost" 100))
+            (if (tls-error? session)
+                (tls-context-close ctx)
+                (begin (tls-session-close session) (tls-context-close ctx)))))))
+(newline)

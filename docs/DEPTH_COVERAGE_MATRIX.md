@@ -41,18 +41,18 @@ sweep — they are complementary, not a substitute): `tests/ad_oracle`,
 
 ## Coverage summary (auto-derived)
 
-- **AST ops in enum:** 110 (67 composable, 43 leaf)
-- **Supplemental composables** (numeric tower, collection HOFs, recursion patterns): 20
-- **Total composable constructs:** 87
-- **With a depth sweep (pillar-owned):** 77
-- **Un-swept GAPS:** 10 -> **88.5% depth-sweep coverage**
+- **AST ops in enum:** 114 (71 composable, 43 leaf)
+- **Supplemental composables** (numeric tower, collection HOFs, recursion patterns): 24
+- **Total composable constructs:** 95
+- **With a depth sweep (pillar-owned):** 83
+- **Un-swept GAPS:** 12 -> **87.4% depth-sweep coverage**
 
 ### The explicit GAP list (composable, no depth sweep)
 
 | GAP construct(s) | Tracking task | Reason un-swept |
 |---|---|---|
 | `with-region`, `owned`, `move`, `borrow`, `shared`, `weak-ref` | **ESH-0140** | Memory/ownership/region forms nest lexically but no P6 pillar owns them. |
-| `:` type-annotation, `forall` | **ESH-0141** | Type expressions nest (arrow/forall) but no pillar sweeps type-expression nesting depth. |
+| `:` type-annotation, `forall`, `the`, `hott`/`hott-eval` | **ESH-0141** | Type expressions nest (arrow/forall, ascriptions, HoTT kernel terms) but no pillar sweeps type-expression nesting depth. |
 | `unify`, `walk` | **ESH-0142** | Logic-engine term operations recurse over nested compound terms; no depth sweep for logic-term nesting. |
 
 Everything else composable is assigned to a pillar (see full tables below). Note:
@@ -118,6 +118,8 @@ a tracked gap), which is the guarantee that no construct is silently shallow.
 | `ESHKOL_DIRECTIONAL_DERIV_OP` | composable | **P6a** | directional-derivative nesting |
 | `ESHKOL_TYPE_ANNOTATION_OP` | composable | GAP (ESH-0141) | nested type expressions (arrow/forall) — no pillar sweeps type-expression nesting depth |
 | `ESHKOL_FORALL_OP` | composable | GAP (ESH-0141) | nested polymorphic type quantifiers — un-swept |
+| `ESHKOL_THE_OP` | composable | GAP (ESH-0141) | `(the type expr)` ascription — expr and type both nest |
+| `ESHKOL_HOTT_OP` | composable | GAP (ESH-0141) | `(hott ...)`/`(hott-eval term)` kernel terms nest and are elaborated and normalised recursively |
 | `ESHKOL_GUARD_OP` | composable | **P6c** | nested guard/raise |
 | `ESHKOL_RAISE_OP` | composable | **P6c** | nested guard/raise |
 | `ESHKOL_LET_VALUES_OP` | composable | **P6c** | nested multiple-values binding |

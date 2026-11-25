@@ -32,7 +32,7 @@ With Node, Python 3.11+ (or 3.10 with tomli), and the official Lean 4.35.0 tools
 python3 verification/lean-kernel/replay.py
 ```
 
-The [replay](lean-kernel/replay.py) authenticates the [R0 receipt](lean-kernel/R0.toml), hashes the artifacts, re-exports the genuine proof, audits the model theorems' axioms, checks the binder corpus, then checks every required verdict. A different receipt, missing evidence, or changed digest fails the run. The receipt binds this release to specific sources and WASM artifacts. Preserve the original corpus and independent target across releases.
+The [replay](lean-kernel/replay.py) authenticates the [receipt for the landed BLC evaluator and v1.4 WASM VM](lean-kernel/R0-blc-v2.toml), hashes the artifacts, re-exports the genuine proof, audits the model theorems' axioms, checks the binder corpus, then checks every required verdict. A different receipt, missing evidence, or changed digest fails the run. The receipt binds this release to specific sources and WASM artifacts. The [original receipt](lean-kernel/R0.toml) and both proof fixtures retain their original bytes. To reproduce the historical experiment, run the same command in the original PR checkout at `53a755e593a4be72e2787b0cea6b3b723c7d6e4b`. The current runner also accepts `--receipt original` when supplied with the matching historical source and VM artifacts.
 
 For standalone use, supply a proof export and a separate export containing the expected proposition as a definition:
 
@@ -42,7 +42,7 @@ verification/lean-kernel/check mt.ndjson mt target.ndjson Verificatum.target
 
 The [launcher](lean-kernel/check) uses Node for file I/O, strict UTF-8 decoding, scalar transport, limits, and running the pinned VM. Only numeric character data enters VM-generated input expressions. The [Eshkol importer](lean-kernel/import.esk) reads JSON and the [kernel](lean-kernel/kernel.esk) checks declarations. Each check starts from an empty environment. The kernel admits safe monomorphic definitions and theorems, concrete universes and dependent functions, plus the specific empty inductive package needed here. Recursor application and general inductive admission are outside R0. The CLI selects string-only dotted names; inside both imports string components, numeric components, and their boundaries are preserved.
 
-The result is one JSON object with `status`, `reason`, `closure` and `assumptions`. Only `ACCEPT` attests the checked environment. A supported typing, declaration or target violation gives `REJECT`. Rules outside the profile give `UNSUPPORTED`; malformed data, exceeded budgets or runtime failure give `ERROR`. Exit codes are 0, 1, 2 and 3 respectively. R0 checks the entire supplied declaration stream, including declarations unused by the theorem. Both frozen proofs were also replayed in a read-only filesystem namespace with no Lean toolchain or reference kernel executable mounted.
+The result is one JSON object with `status`, `reason`, `closure` and `assumptions`. Only `ACCEPT` attests the checked environment. A supported typing, declaration or target violation gives `REJECT`. Rules outside the profile give `UNSUPPORTED`; malformed data, exceeded budgets or runtime failure give `ERROR`. Exit codes are 0, 1, 2 and 3 respectively. R0 checks the entire supplied declaration stream, including declarations unused by the theorem. For the original receipt, both frozen proofs were also replayed in a read-only filesystem namespace with no Lean toolchain or reference kernel executable mounted.
 
 ### What Lean proves
 

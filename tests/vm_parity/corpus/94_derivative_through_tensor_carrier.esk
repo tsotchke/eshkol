@@ -22,3 +22,18 @@
 ; #(1 4)
 (display (derivative (lambda (x) (tensor-sum (tensor x (* x x)))) 1/2)) (newline)
 ; 2
+
+; Deferred constructor slots must be initialized before a carrier widens the
+; whole buffer. Exercise repeated exact/inexact carriers and reused storage.
+(define (constructor-reuse-check n)
+  (if (= n 0)
+      #t
+      (let ((x (if (= (modulo n 2) 0) 0.5 0.25)))
+        (and (= (derivative (lambda (y)
+                             (tensor-ref (tensor y (* y y)) 1)) x)
+                (* 2.0 x))
+             (= (derivative (lambda (y)
+                              (tensor-sum (tensor y (* y y)))) 1/2)
+                2)
+             (constructor-reuse-check (- n 1))))))
+(display (constructor-reuse-check 32)) (newline)

@@ -1,0 +1,6 @@
+;;; Copyright (C) tsotchke. SPDX-License-Identifier: MIT
+;;; Bootstrap entry: all admitted planning work is in the ordinary module.
+;;; Errors are returned as #f across the C++ boundary; no longjmp crosses RAII.
+(require core.compiler.incremental_plan)
+(define (eshkol_incremental_plan_entry graph)
+  (guard (condition (#t #f)) (incremental-plan graph)))

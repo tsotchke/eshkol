@@ -473,6 +473,33 @@ public:
     /** @brief (event-loop-backend) — name of the compiled-in backend: "kqueue", "epoll", "iocp" or "none". */
     llvm::Value* eventLoopBackend(const eshkol_operations_t* op);
     /** @} */
+    /**
+     * @name Stackful coroutines (inc/eshkol/core/coroutine.h)
+     *
+     * A coroutine is a generation-tagged integer handle naming a nullary
+     * procedure that runs on its own stack. lib/core/fibers.esk builds the
+     * fiber scheduler on these.
+     * @{
+     */
+    /** @brief (make-coroutine thunk) — a suspended coroutine that will run @p thunk. */
+    llvm::Value* makeCoroutine(const eshkol_operations_t* op);
+    /** @brief (coroutine-resume co [value]) — run @p co until it yields or returns. @return The yielded or returned value; re-raises the body's raise. */
+    llvm::Value* coroutineResume(const eshkol_operations_t* op);
+    /** @brief (coroutine-raise co obj) — resume @p co by raising @p obj at its suspension point. */
+    llvm::Value* coroutineRaise(const eshkol_operations_t* op);
+    /** @brief (coroutine-yield [value]) — suspend the running coroutine. @return The value of the next resume. */
+    llvm::Value* coroutineYield(const eshkol_operations_t* op);
+    /** @brief (coroutine-status co) — suspended, running, normal, done or failed. */
+    llvm::Value* coroutineStatus(const eshkol_operations_t* op);
+    /** @brief (coroutine-release! co) — free a finished or never-started coroutine's handle. */
+    llvm::Value* coroutineRelease(const eshkol_operations_t* op);
+    /** @brief (current-coroutine) — the running coroutine, or #f on the thread's own stack. */
+    llvm::Value* currentCoroutine(const eshkol_operations_t* op);
+    /** @brief (coroutine? x) — #t for a handle naming a coroutine that has not been released. */
+    llvm::Value* coroutinePredicate(const eshkol_operations_t* op);
+    /** @brief (coroutine-stats) — alist of per-thread coroutine and stack counters. */
+    llvm::Value* coroutineStats(const eshkol_operations_t* op);
+    /** @} */
     /** @brief (fd-write fd data) — write raw bytes to a file descriptor. @return Bytes written. */
     llvm::Value* fdWrite(const eshkol_operations_t* op);
     /** @brief (make-line-reader fd) — create a buffered line reader over a file descriptor. */

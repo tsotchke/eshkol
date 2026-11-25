@@ -1,0 +1,3 @@
+;; expect-error: type mismatch
+(hott (import numbers)
+  (example (Path Int (sucInt (pos 1)) (pos 1)) (refl 0 Int (pos 1))))

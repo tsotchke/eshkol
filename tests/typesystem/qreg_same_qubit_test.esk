@@ -1,0 +1,13 @@
+;; Type System Test: a two-qubit gate on one qubit twice would copy it
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: qubit 1 is used twice by one 'qcnot'
+;; EXPECT-STDERR: no-cloning
+;; EXPECT-STDERR: Refusing to generate code
+
+(require core.quantum)
+
+(define-quantum-region qr (self-cnot)
+  (qmeasure (qcnot (qalloc qr 2) 1 1)))
+
+(display (self-cnot))

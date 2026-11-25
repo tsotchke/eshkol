@@ -32,6 +32,17 @@ Reference documentation for the Eshkol runtime and toolchain (v1.3.5-evolve).
   pattern, and the AD-mode-flag limitation.
 - [JIT internals](jit-internals.md) — the run cache, the stdlib object cache, and
   the Large code model / arm64 Branch26 veneer.
+- [Coroutines](coroutines.md) — stackful asymmetric coroutines:
+  `make-coroutine`, `coroutine-resume`, `coroutine-yield`, `coroutine-raise`,
+  `coroutine-status`, `coroutine-release!`, `current-coroutine`, `coroutine?`,
+  `coroutine-stats`; the per-coroutine execution context, and the substrate of
+  [`core.fibers`](../stdlib/fibers.md).
+- [Compilation server](compilation-server.md) — how `eshkol-server` frames,
+  bounds and answers an HTTP request: one reading of the header section for
+  framing, the repeated-`Content-Length` and `Transfer-Encoding` rules,
+  byte-counted accumulation, the header/body/deadline budgets and their
+  environment variables, per-request isolation of a compilation, and the
+  status each refusal carries.
 - [Event loop](event-loop.md) — the portable readiness multiplexer over
   kqueue / epoll / IOCP: `make-event-loop`, `event-loop-add-fd!`,
   `event-loop-remove-fd!`, `event-loop-poll`, `event-loop-close`, the Windows

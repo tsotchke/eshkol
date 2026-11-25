@@ -6,6 +6,13 @@
 // Eshkol Interactive REPL - A visual live coding experience
 //
 
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+#include <eshkol/core/config.h>
+#include <eshkol/frontend/incrementalize.h>
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+#include <eshkol/frontend/scalar_lowering.h>
+#endif
 #include <eshkol/eshkol.h>
 #include <eshkol/frontend/ast_strings.h>
 #include <eshkol/platform_runtime.h>
@@ -554,7 +561,14 @@ void clear_screen() {
 
 // Load and execute a file
 bool load_file(const std::string& filename, eshkol::ReplJITContext& repl_ctx) {
-    std::ifstream file(filename);
+    const auto path = eshkol::platform::resolve_module_source_path(
+        filename, ".");
+    if (path.empty()) {
+        print_error("Could not resolve module", filename);
+        return false;
+    }
+    eshkol::platform::ScopedRequiringFile source(path);
+    std::ifstream file(path);
     if (!file.is_open()) {
         print_error("Could not open file", filename);
         return false;
@@ -709,11 +723,12 @@ bool handle_command(const std::string& input, eshkol::ReplJITContext& repl_ctx) 
 
     if (cmd == ":stdlib") {
         std::cout << color::dim() << "Loading standard library..." << color::reset() << std::flush;
-        if (repl_ctx.loadStdlib()) {
+        if (llvm::Error error = repl_ctx.loadStdlib()) {
+            std::cout << color::error() << " failed" << color::reset() << "\n";
+            print_error(llvm::toString(std::move(error)));
+        } else {
             std::cout << color::dim() << " done" << color::reset() << "\n";
             print_success("Standard library loaded. Functions available: length, filter, fold, map, etc.");
-        } else {
-            std::cout << color::error() << " failed" << color::reset() << "\n";
         }
         return true;
     }
@@ -1494,6 +1509,12 @@ static void handle_json_request(const std::string& line, eshkol::ReplJITContext&
 // don't need a forward declaration).
 
 int main(int argc, char** argv) {
+#ifdef ESHKOL_SELF_HOSTED_INCREMENTAL
+    eshkol::frontend::enable_self_hosted_incremental();
+#endif
+#ifdef ESHKOL_SELF_HOSTED_SCALAR_LOWERING
+    eshkol::frontend::enable_self_hosted_scalar_lowering();
+#endif
     // Parse command-line arguments
     bool load_stdlib = false;
     bool machine_mode = false;
@@ -1501,6 +1522,10 @@ int main(int argc, char** argv) {
         std::string arg = argv[i];
         if (arg == "--stdlib" || arg == "-s") {
             load_stdlib = true;
+        } else if (arg == "--unsafe") {
+            auto config = *eshkol_config_get();
+            config.unsafe_mode = true;
+            eshkol_config_set(&config);
         } else if (arg == "--machine" || arg == "-m") {
             machine_mode = true;
             load_stdlib = true; // Whole point of the mode is to be JIT-warm
@@ -1515,6 +1540,7 @@ int main(int argc, char** argv) {
             std::cout << "                  stderr; see docs/reference/runtime/eshkol-repl.md).\n";
             std::cout << "                  Suppresses banner / prompts; implies --stdlib\n";
             std::cout << "                  (warm-worker for sister projects).\n";
+            std::cout << "  --unsafe        Skip static type and ownership checks for legacy programs\n";
             std::cout << "  --help, -h      Show this help message\n";
             return 0;
         }
@@ -1555,13 +1581,12 @@ int main(int argc, char** argv) {
         if (g_interactive) {
             std::cout << color::dim() << "Loading standard library..." << color::reset() << std::flush;
         }
-        if (repl_ctx.loadStdlib()) {
-            if (g_interactive) {
-                std::cout << color::dim() << " done" << color::reset() << "\n";
-            }
+        if (llvm::Error error = repl_ctx.loadStdlib()) {
+            std::cerr << llvm::toString(std::move(error)) << std::endl;
+            return 1;
         } else {
             if (g_interactive) {
-                std::cout << color::error() << " failed" << color::reset() << "\n";
+                std::cout << color::dim() << " done" << color::reset() << "\n";
             }
         }
     }

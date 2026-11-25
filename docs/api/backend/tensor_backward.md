@@ -289,7 +289,7 @@ Single-head attention backward pass: computes dQ, dK, dV.
 
 ### `eshkol_backward_multihead_attention`
 
-*Function* — line 257
+*Function* — line 260
 
 ```c
 void eshkol_backward_multihead_attention(
@@ -303,7 +303,7 @@ void eshkol_backward_multihead_attention(
  int64_t seq_q, int64_t seq_k, int64_t d_model, int64_t num_heads);
 ```
 
-Multi-head attention backward pass: computes gradients for Q, K, V and all projection weights.
+Multi-head attention backward pass: computes gradients for Q, K, V and all projection weights. The tensor tape retains Q, K, V, W_Q, W_K, W_V, W_O, and attention in saved_tensors[0..7]. Optional ad_node_t* entries [8..11] receive the corresponding four weight gradients. A null entry denotes a constant.
 
 **Parameters**
 
@@ -330,7 +330,7 @@ Multi-head attention backward pass: computes gradients for Q, K, V and all proje
 
 ### `eshkol_backward_embedding`
 
-*Function* — line 278
+*Function* — line 281
 
 ```c
 void eshkol_backward_embedding(
@@ -353,7 +353,7 @@ Embedding backward pass: scatter-adds gradients into the weight matrix rows sele
 
 ### `eshkol_backward_matmul`
 
-*Function* — line 297
+*Function* — line 300
 
 ```c
 void eshkol_backward_matmul(
@@ -378,7 +378,7 @@ Matmul backward pass: dA = grad_C @ B^T, dB = A^T @ grad_C.
 
 ### `eshkol_backward_batch_matmul`
 
-*Function* — line 304
+*Function* — line 307
 
 ```c
 void eshkol_backward_batch_matmul(
@@ -392,7 +392,7 @@ Backward pass for independent batched matrix products.
 
 ### `eshkol_backward_tensor_elementwise`
 
-*Function* — line 318
+*Function* — line 321
 
 ```c
 void eshkol_backward_tensor_elementwise(
@@ -409,7 +409,7 @@ Dense elementwise backward pass, including NumPy-style broadcasting. The input a
 
 ### `eshkol_accumulate_tensor_grad`
 
-*Function* — line 339
+*Function* — line 342
 
 ```c
 void eshkol_accumulate_tensor_grad(
@@ -426,7 +426,7 @@ Accumulate a gradient into an AD node's tensor_gradient field. If tensor_gradien
 
 ### `eshkol_seed_tensor_gradient`
 
-*Function* — line 353
+*Function* — line 356
 
 ```c
 void eshkol_seed_tensor_gradient(void* ad_node_ptr);
@@ -440,7 +440,7 @@ Seed the output node's tensor gradient for backpropagation. If the node has tens
 
 ### `eshkol_tensor_backward_dispatch`
 
-*Function* — line 384
+*Function* — line 387
 
 ```c
 void eshkol_tensor_backward_dispatch(void* ad_node_ptr);
@@ -454,7 +454,7 @@ Main entry point called from LLVM-generated backward pass. Reads the AD node's t
 
 ### `eshkol_ad_node_total_elements`
 
-*Function* — line 397
+*Function* — line 400
 
 ```c
 int64_t eshkol_ad_node_total_elements(const void* ad_node_ptr);
@@ -468,7 +468,7 @@ Element count of a tensor AD node: the overflow-checked product of its shape, or
 
 ### `eshkol_ad_node_type_name`
 
-*Function* — line 408
+*Function* — line 411
 
 ```c
 const char* eshkol_ad_node_type_name(int node_type);
@@ -482,7 +482,7 @@ Spell an AD node type for diagnostics, e.g. "AD_NODE_TENSOR_MATMUL". Generated f
 
 ### `eshkol_ad_node_type_is_tensor`
 
-*Function* — line 421
+*Function* — line 424
 
 ```c
 bool eshkol_ad_node_type_is_tensor(int node_type);

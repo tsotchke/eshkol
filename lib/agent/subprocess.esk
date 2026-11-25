@@ -17,7 +17,14 @@
          process-wait process-running? process-exit-code process-pid
          process-kill process-destroy
          run-command run-command-capture
-         run-argv run-argv-capture)
+         run-argv run-argv-capture
+         call-with-subprocess-streams process-stream-read!
+         process-stream-read-status process-stream-read-count process-stream-read-error
+         process-stream-poll process-stream-status process-cancel!
+         process-stream-result-value process-stream-result-cleanup-status
+         process-stream-result-cleanup-ticket
+         process-cleanup-tickets process-cleanup-status process-cleanup-drain!
+         process-cleanup-consume! process-stream-runtime-shutdown!)
 
 ;; ============================================================================
 ;; FFI Declarations
@@ -259,6 +266,8 @@
    `stdin` (`pipe` or `null`), and `process-group` (#t or #f)."
   (unless (list? options)
     (error "process-spawn-argv-options: options must be an alist"))
+  (unless (eq? (process-option options 'io-mode 'capture) 'capture)
+    (error "process-spawn-argv-options: use call-with-subprocess-streams for event-loop mode"))
   (let* ((cwd (process-option options 'cwd "."))
          (env (process-option options 'env #f))
          (stdin (process-option options 'stdin 'pipe))
@@ -525,3 +534,151 @@
           (list (cons 'exit-code code)
                 (cons 'stdout stdout)
                 (cons 'stderr stderr))))))
+
+
+;; Checked, output-only event-loop sessions. The native registry owns resources;
+;; Scheme scope state only prevents receiver re-entry after cleanup.
+(extern i64 process-stream-open-raw i64 ptr ptr ptr :real eshkol_process_stream_open)
+(extern i64 process-stream-read-bv-raw i64 i32 ptr i64 i64 :real eshkol_process_stream_read_bytevector)
+(extern i32 process-stream-poll-raw i64 i32 :real eshkol_process_stream_poll)
+(extern i32 process-stream-status-raw i64 :real eshkol_process_stream_exit_code)
+(extern i32 process-stream-cancel-raw i64 i32 :real eshkol_process_stream_cancel)
+(extern i32 process-stream-close-raw i64 i32 i32 :real eshkol_process_stream_close)
+(extern i64 process-cleanup-next-raw i64 :real eshkol_process_cleanup_next)
+(extern i32 process-cleanup-status-raw i64 :real eshkol_process_cleanup_status)
+(extern i32 process-cleanup-drain-raw i64 i32 :real eshkol_process_cleanup_drain)
+(extern i32 process-cleanup-consume-raw i64 :real eshkol_process_cleanup_consume)
+(extern i32 process-stream-shutdown-raw :real eshkol_process_stream_runtime_shutdown)
+
+(define (process-stream-bound! who n)
+  (unless (and (integer? n) (exact? n) (>= n 0) (<= n 2147483647))
+    (error who "expected exact nonnegative signed-word bound" n)))
+
+(define (process-stream-id! who n)
+  (unless (and (integer? n) (exact? n) (> n 0) (<= n 9007199254740991))
+    (error who "expected exact positive resource identity" n)))
+
+(define (process-stream-checked who n)
+  (if (< n 0) (error who "native stream operation failed" n) (inexact->exact n)))
+
+(define (process-stream-poll session timeout-ms)
+  "Return readiness bits: stdout=1, stderr=2, child exit=4; zero means timeout."
+  (capability-require! 'subprocess)
+  (process-stream-id! "process-stream-poll" session)
+  (process-stream-bound! "process-stream-poll" timeout-ms)
+  (process-stream-checked "process-stream-poll" (process-stream-poll-raw session timeout-ms)))
+
+(define (process-stream-status session)
+  "Return an exact exit code, or #f while running. Exit is independent of EOF."
+  (capability-require! 'subprocess)
+  (process-stream-id! "process-stream-status" session)
+  (let ((n (process-stream-status-raw session)))
+    (if (= n -2) #f (process-stream-checked "process-stream-status" n))))
+
+(define (process-cancel! session grace-ms)
+  "Request direct-child termination; polling advances the monotonic grace deadline."
+  (capability-require! 'subprocess)
+  (process-stream-id! "process-cancel!" session)
+  (process-stream-bound! "process-cancel!" grace-ms)
+  (process-stream-checked "process-cancel!" (process-stream-cancel-raw session grace-ms)))
+
+(define (process-stream-read! session which buffer start count)
+  "Read bytes into a caller bytevector. Result predicates distinguish EOF and no data."
+  (capability-require! 'subprocess)
+  (process-stream-id! "process-stream-read!" session)
+  (process-stream-bound! "process-stream-read! start" start)
+  (process-stream-bound! "process-stream-read! count" count)
+  (unless (and (bytevector? buffer) (> count 0)
+               (<= start (bytevector-length buffer))
+               (<= count (- (bytevector-length buffer) start)))
+    (error "process-stream-read!: invalid bytevector range"))
+  (let* ((stream (cond ((eq? which 'stdout) 1) ((eq? which 'stderr) 2)
+                       (else (error "process-stream-read!: expected stdout or stderr"))))
+         (n (process-stream-read-bv-raw session stream buffer start count)))
+    (cond ((> n 0) (vector 'data (inexact->exact n) #f))
+          ((= n 0) (vector 'eof 0 #f))
+          ((= n -2) (vector 'would-block 0 #f))
+          (else (vector 'error 0 (vector 'process-stream-read! (inexact->exact n)))))))
+
+(define (process-stream-read-status result) (vector-ref result 0))
+(define (process-stream-read-count result) (vector-ref result 1))
+(define (process-stream-read-error result) (vector-ref result 2))
+(define (process-stream-result-value result) (vector-ref result 1))
+(define (process-stream-result-cleanup-status result) (vector-ref result 2))
+(define (process-stream-result-cleanup-ticket result) (vector-ref result 3))
+
+(define (process-cleanup-tickets)
+  "Return closed session tickets, including cleanup deferred by non-local exit."
+  (let loop ((after 0) (tickets '()))
+    (let ((next (process-cleanup-next-raw after)))
+      (if (= next 0) (reverse tickets)
+          (loop (process-stream-checked "process-cleanup-tickets" next)
+                (cons (inexact->exact next) tickets))))))
+
+(define (process-cleanup-status ticket)
+  (process-stream-id! "process-cleanup-status" ticket)
+  (let ((n (process-cleanup-status-raw ticket)))
+    (cond ((= n 0) 'reaped) ((= n 1) 'cleanup-pending)
+          (else (vector 'cleanup-error (inexact->exact n))))))
+
+(define (process-cleanup-drain! loop timeout-ms)
+  (process-stream-id! "process-cleanup-drain!" loop)
+  (process-stream-bound! "process-cleanup-drain!" timeout-ms)
+  (process-stream-checked "process-cleanup-drain!" (process-cleanup-drain-raw loop timeout-ms)))
+
+(define (process-cleanup-consume! ticket)
+  (process-stream-id! "process-cleanup-consume!" ticket)
+  (process-stream-checked "process-cleanup-consume!" (process-cleanup-consume-raw ticket)))
+
+(define (process-stream-runtime-shutdown!)
+  (process-stream-checked "process-stream-runtime-shutdown!" (process-stream-shutdown-raw)))
+
+(define (call-with-subprocess-streams loop argv options receiver)
+  "Launch argv with null stdin, invoke receiver with a checked session, then clean up.
+   Normal result carries receiver value, cleanup status, and an optional ticket.
+   Exceptions and continuation escape preserve original control; deferred cleanup
+   remains discoverable with process-cleanup-tickets. Re-entry raises before spawn."
+  (unless (and (list? argv) (not (null? argv)) (list? options) (procedure? receiver))
+    (error "call-with-subprocess-streams: expected argv, options, and receiver"))
+  (capability-require! 'subprocess argv)
+  (process-stream-id! "call-with-subprocess-streams" loop)
+  (process-argv-check-args argv)
+  (let* ((cwd (process-option options 'cwd "."))
+         (env (process-option options 'env #f))
+         (teardown (process-option options 'teardown-ms 500))
+         (grace (process-option options 'term-grace-ms 100))
+         ;; Wind thunks capture one shared cell across continuation hops:
+         ;; entered, closed, session, value, cleanup,
+         ;; loop, packed argv, cwd, packed env, teardown, grace, receiver.
+         (state (vector #f #f 0 #f -1 loop (process-pack-argv argv)
+                        cwd (process-pack-env env) teardown grace receiver)))
+    (process-check-cwd! "call-with-subprocess-streams" cwd)
+    (process-stream-bound! "teardown-ms" teardown)
+    (process-stream-bound! "term-grace-ms" grace)
+    (unless (and (eq? (process-option options 'io-mode 'event-loop) 'event-loop)
+                 (eq? (process-option options 'stdin 'null) 'null)
+                 (not (process-option options 'process-group #f)))
+      (error "call-with-subprocess-streams: requires event-loop mode, null stdin, no process group"))
+    (dynamic-wind
+      (lambda ()
+        (when (vector-ref state 0)
+          (error "call-with-subprocess-streams: closed session re-entry"))
+        (vector-set! state 0 #t)
+        (vector-set! state 2 (process-stream-checked "call-with-subprocess-streams"
+                       (process-stream-open-raw (vector-ref state 5) (vector-ref state 6)
+                         (vector-ref state 7) (vector-ref state 8)))))
+      (lambda ()
+        (vector-set! state 3 ((vector-ref state 11) (vector-ref state 2))))
+      (lambda ()
+        (unless (vector-ref state 1)
+          (vector-set! state 1 #t)
+          (vector-set! state 4
+            (process-stream-close-raw (vector-ref state 2)
+              (vector-ref state 9) (vector-ref state 10)))
+          (when (= (vector-ref state 4) 0)
+            (process-cleanup-consume-raw (vector-ref state 2))))))
+    (let ((cleanup (vector-ref state 4)))
+      (vector 'process-stream-result (vector-ref state 3)
+              (cond ((= cleanup 0) 'reaped) ((= cleanup 1) 'cleanup-pending)
+                    (else 'cleanup-error))
+              (if (= cleanup 0) #f (vector-ref state 2))))))

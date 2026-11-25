@@ -1,0 +1,5 @@
+(import (core net))
+(define die error)
+(define socket (tcp-listen "127.0.0.1" 0))
+(die "stop")
+(tcp-close socket)

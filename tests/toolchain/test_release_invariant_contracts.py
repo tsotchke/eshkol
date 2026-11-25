@@ -59,7 +59,7 @@ class IdentityTests(unittest.TestCase):
 class DeepWalkTests(unittest.TestCase):
     name = "INV-oalr-interior-pointer-deepwalk"
     header = "inc/eshkol/eshkol.h"
-    runtime = "lib/core/runtime_regions.cpp"
+    runtime = "lib/core/runtime_regions_evacuation.cpp"
 
     def test_actual_canonical_enum_matches_actual_deep_walk_dispatch(self):
         self.assertTrue(grade(self.name))

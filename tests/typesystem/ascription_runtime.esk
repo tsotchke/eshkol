@@ -1,0 +1,9 @@
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
+(define calls 0)
+(define (produce x) (set! calls (+ calls 1)) x)
+(define (length-of (s : string)) (if (string? s) (string-length s) 0))
+(display (length-of (the string (produce "abc")))) (newline)
+(display (guard (e (else 'caught)) (length-of (the string (produce 42))))) (newline)
+(display (guard (e (else 'head)) ((the string (produce (lambda (x) x))) 1))) (newline)
+(display calls) (newline)

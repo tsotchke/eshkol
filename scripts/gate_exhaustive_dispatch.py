@@ -106,7 +106,7 @@ SITES = [
                "normal or is itself the bug",
     },
     {
-        "file": os.path.join("lib", "core", "runtime_regions.cpp"),
+        "file": os.path.join("lib", "core", "runtime_regions_evacuation.cpp"),
         "func": "evac_kind_for",
         "enum": "heap_subtype_t",
         "enum_file": os.path.join("inc", "eshkol", "eshkol.h"),
@@ -136,7 +136,7 @@ SITES = [
         # a release build — which is precisely why it needs a source-derived
         # check. -Werror=switch-enum on this file cannot protect a switch the
         # preprocessor removed before the build CI actually runs.
-        "file": os.path.join("lib", "core", "runtime_regions.cpp"),
+        "file": os.path.join("lib", "core", "runtime_regions_evacuation.cpp"),
         "func": "evac_object",
         "enum": "heap_subtype_t",
         "enum_file": os.path.join("inc", "eshkol", "eshkol.h"),

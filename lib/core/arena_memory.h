@@ -460,6 +460,19 @@ eshkol_memctx_t* eshkol_memctx_current(void);
  */
 arena_t* eshkol_current_arena(void);
 
+// Scoped resident owner ABI. Root holders are private one-cell pairs used by
+// core.dbsp.resident; raw arena values must not escape a borrowed operation.
+int64_t eshkol_resident_open(int64_t threshold);
+void eshkol_resident_close(int64_t owner);
+void eshkol_resident_enter(int64_t owner);
+void eshkol_resident_leave(int64_t owner);
+int64_t eshkol_resident_hold(int64_t owner, const arena_tagged_cons_cell_t* holder);
+void eshkol_resident_get(int64_t owner, int64_t root, arena_tagged_cons_cell_t* holder);
+void eshkol_resident_export(int64_t owner, arena_tagged_cons_cell_t* holder);
+void eshkol_resident_release(int64_t owner, int64_t root);
+void eshkol_resident_compact(int64_t owner, int force);
+int64_t eshkol_resident_stat(int64_t owner, int field);
+
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
@@ -838,6 +851,9 @@ void eshkol_region_unwind_for_continuation(void* state);
 uint64_t eshkol_continuation_extent_enter(void* host_frame);
 void eshkol_continuation_extent_leave(uint64_t id);
 void eshkol_continuation_check_extent(void* state);
+// Raise a catchable condition when the continuation's stack image belongs to a
+// coroutine other than the running one (lib/core/runtime_continuations.cpp).
+void eshkol_continuation_check_owner(void* state);
 
 // Surface entry points, shared verbatim by native codegen and the bytecode VM so
 // arity coercions and error text cannot diverge. Optional arguments are passed
@@ -959,7 +975,8 @@ typedef enum eshkol_slot_store_status {
     ESHKOL_SLOT_STORE_NULL = 1,
     ESHKOL_SLOT_STORE_BOUNDS = 2,
     ESHKOL_SLOT_STORE_CONTAINER = 3,  // operand is neither a vector nor a tensor
-    ESHKOL_SLOT_STORE_VALUE = 4       // value has no representation in the slot
+    ESHKOL_SLOT_STORE_VALUE = 4,      // value has no representation in the slot
+    ESHKOL_SLOT_STORE_INEXACT = 5     // an inexact number offered to an exact tensor (ADR-0058)
 } eshkol_slot_store_status_t;
 // Store one value at a linear index of a vector or tensor operand.
 int32_t eshkol_sequence_slot_store(const eshkol_tagged_value_t* sequence,
@@ -1024,7 +1041,7 @@ typedef struct eshkol_shared_header {
     uint8_t flags;                  // Flags (e.g., marked for collection)
     uint8_t value_type;             // Type of the shared value
     uint16_t reserved;              // Alignment padding
-    uint32_t reserved2;             // Padding to 24 bytes
+    uint32_t header_owners;         // Weak handles plus one while the payload is owned
 } eshkol_shared_header_t;
 
 // Weak reference structure - points to shared data
@@ -1084,14 +1101,30 @@ typedef enum eshkol_tensor_dtype {
     // its address, so every alias sees the promotion. A promoted carrier is no
     // longer a numeric tensor: `tensor?` answers #f for it and every tensor
     // kernel refuses it through the operand check.
-    ESHKOL_TENSOR_DTYPE_BOXED = 65
+    ESHKOL_TENSOR_DTYPE_BOXED = 65,
+    // ADR-0058: the exact element type. `elements` holds 16-byte tagged values,
+    // each an exact rational of the scalar tower (fixnum, bignum or rational),
+    // laid out exactly like the two tagged dtypes above. Unlike a boxed
+    // carrier it IS a numeric tensor (`tensor?` answers #t): the kernels with
+    // an exact rule (construction, element access, elementwise arithmetic,
+    // matmul, transpose, sum, det, inverse, solve) compute over the generic
+    // exact ring, and every other tensor kernel refuses it by name through the
+    // operand check instead of reading its slots as doubles.
+    ESHKOL_TENSOR_DTYPE_EXACT = 66
 } eshkol_tensor_dtype_t;
 
 // True when `elements` holds 16-byte tagged values rather than f64 bit
-// patterns. Both tagged dtypes are laid out the same way; they differ only in
-// what the values are allowed to be.
+// patterns. The three tagged dtypes are laid out the same way; they differ
+// only in what the values are allowed to be.
 static inline int eshkol_tensor_dtype_is_tagged(uint64_t dtype) {
-    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_BOXED;
+    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_BOXED ||
+           dtype == ESHKOL_TENSOR_DTYPE_EXACT;
+}
+
+// True for the tagged dtypes that are still numeric tensors and take the
+// generic-scalar kernels (forward-mode jets and exact elements).
+static inline int eshkol_tensor_dtype_is_tagged_numeric(uint64_t dtype) {
+    return dtype == ESHKOL_TENSOR_DTYPE_DUAL || dtype == ESHKOL_TENSOR_DTYPE_EXACT;
 }
 
 // Tensor structure for multi-dimensional arrays

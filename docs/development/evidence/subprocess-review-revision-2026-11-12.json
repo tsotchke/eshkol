@@ -1,0 +1,42 @@
+{
+  "source_commit": "bb78a19dad5384de9470a3dfc3dd7c868e8efe2e",
+  "created_utc": "2026-11-12T21:52:12.738923+00:00",
+  "source_sha256": {
+    "CMakeLists.txt": "8ced0660b4999315f20e2ecac005e709e9347f37be6a8171ccd2be4d99927a06",
+    "exe/eshkol-run.cpp": "9e20902bdfd2bccc2179ee7f0677b53a2f6c00256cbdecdc6dd94578766af599",
+    "inc/eshkol/strict_resource_contracts.h": "0104532e561817dc6dee82244985f7735eeaae3756a5d85e3f1ade5f8225d4fd",
+    "lib/agent/subprocess.esk": "f31051e751d6323fd1d61016f74e776b2fc9f823fe3005d2d0764bebbf1ee5bb",
+    "lib/agent/c/agent_subprocess.c": "172e643be2376803b614c8fb78527f3339b5677cc178969f0ef94b0d9b60a935",
+    "tests/agent/subprocess_stream_test.c": "9891aa04998c4905b89a84830b60784f17221338dcc78d9c9d9b43a1b809307a",
+    "tests/agent/subprocess_stream_watch_failure_test.c": "17f0fa986d9bdc0f53de9d5373f29f6fab7a35707f1655e9854fb24fbde2d5e0",
+    "tests/agent/run_subprocess_stream_test.sh": "e746eef2fbf1663c621fd80ca9c73488cfdbadaf1882e546b96dc823caaa9961",
+    "tests/v1_4_resource_ownership/test_compiled.py": "5a8f946edb9918924bea698b1c0a0ba5d965166aad58ef85f2e6229f2df3465f"
+  },
+  "source_pins": "PASS;40 subprocess exports reviewed",
+  "ctest": {
+    "passed": 4,
+    "failed": 0,
+    "tests": [
+      "agent-subprocess-stream",
+      "agent-subprocess-stream-watch-failure",
+      "resource_explicit_loop_test",
+      "strict_resource_contract_pins"
+    ]
+  },
+  "standalone": "Native and ASan/UBSan/leak PROCESS suites passed, including mixed shared identities and failed-watch recovery.",
+  "compiler_validation": "PROCESS-only checker source syntax passed. Three PROCESS compiled fixtures passed with the compatible combined socket compiler; this is not a fresh isolated production compiler/package build.",
+  "hosted_component_run": "https://github.com/Gabriel-Kahen/eshkol/actions/runs/43312363510",
+  "local_log_sha256": {
+    "eshkol-914-final-build.log": "952f787591c05b049d1702257b68fc4fd2021484997debf30e4a620ec728497c",
+    "eshkol-914-final-ctest.log": "43a89420ec0921c5db1bb677d76308956bad0d36791783968e41654e224ffcde",
+    "eshkol-914-final-native.log": "22ef66237c565a59f1dd4cf0681b39df47358538c3e3caeb874c6bbd67afd0a7",
+    "eshkol-914-final-sanitized.log": "2acb72f2c4e668365fc9d53332ade899b6c87f3032cc95255b3b01658f850b98",
+    "eshkol-914-strict-checks.log": "c44c2cd135900122f07714fdc29ea51da1082481ab25ad3eabea5714fa4d17f5",
+    "eshkol-914-strict-syntax.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "record_note": "Original raw logs retained locally; portable summary metadata only.",
+  "limits": [
+    "Aggregate PROCESS cleanup IDs explicitly unsupported under strict ownership.",
+    "macOS public JIT/AOT and package/release acceptance remain separate maintainer gates."
+  ]
+}

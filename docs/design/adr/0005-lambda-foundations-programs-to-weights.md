@@ -228,11 +228,9 @@ runtime/source S-expression
     -> assemble and verify resident capsule
 ```
 
-The existing bytecode compiler already emits instructions and constants and
-writes them into ESKB (`lib/backend/eshkol_compiler.c:5798-5806`,
-`lib/backend/eshkol_compiler.c:6019-6055`). The new front half must feed that
-lowering from canonical LCIR rather than making the standalone compiler's
-parser representation the long-term identity format.
+At the time of this ADR, the standalone hosted compiler emitted instructions
+and constants into ESKB. That source has since been retired; this historical
+proposal does not describe a live production consumer.
 
 Capsule identity is the hash of all semantic inputs:
 

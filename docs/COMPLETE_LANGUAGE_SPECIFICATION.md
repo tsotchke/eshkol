@@ -886,32 +886,15 @@ also work inside a `#(...)` vector literal under quasiquote:
 ```scheme
 (the <type> expr)
 ```
-Asserts to the type checker that `expr` has type `<type>`. It is a **trusted
-assertion**: the checker adopts `<type>` as the type of the whole form and does
-not re-derive it from `expr`. It is a pure **runtime no-op** — the emitted IR is
-byte-identical to `expr` alone (no runtime tag check, no cost), so
-`(the <type> expr)` evaluates to exactly the same value as `expr`.
+The checker assigns the ascribed type to the expression. At runtime the
+engine evaluates the operand once and checks its tag, including when the
+ascription appears in operator position. A match yields that same value.
+A mismatch raises a condition that `guard` can catch. The runtime check also
+applies under `--unsafe`.
 
-Trusted does not mean unexamined. The checker still synthesizes `expr`, and if
-the type it finds is **provably disjoint** from `<type>` — no value inhabits
-both — it reports the ascription rather than adopting it. That is a compile-time
-diagnostic only: a warning under gradual typing, fatal under `--strict-types`
-(§ [`--strict-types`](reference/runtime/eshkol-run.md)), and in neither case
-does it add anything to the emitted code.
-
-The check is deliberately narrow, so the form stays useful:
-
-- **Narrowing is always accepted** — the primary use. `(the integer (car xs))`
-  over a dynamically-typed container is exactly what the form is for.
-- **Widening is always accepted**: `(the number 1)`.
-- Anything whose type the checker does not know (the dynamic `any`/`value`
-  root, an unresolved name) is trusted, not questioned.
-- **Numeric-tower ascriptions are always accepted.** `integer`, `rational`,
-  `real` and `complex` are siblings under `number` in this type graph rather
-  than a chain, so no subtyping relation holds between them in either
-  direction; `(the real 1)` and `(the float64 (+ 1 2))` are ordinary.
-
-Only a genuine contradiction is reported:
+When the static checker can prove the inferred and ascribed types are disjoint,
+gradual mode issues a diagnostic and `--strict-types` refuses compilation.
+A dynamically typed operand receives the same runtime check.
 
 <!-- doc-example: skip fragment: `mixed-list` and `xs` are assumed bindings illustrating the ascription rules -->
 ```scheme
@@ -997,6 +980,47 @@ decision.
    `Value`. An annotated or linear parameter is never widened. A `do` variable
    is the join of its initialiser and its step, and adopts every join. A
    recursive procedure's result is the least fixpoint over its own calls.
+6. **Expected types are checked tail by tail** (ADR 0042). Where an
+   expected type exists -- a call argument, a return annotation, an annotated
+   `let` binding, a `(: name type)` declaration, `(the T e)` -- each expression
+   whose value becomes the checked value (each branch of `if`, `cond`, `case`,
+   `when`, `unless`, the last expression of a body) must fit on its own; the
+   one that does not is reported there. A lambda passed where a function type
+   is expected is checked with its parameters at the domains and its body
+   against the codomain. Checking never changes the generated code.
+
+#### 3.6.7.2 Dependent Types
+
+Normative for the checker; [ADR 0042](design/adr/0042-dependent-type-enforcement.md)
+records the decision.
+
+1. **Forms.** `(Pi ((x : A) ...) B)` is a dependent function type and
+   `(Sigma ((x : A) ...) B)` a dependent pair type: each binder type may name
+   the earlier binders and `B` all of them. `(universe n)` is the universe at
+   level `n`, and lives in `(universe n+1)`. `(vector A n)` is the vector of
+   length `n` with elements of type `A`. A `define-type` family may declare the
+   sort of a parameter, `(m : integer)` for an index or `(a : (universe k))` for
+   a type, and `(F arg ...)` applies it.
+2. **Index terms** are integer literals, `(+ m n)`, `(- m n)`, `(* m n)`,
+   variables that are never assigned, and `(car p)`, `(cdr p)`,
+   `(vector-length v)`.
+3. **Signatures are telescopes.** A parameter annotation may name an earlier
+   parameter, and a return annotation any parameter. An index variable that no
+   parameter binds is implicit: each call solves it from the arguments.
+   `(vector e ...)` has type `(vector Value k)` for `k` elements, and
+   `(make-vector n x)` type `(vector Value n)` when `n` is an index term.
+4. **Definitional equality** is equality of normal forms: `let`-bound index
+   variables unfold to their values, families expand with their arguments,
+   and index arithmetic is compared in polynomial normal form.
+5. **Obligations.** It is a compile-time error, in every mode except
+   `--unsafe`, when an index is not definitionally equal to the one a type
+   requires, a family argument's universe exceeds its parameter's, a Pi, Sigma
+   or family type is ill-formed or applied to a number of arguments other than its arity,
+   or a variable a dependent type names is assigned with `set!`. A vector
+   index known statically to be outside a length known statically is a type
+   error with the mode's severity (a warning in gradual mode). An index that is
+   not known statically is accepted. The bytecode VM refuses the same
+   programs.
 
 #### 3.6.8 Linear Types — `Qubit`
 `Qubit` is a first-class **linear** type: its values must be used exactly once.
@@ -1124,6 +1148,40 @@ linear accounting, once-closures / affine closure typing, and replacing the
 remaining name-keyed inference with ADR-0004's place-keyed PlaceId/FlowEnv
 (which closes the laundering residue for linear types and for ownership `move`
 alike, since both are defeated by the same aliasing shape).
+
+#### 3.6.9 Quantum Registers and Regions — `qreg<n>`
+
+A **quantum register** of n qubits has type `qreg<n>` (also written
+`(qreg n)`). It is linear exactly as `Qubit` is (3.6.8): every rule there
+applies to a register binder, and a register computed and dropped in a
+sequence is a discard. A qubit address of a `qreg<n>` has type `qidx<n>`.
+Indices are linear expressions over naturals (`3`, `n`, `n+1`, `m+n`,
+`2*n`); they unify at every application, and an index spelled like an
+integer parameter denotes that argument's compile-time value. A register
+whose size is known only at run time has the bare type `qreg`.
+
+```scheme
+(define (entangle (r : qreg<n>)) : qreg<n> (qcnot (qh r 0) 0 1))
+(define (widen (qr : qregion) (r : qreg<n>)) : qreg<n+1> (qjoin r (qalloc qr 1)))
+(define-quantum-region qr (bell)
+  (qmeasure (entangle (qalloc qr 2))))      ; (qalloc qr 2) : qreg<2>
+```
+
+`(define-quantum-region R (name formals ...) body ...)` and
+`(with-quantum-region (R) body ...)` run their body in a fresh quantum region
+bound to R (type `qregion`); they are `call-with-quantum-region` applied to
+`(lambda ((R : qregion)) body ...)`. Allocation (`qalloc R n`) needs the
+region; the body's result must be classical; a procedure returned from the
+body must not mention R; every register must be measured, released or
+otherwise consumed before the region ends.
+
+The following are compile-time errors in every mode but `--unsafe`, on the
+native and bytecode engines: a known dimension mismatch; a literal `qidx`
+outside its register; the same literal qubit twice in one gate; a register
+used twice, never consumed, or discarded; a register or the region escaping
+the region; a `qsplit` continuation whose register parameters are undeclared
+or mis-sized. Primitives and their types: [`core.quantum`](reference/stdlib/quantum.md);
+design: ADR-0048.
 
 ### 3.7 Module System
 
@@ -1387,8 +1445,8 @@ naming both shapes.
 
 <!-- doc-example: skip pseudo-code: demonstrates both successful broadcasts and the intentional errors in the trailing comments; the error lines terminate the program before later lines run -->
 ```scheme
-(* #(1 2) #(3 4))         ; => #(3 8)
-(* #(2.0) #(1.0 2.0 3.0)) ; => #(2 4 6)      (a dimension of 1 broadcasts)
+(* #(1 2) #(3 4))         ; => #(3.0 8.0)
+(* #(2.0) #(1.0 2.0 3.0)) ; => #(2.0 4.0 6.0)  (a dimension of 1 broadcasts)
 (* #(1 2) 2)              ; ERROR: Type error in tensor-mul: expected tensor, got integer
 (* 2 #(1 2))              ; ERROR: the same error, same wording
 (* #(1 2 3) #(4 5))       ; ERROR: Shape mismatch in tensor-mul: shapes (3) and (2)
@@ -1398,8 +1456,8 @@ naming both shapes.
 **Examples:**
 ```scheme
 (+ 1 2)        ; => 3
-(+ 1.5 2.5)    ; => 4    (inexact; a double with no fractional part prints
-               ;          without a decimal point — see 3.1 Numeric Tower)
+(+ 1.5 2.5)    ; => 4.0  (inexact; a double with no fractional part prints
+               ;          with its decimal point — see 3.1 Numeric Tower)
 (+ 1 2 3 4 5)  ; => 15
 ```
 
@@ -2259,6 +2317,19 @@ See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 ; native: data's memory freed here; bytecode VM: same value, not yet freed
 ```
 
+JIT, AOT, the REPL and the hosted bytecode compiler apply ownership checks by
+default, with one verdict function, before any code is generated. For every
+accepted program no owned value is read or moved through any name after it has
+been moved: through the owner, another binding built from it, a closure or
+procedure that names it, a lambda parameter or loop variable it is passed to.
+A value that refers to an owner may not reach a place the checker cannot
+follow: `set!`, an argument a procedure keeps past the call, a procedure the
+checker cannot resolve, or a form it does not model. The complete rules are in
+[ownership](reference/language/ownership.md). Use `--unsafe` to run legacy code
+with static ownership and type checking disabled. The native
+`--strict-resources` profile additionally checks the acquisition and closing
+contracts of resource APIs.
+
 #### 6.2.2 `owned` - Mark Ownership
 **Syntax:** `(owned expr)`
 
@@ -2277,8 +2348,10 @@ See [memory model](reference/runtime/memory-model.md#which-engine-reclaims).
 **Semantics:** Transfers ownership, marks original as moved
 
 **Compile-Time Checks:**
-- Cannot use after move
-- Cannot move while borrowed
+- Cannot use after move, through the owner or any alias, closure or loop
+  variable that refers to the moved value
+- Cannot move twice, or move while borrowed
+- Cannot move an owner bound outside a procedure or loop body from inside it
 
 **Example:**
 ```scheme
@@ -2357,6 +2430,7 @@ Eshkol implements a gradual type system inspired by Homotopy Type Theory with:
 - **Subtype Hierarchy:** Transitive subtyping with caching
 - **Type Inference:** Bidirectional type checking
 - **Runtime Types:** Type information preserved in tagged values
+- **Identity types and univalence:** a cubical type theory (path types, `transp`/`hcomp`, Glue types, higher inductive types) checks and computes `(hott ...)` declarations and `(hott-eval ...)` terms at compile time; see [reference/language/hott.md](reference/language/hott.md) and ADR-0043
 
 ### 7.2 Universe Hierarchy
 
@@ -2687,7 +2761,7 @@ struct ad_tape {
           (* (vref v 0) (sin (vref v 1)))))
 
 (display (jacobian polar-to-cartesian (vector 1.0 0.0)))
-; => #((1 0) (0 1))   (the Jacobian at r=1, θ=0)
+; => #((1.0 0.0) (0.0 1.0))   (the Jacobian at r=1, θ=0)
 ```
 
 #### 8.3.2 `hessian` - Hessian Matrix
@@ -2704,7 +2778,7 @@ struct ad_tape {
      (* (vref v 1) (vref v 1))))
 
 (hessian f (vector 1.0 1.0))
-; => #((2 0) (0 2))  [constant Hessian for quadratic]
+; => #((2.0 0.0) (0.0 2.0))  [constant Hessian for quadratic]
 ```
 
 #### 8.3.3 `divergence` - Vector Field Divergence
@@ -2721,7 +2795,7 @@ struct ad_tape {
 (define (radial v)
   (vector (vref v 0) (vref v 1)))  ; F(x,y) = (x, y)
 
-(divergence radial (vector 1.0 1.0))  ; => 2
+(divergence radial (vector 1.0 1.0))  ; => 2.0
 ```
 
 #### 8.3.4 `curl` - Vector Field Curl
@@ -2740,7 +2814,7 @@ struct ad_tape {
           (vref v 0)             ; x
           0.0))                  ; 0
 
-(curl rotating (vector 1.0 1.0 0.0))  ; => #(0 0 2)
+(curl rotating (vector 1.0 1.0 0.0))  ; => #(0.0 0.0 2.0)
 ```
 
 #### 8.3.5 `laplacian` - Scalar Field Laplacian
@@ -2758,7 +2832,7 @@ struct ad_tape {
   (+ (* (vref v 0) (vref v 0))
      (* (vref v 1) (vref v 1))))  ; x² + y²
 
-(laplacian harmonic (vector 1.0 1.0))  ; => 4
+(laplacian harmonic (vector 1.0 1.0))  ; => 4.0
 ```
 
 #### 8.3.6 `directional-derivative` - Directional Derivative
@@ -2829,7 +2903,7 @@ monomorphization).
 ; => (1.6487212707001282 1.6487212707001282 0.8243606353500641 0.27478687845002137 0.06869671961250534)
 ;    (approximately 1.64872, 1.64872, 0.824361, 0.274787, 0.0686967)
 
-(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; => 27  (f'(x) = 3x^2 at x=3)
+(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; => 27.0  (f'(x) = 3x^2 at x=3)
 ```
 
 #### 8.5.2 `core.ad.guw` — Arbitrary-Order Multivariate Mixed Partials
@@ -3311,7 +3385,7 @@ expressions (matching Racket/MIT/Guile/Chez), under these rules:
   (define t (reshape v 1 2))         ; evaluated HERE, so it sees the filled v
   (tensor-data t))
 
-(display (outer))                    ; => #(1 2)
+(display (outer))                    ; => #(1.0 2.0)
 ```
 
 Reading a value define's variable **before** its source position yields the
@@ -4787,7 +4861,7 @@ This document provides a **complete** specification of the Eshkol programming la
 
 **Total Coverage:** (counts from `tests/coverage/language_surface.json` and `tests/coverage/coverage_policy.json`, the machine sources the coverage gate reads)
 - All 116 special forms and 113 parser AST operations
-- All 1,058 built-in functions (1,118 declared constructs in total)
+- All 1,069 built-in functions (1,470 declared constructs in total)
 - 790 registered VM builtin names and aliases (the manifest's `builtins_in_vm_table` count)
 - 72-opcode bytecode VM with ESKB binary format
 - Complete type system (15+ types with 18+ heap subtypes)

@@ -1,0 +1,16 @@
+;; Dependent types (ADR-0042): the implicit index n of dot is determined as 3 by
+;; the first argument, so a vector of length 2 in the second position is a
+;; failed obligation. It is a compile-time error in the default mode.
+;; EXPECT-MODE: default
+;; EXPECT-COMPILE: fail
+;; EXPECT-STDERR: [ERROR] Type error: argument 2 of 'dot': expected (vector Float64 3), got (vector Value 2)
+;; EXPECT-STDERR: dependent type obligation(s) not met
+
+(define (dot (u : (vector real n)) (v : (vector real n))) : real
+  (let loop ((i 0) (acc 0.0))
+    (if (= i (vector-length u))
+        acc
+        (loop (+ i 1) (+ acc (* (vector-ref u i) (vector-ref v i)))))))
+
+(display (dot (vector 1.0 2.0 3.0) (vector 4.0 5.0)))
+(newline)

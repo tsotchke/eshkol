@@ -1,0 +1,113 @@
+;; effects_coroutine_test.esk — effect handlers across coroutine switches.
+;;
+;; The effect-handler context (ADR-0045) is dynamic state of the execution
+;; context (ADR-0030), saved and restored on every coroutine switch with the
+;; dynamic-wind chain. So a coroutine that suspends inside `handle` resumes
+;; with that handler installed; the context it switched to runs with its own
+;; handlers, never the coroutine's; and a coroutine starts with no handlers,
+;; because a handler of its resumer is not on its stack.
+
+(define-effect Ask (ask))
+
+(define passed 0)
+(define failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (unhandled? thunk)
+  (guard (e ((unhandled-effect-error? e) #t) (#t 'other))
+    (thunk)
+    #f))
+
+;; ─── A handler inside the coroutine, around its yield ──────────────
+
+(define inner
+  (make-coroutine
+   (lambda ()
+     (handle (let* ((a (ask))
+                    (b (coroutine-yield a))
+                    (c (ask)))
+               (list a b c))
+       ((ask) k (k 'inner))))))
+
+(check "the coroutine's handler answers before the yield"
+       (eq? (coroutine-resume inner) 'inner))
+(check "the coroutine's handler is not installed in the resumer"
+       (eq? (unhandled? (lambda () (ask))) #t))
+(check "the resumer's own handler answers while the coroutine is suspended"
+       (eq? (handle (ask) ((ask) k (k 'outer))) 'outer))
+(check "the coroutine resumes with its handler installed"
+       (equal? (handle (coroutine-resume inner 'sent) ((ask) k (k 'outer)))
+               '(inner sent inner)))
+(check "after the coroutine finishes the resumer still has no handler"
+       (eq? (unhandled? (lambda () (ask))) #t))
+
+;; ─── A handler outside the coroutine, around its resume ────────────
+
+(define plain
+  (make-coroutine
+   (lambda ()
+     (coroutine-yield 'first)
+     'second)))
+
+(check "a handler around resume stays installed across the switch"
+       (equal? (handle (let* ((x (coroutine-resume plain))
+                              (y (ask)))
+                         (list x y))
+                 ((ask) k (k 'outer)))
+               '(first outer)))
+(check "a handler around the second resume stays installed too"
+       (equal? (handle (let* ((x (coroutine-resume plain))
+                              (y (ask)))
+                         (list x y))
+                 ((ask) k (k 'outer2)))
+               '(second outer2)))
+
+;; A coroutine starts with no handlers: the resumer's handler is not on the
+;; coroutine's stack, so an operation in the body is unhandled there, and the
+;; condition reaches the resumer as any raise in a body does.
+(define asks
+  (make-coroutine
+   (lambda () (ask))))
+
+(check "a coroutine does not inherit the resumer's handler"
+       (eq? (handle (unhandled? (lambda () (coroutine-resume asks)))
+              ((ask) k (k 'outer)))
+            #t))
+
+;; ─── Nested: handlers on both sides, interleaved switches ──────────
+
+(define nested
+  (make-coroutine
+   (lambda ()
+     (handle (let loop ((i 0) (acc '()))
+               (if (= i 3)
+                   (reverse acc)
+                   (let* ((answer (ask))
+                          (sent (coroutine-yield i)))
+                     (loop (+ i 1) (cons (list answer sent) acc)))))
+       ((ask) k (k 'co))))))
+
+(define (drive tag)
+  (handle (let* ((step (coroutine-resume nested tag))
+                 (mine (ask)))
+            (list step mine))
+    ((ask) k (k tag))))
+
+(check "first interleaved step" (equal? (drive 'r0) '(0 r0)))
+(check "second interleaved step" (equal? (drive 'r1) '(1 r1)))
+(check "third interleaved step" (equal? (drive 'r2) '(2 r2)))
+(check "the coroutine saw only its own handler"
+       (equal? (handle (coroutine-resume nested 'r3) ((ask) k (k 'outer)))
+               '((co r1) (co r2) (co r3))))
+
+(newline)
+(display "passed: ") (display passed) (display ", failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "PASS: effects_coroutine_test") (newline))
+    (begin (display "FAIL: effects_coroutine_test") (newline) (exit 1)))

@@ -1,0 +1,11 @@
+;; An escape-only continuation leaves with the same port state as the
+;; normal return, so the join is closed-after-use.
+(define in (open-input-file "strict-callcc.txt"))
+(define head
+  (call/cc
+    (lambda (k)
+      (if (eof-object? (peek-char in))
+          (k "empty")
+          (read-line in)))))
+(close-port in)
+(display head)

@@ -10,6 +10,7 @@
 
 (require core.list.query)
 (require core.list.transform)
+(require core.utf8)
 
 (provide
   msgpack-null msgpack-null?
@@ -120,10 +121,16 @@
       (else
        (error "msgpack-encode: bin payload too large for current substrate" len)))))
 
+;; A MessagePack str is UTF-8 text; bin remains arbitrary bytes. Text is
+;; validated by core.utf8 before calling the permissive runtime converter.
+(define (msgpack-require-utf8 bv pos len)
+  (utf8-require-valid "msgpack" bv pos len))
+
 (define (msgpack-encode-string str)
   (let* ((utf8 (string->utf8 str))
          (payload (msgpack-bytevector->bytes utf8))
          (len (length payload)))
+    (msgpack-require-utf8 utf8 0 len)
     (cond
       ((<= len 31)
        (append (list (+ 160 len)) payload))
@@ -197,6 +204,7 @@
 
 (define (msgpack-decode-string bv pos len)
   (msgpack-require-available bv pos len)
+  (msgpack-require-utf8 bv pos len)
   (list (utf8->string (bytevector-copy bv pos (+ pos len))) (+ pos len)))
 
 (define (msgpack-decode-array-elements bv pos count acc)

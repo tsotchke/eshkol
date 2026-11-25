@@ -1126,7 +1126,10 @@ void* eshkol_xla_reduce(
     int64_t axis,
     int64_t op_code)
 {
-    if (total_elements <= 0 || !data) return nullptr;
+    if (total_elements < 0 || (!data && total_elements > 0)) return nullptr;
+    if (total_elements == 0 && (!shape || axis < 0 || axis >= rank ||
+                                (op_code == 1 && shape[axis] == 0)))
+        return nullptr;
 
     /* Full reduction (axis == -1): return scalar as 1-element tensor */
     if (axis == -1) {
@@ -1176,7 +1179,8 @@ void* eshkol_xla_reduce(
             switch (op_code) {
                 case 0: case 1: acc = 0; break;  /* SUM, MEAN: init 0 */
                 case 4: acc = 1; break;           /* PROD: init 1 */
-                case 2: case 3: acc = data[o * mid * inner + i]; break; /* MAX, MIN: init first */
+                case 2: acc = mid ? data[o * mid * inner + i] : -INFINITY; break;
+                case 3: acc = mid ? data[o * mid * inner + i] : INFINITY; break;
                 default: acc = 0; break;
             }
             for (int64_t m = 0; m < mid; m++) {

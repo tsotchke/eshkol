@@ -21,6 +21,11 @@ TESTS=(
     # takes its execution evidence from that run — a construct exercised only
     # under ctest earns no coverage credit.
     tests/v1_3_edge_cases/event_loop_test.esk
+    # Stackful coroutines and core.fibers: listed here so the coverage
+    # harness sees every coroutine builtin execute (run_all_tests.sh drives
+    # this script); scripts/run_fibers_gate.py adds the JIT route and stress.
+    tests/fibers/coroutine_primitives_test.esk
+    tests/fibers/fibers_test.esk
     tests/ad/one_pass_gradient_test.esk
     # The negative control for the finite-difference counter and the matmul
     # tape-node ratchet. Listed here as well as in the AD exactness gate so the
@@ -31,6 +36,10 @@ TESTS=(
     tests/ad/matmul_tape_node_count_test.esk
     tests/ad/sparse_tensors_test.esk
     tests/ad/taylor_tower_test.esk
+    tests/effects/handler_laws.esk
+    tests/effects/unwinding_order.esk
+    tests/effects/resumption_counts.esk
+    tests/coverage/wave9_surface_execution_test.esk
 )
 
 echo "========================================="
@@ -49,9 +58,17 @@ for relative in "${TESTS[@]}"; do
     binary="$RUN_DIR/$stem"
     output="$RUN_DIR/$stem.out"
     printf "Testing %-48s " "$stem"
-    "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$source_file" -o "$binary" \
-        >"$RUN_DIR/$stem.compile.out" 2>&1
-    "$binary" >"$output" 2>&1
+    if ! "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$source_file" -o "$binary" \
+        >"$RUN_DIR/$stem.compile.out" 2>&1; then
+        echo "COMPILE FAIL"
+        tail -80 "$RUN_DIR/$stem.compile.out"
+        exit 1
+    fi
+    if ! "$binary" >"$output" 2>&1; then
+        echo "RUNTIME FAIL"
+        tail -80 "$output"
+        exit 1
+    fi
     if grep -Eq '(^|[[:space:]:])FAIL([[:space:]:]|$)|Failed:[[:space:]]+[1-9]|ERROR:' "$output"; then
         echo "FAIL"
         tail -80 "$output"
@@ -60,6 +77,27 @@ for relative in "${TESTS[@]}"; do
     echo "PASS"
     passed=$((passed + 1))
 done
+
+ESHKOL_VM="$ROOT_DIR/$BUILD_DIR/eshkol-vm-standalone-test"
+VM_TESTS=(
+    tests/coverage/wave9_vm_value_constants_test.esk
+)
+if [ -x "$ESHKOL_VM" ]; then
+    for relative in "${VM_TESTS[@]}"; do
+        source_file="$ROOT_DIR/$relative"
+        stem="$(basename "$relative" .esk)"
+        output="$RUN_DIR/$stem.vm.out"
+        printf "Testing %-48s " "$stem (VM)"
+        ESHKOL_VM_NO_DISASM=1 "$ESHKOL_VM" "$source_file" >"$output" 2>&1
+        if grep -Eq '(^|[[:space:]:])FAIL([[:space:]:]|$)|Failed:[[:space:]]+[1-9]|ERROR:' "$output"; then
+            echo "FAIL"
+            tail -80 "$output"
+            exit 1
+        fi
+        echo "PASS"
+        passed=$((passed + 1))
+    done
+fi
 
 echo ""
 echo "Passed: $passed"

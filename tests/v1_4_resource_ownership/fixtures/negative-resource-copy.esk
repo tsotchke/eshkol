@@ -1,0 +1,7 @@
+(require core.net)
+(define socket (tcp-listen "127.0.0.1" 0))
+(if (network-error? socket)
+    #t
+    (begin
+      (define alias socket)
+      (tcp-close socket)))
