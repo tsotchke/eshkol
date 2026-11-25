@@ -1,0 +1,408 @@
+;;; tests/stdlib/measure_markov_test.esk
+;;;
+;;; Acceptance suite for core.measure (sigma-algebras, Partial Markov
+;;; Categories per arXiv:2502.03477, exact rational Bayes disintegration,
+;;; null-set / zero-mass singularity refusals & witnesses, conditional
+;;; independence, and core.sblc sub-distribution conditioning).
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+(require core.measure)
+(require core.blc)
+(require core.sblc)
+
+(define passes 0)
+(define failures 0)
+
+(define (check name ok)
+  (if ok
+      (set! passes (+ passes 1))
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ")
+        (display name)
+        (newline))))
+
+(define (all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (all? pred (cdr xs)))
+        (else #f)))
+
+;; ============================================================================
+;; 1. Finite Boolean sigma-algebras
+;; ============================================================================
+
+(define omega4 '(a b c d))
+(define F-triv (trivial-sigma-algebra omega4))
+(define F-pow (power-set-sigma-algebra omega4))
+(define F-gen (generate-sigma-algebra omega4 (list '(a b) '(b c))))
+
+(check "trivial sigma-algebra has 2 events and is valid"
+       (and (= (sigma-size F-triv) 2)
+            (sigma-algebra-valid? F-triv)
+            (= (length (sigma-atoms F-triv)) 1)))
+
+(check "power-set sigma-algebra on 4 points has 16 events and 4 singleton atoms"
+       (and (= (sigma-size F-pow) 16)
+            (sigma-algebra-valid? F-pow)
+            (= (length (sigma-atoms F-pow)) 4)))
+
+(check "generated sigma-algebra from {a,b} and {b,c} recovers all 4 atoms"
+       (and (sigma-algebra-valid? F-gen)
+            (= (sigma-size F-gen) 16)
+            (sigma-contains? F-gen '(b))
+            (sigma-contains? F-gen '(a))
+            (sigma-contains? F-gen '(c))
+            (sigma-contains? F-gen '(d))))
+
+(define F-part (generate-sigma-algebra omega4 (list '(a b))))
+(check "generated sigma-algebra from {a,b} has 4 events and 2 atoms {a,b}, {c,d}"
+       (and (sigma-algebra-valid? F-part)
+            (= (sigma-size F-part) 4)
+            (= (length (sigma-atoms F-part)) 2)
+            (sigma-contains? F-part '(a b))
+            (sigma-contains? F-part '(c d))
+            (not (sigma-contains? F-part '(a)))))
+
+(define F-no-comp (make-sigma-algebra omega4 (list '() '(a b) omega4)))
+(define F-no-union (make-sigma-algebra omega4 (list '() '(a) '(b) '(b c d) '(a c d) omega4)))
+
+(check "negative control: family missing complement is rejected"
+       (and (not (sigma-closed-complement? F-no-comp))
+            (not (sigma-algebra-valid? F-no-comp))))
+
+(check "negative control: family closed under complement but not union is rejected"
+       (and (sigma-closed-complement? F-no-union)
+            (not (sigma-closed-union? F-no-union))
+            (not (sigma-algebra-valid? F-no-union))))
+
+(define cod3 '(0 1 2))
+(define G-cod (power-set-sigma-algebra cod3))
+
+(define (f-meas x) (if (or (eq? x 'a) (eq? x 'b)) 0 1))
+(define (f-nonmeas x)
+  (cond ((eq? x 'a) 0)
+        ((or (eq? x 'b) (eq? x 'c)) 1)
+        (else 2)))
+
+(check "function constant on atoms is measurable; function splitting an atom is not"
+       (and (measurable-function? f-meas F-part G-cod)
+            (not (measurable-function? f-nonmeas F-part G-cod))))
+
+(define (brute-pushforward f dom-sigma cod-omega)
+  (let* ((pow (power-set-sigma-algebra cod-omega))
+         (omega-x (sigma-space dom-sigma)))
+    (make-sigma-algebra
+     cod-omega
+     (filter (lambda (B)
+               (sigma-contains? dom-sigma (preimage-event f omega-x B)))
+             (sigma-events pow)))))
+
+(define pf-meas (pushforward-sigma-algebra f-meas F-part cod3))
+(define pf-nonmeas (pushforward-sigma-algebra f-nonmeas F-part cod3))
+(define brute-pf-meas (brute-pushforward f-meas F-part cod3))
+(define brute-pf-nonmeas (brute-pushforward f-nonmeas F-part cod3))
+
+(check "pushforward sigma-algebra matches independent brute-force preimage oracle"
+       (and (sigma-algebra-valid? pf-meas)
+            (sigma-algebra-valid? pf-nonmeas)
+            (= (sigma-size pf-meas) (sigma-size brute-pf-meas))
+            (all? (lambda (e) (sigma-contains? brute-pf-meas e)) (sigma-events pf-meas))
+            (= (sigma-size pf-nonmeas) (sigma-size brute-pf-nonmeas))
+            (all? (lambda (e) (sigma-contains? brute-pf-nonmeas e)) (sigma-events pf-nonmeas))
+            (measurable-function? f-nonmeas F-part pf-nonmeas)))
+
+(check "preimage map of measurable function is a sigma-homomorphism"
+       (sigma-homomorphism?
+        (lambda (B) (preimage-event f-meas omega4 B))
+        G-cod F-part))
+
+(check "negative control: constant non-empty map is not a sigma-homomorphism"
+       (not (sigma-homomorphism? (lambda (B) '(a b)) G-cod F-part)))
+
+;; ============================================================================
+;; 2. Exact rational sub-distributions and Partial Markov Category axioms
+;; ============================================================================
+
+(define d-fair (make-dist (list (cons 'h 1/2) (cons 't 1/2))))
+(define d-sub (make-dist (list (cons 'h 1/3) (cons 't 1/6))))
+(define d-dup (make-dist (list (cons 'h 1/6) (cons 'h 1/3) (cons 't 0) (cons 't 1/2))))
+
+(check "exact rational sub-distribution masses, totality, merging, and normalization"
+       (and (dist-total? d-fair)
+            (= (dist-mass d-fair) 1)
+            (exact? (dist-mass d-fair))
+            (dist-subprobability? d-sub)
+            (not (dist-total? d-sub))
+            (= (dist-mass d-sub) 1/2)
+            (dist-equal? d-dup d-fair)
+            (dist-equal? (dist-normalize d-sub)
+                         (make-dist (list (cons 'h 2/3) (cons 't 1/3))))
+            (= (dist-mass dist-zero) 0)))
+
+(define prod-ft (dist-product d-fair d-sub))
+(check "dist-product and marginals conserve exact sub-probability mass"
+       (and (= (dist-mass prod-ft) 1/2)
+            (dist-equal? (dist-marginal-left prod-ft) (dist-scale 1/2 d-fair))
+            (dist-equal? (dist-marginal-right prod-ft) d-sub)))
+
+(define domX '(0 1))
+(define domY '(a b c))
+(define domZ '(u v))
+
+(define K-stoch
+  (make-kernel-from-alist
+   domX domY
+   (list (cons 0 (make-dist (list (cons 'a 1/3) (cons 'b 2/3))))
+         (cons 1 (make-dist (list (cons 'b 1/4) (cons 'c 3/4)))))))
+
+(define K-partial
+  (make-kernel-from-alist
+   domY domZ
+   (list (cons 'a (make-dist (list (cons 'u 1/2) (cons 'v 1/2))))
+         (cons 'b (make-dist (list (cons 'u 1/5))))
+         (cons 'c dist-zero))))
+
+(define K-det-total
+  (make-kernel-from-alist
+   domX domY
+   (list (cons 0 (dist-dirac 'a))
+         (cons 1 (dist-dirac 'c)))))
+
+(define K-det-partial
+  (make-kernel-from-alist
+   domX domY
+   (list (cons 0 (dist-dirac 'a))
+         (cons 1 dist-zero))))
+
+(check "Partial Markov Category axioms hold for stochastic and partial kernels"
+       (and (verify-markov-category-laws K-stoch K-partial)
+            (verify-markov-category-laws K-det-total K-partial)
+            (verify-markov-category-laws K-det-partial K-partial)))
+
+(check "totality vs partiality and sub-probability mass conservation under composition"
+       (let ((comp (kernel-compose K-partial K-stoch)))
+         (and (kernel-total? K-stoch)
+              (not (kernel-total? K-partial))
+              (kernel-subprobability? K-partial)
+              (kernel-subprobability? comp)
+              (not (kernel-total? comp))
+              (= (dist-mass (kernel-apply comp 0)) 7/15)
+              (= (dist-mass (kernel-apply comp 1)) 1/20)
+              (verify-partial-discard-inequality comp))))
+
+(check "determinism = copy preservation distinguishes deterministic, partial-deterministic, and stochastic kernels"
+       (and (kernel-deterministic? K-det-total)
+            (kernel-total-deterministic? K-det-total)
+            (kernel-deterministic? K-det-partial)
+            (not (kernel-total-deterministic? K-det-partial))
+            (not (kernel-deterministic? K-stoch))
+            (not (kernel-deterministic? K-partial))
+            (verify-determinism-law K-det-total)
+            (verify-determinism-law K-det-partial)
+            (verify-determinism-law K-stoch)
+            (verify-determinism-law K-partial)))
+
+(define K-H
+  (make-kernel-from-alist
+   domZ '(p q)
+   (list (cons 'u (make-dist (list (cons 'p 2/7) (cons 'q 3/7))))
+         (cons 'v (dist-dirac 'q)))))
+
+(check "kernel composition is strictly associative in exact rationals"
+       (kernel-equal? (kernel-compose (kernel-compose K-H K-partial) K-stoch)
+                      (kernel-compose K-H (kernel-compose K-partial K-stoch))))
+
+;; ============================================================================
+;; 3. Exact rational Bayes disintegration, null-set non-uniqueness & singularities
+;; ============================================================================
+
+(define domX2 '(0 1))
+(define domX3 '(0 1 2))
+(define joint-xy
+  (make-dist
+   (list (cons (cons 0 'a) 1/12)
+         (cons (cons 0 'b) 1/6)
+         (cons (cons 0 'c) 1/4)
+         (cons (cons 1 'a) 1/8)
+         (cons (cons 1 'b) 3/8))))
+
+(define disint-full (disintegrate-strict joint-xy domX2 domY))
+(define disint-with-null (disintegrate joint-xy domX3 domY))
+(define sigma-x2 (power-set-sigma-algebra domX2))
+(define sigma-x3 (power-set-sigma-algebra domX3))
+(define sigma-y3 (power-set-sigma-algebra domY))
+
+(check "exact disintegration on full-support domain is unique and satisfies integral identity on all events"
+       (and (disintegration? disint-full)
+            (disintegration-unique? disint-full)
+            (null? (disintegration-null-points disint-full))
+            (verify-disintegration joint-xy disint-full sigma-x2 sigma-y3)
+            (= (dist-prob (kernel-apply (disintegration-kernel disint-full) 0) 'a) 1/6)
+            (= (dist-prob (kernel-apply (disintegration-kernel disint-full) 0) 'b) 1/3)
+            (= (dist-prob (kernel-apply (disintegration-kernel disint-full) 0) 'c) 1/2)
+            (= (dist-prob (kernel-apply (disintegration-kernel disint-full) 1) 'a) 1/4)
+            (= (dist-prob (kernel-apply (disintegration-kernel disint-full) 1) 'b) 3/4)))
+
+(check "null-set singularity: disintegrate-strict refuses and nonuniqueness witness constructs two distinct valid kernels"
+       (let* ((refusal (disintegrate-strict joint-xy domX3 domY))
+              (wit (disintegration-nonuniqueness-witness joint-xy disint-with-null domX3 domY)))
+         (and (null-set-nonunique? refusal)
+              (equal? (cadr refusal) '(2))
+              (not (disintegration-unique? disint-with-null))
+              (equal? (disintegration-null-points disint-with-null) '(2))
+              (nonuniqueness-witness? wit)
+              (let ((x0 (cadr wit))
+                    (k1 (caddr wit))
+                    (k2 (cadddr wit)))
+                (and (equal? x0 2)
+                     (not (kernel-equal? k1 k2))
+                     ;; Both distinct kernels satisfy the exact disintegration integral identity on all 64 event pairs!
+                     (verify-disintegration joint-xy
+                                            (list 'disintegration (disintegration-marginal disint-with-null) k1 '(2))
+                                            sigma-x3 sigma-y3)
+                     (verify-disintegration joint-xy
+                                            (list 'disintegration (disintegration-marginal disint-with-null) k2 '(2))
+                                            sigma-x3 sigma-y3))))))
+
+(define sub-joint-xy (dist-scale 3/4 joint-xy))
+(define disint-sub (disintegrate sub-joint-xy domX2 domY))
+(check "exact disintegration holds for sub-probability joints (mass 3/4)"
+       (and (= (dist-mass (disintegration-marginal disint-sub)) 3/4)
+            (disintegration-unique? disint-sub)
+            (verify-disintegration sub-joint-xy disint-sub sigma-x2 sigma-y3)))
+
+(define prior-h (make-dist (list (cons 'fair 3/4) (cons 'biased 1/4))))
+(define lik-coin
+  (make-kernel-from-alist
+   '(fair biased) '(H T impossible)
+   (list (cons 'fair   (make-dist (list (cons 'H 1/2) (cons 'T 1/2))))
+         (cons 'biased (make-dist (list (cons 'H 4/5) (cons 'T 1/5)))))))
+
+(define post-H (bayes-update prior-h lik-coin 'H))
+(define post-zero (bayes-update prior-h lik-coin 'impossible))
+
+(check "exact Bayes update recovers exact rational posterior on positive evidence and refuses explicitly on zero-mass singularity"
+       (and (bayes-posterior? post-H)
+            (= (caddr post-H) 23/40)
+            (= (dist-prob (cadr post-H) 'fair) 15/23)
+            (= (dist-prob (cadr post-H) 'biased) 8/23)
+            (= (dist-mass (cadr post-H)) 1)
+            (zero-mass-singularity? post-zero)
+            (eq? (cadr post-zero) 'impossible)
+            (= (caddr post-zero) 0)))
+
+(define joint-ci
+  (let ((pz (make-dist (list (cons 0 2/5) (cons 1 3/5))))
+        (px-given-z (lambda (z)
+                      (if (= z 0)
+                          (make-dist (list (cons 'x0 1/3) (cons 'x1 2/3)))
+                          (make-dist (list (cons 'x0 3/4) (cons 'x1 1/4))))))
+        (py-given-z (lambda (z)
+                      (if (= z 0)
+                          (make-dist (list (cons 'y0 1/2) (cons 'y1 1/2)))
+                          (make-dist (list (cons 'y0 1/5) (cons 'y1 4/5)))))))
+    (dist-bind pz (lambda (z)
+                    (dist-bind (px-given-z z)
+                               (lambda (x)
+                                 (dist-bind (py-given-z z)
+                                            (lambda (y)
+                                              (dist-dirac (list x y z))))))))))
+
+(define joint-collider
+  (make-dist
+   (list (cons (list 0 0 0) 1/4)
+         (cons (list 0 1 1) 1/4)
+         (cons (list 1 0 1) 1/4)
+         (cons (list 1 1 0) 1/4))))
+
+(check "conditional independence holds for fork X <- Z -> Y and fails for collider X -> Z <- Y"
+       (and (conditionally-independent-triples? joint-ci)
+            (not (conditionally-independent? joint-ci car cadr (lambda (_) 'const)))
+            (conditionally-independent? joint-collider car cadr (lambda (_) 'const))
+            (not (conditionally-independent-triples? joint-collider))))
+
+;; ============================================================================
+;; 4. Integration with core.sblc bounded-step exact sub-distributions
+;; ============================================================================
+
+(define sblc-I (blc-lam (blc-var 1)))
+(define sblc-K (blc-lam (blc-lam (blc-var 2))))
+(define sblc-Omega
+  (blc-app (blc-lam (blc-app (blc-var 1) (blc-var 1)))
+           (blc-lam (blc-app (blc-var 1) (blc-var 1)))))
+(define P-id sblc-I)
+(define P-choice (blc-lam (sblc-choice (blc-var 1) sblc-K)))
+(define P-div (blc-lam (sblc-choice (blc-var 1) sblc-Omega)))
+
+(define input-arg sblc-I)
+(define sblc-step-bound 8)
+
+(define d-div-raw (sblc-distribution (blc-app P-div input-arg) sblc-step-bound))
+(define d-div-sub (sblc-dist->fin-dist d-div-raw))
+(define d-div-tot (sblc-dist->total-dist d-div-raw))
+
+(check "core.sblc partial sub-distribution maps cleanly to Partial Markov sub-distribution"
+       (and (dist-subprobability? d-div-sub)
+            (not (dist-total? d-div-sub))
+            (= (dist-mass d-div-sub) 1/2)
+            (= (dist-prob d-div-sub sblc-I) 1/2)
+            (dist-total? d-div-tot)
+            (= (dist-prob d-div-tot 'timeout) 1/2)))
+
+(define sblc-progs (list P-id P-choice P-div))
+(define sblc-k (sblc-eval-kernel sblc-progs input-arg sblc-step-bound))
+
+(check "sblc-eval-kernel obeys Partial Markov discard inequality and exact partiality"
+       (and (kernel-subprobability? sblc-k)
+            (not (kernel-total? sblc-k))
+            (verify-partial-discard-inequality sblc-k)
+            (= (dist-mass (kernel-apply sblc-k P-id)) 1)
+            (= (dist-mass (kernel-apply sblc-k P-choice)) 1)
+            (= (dist-mass (kernel-apply sblc-k P-div)) 1/2)))
+
+(define sblc-prior
+  (make-dist (list (cons P-id 1/3) (cons P-choice 1/3) (cons P-div 1/3))))
+(define sblc-cond (sblc-condition-via-disintegration sblc-prior input-arg sblc-I sblc-step-bound))
+(define sblc-impossible (sblc-condition-via-disintegration sblc-prior input-arg (blc-lam (blc-lam (blc-var 1))) sblc-step-bound))
+
+(check "core.sblc sub-distribution conditioning via disintegration matches exact Bayes posterior and refuses zero-evidence observation"
+       (and (bayes-posterior? sblc-cond)
+            (= (caddr sblc-cond) 2/3)
+            (= (dist-prob (cadr sblc-cond) P-id) 1/2)
+            (= (dist-prob (cadr sblc-cond) P-choice) 1/4)
+            (= (dist-prob (cadr sblc-cond) P-div) 1/4)
+            (= (dist-mass (cadr sblc-cond)) 1)
+            (zero-mass-singularity? sblc-impossible)))
+
+(define ex-id (cons sblc-I sblc-I))
+(define sblc-ref (sblc-condition 0 6 8 (list ex-id)))
+(define closed-6
+  (append (sblc-enumerate-closed 4)
+          (sblc-enumerate-closed 5)
+          (sblc-enumerate-closed 6)))
+(define raw-prior-6
+  (make-dist (map (lambda (p) (cons p (sblc-weight p))) closed-6)))
+(define cond-6 (sblc-condition-via-disintegration raw-prior-6 sblc-I sblc-I 8))
+
+(check "sblc-condition-via-disintegration matches core.sblc sblc-condition evidence and posteriors identically"
+       (let ((post (cadr cond-6))
+             (ev (caddr cond-6))
+             (ref-ev (sblc-receipt-evidence sblc-ref))
+             (ref-entries (sblc-receipt-programs sblc-ref)))
+         (and (bayes-posterior? cond-6)
+              (= ev ref-ev)
+              (all? (lambda (entry)
+                      (let ((prog (sblc-decode (sblc-entry-bits entry)))
+                            (ref-post (sblc-entry-posterior entry)))
+                        (= (dist-prob post prog) ref-post)))
+                    ref-entries))))
+
+(display "measure_markov_test: ")
+(display passes) (display " passed, ")
+(display failures) (display " failed") (newline)
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

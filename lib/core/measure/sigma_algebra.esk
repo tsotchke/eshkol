@@ -1,0 +1,311 @@
+;;; core.measure.sigma_algebra -- finite Boolean sigma-algebras over finite
+;;; sample spaces.
+;;;
+;;; A finite sample space Omega is represented as a deduplicated list of
+;;; distinct elements in canonical order. Every event (subset of Omega) is
+;;; stored canonically as a sublist preserving the order of Omega.
+;;;
+;;; Provides:
+;;;   - construction, power-set, trivial, and generated sigma-algebras
+;;;   - closedness predicates (complement, binary union, full sigma-algebra)
+;;;   - atom / partition extraction
+;;;   - preimage, measurable-function predicate, pushforward and pullback
+;;;     sigma-algebras
+;;;   - Boolean sigma-homomorphism verification
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+
+(provide sigma-algebra? sigma-space sigma-events sigma-size sigma-contains?
+         event-canonicalize event-equal? event-member? event-subset?
+         event-union event-intersection event-complement event-diff
+         make-sigma-algebra trivial-sigma-algebra power-set-sigma-algebra
+         generate-sigma-algebra
+         sigma-closed-complement? sigma-closed-union? sigma-algebra-valid?
+         sigma-atoms sigma-partition
+         preimage-event measurable-function?
+         pushforward-sigma-algebra pullback-sigma-algebra
+         sigma-homomorphism?)
+
+;; ---------------------------------------------------------------------------
+;; Internal list / set utilities
+;; ---------------------------------------------------------------------------
+
+(define (sa-member? x xs)
+  (cond ((null? xs) #f)
+        ((equal? x (car xs)) #t)
+        (else (sa-member? x (cdr xs)))))
+
+(define (sa-dedup xs)
+  (let loop ((rest xs) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((sa-member? (car rest) acc) (loop (cdr rest) acc))
+          (else (loop (cdr rest) (cons (car rest) acc))))))
+
+(define (sa-all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (sa-all? pred (cdr xs)))
+        (else #f)))
+
+(define (sa-any? pred xs)
+  (cond ((null? xs) #f)
+        ((pred (car xs)) #t)
+        (else (sa-any? pred (cdr xs)))))
+
+;; ---------------------------------------------------------------------------
+;; Canonical event operations relative to a finite sample space Omega
+;; ---------------------------------------------------------------------------
+
+(define (event-canonicalize omega subset)
+  (let loop ((rest omega) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((sa-member? (car rest) subset)
+           (loop (cdr rest) (cons (car rest) acc)))
+          (else (loop (cdr rest) acc)))))
+
+(define (event-member? x ev)
+  (sa-member? x ev))
+
+(define (event-subset? a b)
+  (sa-all? (lambda (x) (sa-member? x b)) a))
+
+(define (event-equal? a b)
+  (and (= (length a) (length b))
+       (event-subset? a b)
+       (event-subset? b a)))
+
+(define (event-union omega a b)
+  (let loop ((rest omega) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((or (sa-member? (car rest) a) (sa-member? (car rest) b))
+           (loop (cdr rest) (cons (car rest) acc)))
+          (else (loop (cdr rest) acc)))))
+
+(define (event-intersection omega a b)
+  (let loop ((rest omega) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((and (sa-member? (car rest) a) (sa-member? (car rest) b))
+           (loop (cdr rest) (cons (car rest) acc)))
+          (else (loop (cdr rest) acc)))))
+
+(define (event-complement omega a)
+  (let loop ((rest omega) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((sa-member? (car rest) a) (loop (cdr rest) acc))
+          (else (loop (cdr rest) (cons (car rest) acc))))))
+
+(define (event-diff omega a b)
+  (event-intersection omega a (event-complement omega b)))
+
+(define (sa-dedup-events events)
+  (let loop ((rest events) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((sa-any? (lambda (e) (event-equal? (car rest) e)) acc)
+           (loop (cdr rest) acc))
+          (else (loop (cdr rest) (cons (car rest) acc))))))
+
+;; ---------------------------------------------------------------------------
+;; Sigma-algebra representation
+;; ---------------------------------------------------------------------------
+
+(define (make-sigma-algebra omega events)
+  (let* ((space (sa-dedup omega))
+         (canon-events
+          (sa-dedup-events
+           (map (lambda (ev) (event-canonicalize space ev)) events))))
+    (list 'sigma-algebra space canon-events)))
+
+(define (sigma-algebra? x)
+  (and (pair? x) (eq? (car x) 'sigma-algebra)))
+
+(define (sigma-space F) (cadr F))
+(define (sigma-events F) (caddr F))
+(define (sigma-size F) (length (sigma-events F)))
+
+(define (sigma-contains? F ev)
+  (let ((canon (event-canonicalize (sigma-space F) ev)))
+    (sa-any? (lambda (e) (event-equal? e canon)) (sigma-events F))))
+
+;; ---------------------------------------------------------------------------
+;; Closure predicates
+;; ---------------------------------------------------------------------------
+
+(define (sigma-closed-complement? F)
+  (let ((omega (sigma-space F))
+        (evs (sigma-events F)))
+    (sa-all? (lambda (a)
+               (sigma-contains? F (event-complement omega a)))
+             evs)))
+
+(define (sigma-closed-union? F)
+  (let ((omega (sigma-space F))
+        (evs (sigma-events F)))
+    (sa-all? (lambda (a)
+               (sa-all? (lambda (b)
+                          (sigma-contains? F (event-union omega a b)))
+                        evs))
+             evs)))
+
+(define (sigma-algebra-valid? F)
+  (and (sigma-algebra? F)
+       (sigma-contains? F '())
+       (sigma-contains? F (sigma-space F))
+       (sigma-closed-complement? F)
+       (sigma-closed-union? F)))
+
+;; ---------------------------------------------------------------------------
+;; Standard constructors and generation from generators
+;; ---------------------------------------------------------------------------
+
+(define (trivial-sigma-algebra omega)
+  (let ((space (sa-dedup omega)))
+    (make-sigma-algebra space (list '() space))))
+
+;; All subsets of a list of items, returning canonical unions of atoms.
+(define (sa-all-unions omega atoms)
+  (let loop ((rest atoms) (acc (list '())))
+    (if (null? rest)
+        (sa-dedup-events (map (lambda (u) (event-canonicalize omega u)) acc))
+        (let ((atom (car rest)))
+          (loop (cdr rest)
+                (append acc (map (lambda (u) (append u atom)) acc)))))))
+
+(define (power-set-sigma-algebra omega)
+  (let* ((space (sa-dedup omega))
+         (singletons (map (lambda (x) (list x)) space)))
+    (make-sigma-algebra space (sa-all-unions space singletons))))
+
+;; Partition omega by membership signature across generators, then take all
+;; unions of the resulting atoms. Exact smallest sigma-algebra containing
+;; every generator.
+(define (generate-sigma-algebra omega generators)
+  (let* ((space (sa-dedup omega))
+         (canon-gens (map (lambda (g) (event-canonicalize space g)) generators))
+         (sig-of (lambda (x)
+                   (map (lambda (g) (if (sa-member? x g) 1 0)) canon-gens)))
+         (groups
+          (let loop ((xs space) (buckets '()))
+            (if (null? xs)
+                (map (lambda (b) (event-canonicalize space (cdr b)))
+                     (reverse buckets))
+                (let* ((x (car xs))
+                       (s (sig-of x))
+                       (updated
+                        (let ins ((bs buckets) (found #f) (acc '()))
+                          (cond
+                            ((null? bs)
+                             (if found
+                                 (reverse acc)
+                                 (reverse (cons (cons s (list x)) acc))))
+                            ((equal? (caar bs) s)
+                             (ins (cdr bs) #t
+                                  (cons (cons s (cons x (cdar bs))) acc)))
+                            (else (ins (cdr bs) found (cons (car bs) acc)))))))
+                  (loop (cdr xs) updated))))))
+    (make-sigma-algebra space (sa-all-unions space groups))))
+
+;; ---------------------------------------------------------------------------
+;; Atoms / partition extraction
+;; ---------------------------------------------------------------------------
+
+;; Minimal nonempty events in F. For any valid finite sigma-algebra, these are
+;; pairwise disjoint and partition (sigma-space F).
+(define (sigma-atoms F)
+  (let ((nonempty (filter (lambda (e) (not (null? e))) (sigma-events F))))
+    (filter
+     (lambda (a)
+       (not (sa-any? (lambda (b)
+                       (and (< (length b) (length a))
+                            (event-subset? b a)))
+                     nonempty)))
+     nonempty)))
+
+(define (sigma-partition F)
+  (sigma-atoms F))
+
+;; ---------------------------------------------------------------------------
+;; Measurability, preimage, pushforward, and pullback
+;; ---------------------------------------------------------------------------
+
+(define (preimage-event f omega-x B)
+  (let loop ((rest omega-x) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((sa-member? (f (car rest)) B)
+           (loop (cdr rest) (cons (car rest) acc)))
+          (else (loop (cdr rest) acc)))))
+
+(define (measurable-function? f domain-sigma codomain-sigma)
+  (let ((omega-x (sigma-space domain-sigma)))
+    (sa-all? (lambda (B)
+               (sigma-contains? domain-sigma (preimage-event f omega-x B)))
+             (sigma-events codomain-sigma))))
+
+;; Pushforward sigma-algebra f_*(F) = { B subset Omega_Y : f^{-1}(B) in F }.
+;; On finite spaces, B is in f_*(F) iff no atom A of F has image f(A)
+;; straddling B and B^c; equivalently, B is a union of connected components of
+;; the hypergraph on Omega_Y with hyperedges { f(A) : A in atoms(F) }.
+(define (sa-merge-components sets)
+  (let loop ((remaining sets) (components '()))
+    (if (null? remaining)
+        (reverse components)
+        (let* ((cur (car remaining))
+               (touching
+                (filter (lambda (c)
+                          (sa-any? (lambda (y) (sa-member? y c)) cur))
+                        components))
+               (disjoint
+                (filter (lambda (c)
+                          (not (sa-any? (lambda (y) (sa-member? y c)) cur)))
+                        components))
+               (merged
+                (sa-dedup
+                 (let combine ((ts touching) (acc cur))
+                   (if (null? ts) acc
+                       (combine (cdr ts) (append acc (car ts))))))))
+          (loop (cdr remaining) (cons merged disjoint))))))
+
+(define (pushforward-sigma-algebra f domain-sigma codomain-omega)
+  (let* ((omega-y (sa-dedup codomain-omega))
+         (atoms (sigma-atoms domain-sigma))
+         (images (map (lambda (a)
+                        (event-canonicalize omega-y (map f a)))
+                      atoms))
+         (initial-sets (append (map (lambda (y) (list y)) omega-y)
+                               (filter (lambda (img) (not (null? img))) images)))
+         (components (map (lambda (c) (event-canonicalize omega-y c))
+                          (sa-merge-components initial-sets))))
+    (make-sigma-algebra omega-y (sa-all-unions omega-y components))))
+
+;; Pullback sigma-algebra f^*(G) = { f^{-1}(B) : B in G }.
+(define (pullback-sigma-algebra f omega-x codomain-sigma)
+  (let ((space (sa-dedup omega-x)))
+    (make-sigma-algebra
+     space
+     (map (lambda (B) (preimage-event f space B))
+          (sigma-events codomain-sigma)))))
+
+;; ---------------------------------------------------------------------------
+;; Boolean sigma-homomorphism verifier
+;; ---------------------------------------------------------------------------
+
+(define (sigma-homomorphism? h F1 F2)
+  (let ((omega1 (sigma-space F1))
+        (omega2 (sigma-space F2))
+        (evs1 (sigma-events F1)))
+    (and (sigma-algebra-valid? F1)
+         (sigma-algebra-valid? F2)
+         (sa-all? (lambda (a) (sigma-contains? F2 (h a))) evs1)
+         (event-equal? (h '()) '())
+         (event-equal? (h omega1) omega2)
+         (sa-all? (lambda (a)
+                    (event-equal? (h (event-complement omega1 a))
+                                  (event-complement omega2 (h a))))
+                  evs1)
+         (sa-all? (lambda (a)
+                    (sa-all? (lambda (b)
+                               (event-equal? (h (event-union omega1 a b))
+                                             (event-union omega2 (h a) (h b))))
+                             evs1))
+                  evs1))))

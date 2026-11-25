@@ -1,0 +1,285 @@
+;;; core.measure.disintegrate -- exact rational Bayes disintegration,
+;;; conditional independence, and core.sblc sub-distribution conditioning.
+;;;
+;;; Given a finite joint sub-distribution gamma on X x Y (entries keyed by
+;;; (cons x y)), exact disintegration factors gamma into:
+;;;   - marginal mu_X on X, and
+;;;   - Markov kernel K : X -> Dist(Y), with K(x)(y) = gamma(x, y) / mu_X(x)
+;;;     whenever mu_X(x) > 0,
+;;; satisfying the exact integral identity on every measurable rectangle:
+;;;   sum_{x in A} mu_X(x) * K(x)(B) = gamma(A x B)
+;;; for all A in Sigma_X and B in Sigma_Y.
+;;;
+;;; Null-set and zero-mass singularity discipline:
+;;;   - Disintegration is unique only mu_X-almost everywhere. Any x in domain-x
+;;;     with mu_X(x) = 0 is recorded explicitly in `disintegration-null-points`;
+;;;     `disintegration-unique?` is #f whenever null points exist;
+;;;     `disintegrate-strict` refuses with `(null-set-nonunique null-points)`;
+;;;     and `disintegration-nonuniqueness-witness` constructs two distinct valid
+;;;     Markov kernels agreeing mu_X-a.e. that both satisfy the integral identity.
+;;;   - Conditioning on a zero-evidence event (`P(Y = obs) = 0`) never divides
+;;;     by zero or fabricates a posterior: `bayes-update` returns an explicit
+;;;     `(zero-mass-singularity obs 0)` refusal record.
+;;;
+;;; Integrates directly with core.sblc bounded-step exact sub-distributions
+;;; (where timeout mass is genuine sub-probability partiality).
+;;;
+;;; Copyright (C) tsotchke
+;;; SPDX-License-Identifier: MIT
+
+(require stdlib)
+(require core.measure.sigma_algebra)
+(require core.measure.markov)
+(require core.blc)
+(require core.sblc)
+
+(provide disintegrate disintegrate-strict disintegrate-right
+         disintegration? disintegration-marginal disintegration-kernel
+         disintegration-null-points disintegration-unique?
+         null-set-nonunique? nonuniqueness-witness?
+         disintegration-nonuniqueness-witness
+         disintegration-reconstruct verify-disintegration
+         bayes-update bayes-posterior? zero-mass-singularity?
+         conditionally-independent? conditionally-independent-triples?
+         sblc-dist->fin-dist sblc-dist->total-dist
+         sblc-eval-kernel sblc-condition-via-disintegration)
+
+;; ---------------------------------------------------------------------------
+;; Internal helpers
+;; ---------------------------------------------------------------------------
+
+(define (dis-member? x xs)
+  (cond ((null? xs) #f)
+        ((equal? x (car xs)) #t)
+        (else (dis-member? x (cdr xs)))))
+
+(define (dis-dedup xs)
+  (let loop ((rest xs) (acc '()))
+    (cond ((null? rest) (reverse acc))
+          ((dis-member? (car rest) acc) (loop (cdr rest) acc))
+          (else (loop (cdr rest) (cons (car rest) acc))))))
+
+(define (dis-all? pred xs)
+  (cond ((null? xs) #t)
+        ((pred (car xs)) (dis-all? pred (cdr xs)))
+        (else #f)))
+
+;; ---------------------------------------------------------------------------
+;; Exact rational disintegration with explicit null-set tracking
+;; ---------------------------------------------------------------------------
+
+(define (disintegrate gamma domain-x domain-y)
+  (let* ((xs (dis-dedup domain-x))
+         (ys (dis-dedup domain-y))
+         (mu-x (dist-marginal-left gamma))
+         (null-pts (filter (lambda (x) (= (dist-prob mu-x x) 0)) xs))
+         (kernel
+          (make-kernel
+           xs ys
+           (lambda (x)
+             (let ((mx (dist-prob mu-x x)))
+               (if (= mx 0)
+                   dist-zero
+                   (let loop ((rest ys) (acc '()))
+                     (if (null? rest)
+                         (make-dist (reverse acc))
+                         (let* ((y (car rest))
+                                (mxy (dist-prob gamma (cons x y))))
+                           (if (= mxy 0)
+                               (loop (cdr rest) acc)
+                               (loop (cdr rest)
+                                     (cons (cons y (/ mxy mx)) acc))))))))))))
+    (list 'disintegration mu-x kernel null-pts)))
+
+;; Strict disintegration: refuses explicitly when domain-x contains any
+;; mu_X-null point (where the conditional kernel is non-unique).
+(define (disintegrate-strict gamma domain-x domain-y)
+  (let* ((xs (dis-dedup domain-x))
+         (mu-x (dist-marginal-left gamma))
+         (null-pts (filter (lambda (x) (= (dist-prob mu-x x) 0)) xs)))
+    (if (null? null-pts)
+        (disintegrate gamma domain-x domain-y)
+        (list 'null-set-nonunique null-pts))))
+
+(define (disintegrate-right gamma domain-x domain-y)
+  (let ((swapped (dist-map (lambda (xy) (cons (cdr xy) (car xy))) gamma)))
+    (disintegrate swapped domain-y domain-x)))
+
+(define (disintegration? d)
+  (and (pair? d) (eq? (car d) 'disintegration)))
+
+(define (null-set-nonunique? x)
+  (and (pair? x) (eq? (car x) 'null-set-nonunique)))
+
+(define (nonuniqueness-witness? x)
+  (and (pair? x) (eq? (car x) 'nonuniqueness-witness)))
+
+(define (disintegration-marginal d) (cadr d))
+(define (disintegration-kernel d) (caddr d))
+(define (disintegration-null-points d) (cadddr d))
+
+(define (disintegration-unique? d)
+  (and (disintegration? d) (null? (disintegration-null-points d))))
+
+;; When null-measure points exist in domain-x (and domain-y is nonempty),
+;; construct an explicit witness (nonuniqueness-witness x0 K1 K2) where K1 != K2
+;; are distinct sub-probability kernels that agree on all mu_X-positive points
+;; and both satisfy the exact disintegration integral identity on every event.
+(define (disintegration-nonuniqueness-witness gamma disint domain-x domain-y)
+  (let ((null-pts (disintegration-null-points disint))
+        (ys (dis-dedup domain-y)))
+    (if (or (null? null-pts) (null? ys))
+        #f
+        (let* ((x0 (car null-pts))
+               (base-k (disintegration-kernel disint))
+               (xs (kernel-domain base-k))
+               (cod (kernel-codomain base-k))
+               (y0 (car ys))
+               (k1 (if (null? (cdr ys))
+                       (make-kernel xs cod
+                                    (lambda (x)
+                                      (if (equal? x x0) dist-zero (kernel-apply base-k x))))
+                       (make-kernel xs cod
+                                    (lambda (x)
+                                      (if (equal? x x0) (dist-dirac y0) (kernel-apply base-k x))))))
+               (k2 (if (null? (cdr ys))
+                       (make-kernel xs cod
+                                    (lambda (x)
+                                      (if (equal? x x0) (dist-dirac y0) (kernel-apply base-k x))))
+                       (let ((y1 (cadr ys)))
+                         (make-kernel xs cod
+                                      (lambda (x)
+                                        (if (equal? x x0) (dist-dirac y1) (kernel-apply base-k x))))))))
+          (list 'nonuniqueness-witness x0 k1 k2)))))
+
+(define (disintegration-reconstruct disint)
+  (let ((mu (disintegration-marginal disint))
+        (K (disintegration-kernel disint)))
+    (dist-bind mu (lambda (x)
+                    (dist-bind (kernel-apply K x)
+                               (lambda (y)
+                                 (dist-dirac (cons x y))))))))
+
+;; Exact integral identity verifier:
+;;   for every A in sigma-x and B in sigma-y,
+;;   sum_{x in A} mu_X(x) * K(x)(B) == gamma(A x B).
+(define (verify-disintegration gamma disint sigma-x sigma-y)
+  (let ((mu (disintegration-marginal disint))
+        (K (disintegration-kernel disint))
+        (events-x (sigma-events sigma-x))
+        (events-y (sigma-events sigma-y)))
+    (and (disintegration? disint)
+         (kernel-subprobability? K)
+         (dist-equal? (disintegration-reconstruct disint) gamma)
+         (dis-all?
+          (lambda (A)
+            (dis-all?
+             (lambda (B)
+               (let ((lhs
+                      (let loop ((xs A) (acc 0))
+                        (if (null? xs)
+                            acc
+                            (let* ((x (car xs))
+                                   (mx (dist-prob mu x)))
+                              (loop (cdr xs)
+                                    (+ acc (* mx (dist-event-prob (kernel-apply K x) B))))))))
+                     (rhs
+                      (let outer ((xs A) (acc 0))
+                        (if (null? xs)
+                            acc
+                            (let inner ((ys B) (acc acc))
+                              (if (null? ys)
+                                  (outer (cdr xs) acc)
+                                  (inner (cdr ys)
+                                         (+ acc (dist-prob gamma (cons (car xs) (car ys)))))))))))
+                 (= lhs rhs)))
+             events-y))
+          events-x))))
+
+;; Exact Bayesian update via disintegration of joint (X, Y) = (id, K) o prior.
+;; Returns:
+;;   (bayes-posterior posterior-dist evidence)  when evidence > 0, or
+;;   (zero-mass-singularity observation 0)      when evidence = 0 (explicit refusal).
+(define (bayes-posterior? x)
+  (and (pair? x) (eq? (car x) 'bayes-posterior)))
+
+(define (zero-mass-singularity? x)
+  (and (pair? x) (eq? (car x) 'zero-mass-singularity)))
+
+(define (bayes-update prior likelihood-kernel observation)
+  (let* ((xs (kernel-domain likelihood-kernel))
+         (ys (kernel-codomain likelihood-kernel))
+         (joint (dist-bind prior
+                           (lambda (x)
+                             (dist-bind (kernel-apply likelihood-kernel x)
+                                        (lambda (y)
+                                          (dist-dirac (cons x y)))))))
+         (rev (disintegrate-right joint xs ys))
+         (evidence (dist-prob (disintegration-marginal rev) observation)))
+    (if (= evidence 0)
+        (list 'zero-mass-singularity observation 0)
+        (let ((posterior (kernel-apply (disintegration-kernel rev) observation)))
+          (list 'bayes-posterior posterior evidence)))))
+
+;; ---------------------------------------------------------------------------
+;; Exact rational conditional independence: X _|_ Y | Z
+;; ---------------------------------------------------------------------------
+
+(define (conditionally-independent? joint proj-x proj-y proj-z)
+  (let* ((xyz (dist-map (lambda (s) (list (proj-x s) (proj-y s) (proj-z s))) joint))
+         (xz  (dist-map (lambda (s) (cons (proj-x s) (proj-z s))) joint))
+         (yz  (dist-map (lambda (s) (cons (proj-y s) (proj-z s))) joint))
+         (z-d (dist-map proj-z joint))
+         (xs  (dis-dedup (map car (dist-support xyz))))
+         (ys  (dis-dedup (map cadr (dist-support xyz))))
+         (zs  (dist-support z-d)))
+    (dis-all?
+     (lambda (z)
+       (let ((pz (dist-prob z-d z)))
+         (dis-all?
+          (lambda (x)
+            (let ((pxz (dist-prob xz (cons x z))))
+              (dis-all?
+               (lambda (y)
+                 (let ((pyz (dist-prob yz (cons y z)))
+                       (pxyz (dist-prob xyz (list x y z))))
+                   (= (* pxyz pz) (* pxz pyz))))
+               ys)))
+          xs)))
+     zs)))
+
+(define (conditionally-independent-triples? joint-xyz)
+  (conditionally-independent? joint-xyz car cadr caddr))
+
+;; ---------------------------------------------------------------------------
+;; Integration with core.sblc bounded-step exact sub-distributions
+;; ---------------------------------------------------------------------------
+
+(define (sblc-dist->fin-dist d)
+  (make-dist (sblc-dist-outcomes d)))
+
+(define (sblc-dist->total-dist d)
+  (let ((t (sblc-dist-timeout d))
+        (outs (sblc-dist-outcomes d)))
+    (make-dist (if (= t 0) outs (cons (cons 'timeout t) outs)))))
+
+(define (sblc-eval-kernel programs input-term bound)
+  (let* ((progs (dis-dedup programs))
+         (table (map (lambda (p)
+                       (cons p (sblc-dist->fin-dist
+                                (sblc-distribution (blc-app p input-term) bound))))
+                     progs))
+         (codomain (dis-dedup
+                    (let loop ((rows table) (acc '()))
+                      (if (null? rows)
+                          acc
+                          (loop (cdr rows)
+                                (append acc (dist-support (cdar rows)))))))))
+    (make-kernel-from-alist progs codomain table)))
+
+(define (sblc-condition-via-disintegration prior-dist input-term expected-output bound)
+  (let* ((programs (dist-support prior-dist))
+         (base-kernel (sblc-eval-kernel programs input-term bound))
+         (cod (dis-dedup (cons expected-output (kernel-codomain base-kernel))))
+         (eval-k (make-kernel programs cod (lambda (p) (kernel-apply base-kernel p)))))
+    (bayes-update prior-dist eval-k expected-output)))
