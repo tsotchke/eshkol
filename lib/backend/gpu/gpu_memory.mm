@@ -11,6 +11,7 @@
  */
 
 #include "eshkol/backend/gpu/gpu_memory.h"
+#include "eshkol/backend/gpu/matmul_range_guard.h"
 #include <eshkol/logger.h>
 #include <cstdlib>
 #include <cstring>
@@ -45,6 +46,7 @@
 
 // GPU threshold (elements) - default 100K
 size_t g_gpu_threshold = 100000;
+static std::atomic<bool> g_gpu_threshold_explicit{false};
 
 // Active backend
 static EshkolGPUBackend g_active_backend = ESHKOL_GPU_NONE;
@@ -3014,45 +3016,64 @@ static int ozaki_ii_fast_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, Eshkol
 // Router: dispatches to the correct tier-specific function
 static int metal_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                              uint64_t M, uint64_t K, uint64_t N) {
+    const double* host_a = static_cast<const double*>(A ? A->host_ptr : nullptr);
+    const double* host_b = static_cast<const double*>(B ? B->host_ptr : nullptr);
+    auto operands_safe_for_reduced = [&](int df64_pair) -> bool {
+        if (!host_a || !host_b) return true;
+        return eshkol_f64_matmul_operands_safe_for_f32(host_a, host_b, M, K, N, df64_pair) != 0;
+    };
+
     switch (g_metal_precision_tier) {
         case 1:
-            return metal_matmul_df64_dispatch(A, B, C, M, K, N);
+            if (operands_safe_for_reduced(1))
+                return metal_matmul_df64_dispatch(A, B, C, M, K, N);
+            break;
         case 2: {
-            const char* f32_env = std::getenv("ESHKOL_F32_KERNEL");
-            bool use_simd = f32_env && strcmp(f32_env, "simd") == 0 && g_matmul_f32_simd_pipeline;
-            return use_simd ? metal_matmul_f32_simd_full_dispatch(A, B, C, M, K, N)
-                            : metal_matmul_f64_via_mps(A, B, C, M, K, N);
+            if (operands_safe_for_reduced(0)) {
+                const char* f32_env = std::getenv("ESHKOL_F32_KERNEL");
+                bool use_simd = f32_env && strcmp(f32_env, "simd") == 0 && g_matmul_f32_simd_pipeline;
+                return use_simd ? metal_matmul_f32_simd_full_dispatch(A, B, C, M, K, N)
+                                : metal_matmul_f64_via_mps(A, B, C, M, K, N);
+            }
+            break;
         }
         case 3:
-            return metal_matmul_fp24_dispatch(A, B, C, M, K, N);
-        default: {
-            // Tier 0: fp53 default, Ozaki-II opt-in for exact DGEMM
-            const char* sf64_env = std::getenv("ESHKOL_SF64_KERNEL");
-            bool use_legacy = sf64_env && (strcmp(sf64_env, "legacy") == 0 || strcmp(sf64_env, "v2") == 0);
-            bool use_fp53 = sf64_env && strcmp(sf64_env, "fp53") == 0;
-            bool force_ozaki = sf64_env && strcmp(sf64_env, "ozaki") == 0;
-            bool ozaki_size_ok = (M >= 512 && K >= 512 && N >= 512);
+            if (operands_safe_for_reduced(0))
+                return metal_matmul_fp24_dispatch(A, B, C, M, K, N);
+            break;
+        default:
+            break;
+    }
 
-            // Ozaki-II reduced-precision FAST tier (opt-in): fully-GPU split +
-            // df32 CRT reconstruction. On any failure it falls through to the
-            // exact tier below, so a fast-tier miss never corrupts a result.
-            if (g_ozaki_fast_enabled && g_ozaki_fast_split_pipeline
-                && g_ozaki_fast_accum_pipeline && g_ozaki_fast_finalize_pipeline
-                && ozaki_size_ok) {
-                int fr = ozaki_ii_fast_dispatch(A, B, C, M, K, N);
-                if (fr == 0) return 0;
-                fprintf(stderr, "[GPU] Ozaki-II FAST dispatch returned %d; "
-                                "falling back to exact tier\n", fr);
-            }
+    {
+        // Tier 0 (or exact fallback when operands exceed reduced-precision range):
+        // fp53 default, Ozaki-II opt-in for exact DGEMM.
+        const char* sf64_env = std::getenv("ESHKOL_SF64_KERNEL");
+        bool use_legacy = sf64_env && (strcmp(sf64_env, "legacy") == 0 || strcmp(sf64_env, "v2") == 0);
+        bool use_fp53 = sf64_env && strcmp(sf64_env, "fp53") == 0;
+        bool force_ozaki = sf64_env && strcmp(sf64_env, "ozaki") == 0;
+        bool ozaki_size_ok = (M >= 512 && K >= 512 && N >= 512);
 
-            // Ozaki-II: CRT-based exact f64 via N f32 GEMMs (opt-in / fast fallback)
-            if ((force_ozaki || g_ozaki_fast_enabled) && g_matmul_ozaki_gemm_pipeline
-                && ozaki_size_ok)
-                return ozaki_ii_dispatch(A, B, C, M, K, N);
-            if (!use_legacy && g_matmul_fp53_pipeline)
-                return metal_matmul_fp53_dispatch(A, B, C, M, K, N);
-            return metal_matmul_sf64_dispatch(A, B, C, M, K, N);
+        // Ozaki-II reduced-precision FAST tier (opt-in): fully-GPU split +
+        // df32 CRT reconstruction. On any range violation or failure it falls
+        // through to the exact tier below.
+        if (g_ozaki_fast_enabled && g_ozaki_fast_split_pipeline
+            && g_ozaki_fast_accum_pipeline && g_ozaki_fast_finalize_pipeline
+            && ozaki_size_ok && operands_safe_for_reduced(0)) {
+            int fr = ozaki_ii_fast_dispatch(A, B, C, M, K, N);
+            if (fr == 0) return 0;
+            fprintf(stderr, "[GPU] Ozaki-II FAST dispatch returned %d; "
+                            "falling back to exact tier\n", fr);
         }
+
+        // Ozaki-II: CRT-based exact f64 via N f32 GEMMs (opt-in / fast fallback)
+        if ((force_ozaki || g_ozaki_fast_enabled) && g_matmul_ozaki_gemm_pipeline
+            && ozaki_size_ok && operands_safe_for_reduced(0))
+            return ozaki_ii_dispatch(A, B, C, M, K, N);
+        if (!use_legacy && g_matmul_fp53_pipeline)
+            return metal_matmul_fp53_dispatch(A, B, C, M, K, N);
+        (void)use_fp53;
+        return metal_matmul_sf64_dispatch(A, B, C, M, K, N);
     }
 }
 
@@ -3656,7 +3677,10 @@ int eshkol_gpu_init(void) {
     // Allow override of GPU dispatch threshold via environment variable
     if (const char* env = std::getenv("ESHKOL_GPU_THRESHOLD")) {
         size_t val = static_cast<size_t>(std::atol(env));
-        if (val > 0) g_gpu_threshold = val;
+        if (val > 0) {
+            g_gpu_threshold = val;
+            g_gpu_threshold_explicit.store(true, std::memory_order_release);
+        }
     }
 
     // Try Metal first (macOS)
@@ -3928,6 +3952,7 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
 
 void eshkol_gpu_set_threshold(size_t threshold) {
     g_gpu_threshold = threshold;
+    g_gpu_threshold_explicit.store(true, std::memory_order_release);
 }
 
 size_t eshkol_gpu_get_threshold(void) {
@@ -3943,25 +3968,70 @@ int eshkol_gpu_should_use(size_t num_elements) {
     return (g_active_backend != ESHKOL_GPU_NONE && num_elements >= g_gpu_threshold) ? 1 : 0;
 }
 
+#if ESHKOL_GPU_METAL_AVAILABLE
+static bool metal_matmul_has_explicit_gpu_override(size_t num_elements) {
+    if (g_gpu_threshold_explicit.load(std::memory_order_acquire)) return true;
+    if (const char* env = std::getenv("ESHKOL_GPU_THRESHOLD")) {
+        if (std::atol(env) > 0) return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_GPU_MATMUL_THRESHOLD")) {
+        long long val = std::atoll(env);
+        if (val > 0 && num_elements >= static_cast<size_t>(val)) return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_SF64_KERNEL")) {
+        if (env[0] != '\0') return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_OZAKI_FAST")) {
+        if (env[0] != '\0' && std::strcmp(env, "0") != 0) return true;
+    }
+    if (const char* env = std::getenv("ESHKOL_GPU_PRECISION")) {
+        if (std::strcmp(env, "high") == 0 ||
+            std::strcmp(env, "fast") == 0 ||
+            std::strcmp(env, "ml") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t /*dtype*/) {
     // dtype currently ignored on Metal (no f16 tensor-core GEMM path yet; a
     // Metal-shader f16 GEMM is a separate follow-up). Storage is already f64
     // precision-reduced for the logical dtype, so the f64 path stays correct.
+    size_t num_elements = M * N;
+
+#if ESHKOL_GPU_METAL_AVAILABLE
+    // Apple Metal lacks native hardware FP64. For default exact FP64 matmul
+    // when BLAS (Apple Accelerate AMX) is available and below the 1B-element
+    // crossover, Accelerate delivers native IEEE-754 FP64 at 450-1100+ GFLOP/s
+    // with zero Metal shader-compilation latency, whereas software-emulated
+    // sf64/fp53 runs at ~50-200 GFLOP/s. Honor every explicit GPU override
+    // (ESHKOL_GPU_THRESHOLD, eshkol_gpu_set_threshold, ESHKOL_GPU_PRECISION,
+    // ESHKOL_SF64_KERNEL, ESHKOL_OZAKI_FAST, ESHKOL_GPU_MATMUL_THRESHOLD).
+    extern int eshkol_blas_available(void);
+    if (!metal_matmul_has_explicit_gpu_override(num_elements) &&
+        eshkol_blas_available() &&
+        num_elements < 1000000000ULL) {
+        extern void eshkol_matmul_f64(const double*, const double*, double*, uint64_t, uint64_t, uint64_t);
+        eshkol_matmul_f64(A, B, C, M, K, N);
+        return;
+    }
+#endif
+
     // Lazy GPU init — ensures g_active_backend is set before threshold check
     if (!g_gpu_initialized.load(std::memory_order_acquire)) {
         eshkol_gpu_init();
     }
 
-    size_t num_elements = M * N;
-
     // GPU path if available and large enough
     if (eshkol_gpu_should_use(num_elements)) {
-        EshkolGPUBuffer buf_a, buf_b, buf_c;
-        if (eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &buf_a) == 0 &&
-            eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &buf_b) == 0 &&
-            eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &buf_c) == 0) {
-
+        EshkolGPUBuffer buf_a = {}, buf_b = {}, buf_c = {};
+        const bool ok_a = eshkol_gpu_wrap_host((void*)A, M * K * sizeof(double), &buf_a) == 0;
+        const bool ok_b = ok_a && eshkol_gpu_wrap_host((void*)B, K * N * sizeof(double), &buf_b) == 0;
+        const bool ok_c = ok_b && eshkol_gpu_wrap_host((void*)C, M * N * sizeof(double), &buf_c) == 0;
+        if (ok_c) {
             if (eshkol_gpu_matmul_f64(&buf_a, &buf_b, &buf_c, M, K, N) == 0) {
                 // Copy back if fallback allocation was used (host_ptr diverged from original)
                 // This happens when newBufferWithBytesNoCopy fails (non-page-aligned pointer)
@@ -3974,6 +4044,9 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                 return;
             }
         }
+        if (ok_a) eshkol_gpu_free(&buf_a);
+        if (ok_b) eshkol_gpu_free(&buf_b);
+        if (ok_c) eshkol_gpu_free(&buf_c);
         // GPU failed, fall through to CPU
         fprintf(stderr, "[GPU] matmul dispatch failed, falling back to CPU BLAS\n");
     }

@@ -249,6 +249,68 @@ def _check_runtime_dependencies(entries: list, package_dir: Path, platform_name:
         _check_leaf(package_dir / relative, f"runtime dependency {relative.as_posix()!r}", errors)
 
 
+def _check_toolchain_flags(
+    entries: list,
+    package_dir: Path,
+    platform_name: str,
+    errors: list[str],
+    checked: list[int],
+    run_it: bool,
+) -> None:
+    for entry in entries:
+        if not _platform_allowed(entry, platform_name) or not entry.get("required", True):
+            continue
+        binary_stem = entry.get("binary", "eshkol-run")
+        flags = entry.get("flags", [])
+        if not isinstance(flags, list) or not flags:
+            errors.append(f"toolchain_flags entry for {binary_stem!r} declares no flags")
+            continue
+        if not run_it:
+            continue
+        ext = ".exe" if platform_name == "windows" else ""
+        exe = package_dir / "bin" / f"{binary_stem}{ext}"
+        checked[0] += 1
+        if not exe.is_file():
+            errors.append(f"toolchain_flags {binary_stem!r}: executable not found: {exe}")
+            continue
+        try:
+            result = subprocess.run(
+                [str(exe), "--help"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception as exc:
+            errors.append(f"toolchain_flags {binary_stem!r}: failed to invoke --help: {exc}")
+            continue
+        help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+        missing = [flag for flag in flags if str(flag) not in help_text]
+        if missing:
+            errors.append(
+                f"toolchain_flags {binary_stem!r}: missing documented flag(s) in --help: "
+                + ", ".join(missing)
+            )
+
+
+def _check_type_diagnostics(
+    entries: list,
+    repo_root: Path,
+    platform_name: str,
+    errors: list[str],
+    checked: list[int],
+) -> None:
+    for entry in entries:
+        if not _platform_allowed(entry, platform_name) or not entry.get("required", True):
+            continue
+        case = entry.get("case", "")
+        if not case or "/" in case or "\\" in case or ".." in case:
+            errors.append(f"type_diagnostics entry has invalid case name: {entry!r}")
+            continue
+        checked[0] += 1
+        expected = repo_root / "tests" / "diagnostics" / case / "expected.json"
+        _check_leaf(expected, f"type_diagnostics case {case!r}", errors)
+
+
 def _check_integration_contract(
     entries: list,
     package_dir: Path,
@@ -333,6 +395,12 @@ def evaluate(
     _check_docs(surface.get("docs", []), package_dir, platform_name, errors, checked)
     _check_cmake_integration(surface.get("cmake_integration", []), package_dir, platform_name, errors, checked)
     _check_runtime_dependencies(surface.get("runtime_dependencies", []), package_dir, platform_name, errors, checked)
+    _check_type_diagnostics(surface.get("type_diagnostics", []), repo_root, platform_name, errors, checked)
+    _check_toolchain_flags(
+        surface.get("toolchain_flags", []),
+        package_dir, platform_name, errors, checked,
+        run_it=verify_integration_contract,
+    )
     _check_integration_contract(
         surface.get("integration_contract", []),
         package_dir, repo_root, platform_name, errors, checked,
@@ -391,6 +459,13 @@ package_surface:
     - id: fake_contract
       script: fake_integration_check.sh
       required: true
+  toolchain_flags:
+    - binary: fake-run
+      flags: ["--help", "--strict-types"]
+      required: true
+  type_diagnostics:
+    - case: fake_type_diag
+      required: true
 """
 
 
@@ -404,9 +479,12 @@ def _build_good_fixture(root: Path, platform_name: str) -> tuple[Path, Path]:
     package_dir = root / "package"
     _write(repo_root / "srclib" / "a.esk")
     _write(repo_root / "srclib" / "nested" / "b.esk")
+    _write(repo_root / "tests" / "diagnostics" / "fake_type_diag" / "expected.json", "{}\n")
 
     ext = ".exe" if platform_name == "windows" else ""
-    _write(package_dir / "bin" / f"fake-run{ext}")
+    fake_exe = package_dir / "bin" / f"fake-run{ext}"
+    _write(fake_exe, "#!/usr/bin/env bash\necho 'Usage: --help --strict-types'\n")
+    fake_exe.chmod(0o755)
 
     lib_name = "fake-runtime.lib" if platform_name == "windows" else "libfake-runtime.a"
     _write(package_dir / "lib" / lib_name)
@@ -501,7 +579,25 @@ def self_test() -> bool:
         all_ok = all_ok and ok
         print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] integration_contract_verified_fail: expected passed=False, got passed={result['passed']}")
 
-        # 9. Malformed manifest document -> must raise / be reported unusable.
+        # 9. Missing toolchain flag in --help -> must FAIL when verified.
+        repo_root, package_dir = _build_good_fixture(tmp_root / "missing_flag", platform_name)
+        fake_exe = package_dir / "bin" / "fake-run"
+        fake_exe.write_text("#!/usr/bin/env bash\necho 'Usage: --help'\n", encoding="utf-8")
+        fake_exe.chmod(0o755)
+        result = evaluate(manifest, package_dir, repo_root, platform_name, verify_integration_contract=True)
+        ok = result["passed"] is False and any("toolchain_flags" in e for e in result["errors"])
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] missing_toolchain_flag: expected passed=False, got {result}")
+
+        # 10. Missing type_diagnostics fixture -> must FAIL.
+        repo_root, package_dir = _build_good_fixture(tmp_root / "missing_type_diag", platform_name)
+        (repo_root / "tests" / "diagnostics" / "fake_type_diag" / "expected.json").unlink()
+        result = evaluate(manifest, package_dir, repo_root, platform_name)
+        ok = result["passed"] is False and any("type_diagnostics" in e for e in result["errors"])
+        all_ok = all_ok and ok
+        print(f"  [{'OK' if ok else 'GATE IS BROKEN'}] missing_type_diagnostic: expected passed=False, got {result}")
+
+        # 11. Malformed manifest document -> must raise / be reported unusable.
         try:
             bad = yaml.safe_load("package_surface: [not, a, mapping]")
             result = evaluate(bad, package_dir, repo_root, platform_name)

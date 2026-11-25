@@ -22,6 +22,9 @@
 #include "eshkol/core/event_loop.h"
 
 #include <stdint.h>
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+#include <pthread.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,11 +53,30 @@ struct eshkol_event_loop {
     int  max_events;          /**< Capacity for both registrations and results. */
     int  n_regs;              /**< Number of live entries in `regs`.            */
     int  last_os_error;       /**< errno / GetLastError from the last failure.  */
-    uintptr_t owner_thread; /**< Adopting thread token; no cross-thread I/O. */
+#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+    pthread_t owner_thread;   /**< Adopting thread identity; stable during TLS teardown. */
+#elif defined(_WIN32)
+    uint32_t  owner_thread;   /**< Adopting Win32 thread ID; no cross-thread I/O. */
+#else
+    uintptr_t owner_thread;   /**< Adopting thread token; no cross-thread I/O. */
+#endif
     unsigned int retain_count; /**< Scoped resources keep the loop alive. */
 
     eshkol_event_reg_t* regs; /**< malloc'd, `max_events` entries.              */
     eshkol_event_t*     out;  /**< malloc'd, `max_events` entries; poll output. */
+
+    /* O(1) fd -> regs[] index table, free-list, and per-poll coalescing state. */
+    int*      fd_hash_keys;      /**< Open-addressed keys: >=0 fd, -1 empty, -2 tomb. */
+    int*      fd_hash_vals;      /**< Matching regs[] slot indices.                   */
+    int       fd_hash_cap;       /**< Power-of-two hash table capacity.               */
+    int       fd_hash_tombstones;/**< Tombstone count triggering periodic compaction. */
+    int*      reg_free_next;     /**< Intrusive free-slot list over [0, max_regs).    */
+    int       reg_free_head;     /**< Head of free-slot list, or -1 when full.        */
+    uint32_t* reg_emit_gen;      /**< Epoch stamp of last emit for each regs[] slot.  */
+    int*      reg_emit_idx;      /**< Output index in `out[]` for current epoch.      */
+    uint32_t  wake_emit_gen;     /**< Epoch stamp for internal wake_read pipe.        */
+    int       wake_emit_idx;     /**< Output index in `out[]` for wake_read.          */
+    uint32_t  emit_epoch;        /**< Monotonic per-poll coalescing epoch.            */
 
     intptr_t backend_fd;      /**< kqueue fd, epoll fd, or IOCP HANDLE. -1 = none. */
     void*    backend_data;    /**< Backend scratch (kevent/epoll_event array).  */

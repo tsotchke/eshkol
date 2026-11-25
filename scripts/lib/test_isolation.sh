@@ -87,7 +87,9 @@ eshkol_test_timeout() {
             return $?
         fi
     fi
-    python3 - "$seconds" "$@" <<'PY'
+    # Pass the watchdog script via -c rather than a heredoc on stdin so callers
+    # that redirect input into eshkol_test_timeout keep their stdin intact.
+    python3 -c '
 import os
 import signal
 import subprocess
@@ -157,7 +159,7 @@ except subprocess.TimeoutExpired:
     # A reaped leader does not imply its descendants exited.
     kill_tree(True)
     raise SystemExit(124)
-PY
+' "$seconds" "$@"
 }
 
 # Resolve the repo root from this file's own location (scripts/lib/), not from

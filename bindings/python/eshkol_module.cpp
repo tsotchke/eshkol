@@ -20,9 +20,14 @@
 
 #include <eshkol/eshkol_ffi.h>
 
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <stdexcept>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -164,7 +169,8 @@ public:
     EshkolContext() {
         eshkol_ffi_context_t* raw = eshkol_ffi_init();
         if (!raw) {
-            throw std::runtime_error("Failed to initialize Eshkol runtime");
+            const char* err = eshkol_ffi_last_error();
+            throw std::runtime_error(err && err[0] ? err : "Failed to initialize Eshkol runtime");
         }
         ctx_ = EshkolCtxHandle(raw, eshkol_ffi_shutdown);
     }
@@ -223,6 +229,143 @@ public:
         }
     }
 
+    /* Convert a NumPy ndarray into an arena-backed Eshkol float64 tensor with
+     * strict exactness enforcement (zero silent dtype demotion or precision loss). */
+    static eshkol_ffi_value_t numpy_to_ffi_tensor(eshkol_ffi_context_t* raw_ctx,
+                                                  const py::object& obj,
+                                                  bool allow_widening) {
+        if (!py::isinstance<py::array>(obj)) {
+            throw py::type_error("expected a numpy.ndarray");
+        }
+        py::array arr = py::reinterpret_borrow<py::array>(obj);
+        py::buffer_info info = arr.request();
+
+        if (info.ndim < 1 || info.ndim > 8) {
+            throw py::value_error("tensor ndim must be between 1 and 8");
+        }
+
+        std::vector<int64_t> shape(static_cast<size_t>(info.ndim));
+        int64_t total = 1;
+        for (py::ssize_t i = 0; i < info.ndim; ++i) {
+            if (info.shape[i] <= 0) {
+                throw py::value_error("tensor dimensions must be strictly positive");
+            }
+            if (total > std::numeric_limits<int64_t>::max() / static_cast<int64_t>(info.shape[i])) {
+                throw py::value_error("tensor element count overflow");
+            }
+            shape[static_cast<size_t>(i)] = static_cast<int64_t>(info.shape[i]);
+            total *= shape[static_cast<size_t>(i)];
+        }
+
+        const py::dtype dt = arr.dtype();
+        const char kind = dt.kind();
+        const py::ssize_t itemsize = dt.itemsize();
+
+        /* Always refuse non-real / object / complex / boolean dtypes. */
+        if (kind == 'c') {
+            throw py::type_error("complex NumPy dtypes cannot be silently demoted to real float64 tensors");
+        }
+        if (kind != 'f' && kind != 'i' && kind != 'u') {
+            throw py::type_error("unsupported NumPy dtype for Eshkol tensor boundary (expected float64)");
+        }
+
+        /* Fast, bit-exact IEEE-754 binary64 path (always permitted). */
+        if (kind == 'f' && itemsize == 8) {
+            py::array_t<double, py::array::c_style> contig;
+            const double* src = nullptr;
+            bool is_c_contig = (arr.flags() & py::array::c_style) != 0;
+            if (is_c_contig) {
+                src = static_cast<const double*>(info.ptr);
+            } else {
+                contig = py::array_t<double, py::array::c_style>::ensure(arr);
+                if (!contig) {
+                    throw py::type_error("failed to materialize contiguous float64 view");
+                }
+                src = static_cast<const double*>(contig.request().ptr);
+            }
+            eshkol_ffi_value_t v = eshkol_ffi_tensor_from_data(
+                raw_ctx, src, shape.data(), static_cast<int>(shape.size()));
+            if (eshkol_ffi_is_null(v)) {
+                throw std::runtime_error("failed to allocate Eshkol tensor from float64 array");
+            }
+            return v;
+        }
+
+        /* Any non-float64 dtype is refused by default to prevent silent precision
+         * mismatches or truncation across the Python/NumPy boundary. */
+        if (!allow_widening) {
+            throw py::type_error(
+                "refusing silent dtype conversion across NumPy->Eshkol boundary: "
+                "expected float64 (pass allow_widening=True for lossless widening)");
+        }
+
+        /* Explicit lossless widening path: verify exactness for 64-bit integers. */
+        std::vector<double> widened(static_cast<size_t>(total));
+        if (kind == 'f' && itemsize == 4) {
+            auto c = py::array_t<float, py::array::c_style | py::array::forcecast>::ensure(arr);
+            const float* p = static_cast<const float*>(c.request().ptr);
+            for (int64_t i = 0; i < total; ++i) widened[static_cast<size_t>(i)] = static_cast<double>(p[i]);
+        } else if (kind == 'f' && itemsize == 2) {
+            py::object f64 = arr.attr("astype")(py::dtype::of<double>());
+            auto c = py::array_t<double, py::array::c_style>::ensure(f64);
+            const double* p = static_cast<const double*>(c.request().ptr);
+            std::memcpy(widened.data(), p, static_cast<size_t>(total) * sizeof(double));
+        } else if (kind == 'i' && itemsize == 8) {
+            auto c = py::array_t<int64_t, py::array::c_style>::ensure(arr);
+            const int64_t* p = static_cast<const int64_t*>(c.request().ptr);
+            constexpr int64_t kMaxExact = (INT64_C(1) << 53);
+            for (int64_t i = 0; i < total; ++i) {
+                if (p[i] > kMaxExact || p[i] < -kMaxExact) {
+                    throw py::value_error(
+                        "refusing lossy int64->float64 demotion: element exceeds exact 53-bit IEEE-754 mantissa");
+                }
+                widened[static_cast<size_t>(i)] = static_cast<double>(p[i]);
+            }
+        } else if (kind == 'u' && itemsize == 8) {
+            auto c = py::array_t<uint64_t, py::array::c_style>::ensure(arr);
+            const uint64_t* p = static_cast<const uint64_t*>(c.request().ptr);
+            constexpr uint64_t kMaxExact = (UINT64_C(1) << 53);
+            for (int64_t i = 0; i < total; ++i) {
+                if (p[i] > kMaxExact) {
+                    throw py::value_error(
+                        "refusing lossy uint64->float64 demotion: element exceeds exact 53-bit IEEE-754 mantissa");
+                }
+                widened[static_cast<size_t>(i)] = static_cast<double>(p[i]);
+            }
+        } else if ((kind == 'i' || kind == 'u') && (itemsize == 1 || itemsize == 2 || itemsize == 4)) {
+            py::object f64 = arr.attr("astype")(py::dtype::of<double>());
+            auto c = py::array_t<double, py::array::c_style>::ensure(f64);
+            const double* p = static_cast<const double*>(c.request().ptr);
+            std::memcpy(widened.data(), p, static_cast<size_t>(total) * sizeof(double));
+        } else {
+            throw py::type_error("unsupported NumPy dtype for lossless widening to float64");
+        }
+
+        eshkol_ffi_value_t v = eshkol_ffi_tensor_from_data(
+            raw_ctx, widened.data(), shape.data(), static_cast<int>(shape.size()));
+        if (eshkol_ffi_is_null(v)) {
+            throw std::runtime_error("failed to allocate Eshkol tensor");
+        }
+        return v;
+    }
+
+    /* Round-trip a NumPy array through an Eshkol arena tensor and back as a
+     * zero-copy NumPy view, enforcing strict exactness and shape preservation. */
+    py::object tensor_roundtrip(const py::object& arr, bool allow_widening = false) {
+        eshkol_ffi_value_t v = numpy_to_ffi_tensor(ctx_.get(), arr, allow_widening);
+        return ffi_value_to_python(ctx_, v);
+    }
+
+    /* Bind a NumPy array directly to a top-level Eshkol variable name without
+     * string serialization, preserving exact IEEE-754 bits and N-D shape. */
+    void bind_tensor(const std::string& name, const py::object& arr, bool allow_widening = false) {
+        eshkol_ffi_value_t v = numpy_to_ffi_tensor(ctx_.get(), arr, allow_widening);
+        if (eshkol_ffi_bind_value(ctx_.get(), name.c_str(), v) != 0) {
+            const char* err = eshkol_ffi_last_error();
+            throw std::runtime_error(err ? err : "Failed to bind tensor");
+        }
+    }
+
     /* Compute derivative: derivative(f_source, x)
      *
      * Security (#191): func_source is user-controlled Python input.
@@ -236,9 +379,13 @@ public:
      * interpreter. */
     double derivative(const std::string& func_source, double x) {
         validate_lambda_source(func_source, "derivative");
-        char buf[512];
-        snprintf(buf, sizeof(buf), "(derivative %s %g)", func_source.c_str(), x);
-        return eval_double(buf);
+        if (!std::isfinite(x)) {
+            throw py::value_error("derivative: evaluation point x must be finite");
+        }
+        char num[64];
+        snprintf(num, sizeof(num), "%.17g", x);
+        std::string expr = "(derivative " + func_source + " " + num + ")";
+        return eval_double(expr);
     }
 
     /* Compute gradient: gradient(f_source, point_list) */
@@ -246,8 +393,11 @@ public:
         validate_lambda_source(func_source, "gradient");
         std::string expr = "(gradient " + func_source + " (list";
         for (double v : point) {
+            if (!std::isfinite(v)) {
+                throw py::value_error("gradient: all point coordinates must be finite");
+            }
             char num[64];
-            snprintf(num, sizeof(num), " %g", v);
+            snprintf(num, sizeof(num), " %.17g", v);
             expr += num;
         }
         expr += "))";
@@ -348,5 +498,12 @@ PYBIND11_MODULE(eshkol, m) {
              py::arg("func"), py::arg("point"),
              "Compute the gradient of a function at a point.\n"
              "Example: ctx.gradient('(lambda (x y) (* x y))', [2.0, 3.0])")
+        .def("bind_tensor", &EshkolContext::bind_tensor,
+             py::arg("name"), py::arg("array"), py::arg("allow_widening") = false,
+             "Bind a NumPy ndarray directly to a top-level Eshkol variable without stringification.\n"
+             "Refuses non-float64 dtypes unless allow_widening=True (and refuses lossy int64 > 2^53).")
+        .def("tensor_roundtrip", &EshkolContext::tensor_roundtrip,
+             py::arg("array"), py::arg("allow_widening") = false,
+             "Round-trip a NumPy ndarray through an Eshkol arena tensor with exact IEEE-754 bit and shape preservation.")
     ;
 }

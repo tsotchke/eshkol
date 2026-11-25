@@ -643,6 +643,138 @@ ESHKOL_AGENT_API int32_t eshkol_http_server_port(int64_t);
 ESHKOL_AGENT_API int32_t eshkol_http_server_accept(int64_t, char*, int32_t, int32_t);
 ESHKOL_AGENT_API void eshkol_http_server_respond(int64_t, int32_t, const char*, const char*);
 ESHKOL_AGENT_API void eshkol_http_server_close(int64_t);
+
+/* Scoped native HTTP event streams used by lib/agent/http_sse.esk. */
+struct HttpSseStream;
+
+/**
+ * @brief Adopts the accepted client for a routed HTTP/1.1 GET.
+ *
+ * Call on the event loop's owner thread with the native network capability.
+ * The HTTP server keeps its listener. Call progress to send the headers.
+ *
+ * @param server HTTP server handle with the accepted client.
+ * @param loop Explicit event loop handle.
+ * @param watch_cookie Nonnegative cookie for the stream's write watch.
+ * @return An owned stream on success, or NULL with the client still owned by
+ *         the HTTP server and no bytes sent.
+ */
+ESHKOL_AGENT_API struct HttpSseStream* eshkol_http_sse_scope_begin(
+    int64_t server, int64_t loop, int64_t watch_cookie);
+
+/**
+ * @brief Reads the active lease identity for cleanup recovery.
+ *
+ * Save the identity immediately after acquisition to look up failed detached
+ * cleanup after the stream has been retired.
+ *
+ * @param stream Live stream returned by eshkol_http_sse_scope_begin().
+ * @return The active lease identity, or zero if absent.
+ */
+ESHKOL_AGENT_API int64_t eshkol_http_sse_scope_id(const struct HttpSseStream* stream);
+
+/**
+ * @brief Retires and disposes of a scoped stream without further writes.
+ *
+ * Call on the loop owner thread. Pending cleanup stays owned by the shared
+ * resource manager. A failed detached ticket can be claimed using the lease
+ * identity saved at acquisition. Cleanup remains available after network
+ * permission is revoked.
+ *
+ * @param stream Stream to retire.
+ * @return Zero when ownership has been transferred and the stream freed, or a
+ *         negative shared status when the caller still owns the stream.
+ */
+ESHKOL_AGENT_API int32_t eshkol_http_sse_scope_close(struct HttpSseStream* stream);
+
+/**
+ * @brief Claims a failed detached cleanup ticket.
+ *
+ * The caller owns the returned ticket and can inspect, retry when permitted,
+ * and release it using the shared resource cleanup API.
+ *
+ * @param retired_id Lease identity saved by eshkol_http_sse_scope_id().
+ * @return The cleanup ticket, or ESHKOL_IO_INVALID when no failed detached
+ *         ticket is available.
+ */
+ESHKOL_AGENT_API int64_t eshkol_http_sse_scope_cleanup_ticket(int64_t retired_id);
+
+/**
+ * @brief Admits an SSE event from NUL-terminated UTF-8 strings.
+ *
+ * Admission buffers one encoded chunk without sending it. Empty event types
+ * are omitted. An empty ID resets the client ID. Event types and IDs cannot
+ * contain carriage returns or line feeds.
+ *
+ * @param stream Active stream on the loop owner thread.
+ * @param data Event data.
+ * @param event_type Event type, or NULL to omit it.
+ * @param id Event ID, or NULL to omit it.
+ * @return Zero on admission. A pending write returns ESHKOL_IO_BUSY. Other
+ *         negative shared statuses report invalid input, idle expiration, or
+ *         an encoded chunk beyond the 16 KiB limit.
+ * @see eshkol_http_sse_stream_send_bytes
+ */
+ESHKOL_AGENT_API int eshkol_http_sse_stream_send(
+    struct HttpSseStream* stream, const char* data, const char* event_type, const char* id);
+
+/**
+ * @brief Admits an SSE event from explicit UTF-8 byte spans.
+ *
+ * The call checks owner-thread, pending-write, and idle state before
+ * validating the spans. Embedded NUL bytes are invalid. Event types and IDs
+ * also reject carriage returns and line feeds. Admission copies the encoded
+ * chunk into the stream and retains no caller-owned pointers.
+ *
+ * @param stream Active stream on the loop owner thread.
+ * @param data Event data. Use a non-NULL pointer for empty data.
+ * @param data_len Nonnegative data byte count.
+ * @param event_type Event type, or NULL to omit it.
+ * @param event_type_len Nonnegative event type byte count. Use zero if omitted.
+ * @param id Event ID, or NULL to omit it.
+ * @param id_len Nonnegative ID byte count. Use zero if omitted.
+ * @return Zero on admission, ESHKOL_IO_BUSY while a write is pending,
+ *         ESHKOL_IO_TRUNCATED when the encoded chunk exceeds 16 KiB, or a
+ *         different negative shared status for invalid input or stream state.
+ * @see eshkol_http_sse_stream_send
+ */
+ESHKOL_AGENT_API int eshkol_http_sse_stream_send_bytes(
+    struct HttpSseStream* stream, const char* data, int64_t data_len,
+    const char* event_type, int64_t event_type_len, const char* id, int64_t id_len);
+
+/**
+ * @brief Advances a pending write or checks for idle expiration.
+ *
+ * Call on the loop owner thread after readiness or at the current deadline.
+ * If network permission is revoked, the stream retires without writing.
+ *
+ * @param stream Active stream to advance.
+ * @return Zero when ready for another event, 1 while a write is pending, or
+ *         2 after the final chunk has been sent and close requested.
+ *         Negative results are shared I/O statuses. Network denial returns
+ *         ESHKOL_IO_SYSTEM and sets errno to EACCES.
+ */
+ESHKOL_AGENT_API int eshkol_http_sse_stream_progress(struct HttpSseStream* stream);
+
+/**
+ * @brief Queues the final HTTP chunk for a clean finish.
+ *
+ * Advance the stream until progress reports that the final chunk was sent.
+ *
+ * @param stream Active stream on the loop owner thread.
+ * @return Zero on admission, ESHKOL_IO_BUSY while bytes are pending, or a
+ *         different negative shared status for invalid or expired state.
+ */
+ESHKOL_AGENT_API int eshkol_http_sse_stream_finish(struct HttpSseStream* stream);
+
+/**
+ * @brief Reads the current absolute write or idle deadline in milliseconds.
+ *
+ * @param stream Retained stream pointer.
+ * @return A deadline from the monotonic clock, or -1 if none remains.
+ */
+ESHKOL_AGENT_API int64_t eshkol_http_sse_stream_deadline(const struct HttpSseStream* stream);
+
 ESHKOL_AGENT_API int64_t eshkol_unix_socket_connect(const char*);
 ESHKOL_AGENT_API int64_t eshkol_ws_server_upgrade(int64_t, const char*, int32_t);
 ESHKOL_AGENT_API int64_t eshkol_ws_wrap_fd(int64_t);

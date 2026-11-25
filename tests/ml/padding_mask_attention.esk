@@ -8,9 +8,8 @@
        (= (tensor-ref t 1 0 0) 4.0) (= (tensor-ref t 1 1 0) 4.0)))
 (define float-refused
   (guard (e ((error-object? e)
-             (string-contains?
-               (error-object-message e)
-               "Type error in padding-mask: expected nonnegative integer maximum length"))
+             (equal? (error-object-message e)
+                     "Type error in padding-mask: expected nonnegative integer maximum length"))
             (#t #f))
     (padding-mask #(1 2) 2.0)
     #f))

@@ -1253,6 +1253,18 @@ namespace {
         return out;
     }
 
+    // Resolve the linker symbol name for a REPL-visible global variable.
+    // User-defined REPL variables live in private `__repl_storage_*` slots
+    // managed by ReplJITContext (hot-reloadable, collision-free with C/libm).
+    // Exported data globals discovered from stdlib.bc (e.g. `stream-null`)
+    // live under their raw public symbol name in stdlib until shadowed by a
+    // user definition. Caller must hold g_repl_mutex.
+    static std::string replGlobalStorageSymbolNameLocked(const std::string& name) {
+        return g_repl_user_variable_names.count(name) > 0
+                   ? replVarStorageSymbolName(name)
+                   : name;
+    }
+
     // Compute the LLVM symbol name used to back a top-level user variable's
     // storage. User-program globals MUST NOT be emitted under their raw Scheme
     // name: a name like `free`/`malloc`/`exit` would collide with the C runtime
@@ -1559,6 +1571,66 @@ static GlobalValue::LinkageTypes publicDefinitionLinkage(bool library_mode) {
     return library_mode
         ? GlobalValue::LinkOnceODRLinkage
         : GlobalValue::ExternalLinkage;
+}
+
+// Scheme allows top-level definitions with ordinary names such as `stat`,
+// `open`, `close`, `time`, `free`, or `signal`. Emitting those as unmangled
+// global linker symbols shadows libc/POSIX routines invoked by libeshkol and
+// system libraries in the same process. Mangle colliding C/POSIX linker names
+// uniformly across defining modules and imported declarations while leaving
+// explicit C ABI exports (`:export` / `:export-name`) untouched.
+static bool isReservedCLinkerSymbol(const std::string& name) {
+    static const std::unordered_set<std::string> kReserved = {
+        "stat", "lstat", "fstat", "fstatat", "stat64", "lstat64", "fstat64",
+        "open", "openat", "creat", "close", "read", "write", "pread", "pwrite",
+        "lseek", "pipe", "pipe2", "dup", "dup2", "fcntl", "ioctl", "poll", "ppoll",
+        "select", "pselect", "kqueue", "kevent", "epoll_create", "epoll_ctl", "epoll_wait",
+        "socket", "socketpair", "bind", "listen", "accept", "accept4", "connect",
+        "send", "sendto", "sendmsg", "recv", "recvfrom", "recvmsg", "shutdown",
+        "getsockopt", "setsockopt", "getsockname", "getpeername",
+        "fork", "vfork", "execve", "execvp", "execv", "execl", "execlp",
+        "wait", "waitpid", "kill", "killpg", "raise", "signal", "sigaction",
+        "sigprocmask", "alarm", "pause", "exit", "_exit", "_Exit", "abort", "atexit",
+        "mkdir", "mkdirat", "rmdir", "unlink", "unlinkat", "rename", "renameat",
+        "link", "symlink", "readlink", "realpath", "chmod", "fchmod", "chown", "fchown",
+        "access", "faccessat", "truncate", "ftruncate", "chdir", "fchdir", "getcwd",
+        "umask", "chroot", "sync", "fsync", "fdatasync", "isatty", "ttyname",
+        "opendir", "readdir", "closedir", "mkstemp", "mkdtemp",
+        "mmap", "munmap", "mprotect", "msync", "madvise",
+        "getpid", "getppid", "getuid", "geteuid", "getgid", "getegid",
+        "setuid", "setgid", "setsid", "setpgid", "getpgid",
+        "malloc", "calloc", "realloc", "free", "aligned_alloc", "posix_memalign",
+        "memcpy", "memmove", "memset", "memcmp", "memchr",
+        "strlen", "strnlen", "strcmp", "strncmp", "strcpy", "strncpy", "strcat", "strncat",
+        "strchr", "strrchr", "strstr", "strtok", "strdup", "strndup", "strerror", "perror",
+        "printf", "fprintf", "sprintf", "snprintf", "vprintf", "vfprintf", "vsprintf", "vsnprintf",
+        "scanf", "fscanf", "sscanf", "puts", "fputs", "putchar", "getchar", "fgets", "fgetc", "fputc",
+        "fopen", "fdopen", "freopen", "fclose", "fread", "fwrite", "fseek", "ftell", "rewind", "fflush",
+        "remove", "tmpfile", "tmpnam", "setvbuf", "fileno", "feof", "ferror", "clearerr",
+        "time", "clock", "clock_gettime", "gettimeofday", "difftime", "mktime",
+        "localtime", "localtime_r", "gmtime", "gmtime_r", "strftime",
+        "nanosleep", "sleep", "usleep",
+        "getenv", "setenv", "unsetenv", "putenv", "system", "popen", "pclose",
+        "dlopen", "dlsym", "dlclose", "dlerror",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+        "exp", "exp2", "expm1", "log", "log10", "log2", "log1p",
+        "pow", "sqrt", "cbrt", "hypot", "ceil", "floor", "round", "trunc", "fabs", "fmod", "remainder",
+        "erf", "erfc", "tgamma", "lgamma", "sinf", "cosf", "expf", "logf", "sqrtf", "powf",
+        "rand", "srand", "random", "srandom", "drand48", "srand48",
+        "qsort", "bsearch", "atoi", "atol", "atoll", "atof", "strtol", "strtoll", "strtoul", "strtod",
+        "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower", "tolower", "toupper",
+        "abs", "labs", "llabs", "div", "ldiv", "lldiv", "index", "rindex",
+        "setjmp", "longjmp", "_setjmp", "_longjmp", "sigsetjmp", "siglongjmp"
+    };
+    return kReserved.find(name) != kReserved.end();
+}
+
+static std::string mangleSchemeFunctionLinkerName(const std::string& name) {
+    if (isReservedCLinkerSymbol(name)) {
+        return "__eshkol_fn_" + name;
+    }
+    return name;
 }
 
 static GlobalValue::LinkageTypes sexprGlobalLinkage(
@@ -2493,8 +2565,9 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
             {
                 std::lock_guard<std::mutex> lock(g_external_mutex);
                 for (const auto& [func_name, info] : g_external_functions) {
+                    const std::string llvm_ext_name = mangleSchemeFunctionLinkerName(func_name);
                     // Skip if already declared (local definition takes precedence)
-                    if (module->getFunction(func_name) || function_table.count(func_name)) {
+                    if (module->getFunction(llvm_ext_name) || function_table.count(func_name)) {
                         continue;
                     }
 
@@ -2504,7 +2577,7 @@ std::pair<std::unique_ptr<Module>, std::unique_ptr<LLVMContext>> EshkolLLVMCodeG
                     Function* ext_func = Function::Create(
                         func_type,
                         GlobalValue::ExternalLinkage,
-                        func_name,
+                        llvm_ext_name,
                         module.get()
                     );
 
@@ -3851,7 +3924,12 @@ void EshkolLLVMCodeGen::createFunctionDeclaration(const eshkol_ast_t* ast) {
         // The function/variable namespaces are mutually exclusive — defining
         // `f` as a function clears any prior variable registration so reads
         // and calls of `f` see a function, not a stale value or closure.
-        std::string llvm_func_name = func_name;
+        const auto& def_op = ast->operation.define_op;
+        const bool explicit_c_export =
+            def_op.export_symbol || def_op.export_name != nullptr || def_op.is_weak;
+        std::string llvm_func_name = explicit_c_export
+            ? std::string(func_name)
+            : mangleSchemeFunctionLinkerName(func_name);
         GlobalValue::LinkageTypes link = publicDefinitionLinkage(library_mode);
         if (g_repl_mode_enabled) {
             int v = g_repl_define_counter.fetch_add(1, std::memory_order_relaxed);
@@ -3861,6 +3939,13 @@ void EshkolLLVMCodeGen::createFunctionDeclaration(const eshkol_ast_t* ast) {
             g_repl_user_function_names.insert(func_name);
             g_repl_user_variable_names.erase(func_name);
             g_repl_symbol_addresses.erase(func_name);
+        } else if (!library_mode && !def_op.is_external && !explicit_c_export &&
+                   llvm_func_name != "main" && llvm_func_name != "scheme_main" &&
+                   llvm_func_name != "_start") {
+            // Standalone executable definitions stay internal to the module so
+            // user-defined Scheme procedures never interpose on libc/POSIX or
+            // runtime symbols during linking.
+            link = GlobalValue::InternalLinkage;
         }
 
         Function* function = Function::Create(
@@ -4329,6 +4414,9 @@ void EshkolLLVMCodeGen::finalizeLibrarySymbols(const eshkol_ast_t* asts, size_t 
             }
         }
 
+        // Resolve tail-transfer forwarders before shared-library or freestanding
+        // export wrappers rename top-level definitions to internal ABI symbols.
+        finalizeTailTransferThunks();
         emitSharedLibraryExportWrappers(asts, num_asts);
         emitFreestandingScalarExportWrappers(asts, num_asts);
     }
@@ -6820,9 +6908,8 @@ Value* EshkolLLVMCodeGen::codegenClosureCall(Value* func_result, const std::vect
             {
                 Value* result;
                 if (call_args.size() == 1) {
-                    // Unary minus: (- x) => 0 - x
-                    Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-                    result = polymorphicSub(zero, call_args[0]);
+                    // Unary minus: (- x)
+                    result = polymorphicUnaryNeg(call_args[0]);
                 } else {
                     result = call_args[0];
                     for (size_t i = 1; i < call_args.size(); i++) {
@@ -8455,6 +8542,44 @@ Value* EshkolLLVMCodeGen::polymorphicSub(Value* left_tagged, Value* right_tagged
         return arith_->sub(left_tagged, right_tagged);
     }
 
+Value* EshkolLLVMCodeGen::polymorphicUnaryNeg(Value* operand) {
+        // IEEE-754 signed-zero preservation: (- 0.0) must emit fneg (-0.0),
+        // not 0.0 - 0.0 (+0.0). Non-double operands delegate to
+        // polymorphicSub(0, operand) so exact integers (including INT64_MIN
+        // bignum promotion), i128, bignums, rationals, complex, dual, AD nodes,
+        // Taylor towers, vectors, and tensors keep full numeric-tower dispatch.
+        Value* type_tag = tagged_->getType(operand);
+        Value* base_type = tagged_->getBaseType(type_tag);
+        Value* is_double = builder->CreateICmpEQ(
+            base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* dbl_bb = BasicBlock::Create(*context, "unary_neg_double", func);
+        BasicBlock* other_bb = BasicBlock::Create(*context, "unary_neg_other", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "unary_neg_merge", func);
+
+        builder->CreateCondBr(is_double, dbl_bb, other_bb);
+
+        builder->SetInsertPoint(dbl_bb);
+        Value* dbl_val = tagged_->unpackDouble(operand);
+        Value* neg_dbl = builder->CreateFNeg(dbl_val, "fneg");
+        Value* dbl_res = tagged_->packDouble(neg_dbl);
+        BasicBlock* dbl_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(other_bb);
+        Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
+        Value* other_res = polymorphicSub(zero, operand);
+        BasicBlock* other_exit = builder->GetInsertBlock();
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2, "unary_neg_res");
+        phi->addIncoming(dbl_res, dbl_exit);
+        phi->addIncoming(other_res, other_exit);
+        return phi;
+    }
+
 Value* EshkolLLVMCodeGen::polymorphicMul(Value* left_tagged, Value* right_tagged) {
         return arith_->mul(left_tagged, right_tagged);
     }
@@ -9730,7 +9855,7 @@ Value* EshkolLLVMCodeGen::codegenVariable(const eshkol_ast_t* ast) {
             if (repl_it != g_repl_symbol_addresses.end() ||
                 g_repl_user_variable_names.count(var_name) > 0) {
                 // Variable exists in REPL context - create external global declaration
-                std::string storage_name = replVarStorageSymbolName(var_name);
+                std::string storage_name = replGlobalStorageSymbolNameLocked(var_name);
                 GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                 if (!global_var) {
                     // Create external declaration for this global variable
@@ -10379,7 +10504,7 @@ Value* EshkolLLVMCodeGen::makeVariadicOperatorClosureValue(const std::string& op
                 return packInt64ToTaggedValue(ConstantInt::get(int64_type, n), true);
             };
             std::function<Value*(Value*)> unary;
-            if (op == "-") unary = [&](Value* x) { return polymorphicSub(exact(0), x); };
+            if (op == "-") unary = [&](Value* x) { return polymorphicUnaryNeg(x); };
             if (op == "/") unary = [&](Value* x) { return polymorphicDiv(exact(1), x); };
             std::function<Value*()> nullary;
             if (op == "+") nullary = [&]() { return exact(0); };
@@ -12152,7 +12277,7 @@ Value* EshkolLLVMCodeGen::codegenSet(const eshkol_operations_t* op) {
             auto repl_it = g_repl_symbol_addresses.find(var_name);
             if (repl_it != g_repl_symbol_addresses.end()) {
                 // Variable exists in REPL context - create external global declaration
-                std::string storage_name = replVarStorageSymbolName(var_name);
+                std::string storage_name = replGlobalStorageSymbolNameLocked(var_name);
                 GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                 if (!global_var) {
                     // Create external declaration for this global variable
@@ -18292,13 +18417,20 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenCallTask(const eshkol_operati
                     co_return packNullToTaggedValue();
                 }
             } else {
-                // REPL FIX: Check if symbol exists in REPL registry (from previous evaluation)
+                // REPL: Check if symbol exists in REPL registry (from previous evaluation)
                 if (g_repl_mode_enabled) {
-                    auto repl_it = g_repl_symbol_addresses.find(func_name);
-                    if (repl_it != g_repl_symbol_addresses.end()) {
+                    std::string storage_name;
+                    bool found_repl_sym = false;
+                    {
+                        std::lock_guard<std::mutex> lock(g_repl_mutex);
+                        if (g_repl_symbol_addresses.find(func_name) != g_repl_symbol_addresses.end()) {
+                            storage_name = replGlobalStorageSymbolNameLocked(func_name);
+                            found_repl_sym = true;
+                        }
+                    }
+                    if (found_repl_sym) {
                         // Symbol exists in JIT from previous evaluation
                         // Create an external GlobalVariable reference and load the closure
-                        std::string storage_name = replVarStorageSymbolName(func_name);
                         GlobalVariable* ext_var = module->getNamedGlobal(storage_name);
                         if (!ext_var) {
                             ext_var = new GlobalVariable(
@@ -20095,10 +20227,7 @@ ContinuationTask<Value*> EshkolLLVMCodeGen::codegenArithmeticTask(const eshkol_o
             TypedValue tv = (co_await codegenTypedASTTask(&op->call_op.variables[0]));
             if (!tv.llvm_value) co_return nullptr;
             Value* tagged = typedValueToTaggedValue(tv);
-            // Create zero tagged value
-            Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-            // Return 0 - x
-            co_return polymorphicSub(zero, tagged);
+            co_return polymorphicUnaryNeg(tagged);
         }
 
         // Handle unary plus: (+ x) => identity
@@ -27469,7 +27598,16 @@ void EshkolLLVMCodeGen::finalizeTailTransferThunks() {
             std::string name = body->getName().str();
             const size_t suffix_len = std::strlen(kTailBodySuffix);
             if (name.size() <= suffix_len) continue;
-            Function* target = module->getFunction(name.substr(0, name.size() - suffix_len));
+            std::string base_name = name.substr(0, name.size() - suffix_len);
+            Function* target = module->getFunction(base_name);
+            if (!target || target->getFunctionType() != body->getFunctionType()) {
+                Function* internal_target =
+                    module->getFunction(sharedLibraryImplSymbolName(base_name));
+                if (internal_target &&
+                    internal_target->getFunctionType() == body->getFunctionType()) {
+                    target = internal_target;
+                }
+            }
             if (!target || target->getFunctionType() != body->getFunctionType()) {
                 // Nothing to forward to. Leaving the declaration would fail the
                 // link; an explicit trap is the loud form of "the compiler lost
@@ -32638,7 +32776,7 @@ Value* EshkolLLVMCodeGen::codegenLambda(const eshkol_operations_t* op) {
                     auto sym_it = g_repl_symbol_addresses.find(var_name);
                     if (sym_it != g_repl_symbol_addresses.end()) {
                         // Create external declaration for the global
-                        std::string storage_name = replVarStorageSymbolName(var_name);
+                        std::string storage_name = replGlobalStorageSymbolNameLocked(var_name);
                         GlobalVariable* global_var = module->getGlobalVariable(storage_name);
                         if (!global_var) {
                             global_var = new GlobalVariable(
@@ -33897,7 +34035,7 @@ Value* EshkolLLVMCodeGen::codegenNamedLet(const eshkol_operations_t* op) {
                                  loop_name.c_str(), fv.c_str());
                     markFatalCodegenError();
                 } else if (g_repl_symbol_addresses.find(fv) != g_repl_symbol_addresses.end()) {
-                    std::string storage_name = replVarStorageSymbolName(fv);
+                    std::string storage_name = replGlobalStorageSymbolNameLocked(fv);
                     GlobalVariable* repl_global = module->getGlobalVariable(storage_name);
                     if (!repl_global) {
                         repl_global = new GlobalVariable(
@@ -43019,10 +43157,9 @@ Function* EshkolLLVMCodeGen::createBuiltinArithmeticFunction(const std::string& 
         auto arg_it = builtin_func->arg_begin();
         Value* result = &*arg_it++;
 
-        // Handle unary minus: (- x) => 0 - x
+        // Handle unary minus: (- x)
         if (arity == 1 && operation == "-") {
-            Value* zero = packInt64ToTaggedValue(ConstantInt::get(int64_type, 0), true);
-            result = polymorphicSub(zero, &*builtin_func->arg_begin());
+            result = polymorphicUnaryNeg(&*builtin_func->arg_begin());
         }
         // Handle unary plus: (+ x) => x (identity, result is already set)
         else if (arity == 1 && operation == "+") {

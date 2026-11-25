@@ -96,27 +96,14 @@ for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
     rm -f "$test_bin" "$test_bin.tmp.o" "$test_output" "$compile_output"
 
     # Try to compile
-    if "$ESHKOL_RUN" -I "$ROOT_DIR/tests" -L"$ROOT_DIR/$BUILD_DIR" "$test_file" -o "$test_bin" > "$compile_output" 2>&1; then
+    if "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$test_file" -o "$test_bin" > "$compile_output" 2>&1; then
         # Compilation succeeded, try to run
         if "$test_bin" > "$test_output" 2>&1; then
-            # test_condition_counts.esk intentionally registers 2 failing
-            # core.testing checks to assert pass/fail counts, then exits 0
-            # only when it prints "PASS: condition counts".
-            if [ "$test_name" = "test_condition_counts.esk" ]; then
-                if grep -Fxq "PASS: condition counts" "$test_output"; then
-                    echo -e "${GREEN}✅ PASS${NC}"
-                    ((PASS++)) || true
-                else
-                    echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
-                    head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
-                    RUNTIME_ERRORS+=("$test_name")
-                    ((FAIL++)) || true
-                fi
             # Check if there were any errors in output
             # `error:` alone is a compiler diagnostic, not a verdict: these
             # programs print their own FAIL lines and exit 0, so scan for
             # failure markers too — anywhere on the line, not just column 0.
-            elif eshkol_test_output_has_failure "$test_output" 'error:'; then
+            if eshkol_test_output_has_failure "$test_output" 'error:'; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                 head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
                 RUNTIME_ERRORS+=("$test_name")

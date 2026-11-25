@@ -1,0 +1,39 @@
+{
+  "base": "eb224260b4814baf3ad260744c8dcdd05fb84898",
+  "toolchain": {
+    "lean": "Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release)",
+    "platform": "Linux x86_64",
+    "libc": "glibc 2.44",
+    "cxx": "c++ (GCC) 16.2.1 20260810"
+  },
+  "axioms": [
+    "'Verificatum.TimeoutDecimal.quotient' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.TimeoutDecimal.digit' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.TimeoutDecimal.formatterExtent' depends on axioms: [propext, Classical.choice, Quot.sound]"
+  ],
+  "distinct_ceilings": 61,
+  "timeout_cases": {
+    "quiet/default": 61,
+    "quiet/registered": 61,
+    "warn/default": 61,
+    "warn/registered": 61,
+    "fatal/default": 61,
+    "fatal/registered": 61
+  },
+  "reference_callback_exit": {
+    "quiet": 90,
+    "warn": 90,
+    "fatal": 90
+  },
+  "other_limit_comparisons": 15,
+  "sha256": {
+    "archive": "10a68815be29e4caacb0214af225b0a11a70c2f93c757be6b341d2117a698b22",
+    "baseline_source": "816ae38197f86d1c1eeafa409cdad32f918667e7f5c648dec8ce31293f6bbc22",
+    "candidate_source": "f119f2f99c07fbe3bb0d74c3234a5c5ab51312e909d2ff1330152c3aa372cde0",
+    "model": "c41e0d8388781bad76c7bac44de6544dd4a909dc2f914b4411224e8f336e539f",
+    "control": "a2692e34dc567a3921cc55e98490323c586b97ccc9f088612644cac251ef0585",
+    "driver": "471f3d24f47258ca1dc300f8a8bc14e5da39748a4d31afc53c124887ec6cc3cd",
+    "reference_elf": "aa456b29661d1bb80c2e266dd0cab0707be0eca36acf2942808d80ef550985b7",
+    "candidate_elf": "b5003514a76772d11824731677f7c11804b56365e374173f6f1a65ce3d007466"
+  }
+}

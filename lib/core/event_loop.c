@@ -18,10 +18,23 @@
 #include "eshkol/core/handle.h"
 
 extern eshkol_handle_registry_t *eshkol_resource_registry(void);
-static _Thread_local unsigned char event_owner_token;
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
-    return loop && loop->owner_thread == (uintptr_t)&event_owner_token;
+    return loop && loop->owner_thread == (uint32_t)GetCurrentThreadId();
 }
+#elif !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
+    return loop && pthread_equal(loop->owner_thread, pthread_self());
+}
+#else
+int eshkol_event_loop_is_owner(const eshkol_event_loop_t *loop) {
+    return loop && loop->owner_thread == (uintptr_t)1;
+}
+#endif
 
 #include <stdlib.h>
 #include <errno.h>
@@ -43,6 +56,90 @@ uint64_t eshkol_event_loop_test_poll_calls(void) { return test_poll_calls; }
  * Pointer API
  * ───────────────────────────────────────────────────────────────────── */
 
+#define ESHKOL_FD_HASH_EMPTY (-1)
+#define ESHKOL_FD_HASH_TOMB  (-2)
+
+static int next_pow2_at_least(int n) {
+    int cap = 16;
+    while (cap < n && cap < (1 << 29)) cap <<= 1;
+    return cap;
+}
+
+static uint32_t fd_hash_mix(int fd) {
+    return (uint32_t)fd * 2654435761u;
+}
+
+static void fd_hash_reset_empty(eshkol_event_loop_t* loop) {
+    for (int i = 0; i < loop->fd_hash_cap; ++i) {
+        loop->fd_hash_keys[i] = ESHKOL_FD_HASH_EMPTY;
+        loop->fd_hash_vals[i] = -1;
+    }
+    loop->fd_hash_tombstones = 0;
+}
+
+static void fd_hash_insert_raw(eshkol_event_loop_t* loop, int fd, int slot) {
+    const uint32_t mask = (uint32_t)(loop->fd_hash_cap - 1);
+    uint32_t pos = fd_hash_mix(fd) & mask;
+    int first_tomb = -1;
+    for (;;) {
+        const int key = loop->fd_hash_keys[pos];
+        if (key == fd) {
+            loop->fd_hash_vals[pos] = slot;
+            return;
+        }
+        if (key == ESHKOL_FD_HASH_TOMB) {
+            if (first_tomb < 0) first_tomb = (int)pos;
+        } else if (key == ESHKOL_FD_HASH_EMPTY) {
+            const int target = (first_tomb >= 0) ? first_tomb : (int)pos;
+            if (first_tomb >= 0 && loop->fd_hash_tombstones > 0)
+                --loop->fd_hash_tombstones;
+            loop->fd_hash_keys[target] = fd;
+            loop->fd_hash_vals[target] = slot;
+            return;
+        }
+        pos = (pos + 1u) & mask;
+    }
+}
+
+static void fd_hash_rehash(eshkol_event_loop_t* loop) {
+    fd_hash_reset_empty(loop);
+    for (int i = 0; i < loop->max_registrations; ++i) {
+        if (loop->regs[i].fd >= 0) fd_hash_insert_raw(loop, loop->regs[i].fd, i);
+    }
+}
+
+static void fd_hash_insert(eshkol_event_loop_t* loop, int fd, int slot) {
+    if ((loop->n_regs + loop->fd_hash_tombstones) * 4 >= loop->fd_hash_cap * 3)
+        fd_hash_rehash(loop);
+    fd_hash_insert_raw(loop, fd, slot);
+}
+
+static void fd_hash_erase(eshkol_event_loop_t* loop, int fd) {
+    const uint32_t mask = (uint32_t)(loop->fd_hash_cap - 1);
+    uint32_t pos = fd_hash_mix(fd) & mask;
+    for (;;) {
+        const int key = loop->fd_hash_keys[pos];
+        if (key == ESHKOL_FD_HASH_EMPTY) return;
+        if (key == fd) {
+            loop->fd_hash_keys[pos] = ESHKOL_FD_HASH_TOMB;
+            loop->fd_hash_vals[pos] = -1;
+            ++loop->fd_hash_tombstones;
+            return;
+        }
+        pos = (pos + 1u) & mask;
+    }
+}
+
+static void event_loop_free_tables(eshkol_event_loop_t* loop) {
+    free(loop->regs);
+    free(loop->out);
+    free(loop->fd_hash_keys);
+    free(loop->fd_hash_vals);
+    free(loop->reg_free_next);
+    free(loop->reg_emit_gen);
+    free(loop->reg_emit_idx);
+}
+
 eshkol_event_loop_t* eshkol_event_loop_create(int max_events) {
     if (max_events <= 0 || max_events > ESHKOL_EVENT_LOOP_MAX_EVENTS) return NULL;
 
@@ -55,26 +152,43 @@ eshkol_event_loop_t* eshkol_event_loop_create(int max_events) {
         (eshkol_event_loop_t*)calloc(1, sizeof(eshkol_event_loop_t));
     if (!loop) return NULL;
 
-    loop->owner_thread = (uintptr_t)&event_owner_token;
+#if defined(_WIN32)
+    loop->owner_thread = (uint32_t)GetCurrentThreadId();
+#elif !defined(ESHKOL_VM_WASM) && !defined(__EMSCRIPTEN__)
+    loop->owner_thread = pthread_self();
+#else
+    loop->owner_thread = (uintptr_t)1;
+#endif
     loop->max_registrations = max_events;
     loop->max_events = max_events + 1;
     loop->wake_read = loop->wake_write = -1;
     loop->backend_fd = -1;
+    loop->fd_hash_cap = next_pow2_at_least(max_events * 2 + 4);
     loop->regs = (eshkol_event_reg_t*)calloc((size_t)loop->max_events,
                                              sizeof(eshkol_event_reg_t));
     loop->out = (eshkol_event_t*)calloc((size_t)loop->max_events,
                                         sizeof(eshkol_event_t));
-    if (!loop->regs || !loop->out) {
-        free(loop->regs);
-        free(loop->out);
+    loop->fd_hash_keys = (int*)malloc((size_t)loop->fd_hash_cap * sizeof(int));
+    loop->fd_hash_vals = (int*)malloc((size_t)loop->fd_hash_cap * sizeof(int));
+    loop->reg_free_next = (int*)malloc((size_t)max_events * sizeof(int));
+    loop->reg_emit_gen = (uint32_t*)calloc((size_t)max_events, sizeof(uint32_t));
+    loop->reg_emit_idx = (int*)calloc((size_t)max_events, sizeof(int));
+    if (!loop->regs || !loop->out || !loop->fd_hash_keys || !loop->fd_hash_vals ||
+        !loop->reg_free_next || !loop->reg_emit_gen || !loop->reg_emit_idx) {
+        event_loop_free_tables(loop);
         free(loop);
         return NULL;
     }
-    for (int i = 0; i < max_events; ++i) loop->regs[i].fd = -1;
+    for (int i = 0; i < max_events; ++i) {
+        loop->regs[i].fd = -1;
+        loop->reg_free_next[i] = (i + 1 < max_events) ? (i + 1) : -1;
+    }
+    loop->regs[max_events].fd = -1;
+    loop->reg_free_head = 0;
+    fd_hash_reset_empty(loop);
 
     if (eshkol_event_backend_open(loop) != ESHKOL_EVENT_LOOP_OK) {
-        free(loop->regs);
-        free(loop->out);
+        event_loop_free_tables(loop);
         free(loop);
         return NULL;
     }
@@ -86,7 +200,7 @@ eshkol_event_loop_t* eshkol_event_loop_create(int max_events) {
 #else
     if (pipe(fds) != 0) {
 #endif
-        eshkol_event_backend_close(loop); free(loop->regs); free(loop->out); free(loop); return NULL;
+        eshkol_event_backend_close(loop); event_loop_free_tables(loop); free(loop); return NULL;
     }
     loop->wake_read = fds[0]; loop->wake_write = fds[1];
 #if !defined(__linux__)
@@ -96,12 +210,12 @@ eshkol_event_loop_t* eshkol_event_loop_create(int max_events) {
         fcntl(fds[1], F_SETFL, write_flags | O_NONBLOCK) < 0 ||
         fcntl(fds[0], F_SETFD, FD_CLOEXEC) < 0 || fcntl(fds[1], F_SETFD, FD_CLOEXEC) < 0) {
         close(fds[0]); close(fds[1]); eshkol_event_backend_close(loop);
-        free(loop->regs); free(loop->out); free(loop); return NULL;
+        event_loop_free_tables(loop); free(loop); return NULL;
     }
 #endif
     if (eshkol_event_backend_add(loop, fds[0], ESHKOL_EVENT_READ, 0) != ESHKOL_EVENT_LOOP_OK) {
         close(fds[0]); close(fds[1]); eshkol_event_backend_close(loop);
-        free(loop->regs); free(loop->out); free(loop); return NULL;
+        event_loop_free_tables(loop); free(loop); return NULL;
     }
 #endif
     return loop;
@@ -126,22 +240,26 @@ int eshkol_event_loop_set_maintenance(eshkol_event_loop_t *loop,
     return ESHKOL_EVENT_LOOP_OK;
 }
 
-/** Index of @p fd in the registration table, or -1. */
+/** O(1) index of @p fd in the registration table, or -1. */
 static int reg_find(const eshkol_event_loop_t* loop, int fd) {
-    for (int i = 0; i < loop->max_registrations; ++i)
-        if (loop->regs[i].fd == fd) return i;
-    return -1;
+    if (fd < 0 || loop->fd_hash_cap <= 0) return -1;
+    const uint32_t mask = (uint32_t)(loop->fd_hash_cap - 1);
+    uint32_t pos = fd_hash_mix(fd) & mask;
+    for (;;) {
+        const int key = loop->fd_hash_keys[pos];
+        if (key == fd) return loop->fd_hash_vals[pos];
+        if (key == ESHKOL_FD_HASH_EMPTY) return -1;
+        pos = (pos + 1u) & mask;
+    }
 }
 
 int eshkol_event_loop_registration_present(const eshkol_event_loop_t *loop, int fd) {
     return loop && reg_find(loop, fd) >= 0;
 }
 
-/** Index of a free registration slot, or -1 when the table is full. */
+/** O(1) peek of a free registration slot, or -1 when the table is full. */
 static int reg_free_slot(const eshkol_event_loop_t* loop) {
-    for (int i = 0; i < loop->max_registrations; ++i)
-        if (loop->regs[i].fd < 0) return i;
-    return -1;
+    return loop->reg_free_head;
 }
 
 uint64_t eshkol_event_lookup_user_data(const eshkol_event_loop_t* loop, int fd) {
@@ -161,9 +279,43 @@ int eshkol_event_loop_registration_matches(const eshkol_event_loop_t* loop,
 int eshkol_event_emit(eshkol_event_loop_t* loop, int* n_out, int fd, int events) {
     if (!loop || !n_out) return 0;
 
-    /* Coalesce: kqueue delivers one record per filter, epoll and the Windows
-     * path one per descriptor. Callers of the public API see the epoll shape
-     * everywhere. */
+    /* O(1) coalescing via per-poll epoch stamps: kqueue delivers one record
+     * per filter, epoll and Windows one per descriptor. */
+    if (fd == loop->wake_read && fd >= 0) {
+        if (loop->emit_epoch != 0 && loop->wake_emit_gen == loop->emit_epoch &&
+            loop->wake_emit_idx >= 0 && loop->wake_emit_idx < *n_out &&
+            loop->out[loop->wake_emit_idx].fd == fd) {
+            loop->out[loop->wake_emit_idx].events |= events;
+            return 1;
+        }
+        if (*n_out >= loop->max_events) return 0;
+        loop->out[*n_out].fd = fd;
+        loop->out[*n_out].events = events;
+        loop->out[*n_out].user_data = 0u;
+        loop->wake_emit_gen = loop->emit_epoch;
+        loop->wake_emit_idx = *n_out;
+        ++(*n_out);
+        return 1;
+    }
+
+    const int slot = reg_find(loop, fd);
+    if (slot >= 0) {
+        if (loop->emit_epoch != 0 && loop->reg_emit_gen[slot] == loop->emit_epoch &&
+            loop->reg_emit_idx[slot] >= 0 && loop->reg_emit_idx[slot] < *n_out &&
+            loop->out[loop->reg_emit_idx[slot]].fd == fd) {
+            loop->out[loop->reg_emit_idx[slot]].events |= events;
+            return 1;
+        }
+        if (*n_out >= loop->max_events) return 0;
+        loop->out[*n_out].fd = fd;
+        loop->out[*n_out].events = events;
+        loop->out[*n_out].user_data = loop->regs[slot].user_data;
+        loop->reg_emit_gen[slot] = loop->emit_epoch;
+        loop->reg_emit_idx[slot] = *n_out;
+        ++(*n_out);
+        return 1;
+    }
+
     for (int i = 0; i < *n_out; ++i) {
         if (loop->out[i].fd == fd) {
             loop->out[i].events |= events;
@@ -174,7 +326,7 @@ int eshkol_event_emit(eshkol_event_loop_t* loop, int* n_out, int fd, int events)
 
     loop->out[*n_out].fd = fd;
     loop->out[*n_out].events = events;
-    loop->out[*n_out].user_data = eshkol_event_lookup_user_data(loop, fd);
+    loop->out[*n_out].user_data = 0u;
     ++(*n_out);
     return 1;
 }
@@ -202,8 +354,13 @@ int eshkol_event_loop_add(eshkol_event_loop_t* loop, int fd, int events,
     const int rc = eshkol_event_backend_add(loop, fd, events, prev_events);
     if (rc != ESHKOL_EVENT_LOOP_OK) return rc;
 
-    if (prev_events == 0) ++loop->n_regs;
-    loop->regs[idx].fd = fd;
+    if (prev_events == 0) {
+        loop->reg_free_head = loop->reg_free_next[idx];
+        loop->reg_free_next[idx] = -1;
+        ++loop->n_regs;
+        loop->regs[idx].fd = fd;
+        fd_hash_insert(loop, fd, idx);
+    }
     loop->regs[idx].events = events;
     loop->regs[idx].user_data = user_data;
     return ESHKOL_EVENT_LOOP_OK;
@@ -232,9 +389,13 @@ int eshkol_event_loop_remove(eshkol_event_loop_t* loop, int fd) {
     /* Keep the owner and watch on a genuine removal failure. Already-gone
      * descriptors are reported as success by the platform backend. */
     if (rc != ESHKOL_EVENT_LOOP_OK) return rc;
+    fd_hash_erase(loop, fd);
     loop->regs[idx].fd = -1;
     loop->regs[idx].events = 0;
     loop->regs[idx].user_data = 0;
+    loop->reg_emit_gen[idx] = 0;
+    loop->reg_free_next[idx] = loop->reg_free_head;
+    loop->reg_free_head = idx;
     if (loop->n_regs > 0) --loop->n_regs;
     return rc;
 }
@@ -257,6 +418,13 @@ int eshkol_event_loop_poll(eshkol_event_loop_t* loop, int timeout_ms,
      * Finite empty polls retain their timeout behavior for process reaping. */
     if (loop->n_regs == 0 && !loop->managed_owners && timeout_ms < 0)
         return ESHKOL_EVENT_LOOP_OK;
+
+    if (++loop->emit_epoch == 0) {
+        memset(loop->reg_emit_gen, 0,
+               (size_t)loop->max_registrations * sizeof(uint32_t));
+        loop->wake_emit_gen = 0;
+        loop->emit_epoch = 1;
+    }
 
     int n = 0;
     const int rc = eshkol_event_backend_poll(loop, timeout_ms, &n);
@@ -289,8 +457,7 @@ int eshkol_event_loop_close(eshkol_event_loop_t* loop) {
     if (loop->wake_read >= 0) close(loop->wake_read);
     if (loop->wake_write >= 0) close(loop->wake_write);
 #endif
-    free(loop->regs);
-    free(loop->out);
+    event_loop_free_tables(loop);
     free(loop);
     return ESHKOL_EVENT_LOOP_OK;
 }

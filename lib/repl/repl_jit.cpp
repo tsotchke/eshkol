@@ -755,6 +755,20 @@ extern "C" {
                                      const char* content_type, const char* body)
         ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_http_server_close(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    struct HttpSseStream;
+    HttpSseStream* eshkol_http_sse_scope_begin(int64_t, int64_t, int64_t)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_http_sse_scope_id(const HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_http_sse_scope_close(HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_http_sse_scope_cleanup_ticket(int64_t) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_http_sse_stream_send(HttpSseStream*, const char*, const char*, const char*)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_http_sse_stream_send_bytes(HttpSseStream*, const char*, int64_t,
+                                         const char*, int64_t, const char*, int64_t)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_http_sse_stream_finish(HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int eshkol_http_sse_stream_progress(HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_http_sse_stream_deadline(const HttpSseStream*) ESHKOL_OPTIONAL_AGENT_FFI;
     int64_t eshkol_unix_socket_connect(const char* path) ESHKOL_OPTIONAL_AGENT_FFI;
     int64_t eshkol_ws_wrap_fd(int32_t fd) ESHKOL_OPTIONAL_AGENT_FFI;
     int32_t eshkol_ws_send_text(int64_t handle, const char* data, int32_t len)
@@ -1736,6 +1750,15 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_accept);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_respond);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_server_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_scope_begin);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_scope_id);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_scope_close);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_scope_cleanup_ticket);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_send);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_send_bytes);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_finish);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_progress);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_http_sse_stream_deadline);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_unix_socket_connect);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_wrap_fd);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_ws_send_text);

@@ -1,0 +1,131 @@
+{
+  "lean": "Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release)",
+  "axioms": [
+    "'Verificatum.NestedRegions.pop_layout' depends on axioms: [propext, Quot.sound]",
+    "'Verificatum.NestedRegions.pop_child' depends on axioms: [propext, Quot.sound]"
+  ],
+  "builds": {
+    "default": {
+      "normal_forms": [
+        "0010",
+        "0000110"
+      ],
+      "workloads": [
+        {
+          "parent_cursor": [
+            48,
+            48,
+            96
+          ],
+          "child_used": 2352,
+          "survivor_offset": 8,
+          "fresh_offset": 56
+        },
+        {
+          "parent_cursor": [
+            48,
+            48,
+            96
+          ],
+          "child_used": 16576,
+          "survivor_offset": 8,
+          "fresh_offset": 56
+        }
+      ],
+      "live_binding_decisions": [
+        "true",
+        "false",
+        "false",
+        "false",
+        "true",
+        "false",
+        "false",
+        "false"
+      ],
+      "elf_sha256": "8d0c4336be23f5c03bba1f47824d56c1fe7fd6e5d88421ae47306126ce0e36a6"
+    },
+    "instrumented": {
+      "normal_forms": [
+        "0010",
+        "0000110"
+      ],
+      "workloads": [
+        {
+          "parent_cursor": [
+            48,
+            48,
+            96
+          ],
+          "child_used": 2352,
+          "survivor_offset": 8,
+          "fresh_offset": 56
+        },
+        {
+          "parent_cursor": [
+            48,
+            48,
+            96
+          ],
+          "child_used": 16576,
+          "survivor_offset": 8,
+          "fresh_offset": 56
+        }
+      ],
+      "live_binding_decisions": [
+        "true",
+        "false",
+        "false",
+        "false",
+        "true",
+        "false",
+        "false",
+        "false"
+      ],
+      "observed_child_destructor_entries": 2,
+      "denial": "SIGABRT at restored parent",
+      "denied_child_destructor_entries": 0,
+      "elf_sha256": "4fb46a3d2a1da552a0fa13e32436e44fb3eeba3c451738dd0c54ec4f5dda671a"
+    },
+    "ordinary_gate": {
+      "normal_forms": [
+        "0010",
+        "0000110"
+      ],
+      "workloads": [
+        {
+          "parent_cursor": [
+            48,
+            48,
+            96
+          ],
+          "child_used": 2352,
+          "survivor_offset": 8,
+          "fresh_offset": 56
+        },
+        {
+          "parent_cursor": [
+            48,
+            48,
+            96
+          ],
+          "child_used": 16576,
+          "survivor_offset": 8,
+          "fresh_offset": 56
+        }
+      ],
+      "live_binding_decisions": [
+        "true",
+        "false",
+        "false",
+        "false",
+        "true",
+        "false",
+        "false",
+        "false"
+      ],
+      "denial": "SIGABRT at restored parent",
+      "elf_sha256": "543941f7e619f4907c66f6f8c58d3df106c77161b6e59da9e4d3a4a47cbfce60"
+    }
+  },
+  "runtime_sha256": "10a68815be29e4caacb0214af225b0a11a70c2f93c757be6b341d2117a698b22"
+}

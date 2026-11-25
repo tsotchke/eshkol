@@ -23,4 +23,21 @@ static inline double eshkol_cuda_parse_matmul_budget(const char* text) {
     }
     return 1e-15;  // "exact", "full", and invalid input select native f64.
 }
+
+/* Resolve the effective CUDA matmul accuracy budget from ESHKOL_MATMUL_ACCURACY
+ * (taking precedence when set) and ESHKOL_GPU_PRECISION ("exact" / "high" /
+ * "fast", matching Metal and WebGPU precision tiers). Invalid values fail closed
+ * to 1e-15 (native cuBLAS DGEMM). */
+static inline double eshkol_cuda_resolve_matmul_budget(const char* accuracy_env,
+                                                       const char* precision_env) {
+    if (accuracy_env && *accuracy_env) {
+        return eshkol_cuda_parse_matmul_budget(accuracy_env);
+    }
+    if (!precision_env || !*precision_env) {
+        return -1.0;
+    }
+    if (std::strcmp(precision_env, "fast") == 0) return 1e-5;
+    if (std::strcmp(precision_env, "high") == 0) return 1e-11;
+    return 1e-15;  // "exact" and unknown tiers fail closed to native f64.
+}
 #endif

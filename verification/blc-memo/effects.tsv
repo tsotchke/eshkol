@@ -1,0 +1,96 @@
+scope	effect	form	sites
+blc-fast-run	allocate	(cons (quote quote-at) 0)	1
+blc-fast-run	allocate	(list (cons (quote quote-at) 0))	1
+blc-fast-run	error	(error "blc-fast-run: expected a nonnegative transition budget" fuel)	1
+blc-fast-run	inspect	(eq? mode (quote emit))	1
+blc-fast-run	inspect	(eq? mode (quote eval))	1
+blc-fast-run	inspect	(eq? mode (quote force))	1
+blc-fast-run	inspect	(eq? mode (quote lookup))	1
+blc-fast-run	inspect	(eq? mode (quote value))	1
+blc-fast-run	inspect	(null? frames)	1
+core.blc/blc-app	allocate	(list (quote app) m n)	1
+core.blc/blc-app-arg	read	(caddr t)	1
+core.blc/blc-app-fun	read	(cadr t)	1
+core.blc/blc-app?	import	(blc-tagged? t (quote app))	1
+core.blc/blc-lam	allocate	(list (quote lam) b)	1
+core.blc/blc-lam-body	read	(cadr t)	1
+core.blc/blc-lam?	import	(blc-tagged? t (quote lam))	1
+core.blc/blc-tagged?	inspect	(eq? (car t) tag)	1
+core.blc/blc-tagged?	inspect	(pair? t)	1
+core.blc/blc-tagged?	read	(car t)	1
+core.blc/blc-var	allocate	(list (quote var) i)	1
+core.blc/blc-var-index	read	(cadr t)	1
+core.blc/blc-var?	import	(blc-tagged? t (quote var))	1
+dispatch/emit	allocate	(cons (cons (quote quote-at) (cadr frame)) (cons (cons (quote wrap-app) item) rest))	1
+dispatch/emit	allocate	(cons (cons (quote wrap-app) item) rest)	1
+dispatch/emit	allocate	(cons (quote quote-at) (cadr frame))	1
+dispatch/emit	allocate	(cons (quote wrap-app) item)	1
+dispatch/emit	import	(blc-app (cdr frame) item)	1
+dispatch/emit	import	(blc-lam item)	1
+dispatch/emit	inspect	(eq? (car frame) (quote quote-arg))	1
+dispatch/emit	inspect	(eq? (car frame) (quote wrap-lam))	1
+dispatch/emit	read	(cadr frame)	1
+dispatch/emit	read	(car frame)	2
+dispatch/emit	read	(car frames)	1
+dispatch/emit	read	(cddr frame)	1
+dispatch/emit	read	(cdr frame)	1
+dispatch/emit	read	(cdr frames)	1
+dispatch/emit	register	(set! nodes (+ nodes 1))	2
+dispatch/eval	allocate	(cons (blc-app-arg item) env)	1
+dispatch/eval	allocate	(cons (blc-lam-body item) env)	1
+dispatch/eval	allocate	(cons (cons (quote argument) cell) frames)	1
+dispatch/eval	allocate	(cons (quote argument) cell)	1
+dispatch/eval	allocate	(cons (quote closure) (cons (blc-lam-body item) env))	1
+dispatch/eval	allocate	(cons (quote pending) (cons (blc-app-arg item) env))	1
+dispatch/eval	error	(error "blc-fast-run: invalid term" item)	1
+dispatch/eval	import	(blc-app-arg item)	1
+dispatch/eval	import	(blc-app-fun item)	1
+dispatch/eval	import	(blc-app? item)	1
+dispatch/eval	import	(blc-lam-body item)	1
+dispatch/eval	import	(blc-lam? item)	1
+dispatch/eval	import	(blc-var-index item)	1
+dispatch/eval	import	(blc-var? item)	1
+dispatch/eval	register	(set! suspensions (+ suspensions 1))	1
+dispatch/force	allocate	(cons (cons (quote update) item) frames)	1
+dispatch/force	allocate	(cons (quote update) item)	1
+dispatch/force	inspect	(eq? (car item) (quote memo))	1
+dispatch/force	inspect	(eq? (car item) (quote pending))	1
+dispatch/force	read	(cadr item)	1
+dispatch/force	read	(car item)	2
+dispatch/force	read	(cddr item)	1
+dispatch/force	read	(cdr item)	1
+dispatch/force	register	(set! forces (+ forces 1))	1
+dispatch/force	register	(set! hits (+ hits 1))	1
+dispatch/lookup	inspect	(null? env)	1
+dispatch/lookup	read	(car env)	1
+dispatch/lookup	read	(cdr env)	1
+dispatch/value	allocate	(cons (cons (quote level) data) (cddr item))	1
+dispatch/value	allocate	(cons (cons (quote quote-arg) (cons data (caddr item))) rest)	1
+dispatch/value	allocate	(cons (cons (quote quote-at) (+ data 1)) (cons (quote (wrap-lam)) rest))	1
+dispatch/value	allocate	(cons (quote (wrap-lam)) rest)	1
+dispatch/value	allocate	(cons (quote level) data)	1
+dispatch/value	allocate	(cons (quote quote-arg) (cons data (caddr item)))	1
+dispatch/value	allocate	(cons (quote quote-at) (+ data 1))	1
+dispatch/value	allocate	(cons data (caddr item))	1
+dispatch/value	allocate	(cons data (cddr item))	1
+dispatch/value	allocate	(cons frame (cons (cons (quote quote-arg) (cons data (caddr item))) rest))	1
+dispatch/value	allocate	(list (quote spine) item data)	1
+dispatch/value	import	(blc-var (- data item))	1
+dispatch/value	inspect	(eq? (car item) (quote closure))	2
+dispatch/value	inspect	(eq? action (quote argument))	1
+dispatch/value	inspect	(eq? action (quote update))	1
+dispatch/value	inspect	(pair? item)	1
+dispatch/value	literal-pair	(quote (wrap-lam))	1
+dispatch/value	read	(caddr item)	1
+dispatch/value	read	(cadr item)	3
+dispatch/value	read	(car frame)	1
+dispatch/value	read	(car frames)	1
+dispatch/value	read	(car item)	2
+dispatch/value	read	(cddr item)	2
+dispatch/value	read	(cdr frame)	1
+dispatch/value	read	(cdr frames)	1
+dispatch/value	register	(set! nodes (+ nodes 1))	1
+dispatch/value	write	(set-car! data (quote memo))	1
+dispatch/value	write	(set-cdr! data item)	1
+exit/exhausted	allocate	(list (quote exhausted) #f steps suspensions forces hits nodes)	1
+exit/normal	allocate	(list (quote normal) item steps suspensions forces hits nodes)	1

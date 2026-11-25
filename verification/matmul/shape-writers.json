@@ -1,0 +1,15 @@
+{
+  "snapshot": {
+    "files": 425,
+    "sha256": "8748ee37cfe610ca9e38bfdf420f3689a4af6d5019d859c2a09ef5a1259433ea",
+    "lexical_counts": {
+      "llvm-write-candidate": 2500,
+      "native-bulk-destination": 3,
+      "native-field": 121,
+      "runtime-axis-buffer": 6,
+      "vm-bulk-destination": 6,
+      "vm-field": 16,
+      "wasm-host-write-candidate": 174
+    }
+  }
+}

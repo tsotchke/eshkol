@@ -1,0 +1,81 @@
+{
+  "scope": "two single-thread nested BLC executions",
+  "normal_forms": [
+    "0010",
+    "0000110"
+  ],
+  "workloads": [
+    {
+      "parent_cursor": [
+        48,
+        48,
+        96
+      ],
+      "child_used": 2352,
+      "survivor_offset": 8,
+      "fresh_offset": 56
+    },
+    {
+      "parent_cursor": [
+        48,
+        48,
+        96
+      ],
+      "child_used": 16576,
+      "survivor_offset": 8,
+      "fresh_offset": 56
+    }
+  ],
+  "model": "Verificatum.NestedRegions.pop_child",
+  "lean": "Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release)",
+  "snapshot_cases": [
+    "measured",
+    "fallback_as_domain",
+    "missing_parent",
+    "inactive_child"
+  ],
+  "lean_decisions": [
+    "true",
+    "false",
+    "false",
+    "false",
+    "true",
+    "false",
+    "false",
+    "false"
+  ],
+  "binding_cases": [
+    "1 2 3 1 4 2 1 3 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    "1 2 3 1 4 2 1 1 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    "1 2 3 1 4 2 1 3 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    "1 2 3 1 4 2 1 3 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5",
+    "1 2 3 1 4 2 1 3 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    "1 2 3 1 4 2 1 1 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    "1 2 3 1 4 2 1 3 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    "1 2 3 1 4 2 1 3 1 2 5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5"
+  ],
+  "whole_native_permit": "withheld",
+  "inputs": {
+    "compiler": "7ff4b956313c756f2f0a87e497c34a697989d5207e57245b19d7b5be130c1dcb",
+    "cblas": "6496d7ae3b96e6a2326df00ba479cb6a9e4373354dabdbc6aab82c08546e7b11",
+    "stdlib.o": "1e89cbc6e5fda921eefeb4541ad82659ffefd643387647cf68e1485c365abdff",
+    "runtime": "10a68815be29e4caacb0214af225b0a11a70c2f93c757be6b341d2117a698b22",
+    "stdlib.esk": "3f2aeed4f986ac7762232aa704a5198b83da692b6949924d0de755bd06c405dc",
+    "arena_memory.h": "a3cfd7a967e0362931d627d34e7fe7b32cf4b10cd9f07871c5819f61507cebdb",
+    "eshkol.h": "8e33d2622e9412debbca0bdf053b65fc7a976e7379c00b8eec73d73249e9c800",
+    "object_limits.h": "a677e79d178614089519d9868195baacccc3ab1b30803a83ad00990251ef6325",
+    "blc.esk": "25048643f33b8b24f5e1602e4ec13d85f745bf88fda49c504dce13138cf38d6c",
+    "blc-fast.esk": "5ccdd2607eeed1dc7ba54b08f3f3e590f0751feb7df71e8500d4297fa2bfb62a"
+  },
+  "sources": {
+    "ArenaBump.lean": "f418268a48542a595ab8850d4449be5824fa459e0c077d1816a335c47d8000eb",
+    "ArenaLedger.lean": "be6cabd6c3b51950d9010612a690a0e8aac060642b0428384b6ca50c38c0a538",
+    "NativeAllocation.lean": "2c7e5391ff9cba21f4f2ea0e8aef48907f79a868713f64dbdf1f0a7a5a458215",
+    "Reclamation.lean": "397055e37e27b6b2b4c62ab151c3bfa168817fd2b80f2ca8a0083280d192030b",
+    "NestedRegions.lean": "fb405d4226202a065796228b290af3142efc2453d64913efeac07dbcbd351afe",
+    "nested_regions.cpp": "b11dd581cc8d7851eaf6fb6ee0cf4692ccdb836064f5c64531d81c7a2b945a02",
+    "nested_regions.esk": "6a31b24687e767dde193a206ec4b481a5b8d05c440086e701e429995c6a0508d",
+    "nested_regions_replay.py": "f52365f2971b879211945d18f870d5c4f1dcdec3ab990dab9a21eb63348397b0"
+  },
+  "elf": "bbbed4d567834efededcd30db361fb24ef72abfefda69782b7f17c6f3f47373d"
+}

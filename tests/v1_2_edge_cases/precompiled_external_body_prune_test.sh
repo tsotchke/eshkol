@@ -95,7 +95,7 @@ cp "$stdlib_object" "$tmpdir/stdlib.o"
 set +e
 (
     cd "$tmpdir"
-    ESHKOL_LIB_DIR="$tmpdir/lib" "$fixture_runner" --strict-types --compile-only \
+    "$fixture_runner" --strict-types --compile-only \
         use_external_probe.esk stdlib.o \
         -o use_external_probe.o
 ) > "$tmpdir/compile.log" 2>&1

@@ -172,14 +172,15 @@ extern "C" void tensor_softmax_backward(ad_node_t* node) {
 
 /** @brief Backward pass for layer normalization: for each row along the
  *  last dimension, chains gradients back through the mean/variance
- *  normalization to dx, and accumulates dgamma when a gamma input is
- *  present. */
+ *  normalization to dx, and accumulates dgamma and dbeta when gamma/beta
+ *  inputs are present. */
 extern "C" void tensor_layernorm_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
     double* dy = (double*)node->tensor_gradient;
     ad_node_t* x_node = node->input1;
     ad_node_t* gamma_node = node->input2;
+    ad_node_t* beta_node = node->input3;
 
     if (!x_node) return;
 
@@ -203,6 +204,15 @@ extern "C" void tensor_layernorm_backward(ad_node_t* node) {
             gamma_node->tensor_gradient = alloc_grad(last_dim);
         }
         dgamma = (double*)gamma_node->tensor_gradient;
+    }
+
+    /* Gradient for beta (accumulated across batch) */
+    double* dbeta = NULL;
+    if (beta_node) {
+        if (beta_node->tensor_gradient == NULL) {
+            beta_node->tensor_gradient = alloc_grad(last_dim);
+        }
+        dbeta = (double*)beta_node->tensor_gradient;
     }
 
     for (size_t r = 0; r < num_rows; r++) {
@@ -236,6 +246,9 @@ extern "C" void tensor_layernorm_backward(ad_node_t* node) {
 
             if (dgamma) {
                 dgamma[i] += dy_row[i] * xhat;
+            }
+            if (dbeta) {
+                dbeta[i] += dy_row[i];
             }
         }
 

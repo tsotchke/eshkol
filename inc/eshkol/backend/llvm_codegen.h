@@ -1464,6 +1464,9 @@ private:
     // MIGRATED: Polymorphic subtraction - delegates to ArithmeticCodegen
     Value* polymorphicSub(Value* left_tagged, Value* right_tagged);
 
+    // Polymorphic unary negation (- x), preserving IEEE-754 signed zero for doubles
+    Value* polymorphicUnaryNeg(Value* operand);
+
     // MIGRATED: Polymorphic multiplication - delegates to ArithmeticCodegen
     Value* polymorphicMul(Value* left_tagged, Value* right_tagged);
 

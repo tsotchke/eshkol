@@ -44,6 +44,7 @@
 #ifdef __EMSCRIPTEN__
 
 #include <eshkol/backend/gpu/gpu_memory.h>
+#include <eshkol/backend/gpu/matmul_range_guard.h>
 #include <eshkol/logger.h>
 #include <emscripten.h>
 #include <cstdio>
@@ -446,6 +447,11 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
     if (!a || !b || !c) return -1;
 
     if (eshkol_gpu_should_use(static_cast<size_t>(M) * static_cast<size_t>(N))) {
+        if (!eshkol_gpu_has_fp64() &&
+            !eshkol_f64_matmul_operands_safe_for_f32(a, b, M, K, N, 0)) {
+            webgpu_note_fallback("matmul-range-guard", static_cast<size_t>(M) * static_cast<size_t>(N));
+            return -1;
+        }
         int rc = eshkol_webgpu_js_matmul(
             const_cast<double*>(a), const_cast<double*>(b), c,
             static_cast<double>(M), static_cast<double>(K), static_cast<double>(N));

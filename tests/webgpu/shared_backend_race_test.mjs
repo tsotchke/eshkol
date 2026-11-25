@@ -80,7 +80,7 @@ try {
                  diagnostics: backend.diagnostics };
     });
     const pass = result.small.allExpected && result.large.allExpected &&
-        result.small.outputs[0][0] === '6' && result.small.outputs[1][0] === '20' &&
+        result.small.outputs[0][0] === '6.0' && result.small.outputs[1][0] === '20.0' &&
         result.large.outputs[0].every((x) => Number(x) === 48) &&
         result.large.outputs[1].every((x) => Number(x) === 160) &&
         result.small.dispatchDelta === 2 && result.large.dispatchDelta === 2 &&

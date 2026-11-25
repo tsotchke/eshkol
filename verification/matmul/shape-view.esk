@@ -1,0 +1,13 @@
+;; The source and view map different coordinates to the same final element.
+(define (shape-owner x) (tensor-apply x (lambda (v) (+ v 1.0))))
+(define original (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 3 2))
+(define requested (list 2 3))
+(define reshaped (reshape original requested))
+(set-car! requested 1)
+(tensor-set! reshaped 1 2 42.0)
+(define mapped (shape-owner original))
+(write (list requested (tensor-shape original) (tensor-shape reshaped)
+             (= (tensor-get original 2 1) 42.0)
+             (= (tensor-get reshaped 1 2) 42.0)
+             (tensor-shape mapped) (= (tensor-get mapped 2 1) 43.0)))
+(newline)

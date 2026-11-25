@@ -1,0 +1,74 @@
+;;; Durable crash-safe session persistence test (agent.session).
+;;; Exercises WAL/FULL persistence across reopen, chained SHA-256 verification,
+;;; checkpoint + delta replay, rollback atomicity, and tamper detection.
+
+(require agent.session)
+(require agent.sqlite)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name cond)
+  (if cond
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define db-path
+  (let ((env-path (getenv "ESHKOL_SESSION_TEST_DB")))
+    (if (and env-path (> (string-length env-path) 0))
+        env-path
+        "/tmp/eshkol_agent_session_test.db")))
+
+;; Phase 1: Create session, append events, save checkpoint, append post-checkpoint delta.
+(with-session-store db-path
+  (lambda (db)
+    (if (session-exists? db "sess-1")
+        (session-delete! db "sess-1"))
+    (let ((genesis (session-create! db "sess-1" "{\"agent\":\"worker-1\",\"version\":1}")))
+      (check "session-create returns 64-char sha256 genesis" (= (string-length genesis) 64))
+      (check "session-exists? is true after create" (session-exists? db "sess-1"))
+      (let ((s1 (session-append! db "sess-1" "user" "plan track B"))
+            (s2 (session-append! db "sess-1" "assistant" "executing verification gates")))
+        (check "monotonic seq 1 and 2" (and (= s1 1) (= s2 2)))
+        (let ((cp-seq (session-checkpoint! db "sess-1" "{\"step\":2,\"status\":\"active\"}")))
+          (check "checkpoint recorded at seq 2" (= cp-seq 2)))
+        (let ((s3 (session-append! db "sess-1" "tool" "large-payload-ok")))
+          (check "post-checkpoint event assigned seq 3" (= s3 3)))
+        (check "session-verify! passes before reopen" (session-verify! db "sess-1"))))))
+
+;; Phase 2: Reopen cold database handle (simulating process restart) and replay checkpoint + tail.
+(with-session-store db-path
+  (lambda (db)
+    (check "session survives close and cold reopen" (session-exists? db "sess-1"))
+    (check "session-verify! passes after cold reopen" (session-verify! db "sess-1"))
+    (let ((cp (session-latest-checkpoint db "sess-1")))
+      (check "latest checkpoint recovered after reopen"
+             (and cp (= (car cp) 2) (string=? (cadr cp) "{\"step\":2,\"status\":\"active\"}")))
+      (let ((tail (session-events-after db "sess-1" (car cp))))
+        (check "delta replay returns exactly post-checkpoint event 3"
+               (and (= (length tail) 1)
+                    (= (car (car tail)) 3)
+                    (string=? (cadr (car tail)) "tool")
+                    (string=? (caddr (car tail)) "large-payload-ok")))))
+    (let ((all-sessions (session-list db)))
+      (check "session-list includes sess-1 at seq 3"
+             (and (>= (length all-sessions) 1)
+                  (= (caddr (car all-sessions)) 3))))
+
+    ;; Phase 3: Tamper with an event payload directly via SQLite and confirm verify detects it.
+    (sqlite-exec db "UPDATE session_events SET payload = 'tampered' WHERE session_id = 'sess-1' AND seq = 2;")
+    (check "session-verify! detects event payload tampering" (not (session-verify! db "sess-1")))
+
+    ;; Cleanup
+    (session-delete! db "sess-1")
+    (check "session-delete! removes session cleanly" (not (session-exists? db "sess-1")))))
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "PASS: session_persistence_test") (newline))
+    (error "session_persistence_test failed"))

@@ -1,0 +1,20 @@
+(require core.blc)
+
+(define (syntax-check label bits ok)
+  (if (not ok) (begin (display label) (display " ") (display bits) (newline) (exit 1))))
+
+(define (check-syntax port count)
+  (let ((row (read port)))
+    (if (eof-object? row)
+        (begin (display "Syntax rows passed: ") (display count) (newline))
+        (let* ((bits (car row)) (term (cadr row))
+               (changed (caddr row)) (expected (cadddr row))
+               (decoded (blc-decode bits)))
+          (syntax-check "syntax decode" bits (equal? decoded term))
+          (syntax-check "syntax prefix" bits (equal? (blc-decode (string-append bits "0!")) term))
+          (syntax-check "syntax encode" bits (equal? bits (blc-encode term)))
+          (syntax-check "syntax step" bits (equal? (blc-step term) (cons changed expected)))
+          (check-syntax port (+ count 1))))))
+
+(call-with-input-file (get-environment-variable "ESHKOL_BLC_SYNTAX_ROWS")
+  (lambda (port) (check-syntax port 0)))

@@ -190,7 +190,7 @@ bool isNumericName(const std::string& n) {
 bool isDynName(const std::string& n) {
     static const char* const kNames[] = {
         "any", "Any", "Value", "value", "nothing", "Nothing", "Function", "function",
-        "procedure", "Procedure", "closure", "Closure", "List", "Vector", "Pair", "Tensor", "Pointer", "Ptr"};
+        "procedure", "Procedure", "List", "Vector", "Pair", "Tensor", "Pointer", "Ptr"};
     for (const char* k : kNames) {
         if (n == k) return true;
     }
