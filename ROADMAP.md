@@ -1293,7 +1293,9 @@ Informed by the [Multimedia System Architecture](docs/future/MULTIMEDIA_SYSTEM_A
 - [x] Event system (keyboard, mouse, touch, window events): per-window thread-safe queues, platform-independent key codes
 - [x] Real-time audio with callback-based I/O: CoreAudio, ALSA and a null real-time clock; lock-free queue mode, underrun/overrun/latency counters; WASAPI Planned for v1.8.1
 - [x] MIDI input/output: CoreMIDI, ALSA sequencer and in-process loopback
-- [x] Vulkan compute inside the ordinary GPU dispatch, cross-checked bit for bit against the CPU path ([VULKAN_COMPUTE.md](docs/platform/VULKAN_COMPUTE.md))
+- [x] Vulkan compute inside the ordinary GPU dispatch on Linux (`libvulkan.so.1`), cross-checked bit for bit against the CPU path ([VULKAN_COMPUTE.md](docs/platform/VULKAN_COMPUTE.md))
+- [ ] Vulkan compute loader bindings for Windows (`vulkan-1.dll`) and Apple (`MoltenVK`), extending `lib/backend/gpu/gpu_vulkan.c` with zero link-time dependency
+- [ ] OpenCL compute backend (`ESHKOL_GPU_OPENCL`) inside the ordinary `eshkol_gpu_*` dispatch: runtime-loaded (`libOpenCL.so.1` / `OpenCL.dll`), zero link-time dependency, bitwise per-device `cl_khr_fp64` admission probe, and automatic CPU fallback for legacy/non-Vulkan hardware
 - [x] Embedded cross-compilation: Cortex-M4, AArch64, RV32IMAC and RV64GC bare metal with a freestanding runtime subset ([EMBEDDED_TARGETS.md](docs/platform/EMBEDDED_TARGETS.md))
 - [ ] `core.memory` as a Z-set; resident recurrent AD
 
