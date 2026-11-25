@@ -2713,6 +2713,7 @@ set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/core/stl_control_loop.cpp
   lib/core/fenced_cognitive_ckpt.cpp
   lib/core/qtt_incremental_psi.cpp
+  lib/core/starlight_unified_diff_zx.cpp
   lib/core/merkle.c
   lib/core/model_io_atomic.c
   lib/core/model_io.cpp
@@ -4431,6 +4432,18 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
     target_link_libraries(ce11_qtt_incremental_psi_test PRIVATE eshkol-runtime)
     add_test(NAME ce11_qtt_incremental_psi_test COMMAND ce11_qtt_incremental_psi_test)
     set_tests_properties(ce11_qtt_incremental_psi_test PROPERTIES TIMEOUT 120)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/logic/ce12_starlight_diff_zx_lean4_test.cpp")
+    add_executable(ce12_starlight_diff_zx_lean4_test
+        tests/logic/ce12_starlight_diff_zx_lean4_test.cpp)
+    target_compile_features(ce12_starlight_diff_zx_lean4_test PRIVATE cxx_std_17)
+    target_include_directories(ce12_starlight_diff_zx_lean4_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    target_link_libraries(ce12_starlight_diff_zx_lean4_test PRIVATE eshkol-runtime)
+    add_test(NAME ce12_starlight_diff_zx_lean4_test COMMAND ce12_starlight_diff_zx_lean4_test)
+    set_tests_properties(ce12_starlight_diff_zx_lean4_test PROPERTIES TIMEOUT 120)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_zero_gradients_test.cpp")
